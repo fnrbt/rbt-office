@@ -88,6 +88,7 @@ try {
     null,
     { timeout: 30000 }
   );
+  await page.evaluate(() => window.rbWordRunner.clearSelection());
   if (outputJson) {
     const segments = await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
     await fs.writeFile(outputJson, JSON.stringify(segments, null, 2));

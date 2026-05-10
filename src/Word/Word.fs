@@ -151,6 +151,11 @@ module API =
                 "IsCollapsed" ==> selection.IsCollapsed
             ]
 
+    let clearSelection (editor: Editor) =
+        let newDoc = { editor.Doc with Selection = None }
+        Inp.updateDocument editor.Handler newDoc
+        editor.Doc <- newDoc
+
     let getImageHitTest (editor: Editor) (x: float) (y: float) =
         match Ren.hitTestForImage editor.Handler.RenderContext editor.Doc x y with
         | None -> null
@@ -1090,6 +1095,7 @@ module API =
             "getRevisionInfos" ==> getRevisionInfos
             "selectCommentAnchor" ==> selectCommentAnchor
             "getSelection" ==> getSelection
+            "clearSelection" ==> clearSelection
             "getImageHitTest" ==> getImageHitTest
             "getLayoutSegments" ==> getLayoutSegments
             "findText" ==> findText

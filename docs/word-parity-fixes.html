@@ -225,7 +225,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/repro-table-cell-spacing-after-text-scale.png" style="--w:900px; --x:70px; --y:70px; --s:2.4" alt="After native text scale fix">
+            <img src="../artifacts/native/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:70px; --y:70px; --s:2.4" alt="After native text scale fix">
           </div>
           <div class="caption">After: native measurement and glyph drawing use the same <code>96/72</code> point-to-pixel conversion as the browser canvas path.</div>
         </td>
@@ -235,6 +235,40 @@
             <li>Before guard: native Calibri body text was visibly smaller than Word/browser.</li>
             <li>After guard: native body text scale matches the browser path and the Word reference more closely.</li>
             <li>Check with <code>tools/native-runner</code> on the focused repro.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Static runner captures omit editor caret</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Fix commit: <code>this commit</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:130px; --y:145px; --s:1.8" alt="Word reference without caret">
+          </div>
+          <div class="caption">Word print/PDF reference has no active editor caret in the rendered page.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/browser-caret-before-fix.png" style="--w:900px; --x:70px; --y:75px; --s:2.4" alt="Before caret capture fix">
+          </div>
+          <div class="caption">Before: browser and native snapshot runners captured the initial collapsed selection as a blue caret.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:70px; --y:75px; --s:2.4" alt="After caret capture fix">
+          </div>
+          <div class="caption">After: automated snapshots clear selection before reading layout JSON or taking screenshots.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add a browser <code>clearSelection</code> API for capture tools and import native runner documents with <code>Selection = None</code>.</p>
+          <ul>
+            <li>Before guard: blue caret appeared in browser/native PNG artifacts.</li>
+            <li>After guard: static parity artifacts match Word’s non-editing render surface.</li>
+            <li>Interactive editor behavior is unchanged outside the snapshot runners.</li>
           </ul>
         </td>
       </tr>

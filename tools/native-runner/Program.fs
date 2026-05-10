@@ -419,7 +419,7 @@ let private renderDocx (inputPath: string) (outputPath: string) (width: int) (he
         | Some parsed -> parsed
         | None -> failwithf "Could not parse DOCX: %s" inputPath
 
-    let wordDoc = importDoc doc
+    let wordDoc = { importDoc doc with Selection = None }
     let widget = Composit.Ui.WordEditor.scrollEditor (float width) (float height) wordDoc
     let backend = Raster.create()
     let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend width height widget

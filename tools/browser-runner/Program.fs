@@ -217,6 +217,7 @@ let private boot () =
         "loadDocxUrl" ==> fun (url: string) -> loadDocxUrl state url
         "getLayoutSegments" ==> fun () -> getLayoutSegments state
         "getLayoutJson" ==> fun () -> stringify (box (getLayoutSegments state))
+        "clearSelection" ==> fun () -> ensureEditor state |> WordApi.clearSelection
         "setCanvasSize" ==> fun (width: int) (height: int) -> setCanvasSize state width height
         "canvasToPngDataUrl" ==> fun () -> canvasToPngDataUrl state.Canvas
         "editor" ==> fun () -> state.Editor

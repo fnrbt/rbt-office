@@ -68,6 +68,7 @@ try {
     null,
     { timeout: 30000 }
   );
+  await page.evaluate(() => window.rbWordRunner.clearSelection());
   const segments = await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
   await fs.writeFile(path.join(outDir, `${outputStem}-layout.json`), JSON.stringify(segments, null, 2));
   await page.locator('#word-canvas').screenshot({ path: path.join(outDir, `${outputStem}.png`) });
