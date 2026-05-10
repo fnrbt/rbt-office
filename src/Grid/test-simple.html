@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Module Load Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+        }
+        #status {
+            padding: 20px;
+            margin: 20px 0;
+            border: 2px solid #ccc;
+            border-radius: 4px;
+        }
+        .success { background: #d4edda; border-color: #28a745; }
+        .error { background: #f8d7da; border-color: #dc3545; }
+        #spreadsheet-root {
+            border: 2px solid #333;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Module Load Test</h1>
+    <div id="status">Loading...</div>
+    <div id="spreadsheet-root" style="width: 800px; height: 400px;"></div>
+
+    <script type="module">
+        const statusDiv = document.getElementById('status');
+
+        try {
+            statusDiv.textContent = 'Attempting to import Spreadsheet module...';
+
+            const { default: createSpreadsheet } = await import('./../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js');
+
+            statusDiv.textContent = 'Module imported! Type: ' + typeof createSpreadsheet;
+            statusDiv.className = 'success';
+
+            console.log('createSpreadsheet:', createSpreadsheet);
+
+            // Try to create spreadsheet
+            const container = document.getElementById('spreadsheet-root');
+            const spreadsheet = createSpreadsheet(container);
+
+            statusDiv.textContent += '\nSpreadsheet created! Mounting...';
+
+            spreadsheet.Mount();
+
+            statusDiv.textContent += '\nMounted! Adding test data...';
+
+            // Add some test data
+            spreadsheet.SetCell(0, 0, 'A1');
+            spreadsheet.SetCell(0, 1, 'B1');
+            spreadsheet.SetCell(1, 0, '100');
+            spreadsheet.SetCell(1, 1, '200');
+            spreadsheet.SetCell(2, 0, '=A2+B2');
+
+            statusDiv.textContent += '\nSUCCESS! Spreadsheet is working.';
+
+        } catch (error) {
+            statusDiv.textContent = 'ERROR: ' + error.message + '\n\nStack:\n' + error.stack;
+            statusDiv.className = 'error';
+            console.error('Failed to load module:', error);
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phase 1 Feature Test - Excel Features</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        #toolbar-container {
+            /* Toolbars will be placed here */
+        }
+
+        #spreadsheet-root {
+            /* Spreadsheet handles its own styling */
+        }
+
+        .toolbar {
+            flex-wrap: wrap;
+        }
+
+        .instructions {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .instructions h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #2196F3;
+        }
+
+        .instructions h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 15px;
+            margin-bottom: 5px;
+        }
+
+        .instructions ul {
+            list-style: disc;
+            margin-left: 20px;
+            line-height: 1.8;
+        }
+
+        .instructions code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .feature-tag {
+            display: inline-block;
+            background: #4CAF50;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 5px;
+        }
+
+        .test-section {
+            background: #e3f2fd;
+            padding: 10px;
+            border-left: 4px solid #2196F3;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Phase 1 Feature Test - Excel Features</h1>
+
+        <div class="instructions">
+            <h2>📋 Phase 1: Foundation Features</h2>
+            <p>This test page demonstrates the four core Excel features implemented in Phase 1.</p>
+
+            <div class="test-section">
+                <h3>1. Range References in Formulas <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li>Cells A1-A5 contain numbers 100, 200, 300, 400, 500</li>
+                    <li>Cell A6 contains <code>=SUM(A1:A5)</code> - should show 1500</li>
+                    <li>Cell B1 contains <code>=AVERAGE(A1:A5)</code> - should show 300</li>
+                    <li>Try creating your own range formulas like <code>=SUM(B1:B10)</code></li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>2. Copy/Paste/Cut <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li>Select cell A1 and press <code>Ctrl+C</code> (or <code>Cmd+C</code> on Mac) to copy</li>
+                    <li>Select cell D1 and press <code>Ctrl+V</code> to paste - formula references adjust automatically</li>
+                    <li>Try <code>Ctrl+X</code> to cut a cell</li>
+                    <li><strong>Formula Adjustment:</strong> Copy cell A6 (=SUM(A1:A5)) and paste to E6 - formula becomes =SUM(E1:E5)</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>3. More Functions <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li><strong>COUNT:</strong> Cell C1 has <code>=COUNT(A1:A5)</code> - counts non-empty cells (should be 5)</li>
+                    <li><strong>MIN:</strong> Cell C2 has <code>=MIN(A1:A5)</code> - finds minimum (should be 100)</li>
+                    <li><strong>MAX:</strong> Cell C3 has <code>=MAX(A1:A5)</code> - finds maximum (should be 500)</li>
+                    <li><strong>IF:</strong> Cell C4 has <code>=IF(A1>150, "High", "Low")</code> - conditional logic (should be "Low")</li>
+                    <li>Try changing A1 to 200 - C4 should update to "High"</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>4. Undo/Redo <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li>Edit any cell and press <code>Ctrl+Z</code> (or <code>Cmd+Z</code>) to undo</li>
+                    <li>Press <code>Ctrl+Y</code> (or <code>Cmd+Y</code>) to redo</li>
+                    <li>Try a sequence: Edit cell → Copy → Paste → Undo → Undo → Redo</li>
+                    <li>History supports up to 50 operations</li>
+                </ul>
+            </div>
+
+            <h3>Basic Operations (Pre-existing)</h3>
+            <ul>
+                <li>Click a cell to select it</li>
+                <li>Double-click or press <code>Enter</code>/<code>F2</code> to edit</li>
+                <li>Use arrow keys to navigate</li>
+                <li>Press <code>Tab</code> to move to the next cell</li>
+                <li>Press <code>Delete</code> or <code>Backspace</code> to clear a cell</li>
+            </ul>
+        </div>
+
+        <div id="toolbar-container"></div>
+        <div id="spreadsheet-root"></div>
+    </div>
+
+    <script type="module">
+        // Import the compiled Fable modules
+        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
+        import { createFormatToolbar, createAlignmentToolbar, createNumberFormatToolbar } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
+
+        // Get the container elements
+        const toolbarContainer = document.getElementById('toolbar-container');
+        const spreadsheetContainer = document.getElementById('spreadsheet-root');
+
+        // Create and mount the spreadsheet
+        const spreadsheet = createSpreadsheet(spreadsheetContainer);
+        spreadsheet.Mount();
+
+        // Create toolbars
+        const formatToolbar = createFormatToolbar((action) => {
+            if (action === 'textColor') {
+                spreadsheet.ApplyTextColor('#ff0000');
+            } else if (action === 'bgColor') {
+                spreadsheet.ApplyBgColor('#ffff00');
+            } else {
+                spreadsheet.ApplyFormat(action);
+            }
+        });
+
+        const alignmentToolbar = createAlignmentToolbar((action) => {
+            spreadsheet.ApplyFormat(action);
+        });
+
+        const numberToolbar = createNumberFormatToolbar((action) => {
+            if (action === 'formatNumber') {
+                spreadsheet.ApplyNumberFormat('number');
+            } else if (action === 'formatCurrency') {
+                spreadsheet.ApplyNumberFormat('currency');
+            } else if (action === 'formatPercent') {
+                spreadsheet.ApplyNumberFormat('percent');
+            }
+        });
+
+        // Mount toolbars
+        formatToolbar.Mount(toolbarContainer);
+        alignmentToolbar.Mount(toolbarContainer);
+        numberToolbar.Mount(toolbarContainer);
+
+        // ===== PHASE 1 TEST DATA =====
+
+        // Feature 1: Range References - Setup data for range formulas
+        spreadsheet.SetCell(0, 0, "100");       // A1
+        spreadsheet.SetCell(1, 0, "200");       // A2
+        spreadsheet.SetCell(2, 0, "300");       // A3
+        spreadsheet.SetCell(3, 0, "400");       // A4
+        spreadsheet.SetCell(4, 0, "500");       // A5
+        spreadsheet.SetCell(5, 0, "=SUM(A1:A5)");     // A6 - Range sum (1500)
+
+        spreadsheet.SetCell(0, 1, "=AVERAGE(A1:A5)"); // B1 - Range average (300)
+
+        // Feature 3: New Functions
+        spreadsheet.SetCell(0, 2, "=COUNT(A1:A5)");   // C1 - Count (5)
+        spreadsheet.SetCell(1, 2, "=MIN(A1:A5)");     // C2 - Min (100)
+        spreadsheet.SetCell(2, 2, "=MAX(A1:A5)");     // C3 - Max (500)
+        spreadsheet.SetCell(3, 2, "=IF(A1>150, \"High\", \"Low\")"); // C4 - IF (Low)
+
+        // Additional test data
+        spreadsheet.SetCell(0, 3, "10");        // D1
+        spreadsheet.SetCell(1, 3, "20");        // D2
+        spreadsheet.SetCell(2, 3, "30");        // D3
+        spreadsheet.SetCell(3, 3, "=SUM(D1:D3)"); // D4 (60)
+
+        console.log('✅ Phase 1 features loaded!');
+        console.log('');
+        console.log('Test Scenarios:');
+        console.log('1. Range References: Check A6 (=SUM(A1:A5)) shows 1500');
+        console.log('2. Copy/Paste: Copy A6, paste to E6, check formula adjusts to =SUM(E1:E5)');
+        console.log('3. Functions: Check C1-C4 for COUNT, MIN, MAX, IF results');
+        console.log('4. Undo/Redo: Edit a cell, press Ctrl+Z to undo, Ctrl+Y to redo');
+        console.log('');
+        console.log('🎯 Try copying cell A1 (100) and pasting it to different locations!');
+        console.log('🎯 Try editing A1 to 200 and see how C4 changes from "Low" to "High"!');
+    </script>
+</body>
+</html>

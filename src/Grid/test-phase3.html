@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phase 3 Feature Test - Polish</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        #toolbar-container {
+            /* Toolbars will be placed here */
+        }
+
+        #spreadsheet-root {
+            /* Spreadsheet handles its own styling */
+        }
+
+        .toolbar {
+            flex-wrap: wrap;
+        }
+
+        .instructions {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .instructions h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #9C27B0;
+        }
+
+        .instructions h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 15px;
+            margin-bottom: 5px;
+        }
+
+        .instructions ul {
+            list-style: disc;
+            margin-left: 20px;
+            line-height: 1.8;
+        }
+
+        .instructions code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .feature-tag {
+            display: inline-block;
+            background: #9C27B0;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 5px;
+        }
+
+        .test-section {
+            background: #f3e5f5;
+            padding: 10px;
+            border-left: 4px solid #9C27B0;
+            margin: 10px 0;
+        }
+
+        .control-buttons {
+            margin: 15px 0;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .control-buttons button {
+            margin: 5px;
+            padding: 8px 16px;
+            background: #9C27B0;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .control-buttons button:hover {
+            background: #7B1FA2;
+        }
+
+        .control-buttons input {
+            margin: 5px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        #search-results {
+            margin-left: 10px;
+            font-size: 14px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Phase 3 Feature Test - Polish</h1>
+
+        <div class="instructions">
+            <h2>✨ Phase 3: Polish Features</h2>
+            <p>This test page demonstrates the four polish features implemented in Phase 3.</p>
+
+            <div class="test-section">
+                <h3>1. Row/Column Resizing <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li>Infrastructure added: Model supports custom RowHeights and ColumnWidths maps</li>
+                    <li>Functions: <code>getRowHeight</code>, <code>setRowHeight</code>, <code>getColumnWidth</code>, <code>setColumnWidth</code></li>
+                    <li>Future: Drag dividers between headers to resize (UI implementation pending)</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>2. Find/Replace <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li>Use the search controls below to find text in cells</li>
+                    <li><strong>Find:</strong> Enter search term and click "Search" to find all matches</li>
+                    <li><strong>Find Next:</strong> Navigate through results</li>
+                    <li><strong>Replace:</strong> Replace current selection with new text</li>
+                    <li><strong>Replace All:</strong> Replace all occurrences at once</li>
+                    <li>Case-sensitive option available</li>
+                    <li>Searches both cell values and formulas</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>3. Conditional Formatting <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li>Use the buttons below to apply conditional formatting rules</li>
+                    <li><strong>Rule Types:</strong> Greater Than, Less Than, Equal To, Between, Contains Text</li>
+                    <li>Cells B1-B5 have values 100-500 (perfect for testing number rules)</li>
+                    <li>Try "Highlight >300" to highlight cells with values greater than 300</li>
+                    <li>Try "Highlight =200" to highlight cells equal to 200</li>
+                    <li>Conditional formats override base cell styles</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>4. CSV Import/Export <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li><strong>Export:</strong> Click "Export CSV" to download spreadsheet as CSV</li>
+                    <li><strong>Import:</strong> Paste CSV text and click "Import CSV" to load data</li>
+                    <li>Handles numbers, strings, formulas, booleans</li>
+                    <li>Escapes commas and quotes properly</li>
+                    <li>Import is undo-able with Ctrl+Z</li>
+                </ul>
+            </div>
+
+            <h3>All Previous Features Still Available</h3>
+            <ul>
+                <li><strong>Phase 1:</strong> Range formulas, Copy/Paste, COUNT/IF/MIN/MAX, Undo/Redo</li>
+                <li><strong>Phase 2:</strong> Column sorting, Filtering, Number formatting, Insert/Delete rows/cols</li>
+            </ul>
+        </div>
+
+        <div class="control-buttons">
+            <strong>Find/Replace:</strong><br>
+            <input type="text" id="search-input" placeholder="Search..." style="width: 200px;">
+            <label><input type="checkbox" id="case-sensitive"> Case Sensitive</label>
+            <button id="btn-search">Search</button>
+            <button id="btn-find-next">Find Next</button>
+            <span id="search-results"></span>
+            <br>
+            <input type="text" id="replace-input" placeholder="Replace with..." style="width: 200px;">
+            <button id="btn-replace">Replace</button>
+            <button id="btn-replace-all">Replace All</button>
+        </div>
+
+        <div class="control-buttons">
+            <strong>Conditional Formatting:</strong>
+            <button id="btn-cond-gt300">Highlight B1-B5 >300 (Yellow)</button>
+            <button id="btn-cond-eq200">Highlight B2 =200 (Green)</button>
+            <button id="btn-cond-remove">Remove All Conditional Formats</button>
+        </div>
+
+        <div class="control-buttons">
+            <strong>CSV Import/Export:</strong>
+            <button id="btn-export-csv">Export CSV</button>
+            <br>
+            <textarea id="csv-import-text" placeholder="Paste CSV data here..." style="width: 500px; height: 100px; margin: 5px;"></textarea>
+            <br>
+            <button id="btn-import-csv">Import CSV</button>
+        </div>
+
+        <div id="toolbar-container"></div>
+        <div id="spreadsheet-root"></div>
+    </div>
+
+    <script type="module">
+        // Import the compiled Fable modules
+        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
+        import { createFormatToolbar, createAlignmentToolbar, createNumberFormatToolbar } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
+
+        // Get the container elements
+        const toolbarContainer = document.getElementById('toolbar-container');
+        const spreadsheetContainer = document.getElementById('spreadsheet-root');
+
+        // Create and mount the spreadsheet
+        const spreadsheet = createSpreadsheet(spreadsheetContainer);
+        spreadsheet.Mount();
+
+        // Create toolbars
+        const formatToolbar = createFormatToolbar((action) => {
+            if (action === 'textColor') {
+                spreadsheet.ApplyTextColor('#ff0000');
+            } else if (action === 'bgColor') {
+                spreadsheet.ApplyBgColor('#ffff00');
+            } else {
+                spreadsheet.ApplyFormat(action);
+            }
+        });
+
+        const alignmentToolbar = createAlignmentToolbar((action) => {
+            spreadsheet.ApplyFormat(action);
+        });
+
+        const numberToolbar = createNumberFormatToolbar((action) => {
+            if (action === 'formatNumber') {
+                spreadsheet.ApplyNumberFormat('number');
+            } else if (action === 'formatCurrency') {
+                spreadsheet.ApplyNumberFormat('currency');
+            } else if (action === 'formatPercent') {
+                spreadsheet.ApplyNumberFormat('percentage');
+            }
+        });
+
+        // Mount toolbars
+        formatToolbar.Mount(toolbarContainer);
+        alignmentToolbar.Mount(toolbarContainer);
+        numberToolbar.Mount(toolbarContainer);
+
+        // ===== PHASE 3 TEST DATA =====
+
+        // Column A - Text for find/replace testing
+        spreadsheet.SetCell(0, 0, "Apple");
+        spreadsheet.SetCell(1, 0, "Banana");
+        spreadsheet.SetCell(2, 0, "Cherry");
+        spreadsheet.SetCell(3, 0, "Apple");
+        spreadsheet.SetCell(4, 0, "Grape");
+
+        // Column B - Numbers for conditional formatting
+        spreadsheet.SetCell(0, 1, "100");
+        spreadsheet.SetCell(1, 1, "200");
+        spreadsheet.SetCell(2, 1, "300");
+        spreadsheet.SetCell(3, 1, "400");
+        spreadsheet.SetCell(4, 1, "500");
+
+        // Column C - Mixed content
+        spreadsheet.SetCell(0, 2, "=B1*2");
+        spreadsheet.SetCell(1, 2, "Test");
+        spreadsheet.SetCell(2, 2, "=SUM(B1:B5)");
+
+        // ===== FIND/REPLACE CONTROLS =====
+
+        document.getElementById('btn-search').addEventListener('click', () => {
+            const query = document.getElementById('search-input').value;
+            const caseSensitive = document.getElementById('case-sensitive').checked;
+
+            if (query) {
+                spreadsheet.StartSearch(query, caseSensitive);
+                const count = spreadsheet.GetSearchResultsCount();
+                document.getElementById('search-results').textContent = `Found ${count} result(s)`;
+                console.log(`✅ Search for "${query}" found ${count} result(s)`);
+            }
+        });
+
+        document.getElementById('btn-find-next').addEventListener('click', () => {
+            const found = spreadsheet.FindNext();
+            if (found) {
+                const index = spreadsheet.GetSearchIndex();
+                const count = spreadsheet.GetSearchResultsCount();
+                document.getElementById('search-results').textContent =
+                    `Result ${index + 1} of ${count}`;
+            } else {
+                console.log('No more results');
+            }
+        });
+
+        document.getElementById('btn-replace').addEventListener('click', () => {
+            const findText = document.getElementById('search-input').value;
+            const replaceText = document.getElementById('replace-input').value;
+            const caseSensitive = document.getElementById('case-sensitive').checked;
+
+            if (findText && replaceText) {
+                const replaced = spreadsheet.Replace(findText, replaceText, caseSensitive);
+                if (replaced) {
+                    console.log(`✅ Replaced "${findText}" with "${replaceText}"`);
+                } else {
+                    console.log('Nothing to replace at current selection');
+                }
+            }
+        });
+
+        document.getElementById('btn-replace-all').addEventListener('click', () => {
+            const findText = document.getElementById('search-input').value;
+            const replaceText = document.getElementById('replace-input').value;
+            const caseSensitive = document.getElementById('case-sensitive').checked;
+
+            if (findText && replaceText) {
+                spreadsheet.ReplaceAll(findText, replaceText, caseSensitive);
+                console.log(`✅ Replaced all "${findText}" with "${replaceText}"`);
+            }
+        });
+
+        // ===== CONDITIONAL FORMATTING CONTROLS =====
+
+        document.getElementById('btn-cond-gt300').addEventListener('click', () => {
+            // Highlight cells B3-B5 (values 300, 400, 500) with yellow background
+            for (let row = 2; row <= 4; row++) {
+                spreadsheet.AddConditionalFormat(row, 1, "greaterThan", 300, "#ffff99");
+            }
+            console.log('✅ Added conditional format: >300 → Yellow');
+        });
+
+        document.getElementById('btn-cond-eq200').addEventListener('click', () => {
+            // Highlight B2 (value 200) with green background
+            spreadsheet.AddConditionalFormat(1, 1, "equal", 200, "#90ee90");
+            console.log('✅ Added conditional format: =200 → Green');
+        });
+
+        document.getElementById('btn-cond-remove').addEventListener('click', () => {
+            // Remove conditional formats from B1-B5
+            for (let row = 0; row <= 4; row++) {
+                spreadsheet.RemoveConditionalFormats(row, 1);
+            }
+            console.log('✅ Removed all conditional formats');
+        });
+
+        // ===== CSV IMPORT/EXPORT CONTROLS =====
+
+        document.getElementById('btn-export-csv').addEventListener('click', () => {
+            const csv = spreadsheet.ExportCSV();
+            console.log('Exported CSV:');
+            console.log(csv);
+
+            // Download as file
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'spreadsheet.csv';
+            a.click();
+            URL.revokeObjectURL(url);
+
+            console.log('✅ CSV exported and downloaded');
+        });
+
+        document.getElementById('btn-import-csv').addEventListener('click', () => {
+            const csvText = document.getElementById('csv-import-text').value;
+            if (csvText) {
+                spreadsheet.ImportCSV(csvText, 0, 0);
+                console.log('✅ CSV imported');
+            } else {
+                alert('Please paste CSV data first');
+            }
+        });
+
+        console.log('✅ Phase 3 features loaded!');
+        console.log('');
+        console.log('Test Scenarios:');
+        console.log('1. Find/Replace: Search for "Apple", replace with "Orange"');
+        console.log('2. Conditional Formatting: Click "Highlight >300" to see B3-B5 turn yellow');
+        console.log('3. CSV Export: Click "Export CSV" to download the current data');
+        console.log('4. CSV Import: Paste CSV in the textarea and click "Import CSV"');
+        console.log('');
+        console.log('🎯 Try searching for "Apple" - should find 2 results in A1 and A4!');
+        console.log('🎯 Try exporting CSV, editing it, and importing it back!');
+    </script>
+</body>
+</html>

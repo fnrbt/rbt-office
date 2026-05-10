@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="src/XmlDsl.fs" />
+    <Compile Include="src/OfficeDsl.fs" />
+    <Compile Include="src/ZipInterop.fs" />
+    <Compile Include="src/DocxReader.fs" />
+    <Compile Include="src/DocumentProcessors.fs" />
+    <Compile Include="src/XlsxReader.fs" />
+    <!-- Writers -->
+    <Compile Include="src/XmlGenerator.fs" />
+    <Compile Include="src/ZipWriter.fs" />
+    <Compile Include="src/DocxWriter.fs" />
+    <Compile Include="src/XlsxWriter.fs" />
+    <Compile Include="src/DocumentWriter.fs" />
+    <Compile Include="src/StyleWriter.fs" />
+    <Compile Include="src/TableWriter.fs" />
+    <Compile Include="src/MediaWriter.fs" />
+    <Compile Include="src/DocumentBuilder.fs" />
+    <Compile Include="src/WorkbookBuilder.fs" />
+    <Compile Include="src/Main.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Fable.Core" Version="4.0.0" />
+    <PackageReference Include="Fable.Browser.Dom" Version="2.16.0" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XLSX Import Test - office-format Integration</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .instructions {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .instructions h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #673AB7;
+        }
+
+        .instructions h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 15px;
+            margin-bottom: 5px;
+        }
+
+        .instructions ul {
+            list-style: disc;
+            margin-left: 20px;
+            line-height: 1.8;
+        }
+
+        .instructions code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .feature-tag {
+            display: inline-block;
+            background: #673AB7;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 5px;
+        }
+
+        .test-section {
+            background: #EDE7F6;
+            padding: 10px;
+            border-left: 4px solid #673AB7;
+            margin: 10px 0;
+        }
+
+        .control-buttons {
+            margin: 15px 0;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .control-buttons button {
+            margin: 5px;
+            padding: 8px 16px;
+            background: #673AB7;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .control-buttons button:hover {
+            background: #512DA8;
+        }
+
+        .control-buttons input[type="file"] {
+            margin: 5px;
+            padding: 8px;
+        }
+
+        .status {
+            margin: 10px 0;
+            padding: 10px;
+            background: #f9f9f9;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            min-height: 40px;
+        }
+
+        .sheet-selector {
+            margin: 10px 0;
+            padding: 10px;
+            background: #f9f9f9;
+            border-radius: 4px;
+        }
+
+        .sheet-selector select {
+            padding: 5px 10px;
+            font-size: 14px;
+            margin-left: 10px;
+        }
+
+        #toolbar-container {
+            /* Toolbars will be placed here */
+        }
+
+        #spreadsheet-root {
+            /* Spreadsheet handles its own styling */
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>XLSX Import Test - office-format Integration</h1>
+
+        <div class="instructions">
+            <h2>📊 XLSX Import Feature</h2>
+            <p>This test page demonstrates importing Excel files using the office-format library integration.</p>
+
+            <div class="test-section">
+                <h3>office-format Integration <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li><strong>File Upload:</strong> Select an .xlsx file to import</li>
+                    <li><strong>Sheet Selection:</strong> Choose which sheet to import (or first sheet)</li>
+                    <li><strong>Data Import:</strong> Cell values, formulas, styles all imported</li>
+                    <li><strong>Style Preservation:</strong> Bold, italic, colors, font sizes preserved</li>
+                    <li><strong>Layout Import:</strong> Column widths and row heights preserved</li>
+                    <li><strong>Undo Support:</strong> Import is undo-able with Ctrl+Z</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>Supported Cell Types</h3>
+                <ul>
+                    <li><strong>Numbers:</strong> Imported as numeric values</li>
+                    <li><strong>Strings:</strong> Imported as text</li>
+                    <li><strong>Booleans:</strong> TRUE/FALSE values</li>
+                    <li><strong>Dates:</strong> Excel date serials</li>
+                    <li><strong>Formulas:</strong> Formula text imported (re-evaluated in grid)</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>Supported Styles</h3>
+                <ul>
+                    <li>Font: Bold, Italic, Size, Color</li>
+                    <li>Background: Fill color</li>
+                    <li>Number formats: Currency, Percentage, Date, Decimal</li>
+                    <li>Column widths (converted to pixels)</li>
+                    <li>Row heights (converted to pixels)</li>
+                </ul>
+            </div>
+
+            <h3>How to Use</h3>
+            <ol style="list-style: decimal; margin-left: 20px; line-height: 1.8;">
+                <li>Click "Choose File" and select an Excel .xlsx file</li>
+                <li>If file has multiple sheets, select which sheet to import</li>
+                <li>Click "Import XLSX" to load the data</li>
+                <li>Data will appear in the spreadsheet with formatting preserved</li>
+            </ol>
+        </div>
+
+        <div class="control-buttons">
+            <strong>XLSX Import:</strong><br>
+            <input type="file" id="xlsx-file-input" accept=".xlsx">
+            <div id="sheet-selector" class="sheet-selector" style="display: none;">
+                <label>Select Sheet:</label>
+                <select id="sheet-select"></select>
+            </div>
+            <button id="btn-import-xlsx">Import XLSX</button>
+            <div id="import-status" class="status">Ready to import...</div>
+        </div>
+
+        <div id="toolbar-container"></div>
+        <div id="spreadsheet-root"></div>
+    </div>
+
+    <script type="module">
+        // Import the compiled Fable modules
+        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
+        import { createFormatToolbar, createAlignmentToolbar, createNumberFormatToolbar } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
+
+        // Get the container elements
+        const toolbarContainer = document.getElementById('toolbar-container');
+        const spreadsheetContainer = document.getElementById('spreadsheet-root');
+
+        // Create and mount the spreadsheet
+        const spreadsheet = createSpreadsheet(spreadsheetContainer);
+        spreadsheet.Mount();
+
+        // Create toolbars
+        const formatToolbar = createFormatToolbar((action) => {
+            if (action === 'textColor') {
+                spreadsheet.ApplyTextColor('#ff0000');
+            } else if (action === 'bgColor') {
+                spreadsheet.ApplyBgColor('#ffff00');
+            } else {
+                spreadsheet.ApplyFormat(action);
+            }
+        });
+
+        const alignmentToolbar = createAlignmentToolbar((action) => {
+            spreadsheet.ApplyFormat(action);
+        });
+
+        const numberToolbar = createNumberFormatToolbar((action) => {
+            if (action === 'formatNumber') {
+                spreadsheet.ApplyNumberFormat('number');
+            } else if (action === 'formatCurrency') {
+                spreadsheet.ApplyNumberFormat('currency');
+            } else if (action === 'formatPercent') {
+                spreadsheet.ApplyNumberFormat('percentage');
+            }
+        });
+
+        // Mount toolbars
+        formatToolbar.Mount(toolbarContainer);
+        alignmentToolbar.Mount(toolbarContainer);
+        numberToolbar.Mount(toolbarContainer);
+
+        // Global state
+        let selectedFile = null;
+        let fileBuffer = null;
+        let availableSheets = [];
+
+        // File input handler
+        document.getElementById('xlsx-file-input').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            selectedFile = file;
+            const statusEl = document.getElementById('import-status');
+            statusEl.textContent = `Loading ${file.name}...`;
+
+            try {
+                // Read file as ArrayBuffer
+                fileBuffer = await file.arrayBuffer();
+
+                // Get sheet names
+                availableSheets = await spreadsheet.GetXlsxSheetNames(fileBuffer);
+
+                if (availableSheets.length > 1) {
+                    // Show sheet selector
+                    const sheetSelector = document.getElementById('sheet-selector');
+                    const sheetSelect = document.getElementById('sheet-select');
+
+                    // Populate sheet selector
+                    sheetSelect.innerHTML = '';
+                    availableSheets.forEach(sheetName => {
+                        const option = document.createElement('option');
+                        option.value = sheetName;
+                        option.textContent = sheetName;
+                        sheetSelect.appendChild(option);
+                    });
+
+                    sheetSelector.style.display = 'block';
+                    statusEl.textContent = `File loaded. ${availableSheets.length} sheets found. Select a sheet and click Import.`;
+                } else {
+                    // Single sheet, hide selector
+                    document.getElementById('sheet-selector').style.display = 'none';
+                    statusEl.textContent = `File loaded: ${file.name} (1 sheet). Click Import to load.`;
+                }
+
+                console.log(`✅ File loaded: ${file.name}`);
+                console.log(`   Sheets: ${availableSheets.join(', ')}`);
+            } catch (error) {
+                statusEl.textContent = `Error loading file: ${error.message}`;
+                console.error('❌ Error loading file:', error);
+            }
+        });
+
+        // Import button handler
+        document.getElementById('btn-import-xlsx').addEventListener('click', async () => {
+            if (!fileBuffer) {
+                alert('Please select a file first');
+                return;
+            }
+
+            const statusEl = document.getElementById('import-status');
+            statusEl.textContent = 'Importing...';
+
+            try {
+                // Get selected sheet (if multiple sheets)
+                let sheetName = null;
+                if (availableSheets.length > 1) {
+                    sheetName = document.getElementById('sheet-select').value;
+                }
+
+                // Import XLSX
+                await spreadsheet.ImportXlsxFromBuffer(fileBuffer, sheetName);
+
+                const sheetText = sheetName ? ` (sheet: ${sheetName})` : '';
+                statusEl.textContent = `✅ Import complete: ${selectedFile.name}${sheetText}`;
+                console.log(`✅ XLSX imported successfully${sheetText}`);
+                console.log('   - Cell data imported');
+                console.log('   - Formulas imported');
+                console.log('   - Styles preserved');
+                console.log('   - Column widths/row heights applied');
+            } catch (error) {
+                statusEl.textContent = `❌ Import failed: ${error.message}`;
+                console.error('❌ Import error:', error);
+            }
+        });
+
+        console.log('✅ XLSX import test page loaded!');
+        console.log('');
+        console.log('Test Workflow:');
+        console.log('1. Create a sample .xlsx file with:');
+        console.log('   - Numbers, formulas (=A1+B1), text');
+        console.log('   - Bold/italic formatting');
+        console.log('   - Background colors');
+        console.log('   - Different column widths');
+        console.log('2. Click "Choose File" and select the .xlsx');
+        console.log('3. If multiple sheets, select one from dropdown');
+        console.log('4. Click "Import XLSX" to load');
+        console.log('5. Verify data and formatting appear correctly');
+        console.log('6. Try Ctrl+Z to undo import');
+    </script>
+</body>
+</html>

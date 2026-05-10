@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Full Excel Interface - RedBat.Grid</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #e8e8e8;
+            overflow: hidden;
+        }
+
+        .app-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .title-bar {
+            background: linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%);
+            padding: 8px 12px;
+            border-bottom: 1px solid #ccc;
+            font-size: 14px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .ribbon {
+            background: #f0f0f0;
+            border-bottom: 1px solid #d0d0d0;
+        }
+
+        .ribbon-row {
+            display: flex;
+            align-items: center;
+            padding: 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .ribbon-row:last-child {
+            border-bottom: none;
+        }
+
+        .toolbar-section {
+            display: flex;
+            align-items: center;
+            border-right: 1px solid #e0e0e0;
+            padding: 0;
+        }
+
+        .toolbar-section:last-child {
+            border-right: none;
+        }
+
+        .formula-bar-container {
+            background: #ffffff;
+            border-bottom: 1px solid #d0d0d0;
+        }
+
+        .content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: #ffffff;
+        }
+
+        #spreadsheet-root {
+            flex: 1;
+            overflow: auto;
+        }
+
+        .status-bar {
+            background: #f0f0f0;
+            border-top: 1px solid #d0d0d0;
+            padding: 4px 12px;
+            font-size: 11px;
+            color: #666;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Excel-like styling for toolbars */
+        .toolbar {
+            background: #f0f0f0 !important;
+            border-bottom: none !important;
+        }
+
+        .toolbar-button {
+            transition: all 0.1s;
+        }
+
+        .toolbar-button:active {
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
+        }
+
+        /* Find/Replace toolbar (initially hidden) */
+        #find-replace-container {
+            display: none;
+            border-bottom: 1px solid #d0d0d0;
+        }
+
+        #find-replace-container.visible {
+            display: block;
+        }
+
+        .find-replace-close {
+            padding: 4px 8px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .find-replace-close:hover {
+            color: #000;
+            background: #e8e8e8;
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Title Bar -->
+        <div class="title-bar">
+            📊 RedBat.Grid - Full Excel Interface Demo
+        </div>
+
+        <!-- Ribbon (Toolbars) -->
+        <div class="ribbon">
+            <!-- Row 1: Clipboard + Format + Alignment -->
+            <div class="ribbon-row">
+                <div class="toolbar-section" id="clipboard-toolbar"></div>
+                <div class="toolbar-section" id="format-toolbar"></div>
+                <div class="toolbar-section" id="alignment-toolbar"></div>
+                <div class="toolbar-section" id="number-format-toolbar"></div>
+            </div>
+
+            <!-- Row 2: Insert/Delete + Data Operations -->
+            <div class="ribbon-row">
+                <div class="toolbar-section" id="insert-delete-toolbar"></div>
+                <div class="toolbar-section" id="data-toolbar"></div>
+            </div>
+        </div>
+
+        <!-- Formula Bar -->
+        <div class="formula-bar-container" id="formula-bar-container"></div>
+
+        <!-- Find/Replace Toolbar (collapsible) -->
+        <div id="find-replace-container" class="find-replace-container">
+            <button class="find-replace-close" id="close-find-replace">✕</button>
+            <div id="find-replace-toolbar"></div>
+        </div>
+
+        <!-- Spreadsheet Content -->
+        <div class="content">
+            <div id="spreadsheet-root"></div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div class="status-item">
+                <span id="status-message">Ready</span>
+            </div>
+            <div class="status-item">
+                <span id="cell-count">0 cells</span>
+                <span>|</span>
+                <span id="selection-info">No selection</span>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Import the compiled Fable modules
+        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
+        import {
+            createFormatToolbar,
+            createAlignmentToolbar,
+            createNumberFormatToolbar,
+            createInsertDeleteToolbar,
+            createDataToolbar,
+            createClipboardToolbar,
+            createFormulaBar,
+            createFindReplaceToolbar
+        } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
+
+        // Create spreadsheet
+        const spreadsheetContainer = document.getElementById('spreadsheet-root');
+        const spreadsheet = createSpreadsheet(spreadsheetContainer);
+        spreadsheet.Mount();
+
+        // ===== FORMULA BAR =====
+
+        const formulaBarContainer = document.getElementById('formula-bar-container');
+        const formulaBar = createFormulaBar(
+            // onCellRefChange
+            (ref) => {
+                console.log('Cell ref changed:', ref);
+            },
+            // onFormulaChange
+            (formula) => {
+                console.log('Formula changed:', formula);
+            },
+            // onFormulaSubmit
+            () => {
+                const formula = document.querySelector('.formula-input').value;
+                spreadsheet.SetCurrentCellFromFormula(formula);
+                updateFormulaBar();
+            }
+        );
+        formulaBar.Mount(formulaBarContainer);
+
+        // Update formula bar when selection changes
+        function updateFormulaBar() {
+            const cellRef = spreadsheet.GetSelectionRef();
+            const formula = spreadsheet.GetCurrentCellFormula();
+            formulaBar.SetCellRef(cellRef);
+            formulaBar.SetFormula(formula);
+
+            // Update status bar
+            document.getElementById('selection-info').textContent = `Selection: ${cellRef}`;
+        }
+
+        // Call initially
+        updateFormulaBar();
+
+        // Periodically check for selection changes (in real app, spreadsheet would emit events)
+        setInterval(updateFormulaBar, 100);
+
+        // ===== CLIPBOARD TOOLBAR =====
+
+        const clipboardToolbar = createClipboardToolbar((action) => {
+            console.log('Clipboard action:', action);
+            switch (action) {
+                case 'cut':
+                    spreadsheet.Cut();
+                    updateStatus('Cut to clipboard');
+                    break;
+                case 'copy':
+                    spreadsheet.Copy();
+                    updateStatus('Copied to clipboard');
+                    break;
+                case 'paste':
+                    spreadsheet.Paste();
+                    updateStatus('Pasted from clipboard');
+                    break;
+                case 'undo':
+                    spreadsheet.Undo();
+                    updateStatus('Undo');
+                    break;
+                case 'redo':
+                    spreadsheet.Redo();
+                    updateStatus('Redo');
+                    break;
+            }
+        });
+        clipboardToolbar.Mount(document.getElementById('clipboard-toolbar'));
+
+        // ===== FORMAT TOOLBAR =====
+
+        const formatToolbar = createFormatToolbar((action) => {
+            console.log('Format action:', action);
+            if (action === 'textColor') {
+                spreadsheet.ApplyTextColor('#ff0000');
+                updateStatus('Applied text color');
+            } else if (action === 'bgColor') {
+                spreadsheet.ApplyBgColor('#ffff00');
+                updateStatus('Applied background color');
+            } else {
+                spreadsheet.ApplyFormat(action);
+                updateStatus(`Applied format: ${action}`);
+            }
+        });
+        formatToolbar.Mount(document.getElementById('format-toolbar'));
+
+        // ===== ALIGNMENT TOOLBAR =====
+
+        const alignmentToolbar = createAlignmentToolbar((action) => {
+            console.log('Alignment action:', action);
+            spreadsheet.ApplyFormat(action);
+            updateStatus(`Applied alignment: ${action}`);
+        });
+        alignmentToolbar.Mount(document.getElementById('alignment-toolbar'));
+
+        // ===== NUMBER FORMAT TOOLBAR =====
+
+        const numberToolbar = createNumberFormatToolbar((action) => {
+            console.log('Number format action:', action);
+            if (action === 'formatNumber') {
+                spreadsheet.ApplyNumberFormat('number');
+                updateStatus('Applied number format');
+            } else if (action === 'formatCurrency') {
+                spreadsheet.ApplyNumberFormat('currency');
+                updateStatus('Applied currency format');
+            } else if (action === 'formatPercent') {
+                spreadsheet.ApplyNumberFormat('percentage');
+                updateStatus('Applied percentage format');
+            }
+        });
+        numberToolbar.Mount(document.getElementById('number-format-toolbar'));
+
+        // ===== INSERT/DELETE TOOLBAR =====
+
+        const insertDeleteToolbar = createInsertDeleteToolbar((action) => {
+            console.log('Insert/Delete action:', action);
+            switch (action) {
+                case 'insertRow':
+                    const insertRowIdx = parseInt(prompt('Insert row at index (0-based):') || '0');
+                    spreadsheet.InsertRow(insertRowIdx);
+                    updateStatus(`Inserted row at ${insertRowIdx}`);
+                    break;
+                case 'deleteRow':
+                    const deleteRowIdx = parseInt(prompt('Delete row at index (0-based):') || '0');
+                    spreadsheet.DeleteRow(deleteRowIdx);
+                    updateStatus(`Deleted row ${deleteRowIdx}`);
+                    break;
+                case 'insertColumn':
+                    const insertColIdx = parseInt(prompt('Insert column at index (0-based):') || '0');
+                    spreadsheet.InsertColumn(insertColIdx);
+                    updateStatus(`Inserted column at ${insertColIdx}`);
+                    break;
+                case 'deleteColumn':
+                    const deleteColIdx = parseInt(prompt('Delete column at index (0-based):') || '0');
+                    spreadsheet.DeleteColumn(deleteColIdx);
+                    updateStatus(`Deleted column ${deleteColIdx}`);
+                    break;
+            }
+        });
+        insertDeleteToolbar.Mount(document.getElementById('insert-delete-toolbar'));
+
+        // ===== DATA TOOLBAR =====
+
+        const dataToolbar = createDataToolbar((action) => {
+            console.log('Data action:', action);
+            switch (action) {
+                case 'sortAsc':
+                    spreadsheet.SortCurrentColumnAsc();
+                    updateStatus('Sorted ascending');
+                    break;
+                case 'sortDesc':
+                    spreadsheet.SortCurrentColumnDesc();
+                    updateStatus('Sorted descending');
+                    break;
+                case 'filter':
+                    updateStatus('Filter not yet implemented');
+                    break;
+                case 'clearFilter':
+                    updateStatus('Clear filter not yet implemented');
+                    break;
+            }
+        });
+        dataToolbar.Mount(document.getElementById('data-toolbar'));
+
+        // ===== FIND/REPLACE TOOLBAR =====
+
+        const findReplaceContainer = document.getElementById('find-replace-container');
+        const findReplaceToolbar = createFindReplaceToolbar(
+            // onFind
+            (query) => {
+                console.log('Find:', query);
+                spreadsheet.StartSearch(query, false);
+                const count = spreadsheet.GetSearchResultsCount();
+                updateStatus(`Found ${count} result(s)`);
+                if (count > 0) {
+                    spreadsheet.FindNext();
+                }
+            },
+            // onReplace
+            (findText, replaceText) => {
+                console.log('Replace:', findText, '=>', replaceText);
+                spreadsheet.ReplaceAll(findText, replaceText, false);
+                updateStatus(`Replaced all "${findText}" with "${replaceText}"`);
+            }
+        );
+        findReplaceToolbar.Mount(document.getElementById('find-replace-toolbar'));
+
+        // Close find/replace
+        document.getElementById('close-find-replace').addEventListener('click', () => {
+            findReplaceContainer.classList.remove('visible');
+        });
+
+        // Show find/replace with Ctrl+F
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.key === 'f') {
+                e.preventDefault();
+                findReplaceContainer.classList.add('visible');
+                // Focus find input
+                setTimeout(() => {
+                    const findInput = document.querySelector('.find-input');
+                    if (findInput) findInput.focus();
+                }, 100);
+            }
+        });
+
+        // ===== STATUS BAR =====
+
+        function updateStatus(message) {
+            document.getElementById('status-message').textContent = message;
+            setTimeout(() => {
+                document.getElementById('status-message').textContent = 'Ready';
+            }, 3000);
+        }
+
+        // ===== SAMPLE DATA =====
+
+        // Add headers
+        spreadsheet.SetCell(0, 0, "Product");
+        spreadsheet.SetCell(0, 1, "Price");
+        spreadsheet.SetCell(0, 2, "Quantity");
+        spreadsheet.SetCell(0, 3, "Total");
+        spreadsheet.SetCell(0, 4, "Status");
+
+        // Add data rows
+        const products = [
+            ["Widget A", "19.99", "150", "=B2*C2", "In Stock"],
+            ["Gadget B", "29.99", "75", "=B3*C3", "Low Stock"],
+            ["Tool C", "49.99", "200", "=B4*C4", "In Stock"],
+            ["Device D", "99.99", "50", "=B5*C5", "In Stock"],
+            ["Item E", "9.99", "500", "=B6*C6", "In Stock"]
+        ];
+
+        products.forEach((row, idx) => {
+            row.forEach((cell, colIdx) => {
+                spreadsheet.SetCell(idx + 1, colIdx, cell);
+            });
+        });
+
+        // Add totals row
+        spreadsheet.SetCell(6, 0, "TOTAL");
+        spreadsheet.SetCell(6, 3, "=SUM(D2:D6)");
+
+        // Format header row (bold)
+        for (let col = 0; col < 5; col++) {
+            spreadsheet.SelectCell(0, col);
+            spreadsheet.ApplyFormat('bold');
+        }
+
+        // Format price columns as currency
+        for (let row = 1; row <= 6; row++) {
+            spreadsheet.SelectCell(row, 1);
+            spreadsheet.ApplyNumberFormat('currency');
+            if (row !== 6) {  // Skip total row for column D formatting
+                spreadsheet.SelectCell(row, 3);
+                spreadsheet.ApplyNumberFormat('currency');
+            }
+        }
+
+        // Format total row (bold, currency)
+        spreadsheet.SelectCell(6, 3);
+        spreadsheet.ApplyFormat('bold');
+        spreadsheet.ApplyNumberFormat('currency');
+
+        console.log('✅ Full Excel interface loaded!');
+        console.log('');
+        console.log('Try these features:');
+        console.log('1. Click on cells and edit in formula bar');
+        console.log('2. Use toolbar buttons for formatting');
+        console.log('3. Cut/Copy/Paste with clipboard toolbar');
+        console.log('4. Sort columns with data toolbar');
+        console.log('5. Press Ctrl+F to open Find/Replace');
+        console.log('6. Insert/Delete rows and columns');
+        console.log('7. Use Undo/Redo buttons');
+    </script>
+</body>
+</html>

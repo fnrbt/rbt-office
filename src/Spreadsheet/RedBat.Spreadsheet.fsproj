@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <IsTestProject>false</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Model.fs" />
+    <Compile Include="Workbook.fs" />
+    <Compile Include="Formula.fs" />
+    <Compile Include="Calc.fs" />
+    <Compile Include="Layout.fs" />
+    <Compile Include="Paint.fs" />
+    <Compile Include="XlsxImporter.fs" />
+    <Compile Include="Tabs.fs" />
+    <Compile Include="Spreadsheet.fs" />
+    <Compile Include="Toolbar.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Grid/RedBat.Grid.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Fable.Core" Version="4.3.0" />
+  </ItemGroup>
+</Project>

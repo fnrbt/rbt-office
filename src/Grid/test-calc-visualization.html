@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Calculation Engine Visualization</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+
+        .demo {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .demo h2 {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #2c3e50;
+        }
+
+        .demo-description {
+            margin-bottom: 15px;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-card {
+            background: #ecf0f1;
+            padding: 15px;
+            border-radius: 4px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #7f8c8d;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            background: #3498db;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: #2980b9;
+        }
+
+        .btn-danger {
+            background: #e74c3c;
+        }
+
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+
+        .btn-success {
+            background: #27ae60;
+        }
+
+        .btn-success:hover {
+            background: #229954;
+        }
+
+        .graph {
+            display: flex;
+            gap: 30px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .cell-node {
+            padding: 15px 20px;
+            border: 2px solid #3498db;
+            border-radius: 8px;
+            background: white;
+            font-weight: bold;
+            min-width: 80px;
+            text-align: center;
+            transition: all 0.3s;
+        }
+
+        .cell-node.dirty {
+            background: #ffe6e6;
+            border-color: #e74c3c;
+            animation: pulse 1s infinite;
+        }
+
+        .cell-node.clean {
+            background: #e6ffe6;
+            border-color: #27ae60;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .cell-value {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .calc-chain {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .chain-arrow {
+            color: #95a5a6;
+            font-size: 20px;
+        }
+
+        .log {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+        }
+
+        .log-info { color: #3498db; }
+        .log-success { color: #27ae60; }
+        .log-warning { color: #f39c12; }
+        .log-error { color: #e74c3c; }
+
+        #spreadsheet-root {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Calculation Engine Visualization</h1>
+
+        <div class="demo">
+            <h2>Demo 1: Simple Dependency Chain</h2>
+            <div class="demo-description">
+                A1 → A2 → A3 → A4 → A5
+                <br>
+                When A1 changes, all downstream cells are marked dirty and recalculated in order.
+            </div>
+
+            <div class="stats" id="stats1">
+                <div class="stat-card">
+                    <div class="stat-label">Total Cells</div>
+                    <div class="stat-value" id="total-cells-1">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Formula Cells</div>
+                    <div class="stat-value" id="formula-cells-1">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Dirty Cells</div>
+                    <div class="stat-value" id="dirty-cells-1">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Dependencies</div>
+                    <div class="stat-value" id="dependencies-1">0</div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button class="btn" onclick="changeA1()">Change A1 (mark dirty)</button>
+                <button class="btn btn-success" onclick="recalculate()">Recalculate Dirty Cells</button>
+                <button class="btn btn-danger" onclick="reset()">Reset Demo</button>
+            </div>
+
+            <div class="graph" id="graph1"></div>
+
+            <h3 style="margin: 20px 0 10px 0;">Calculation Chain (Execution Order)</h3>
+            <div class="calc-chain" id="calc-chain"></div>
+        </div>
+
+        <div class="demo">
+            <h2>Demo 2: Complex Dependency Tree</h2>
+            <div class="demo-description">
+                B1 branches to B2 and B3, which both feed into B4.
+                <br>
+                Demonstrates topological sort: B2 and B3 calculated before B4.
+            </div>
+
+            <div class="stats" id="stats2">
+                <div class="stat-card">
+                    <div class="stat-label">Dirty Cells</div>
+                    <div class="stat-value" id="dirty-cells-2">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Last Calc Time</div>
+                    <div class="stat-value" id="calc-time">0 μs</div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <button class="btn" onclick="changeB1()">Change B1</button>
+                <button class="btn btn-success" onclick="recalculate()">Recalculate</button>
+            </div>
+
+            <div class="graph" id="graph2"></div>
+        </div>
+
+        <div class="demo">
+            <h2>Activity Log</h2>
+            <div class="log" id="log"></div>
+        </div>
+
+        <div class="demo">
+            <h2>Live Spreadsheet</h2>
+            <div class="demo-description">
+                The spreadsheet below uses the calculation engine. Changes propagate through dependencies automatically.
+            </div>
+            <div id="spreadsheet-root"></div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { createEmpty, getCellValue, displayValue, formatCellRef } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Model.js';
+        import { emptyEngine, updateCell, smartRecalculate, markDirty, getStats } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Calc.js';
+        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
+
+        // Global state
+        let model = createEmpty(1000, 26);
+        let engine = emptyEngine();
+        const log = [];
+
+        function addLog(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            log.push({ message, type, timestamp });
+            updateLogDisplay();
+        }
+
+        function updateLogDisplay() {
+            const logEl = document.getElementById('log');
+            logEl.innerHTML = log.slice(-20).reverse().map(entry =>
+                `<div class="log-entry log-${entry.type}">[${entry.timestamp}] ${entry.message}</div>`
+            ).join('');
+        }
+
+        function updateStats() {
+            const stats = getStats(model, engine);
+
+            document.getElementById('total-cells-1').textContent = stats.TotalCells;
+            document.getElementById('formula-cells-1').textContent = stats.FormulaCells;
+            document.getElementById('dirty-cells-1').textContent = stats.DirtyCells;
+            document.getElementById('dependencies-1').textContent = stats.Dependencies;
+            document.getElementById('dirty-cells-2').textContent = stats.DirtyCells;
+        }
+
+        function renderGraph(cells, containerId) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+
+            cells.forEach(({ addr, label, value }) => {
+                const node = document.createElement('div');
+                node.className = 'cell-node';
+
+                const meta = engine.Metadata.get(addr) || { IsDirty: false };
+                if (meta.IsDirty) {
+                    node.classList.add('dirty');
+                } else if (value !== null) {
+                    node.classList.add('clean');
+                }
+
+                node.innerHTML = `
+                    <div>${label}</div>
+                    <div class="cell-value">${value !== null ? value : 'empty'}</div>
+                `;
+                container.appendChild(node);
+
+                if (cells[cells.length - 1] !== cells.find(c => c.addr === addr)) {
+                    const arrow = document.createElement('div');
+                    arrow.className = 'chain-arrow';
+                    arrow.textContent = '→';
+                    container.appendChild(arrow);
+                }
+            });
+        }
+
+        function renderCalcChain() {
+            const container = document.getElementById('calc-chain');
+            container.innerHTML = '';
+
+            engine.CalcChain.forEach((addr, i) => {
+                const node = document.createElement('div');
+                node.className = 'cell-node';
+                node.style.fontSize = '12px';
+                node.style.padding = '8px 12px';
+                node.style.minWidth = '50px';
+                node.textContent = formatCellRef(addr.Row, addr.Col);
+                container.appendChild(node);
+
+                if (i < engine.CalcChain.length - 1) {
+                    const arrow = document.createElement('div');
+                    arrow.className = 'chain-arrow';
+                    arrow.textContent = '→';
+                    container.appendChild(arrow);
+                }
+            });
+        }
+
+        // Initialize demo
+        window.reset = function() {
+            addLog('Resetting demo...', 'info');
+
+            model = createEmpty(1000, 26);
+            engine = emptyEngine();
+
+            // Build dependency chain
+            const updates = [
+                [0, 0, { Number: 10 }],
+                [1, 0, { Formula: ['=A1+5', { Empty: null }] }],
+                [2, 0, { Formula: ['=A2*2', { Empty: null }] }],
+                [3, 0, { Formula: ['=A3-3', { Empty: null }] }],
+                [4, 0, { Formula: ['=A4/2', { Empty: null }] }],
+            ];
+
+            updates.forEach(([row, col, value]) => {
+                const addr = { Row: row, Col: col };
+                const cellData = { Value: value, Format: {} };
+                const result = updateCell(addr, value, cellData, model, engine);
+                model = result[0];
+                engine = result[1];
+            });
+
+            addLog('Built dependency chain: A1 → A2 → A3 → A4 → A5', 'success');
+
+            // Build B column tree
+            const updatesB = [
+                [0, 1, { Number: 100 }],
+                [1, 1, { Formula: ['=B1*2', { Empty: null }] }],
+                [2, 1, { Formula: ['=B1+50', { Empty: null }] }],
+                [3, 1, { Formula: ['=B2+B3', { Empty: null }] }],
+            ];
+
+            updatesB.forEach(([row, col, value]) => {
+                const addr = { Row: row, Col: col };
+                const cellData = { Value: value, Format: {} };
+                const result = updateCell(addr, value, cellData, model, engine);
+                model = result[0];
+                engine = result[1];
+            });
+
+            addLog('Built dependency tree: B1 → B2, B3 → B4', 'success');
+
+            // Initial calculation
+            const result = smartRecalculate(model, engine);
+            model = result[0];
+            engine = result[1];
+
+            addLog(`Initial calculation complete. All ${getStats(model, engine).FormulaCells} formulas evaluated.`, 'success');
+
+            updateUI();
+        };
+
+        window.changeA1 = function() {
+            const addr = { Row: 0, Col: 0 };
+            const newValue = { Number: Math.floor(Math.random() * 100) };
+            const cellData = { Value: newValue, Format: {} };
+
+            addLog(`Changing A1 to ${newValue.Number}`, 'warning');
+
+            const result = updateCell(addr, newValue, cellData, model, engine);
+            model = result[0];
+            engine = result[1];
+
+            const dirtyCount = getStats(model, engine).DirtyCells;
+            addLog(`Marked ${dirtyCount} cells dirty (A2, A3, A4, A5)`, 'warning');
+
+            updateUI();
+        };
+
+        window.changeB1 = function() {
+            const addr = { Row: 0, Col: 1 };
+            const newValue = { Number: Math.floor(Math.random() * 200) };
+            const cellData = { Value: newValue, Format: {} };
+
+            addLog(`Changing B1 to ${newValue.Number}`, 'warning');
+
+            const result = updateCell(addr, newValue, cellData, model, engine);
+            model = result[0];
+            engine = result[1];
+
+            const dirtyCount = getStats(model, engine).DirtyCells;
+            addLog(`Marked ${dirtyCount} cells dirty (B2, B3, B4)`, 'warning');
+
+            updateUI();
+        };
+
+        window.recalculate = function() {
+            const stats = getStats(model, engine);
+            if (stats.DirtyCells === 0) {
+                addLog('No dirty cells to recalculate', 'info');
+                return;
+            }
+
+            addLog(`Recalculating ${stats.DirtyCells} dirty cells...`, 'info');
+
+            const start = performance.now();
+            const result = smartRecalculate(model, engine);
+            const elapsed = performance.now() - start;
+
+            model = result[0];
+            engine = result[1];
+
+            document.getElementById('calc-time').textContent = `${Math.round(elapsed * 1000)} μs`;
+            addLog(`Recalculation complete in ${Math.round(elapsed * 1000)} μs`, 'success');
+
+            updateUI();
+        };
+
+        function updateUI() {
+            updateStats();
+
+            // Render A column graph
+            const cellsA = [
+                { addr: { Row: 0, Col: 0 }, label: 'A1', value: displayValue(getCellValue({ Row: 0, Col: 0 }, model)) },
+                { addr: { Row: 1, Col: 0 }, label: 'A2', value: displayValue(getCellValue({ Row: 1, Col: 0 }, model)) },
+                { addr: { Row: 2, Col: 0 }, label: 'A3', value: displayValue(getCellValue({ Row: 2, Col: 0 }, model)) },
+                { addr: { Row: 3, Col: 0 }, label: 'A4', value: displayValue(getCellValue({ Row: 3, Col: 0 }, model)) },
+                { addr: { Row: 4, Col: 0 }, label: 'A5', value: displayValue(getCellValue({ Row: 4, Col: 0 }, model)) },
+            ];
+            renderGraph(cellsA, 'graph1');
+
+            // Render B column graph
+            const cellsB = [
+                { addr: { Row: 0, Col: 1 }, label: 'B1', value: displayValue(getCellValue({ Row: 0, Col: 1 }, model)) },
+                { addr: { Row: 1, Col: 1 }, label: 'B2', value: displayValue(getCellValue({ Row: 1, Col: 1 }, model)) },
+                { addr: { Row: 2, Col: 1 }, label: 'B3', value: displayValue(getCellValue({ Row: 2, Col: 1 }, model)) },
+                { addr: { Row: 3, Col: 1 }, label: 'B4', value: displayValue(getCellValue({ Row: 3, Col: 1 }, model)) },
+            ];
+            renderGraph(cellsB, 'graph2');
+
+            renderCalcChain();
+        }
+
+        // Initialize
+        reset();
+
+        // Create live spreadsheet
+        const spreadsheet = createSpreadsheet(document.getElementById('spreadsheet-root'));
+        spreadsheet.Mount();
+
+        // Populate with same data
+        spreadsheet.SetCell(0, 0, '10');
+        spreadsheet.SetCell(1, 0, '=A1+5');
+        spreadsheet.SetCell(2, 0, '=A2*2');
+        spreadsheet.SetCell(3, 0, '=A3-3');
+        spreadsheet.SetCell(4, 0, '=A4/2');
+
+        spreadsheet.SetCell(0, 1, '100');
+        spreadsheet.SetCell(1, 1, '=B1*2');
+        spreadsheet.SetCell(2, 1, '=B1+50');
+        spreadsheet.SetCell(3, 1, '=B2+B3');
+
+        addLog('Spreadsheet initialized', 'success');
+    </script>
+</body>
+</html>

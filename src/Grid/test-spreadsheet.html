@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fable Spreadsheet Test</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        #toolbar-container {
+            /* Toolbars will be placed here */
+        }
+
+        #spreadsheet-root {
+            /* Spreadsheet handles its own styling */
+        }
+
+        .toolbar {
+            flex-wrap: wrap;
+        }
+
+        .instructions {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .instructions h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .instructions ul {
+            list-style: disc;
+            margin-left: 20px;
+            line-height: 1.6;
+        }
+
+        .instructions code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Fable Spreadsheet Test</h1>
+
+        <div class="instructions">
+            <h2>Instructions</h2>
+            <ul>
+                <li>Click a cell to select it</li>
+                <li>Double-click or press <code>Enter</code>/<code>F2</code> to edit</li>
+                <li>Use arrow keys to navigate</li>
+                <li>Press <code>Tab</code> to move to the next cell</li>
+                <li>Press <code>Delete</code> or <code>Backspace</code> to clear a cell</li>
+                <li>Enter formulas starting with <code>=</code> (e.g., <code>=A1+B1</code>, <code>=SUM(A1,A2,A3)</code>)</li>
+                <li><strong>Formatting:</strong> Select cell A5 and try the toolbar buttons (Bold, Italic, Underline, Font size, Colors, Alignment)</li>
+                <li><strong>Number formats:</strong> Select a number cell and try currency or percent formatting</li>
+            </ul>
+        </div>
+
+        <div id="toolbar-container"></div>
+        <div id="spreadsheet-root"></div>
+    </div>
+
+    <script type="module">
+        // Import the compiled Fable modules
+        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
+        import { createFormatToolbar, createAlignmentToolbar, createNumberFormatToolbar } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
+
+        // Get the container elements
+        const toolbarContainer = document.getElementById('toolbar-container');
+        const spreadsheetContainer = document.getElementById('spreadsheet-root');
+
+        // Create and mount the spreadsheet
+        const spreadsheet = createSpreadsheet(spreadsheetContainer);
+        spreadsheet.Mount();
+
+        // Create toolbars
+        const formatToolbar = createFormatToolbar((action) => {
+            console.log('Format action:', action);
+            if (action === 'textColor') {
+                spreadsheet.ApplyTextColor('#ff0000');
+            } else if (action === 'bgColor') {
+                spreadsheet.ApplyBgColor('#ffff00');
+            } else {
+                spreadsheet.ApplyFormat(action);
+            }
+        });
+
+        const alignmentToolbar = createAlignmentToolbar((action) => {
+            console.log('Alignment action:', action);
+            spreadsheet.ApplyFormat(action);
+        });
+
+        const numberToolbar = createNumberFormatToolbar((action) => {
+            console.log('Number format action:', action);
+            if (action === 'formatNumber') {
+                spreadsheet.ApplyNumberFormat('number');
+            } else if (action === 'formatCurrency') {
+                spreadsheet.ApplyNumberFormat('currency');
+            } else if (action === 'formatPercent') {
+                spreadsheet.ApplyNumberFormat('percent');
+            }
+        });
+
+        // Mount toolbars
+        formatToolbar.Mount(toolbarContainer);
+        alignmentToolbar.Mount(toolbarContainer);
+        numberToolbar.Mount(toolbarContainer);
+
+        // Pre-populate some example data
+        spreadsheet.SetCell(0, 0, "10");      // A1 = 10
+        spreadsheet.SetCell(1, 0, "20");      // A2 = 20
+        spreadsheet.SetCell(2, 0, "30");      // A3 = 30
+        spreadsheet.SetCell(3, 0, "=A1+A2");  // A4 = sum formula
+
+        spreadsheet.SetCell(0, 1, "5");       // B1 = 5
+        spreadsheet.SetCell(1, 1, "15");      // B2 = 15
+        spreadsheet.SetCell(2, 1, "=B1*2");   // B3 = multiply formula
+
+        spreadsheet.SetCell(0, 2, "=A1+B1");  // C1 = reference formula
+        spreadsheet.SetCell(1, 2, "=SUM(A1,A2,A3)");  // C2 = SUM function
+
+        spreadsheet.SetCell(4, 0, "Sample Text");  // A5 = text for formatting demo
+
+        console.log('Spreadsheet and toolbars mounted successfully!');
+        console.log('Try selecting cell A5 and using the format buttons!');
+    </script>
+</body>
+</html>

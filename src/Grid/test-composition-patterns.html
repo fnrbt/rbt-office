@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Composition Patterns - Grid vs Tabs</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        .example {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .example h2 {
+            font-size: 18px;
+            margin-bottom: 10px;
+            color: #2c3e50;
+        }
+
+        .example p {
+            margin-bottom: 15px;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .example code {
+            background: #f8f8f8;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .grid-container {
+            border: 2px solid #3498db;
+            min-height: 400px;
+            margin-bottom: 10px;
+        }
+
+        .tabs-container {
+            border: 2px solid #e74c3c;
+            padding: 10px;
+            background: #f8f8f8;
+        }
+
+        .sidebar-layout {
+            display: flex;
+            gap: 0;
+            height: 500px;
+        }
+
+        .sidebar {
+            width: 200px;
+            background: #34495e;
+            color: white;
+            padding: 15px;
+        }
+
+        .sidebar h3 {
+            font-size: 14px;
+            margin-bottom: 15px;
+            color: #ecf0f1;
+        }
+
+        .sidebar .sheet-list {
+            list-style: none;
+        }
+
+        .sidebar .sheet-item {
+            padding: 8px 12px;
+            margin-bottom: 4px;
+            background: #2c3e50;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.2s;
+        }
+
+        .sidebar .sheet-item:hover {
+            background: #3d566e;
+        }
+
+        .sidebar .sheet-item.active {
+            background: #3498db;
+        }
+
+        .main-area {
+            flex: 1;
+            background: white;
+        }
+
+        .label {
+            display: inline-block;
+            padding: 4px 8px;
+            background: #e74c3c;
+            color: white;
+            font-size: 11px;
+            font-weight: bold;
+            border-radius: 3px;
+            margin-bottom: 10px;
+        }
+
+        .label.blue {
+            background: #3498db;
+        }
+    </style>
+</head>
+<body>
+    <h1>Composition Patterns: Independent Components</h1>
+
+    <div class="example">
+        <h2>Pattern 1: Grid Only (No Tabs)</h2>
+        <p>
+            Single-sheet application. The <code>Spreadsheet</code> component renders one sheet.
+            No tabs, no workbook - just a standalone grid.
+        </p>
+        <p><strong>Use case:</strong> Embedded calculator, single-sheet editor, simple data entry</p>
+
+        <span class="label blue">Spreadsheet Component</span>
+        <div class="grid-container" id="grid1"></div>
+
+        <p style="margin-top: 15px; font-size: 13px; color: #7f8c8d;">
+            Note: This is just <code>createSpreadsheet(container)</code> - no workbook, no tabs.
+        </p>
+    </div>
+
+    <div class="example">
+        <h2>Pattern 2: Tabs Below (Excel Style)</h2>
+        <p>
+            Classic Excel layout: grid on top, tabs on bottom. Components are completely separate.
+            The <code>Tabs</code> component doesn't know about the grid, the grid doesn't know about tabs.
+        </p>
+        <p><strong>Use case:</strong> Multi-sheet workbook, Excel clone, data analysis tool</p>
+
+        <span class="label blue">Spreadsheet Component</span>
+        <div class="grid-container" id="grid2"></div>
+
+        <span class="label">Tabs Component (Separate)</span>
+        <div class="tabs-container" id="tabs2"></div>
+
+        <p style="margin-top: 15px; font-size: 13px; color: #7f8c8d;">
+            Apps wire them together: tab click → hide old grid, show new grid
+        </p>
+    </div>
+
+    <div class="example">
+        <h2>Pattern 3: Sidebar Navigation (Custom)</h2>
+        <p>
+            Tabs component replaced with custom sidebar. Same grid, different navigation.
+            Apps can use Workbook model without the Tabs component.
+        </p>
+        <p><strong>Use case:</strong> Custom dashboard, report builder, data management UI</p>
+
+        <div class="sidebar-layout">
+            <div class="sidebar">
+                <h3>Sheets</h3>
+                <ul class="sheet-list">
+                    <li class="sheet-item active">Sheet1</li>
+                    <li class="sheet-item">Budget</li>
+                    <li class="sheet-item">Sales</li>
+                </ul>
+            </div>
+            <div class="main-area">
+                <span class="label blue">Spreadsheet Component</span>
+                <div id="grid3" style="height: 100%;"></div>
+            </div>
+        </div>
+
+        <p style="margin-top: 15px; font-size: 13px; color: #7f8c8d;">
+            Note: Using Workbook model but custom navigation UI (no Tabs component)
+        </p>
+    </div>
+
+    <div class="example">
+        <h2>Pattern 4: Dropdown Navigation</h2>
+        <p>
+            Mobile-friendly: dropdown instead of tabs. Same Workbook model, same Spreadsheet component.
+            Different navigation, no tabs component needed.
+        </p>
+        <p><strong>Use case:</strong> Mobile apps, limited screen width, many sheets</p>
+
+        <div style="margin-bottom: 10px;">
+            <label style="font-size: 13px; margin-right: 10px;">Select Sheet:</label>
+            <select id="sheet-dropdown" style="padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px;">
+                <option>Sheet1</option>
+                <option>Budget</option>
+                <option>Sales</option>
+            </select>
+        </div>
+
+        <span class="label blue">Spreadsheet Component</span>
+        <div class="grid-container" id="grid4"></div>
+
+        <p style="margin-top: 15px; font-size: 13px; color: #7f8c8d;">
+            Note: Workbook model used, but navigation via dropdown (no Tabs component)
+        </p>
+    </div>
+
+    <div class="example">
+        <h2>Architecture Summary</h2>
+        <div style="background: #ecf0f1; padding: 15px; border-radius: 4px; font-size: 13px; line-height: 1.8;">
+            <strong>Three Independent Layers:</strong>
+            <ul style="margin: 10px 0 10px 20px;">
+                <li><strong>Workbook.fs</strong> - Pure data model (sheets, tables, references)</li>
+                <li><strong>Spreadsheet.fs</strong> - Grid renderer (takes SpreadsheetModel, no workbook knowledge)</li>
+                <li><strong>Tabs.fs</strong> - Optional UI component (can use, replace, or omit)</li>
+            </ul>
+
+            <strong style="display: block; margin-top: 15px;">Apps Compose:</strong>
+            <ul style="margin: 10px 0 10px 20px;">
+                <li>Pattern 1: Spreadsheet only (no workbook, no tabs)</li>
+                <li>Pattern 2: Workbook + Spreadsheet + Tabs (Excel clone)</li>
+                <li>Pattern 3: Workbook + Spreadsheet + custom nav (sidebar)</li>
+                <li>Pattern 4: Workbook + Spreadsheet + custom nav (dropdown)</li>
+            </ul>
+
+            <strong style="display: block; margin-top: 15px; color: #c0392b;">Key Principle:</strong>
+            <p style="margin: 5px 0 0 0;">
+                The grid doesn't know about tabs. The tabs don't know about the grid.
+                The workbook is just data. Apps wire components together however they want.
+            </p>
+        </div>
+    </div>
+
+    <script type="module">
+        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
+        import { createWorkbook, addSheet, getSheetNames } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Workbook.js';
+        import { createTabs } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Tabs.js';
+
+        // Pattern 1: Grid only (no tabs)
+        const grid1 = createSpreadsheet(document.getElementById('grid1'));
+        grid1.Mount();
+        grid1.SetCell(0, 0, '10');
+        grid1.SetCell(1, 0, '=A1*2');
+        grid1.SetCell(2, 0, '=A2+10');
+
+        // Pattern 2: Grid + Tabs (separate components)
+        const grid2 = createSpreadsheet(document.getElementById('grid2'));
+        grid2.Mount();
+        grid2.SetCell(0, 0, 'Pattern 2');
+        grid2.SetCell(1, 0, 'Grid and tabs are separate');
+
+        let workbook2 = createWorkbook();
+        workbook2 = addSheet('Budget', workbook2);
+        workbook2 = addSheet('Sales', workbook2);
+
+        const tabs2 = createTabs(workbook2, {
+            OnTabClick: (sheetId) => console.log('Tab clicked:', sheetId),
+            OnTabAdd: () => console.log('Add sheet'),
+            OnTabRename: (id, name) => console.log('Rename:', name),
+            OnTabDelete: (id) => console.log('Delete:', id),
+            OnTabReorder: (order) => console.log('Reorder:', order)
+        });
+        tabs2.Mount(document.getElementById('tabs2'));
+
+        // Pattern 3: Grid + Sidebar (custom nav, no tabs component)
+        const grid3 = createSpreadsheet(document.getElementById('grid3'));
+        grid3.Mount();
+        grid3.SetCell(0, 0, 'Pattern 3');
+        grid3.SetCell(1, 0, 'Custom sidebar navigation');
+
+        // Pattern 4: Grid + Dropdown (custom nav, no tabs component)
+        const grid4 = createSpreadsheet(document.getElementById('grid4'));
+        grid4.Mount();
+        grid4.SetCell(0, 0, 'Pattern 4');
+        grid4.SetCell(1, 0, 'Dropdown navigation for mobile');
+
+        console.log('Composition patterns loaded!');
+        console.log('Key point: Grid, Tabs, and Workbook are independent.');
+        console.log('Apps compose them however they want.');
+    </script>
+</body>
+</html>

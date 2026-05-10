@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phase 2 Feature Test - Data Operations</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        #toolbar-container {
+            /* Toolbars will be placed here */
+        }
+
+        #spreadsheet-root {
+            /* Spreadsheet handles its own styling */
+        }
+
+        .toolbar {
+            flex-wrap: wrap;
+        }
+
+        .instructions {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .instructions h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #FF9800;
+        }
+
+        .instructions h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-top: 15px;
+            margin-bottom: 5px;
+        }
+
+        .instructions ul {
+            list-style: disc;
+            margin-left: 20px;
+            line-height: 1.8;
+        }
+
+        .instructions code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .feature-tag {
+            display: inline-block;
+            background: #FF9800;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+            margin-left: 5px;
+        }
+
+        .test-section {
+            background: #fff3e0;
+            padding: 10px;
+            border-left: 4px solid #FF9800;
+            margin: 10px 0;
+        }
+
+        .control-buttons {
+            margin: 15px 0;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .control-buttons button {
+            margin: 5px;
+            padding: 8px 16px;
+            background: #FF9800;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .control-buttons button:hover {
+            background: #F57C00;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Phase 2 Feature Test - Data Operations</h1>
+
+        <div class="instructions">
+            <h2>🔧 Phase 2: Data Operations</h2>
+            <p>This test page demonstrates the four data operation features implemented in Phase 2.</p>
+
+            <div class="test-section">
+                <h3>1. Column Sorting <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li><strong>Click any column header</strong> to sort by that column</li>
+                    <li>Click again to toggle between ascending ▲ and descending ▼</li>
+                    <li>Column A has mixed data: "Zebra", "Alpha", numbers 500, 100, 300</li>
+                    <li>Column B has sales amounts (perfect for sorting numbers)</li>
+                    <li>Sorting is undo-able with Ctrl+Z</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>2. Basic Filtering <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li>Filtering infrastructure is implemented (model supports column filters)</li>
+                    <li>Future: Click filter icon on column header to show/hide specific values</li>
+                    <li>Filters use AND logic (all filters must match)</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>3. Number Formatting <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li><strong>Currency:</strong> Select cell B1 and click the currency button ($) in toolbar</li>
+                    <li><strong>Percentage:</strong> Select cell C1 (0.15) and click percentage button (%)</li>
+                    <li><strong>2 Decimals:</strong> Click .00 button for fixed decimal places</li>
+                    <li>Cell B1 = 1234.56 → displays as $1,234.56</li>
+                    <li>Cell C1 = 0.15 → displays as 15.00%</li>
+                    <li>Cell D1 = 45000 (Excel date) → displays as date when formatted</li>
+                </ul>
+            </div>
+
+            <div class="test-section">
+                <h3>4. Insert/Delete Rows & Columns <span class="feature-tag">NEW</span></h3>
+                <ul>
+                    <li>Use the control buttons below to insert/delete rows and columns</li>
+                    <li><strong>Insert Row:</strong> Inserts at row 3, shifting everything down</li>
+                    <li><strong>Delete Row:</strong> Deletes row 2</li>
+                    <li><strong>Insert Column:</strong> Inserts at column C, shifting columns right</li>
+                    <li><strong>Delete Column:</strong> Deletes column B</li>
+                    <li>All operations update cell addresses and are undo-able</li>
+                </ul>
+            </div>
+
+            <h3>Phase 1 Features (Still Available)</h3>
+            <ul>
+                <li>Range formulas: <code>=SUM(B1:B5)</code></li>
+                <li>Copy/Paste/Cut: <code>Ctrl+C/V/X</code></li>
+                <li>New functions: COUNT, IF, MIN, MAX</li>
+                <li>Undo/Redo: <code>Ctrl+Z/Y</code></li>
+            </ul>
+        </div>
+
+        <div class="control-buttons">
+            <strong>Row/Column Operations:</strong>
+            <button id="btn-insert-row">Insert Row at 3</button>
+            <button id="btn-delete-row">Delete Row 2</button>
+            <button id="btn-insert-col">Insert Column C</button>
+            <button id="btn-delete-col">Delete Column B</button>
+        </div>
+
+        <div id="toolbar-container"></div>
+        <div id="spreadsheet-root"></div>
+    </div>
+
+    <script type="module">
+        // Import the compiled Fable modules
+        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
+        import { createFormatToolbar, createAlignmentToolbar, createNumberFormatToolbar } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
+
+        // Get the container elements
+        const toolbarContainer = document.getElementById('toolbar-container');
+        const spreadsheetContainer = document.getElementById('spreadsheet-root');
+
+        // Create and mount the spreadsheet
+        const spreadsheet = createSpreadsheet(spreadsheetContainer);
+        spreadsheet.Mount();
+
+        // Create toolbars
+        const formatToolbar = createFormatToolbar((action) => {
+            if (action === 'textColor') {
+                spreadsheet.ApplyTextColor('#ff0000');
+            } else if (action === 'bgColor') {
+                spreadsheet.ApplyBgColor('#ffff00');
+            } else {
+                spreadsheet.ApplyFormat(action);
+            }
+        });
+
+        const alignmentToolbar = createAlignmentToolbar((action) => {
+            spreadsheet.ApplyFormat(action);
+        });
+
+        const numberToolbar = createNumberFormatToolbar((action) => {
+            if (action === 'formatNumber') {
+                spreadsheet.ApplyNumberFormat('number');
+            } else if (action === 'formatCurrency') {
+                spreadsheet.ApplyNumberFormat('currency');
+            } else if (action === 'formatPercent') {
+                spreadsheet.ApplyNumberFormat('percentage');
+            }
+        });
+
+        // Mount toolbars
+        formatToolbar.Mount(toolbarContainer);
+        alignmentToolbar.Mount(toolbarContainer);
+        numberToolbar.Mount(toolbarContainer);
+
+        // ===== PHASE 2 TEST DATA =====
+
+        // Column A - Mixed data for sorting test
+        spreadsheet.SetCell(0, 0, "Zebra");       // A1 - String
+        spreadsheet.SetCell(1, 0, "500");         // A2 - Number
+        spreadsheet.SetCell(2, 0, "Alpha");       // A3 - String
+        spreadsheet.SetCell(3, 0, "100");         // A4 - Number
+        spreadsheet.SetCell(4, 0, "300");         // A5 - Number
+
+        // Column B - Sales amounts (for sorting and number formatting)
+        spreadsheet.SetCell(0, 1, "1234.56");     // B1 - Currency format demo
+        spreadsheet.SetCell(1, 1, "89.99");       // B2
+        spreadsheet.SetCell(2, 1, "2500.00");     // B3
+        spreadsheet.SetCell(3, 1, "45.50");       // B4
+        spreadsheet.SetCell(4, 1, "=SUM(B1:B4)"); // B5 - Sum formula
+
+        // Column C - Percentages
+        spreadsheet.SetCell(0, 2, "0.15");        // C1 - 15% when formatted
+        spreadsheet.SetCell(1, 2, "0.08");        // C2 - 8%
+        spreadsheet.SetCell(2, 2, "0.25");        // C3 - 25%
+
+        // Column D - Dates (Excel date format)
+        spreadsheet.SetCell(0, 3, "45000");       // D1 - Excel date (03/07/2023)
+        spreadsheet.SetCell(1, 3, "45100");       // D2
+
+        // Column E - Functions (using Phase 1 features)
+        spreadsheet.SetCell(0, 4, "=COUNT(B1:B4)");     // E1 - Count
+        spreadsheet.SetCell(1, 4, "=MIN(B1:B4)");       // E2 - Min
+        spreadsheet.SetCell(2, 4, "=MAX(B1:B4)");       // E3 - Max
+        spreadsheet.SetCell(3, 4, "=IF(B1>1000, \"High\", \"Low\")"); // E4 - IF
+
+        // Wire up control buttons
+        document.getElementById('btn-insert-row').addEventListener('click', () => {
+            spreadsheet.InsertRow(3);  // Insert at row 3 (0-indexed)
+            console.log('✅ Inserted row at position 3');
+        });
+
+        document.getElementById('btn-delete-row').addEventListener('click', () => {
+            spreadsheet.DeleteRow(2);  // Delete row 2 (0-indexed)
+            console.log('✅ Deleted row 2');
+        });
+
+        document.getElementById('btn-insert-col').addEventListener('click', () => {
+            spreadsheet.InsertColumn(2);  // Insert at column C (0-indexed)
+            console.log('✅ Inserted column at position C');
+        });
+
+        document.getElementById('btn-delete-col').addEventListener('click', () => {
+            spreadsheet.DeleteColumn(1);  // Delete column B (0-indexed)
+            console.log('✅ Deleted column B');
+        });
+
+        console.log('✅ Phase 2 features loaded!');
+        console.log('');
+        console.log('Test Scenarios:');
+        console.log('1. Column Sorting: Click column A header to sort mixed data');
+        console.log('2. Number Formatting: Select B1, click $ button to format as currency');
+        console.log('3. Percentage: Select C1 (0.15), click % button to show 15.00%');
+        console.log('4. Insert/Delete: Use the buttons to test row/column operations');
+        console.log('');
+        console.log('🎯 Try sorting column B (sales amounts) to see numbers in order!');
+        console.log('🎯 Try selecting B1 and applying currency format!');
+        console.log('🎯 Try inserting a row at position 3 - watch everything shift down!');
+    </script>
+</body>
+</html>

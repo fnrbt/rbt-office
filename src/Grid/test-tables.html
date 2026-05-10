@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Spreadsheet - Excel Tables Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            margin: 0 0 20px 0;
+            color: #333;
+            font-size: 24px;
+        }
+        .controls {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 4px;
+            border: 1px solid #e0e0e0;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .control-group label {
+            font-size: 12px;
+            font-weight: bold;
+            color: #666;
+        }
+        button {
+            padding: 8px 16px;
+            border: 1px solid #d0d0d0;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        button:hover {
+            background: #f0f0f0;
+        }
+        button:active {
+            background: #e0e0e0;
+        }
+        input {
+            padding: 6px 10px;
+            border: 1px solid #d0d0d0;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .info-panel {
+            display: flex;
+            gap: 30px;
+            padding: 15px;
+            background: #f0f8ff;
+            border: 1px solid #b0d4f1;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-size: 13px;
+        }
+        .info-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .info-item strong {
+            color: #0066cc;
+        }
+        .table-list {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .table-tag {
+            padding: 4px 12px;
+            background: #4472C4;
+            color: white;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .spreadsheet-wrapper {
+            border: 1px solid #d0d0d0;
+            border-radius: 4px;
+            overflow: hidden;
+            background: white;
+        }
+        .instructions {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff9e6;
+            border: 1px solid #ffe066;
+            border-radius: 4px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .instructions h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            color: #996600;
+        }
+        .instructions ul {
+            margin: 5px 0;
+            padding-left: 20px;
+        }
+        .instructions li {
+            margin: 3px 0;
+        }
+        .instructions code {
+            background: #fff;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+            color: #c7254e;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 Excel-Style Tables with Formulas</h1>
+
+        <div class="info-panel">
+            <div class="info-item">
+                <strong>Tables:</strong>
+                <div class="table-list" id="table-list"></div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label>Table Name</label>
+                <input type="text" id="table-name" placeholder="Sales" value="Revenue">
+            </div>
+            <div class="control-group">
+                <label>Start (row,col)</label>
+                <input type="text" id="start-pos" placeholder="0,0" value="2,1">
+            </div>
+            <div class="control-group">
+                <label>End (row,col)</label>
+                <input type="text" id="end-pos" placeholder="10,3" value="7,4">
+            </div>
+            <div class="control-group">
+                <label>Actions</label>
+                <div style="display: flex; gap: 5px;">
+                    <button id="create-table">Create Table</button>
+                    <button id="delete-table">Delete Table</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="spreadsheet-wrapper">
+            <div id="spreadsheet"></div>
+        </div>
+
+        <div class="instructions">
+            <h3>📖 Instructions:</h3>
+            <ul>
+                <li><strong>Tables created:</strong> "Sales" table (A0:D10) and example "Revenue" table</li>
+                <li><strong>Table formulas:</strong> Use syntax like <code>=SUM(Sales[Amount])</code> or <code>=AVERAGE(Sales[Amount])</code></li>
+                <li><strong>Excel styling:</strong> Blue headers with gradient, alternating row colors, custom borders</li>
+                <li><strong>Create tables:</strong> Enter name and range above, click "Create Table"</li>
+                <li><strong>Sample data:</strong> Pre-populated with sales data and formulas demonstrating table references</li>
+                <li><strong>Cell F0:</strong> <code>=SUM(Sales[Amount])</code> - Total sales</li>
+                <li><strong>Cell F1:</strong> <code>=AVERAGE(Sales[Amount])</code> - Average sale</li>
+            </ul>
+        </div>
+    </div>
+
+    <script type="module">
+        import { createWorkbook, addSheet, defineTable, getTableNames } from './src/lib/grid/Spreadsheet/Workbook.js';
+        import createSpreadsheet from './src/lib/grid/Spreadsheet/Spreadsheet.js';
+
+        // Create workbook
+        let workbook = createWorkbook();
+
+        // Create spreadsheet
+        const container = document.getElementById('spreadsheet');
+        const grid = createSpreadsheet(container);
+        grid.Mount();
+        grid.SetWorkbook(workbook);
+
+        // Define Sales table (A0:D10) with headers
+        const salesTable = {
+            Name: 'Sales',
+            SheetId: 'sheet1',
+            StartRow: 0,
+            StartCol: 0,
+            EndRow: 10,
+            EndCol: 3,
+            Columns: ['Date', 'Product', 'Quantity', 'Amount'],
+            HasHeaders: true
+        };
+        workbook = defineTable(salesTable, workbook);
+        grid.SetWorkbook(workbook);
+
+        // Populate sample data
+        // Headers (row 0)
+        grid.SetCell(0, 0, 'Date');
+        grid.SetCell(0, 1, 'Product');
+        grid.SetCell(0, 2, 'Quantity');
+        grid.SetCell(0, 3, 'Amount');
+
+        // Data rows (1-10)
+        const sampleData = [
+            ['2024-01-15', 'Widget A', '25', '2500'],
+            ['2024-01-16', 'Widget B', '15', '1800'],
+            ['2024-01-17', 'Widget C', '30', '4200'],
+            ['2024-01-18', 'Widget A', '20', '2000'],
+            ['2024-01-19', 'Widget B', '35', '4200'],
+            ['2024-01-20', 'Widget C', '18', '2520'],
+            ['2024-01-21', 'Widget A', '22', '2200'],
+            ['2024-01-22', 'Widget B', '28', '3360'],
+            ['2024-01-23', 'Widget C', '31', '4340'],
+            ['2024-01-24', 'Widget A', '19', '1900']
+        ];
+
+        sampleData.forEach((row, rowIndex) => {
+            row.forEach((cell, colIndex) => {
+                grid.SetCell(rowIndex + 1, colIndex, cell);
+            });
+        });
+
+        // Add formulas using table references
+        // Total sales (F0)
+        grid.SetCell(0, 5, 'Total:');
+        grid.SetCell(0, 6, '=SUM(Sales[Amount])');
+
+        // Average sales (F1)
+        grid.SetCell(1, 5, 'Average:');
+        grid.SetCell(1, 6, '=AVERAGE(Sales[Amount])');
+
+        // Count sales (F2)
+        grid.SetCell(2, 5, 'Count:');
+        grid.SetCell(2, 6, '10');  // Manual count for now
+
+        // Update table list
+        function updateTableList() {
+            const tableList = document.getElementById('table-list');
+            const tables = grid.GetTableNames();
+
+            if (tables.length === 0) {
+                tableList.innerHTML = '<span style="color: #999;">No tables defined</span>';
+            } else {
+                tableList.innerHTML = '';
+                tables.forEach(name => {
+                    const tag = document.createElement('span');
+                    tag.className = 'table-tag';
+                    tag.textContent = name;
+                    tableList.appendChild(tag);
+                });
+            }
+        }
+
+        // Create table button
+        document.getElementById('create-table').addEventListener('click', () => {
+            const name = document.getElementById('table-name').value;
+            const startPos = document.getElementById('start-pos').value.split(',').map(s => parseInt(s.trim()));
+            const endPos = document.getElementById('end-pos').value.split(',').map(s => parseInt(s.trim()));
+
+            if (name && startPos.length === 2 && endPos.length === 2) {
+                const columnCount = endPos[1] - startPos[1] + 1;
+                const columns = [];
+                for (let i = 0; i < columnCount; i++) {
+                    columns.push(`Col${String.fromCharCode(65 + i)}`);  // ColA, ColB, ...
+                }
+
+                grid.DefineTable(name, startPos[0], startPos[1], endPos[0], endPos[1], columns, true);
+                workbook = grid.GetWorkbook();
+                updateTableList();
+
+                alert(`Table "${name}" created!\\nRange: (${startPos[0]},${startPos[1]}) to (${endPos[0]},${endPos[1]})`);
+            } else {
+                alert('Please enter valid table name and positions');
+            }
+        });
+
+        // Delete table button
+        document.getElementById('delete-table').addEventListener('click', () => {
+            const name = document.getElementById('table-name').value;
+            if (name) {
+                grid.DeleteTable(name);
+                workbook = grid.GetWorkbook();
+                updateTableList();
+                alert(`Table "${name}" deleted!`);
+            } else {
+                alert('Please enter table name to delete');
+            }
+        });
+
+        // Initial table list update
+        updateTableList();
+
+        console.log('Demo ready! Try:');
+        console.log('1. Click on cell G0 (contains =SUM(Sales[Amount]))');
+        console.log('2. Edit cell values in the Amount column');
+        console.log('3. Create new tables using the controls');
+        console.log('4. Reference table columns in formulas like =AVERAGE(Sales[Quantity])');
+    </script>
+</body>
+</html>
