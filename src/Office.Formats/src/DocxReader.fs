@@ -2575,7 +2575,7 @@ let private bordersToEditor (borders: CellBorders option) =
 let private paragraphLayoutProps fontSize (props: ParagraphProperties) =
     let spacingAfter =
         if props.SpacingAfterAuto = Some true then Some 0.0
-        else wordTwipsToPoints props.SpacingAfter |> Option.orElse (Some 0.0)
+        else wordTwipsToPoints props.SpacingAfter
     let firstLineIndent =
         match wordTwipsToPoints props.FirstLineIndent, wordTwipsToPoints props.HangingIndent with
         | Some firstLine, _ -> Some firstLine

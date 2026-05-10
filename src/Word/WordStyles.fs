@@ -185,7 +185,6 @@ let forTableCellParagraphInDocument (doc: Document) (para: ParagraphBlock) =
     let style = forBlockInDocument doc (Paragraph para)
     { style with
         SpacingBefore = Some 0.0
-        SpacingAfter = Some 0.0
         LineSpacing = Some 1.0
         LineSpacingRule = Some "auto" }
 
@@ -194,7 +193,6 @@ let tableCellParagraphForLayout (para: ParagraphBlock) =
         Metadata =
             { para.Metadata with
                 SpacingBefore = Some 0.0
-                SpacingAfter = Some 0.0
                 LineSpacing = Some 1.0
                 LineSpacingRule = Some "auto" } }
 
