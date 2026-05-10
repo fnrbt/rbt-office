@@ -5,7 +5,9 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const fixture = path.resolve(root, '../../tests/test-documents-features/test-formatting.docx');
+const fixtureArg = process.argv[2] ?? '../../tests/test-documents-features/test-formatting.docx';
+const outputStem = process.argv[3] ?? path.basename(fixtureArg, path.extname(fixtureArg));
+const fixture = path.resolve(root, fixtureArg);
 const outDir = path.resolve(root, '../../artifacts/browser');
 await fs.mkdir(outDir, { recursive: true });
 
@@ -52,8 +54,8 @@ try {
     { timeout: 30000 }
   );
   const segments = await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
-  await fs.writeFile(path.join(outDir, 'test-formatting-layout.json'), JSON.stringify(segments, null, 2));
-  await page.locator('#word-canvas').screenshot({ path: path.join(outDir, 'test-formatting.png') });
+  await fs.writeFile(path.join(outDir, `${outputStem}-layout.json`), JSON.stringify(segments, null, 2));
+  await page.locator('#word-canvas').screenshot({ path: path.join(outDir, `${outputStem}.png`) });
   await browser.close();
   console.log(`browser runner ok: ${segments.length} layout segments`);
 } finally {
