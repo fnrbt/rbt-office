@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Word Render/Layout Parity Fixes</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f3f5f7;
+      color: #17202a;
+    }
+
+    body {
+      margin: 0;
+      padding: 28px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .lede {
+      max-width: 980px;
+      margin: 0 0 22px;
+      color: #4b5563;
+      line-height: 1.45;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      background: #fff;
+      border: 1px solid #d8dee6;
+    }
+
+    th,
+    td {
+      vertical-align: top;
+      border: 1px solid #d8dee6;
+      padding: 12px;
+    }
+
+    th {
+      background: #e9edf2;
+      text-align: left;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    td {
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .case {
+      width: 15%;
+    }
+
+    .render {
+      width: 20%;
+    }
+
+    .summary {
+      width: 25%;
+    }
+
+    .meta {
+      display: block;
+      margin-top: 8px;
+      color: #637083;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .zoom {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1.45 / 1;
+      overflow: hidden;
+      background: #fff;
+      border: 1px solid #cfd6df;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.7);
+    }
+
+    .zoom img {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: var(--w);
+      height: auto;
+      max-width: none;
+      transform-origin: top left;
+      transform: translate(calc(-1 * var(--x)), calc(-1 * var(--y))) scale(var(--s));
+    }
+
+    .caption {
+      margin-top: 8px;
+      color: #4b5563;
+      font-size: 12px;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: #eef2f6;
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+
+    ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Word Render/Layout Parity Fixes</h1>
+  <p class="lede">
+    Focused regression table for DOCX render/layout parity work. Each row keeps the real Word reference,
+    our saved pre-fix rendering, and the current post-fix rendering. The frames are cropped into the problem
+    area rather than full-page screenshots. Baseline images live under <code>artifacts/baseline/</code> and
+    are intentionally not committed.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="case">Case</th>
+        <th class="render">Word Reference</th>
+        <th class="render">Ours Before</th>
+        <th class="render">Ours After</th>
+        <th class="summary">Fix / Guard</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>
+          <strong>DOCX table import preserves structure</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-import-preserves-structure.docx</code></span>
+          <span class="meta">Fix commit: <code>ca4e9e0</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-import-word.png" style="--w:1224px; --x:130px; --y:220px; --s:1.7" alt="Word reference table import repro">
+          </div>
+          <div class="caption">Word keeps <code>A1/B1</code> on the same row and <code>A2/B2</code> on the next row.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-import-before-fix.png" style="--w:900px; --x:70px; --y:120px; --s:2.15" alt="Before fix table import repro">
+          </div>
+          <div class="caption">Before: browser import flattened table cells into ordinary paragraphs; <code>B1</code> stacked under <code>A1</code> at <code>x=0</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/repro-table-import-after.png" style="--w:900px; --x:70px; --y:125px; --s:2.15" alt="After fix table import repro">
+          </div>
+          <div class="caption">After: browser import emits table objects, so same-row cells share Y and distinct X positions.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>Processors.forEditorPackage</code> now uses the typed DOCX-to-editor package path, including tables, headers/footers, page setup, and numbering.</p>
+          <ul>
+            <li>Before guard: <code>B1 x=0, y=150.4</code></li>
+            <li>After guard: <code>B1 x=318, y=142.7</code></li>
+            <li>Check with <code>capture-browser-docx.mjs</code> JSON output.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Default paragraph after-spacing inside table cells</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Fix commit: <code>c05cf8d</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:130px; --y:220px; --s:1.7" alt="Word reference table spacing repro">
+          </div>
+          <div class="caption">Word applies the Normal paragraph after-spacing in table cells when the DOCX omits explicit spacing.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-cell-spacing-before-fix.png" style="--w:900px; --x:70px; --y:128px; --s:2.15" alt="Before fix table spacing repro">
+          </div>
+          <div class="caption">Before: cell paragraph spacing was forced to zero, compressing the second row and following paragraph.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/repro-table-cell-spacing-after.png" style="--w:900px; --x:70px; --y:128px; --s:2.15" alt="After fix table spacing repro">
+          </div>
+          <div class="caption">After: omitted spacing remains inherited/defaulted; row positions move down to match Word's cell paragraph rhythm.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> preserve missing DOCX <code>w:spacing/@after</code> as <code>None</code>, and stop clearing table-cell paragraph <code>SpacingAfter</code> in layout style normalization.</p>
+          <ul>
+            <li>Before guard: <code>Gamma y=160.6</code>, <code>After y=188.5</code></li>
+            <li>After guard: <code>Gamma y=170.6</code>, <code>After y=208.5</code></li>
+            <li>Regression check: row gap should stay roughly one default after-spacing larger than the pre-fix baseline.</li>
+          </ul>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</body>
+</html>
