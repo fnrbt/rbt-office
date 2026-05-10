@@ -309,6 +309,41 @@
           </ul>
         </td>
       </tr>
+
+      <tr>
+        <td>
+          <strong>Default table cell inset alignment</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-complex-tables.docx</code></span>
+          <span class="meta">Fix commit: <code>this commit</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table cell inset alignment">
+          </div>
+          <div class="caption">Word aligns the heading, table left border, and cell text to the same left edge for this default table.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/repro-table-default-cell-padding-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before default table cell inset alignment fix">
+          </div>
+          <div class="caption">Before: the table border was shifted left and the cell text was padded right of the table edge.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/repro-table-cell-padding-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After default table cell inset alignment fix">
+          </div>
+          <div class="caption">After: default table padding is zero, so heading, border, and cell text share the left edge unless the DOCX specifies padding.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> set the Word table layout default cell padding to zero for canvas and print scales. Explicit DOCX table, row, and cell padding values still flow through the existing padding code.</p>
+          <ul>
+            <li>Before guard: table border was offset left of the surrounding paragraph text by the default cell inset.</li>
+            <li>After guard: <code>Alpha</code> and the table border start at the same x-position.</li>
+            <li>The complex-table heading now lines up with the table below it.</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 </body>

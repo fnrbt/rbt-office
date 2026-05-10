@@ -12,13 +12,13 @@ type Scale = {
 
 let canvasScale = {
     DxaPerUnit = 15.0
-    DefaultCellPadding = 6.0
+    DefaultCellPadding = 0.0
     DefaultColumnWidth = 140.0
 }
 
 let printScale = {
     DxaPerUnit = 20.0
-    DefaultCellPadding = 4.0
+    DefaultCellPadding = 0.0
     DefaultColumnWidth = 140.0
 }
 
