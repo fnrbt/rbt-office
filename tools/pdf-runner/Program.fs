@@ -11,35 +11,82 @@ let private fullPath (path: string) =
     if Path.IsPathRooted path then path
     else Path.GetFullPath(path, Directory.GetCurrentDirectory())
 
-let private findFont () =
-    let candidates = [
+let private existingDir path =
+    if Directory.Exists path then Some path else None
+
+let private fontDirs () =
+    [
+        Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
+        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "artifacts/fonts/windows"))
+        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../artifacts/fonts/windows"))
+    ]
+    |> List.choose (fun path -> if String.IsNullOrWhiteSpace path then None else existingDir path)
+
+let private findFallbackFont () =
+    [
         Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../renderer/NotoSans-Regular.ttf"))
         Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../renderer/NotoSans-Regular.ttf"))
         "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     ]
-    candidates |> List.tryFind File.Exists
+    |> List.tryFind File.Exists
+
+let private tryFontFile fileName =
+    fontDirs ()
+    |> List.tryPick (fun dir ->
+        let path = Path.Combine(dir, fileName)
+        if File.Exists path then Some path else None)
+
+let private tryFace faceName family bold italic fileName =
+    tryFontFile fileName
+    |> Option.map (fun path ->
+        {
+            FaceName = faceName
+            Family = family
+            Bold = bold
+            Italic = italic
+            Data = File.ReadAllBytes path
+        }: RedBat.Word.Pdf.FontFace)
 
 let private pdfOptions () : RedBat.Word.Pdf.RenderOptions =
-    let fontPath =
-        findFont ()
+    let windowsFaces =
+        [
+            tryFace "Calibri" "Calibri" false false "calibri.ttf"
+            tryFace "Calibri-Bold" "Calibri" true false "calibrib.ttf"
+            tryFace "Calibri-Italic" "Calibri" false true "calibrii.ttf"
+            tryFace "Calibri-BoldItalic" "Calibri" true true "calibriz.ttf"
+            tryFace "Arial" "Arial" false false "arial.ttf"
+            tryFace "Arial-Bold" "Arial" true false "arialbd.ttf"
+            tryFace "Arial-Italic" "Arial" false true "ariali.ttf"
+            tryFace "Arial-BoldItalic" "Arial" true true "arialbi.ttf"
+            tryFace "Times New Roman" "Times New Roman" false false "times.ttf"
+            tryFace "Times New Roman-Bold" "Times New Roman" true false "timesbd.ttf"
+            tryFace "Times New Roman-Italic" "Times New Roman" false true "timesi.ttf"
+            tryFace "Times New Roman-BoldItalic" "Times New Roman" true true "timesbi.ttf"
+        ]
+        |> List.choose id
+
+    let fallbackPath =
+        findFallbackFont ()
         |> Option.defaultWith (fun () -> failwith "Could not find a TTF font for PDF rendering")
-    let bytes = File.ReadAllBytes fontPath
+    let fallbackBytes = File.ReadAllBytes fallbackPath
     let face faceName family =
         {
             FaceName = faceName
             Family = family
             Bold = false
             Italic = false
-            Data = bytes
+            Data = fallbackBytes
         }: RedBat.Word.Pdf.FontFace
+
+    let defaultFamily =
+        if windowsFaces |> List.exists (fun face -> face.Family = "Calibri" && not face.Bold && not face.Italic) then "Calibri"
+        else "Noto Sans"
+
     {
-        DefaultFontFamily = "Noto Sans"
-        Fonts = [
+        DefaultFontFamily = defaultFamily
+        Fonts = windowsFaces @ [
             face "NotoSans" "Noto Sans"
-            face "Calibri" "Calibri"
-            face "Arial" "Arial"
-            face "TimesNewRoman" "Times New Roman"
         ]
         MeasureText = None
         ShapeText = None

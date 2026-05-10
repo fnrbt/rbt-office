@@ -19,6 +19,24 @@ let private fullPath (path: string) =
     if Path.IsPathRooted path then path
     else Path.GetFullPath(path, Directory.GetCurrentDirectory())
 
+let private existingFile path =
+    if File.Exists path then Some path else None
+
+let private findWordFont () =
+    [
+        Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
+        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "artifacts/fonts/windows"))
+        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../artifacts/fonts/windows"))
+    ]
+    |> List.choose (fun dir ->
+        if String.IsNullOrWhiteSpace dir then None
+        else Path.Combine(dir, "calibri.ttf") |> existingFile)
+    |> List.tryHead
+
+let private initWordFont () =
+    findWordFont ()
+    |> Option.iter Composit.Ui.Layout.initFont
+
 let private parseFloat (value: string option) =
     value
     |> Option.bind (fun text ->
@@ -394,6 +412,7 @@ let importDoc (doc: DocxReader.WordDocument) =
 
 #if NATIVE_RUNNER_MAIN
 let private renderDocx (inputPath: string) (outputPath: string) (width: int) (height: int) =
+    initWordFont ()
     let bytes = File.ReadAllBytes inputPath
     let doc =
         match DocxReader.loadBytesNative bytes with

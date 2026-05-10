@@ -10,6 +10,7 @@ const fixture = path.resolve(process.argv[2] ?? '');
 const outputPng = path.resolve(process.argv[3] ?? '');
 const outputJson = process.argv[4] ? path.resolve(process.argv[4]) : null;
 const port = Number(process.env.BROWSER_CAPTURE_PORT ?? 5181);
+const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(officeRoot, 'artifacts/fonts/windows'));
 
 if (!process.argv[2] || !process.argv[3]) {
   console.error('Usage: OFFICE_ROOT=/path/to/office node tools/word-parity/capture-browser-docx.mjs input.docx output.png [layout.json]');
@@ -21,6 +22,15 @@ function run(command, args, options = {}) {
     const child = spawn(command, args, { cwd: options.cwd ?? runnerRoot, stdio: 'inherit', ...options });
     child.on('exit', code => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)));
   });
+}
+
+async function fileExists(file) {
+  try {
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 await fs.mkdir(path.dirname(outputPng), { recursive: true });
@@ -68,7 +78,11 @@ try {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1100, height: 1800 } });
   const docUrl = `/@fs/${servedFixture}`;
-  await page.goto(`http://127.0.0.1:${port}/?doc=${encodeURIComponent(docUrl)}`);
+  const params = new URLSearchParams({ doc: docUrl });
+  if (await fileExists(path.join(fontDir, 'calibri.ttf'))) {
+    params.set('fontRoot', `/@fs/${fontDir}`);
+  }
+  await page.goto(`http://127.0.0.1:${port}/?${params.toString()}`);
   await page.waitForFunction(
     () => window.rbWordRunner && document.querySelector('#status')?.textContent?.startsWith('Loaded '),
     null,

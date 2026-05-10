@@ -5,10 +5,12 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const officeRoot = path.resolve(root, '../..');
 const fixtureArg = process.argv[2] ?? '../../tests/test-documents-features/test-formatting.docx';
 const outputStem = process.argv[3] ?? path.basename(fixtureArg, path.extname(fixtureArg));
 const fixture = path.resolve(root, fixtureArg);
 const outDir = path.resolve(root, '../../artifacts/browser');
+const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(officeRoot, 'artifacts/fonts/windows'));
 await fs.mkdir(outDir, { recursive: true });
 
 function run(command, args, options = {}) {
@@ -16,6 +18,15 @@ function run(command, args, options = {}) {
     const child = spawn(command, args, { cwd: root, stdio: 'inherit', ...options });
     child.on('exit', code => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)));
   });
+}
+
+async function fileExists(file) {
+  try {
+    await fs.access(file);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 await run('dotnet', ['tool', 'restore']);
@@ -47,7 +58,11 @@ try {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1100, height: 1800 } });
   const docUrl = `/@fs/${fixture}`;
-  await page.goto(`http://127.0.0.1:5179/?doc=${encodeURIComponent(docUrl)}`);
+  const params = new URLSearchParams({ doc: docUrl });
+  if (await fileExists(path.join(fontDir, 'calibri.ttf'))) {
+    params.set('fontRoot', `/@fs/${fontDir}`);
+  }
+  await page.goto(`http://127.0.0.1:5179/?${params.toString()}`);
   await page.waitForFunction(
     () => window.rbWordRunner && document.querySelector('#status')?.textContent?.startsWith('Loaded '),
     null,

@@ -64,6 +64,7 @@ For each identified bug, prefer this stricter loop:
 - Word automation should live in checked-in `.vbs` files and be invoked with `cscript`; avoid one-off giant SSH/PowerShell command lines.
 - The Linux wrappers default to `WORD_VM_RUN_MODE=task`, which copies the checked-in VBS to the VM and runs it through an interactive-user scheduled task. This mode is verified with `tests/test-documents-features/test-formatting.docx`.
 - `WORD_VM_RUN_MODE=direct` runs `cscript` directly over SSH. Direct SSH copied files to the VM, but Windows blocked `CreateObject` in the SSH-launched VBS process with `Permission denied` here, so keep task mode as the default unless the VM setup changes.
+- Windows/Word fonts are copied from the VM into uncommitted local artifacts with `tools/word-parity/fetch-windows-fonts.sh`. Browser, native, and PDF runners use `RB_WORD_FONT_DIR` when set, otherwise they look for `artifacts/fonts/windows`.
 - No old `.vbs`, `.vba`, `.ps1`, `.cmd`, or comparison scripts were present in the extracted repo.
 - `dotnet restore Office.slnx` completed.
 - `dotnet build Office.slnx --no-restore` succeeds after adapting `src/Word.Pdf/Pdf.fs` to the updated `../pdf` subset API and restoring `onText` support in `../widgets`.
@@ -78,6 +79,7 @@ For each identified bug, prefer this stricter loop:
 - `tools/word-parity/word-print-pdf.sh` wraps the PDF generator.
 - `tools/word-parity/create-focused-repros.py` writes deterministic minimal DOCX repro files.
 - `tools/word-parity/capture-browser-docx.mjs` captures a browser canvas PNG and optional layout JSON for a DOCX. Set `OFFICE_ROOT=/path/to/worktree` to capture from an old commit.
+- `tools/word-parity/fetch-windows-fonts.sh` copies Calibri, Arial, Times New Roman, and related Windows fonts from `wordvm` into `artifacts/fonts/windows`.
 - `tools/browser-runner/` is a standalone Fable/Vite browser harness for the canvas renderer. It loads DOCX files through `Office.Formats`, imports them into `RedBat.Word.API`, exposes `window.rbWordRunner`, and can write layout JSON plus canvas screenshots through Playwright.
 - `tools/native-runner/` is a native DOCX-to-PNG snapshot harness. It loads DOCX bytes with the native `DocxReader`, maps the typed parse tree into `RedBat.Word.Document`, renders `word-native` through `../widgets` + `../renderer`, and writes a PNG.
 - `tools/pdf-runner/` is the project PDF backend harness. It reuses the native typed DOCX import, calls `RedBat.Word.Pdf.toBytes`, and writes the resulting PDF.
@@ -100,6 +102,18 @@ Smoke-tested commands:
 ```sh
 tools/word-parity/word-layout-tsv.sh tests/test-documents-features/test-formatting.docx artifacts/word/test-formatting.tsv
 tools/word-parity/word-print-pdf.sh tests/test-documents-features/test-formatting.docx artifacts/word/test-formatting-word.pdf
+```
+
+Font setup:
+
+```sh
+tools/word-parity/fetch-windows-fonts.sh
+```
+
+This writes uncommitted files under `artifacts/fonts/windows`. To use another font directory:
+
+```sh
+RB_WORD_FONT_DIR=/path/to/windows/fonts dotnet run --project tools/pdf-runner/PdfRunner.fsproj -- input.docx output.pdf
 ```
 
 Browser runner commands:

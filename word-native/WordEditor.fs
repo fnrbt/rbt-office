@@ -803,7 +803,7 @@ let private toRendererCommand (resolveImage: string -> Framebuffer option) = fun
 
 let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) (doc: Document) =
     let settings = layoutSettings width doc
-    let layouts, contentCommands, _ = WordPaint.collectDocumentCommands settings "Noto Sans" measureText (WordLayout.rangeMeasurerFromTextMeasurer measureText) doc
+    let layouts, contentCommands, _ = WordPaint.collectDocumentCommands settings "Calibri" measureText (WordLayout.rangeMeasurerFromTextMeasurer measureText) doc
 
     let overlayCommands =
         WordPaint.selectionCommands settings measureText doc layouts @

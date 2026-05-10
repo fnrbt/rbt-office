@@ -51,8 +51,15 @@ let private setDownload (_element: HTMLAnchorElement) (_value: string) : unit = 
 [<Emit("new URLSearchParams(window.location.search).get($0)")>]
 let private getQueryParam (_name: string) : string = jsNative
 
+[<Emit("(document.fonts ? document.fonts.ready.then(function(){}) : Promise.resolve())")>]
+let private documentFontsReady () : JS.Promise<unit> = jsNative
+
 [<Emit("$0.catch($1)")>]
 let private promiseCatch (_promise: JS.Promise<'a>) (_handler: obj -> obj) : JS.Promise<'a> = jsNative
+
+let private queryParam name =
+    let value = getQueryParam name
+    if isNull value || value = "" then None else Some value
 
 let private status (state: RunnerState) text =
     state.Status.textContent <- text
@@ -86,6 +93,7 @@ let private download name text mimeType =
 let private loadArrayBuffer (state: RunnerState) sourceName (buffer: obj) =
     promise {
         status state (sprintf "Loading %s..." sourceName)
+        do! documentFontsReady ()
         let editor = ensureEditor state
         let! package = Formats.Processors.forEditorPackage buffer
         WordApi.importFromDocxPackage editor package
@@ -110,10 +118,6 @@ let private loadFile (state: RunnerState) (file: File) =
 let private selectedFile (input: HTMLInputElement) =
     if input.files.length > 0 then Some input.files.[0] else None
 
-let private queryParam name =
-    let value = getQueryParam name
-    if isNull value || value = "" then None else Some value
-
 let private renderShell () =
     document.body.innerHTML <- """
 <div class="toolbar">
@@ -131,7 +135,29 @@ let private renderShell () =
 
 let private installStyles () =
     let style = document.createElement("style")
-    style.textContent <- """
+    let fontRoot = queryParam "fontRoot" |> Option.map (fun root -> root.TrimEnd([|'/'|]))
+    let wordFonts =
+        match fontRoot with
+        | Some root ->
+            let face family file weight style =
+                sprintf "@font-face { font-family: \"%s\"; src: url(\"%s/%s\") format(\"truetype\"); font-weight: %d; font-style: %s; }" family root file weight style
+            String.concat "\n" [
+                face "Calibri" "calibri.ttf" 400 "normal"
+                face "Calibri" "calibrib.ttf" 700 "normal"
+                face "Calibri" "calibrii.ttf" 400 "italic"
+                face "Calibri" "calibriz.ttf" 700 "italic"
+                face "Arial" "arial.ttf" 400 "normal"
+                face "Arial" "arialbd.ttf" 700 "normal"
+                face "Arial" "ariali.ttf" 400 "italic"
+                face "Arial" "arialbi.ttf" 700 "italic"
+                face "Times New Roman" "times.ttf" 400 "normal"
+                face "Times New Roman" "timesbd.ttf" 700 "normal"
+                face "Times New Roman" "timesi.ttf" 400 "italic"
+                face "Times New Roman" "timesbi.ttf" 700 "italic"
+                ""
+            ]
+        | None -> ""
+    style.textContent <- wordFonts + """
 html, body { margin: 0; min-height: 100%; font-family: system-ui, sans-serif; background: #646b75; }
 .toolbar { position: sticky; top: 0; z-index: 10; display: flex; gap: 8px; align-items: center; padding: 8px; background: #f3f4f6; border-bottom: 1px solid #cbd5e1; }
 .toolbar input[type='text'] { width: 420px; max-width: 45vw; padding: 5px 7px; }
