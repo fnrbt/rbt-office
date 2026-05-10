@@ -204,6 +204,40 @@
           </ul>
         </td>
       </tr>
+
+      <tr>
+        <td>
+          <strong>Native Word text size uses CSS-pixel scale</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Fix commit: <code>this commit</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:130px; --y:135px; --s:1.8" alt="Word reference native text scale repro">
+          </div>
+          <div class="caption">Word renders 11 pt Calibri as roughly 14.7 CSS pixels on the page surface.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/native-text-size-before-fix.png" style="--w:900px; --x:70px; --y:70px; --s:2.4" alt="Before native text scale fix">
+          </div>
+          <div class="caption">Before: native measurement and glyph drawing passed Word point sizes directly to <code>../renderer</code>, shrinking Calibri text.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/repro-table-cell-spacing-after-text-scale.png" style="--w:900px; --x:70px; --y:70px; --s:2.4" alt="After native text scale fix">
+          </div>
+          <div class="caption">After: native measurement and glyph drawing use the same <code>96/72</code> point-to-pixel conversion as the browser canvas path.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> convert Word paint-command font sizes from points to canvas pixels before calling <code>Renderer.Text.measureWidth</code> and <code>Renderer.Text.layout</code> in <code>word-native</code>.</p>
+          <ul>
+            <li>Before guard: native Calibri body text was visibly smaller than Word/browser.</li>
+            <li>After guard: native body text scale matches the browser path and the Word reference more closely.</li>
+            <li>Check with <code>tools/native-runner</code> on the focused repro.</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 </body>

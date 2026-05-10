@@ -14,9 +14,11 @@ let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasu
 
 let private rendererFont () = Composit.Ui.Layout.font()
 
+let private pointsToPixels points = points * 96.0 / 72.0
+
 let private measureText (text: string) (style: RedBat.Word.TextBuffer.TextStyle) =
     let font = rendererFont()
-    Renderer.Text.measureWidth font style.FontSize text
+    Renderer.Text.measureWidth font (pointsToPixels style.FontSize) text
 
 let private parseHexColor (value: string) =
     let value =
@@ -764,7 +766,7 @@ let private handleKey width height state (ev: KeyEvent) =
 let private toRendererCommand (resolveImage: string -> Framebuffer option) = function
     | WordPaint.DrawText (text, style, x, baseline, _) ->
         let font = textFont style
-        [ Cmd.DrawGlyphs(vec2 x baseline, Renderer.Text.layout font style.FontSize text, Solid (parseHexColor style.Color)) ]
+        [ Cmd.DrawGlyphs(vec2 x baseline, Renderer.Text.layout font (pointsToPixels style.FontSize) text, Solid (parseHexColor style.Color)) ]
 
     | WordPaint.DrawUnderline (color, x, y, width) ->
         [ Cmd.Line(vec2 x y, vec2 (x + width) y, parseHexColor color, px 1.0) ]
