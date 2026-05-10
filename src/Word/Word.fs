@@ -203,6 +203,91 @@ module API =
                         ])) )
         |> List.toArray
 
+    let getLayoutLines (editor: Editor) =
+        let pageHeight = editor.Doc.PageSetup.PageHeight
+        let pageLeft = editor.Doc.PageSetup.MarginLeft
+        let pageStride = pageHeight + WordLayout.Page.gap
+        let pageForY y = int (floor (max 0.0 y / pageStride)) + 1
+        let pageTopForY y = floor (max 0.0 y / pageStride) * pageStride
+
+        Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+        |> List.mapi (fun layoutIndex layout ->
+            layout.Lines
+            |> List.mapi (fun lineIndex line ->
+                let alignOffset = Layout.alignmentOffset layout line
+                let segments =
+                    line.Segments
+                    |> List.map (function
+                        | Layout.TextSegment (text, _, x, width, startOffset) ->
+                            createObj [
+                                "Kind" ==> "text"
+                                "Text" ==> text
+                                "StartOffset" ==> startOffset
+                                "X" ==> (pageLeft + x + alignOffset)
+                                "Width" ==> width
+                            ]
+                        | Layout.ImageSegment (_, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, _, _, _, _) ->
+                            createObj [
+                                "Kind" ==> "image"
+                                "Text" ==> "\uFFFC"
+                                "StartOffset" ==> startOffset
+                                "X" ==> (pageLeft + x + alignOffset)
+                                "Y" ==> (line.Y + yOffset)
+                                "Width" ==> width
+                                "Height" ==> height
+                                "Floating" ==> floating
+                                "Wrap" ==> wrap
+                                "RelativeHeight" ==> relativeHeight
+                            ])
+
+                let text =
+                    line.Segments
+                    |> List.map (function
+                        | Layout.TextSegment (text, _, _, _, _) -> text
+                        | Layout.ImageSegment _ -> "\uFFFC")
+                    |> String.concat ""
+
+                let bounds =
+                    line.Segments
+                    |> List.choose (function
+                        | Layout.TextSegment (_, _, x, width, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width)
+                        | Layout.ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width))
+
+                let x, width =
+                    match bounds with
+                    | [] -> pageLeft + alignOffset, line.Width
+                    | _ ->
+                        let left = bounds |> List.map fst |> List.min
+                        let right = bounds |> List.map snd |> List.max
+                        left, max 0.0 (right - left)
+
+                let page = pageForY line.Y
+                let pageTop = pageTopForY line.Y
+                createObj [
+                    "Kind" ==> "line"
+                    "BlockId" ==> layout.BlockId
+                    "BlockIndex" ==> layoutIndex
+                    "LineIndex" ==> lineIndex
+                    "Page" ==> page
+                    "X" ==> x
+                    "Y" ==> line.Y
+                    "PageY" ==> (line.Y - pageTop)
+                    "Width" ==> width
+                    "Height" ==> line.Height
+                    "LineWidth" ==> line.Width
+                    "StartOffset" ==> line.StartOffset
+                    "EndOffset" ==> line.EndOffset
+                    "BlockY" ==> layout.Y
+                    "BlockHeight" ==> layout.Height
+                    "AvailableWidth" ==> layout.AvailableWidth
+                    "Indent" ==> layout.Indent
+                    "Text" ==> text
+                    "Segments" ==> segments
+                ])
+            )
+        |> List.collect id
+        |> List.toArray
+
     /// Find literal text matches across editable paragraphs.
     let findText (editor: Editor) (query: string) (matchCase: bool) =
         Doc.findText query matchCase editor.Doc
@@ -1098,6 +1183,7 @@ module API =
             "clearSelection" ==> clearSelection
             "getImageHitTest" ==> getImageHitTest
             "getLayoutSegments" ==> getLayoutSegments
+            "getLayoutLines" ==> getLayoutLines
             "findText" ==> findText
             "selectFindMatch" ==> selectFindMatch
             "selectRevisionInfo" ==> selectRevisionInfo

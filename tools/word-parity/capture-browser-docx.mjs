@@ -11,6 +11,7 @@ const outputPng = path.resolve(process.argv[3] ?? '');
 const outputJson = process.argv[4] ? path.resolve(process.argv[4]) : null;
 const port = Number(process.env.BROWSER_CAPTURE_PORT ?? 5181);
 const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(officeRoot, 'artifacts/fonts/windows'));
+const layoutMode = process.env.BROWSER_CAPTURE_LAYOUT ?? 'segments';
 
 if (!process.argv[2] || !process.argv[3]) {
   console.error('Usage: OFFICE_ROOT=/path/to/office node tools/word-parity/capture-browser-docx.mjs input.docx output.png [layout.json]');
@@ -90,8 +91,10 @@ try {
   );
   await page.evaluate(() => window.rbWordRunner.clearSelection());
   if (outputJson) {
-    const segments = await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
-    await fs.writeFile(outputJson, JSON.stringify(segments, null, 2));
+    const layout = layoutMode === 'lines'
+      ? await page.evaluate(() => window.rbWordRunner.getLayoutLines())
+      : await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
+    await fs.writeFile(outputJson, JSON.stringify(layout, null, 2));
   }
   await page.locator('#word-canvas').screenshot({ path: outputPng });
   await browser.close();

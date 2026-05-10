@@ -4,6 +4,7 @@ Const wdActiveEndPageNumber = 3
 Const wdHorizontalPositionRelativeToPage = 5
 Const wdVerticalPositionRelativeToPage = 6
 Const wdFirstCharacterLineNumber = 10
+Const wdWithInTable = 12
 Const wdPrintView = 3
 Const wdDoNotSaveChanges = 0
 
@@ -37,7 +38,23 @@ word.ActiveWindow.View.Type = wdPrintView
 doc.Repaginate
 
 Set outFile = fso.CreateTextFile(outputPath, True, True)
-outFile.WriteLine "doc" & vbTab & "page" & vbTab & "paragraph" & vbTab & "line" & vbTab & "start" & vbTab & "end" & vbTab & "x" & vbTab & "y" & vbTab & "text"
+outFile.WriteLine _
+  "doc" & vbTab & _
+  "page" & vbTab & _
+  "paragraph" & vbTab & _
+  "line" & vbTab & _
+  "start" & vbTab & _
+  "end" & vbTab & _
+  "x" & vbTab & _
+  "y" & vbTab & _
+  "lastX" & vbTab & _
+  "lastY" & vbTab & _
+  "inTable" & vbTab & _
+  "table" & vbTab & _
+  "row" & vbTab & _
+  "column" & vbTab & _
+  "style" & vbTab & _
+  "text"
 
 Dim paraIndex
 paraIndex = 0
@@ -62,11 +79,13 @@ Sub EmitParagraphLines(docObj, docPath, fileObj, paragraph, paragraphIndex)
     Exit Sub
   End If
 
-  Dim currentPage, currentLine, currentX, currentY, currentStart, currentEnd, currentText
+  Dim currentPage, currentLine, currentX, currentY, currentLastX, currentLastY, currentStart, currentEnd, currentText
   currentPage = Empty
   currentLine = Empty
   currentX = Empty
   currentY = Empty
+  currentLastX = Empty
+  currentLastY = Empty
   currentStart = 0
   currentEnd = 0
   currentText = ""
@@ -87,18 +106,24 @@ Sub EmitParagraphLines(docObj, docPath, fileObj, paragraph, paragraphIndex)
         currentLine = lineNum
         currentX = x
         currentY = y
+        currentLastX = x
+        currentLastY = y
         currentStart = i
         currentEnd = i + 1
         currentText = ch
       ElseIf pageNum = currentPage And lineNum = currentLine Then
         currentEnd = i + 1
+        currentLastX = x
+        currentLastY = y
         currentText = currentText & ch
       Else
-        WriteLine fileObj, docPath, currentPage, paragraphIndex, currentLine, currentStart, currentEnd, currentX, currentY, currentText
+        WriteLine fileObj, docObj, docPath, paragraph, paragraphIndex, currentPage, currentLine, currentStart, currentEnd, currentX, currentY, currentLastX, currentLastY, currentText
         currentPage = pageNum
         currentLine = lineNum
         currentX = x
         currentY = y
+        currentLastX = x
+        currentLastY = y
         currentStart = i
         currentEnd = i + 1
         currentText = ch
@@ -107,7 +132,7 @@ Sub EmitParagraphLines(docObj, docPath, fileObj, paragraph, paragraphIndex)
   Next
 
   If Not IsEmpty(currentLine) Then
-    WriteLine fileObj, docPath, currentPage, paragraphIndex, currentLine, currentStart, currentEnd, currentX, currentY, currentText
+    WriteLine fileObj, docObj, docPath, paragraph, paragraphIndex, currentPage, currentLine, currentStart, currentEnd, currentX, currentY, currentLastX, currentLastY, currentText
   End If
 End Sub
 
@@ -121,7 +146,70 @@ Function SafeInfo(rangeObj, infoKind)
   On Error GoTo 0
 End Function
 
-Sub WriteLine(fileObj, docPath, pageNum, paragraphIndex, lineNum, startOffset, endOffset, x, y, lineText)
+Function SafeStyleName(paragraph)
+  On Error Resume Next
+  SafeStyleName = paragraph.Range.Style.NameLocal
+  If Err.Number <> 0 Then
+    SafeStyleName = ""
+    Err.Clear
+  End If
+  On Error GoTo 0
+End Function
+
+Function TableIndexForParagraph(docObj, paragraph)
+  On Error Resume Next
+  TableIndexForParagraph = ""
+  If paragraph.Range.Tables.Count > 0 Then
+    Dim paraStart, i
+    paraStart = paragraph.Range.Start
+    For i = 1 To docObj.Tables.Count
+      If docObj.Tables(i).Range.Start <= paraStart And docObj.Tables(i).Range.End >= paraStart Then
+        TableIndexForParagraph = CStr(i)
+        Exit For
+      End If
+    Next
+  End If
+  If Err.Number <> 0 Then
+    TableIndexForParagraph = ""
+    Err.Clear
+  End If
+  On Error GoTo 0
+End Function
+
+Function TableRowForParagraph(paragraph)
+  On Error Resume Next
+  TableRowForParagraph = ""
+  If paragraph.Range.Cells.Count > 0 Then
+    TableRowForParagraph = CStr(paragraph.Range.Cells(1).RowIndex)
+  End If
+  If Err.Number <> 0 Then
+    TableRowForParagraph = ""
+    Err.Clear
+  End If
+  On Error GoTo 0
+End Function
+
+Function TableColumnForParagraph(paragraph)
+  On Error Resume Next
+  TableColumnForParagraph = ""
+  If paragraph.Range.Cells.Count > 0 Then
+    TableColumnForParagraph = CStr(paragraph.Range.Cells(1).ColumnIndex)
+  End If
+  If Err.Number <> 0 Then
+    TableColumnForParagraph = ""
+    Err.Clear
+  End If
+  On Error GoTo 0
+End Function
+
+Sub WriteLine(fileObj, docObj, docPath, paragraph, paragraphIndex, pageNum, lineNum, startOffset, endOffset, x, y, lastX, lastY, lineText)
+  Dim inTable, tableIndex, rowIndex, columnIndex, styleName
+  inTable = SafeInfo(paragraph.Range, wdWithInTable)
+  tableIndex = TableIndexForParagraph(docObj, paragraph)
+  rowIndex = TableRowForParagraph(paragraph)
+  columnIndex = TableColumnForParagraph(paragraph)
+  styleName = SafeStyleName(paragraph)
+
   fileObj.WriteLine _
     Tsv(docPath) & vbTab & _
     Tsv(CStr(pageNum)) & vbTab & _
@@ -131,6 +219,13 @@ Sub WriteLine(fileObj, docPath, pageNum, paragraphIndex, lineNum, startOffset, e
     Tsv(CStr(endOffset)) & vbTab & _
     Tsv(CStr(x)) & vbTab & _
     Tsv(CStr(y)) & vbTab & _
+    Tsv(CStr(lastX)) & vbTab & _
+    Tsv(CStr(lastY)) & vbTab & _
+    Tsv(CStr(inTable)) & vbTab & _
+    Tsv(tableIndex) & vbTab & _
+    Tsv(rowIndex) & vbTab & _
+    Tsv(columnIndex) & vbTab & _
+    Tsv(styleName) & vbTab & _
     Tsv(lineText)
 End Sub
 
@@ -140,5 +235,6 @@ Function Tsv(value)
   text = Replace(text, vbTab, " ")
   text = Replace(text, vbCr, " ")
   text = Replace(text, vbLf, " ")
+  text = Replace(text, Chr(7), "")
   Tsv = text
 End Function

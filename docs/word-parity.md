@@ -71,7 +71,7 @@ For each identified bug, prefer this stricter loop:
 
 ## Added Tooling
 
-- `tools/word-parity/extract-word-layout.vbs` extracts Microsoft Word paragraph/line geometry to TSV.
+- `tools/word-parity/extract-word-layout.vbs` extracts Microsoft Word paragraph/line geometry to TSV, including table row/column context and Word point positions.
 - `tools/word-parity/print-word-pdf.vbs` opens a DOCX in Word and writes a PDF.
 - `tools/word-parity/run-word-vbs-on-vm.sh` copies a VBS script and DOCX to `wordvm`, runs `cscript`, and copies the output back.
 - `tools/word-parity/run-word-vbs-task.ps1` runs the copied VBS through Windows Task Scheduler with an interactive-user token.
@@ -79,8 +79,9 @@ For each identified bug, prefer this stricter loop:
 - `tools/word-parity/word-print-pdf.sh` wraps the PDF generator.
 - `tools/word-parity/create-focused-repros.py` writes deterministic minimal DOCX repro files.
 - `tools/word-parity/capture-browser-docx.mjs` captures a browser canvas PNG and optional layout JSON for a DOCX. Set `OFFICE_ROOT=/path/to/worktree` to capture from an old commit.
+- `tools/word-parity/compare-word-browser-layouts.mjs` runs Word TSV extraction plus browser line capture for one or more DOCX files/directories, then writes per-document layout diffs and a ranked summary.
 - `tools/word-parity/fetch-windows-fonts.sh` copies Calibri, Arial, Times New Roman, and related Windows fonts from `wordvm` into `artifacts/fonts/windows`.
-- `tools/browser-runner/` is a standalone Fable/Vite browser harness for the canvas renderer. It loads DOCX files through `Office.Formats`, imports them into `RedBat.Word.API`, exposes `window.rbWordRunner`, and can write layout JSON plus canvas screenshots through Playwright.
+- `tools/browser-runner/` is a standalone Fable/Vite browser harness for the canvas renderer. It loads DOCX files through `Office.Formats`, imports them into `RedBat.Word.API`, exposes `window.rbWordRunner`, and can write segment JSON, line-box JSON, plus canvas screenshots through Playwright.
 - `tools/native-runner/` is a native DOCX-to-PNG snapshot harness. It loads DOCX bytes with the native `DocxReader`, maps the typed parse tree into `RedBat.Word.Document`, renders `word-native` through `../widgets` + `../renderer`, and writes a PNG.
 - `tools/pdf-runner/` is the project PDF backend harness. It reuses the native typed DOCX import, calls `RedBat.Word.Pdf.toBytes`, and writes the resulting PDF.
 
@@ -181,6 +182,33 @@ node tools/word-parity/capture-browser-docx.mjs \
   artifacts/browser/table-import-current.json
 ```
 
+For line-level browser geometry instead of segment-level geometry:
+
+```sh
+BROWSER_CAPTURE_LAYOUT=lines node tools/word-parity/capture-browser-docx.mjs \
+  tests/repros/word/table-import-preserves-structure.docx \
+  artifacts/browser/table-import-current.png \
+  artifacts/browser/table-import-lines.json
+```
+
+Word/browser numeric comparison:
+
+```sh
+node tools/word-parity/compare-word-browser-layouts.mjs \
+  --out artifacts/layout-compare-current \
+  --max-lines 180 \
+  tests/repros/word \
+  tests/test-documents-features/test-complex-tables.docx \
+  tests/test-documents-features/test-formatting.docx
+```
+
+This writes:
+
+- `artifacts/layout-compare-current/summary.tsv`: ranked per-document deltas above the configured threshold.
+- `artifacts/layout-compare-current/<doc>/word-layout.tsv`: raw Word line geometry in points.
+- `artifacts/layout-compare-current/<doc>/browser-lines.json`: browser line boxes in CSS pixels.
+- `artifacts/layout-compare-current/<doc>/layout-diff.tsv`: matched Word/browser line pairs with `dx`, `dy`, and consecutive-line `gapDy`.
+
 Old-render capture example:
 
 ```sh
@@ -195,13 +223,21 @@ OFFICE_ROOT=/tmp/office-before-fix \
 The TSV columns are:
 
 ```text
-doc	page	paragraph	line	start	end	x	y	text
+doc	page	paragraph	line	start	end	x	y	lastX	lastY	inTable	table	row	column	style	text
 ```
 
-Positions are reported in Word points relative to the page.
+Word positions are reported in points relative to the page. The comparator converts them to CSS pixels with `96 / 72` before comparing against browser line boxes. `lastX`/`lastY` are the last non-marker character position Word exposes for the line; use them as hints, not as exact line width.
+
+Browser line JSON records include:
+
+```text
+Kind	BlockId	BlockIndex	LineIndex	Page	X	Y	PageY	Width	Height	LineWidth	StartOffset	EndOffset	BlockY	BlockHeight	AvailableWidth	Indent	Text	Segments
+```
+
+`X` and `PageY` are the comparable page-relative CSS-pixel coordinates. `Y` is absolute canvas Y including page gaps.
 
 ## Next Setup Tasks
 
 - Add a native geometry export alongside the native PNG runner if we need numeric native line/paragraph positions, not just raster snapshots.
-- Add a small comparison driver that runs Word TSV/PDF, browser JSON/PNG, native PNG, and project PDF for the same fixture into a single artifact folder.
+- Extend the comparison driver to optionally include native geometry once the native runner exports line boxes.
 - Resume parity fixes on tables/floats using the existing real-world fixtures and focused DOCX writer repros.

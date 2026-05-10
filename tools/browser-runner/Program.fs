@@ -82,6 +82,10 @@ let private getLayoutSegments (state: RunnerState) =
     let editor = ensureEditor state
     WordApi.getLayoutSegments editor
 
+let private getLayoutLines (state: RunnerState) =
+    let editor = ensureEditor state
+    WordApi.getLayoutLines editor
+
 let private download name text mimeType =
     let blob = createBlob text mimeType
     let url = createObjectUrl blob
@@ -216,7 +220,9 @@ let private boot () =
     setWindowValue "rbWordRunner" (createObj [
         "loadDocxUrl" ==> fun (url: string) -> loadDocxUrl state url
         "getLayoutSegments" ==> fun () -> getLayoutSegments state
+        "getLayoutLines" ==> fun () -> getLayoutLines state
         "getLayoutJson" ==> fun () -> stringify (box (getLayoutSegments state))
+        "getLayoutLinesJson" ==> fun () -> stringify (box (getLayoutLines state))
         "clearSelection" ==> fun () -> ensureEditor state |> WordApi.clearSelection
         "setCanvasSize" ==> fun (width: int) (height: int) -> setCanvasSize state width height
         "canvasToPngDataUrl" ==> fun () -> canvasToPngDataUrl state.Canvas
