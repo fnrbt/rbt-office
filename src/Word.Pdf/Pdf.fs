@@ -679,11 +679,7 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
         |> List.choose (fun (fontName, gids) ->
             match Map.tryFind fontName textContext.FontBytes with
             | Some bytes when not (Set.isEmpty gids) ->
-                let customToUnicode =
-                    match textContext.GlyphText.TryGetValue fontName with
-                    | true, mappings -> mappings |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
-                    | _ -> Map.empty
-                let remap = PdfDoc.loadFontBytesSubsetWithToUnicode builder fontName bytes gids customToUnicode
+                let remap = PdfDoc.loadFontBytesSubset builder fontName bytes gids
                 remaps <- remaps |> Map.add fontName remap
                 Some fontName
             | _ -> None)

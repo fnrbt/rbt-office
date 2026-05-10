@@ -1,0 +1,5 @@
+/.dotnet-tools/
+/bin/
+/obj/
+/node_modules/
+/src/
