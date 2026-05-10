@@ -854,7 +854,7 @@ module Table =
     let tableWidthWithSpacing (columnWidths: float list) spacing =
         columnWidths |> List.sum
 
-    let afterSpacing = 10.0
+    let afterSpacing = 0.0
 
     let defaultRowHeight (_lineHeight: float) =
         0.0

@@ -344,6 +344,40 @@
           </ul>
         </td>
       </tr>
+
+      <tr>
+        <td>
+          <strong>Table following paragraph spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:95px; --y:130px; --s:.74" alt="Word reference table following paragraph spacing">
+          </div>
+          <div class="caption">Word starts the paragraph immediately below the table border.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-after-spacing-before-fix.png" style="--w:900px; --x:70px; --y:105px; --s:.98" alt="Before table following paragraph spacing fix">
+          </div>
+          <div class="caption">Before: an extra table block gap pushed <code>After table</code> down by 10 layout units.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/repro-table-after-spacing-after.png" style="--w:900px; --x:70px; --y:105px; --s:.98" alt="After table following paragraph spacing fix">
+          </div>
+          <div class="caption">After: the following paragraph moves up to match the Word table edge spacing more closely.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> remove the unconditional post-table spacing from shared Word table layout. Paragraph spacing now comes from the surrounding paragraph/table content instead of an added table gap.</p>
+          <ul>
+            <li>Before guard: browser JSON placed <code>After table</code> at <code>y=208.51</code>.</li>
+            <li>After guard: browser JSON places <code>After table</code> at <code>y=198.51</code>.</li>
+            <li>The same focused repro was captured through native PNG and the PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 </body>
