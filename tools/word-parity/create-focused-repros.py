@@ -143,6 +143,15 @@ def main():
             + table([row(["Alpha", "Beta"]), row(["Gamma", "Delta"])])
             + paragraph("After table")
         ),
+        "two-tables-border-position.docx": (
+            paragraph("Two table border position repro", "Heading1")
+            + paragraph("First table", "Heading2")
+            + table([row(["A1", "B1", "C1"]), row(["A2", "B2", "C2"])])
+            + paragraph("\n")
+            + paragraph("Second table", "Heading2")
+            + table([row(["Product", "Price", "Quantity", "Total"]), row(["Widget A", "$10.00", "5", "$50.00"]), row(["Total", "", "", "$50.00"])])
+            + paragraph("After second table")
+        ),
     }
     for name, body in repros.items():
         path = out_dir / name

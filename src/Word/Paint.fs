@@ -622,8 +622,11 @@ let private canonicalTableYFromLayouts settings measureText measureRange doc (la
             let planAtZero = buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock 0.0
             let firstPlannedContentOffset =
                 planAtZero.Rows
-                |> List.collect (fun row -> row.Fragments |> List.collect (fun fragment -> tableRowFragmentLayouts fragment row.Measurement))
-                |> List.map _.Y
+                |> List.collect (fun row ->
+                    row.Measurement.CellGroups
+                    |> List.collect (fun group ->
+                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment row.Height group.PaddingTop group.PaddingBottom group.ContentHeight
+                        group.Layouts |> List.map (fun layout -> layout.Y + offset)))
                 |> function
                     | [] -> 0.0
                     | plannedValues -> List.min plannedValues

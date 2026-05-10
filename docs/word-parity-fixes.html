@@ -272,6 +272,41 @@
           </ul>
         </td>
       </tr>
+
+      <tr>
+        <td>
+          <strong>Cached table border Y anchor</strong>
+          <span class="meta">Repro: <code>tests/repros/word/two-tables-border-position.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-complex-tables.docx</code></span>
+          <span class="meta">Fix commit: <code>this commit</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/raster/test-complex-tables-word.png" style="--w:1224px; --x:115px; --y:240px; --s:1.25" alt="Word reference complex table borders">
+          </div>
+          <div class="caption">Word anchors each table border grid to its own table text.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/complex-tables-border-before-fix.png" style="--w:900px; --x:70px; --y:145px; --s:2.0" alt="Before cached table border anchor fix">
+          </div>
+          <div class="caption">Before: the second table's border grid was painted too high, crossing the prior table/heading area.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/test-complex-tables-border-after.png" style="--w:900px; --x:70px; --y:145px; --s:2.0" alt="After cached table border anchor fix">
+          </div>
+          <div class="caption">After: cached table border paint derives the table anchor from planned block layout Y, not planned line Y.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> align cached table border plans by comparing actual table-cell paragraph block Y to planned table-cell paragraph block Y. The previous line-Y comparison over-subtracted the first line offset.</p>
+          <ul>
+            <li>Before guard: data-table vertical borders started in the first table region.</li>
+            <li>After guard: data-table borders start at the data table top.</li>
+            <li>Focused repro is kept for the multi-table shape; the visible failure was first caught on the real complex-table fixture.</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 </body>
