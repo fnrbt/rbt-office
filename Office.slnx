@@ -1,0 +1,41 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/FableUI/">
+    <Project Path="src/FableUI/RedBat.FableUI.fsproj" />
+  </Folder>
+  <Folder Name="/src/Grid/">
+    <Project Path="src/Grid/RedBat.Grid.fsproj" />
+  </Folder>
+  <Folder Name="/src/Office.Formats/">
+    <Project Path="src/Office.Formats/OfficeFormat.fsproj" />
+  </Folder>
+  <Folder Name="/src/ShaperText/">
+    <Project Path="src/ShaperText/RedBat.Word.ShaperText.fsproj" />
+  </Folder>
+  <Folder Name="/src/Spreadsheet.Core/">
+    <Project Path="src/Spreadsheet.Core/RedBat.Spreadsheet.Core.fsproj" />
+  </Folder>
+  <Folder Name="/src/Spreadsheet/">
+    <Project Path="src/Spreadsheet/RedBat.Spreadsheet.fsproj" />
+  </Folder>
+  <Folder Name="/src/Word.Pdf/">
+    <Project Path="src/Word.Pdf/RedBat.Word.Pdf.fsproj" />
+  </Folder>
+  <Folder Name="/src/Word/">
+    <Project Path="src/Word/RedBat.Word.fsproj" />
+  </Folder>
+  <Folder Name="/word-native/">
+    <Project Path="word-native/WordWidgets.fsproj" />
+  </Folder>
+  <Project Path="../pdf/FsPdf.fsproj" />
+  <Project Path="../renderer/Renderer.fsproj" />
+  <Project Path="../text/bidi/Bidi.Core.fsproj" />
+  <Project Path="../text/bidi/Bidi.fsproj" />
+  <Project Path="../text/engine/Text.Engine.fsproj" />
+  <Project Path="../text/opentype/OpenType.Core.fsproj" />
+  <Project Path="../text/opentype/OpenType.fsproj" />
+  <Project Path="../text/shaper/Shaper.Core.fsproj" />
+  <Project Path="../text/unicode/src/Unicode/Unicode.Core.fsproj" />
+  <Project Path="../text/unicode/src/Unicode/Unicode.fsproj" />
+  <Project Path="../widgets/Widgets.fsproj" />
+</Solution>
