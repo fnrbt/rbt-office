@@ -14,6 +14,7 @@
     body {
       margin: 0;
       padding: 28px;
+      min-width: 1760px;
     }
 
     h1 {
@@ -57,15 +58,15 @@
     }
 
     .case {
-      width: 15%;
+      width: 12%;
     }
 
     .render {
-      width: 20%;
+      width: 23%;
     }
 
     .summary {
-      width: 25%;
+      width: 19%;
     }
 
     .meta {
@@ -79,7 +80,8 @@
     .zoom {
       position: relative;
       width: 100%;
-      aspect-ratio: 1.45 / 1;
+      aspect-ratio: 1.25 / 1;
+      min-height: 260px;
       overflow: hidden;
       background: #fff;
       border: 1px solid #cfd6df;
@@ -145,19 +147,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-import-word.png" style="--w:1224px; --x:130px; --y:220px; --s:1.7" alt="Word reference table import repro">
+            <img src="../artifacts/word/repro-table-import-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table import repro">
           </div>
           <div class="caption">Word keeps <code>A1/B1</code> on the same row and <code>A2/B2</code> on the next row.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-import-before-fix.png" style="--w:900px; --x:70px; --y:120px; --s:2.15" alt="Before fix table import repro">
+            <img src="../artifacts/baseline/table-import-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before fix table import repro">
           </div>
           <div class="caption">Before: browser import flattened table cells into ordinary paragraphs; <code>B1</code> stacked under <code>A1</code> at <code>x=0</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/repro-table-import-after.png" style="--w:900px; --x:70px; --y:125px; --s:2.15" alt="After fix table import repro">
+            <img src="../artifacts/browser/repro-table-import-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After fix table import repro">
           </div>
           <div class="caption">After: browser import emits table objects, so same-row cells share Y and distinct X positions.</div>
         </td>
@@ -179,19 +181,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:130px; --y:220px; --s:1.7" alt="Word reference table spacing repro">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table spacing repro">
           </div>
           <div class="caption">Word applies the Normal paragraph after-spacing in table cells when the DOCX omits explicit spacing.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-spacing-before-fix.png" style="--w:900px; --x:70px; --y:128px; --s:2.15" alt="Before fix table spacing repro">
+            <img src="../artifacts/baseline/table-cell-spacing-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before fix table spacing repro">
           </div>
           <div class="caption">Before: cell paragraph spacing was forced to zero, compressing the second row and following paragraph.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/repro-table-cell-spacing-after.png" style="--w:900px; --x:70px; --y:128px; --s:2.15" alt="After fix table spacing repro">
+            <img src="../artifacts/browser/repro-table-cell-spacing-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After fix table spacing repro">
           </div>
           <div class="caption">After: omitted spacing remains inherited/defaulted; row positions move down to match Word's cell paragraph rhythm.</div>
         </td>
@@ -213,19 +215,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:130px; --y:135px; --s:1.8" alt="Word reference native text scale repro">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference native text scale repro">
           </div>
           <div class="caption">Word renders 11 pt Calibri as roughly 14.7 CSS pixels on the page surface.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/native-text-size-before-fix.png" style="--w:900px; --x:70px; --y:70px; --s:2.4" alt="Before native text scale fix">
+            <img src="../artifacts/baseline/native-text-size-before-fix.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="Before native text scale fix">
           </div>
           <div class="caption">Before: native measurement and glyph drawing passed Word point sizes directly to <code>../renderer</code>, shrinking Calibri text.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:70px; --y:70px; --s:2.4" alt="After native text scale fix">
+            <img src="../artifacts/native/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="After native text scale fix">
           </div>
           <div class="caption">After: native measurement and glyph drawing use the same <code>96/72</code> point-to-pixel conversion as the browser canvas path.</div>
         </td>
@@ -247,19 +249,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:130px; --y:145px; --s:1.8" alt="Word reference without caret">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference without caret">
           </div>
           <div class="caption">Word print/PDF reference has no active editor caret in the rendered page.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/browser-caret-before-fix.png" style="--w:900px; --x:70px; --y:75px; --s:2.4" alt="Before caret capture fix">
+            <img src="../artifacts/baseline/browser-caret-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before caret capture fix">
           </div>
           <div class="caption">Before: browser and native snapshot runners captured the initial collapsed selection as a blue caret.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:70px; --y:75px; --s:2.4" alt="After caret capture fix">
+            <img src="../artifacts/browser/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After caret capture fix">
           </div>
           <div class="caption">After: automated snapshots clear selection before reading layout JSON or taking screenshots.</div>
         </td>
@@ -282,19 +284,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/raster/test-complex-tables-word.png" style="--w:1224px; --x:115px; --y:240px; --s:1.25" alt="Word reference complex table borders">
+            <img src="../artifacts/raster/test-complex-tables-word.png" style="--w:1224px; --x:70px; --y:150px; --s:.58" alt="Word reference complex table borders">
           </div>
           <div class="caption">Word anchors each table border grid to its own table text.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/complex-tables-border-before-fix.png" style="--w:900px; --x:70px; --y:145px; --s:2.0" alt="Before cached table border anchor fix">
+            <img src="../artifacts/baseline/complex-tables-border-before-fix.png" style="--w:900px; --x:40px; --y:90px; --s:.82" alt="Before cached table border anchor fix">
           </div>
           <div class="caption">Before: the second table's border grid was painted too high, crossing the prior table/heading area.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/test-complex-tables-border-after.png" style="--w:900px; --x:70px; --y:145px; --s:2.0" alt="After cached table border anchor fix">
+            <img src="../artifacts/browser/test-complex-tables-border-after.png" style="--w:900px; --x:40px; --y:90px; --s:.82" alt="After cached table border anchor fix">
           </div>
           <div class="caption">After: cached table border paint derives the table anchor from planned block layout Y, not planned line Y.</div>
         </td>
