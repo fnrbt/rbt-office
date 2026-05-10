@@ -50,6 +50,14 @@ Good initial candidates:
 7. Fix the smallest layout/import/export discrepancy that explains the measured delta.
 8. Keep the repro fixture and comparison output.
 
+For each identified bug, prefer this stricter loop:
+
+1. Add or generate a focused DOCX repro under `tests/repros/word/`.
+2. Capture the old wrong rendering before editing code. Use a temporary git worktree at the pre-fix commit and write PNG/JSON outputs under `artifacts/baseline/`; these artifacts are for records and are not committed.
+3. Fix the importer/layout/rendering bug.
+4. Re-run Word/browser/native/PDF as appropriate.
+5. Commit the repro and the code fix together, or commit repro/tooling separately when retrofitting an already-fixed bug.
+
 ## Current Machine State
 
 - `ssh wordvm hostname` works and returns `DESKTOP-OP2QS0N`.
@@ -68,6 +76,8 @@ Good initial candidates:
 - `tools/word-parity/run-word-vbs-task.ps1` runs the copied VBS through Windows Task Scheduler with an interactive-user token.
 - `tools/word-parity/word-layout-tsv.sh` wraps the layout extractor.
 - `tools/word-parity/word-print-pdf.sh` wraps the PDF generator.
+- `tools/word-parity/create-focused-repros.py` writes deterministic minimal DOCX repro files.
+- `tools/word-parity/capture-browser-docx.mjs` captures a browser canvas PNG and optional layout JSON for a DOCX. Set `OFFICE_ROOT=/path/to/worktree` to capture from an old commit.
 - `tools/browser-runner/` is a standalone Fable/Vite browser harness for the canvas renderer. It loads DOCX files through `Office.Formats`, imports them into `RedBat.Word.API`, exposes `window.rbWordRunner`, and can write layout JSON plus canvas screenshots through Playwright.
 - `tools/native-runner/` is a native DOCX-to-PNG snapshot harness. It loads DOCX bytes with the native `DocxReader`, maps the typed parse tree into `RedBat.Word.Document`, renders `word-native` through `../widgets` + `../renderer`, and writes a PNG.
 - `tools/pdf-runner/` is the project PDF backend harness. It reuses the native typed DOCX import, calls `RedBat.Word.Pdf.toBytes`, and writes the resulting PDF.
@@ -146,6 +156,27 @@ Smoke-tested outputs:
 
 - `artifacts/pdf/test-formatting.pdf`
 - `artifacts/pdf/test-complex-tables.pdf`
+
+Focused repro commands:
+
+```sh
+tools/word-parity/create-focused-repros.py tests/repros/word
+node tools/word-parity/capture-browser-docx.mjs \
+  tests/repros/word/table-import-preserves-structure.docx \
+  artifacts/browser/table-import-current.png \
+  artifacts/browser/table-import-current.json
+```
+
+Old-render capture example:
+
+```sh
+git worktree add /tmp/office-before-fix <commit>
+OFFICE_ROOT=/tmp/office-before-fix \
+  node tools/word-parity/capture-browser-docx.mjs \
+  tests/repros/word/table-import-preserves-structure.docx \
+  artifacts/baseline/table-import-before-fix.png \
+  artifacts/baseline/table-import-before-fix.json
+```
 
 The TSV columns are:
 
