@@ -780,10 +780,10 @@ let private blockFromEditor (item: obj) =
                             Borders = tableBordersFromEditor (cell?Borders)
                             VerticalAlignment = optionalString (cell?VerticalAlignment)
                             VerticalMerge = tableVerticalMergeFromString (optionalString (cell?VerticalMerge))
-                            PaddingTop = optionalDxaAsPoints (cell?PaddingTop)
-                            PaddingRight = optionalDxaAsPoints (cell?PaddingRight)
-                            PaddingBottom = optionalDxaAsPoints (cell?PaddingBottom)
-                            PaddingLeft = optionalDxaAsPoints (cell?PaddingLeft)
+                            PaddingTop = optionalDxaAsCanvasPixels (cell?PaddingTop)
+                            PaddingRight = optionalDxaAsCanvasPixels (cell?PaddingRight)
+                            PaddingBottom = optionalDxaAsCanvasPixels (cell?PaddingBottom)
+                            PaddingLeft = optionalDxaAsCanvasPixels (cell?PaddingLeft)
                         })
                     |> Array.toList
                 let canSplit = if isNullOrUndefined (row?CanSplit) then None else Some (unbox<bool> row?CanSplit)
@@ -793,10 +793,10 @@ let private blockFromEditor (item: obj) =
                   HeightRule = optionalString (row?HeightRule)
                   CanSplit = canSplit
                   CellSpacing = optionalDxaAsCanvasPixels (row?CellSpacing)
-                  PaddingTop = optionalDxaAsPoints (row?PaddingTop)
-                  PaddingRight = optionalDxaAsPoints (row?PaddingRight)
-                  PaddingBottom = optionalDxaAsPoints (row?PaddingBottom)
-                  PaddingLeft = optionalDxaAsPoints (row?PaddingLeft) })
+                  PaddingTop = optionalDxaAsCanvasPixels (row?PaddingTop)
+                  PaddingRight = optionalDxaAsCanvasPixels (row?PaddingRight)
+                  PaddingBottom = optionalDxaAsCanvasPixels (row?PaddingBottom)
+                  PaddingLeft = optionalDxaAsCanvasPixels (row?PaddingLeft) })
             |> Array.toList
 
         let gridColumns =
@@ -816,10 +816,10 @@ let private blockFromEditor (item: obj) =
             Borders = tableBordersFromEditor (item?Borders)
             BackgroundColor = optionalString (item?BackgroundColor)
             CellSpacing = optionalDxaAsCanvasPixels (item?CellSpacing)
-            PaddingTop = optionalDxaAsPoints (item?PaddingTop)
-            PaddingRight = optionalDxaAsPoints (item?PaddingRight)
-            PaddingBottom = optionalDxaAsPoints (item?PaddingBottom)
-            PaddingLeft = optionalDxaAsPoints (item?PaddingLeft)
+            PaddingTop = optionalDxaAsCanvasPixels (item?PaddingTop)
+            PaddingRight = optionalDxaAsCanvasPixels (item?PaddingRight)
+            PaddingBottom = optionalDxaAsCanvasPixels (item?PaddingBottom)
+            PaddingLeft = optionalDxaAsCanvasPixels (item?PaddingLeft)
             Floating = boolOrDefault false (item?Floating)
         }
 

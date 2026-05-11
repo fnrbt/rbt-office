@@ -69,19 +69,25 @@ def empty_paragraph():
     return "<w:p/>"
 
 
-def cell(text, width=2400, spacing_after=None):
+def cell(text, width=2400, spacing_after=None, padding_left=None):
+    tc_props = [f'<w:tcW w:w="{width}" w:type="dxa"/>']
+    if padding_left is not None:
+        tc_props.append(f'<w:tcMar><w:left w:w="{padding_left}" w:type="dxa"/></w:tcMar>')
     return (
         "<w:tc>"
-        f'<w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr>'
+        f"<w:tcPr>{''.join(tc_props)}</w:tcPr>"
         f"{paragraph(text, spacing_after=spacing_after)}"
         "</w:tc>"
     )
 
 
-def cell_paragraphs(paragraphs, width=2400):
+def cell_paragraphs(paragraphs, width=2400, padding_left=None):
+    tc_props = [f'<w:tcW w:w="{width}" w:type="dxa"/>']
+    if padding_left is not None:
+        tc_props.append(f'<w:tcMar><w:left w:w="{padding_left}" w:type="dxa"/></w:tcMar>')
     return (
         "<w:tc>"
-        f'<w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr>'
+        f"<w:tcPr>{''.join(tc_props)}</w:tcPr>"
         f"{''.join(paragraphs)}"
         "</w:tc>"
     )
@@ -445,6 +451,20 @@ def main():
             paragraph("Table cell spacing repro", "Heading1")
             + table([row(["Alpha", "Beta"]), row(["Gamma", "Delta"])])
             + paragraph("After table")
+        )),
+        "table-cell-explicit-left-padding.docx": (False, (
+            paragraph("Table cell explicit left padding repro", "Heading1")
+            + table([
+                row_cells([
+                    cell("Name", padding_left=108),
+                    cell("Value", padding_left=108),
+                ]),
+                row_cells([
+                    cell("Country", padding_left=108),
+                    cell("AU", padding_left=108),
+                ]),
+            ])
+            + paragraph("After padded table")
         )),
         "table-cell-explicit-before-spacing.docx": (False, (
             paragraph("Table cell before-spacing repro", "Heading1")

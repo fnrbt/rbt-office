@@ -773,18 +773,10 @@ module Table =
             currentColumn <- currentColumn + span
             positioned)
 
-    let outerCellInsets scale (table: TableBlock) =
-        table.Rows
-        |> List.tryPick (fun row ->
-            match positionedCells row with
-            | [] -> None
-            | cells ->
-                let first = cells |> List.minBy _.StartColumn
-                let last = cells |> List.maxBy (fun cell -> cell.StartColumn + cell.Span)
-                let firstPadding = cellPaddingForRow scale table row first.Cell
-                let lastPadding = cellPaddingForRow scale table row last.Cell
-                Some (firstPadding.Left, lastPadding.Right))
-        |> Option.defaultValue (0.0, 0.0)
+    let outerCellInsets _scale (_table: TableBlock) =
+        // Cell margins are interior cell content offsets in Word. They should not
+        // move the table origin or expand the table's available width.
+        0.0, 0.0
 
     let rowColumnCount (row: TableRow) =
         positionedCells row

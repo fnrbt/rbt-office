@@ -382,6 +382,41 @@
 
       <tr>
         <td>
+          <strong>Explicit table cell left padding</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-explicit-left-padding.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-cell-explicit-left-padding-word.png" style="--w:1224px; --x:125px; --y:190px; --s:1.18" alt="Word reference explicit table cell left padding">
+          </div>
+          <div class="caption">Word applies the explicit <code>w:tcMar/w:left="108"</code> inset inside each cell.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-cell-explicit-left-padding-before.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="Before explicit table cell left padding fix">
+          </div>
+          <div class="caption">Before: imported cell padding was canceled by the table outer-inset adjustment, so text started at the cell border.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-cell-explicit-left-padding-after.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="After explicit table cell left padding fix">
+          </div>
+          <div class="caption">After: explicit cell padding offsets text within the table cell, matching Word's queried left edge.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> stop using cell margins as table outer insets, and convert imported table/cell padding from DOCX twips to canvas pixels.</p>
+          <ul>
+            <li>Before guard: focused repro had <code>dx=-7.00</code> for first-column cell text and <code>dx=-8.30</code> for second-column text.</li>
+            <li>After guard: focused repro compares cleanly with <code>5 matched lines</code>.</li>
+            <li>Real guard: legal-contributor form labels no longer report the repeated <code>dx=-7.00</code> table-cell offsets.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Table following paragraph spacing</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
           <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
