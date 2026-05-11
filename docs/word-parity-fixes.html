@@ -587,6 +587,41 @@
 
       <tr>
         <td>
+          <strong>Top heading before-spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/top-heading-before-spacing.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/top-heading-before-spacing-word.png" style="--w:1224px; --x:70px; --y:90px; --s:.78" alt="Word reference top heading before spacing">
+          </div>
+          <div class="caption">Word honors imported paragraph <code>w:before</code> spacing even when the paragraph starts at the top of the body area.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/top-heading-before-spacing-before.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="Before top heading before spacing fix">
+          </div>
+          <div class="caption">Before: page-top layout suppressed the imported before-spacing, placing both headings 32px too high.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/top-heading-before-spacing-after.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="After top heading before spacing fix">
+          </div>
+          <div class="caption">After: body layout applies the paragraph before-spacing and matches Word within the line-position threshold.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> remove the generic page-top suppression of paragraph before-spacing. Table-cell spacing had already been handled separately; body paragraphs now use their imported/effective spacing consistently.</p>
+          <ul>
+            <li>Before guard: focused headings were at <code>dy=-32.00</code> and <code>dy=-32.43</code>.</li>
+            <li>After guard: focused headings are within <code>0.43px</code> of Word.</li>
+            <li>Real guard: early legal-contributor drift drops by one imported heading before-spacing step.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Imported heading style spacing</strong>
           <span class="meta">Repro: <code>tests/repros/word/heading-style-no-spacing.docx</code></span>
           <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-lists.docx</code></span>

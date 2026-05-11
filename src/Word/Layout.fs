@@ -867,10 +867,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let rightIndent = WordLayout.Paragraph.rightIndent metadata
     let firstLineIndent = WordLayout.Paragraph.firstLineIndent metadata
     let rawSpacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle metadata
-    let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
-    let spacingBefore =
-        if not settings.InTableCell && y <= WordLayout.Page.contentTop settings.PaddingTop pageTop + pageFitTolerance then 0.0
-        else rawSpacingBefore
+    let spacingBefore = rawSpacingBefore
     let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle metadata
     let lineSpacing = WordLayout.Paragraph.lineSpacing paragraphStyle metadata
     let lineSpacingRule = WordStyles.lineSpacingRule paragraphStyle metadata

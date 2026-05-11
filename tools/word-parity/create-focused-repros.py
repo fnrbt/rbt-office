@@ -154,6 +154,23 @@ def styles(include_heading_spacing=True, include_doc_defaults=True):
     )
 
 
+def top_heading_before_spacing_styles():
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:styles xmlns:w="{WORD_NS}" xmlns:r="{REL_NS}">'
+        "<w:docDefaults>"
+        '<w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>'
+        "</w:docDefaults>"
+        '<w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style>'
+        '<w:style w:type="paragraph" w:styleId="Heading1">'
+        '<w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/>'
+        '<w:pPr><w:spacing w:before="480" w:after="0"/><w:outlineLvl w:val="0"/></w:pPr>'
+        '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr>'
+        "</w:style>"
+        "</w:styles>"
+    )
+
+
 def content_types(include_numbering=False, include_header_footer=False):
     numbering_override = (
         '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>'
@@ -249,7 +266,7 @@ def footer_xml():
     )
 
 
-def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True):
+def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True, styles_xml=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -258,7 +275,7 @@ def write_docx(path, body_xml, include_numbering=False, leading_section_properti
         (root / "[Content_Types].xml").write_text(content_types(include_numbering, include_header_footer), encoding="utf-8")
         (root / "_rels" / ".rels").write_text(root_rels(), encoding="utf-8")
         (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer, margin_bottom), encoding="utf-8")
-        (root / "word" / "styles.xml").write_text(styles(include_heading_spacing, include_doc_defaults), encoding="utf-8")
+        (root / "word" / "styles.xml").write_text(styles_xml or styles(include_heading_spacing, include_doc_defaults), encoding="utf-8")
         if include_numbering:
             (root / "word" / "numbering.xml").write_text(numbering(), encoding="utf-8")
         if include_header_footer:
@@ -342,6 +359,11 @@ def main():
             + paragraph("Section B", "Heading2")
             + paragraph("Third normal line")
         ), False),
+        "top-heading-before-spacing.docx": (False, False, False, (
+            paragraph("Top heading before-spacing repro", "Heading1")
+            + paragraph("Second heading with the same imported before-spacing", "Heading1")
+            + paragraph("After heading")
+        ), True, True, top_heading_before_spacing_styles()),
         "wrapped-paragraph-line-pitch.docx": (False, (
             paragraph("Wrapped paragraph line pitch repro", "Heading1")
             + repeated_long_paragraphs(18)
@@ -377,7 +399,9 @@ def main():
             include_numbering, body = value
             leading_section_properties = False
             include_header_footer = False
+            styles_xml = None
         elif len(value) == 3:
+            styles_xml = None
             if isinstance(value[2], int):
                 include_numbering, body, margin_bottom = value
                 leading_section_properties = False
@@ -387,12 +411,15 @@ def main():
                 include_header_footer = False
         else:
             include_numbering, leading_section_properties, include_header_footer, body = value[:4]
+            styles_xml = None
             if len(value) > 4:
                 include_heading_spacing = value[4]
             if len(value) > 5:
                 include_doc_defaults = value[5]
+            if len(value) > 6:
+                styles_xml = value[6]
         path = out_dir / name
-        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom, include_heading_spacing, include_doc_defaults)
+        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom, include_heading_spacing, include_doc_defaults, styles_xml)
         print(path)
 
 
