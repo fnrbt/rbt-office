@@ -21,7 +21,17 @@ def esc(text):
     )
 
 
-def paragraph(text="", style=None, spacing_before=None, spacing_after=None, list_id=None, list_level=None):
+def paragraph(
+    text="",
+    style=None,
+    spacing_before=None,
+    spacing_after=None,
+    list_id=None,
+    list_level=None,
+    indent_left=None,
+    hanging=None,
+    first_line=None,
+):
     props = []
     if style:
         props.append(f'<w:pStyle w:val="{esc(style)}"/>')
@@ -40,6 +50,15 @@ def paragraph(text="", style=None, spacing_before=None, spacing_after=None, list
             f'<w:numId w:val="{list_id}"/>'
             "</w:numPr>"
         )
+    indent_attrs = []
+    if indent_left is not None:
+        indent_attrs.append(f'w:left="{indent_left}"')
+    if hanging is not None:
+        indent_attrs.append(f'w:hanging="{hanging}"')
+    if first_line is not None:
+        indent_attrs.append(f'w:firstLine="{first_line}"')
+    if indent_attrs:
+        props.append(f"<w:ind {' '.join(indent_attrs)}/>")
     ppr = f"<w:pPr>{''.join(props)}</w:pPr>" if props else ""
     return (
         f"<w:p>{ppr}<w:r><w:t xml:space=\"preserve\">{esc(text)}</w:t></w:r></w:p>"
@@ -109,18 +128,19 @@ def long_paragraph(spacing_before=None):
     return paragraph(text, spacing_before=spacing_before)
 
 
-def section_properties(include_header_footer=False, margin_bottom=1440):
+def section_properties(include_header_footer=False, margin_bottom=1440, include_doc_grid=False):
     refs = (
         '<w:headerReference w:type="default" r:id="rId3"/>'
         '<w:footerReference w:type="default" r:id="rId4"/>'
         if include_header_footer
         else ""
     )
-    return f'<w:sectPr>{refs}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="{margin_bottom}" w:left="1440" w:header="720" w:footer="720"/></w:sectPr>'
+    doc_grid = '<w:docGrid w:type="default" w:linePitch="360" w:charSpace="4294965247"/>' if include_doc_grid else ""
+    return f'<w:sectPr>{refs}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="{margin_bottom}" w:left="1440" w:header="720" w:footer="720"/>{doc_grid}</w:sectPr>'
 
 
-def document(body_xml, leading_section_properties=False, include_header_footer=False, margin_bottom=1440):
-    sectpr = section_properties(include_header_footer, margin_bottom)
+def document(body_xml, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_doc_grid=False):
+    sectpr = section_properties(include_header_footer, margin_bottom, include_doc_grid)
     if leading_section_properties:
         body = f"{sectpr}{body_xml}"
     else:
@@ -171,7 +191,28 @@ def top_heading_before_spacing_styles():
     )
 
 
-def content_types(include_numbering=False, include_header_footer=False):
+def cambria_heading_wrap_styles():
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:styles xmlns:w="{WORD_NS}" xmlns:r="{REL_NS}">'
+        "<w:docDefaults>"
+        '<w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>'
+        "</w:docDefaults>"
+        '<w:style w:type="paragraph" w:styleId="Normal" w:default="1">'
+        '<w:name w:val="Normal"/>'
+        '<w:pPr><w:widowControl/><w:spacing w:lineRule="auto" w:line="276" w:before="100" w:after="100"/><w:ind w:left="567" w:hanging="0"/><w:jc w:val="left"/></w:pPr>'
+        '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>'
+        "</w:style>"
+        '<w:style w:type="paragraph" w:styleId="Heading1">'
+        '<w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/>'
+        '<w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="480" w:after="0"/><w:ind w:left="567" w:hanging="567"/><w:outlineLvl w:val="0"/></w:pPr>'
+        '<w:rPr><w:rFonts w:ascii="Cambria" w:hAnsi="Cambria" w:asciiTheme="majorHAnsi" w:hAnsiTheme="majorHAnsi"/><w:b/><w:color w:val="365F91"/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr>'
+        "</w:style>"
+        "</w:styles>"
+    )
+
+
+def content_types(include_numbering=False, include_header_footer=False, include_office_theme=False):
     numbering_override = (
         '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>'
         if include_numbering
@@ -183,6 +224,13 @@ def content_types(include_numbering=False, include_header_footer=False):
         if include_header_footer
         else ""
     )
+    theme_overrides = (
+        '<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>'
+        '<Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/>'
+        '<Override PartName="/word/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
+        if include_office_theme
+        else ""
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         f'<Types xmlns="{CONTENT_TYPES_NS}">'
@@ -192,6 +240,7 @@ def content_types(include_numbering=False, include_header_footer=False):
         '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
         f"{numbering_override}"
         f"{running_overrides}"
+        f"{theme_overrides}"
         "</Types>"
     )
 
@@ -205,7 +254,7 @@ def root_rels():
     )
 
 
-def document_rels(include_numbering=False, include_header_footer=False):
+def document_rels(include_numbering=False, include_header_footer=False, include_office_theme=False):
     numbering_rel = (
         '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>'
         if include_numbering
@@ -217,12 +266,20 @@ def document_rels(include_numbering=False, include_header_footer=False):
         if include_header_footer
         else ""
     )
+    theme_rels = (
+        '<Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/fontTable" Target="fontTable.xml"/>'
+        '<Relationship Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>'
+        '<Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>'
+        if include_office_theme
+        else ""
+    )
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         f'<Relationships xmlns="{PKG_REL_NS}">'
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
         f"{numbering_rel}"
         f"{running_rels}"
+        f"{theme_rels}"
         "</Relationships>"
     )
 
@@ -266,22 +323,108 @@ def footer_xml():
     )
 
 
-def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True, styles_xml=None):
+def word_settings_xml():
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:settings xmlns:w="{WORD_NS}">'
+        '<w:zoom w:percent="100"/>'
+        '<w:defaultTabStop w:val="720"/>'
+        '<w:compat>'
+        '<w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="14"/>'
+        '<w:compatSetting w:name="overrideTableStyleFontSizeAndJustification" w:uri="http://schemas.microsoft.com/office/word" w:val="1"/>'
+        '<w:compatSetting w:name="enableOpenTypeFeatures" w:uri="http://schemas.microsoft.com/office/word" w:val="1"/>'
+        '<w:compatSetting w:name="doNotFlipMirrorIndents" w:uri="http://schemas.microsoft.com/office/word" w:val="1"/>'
+        '</w:compat>'
+        '<w:themeFontLang w:val="en-US" w:eastAsia="en-US" w:bidi=""/>'
+        '</w:settings>'
+    )
+
+
+def font_table_xml():
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:fonts xmlns:w="{WORD_NS}" xmlns:r="{REL_NS}">'
+        '<w:font w:name="Calibri"><w:charset w:val="01"/><w:family w:val="roman"/><w:pitch w:val="variable"/></w:font>'
+        '<w:font w:name="Cambria"><w:charset w:val="01"/><w:family w:val="roman"/><w:pitch w:val="variable"/></w:font>'
+        '<w:font w:name="Arial"><w:charset w:val="00"/><w:family w:val="swiss"/><w:pitch w:val="variable"/></w:font>'
+        '<w:font w:name="Times New Roman"><w:charset w:val="00"/><w:family w:val="roman"/><w:pitch w:val="variable"/></w:font>'
+        "</w:fonts>"
+    )
+
+
+def theme_xml():
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">'
+        '<a:themeElements>'
+        '<a:clrScheme name="Office">'
+        '<a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>'
+        '<a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>'
+        '<a:dk2><a:srgbClr val="1F497D"/></a:dk2>'
+        '<a:lt2><a:srgbClr val="EEECE1"/></a:lt2>'
+        '<a:accent1><a:srgbClr val="4F81BD"/></a:accent1>'
+        '<a:accent2><a:srgbClr val="C0504D"/></a:accent2>'
+        '<a:accent3><a:srgbClr val="9BBB59"/></a:accent3>'
+        '<a:accent4><a:srgbClr val="8064A2"/></a:accent4>'
+        '<a:accent5><a:srgbClr val="4BACC6"/></a:accent5>'
+        '<a:accent6><a:srgbClr val="F79646"/></a:accent6>'
+        '<a:hlink><a:srgbClr val="0000FF"/></a:hlink>'
+        '<a:folHlink><a:srgbClr val="800080"/></a:folHlink>'
+        '</a:clrScheme>'
+        '<a:fontScheme name="Office">'
+        '<a:majorFont><a:latin typeface="Cambria"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>'
+        '<a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>'
+        '</a:fontScheme>'
+        '<a:fmtScheme name="Office">'
+        '<a:fillStyleLst>'
+        '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>'
+        '<a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"/></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"/></a:gs></a:gsLst><a:lin ang="16200000" scaled="1"/></a:gradFill>'
+        '<a:gradFill rotWithShape="1"><a:gsLst><a:gs pos="0"><a:schemeClr val="phClr"/></a:gs><a:gs pos="100000"><a:schemeClr val="phClr"/></a:gs></a:gsLst><a:lin ang="16200000" scaled="0"/></a:gradFill>'
+        '</a:fillStyleLst>'
+        '<a:lnStyleLst>'
+        '<a:ln w="9525" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>'
+        '<a:ln w="25400" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>'
+        '<a:ln w="38100" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:prstDash val="solid"/></a:ln>'
+        '</a:lnStyleLst>'
+        '<a:effectStyleLst>'
+        '<a:effectStyle><a:effectLst/></a:effectStyle>'
+        '<a:effectStyle><a:effectLst/></a:effectStyle>'
+        '<a:effectStyle><a:effectLst/></a:effectStyle>'
+        '</a:effectStyleLst>'
+        '<a:bgFillStyleLst>'
+        '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>'
+        '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>'
+        '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>'
+        '</a:bgFillStyleLst>'
+        '</a:fmtScheme>'
+        '</a:themeElements>'
+        '<a:objectDefaults/>'
+        '<a:extraClrSchemeLst/>'
+        '</a:theme>'
+    )
+
+
+def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True, styles_xml=None, include_office_theme=False, include_doc_grid=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "_rels").mkdir()
         (root / "word" / "_rels").mkdir(parents=True)
-        (root / "[Content_Types].xml").write_text(content_types(include_numbering, include_header_footer), encoding="utf-8")
+        (root / "[Content_Types].xml").write_text(content_types(include_numbering, include_header_footer, include_office_theme), encoding="utf-8")
         (root / "_rels" / ".rels").write_text(root_rels(), encoding="utf-8")
-        (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer, margin_bottom), encoding="utf-8")
+        (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer, margin_bottom, include_doc_grid), encoding="utf-8")
         (root / "word" / "styles.xml").write_text(styles_xml or styles(include_heading_spacing, include_doc_defaults), encoding="utf-8")
         if include_numbering:
             (root / "word" / "numbering.xml").write_text(numbering(), encoding="utf-8")
         if include_header_footer:
             (root / "word" / "header1.xml").write_text(header_xml(), encoding="utf-8")
             (root / "word" / "footer1.xml").write_text(footer_xml(), encoding="utf-8")
-        (root / "word" / "_rels" / "document.xml.rels").write_text(document_rels(include_numbering, include_header_footer), encoding="utf-8")
+        if include_office_theme:
+            (root / "word" / "theme").mkdir()
+            (root / "word" / "settings.xml").write_text(word_settings_xml(), encoding="utf-8")
+            (root / "word" / "fontTable.xml").write_text(font_table_xml(), encoding="utf-8")
+            (root / "word" / "theme" / "theme1.xml").write_text(theme_xml(), encoding="utf-8")
+        (root / "word" / "_rels" / "document.xml.rels").write_text(document_rels(include_numbering, include_header_footer, include_office_theme), encoding="utf-8")
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file in sorted(root.rglob("*")):
                 if file.is_file():
@@ -364,6 +507,12 @@ def main():
             + paragraph("Second heading with the same imported before-spacing", "Heading1")
             + paragraph("After heading")
         ), True, True, top_heading_before_spacing_styles()),
+        "heading-cambria-font-wrap.docx": (True, False, False, (
+            paragraph("Heading Cambria font wrap repro", spacing_before=0, spacing_after=0, indent_left=0, hanging=0)
+            + paragraph("Subject to the terms and conditions of this Agreement, You hereby grant to the Sponsor and to recipients of software distributed by the Sponsor a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable (except as stated in this section) patent license to make, have made, use, offer to sell, sell, import, and otherwise transfer the Work, where such license applies only to those patent claims licensable by You that are necessarily infringed by Your Contribution(s) alone or by combination of Your Contribution(s) with the Work to which such Contribution(s) was submitted. If any entity institutes patent litigation against You or any other entity (including a cross-claim or counterclaim in a lawsuit) alleging that your Contribution, or the Work to which you have contributed, constitutes direct or contributory patent infringement, then any patent licenses granted to that entity under this Agreement for that Contribution or Work shall terminate as of the date such litigation is filed. ")
+            + paragraph("You represent that you are legally entitled to grant the above license. ", "Heading1", list_id=1, list_level=0, indent_left=567, hanging=567)
+            + paragraph("If your employer(s) has rights to intellectual property that you create that includes your Contributions, you represent that you have received permission to make Contributions on behalf of that employer, that your employer has waived such rights for your Contributions to the Sponsor, or that your employer has executed a separate Corporate CLA with the Sponsor. ")
+        ), True, True, cambria_heading_wrap_styles(), True, True),
         "wrapped-paragraph-line-pitch.docx": (False, (
             paragraph("Wrapped paragraph line pitch repro", "Heading1")
             + repeated_long_paragraphs(18)
@@ -395,6 +544,8 @@ def main():
         margin_bottom = 1440
         include_heading_spacing = True
         include_doc_defaults = True
+        include_office_theme = False
+        include_doc_grid = False
         if len(value) == 2:
             include_numbering, body = value
             leading_section_properties = False
@@ -418,8 +569,12 @@ def main():
                 include_doc_defaults = value[5]
             if len(value) > 6:
                 styles_xml = value[6]
+            if len(value) > 7:
+                include_office_theme = value[7]
+            if len(value) > 8:
+                include_doc_grid = value[8]
         path = out_dir / name
-        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom, include_heading_spacing, include_doc_defaults, styles_xml)
+        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom, include_heading_spacing, include_doc_defaults, styles_xml, include_office_theme, include_doc_grid)
         print(path)
 
 

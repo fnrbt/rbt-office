@@ -679,7 +679,12 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
         |> List.choose (fun (fontName, gids) ->
             match Map.tryFind fontName textContext.FontBytes with
             | Some bytes when not (Set.isEmpty gids) ->
-                let remap = PdfDoc.loadFontBytesSubset builder fontName bytes gids
+                let remap =
+                    try
+                        PdfDoc.loadFontBytesSubset builder fontName bytes gids
+                    with _ ->
+                        PdfDoc.loadFontBytes builder fontName bytes |> ignore
+                        Map.empty
                 remaps <- remaps |> Map.add fontName remap
                 Some fontName
             | _ -> None)

@@ -55,6 +55,8 @@ let private pdfOptions () : RedBat.Word.Pdf.RenderOptions =
             tryFace "Calibri-Bold" "Calibri" true false "calibrib.ttf"
             tryFace "Calibri-Italic" "Calibri" false true "calibrii.ttf"
             tryFace "Calibri-BoldItalic" "Calibri" true true "calibriz.ttf"
+            tryFace "Cambria-Bold" "Cambria" true false "cambriab.ttf"
+            tryFace "Cambria-Italic" "Cambria" false true "cambriai.ttf"
             tryFace "Arial" "Arial" false false "arial.ttf"
             tryFace "Arial-Bold" "Arial" true false "arialbd.ttf"
             tryFace "Arial-Italic" "Arial" false true "ariali.ttf"

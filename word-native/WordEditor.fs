@@ -1,5 +1,8 @@
 module Composit.Ui.WordEditor
 
+open System
+open System.Collections.Generic
+open System.IO
 open Renderer
 open Composit.Ui.Reactive
 open Composit.Ui.Widget
@@ -16,8 +19,71 @@ let private rendererFont () = Composit.Ui.Layout.font()
 
 let private pointsToPixels points = points * 96.0 / 72.0
 
+let private wordFontCache = Dictionary<string, Renderer.Text.FontData option>()
+
+let private existingDir path =
+    if Directory.Exists path then Some path else None
+
+let private wordFontDirs () =
+    [
+        Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
+        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "artifacts/fonts/windows"))
+        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../artifacts/fonts/windows"))
+        Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../artifacts/fonts/windows"))
+    ]
+    |> List.choose (fun path -> if String.IsNullOrWhiteSpace path then None else existingDir path)
+
+let private fontFilesFor (family: string option) (bold: bool) (italic: bool) =
+    match family |> Option.map (fun value -> value.Trim().ToLowerInvariant()) with
+    | Some "cambria" ->
+        if bold then ["cambriab.ttf"; "cambria.ttc"]
+        elif italic then ["cambriai.ttf"; "cambria.ttc"]
+        else ["cambria.ttc"]
+    | Some "calibri" ->
+        if bold && italic then ["calibriz.ttf"; "calibrib.ttf"; "calibri.ttf"]
+        elif bold then ["calibrib.ttf"; "calibri.ttf"]
+        elif italic then ["calibrii.ttf"; "calibri.ttf"]
+        else ["calibri.ttf"]
+    | Some "arial" ->
+        if bold && italic then ["arialbi.ttf"; "arialbd.ttf"; "arial.ttf"]
+        elif bold then ["arialbd.ttf"; "arial.ttf"]
+        elif italic then ["ariali.ttf"; "arial.ttf"]
+        else ["arial.ttf"]
+    | Some "times new roman" ->
+        if bold && italic then ["timesbi.ttf"; "timesbd.ttf"; "times.ttf"]
+        elif bold then ["timesbd.ttf"; "times.ttf"]
+        elif italic then ["timesi.ttf"; "times.ttf"]
+        else ["times.ttf"]
+    | _ -> []
+
+let private tryLoadWordFont (family: string option) (bold: bool) (italic: bool) =
+    let key = sprintf "%A|%b|%b" family bold italic
+    match wordFontCache.TryGetValue key with
+    | true, cached -> cached
+    | _ ->
+        let loaded =
+            fontFilesFor family bold italic
+            |> List.tryPick (fun fileName ->
+                wordFontDirs ()
+                |> List.tryPick (fun dir ->
+                    let path = Path.Combine(dir, fileName)
+                    if File.Exists path then
+                        try Some (Renderer.Text.loadFontFile path)
+                        with _ -> None
+                    else None))
+        wordFontCache.[key] <- loaded
+        loaded
+
+let private fontForTextStyle (style: RedBat.Word.TextBuffer.TextStyle) =
+    tryLoadWordFont style.FontFamily style.Bold style.Italic
+    |> Option.defaultWith rendererFont
+
+let private fontForPaintStyle (style: WordPaint.TextPaintStyle) =
+    tryLoadWordFont style.FontFamily style.Bold style.Italic
+    |> Option.defaultWith rendererFont
+
 let private measureText (text: string) (style: RedBat.Word.TextBuffer.TextStyle) =
-    let font = rendererFont()
+    let font = fontForTextStyle style
     Renderer.Text.measureWidth font (pointsToPixels style.FontSize) text
 
 let private parseHexColor (value: string) =
@@ -74,7 +140,7 @@ let private parseHexColor (value: string) =
             Color.black
     | _ -> Color.black
 
-let private textFont (_style: WordPaint.TextPaintStyle) = rendererFont()
+let private textFont style = fontForPaintStyle style
 
 type WordEditorState = {
     Document: Signal<Document>

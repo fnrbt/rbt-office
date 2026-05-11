@@ -622,6 +622,41 @@
 
       <tr>
         <td>
+          <strong>Cambria theme heading metrics</strong>
+          <span class="meta">Repro: <code>tests/repros/word/heading-cambria-font-wrap.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/heading-cambria-font-wrap-word.png" style="--w:1224px; --x:105px; --y:470px; --s:.82" alt="Word reference Cambria heading wrap">
+          </div>
+          <div class="caption">Word resolves the theme major font to Cambria and wraps the legal Heading 1 before <code>license.</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/heading-cambria-font-wrap-before.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="Before Cambria heading metric fix">
+          </div>
+          <div class="caption">Before: the browser runner had no Cambria face, so the heading used fallback metrics, stayed on one line, and pulled following text upward.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/heading-cambria-font-wrap-after.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="After Cambria heading metric fix">
+          </div>
+          <div class="caption">After: the browser runner uses the fetched Windows Cambria faces, and the same heading wraps at the Word break.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> register Cambria in the browser runner, add Cambria bold/italic to the PDF runner, and teach the native Word renderer to resolve Word font families from the fetched Windows font directory.</p>
+          <ul>
+            <li>Before guard: focused repro shifted following text by about <code>29px</code> because the heading did not wrap.</li>
+            <li>After guard: focused repro compares cleanly with <code>10 matched lines</code>.</li>
+            <li>Real guard: <code>docx4j-legal-contributor.docx</code> now keeps the employer paragraph split on page 3 like Word.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Imported heading style spacing</strong>
           <span class="meta">Repro: <code>tests/repros/word/heading-style-no-spacing.docx</code></span>
           <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-lists.docx</code></span>
