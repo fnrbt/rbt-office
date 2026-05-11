@@ -33,6 +33,8 @@ module Dialogs =
     type TableCellStyleState = {
         IsOpen: Signal<bool>
         BackgroundColor: Signal<string>
+        ShadingPattern: Signal<string>
+        ShadingForegroundColor: Signal<string>
         Width: Signal<string>
         BorderColor: Signal<string>
         BorderWidth: Signal<string>
@@ -184,6 +186,8 @@ module Dialogs =
     let tableCellStyleState () = {
         IsOpen = signal false
         BackgroundColor = signal "#D9EAF7"
+        ShadingPattern = signal "clear"
+        ShadingForegroundColor = signal "#6FB31A"
         Width = signal "180"
         BorderColor = signal "#C00000"
         BorderWidth = signal "2"
@@ -407,7 +411,27 @@ module Dialogs =
             DialogBody [] [
                 label [] [
                     span [] [ text "Background color" ]
-                    Input [ attr "data-testid" "word-table-cell-background"; valueS state.BackgroundColor; onInput (fun value -> state.BackgroundColor.Value <- value) ]
+                    Input [ typ "color"; attr "data-testid" "word-table-cell-background"; valueS state.BackgroundColor; onInput (fun value -> state.BackgroundColor.Value <- value) ]
+                ]
+                label [] [
+                    span [] [ text "Shading pattern" ]
+                    select [ attr "data-testid" "word-table-cell-shading-pattern"; propS "value" state.ShadingPattern; onChange (fun event -> state.ShadingPattern.Value <- selectValue event) ] [
+                        option [ attr "value" "clear" ] [ text "Clear fill" ]
+                        option [ attr "value" "none" ] [ text "No fill" ]
+                        option [ attr "value" "solid" ] [ text "Solid pattern" ]
+                        option [ attr "value" "pct5" ] [ text "5% pattern" ]
+                        option [ attr "value" "pct10" ] [ text "10% pattern" ]
+                        option [ attr "value" "pct20" ] [ text "20% pattern" ]
+                        option [ attr "value" "horzStripe" ] [ text "Horizontal stripe" ]
+                        option [ attr "value" "vertStripe" ] [ text "Vertical stripe" ]
+                        option [ attr "value" "diagStripe" ] [ text "Diagonal stripe" ]
+                        option [ attr "value" "reverseDiagStripe" ] [ text "Reverse diagonal stripe" ]
+                        option [ attr "value" "diagCross" ] [ text "Diagonal cross" ]
+                    ]
+                ]
+                label [] [
+                    span [] [ text "Pattern color" ]
+                    Input [ typ "color"; attr "data-testid" "word-table-cell-shading-color"; valueS state.ShadingForegroundColor; onInput (fun value -> state.ShadingForegroundColor.Value <- value) ]
                 ]
                 label [] [
                     span [] [ text "Width" ]

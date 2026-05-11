@@ -471,8 +471,8 @@ module Host =
         let paddingRight = parseFloat 18.0 state.PaddingRight.Value
         let paddingBottom = parseFloat 10.0 state.PaddingBottom.Value
         let paddingLeft = parseFloat 18.0 state.PaddingLeft.Value
-        runCommand host (fun editor -> WordApi.setSelectedTableCellStyle editor state.BackgroundColor.Value cellWidth state.BorderColor.Value borderWidth state.VerticalAlignment.Value paddingTop paddingRight paddingBottom paddingLeft)
-        host.Status.Value <- sprintf "Table cell style: %s border, %s align, %s width, %s/%s/%s/%s padding" state.BorderColor.Value state.VerticalAlignment.Value state.Width.Value state.PaddingTop.Value state.PaddingRight.Value state.PaddingBottom.Value state.PaddingLeft.Value
+        runCommand host (fun editor -> WordApi.setSelectedTableCellStyleWithShading editor state.BackgroundColor.Value state.ShadingPattern.Value state.ShadingForegroundColor.Value cellWidth state.BorderColor.Value borderWidth state.VerticalAlignment.Value paddingTop paddingRight paddingBottom paddingLeft)
+        host.Status.Value <- sprintf "Table cell style: %s shading, %s border, %s align, %s width, %s/%s/%s/%s padding" state.ShadingPattern.Value state.BorderColor.Value state.VerticalAlignment.Value state.Width.Value state.PaddingTop.Value state.PaddingRight.Value state.PaddingBottom.Value state.PaddingLeft.Value
         state.IsOpen.Value <- false
 
     let applyAnnotation host =

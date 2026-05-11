@@ -1845,7 +1845,7 @@ let setCurrentTextBoxStyle x y width height fillColor borderColor borderWidth do
                                     BorderWidth = if borderWidth > 0.0 then Some borderWidth else None }
                     | block -> block) }
 
-let setSelectedTableCellStyle backgroundColor width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
+let setSelectedTableCellStyleWithShading backgroundColor shading width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
     match currentTableCell doc with
     | None -> doc
     | Some (tableId, rowIndex, colIndex) ->
@@ -1864,7 +1864,7 @@ let setSelectedTableCellStyle backgroundColor width borderColor borderWidth vert
                                         else
                                             { cell with
                                                 BackgroundColor = backgroundColor
-                                                Shading = None
+                                                Shading = shading
                                                 Width = width
                                                 BorderColor = borderColor
                                                 BorderWidth = borderWidth
@@ -1873,6 +1873,9 @@ let setSelectedTableCellStyle backgroundColor width borderColor borderWidth vert
                                                 PaddingRight = paddingRight
                                                 PaddingBottom = paddingBottom
                                                 PaddingLeft = paddingLeft }) }) })
+
+let setSelectedTableCellStyle backgroundColor width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
+    setSelectedTableCellStyleWithShading backgroundColor None width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc
 
 let private headingFontSize level =
     match level with

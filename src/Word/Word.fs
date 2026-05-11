@@ -792,6 +792,31 @@ module API =
         Inp.updateDocument editor.Handler newDoc
         editor.Doc <- newDoc
 
+    let setSelectedTableCellStyleWithShading (editor: Editor) (backgroundColor: string) (shadingPattern: string) (shadingForegroundColor: string) (cellWidth: float) (borderColor: string) (borderWidth: float) (verticalAlignment: string) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) =
+        let optionalCellWidth = if cellWidth > 0.0 then Some cellWidth else None
+        let optionalWidth = if borderWidth > 0.0 then Some borderWidth else None
+        let optionalPadding value = if value >= 0.0 then Some value else None
+        let normalizedPattern = if isNull (box shadingPattern) then "" else shadingPattern.Trim()
+        let background = optionalText backgroundColor
+        let shading: Doc.Shading option =
+            match normalizedPattern with
+            | ""
+            | "clear"
+            | "none" -> None
+            | pattern ->
+                Some {
+                    Pattern = Some pattern
+                    ForegroundColor = optionalText shadingForegroundColor
+                    BackgroundColor = background
+                }
+        let fillColor =
+            if normalizedPattern = "none" then None
+            elif shading.IsSome then None
+            else background
+        let newDoc = Doc.setSelectedTableCellStyleWithShading fillColor shading optionalCellWidth (optionalText borderColor) optionalWidth (optionalText verticalAlignment) (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
+        Inp.updateDocument editor.Handler newDoc
+        editor.Doc <- newDoc
+
     /// Align justify
     let alignJustify (editor: Editor) =
         let newDoc = Doc.alignJustify editor.Doc
@@ -1249,6 +1274,7 @@ module API =
             "deleteTableColumn" ==> deleteTableColumn
             "insertTable" ==> insertTable
             "setSelectedTableCellStyle" ==> setSelectedTableCellStyle
+            "setSelectedTableCellStyleWithShading" ==> setSelectedTableCellStyleWithShading
             "setSectionBreak" ==> setSectionBreak
             "importFromDocx" ==> importFromDocx
             "importFromDocxWithHeaderFooters" ==> importFromDocxWithHeaderFooters
