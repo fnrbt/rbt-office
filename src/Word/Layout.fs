@@ -899,10 +899,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
             | Text run -> Some (WordLayout.Text.displayFontSize run.Style)
             | Image _ -> None)
         |> function
-            | [] ->
-                metadata.ParagraphMarkFontSize
-                |> Option.filter (fun fontSize -> fontSize <= paragraphStyle.Text.FontSize - 2.0)
-                |> Option.defaultValue paragraphStyle.Text.FontSize
+            | [] -> metadata.ParagraphMarkFontSize |> Option.defaultValue paragraphStyle.Text.FontSize
             | sizes -> List.max sizes
     let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings paragraphStyle.Text contentFontSize lineSpacing lineSpacingRule }
     let lines, updatedObstacles, updatedPlacedBoxes = layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.RightTabPosition initialObstacles initialPlacedBoxes

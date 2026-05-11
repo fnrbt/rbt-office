@@ -483,6 +483,41 @@
 
       <tr>
         <td>
+          <strong>Empty Normal paragraph mark size</strong>
+          <span class="meta">Repro: <code>tests/repros/word/empty-normal-paragraph-mark-size.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-unmarshall-template.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/empty-paragraph-mark-size-word.png" style="--w:1224px; --x:92px; --y:92px; --s:.76" alt="Word reference empty paragraph mark size">
+          </div>
+          <div class="caption">Word gives a true empty Normal paragraph the same fallback paragraph-mark height as nearby 11 pt text.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/empty-paragraph-mark-size-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before empty paragraph mark size fix">
+          </div>
+          <div class="caption">Before: when the DOCX omitted document defaults, empty paragraphs fell back to the editor's hardcoded 11px style and were 4.82px too short.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/empty-paragraph-mark-size-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After empty paragraph mark size fix">
+          </div>
+          <div class="caption">After: empty paragraphs honor the imported <code>ParagraphMarkFontSize</code>, removing the accumulated upward drift.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> use the imported paragraph mark font size for empty paragraph line-height instead of discarding it when it is larger than the base paragraph style.</p>
+          <ul>
+            <li>Focused guard: the blank-paragraph gap moved from <code>55.18</code> to <code>60.00</code> browser pixels.</li>
+            <li>Real guard: <code>docx4j-unmarshall-template.docx</code> moved from <code>dy=-9.65</code> to <code>dy=0.01</code>.</li>
+            <li>The repro intentionally omits DOCX document defaults to match the docx4j fixture shape.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Wrapped Normal line pitch</strong>
           <span class="meta">Repro: <code>tests/repros/word/wrapped-paragraph-line-pitch.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-features/test-multi-headers.docx</code></span>
