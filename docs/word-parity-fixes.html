@@ -472,11 +472,79 @@
           <div class="caption">After: consecutive Normal paragraph gaps match Word, and Heading style spacing no longer accumulates vertical drift.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> raise the built-in Normal after-spacing used by the editor layout and convert style-level DOCX twips/font sizes to CSS-pixel units in the browser package bridge.</p>
+          <p><strong>Fix:</strong> normalize the built-in Normal paragraph rhythm and convert style-level DOCX twips/font sizes to CSS-pixel units in the browser package bridge.</p>
           <ul>
-            <li>Focused guard: Normal paragraph gaps move from <code>27.6</code> to <code>30.0</code> browser pixels.</li>
-            <li><code>test-formatting.docx</code> now has 23 matched lines below the 6px comparator threshold.</li>
-            <li><code>test-complex-tables.docx</code> now has 34 matched lines below the 6px comparator threshold.</li>
+            <li>Focused guard: Normal paragraph gaps stay at <code>30.0</code> browser pixels.</li>
+            <li>The wrapped-line and widow-control rows below cover the later page-break precision pass.</li>
+            <li>Current real-fixture residuals in formatting/list headings are tracked separately near the comparator threshold.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Wrapped Normal line pitch</strong>
+          <span class="meta">Repro: <code>tests/repros/word/wrapped-paragraph-line-pitch.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-multi-headers.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/wrapped-paragraph-line-pitch-word.png" style="--w:1224px; --x:92px; --y:700px; --s:.78" alt="Word reference wrapped paragraph line pitch">
+          </div>
+          <div class="caption">Word uses roughly 19-20 CSS-equivalent pixels between wrapped 11 pt Calibri line baselines.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/wrapped-paragraph-line-pitch-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before wrapped paragraph line pitch fix">
+          </div>
+          <div class="caption">Before: wrapped lines advanced by 17.6px, accumulating enough vertical drift to keep text on the wrong page.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/wrapped-paragraph-line-pitch-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After wrapped paragraph line pitch fix">
+          </div>
+          <div class="caption">After: wrapped line baselines and page break position match the Word reference in the focused repro.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> use a Word-like single-spaced body line box for Normal text and rebalance default after-spacing so single-line paragraph gaps remain at 30px.</p>
+          <ul>
+            <li>Before guard: the focused repro split at the wrong place with a page-level <code>dy</code> above 800px.</li>
+            <li>After guard: <code>wrapped-paragraph-line-pitch.docx</code> compares cleanly with 55 matched lines.</li>
+            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Widow control for last-line split</strong>
+          <span class="meta">Repro: <code>tests/repros/word/widow-control-last-line.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-multi-headers.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/widow-control-last-line-word.png" style="--w:1224px; --x:92px; --y:700px; --s:.78" alt="Word reference widow control last line split">
+          </div>
+          <div class="caption">Word moves the whole short paragraph when only its last line would be alone on the next page.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/widow-control-last-line-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before widow control last line split fix">
+          </div>
+          <div class="caption">Before: the first two lines stayed at the page bottom and the final line started the next page by itself.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/widow-control-last-line-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After widow control last line split fix">
+          </div>
+          <div class="caption">After: the short paragraph moves as a unit, matching Word's widow-control behavior.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> extend the widow-control pre-pass to move short paragraphs when the split would leave exactly one trailing line on the next page.</p>
+          <ul>
+            <li>Before guard: paragraph 13 crossed the page with a page-level <code>dy</code> above 800px.</li>
+            <li>After guard: <code>widow-control-last-line.docx</code> compares cleanly with 40 matched lines.</li>
+            <li><code>test-multi-headers.docx</code> now has only one residual above 6px, at <code>dy=6.12</code>.</li>
           </ul>
         </td>
       </tr>

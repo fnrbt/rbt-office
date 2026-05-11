@@ -21,12 +21,17 @@ def esc(text):
     )
 
 
-def paragraph(text="", style=None, spacing_after=None, list_id=None, list_level=None):
+def paragraph(text="", style=None, spacing_before=None, spacing_after=None, list_id=None, list_level=None):
     props = []
     if style:
         props.append(f'<w:pStyle w:val="{esc(style)}"/>')
+    spacing_attrs = []
+    if spacing_before is not None:
+        spacing_attrs.append(f'w:before="{spacing_before}"')
     if spacing_after is not None:
-        props.append(f'<w:spacing w:after="{spacing_after}"/>')
+        spacing_attrs.append(f'w:after="{spacing_after}"')
+    if spacing_attrs:
+        props.append(f"<w:spacing {' '.join(spacing_attrs)}/>")
     if list_id is not None:
         level = 0 if list_level is None else list_level
         props.append(
@@ -67,18 +72,38 @@ def table(rows, width_pct=5000):
     )
 
 
-def section_properties(include_header_footer=False):
+def repeated_long_paragraphs(count):
+    text = (
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
+        "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. "
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
+        "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua."
+    )
+    return "".join(paragraph(text) for _ in range(count))
+
+
+def long_paragraph(spacing_before=None):
+    text = (
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
+        "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. "
+        "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
+        "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua."
+    )
+    return paragraph(text, spacing_before=spacing_before)
+
+
+def section_properties(include_header_footer=False, margin_bottom=1440):
     refs = (
         '<w:headerReference w:type="default" r:id="rId3"/>'
         '<w:footerReference w:type="default" r:id="rId4"/>'
         if include_header_footer
         else ""
     )
-    return f'<w:sectPr>{refs}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/></w:sectPr>'
+    return f'<w:sectPr>{refs}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="{margin_bottom}" w:left="1440" w:header="720" w:footer="720"/></w:sectPr>'
 
 
-def document(body_xml, leading_section_properties=False, include_header_footer=False):
-    sectpr = section_properties(include_header_footer)
+def document(body_xml, leading_section_properties=False, include_header_footer=False, margin_bottom=1440):
+    sectpr = section_properties(include_header_footer, margin_bottom)
     if leading_section_properties:
         body = f"{sectpr}{body_xml}"
     else:
@@ -200,7 +225,7 @@ def footer_xml():
     )
 
 
-def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False):
+def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -208,7 +233,7 @@ def write_docx(path, body_xml, include_numbering=False, leading_section_properti
         (root / "word" / "_rels").mkdir(parents=True)
         (root / "[Content_Types].xml").write_text(content_types(include_numbering, include_header_footer), encoding="utf-8")
         (root / "_rels" / ".rels").write_text(root_rels(), encoding="utf-8")
-        (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer), encoding="utf-8")
+        (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer, margin_bottom), encoding="utf-8")
         (root / "word" / "styles.xml").write_text(styles(), encoding="utf-8")
         if include_numbering:
             (root / "word" / "numbering.xml").write_text(numbering(), encoding="utf-8")
@@ -219,7 +244,9 @@ def write_docx(path, body_xml, include_numbering=False, leading_section_properti
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file in sorted(root.rglob("*")):
                 if file.is_file():
-                    zf.write(file, file.relative_to(root).as_posix())
+                    info = zipfile.ZipInfo(file.relative_to(root).as_posix(), (1980, 1, 1, 0, 0, 0))
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    zf.writestr(info, file.read_bytes())
 
 
 def main():
@@ -251,6 +278,17 @@ def main():
             + paragraph("Third normal line")
             + paragraph("Wrapped line pitch - Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.")
         )),
+        "wrapped-paragraph-line-pitch.docx": (False, (
+            paragraph("Wrapped paragraph line pitch repro", "Heading1")
+            + repeated_long_paragraphs(18)
+            + paragraph("After wrapped paragraphs")
+        )),
+        "widow-control-last-line.docx": (False, (
+            paragraph("Widow control last line repro", "Heading1")
+            + repeated_long_paragraphs(12)
+            + long_paragraph()
+            + paragraph("After widow probe")
+        ), 1740),
         "list-default-indent.docx": (True, False, (
             paragraph("List default indent repro", "Heading1")
             + paragraph("Top bullet", list_id=2, list_level=0)
@@ -268,17 +306,23 @@ def main():
         )),
     }
     for name, value in repros.items():
+        margin_bottom = 1440
         if len(value) == 2:
             include_numbering, body = value
             leading_section_properties = False
             include_header_footer = False
         elif len(value) == 3:
-            include_numbering, leading_section_properties, body = value
-            include_header_footer = False
+            if isinstance(value[2], int):
+                include_numbering, body, margin_bottom = value
+                leading_section_properties = False
+                include_header_footer = False
+            else:
+                include_numbering, leading_section_properties, body = value
+                include_header_footer = False
         else:
             include_numbering, leading_section_properties, include_header_footer, body = value
         path = out_dir / name
-        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer)
+        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom)
         print(path)
 
 

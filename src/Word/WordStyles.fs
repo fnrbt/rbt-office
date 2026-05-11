@@ -115,7 +115,7 @@ let private applyNamedParagraphStyle (styles: Map<(string * string), NamedStyle>
 let normal = {
     Text = { TextBuffer.defaultStyle with FontFamily = Some "Calibri" }
     SpacingBefore = None
-    SpacingAfter = Some 12.4
+    SpacingAfter = Some 10.7
     ContextualSpacing = None
     LineSpacing = None
     LineSpacingRule = None
@@ -238,7 +238,7 @@ let effectiveBufferInDocument doc paragraphStyle (buffer: TextBuffer) =
                 | Image image -> Image image) }
 
 let spacingBefore (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore |> Option.defaultValue 0.0
-let spacingAfter (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter |> Option.defaultValue 12.4
+let spacingAfter (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter |> Option.defaultValue 10.7
 let lineSpacing (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.LineSpacing |> Option.orElse paragraphStyle.LineSpacing |> Option.defaultValue 1.0
 let lineSpacingRule (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule |> Option.defaultValue "auto"
 let widowControl (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.WidowControl |> Option.orElse paragraphStyle.WidowControl |> Option.defaultValue true

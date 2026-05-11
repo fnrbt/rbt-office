@@ -310,6 +310,12 @@ let private paginateTableRowWithFootnotes settings footnotesByPage (row: TableRo
     if canSplit && y < contentBottom && rowHeight > remaining then y else paginateBlockWithFootnotes settings footnotesByPage y rowHeight
 
 let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
+    let shiftToNextPage (firstY: float) (lines: MeasuredLine list) : MeasuredLine list =
+        let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) firstY
+        let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
+        let delta = nextY - firstY
+        lines |> List.map (fun line -> { line with Y = line.Y + delta })
+
     match lines with
     | first :: second :: _ ->
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) first.Y
@@ -317,10 +323,13 @@ let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
         let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
         let lineFits (line: MeasuredLine) = line.Y + lineVisibleFitHeight line <= contentBottom + pageFitTolerance
         if first.Y > contentTop && lineFits first && not (lineFits second) then
-            let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
-            let delta = nextY - first.Y
-            lines |> List.map (fun line -> { line with Y = line.Y + delta })
-        else lines
+            shiftToNextPage first.Y lines
+        else
+            let fitCount = lines |> List.takeWhile lineFits |> List.length
+            if first.Y > contentTop && lines.Length <= 4 && fitCount = lines.Length - 1 then
+                shiftToNextPage first.Y lines
+            else
+                lines
     | _ -> lines
 
 let private paginateLines settings widowControl (lines: MeasuredLine list) =
@@ -376,8 +385,9 @@ let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
 
 // Word line boxes include font leading beyond the nominal font size.
 let private wordLineBoxFactor = 1.20
+let private wordSingleLineBoxFactor = 1.316
 let private monospaceLineBoxFactor = 1.18
-let private tableCellLineBoxFactor = 1.22
+let private tableCellLineBoxFactor = 1.336
 
 let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
     match style.FontFamily |> Option.map (fun family -> family.Trim().ToLowerInvariant()) with
@@ -387,7 +397,12 @@ let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
     | _ -> wordLineBoxFactor
 
 let private wordLineHeight textStyle fontSize lineSpacing =
-    fontSize * lineSpacing * lineBoxFactorForTextStyle textStyle
+    let factor =
+        if abs (lineSpacing - 1.0) < 0.001 then
+            wordSingleLineBoxFactor
+        else
+            lineBoxFactorForTextStyle textStyle
+    fontSize * lineSpacing * factor
 
 let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule =
     let automatic = if settings.InTableCell then fontSize * lineSpacing * tableCellLineBoxFactor else wordLineHeight textStyle fontSize lineSpacing
