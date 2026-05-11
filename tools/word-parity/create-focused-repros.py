@@ -152,6 +152,13 @@ def main():
             + table([row(["Product", "Price", "Quantity", "Total"]), row(["Widget A", "$10.00", "5", "$50.00"]), row(["Total", "", "", "$50.00"])])
             + paragraph("After second table")
         ),
+        "normal-paragraph-line-pitch.docx": (
+            paragraph("Normal paragraph pitch repro", "Heading1")
+            + paragraph("First normal line")
+            + paragraph("Second normal line")
+            + paragraph("Third normal line")
+            + paragraph("Wrapped line pitch - Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.")
+        ),
     }
     for name, body in repros.items():
         path = out_dir / name

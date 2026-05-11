@@ -108,18 +108,18 @@ module Processors =
             elif value.Length = 8 then Some ("#" + value.Substring(2).ToUpper())
             else Some ("#" + value.ToUpper()))
 
-    let private wordFontSizeToPoints (size: string option) =
+    let private wordFontSizeToCssPixels (size: string option) =
         size
         |> Option.bind (fun value ->
             match System.Double.TryParse(value) with
-            | true, parsed -> Some (parsed / 2.0)
+            | true, parsed -> Some ((parsed / 2.0) * 96.0 / 72.0)
             | false, _ -> None)
 
-    let private wordTwipsToPoints (value: string option) =
+    let private wordTwipsToCssPixels (value: string option) =
         value
         |> Option.bind (fun text ->
             match System.Double.TryParse(text) with
-            | true, parsed -> Some (parsed / 20.0)
+            | true, parsed -> Some (parsed / 15.0)
             | false, _ -> None)
 
     let private wordLineSpacingValue (fontSize: float option) (value: string option) (rule: string option) =
@@ -129,7 +129,7 @@ module Processors =
             | true, parsed ->
                 match rule with
                 | Some "exact"
-                | Some "atLeast" -> Some (parsed / 20.0)
+                | Some "atLeast" -> Some (parsed / 15.0)
                 | _ -> Some (parsed / 240.0)
             | false, _ -> None)
 
@@ -197,18 +197,18 @@ module Processors =
             "StyleSmallCaps" ==> (style.RunProperties |> Option.bind (fun props -> props.SmallCaps))
             "StyleStrike" ==> (style.RunProperties |> Option.bind (fun props -> props.Strike))
             "StyleVertAlign" ==> (style.RunProperties |> Option.bind (fun props -> props.VertAlign))
-            "StyleFontSize" ==> (style.RunProperties |> Option.bind (fun props -> wordFontSizeToPoints props.FontSize))
+            "StyleFontSize" ==> (style.RunProperties |> Option.bind (fun props -> wordFontSizeToCssPixels props.FontSize))
             "StyleFontFamily" ==> (style.RunProperties |> Option.bind (fun props -> props.FontFamily |> Option.orElse (resolveThemeFont theme props.ThemeFont)))
             "StyleColor" ==> (style.RunProperties |> Option.bind (fun props -> wordColorToCss props.Color |> Option.orElse (resolveThemeColor theme props.ThemeColor props.ThemeTint props.ThemeShade)))
             "StyleHighlight" ==> (style.RunProperties |> Option.bind (fun props -> props.Highlight))
-            "StyleSpacingBefore" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToPoints props.SpacingBefore))
-            "StyleSpacingAfter" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToPoints props.SpacingAfter))
-            "StyleLineSpacing" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordLineSpacingValue (style.RunProperties |> Option.bind (fun run -> wordFontSizeToPoints run.FontSize)) props.LineSpacing props.LineRule))
+            "StyleSpacingBefore" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.SpacingBefore))
+            "StyleSpacingAfter" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.SpacingAfter))
+            "StyleLineSpacing" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordLineSpacingValue (style.RunProperties |> Option.bind (fun run -> wordFontSizeToCssPixels run.FontSize)) props.LineSpacing props.LineRule))
             "StyleLineRule" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.LineRule))
             "StyleAlignment" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.Alignment))
-            "StyleIndentLeft" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToPoints props.IndentLeft))
-            "StyleIndentRight" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToPoints props.IndentRight))
-            "StyleFirstLineIndent" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToPoints props.FirstLineIndent))
+            "StyleIndentLeft" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.IndentLeft))
+            "StyleIndentRight" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.IndentRight))
+            "StyleFirstLineIndent" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.FirstLineIndent))
             "StyleBackgroundColor" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordColorToCss props.BackgroundColor))
             "StyleOutlineLevel" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordInt props.OutlineLevel))
             "StyleKeepNext" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.KeepNext))

@@ -373,8 +373,42 @@
           <p><strong>Fix:</strong> remove the unconditional post-table spacing from shared Word table layout. Paragraph spacing now comes from the surrounding paragraph/table content instead of an added table gap.</p>
           <ul>
             <li>Before guard: browser JSON placed <code>After table</code> at <code>y=208.51</code>.</li>
-            <li>After guard: browser JSON places <code>After table</code> at <code>y=198.51</code>.</li>
+            <li>After guard: current browser JSON places <code>After table</code> at <code>y=203.31</code>, within 1.4px of Word.</li>
             <li>The same focused repro was captured through native PNG and the PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Normal paragraph pitch and style spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/normal-paragraph-line-pitch.docx</code></span>
+          <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-complex-tables.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/normal-paragraph-line-pitch-word.png" style="--w:1224px; --x:92px; --y:115px; --s:.74" alt="Word reference normal paragraph pitch">
+          </div>
+          <div class="caption">Word advances consecutive Normal paragraphs by 30 CSS-equivalent pixels in this repro.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/normal-paragraph-line-pitch-before-fix.png" style="--w:900px; --x:70px; --y:75px; --s:.98" alt="Before normal paragraph pitch fix">
+          </div>
+          <div class="caption">Before: Normal paragraph gaps were 27.6px, and style spacing from DOCX styles was converted as points instead of canvas pixels.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/normal-paragraph-line-pitch-after.png" style="--w:900px; --x:70px; --y:75px; --s:.98" alt="After normal paragraph pitch fix">
+          </div>
+          <div class="caption">After: consecutive Normal paragraph gaps match Word, and Heading style spacing no longer accumulates vertical drift.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> raise the built-in Normal after-spacing used by the editor layout and convert style-level DOCX twips/font sizes to CSS-pixel units in the browser package bridge.</p>
+          <ul>
+            <li>Focused guard: Normal paragraph gaps move from <code>27.6</code> to <code>30.0</code> browser pixels.</li>
+            <li><code>test-formatting.docx</code> now has 23 matched lines below the 6px comparator threshold.</li>
+            <li><code>test-complex-tables.docx</code> now has 34 matched lines below the 6px comparator threshold.</li>
           </ul>
         </td>
       </tr>
