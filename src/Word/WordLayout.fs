@@ -733,17 +733,29 @@ module Table =
             Left = optionalLength scale tableLeft cell.PaddingLeft
         }
 
-    let cellPaddingForRow scale (table: TableBlock) (row: TableRow) (cell: TableCell) : CellPadding =
-        let tablePadding = cellPaddingForTable scale table { cell with PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None }
-        let rowTop = optionalLength scale tablePadding.Top row.PaddingTop
-        let rowRight = optionalLength scale tablePadding.Right row.PaddingRight
-        let rowBottom = optionalLength scale tablePadding.Bottom row.PaddingBottom
-        let rowLeft = optionalLength scale tablePadding.Left row.PaddingLeft
+    let rowCellPaddingDefaults scale (table: TableBlock) (row: TableRow) : CellPadding =
+        let tableTop = optionalLength scale 0.0 table.PaddingTop
+        let tableRight = optionalLength scale scale.DefaultCellPadding table.PaddingRight
+        let tableBottom = optionalLength scale 0.0 table.PaddingBottom
+        let tableLeft = optionalLength scale scale.DefaultCellPadding table.PaddingLeft
+        let rowTop = optionalLength scale tableTop row.PaddingTop
+        let rowRight = optionalLength scale tableRight row.PaddingRight
+        let rowBottom = optionalLength scale tableBottom row.PaddingBottom
+        let rowLeft = optionalLength scale tableLeft row.PaddingLeft
         {
-            Top = optionalLength scale rowTop cell.PaddingTop
-            Right = optionalLength scale rowRight cell.PaddingRight
-            Bottom = optionalLength scale rowBottom cell.PaddingBottom
-            Left = optionalLength scale rowLeft cell.PaddingLeft
+            Top = rowTop
+            Right = rowRight
+            Bottom = rowBottom
+            Left = rowLeft
+        }
+
+    let cellPaddingForRow scale (table: TableBlock) (row: TableRow) (cell: TableCell) : CellPadding =
+        let rowPadding = rowCellPaddingDefaults scale table row
+        {
+            Top = optionalLength scale rowPadding.Top cell.PaddingTop
+            Right = optionalLength scale rowPadding.Right cell.PaddingRight
+            Bottom = optionalLength scale rowPadding.Bottom cell.PaddingBottom
+            Left = optionalLength scale rowPadding.Left cell.PaddingLeft
         }
 
     let cellSpacing scale (table: TableBlock) =
@@ -773,10 +785,15 @@ module Table =
             currentColumn <- currentColumn + span
             positioned)
 
-    let outerCellInsets _scale (_table: TableBlock) =
-        // Cell margins are interior cell content offsets in Word. They should not
-        // move the table origin or expand the table's available width.
-        0.0, 0.0
+    let outerCellInsets scale (table: TableBlock) =
+        table.Rows
+        |> List.tryPick (fun row ->
+            match positionedCells row with
+            | [] -> None
+            | _ ->
+                let rowPadding = rowCellPaddingDefaults scale table row
+                Some (rowPadding.Left, rowPadding.Right))
+        |> Option.defaultValue (0.0, 0.0)
 
     let rowColumnCount (row: TableRow) =
         positionedCells row

@@ -45,6 +45,14 @@ module Dialogs =
         PaddingLeft: Signal<string>
     }
 
+    type TableMarginsState = {
+        IsOpen: Signal<bool>
+        PaddingTop: Signal<string>
+        PaddingRight: Signal<string>
+        PaddingBottom: Signal<string>
+        PaddingLeft: Signal<string>
+    }
+
     type InsertTableState = {
         IsOpen: Signal<bool>
         Rows: Signal<string>
@@ -196,6 +204,14 @@ module Dialogs =
         PaddingRight = signal "18"
         PaddingBottom = signal "10"
         PaddingLeft = signal "18"
+    }
+
+    let tableMarginsState () = {
+        IsOpen = signal false
+        PaddingTop = signal "0"
+        PaddingRight = signal "7.2"
+        PaddingBottom = signal "0"
+        PaddingLeft = signal "7.2"
     }
 
     let insertTableState () = {
@@ -473,6 +489,33 @@ module Dialogs =
             DialogFooter [] [
                 Button [ attr "data-testid" "word-table-cell-style-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
                 Button [ attr "data-testid" "word-table-cell-style-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
+            ]
+        ]
+
+    let tableMarginsDialog overlayTestId dialogTestId (state: TableMarginsState) onApply =
+        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
+            DialogHeader [] [ DialogTitle [] [ text "Table cell margins" ] ]
+            DialogBody [] [
+                label [] [
+                    span [] [ text "Default cell margin top" ]
+                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-margin-top"; valueS state.PaddingTop; onInput (fun value -> state.PaddingTop.Value <- value) ]
+                ]
+                label [] [
+                    span [] [ text "Default cell margin right" ]
+                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-margin-right"; valueS state.PaddingRight; onInput (fun value -> state.PaddingRight.Value <- value) ]
+                ]
+                label [] [
+                    span [] [ text "Default cell margin bottom" ]
+                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-margin-bottom"; valueS state.PaddingBottom; onInput (fun value -> state.PaddingBottom.Value <- value) ]
+                ]
+                label [] [
+                    span [] [ text "Default cell margin left" ]
+                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-margin-left"; valueS state.PaddingLeft; onInput (fun value -> state.PaddingLeft.Value <- value) ]
+                ]
+            ]
+            DialogFooter [] [
+                Button [ attr "data-testid" "word-table-margins-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
+                Button [ attr "data-testid" "word-table-margins-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
             ]
         ]
 

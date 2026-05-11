@@ -143,6 +143,43 @@
     <tbody>
       <tr>
         <td>
+          <strong>Table style cell margin origin</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-style-cell-margin-origin.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>pending</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-style-cell-margin-origin-word.png" style="--w:1224px; --x:70px; --y:125px; --s:0.9" alt="Word reference table style cell margin origin">
+          </div>
+          <div class="caption">Word aligns the first cell text with the surrounding paragraph text while the table border extends left by the style/default cell margin.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-style-cell-margin-origin-before.png" style="--w:900px; --x:47px; --y:83px; --s:1.35" alt="Before table style cell margin origin fix">
+          </div>
+          <div class="caption">Before: the table border started at the paragraph margin and style-derived cell margins pushed all cell text inward.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-style-cell-margin-origin-after.png" style="--w:900px; --x:47px; --y:83px; --s:1.35" alt="After table style cell margin origin fix">
+          </div>
+          <div class="caption">After: table/row default cell margins offset the outer table origin, while direct cell padding remains an interior content offset.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> model Word's table origin from table/row default cell margins instead of treating every margin as pure cell-internal padding. Direct per-cell padding still stays inside the cell, matching explicit <code>w:tcMar</code> behavior.</p>
+          <ul>
+            <li>Focused guard: <code>table-style-cell-margin-origin.docx</code> compares cleanly with <code>5 matched lines</code>.</li>
+            <li>Regression guard: <code>table-cell-explicit-left-padding.docx</code> still compares cleanly with <code>5 matched lines</code>.</li>
+            <li>Real guard: <code>docx4j-tables.docx</code> no longer shows the recurring table-cell x-origin drift; remaining deltas are vertical row-height/merge issues.</li>
+            <li>Authoring guard: added an interactive table cell margins dialog/API for table-level default cell margins, separate from selected-cell padding.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Auto pattern table-cell shading</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-cell-auto-pattern-shading.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>

@@ -252,6 +252,7 @@ module Ui =
         OpenAnnotation: string -> unit
         OpenParagraphStyle: unit -> unit
         OpenTableCellStyle: unit -> unit
+        OpenTableMargins: unit -> unit
         OpenInsertTable: unit -> unit
         InsertDefaultTable: unit -> unit
         InsertTableRow: unit -> unit
@@ -415,6 +416,7 @@ module Ui =
                 item "word-menu-delete-row" "Delete row" None actions.DeleteTableRow
                 item "word-menu-delete-column" "Delete column" None actions.DeleteTableColumn
                 item "word-menu-table-cell-style" "Cell style..." None actions.OpenTableCellStyle
+                item "word-menu-table-margins" "Cell margins..." None actions.OpenTableMargins
             ]
         }
     ]
@@ -477,6 +479,7 @@ module Ui =
         button "word-delete-row" "-Row" None actions.DeleteTableRow
         button "word-delete-column" "-Col" None actions.DeleteTableColumn
         button "word-table-cell-style" "Cell" None actions.OpenTableCellStyle
+        button "word-table-margins" "Margins" None actions.OpenTableMargins
         button "word-paragraph-style" "Paragraph" None actions.OpenParagraphStyle
     ]
 
@@ -515,6 +518,7 @@ module Ui =
             button "word-delete-row" "-Row" None actions.DeleteTableRow
             button "word-delete-column" "-Col" None actions.DeleteTableColumn
             button "word-table-cell-style" "Cell" None actions.OpenTableCellStyle
+            button "word-table-margins" "Margins" None actions.OpenTableMargins
             button "word-print-pdf" "PDF" None actions.PrintPdf
         ] }
         { Label = "Formatting"; Controls = [

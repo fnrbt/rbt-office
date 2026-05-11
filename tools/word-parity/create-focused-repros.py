@@ -626,6 +626,14 @@ def main():
             ], [2303, 2303, 2303, 2303])
             + paragraph("After table")
         ), True, True, table_grid_paragraph_spacing_styles()),
+        "table-style-cell-margin-origin.docx": (False, False, False, (
+            paragraph("Table style cell margin origin repro", "Heading1")
+            + table_grid_style_table([
+                row_cells([cell("Alpha", width=2303), cell("Beta", width=2303)]),
+                row_cells([cell("Gamma", width=2303), cell("Delta", width=2303)]),
+            ], [2303, 2303])
+            + paragraph("After styled margin table")
+        ), True, True, table_grid_paragraph_spacing_styles()),
         "table-cell-explicit-before-spacing.docx": (False, (
             paragraph("Table cell before-spacing repro", "Heading1")
             + table([

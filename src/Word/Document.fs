@@ -1877,6 +1877,17 @@ let setSelectedTableCellStyleWithShading backgroundColor shading width borderCol
 let setSelectedTableCellStyle backgroundColor width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
     setSelectedTableCellStyleWithShading backgroundColor None width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc
 
+let setCurrentTableCellMargins paddingTop paddingRight paddingBottom paddingLeft doc =
+    match currentTableCell doc with
+    | None -> doc
+    | Some (tableId, _, _) ->
+        updateTable doc tableId (fun table ->
+            { table with
+                PaddingTop = paddingTop
+                PaddingRight = paddingRight
+                PaddingBottom = paddingBottom
+                PaddingLeft = paddingLeft })
+
 let private headingFontSize level =
     match level with
     | 1 -> 24.0

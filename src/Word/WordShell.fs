@@ -536,6 +536,7 @@ module Shell =
             OpenAnnotation = openAnnotation
             OpenParagraphStyle = fun () -> WordHost.openParagraphStyle host
             OpenTableCellStyle = fun () -> WordHost.openTableCellStyle host
+            OpenTableMargins = fun () -> WordHost.openTableMargins host
             OpenInsertTable = fun () -> WordHost.openInsertTable host
             InsertDefaultTable = fun () -> WordHost.insertTable host
             InsertTableRow = insertTableRow

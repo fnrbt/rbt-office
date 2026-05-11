@@ -817,6 +817,12 @@ module API =
         Inp.updateDocument editor.Handler newDoc
         editor.Doc <- newDoc
 
+    let setCurrentTableCellMargins (editor: Editor) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) =
+        let optionalPadding value = if value >= 0.0 then Some value else None
+        let newDoc = Doc.setCurrentTableCellMargins (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
+        Inp.updateDocument editor.Handler newDoc
+        editor.Doc <- newDoc
+
     /// Align justify
     let alignJustify (editor: Editor) =
         let newDoc = Doc.alignJustify editor.Doc
@@ -1275,6 +1281,7 @@ module API =
             "insertTable" ==> insertTable
             "setSelectedTableCellStyle" ==> setSelectedTableCellStyle
             "setSelectedTableCellStyleWithShading" ==> setSelectedTableCellStyleWithShading
+            "setCurrentTableCellMargins" ==> setCurrentTableCellMargins
             "setSectionBreak" ==> setSectionBreak
             "importFromDocx" ==> importFromDocx
             "importFromDocxWithHeaderFooters" ==> importFromDocxWithHeaderFooters

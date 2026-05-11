@@ -27,6 +27,7 @@ module Host =
         ParagraphStyle: WordDialogs.ParagraphStyleState
         FindReplace: WordDialogs.FindReplaceState
         TableCellStyle: WordDialogs.TableCellStyleState
+        TableMargins: WordDialogs.TableMarginsState
         InsertTable: WordDialogs.InsertTableState
         ImageSize: WordDialogs.ImageSizeState
         TextBoxStyle: WordDialogs.TextBoxStyleState
@@ -59,6 +60,7 @@ module Host =
         ParagraphStyle = WordDialogs.paragraphStyleState ()
         FindReplace = WordDialogs.findReplaceState ()
         TableCellStyle = WordDialogs.tableCellStyleState ()
+        TableMargins = WordDialogs.tableMarginsState ()
         InsertTable = WordDialogs.insertTableState ()
         ImageSize = WordDialogs.imageSizeState ()
         TextBoxStyle = WordDialogs.textBoxStyleState ()
@@ -190,6 +192,9 @@ module Host =
 
     let openTableCellStyle host =
         host.TableCellStyle.IsOpen.Value <- true
+
+    let openTableMargins host =
+        host.TableMargins.IsOpen.Value <- true
 
     let openInsertTable host =
         host.InsertTable.IsOpen.Value <- true
@@ -475,6 +480,16 @@ module Host =
         host.Status.Value <- sprintf "Table cell style: %s shading, %s border, %s align, %s width, %s/%s/%s/%s padding" state.ShadingPattern.Value state.BorderColor.Value state.VerticalAlignment.Value state.Width.Value state.PaddingTop.Value state.PaddingRight.Value state.PaddingBottom.Value state.PaddingLeft.Value
         state.IsOpen.Value <- false
 
+    let applyTableMargins host =
+        let state = host.TableMargins
+        let paddingTop = parseFloat 0.0 state.PaddingTop.Value
+        let paddingRight = parseFloat 7.2 state.PaddingRight.Value
+        let paddingBottom = parseFloat 0.0 state.PaddingBottom.Value
+        let paddingLeft = parseFloat 7.2 state.PaddingLeft.Value
+        runCommand host (fun editor -> WordApi.setCurrentTableCellMargins editor paddingTop paddingRight paddingBottom paddingLeft)
+        host.Status.Value <- sprintf "Table cell margins: %s/%s/%s/%s" state.PaddingTop.Value state.PaddingRight.Value state.PaddingBottom.Value state.PaddingLeft.Value
+        state.IsOpen.Value <- false
+
     let applyAnnotation host =
         let state = host.Annotation
         runCommand host (fun editor ->
@@ -654,6 +669,7 @@ module Host =
             WordDialogs.paragraphStyleDialog "word-paragraph-dialog-overlay" "word-paragraph-dialog" host.ParagraphStyle (fun () -> applyParagraphStyle host)
             WordDialogs.findReplaceDialog "word-find-dialog-overlay" "word-find-dialog" host.FindReplace (fun () -> findNext host) (fun () -> replaceAll host)
             WordDialogs.tableCellStyleDialog "word-table-cell-style-dialog-overlay" "word-table-cell-style-dialog" host.TableCellStyle (fun () -> applyTableCellStyle host)
+            WordDialogs.tableMarginsDialog "word-table-margins-dialog-overlay" "word-table-margins-dialog" host.TableMargins (fun () -> applyTableMargins host)
             WordDialogs.insertTableDialog "word-insert-table-dialog-overlay" "word-insert-table-dialog" host.InsertTable (fun () -> insertCustomTable host)
             WordDialogs.imageSizeDialog "word-image-size-dialog-overlay" "word-image-size-dialog" host.ImageSize (fun () -> applyImageSize host)
             WordDialogs.textBoxStyleDialog "word-textbox-style-dialog-overlay" "word-textbox-style-dialog" host.TextBoxStyle (fun () -> applyTextBoxStyle host)
@@ -725,6 +741,9 @@ module Host =
 
     let openMountedTableCellStyle () =
         mountedHost |> Option.iter openTableCellStyle
+
+    let openMountedTableMargins () =
+        mountedHost |> Option.iter openTableMargins
 
     let openMountedAnnotation kind =
         mountedHost |> Option.iter (openAnnotation kind)
