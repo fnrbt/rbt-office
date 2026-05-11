@@ -209,6 +209,41 @@
 
       <tr>
         <td>
+          <strong>Explicit before-spacing inside table cells</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-explicit-before-spacing.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table cell before spacing">
+          </div>
+          <div class="caption">Word honors explicit paragraph <code>w:before</code> spacing inside each table cell, including empty cell paragraphs.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-cell-before-spacing-before.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before table cell before spacing fix">
+          </div>
+          <div class="caption">Before: row-local table measurement treated cell paragraphs as page-top paragraphs and suppressed their before-spacing.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-cell-before-spacing-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After table cell before spacing fix">
+          </div>
+          <div class="caption">After: explicit cell paragraph before-spacing contributes to row height, matching the Word row rhythm.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> preserve imported/effective table-cell paragraph <code>SpacingBefore</code>, and skip page-top before-spacing suppression when measuring paragraphs inside table cells.</p>
+          <ul>
+            <li>Before guard: focused repro had <code>First dy=-6.93</code>, <code>Second dy=-14.33</code>, and <code>Third dy=-39.95</code>.</li>
+            <li>After guard: focused repro compares below threshold with all matched lines within 1px.</li>
+            <li>Real guard: the legal-contributor table row drift dropped from 18-46px high to single-digit offsets.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Native Word text size uses CSS-pixel scale</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
           <span class="meta">Fix commit: <code>this commit</code></span>

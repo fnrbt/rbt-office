@@ -198,7 +198,7 @@ let tableCellParagraphForLayout (para: ParagraphBlock) =
     { para with
         Metadata =
             { para.Metadata with
-                SpacingBefore = Some 0.0
+                SpacingBefore = para.Metadata.SpacingBefore |> Option.orElse (Some 0.0)
                 LineSpacing = Some 1.0
                 LineSpacingRule = Some "auto" } }
 

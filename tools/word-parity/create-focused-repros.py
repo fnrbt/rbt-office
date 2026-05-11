@@ -59,8 +59,21 @@ def cell(text, width=2400, spacing_after=None):
     )
 
 
+def cell_paragraphs(paragraphs, width=2400):
+    return (
+        "<w:tc>"
+        f'<w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr>'
+        f"{''.join(paragraphs)}"
+        "</w:tc>"
+    )
+
+
 def row(values, spacing_after=None):
     return "<w:tr>" + "".join(cell(value, spacing_after=spacing_after) for value in values) + "</w:tr>"
+
+
+def row_cells(cells):
+    return "<w:tr>" + "".join(cells) + "</w:tr>"
 
 
 def table(rows, width_pct=5000):
@@ -271,6 +284,29 @@ def main():
         "table-cell-default-after-spacing.docx": (False, (
             paragraph("Table cell spacing repro", "Heading1")
             + table([row(["Alpha", "Beta"]), row(["Gamma", "Delta"])])
+            + paragraph("After table")
+        )),
+        "table-cell-explicit-before-spacing.docx": (False, (
+            paragraph("Table cell before-spacing repro", "Heading1")
+            + table([
+                row_cells([
+                    cell_paragraphs([paragraph("First", spacing_before=100, spacing_after=0)]),
+                    cell_paragraphs([paragraph("", spacing_before=100, spacing_after=0)]),
+                ]),
+                row_cells([
+                    cell_paragraphs([paragraph("Second", spacing_before=100, spacing_after=0)]),
+                    cell_paragraphs([
+                        paragraph("", spacing_before=100, spacing_after=0),
+                        paragraph("", spacing_before=100, spacing_after=0),
+                        paragraph("", spacing_before=100, spacing_after=0),
+                        paragraph("", spacing_before=100, spacing_after=0),
+                    ]),
+                ]),
+                row_cells([
+                    cell_paragraphs([paragraph("Third", spacing_before=100, spacing_after=0)]),
+                    cell_paragraphs([paragraph("", spacing_before=100, spacing_after=0)]),
+                ]),
+            ])
             + paragraph("After table")
         )),
         "two-tables-border-position.docx": (False, (
