@@ -248,6 +248,34 @@ def table_grid_styles():
     )
 
 
+def table_grid_paragraph_spacing_styles():
+    borders = "".join(
+        f'<w:{name} w:val="single" w:sz="4" w:space="0" w:color="000000"/>'
+        for name in ["top", "left", "bottom", "right", "insideH", "insideV"]
+    )
+    cell_margin = (
+        '<w:tblCellMar>'
+        '<w:top w:w="0" w:type="dxa"/>'
+        '<w:left w:w="108" w:type="dxa"/>'
+        '<w:bottom w:w="0" w:type="dxa"/>'
+        '<w:right w:w="108" w:type="dxa"/>'
+        '</w:tblCellMar>'
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:styles xmlns:w="{WORD_NS}" xmlns:r="{REL_NS}">'
+        "<w:docDefaults>"
+        '<w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="24"/><w:szCs w:val="24"/></w:rPr></w:rPrDefault>'
+        '<w:pPrDefault><w:pPr><w:spacing w:after="200" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault>'
+        "</w:docDefaults>"
+        '<w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/><w:rPr><w:sz w:val="24"/></w:rPr></w:style>'
+        '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="240"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
+        f'<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:tblPr>{cell_margin}</w:tblPr></w:style>'
+        f'<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblBorders>{borders}</w:tblBorders>{cell_margin}</w:tblPr></w:style>'
+        "</w:styles>"
+    )
+
+
 def top_heading_before_spacing_styles():
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -562,6 +590,16 @@ def main():
             ], [3000, 3000])
             + paragraph("After styled table")
         ), True, True, table_grid_styles()),
+        "table-style-paragraph-spacing.docx": (False, False, False, (
+            paragraph("Table style paragraph spacing repro", "Heading1")
+            + table_grid_style_table([
+                row_cells([cell("row 01 a", width=2303), cell("row 01 b", width=2303), cell("row 01 c", width=2303), cell("row 01 d", width=2303)]),
+                row_cells([cell("row 02 a", width=2303), cell("row 02 b", width=2303), cell("row 02 c", width=2303), cell("row 02 d", width=2303)]),
+                row_cells([cell("row 03 a", width=2303), cell("row 03 b", width=2303), cell("row 03 c", width=2303), cell("row 03 d", width=2303)]),
+                row_cells([cell("row 04 a", width=2303), cell("row 04 b", width=2303), cell("row 04 c", width=2303), cell("row 04 d", width=2303)]),
+            ], [2303, 2303, 2303, 2303])
+            + paragraph("After table")
+        ), True, True, table_grid_paragraph_spacing_styles()),
         "table-cell-explicit-before-spacing.docx": (False, (
             paragraph("Table cell before-spacing repro", "Heading1")
             + table([

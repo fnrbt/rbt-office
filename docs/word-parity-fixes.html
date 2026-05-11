@@ -143,6 +143,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Table style paragraph spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-style-paragraph-spacing.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>ae7b19c</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-style-paragraph-spacing-word.png" style="--w:1224px; --x:60px; --y:100px; --s:0.8" alt="Word reference table style paragraph spacing">
+          </div>
+          <div class="caption">Word applies the TableGrid table style's paragraph spacing inside the cells, so row pitch stays tight and <code>After table</code> sits directly below the grid.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-style-paragraph-spacing-before-fix.png" style="--w:900px; --x:60px; --y:100px; --s:1.2" alt="Before table style paragraph spacing fix">
+          </div>
+          <div class="caption">Before: cell paragraphs inherited the document-default loose spacing, making each table row too tall and pushing following content down.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-style-paragraph-spacing-after.png" style="--w:900px; --x:60px; --y:100px; --s:1.2" alt="After table style paragraph spacing fix">
+          </div>
+          <div class="caption">After: the browser render applies the table-style paragraph properties before cell paragraph conversion; native PNG and PDF use the same import fallback.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> merge base table-style paragraph properties, plus first-row conditional paragraph properties when enabled, into table-cell paragraphs. Paragraphs without an explicit <code>pStyle</code> keep the document-default run base instead of falling through to Normal.</p>
+          <ul>
+            <li>Focused guard: row 4 vertical drift dropped from <code>42.57px</code> to <code>2.57px</code>.</li>
+            <li>Browser suite guard: all existing focused repros still compare cleanly; this new repro only reports the known <code>7px</code> table-cell x offset from Word's VBS position query.</li>
+            <li>Real guard: <code>docx4j-tables.docx</code> page-2 table pitch is materially closer and stays on the same page; remaining table shading/vertical-align issues are separate.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>TableGrid style borders</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-grid-style-borders.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>

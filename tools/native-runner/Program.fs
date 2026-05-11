@@ -114,6 +114,63 @@ let private mergeTableStyleProperties (baseProps: DocxReader.TableStylePropertie
     PaddingLeft = props.PaddingLeft |> Option.orElse baseProps.PaddingLeft
 }
 
+let private mergeRunProperties (baseProps: DocxReader.RunProperties) (props: DocxReader.RunProperties) : DocxReader.RunProperties = {
+    Style = props.Style |> Option.orElse baseProps.Style
+    Bold = props.Bold |> Option.orElse baseProps.Bold
+    Italic = props.Italic |> Option.orElse baseProps.Italic
+    Underline = props.Underline |> Option.orElse baseProps.Underline
+    AllCaps = props.AllCaps |> Option.orElse baseProps.AllCaps
+    SmallCaps = props.SmallCaps |> Option.orElse baseProps.SmallCaps
+    FontSize = props.FontSize |> Option.orElse baseProps.FontSize
+    FontFamily = props.FontFamily |> Option.orElse baseProps.FontFamily
+    ThemeFont = props.ThemeFont |> Option.orElse baseProps.ThemeFont
+    Color = props.Color |> Option.orElse baseProps.Color
+    ThemeColor = props.ThemeColor |> Option.orElse baseProps.ThemeColor
+    ThemeTint = props.ThemeTint |> Option.orElse baseProps.ThemeTint
+    ThemeShade = props.ThemeShade |> Option.orElse baseProps.ThemeShade
+    Highlight = props.Highlight |> Option.orElse baseProps.Highlight
+    Strike = props.Strike |> Option.orElse baseProps.Strike
+    VertAlign = props.VertAlign |> Option.orElse baseProps.VertAlign
+}
+
+let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties) (props: DocxReader.ParagraphProperties) : DocxReader.ParagraphProperties = {
+    Style = props.Style |> Option.orElse baseProps.Style
+    ContentControlId = props.ContentControlId |> Option.orElse baseProps.ContentControlId
+    ContentControlTag = props.ContentControlTag |> Option.orElse baseProps.ContentControlTag
+    ContentControlAlias = props.ContentControlAlias |> Option.orElse baseProps.ContentControlAlias
+    Alignment = props.Alignment |> Option.orElse baseProps.Alignment
+    IndentLeft = props.IndentLeft |> Option.orElse baseProps.IndentLeft
+    IndentRight = props.IndentRight |> Option.orElse baseProps.IndentRight
+    FirstLineIndent = props.FirstLineIndent |> Option.orElse baseProps.FirstLineIndent
+    HangingIndent = props.HangingIndent |> Option.orElse baseProps.HangingIndent
+    RightTabPosition = props.RightTabPosition |> Option.orElse baseProps.RightTabPosition
+    SpacingBefore = props.SpacingBefore |> Option.orElse baseProps.SpacingBefore
+    SpacingBeforeAuto = props.SpacingBeforeAuto |> Option.orElse baseProps.SpacingBeforeAuto
+    SpacingAfter = props.SpacingAfter |> Option.orElse baseProps.SpacingAfter
+    SpacingAfterAuto = props.SpacingAfterAuto |> Option.orElse baseProps.SpacingAfterAuto
+    LineSpacing = props.LineSpacing |> Option.orElse baseProps.LineSpacing
+    LineRule = props.LineRule |> Option.orElse baseProps.LineRule
+    OutlineLevel = props.OutlineLevel |> Option.orElse baseProps.OutlineLevel
+    KeepNext = props.KeepNext |> Option.orElse baseProps.KeepNext
+    KeepLines = props.KeepLines |> Option.orElse baseProps.KeepLines
+    PageBreakBefore = props.PageBreakBefore |> Option.orElse baseProps.PageBreakBefore
+    WidowControl = props.WidowControl |> Option.orElse baseProps.WidowControl
+    ContextualSpacing = props.ContextualSpacing |> Option.orElse baseProps.ContextualSpacing
+    BackgroundColor = props.BackgroundColor |> Option.orElse baseProps.BackgroundColor
+    ParagraphRunProperties =
+        match baseProps.ParagraphRunProperties, props.ParagraphRunProperties with
+        | Some baseRun, Some run -> Some (mergeRunProperties baseRun run)
+        | None, run -> run
+        | run, None -> run
+    ParagraphBorders = props.ParagraphBorders |> Option.orElse baseProps.ParagraphBorders
+    ListInfo = props.ListInfo |> Option.orElse baseProps.ListInfo
+    SectionBreak = props.SectionBreak |> Option.orElse baseProps.SectionBreak
+    SectionPageNumberStart = props.SectionPageNumberStart |> Option.orElse baseProps.SectionPageNumberStart
+    RenderedPageBreakBefore = props.RenderedPageBreakBefore |> Option.orElse baseProps.RenderedPageBreakBefore
+    HeaderReferences = if props.HeaderReferences.IsEmpty then baseProps.HeaderReferences else props.HeaderReferences
+    FooterReferences = if props.FooterReferences.IsEmpty then baseProps.FooterReferences else props.FooterReferences
+}
+
 let private resolveTableStyleProperties (styleMap: Map<string, DocxReader.StyleDefinition>) styleId =
     let rec resolve visited id =
         if Set.contains id visited then None
@@ -130,6 +187,27 @@ let private resolveTableStyleProperties (styleMap: Map<string, DocxReader.StyleD
                 | None, Some value -> Some value
                 | Some value, None -> Some value
                 | None, None -> None
+
+    styleId |> Option.bind (resolve Set.empty)
+
+let private mergeParagraphPropertyOptions baseProps props =
+    match baseProps, props with
+    | Some baseValue, Some value -> Some (mergeParagraphProperties baseValue value)
+    | None, value -> value
+    | value, None -> value
+
+let private resolveTableParagraphProperties selector (styleMap: Map<string, DocxReader.StyleDefinition>) styleId =
+    let rec resolve visited id =
+        if Set.contains id visited then None
+        else
+            match Map.tryFind id styleMap with
+            | None -> None
+            | Some style ->
+                let baseProps =
+                    match style.BasedOn with
+                    | Some basedOn when basedOn <> id -> resolve (Set.add id visited) basedOn
+                    | _ -> None
+                mergeParagraphPropertyOptions baseProps (selector style)
 
     styleId |> Option.bind (resolve Set.empty)
 
@@ -322,11 +400,26 @@ let private mkPara resolver images styleMap comments notes para =
         Metadata = paraMetadata resolver para editorPara
     }
 
-let private tableCell resolver images styleMap comments notes (cell: DocxReader.TableCell) =
+let private tableCell resolver images styleMap comments notes (paragraphProperties: DocxReader.ParagraphProperties option) (cell: DocxReader.TableCell) =
     let props = cell.Properties
-    let content = cell.Paragraphs |> List.map (mkPara resolver images styleMap comments notes)
+    let applyTableParagraphProperties (para: DocxReader.Paragraph) =
+        match paragraphProperties with
+        | Some styleProps ->
+            let properties = mergeParagraphProperties styleProps para.Properties
+            let properties =
+                if para.Properties.Style.IsNone && styleProps.Style.IsNone then
+                    { properties with Style = Some DocxReader.Styles.defaultStyleId }
+                else
+                    properties
+            { para with Properties = properties }
+        | None -> para
+    let emptyPara : DocxReader.Paragraph = { Runs = []; Properties = DocxReader.Docx.paragraphProps XmlDsl.Empty }
+    let content =
+        cell.Paragraphs
+        |> List.map applyTableParagraphProperties
+        |> List.map (mkPara resolver images styleMap comments notes)
     {
-        Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes { Runs = []; Properties = DocxReader.Docx.paragraphProps XmlDsl.Empty }] else content
+        Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes (applyTableParagraphProperties emptyPara)] else content
         ColSpan = props |> Option.bind (fun p -> p.ColSpan) |> Option.defaultValue 1
         BackgroundColor = props |> Option.bind (fun p -> p.Shading) |> Option.bind (fun s -> color s.Fill)
         Width = props |> Option.bind (fun p -> twipsToCanvasPixels p.Width)
@@ -347,6 +440,14 @@ let private tableCell resolver images styleMap comments notes (cell: DocxReader.
 
 let private tableBlock resolver images styleMap tableStyleMap comments notes (table: DocxReader.Table) =
     let styleProperties = resolveTableStyleProperties tableStyleMap table.StyleId
+    let tableParagraphProperties =
+        resolveTableParagraphProperties (fun style -> style.ParagraphProperties) tableStyleMap table.StyleId
+    let firstRowParagraphProperties =
+        resolveTableParagraphProperties (fun style -> style.FirstRowParagraphProperties) tableStyleMap table.StyleId
+    let paragraphPropertiesForRow rowIndex =
+        let firstRowEnabled = table.Look |> Option.map _.FirstRow |> Option.defaultValue false
+        let conditionalProperties = if rowIndex = 0 && firstRowEnabled then firstRowParagraphProperties else None
+        mergeParagraphPropertyOptions tableParagraphProperties conditionalProperties
     let tablePadding selector =
         table.Properties
         |> Option.bind selector
@@ -364,8 +465,8 @@ let private tableBlock resolver images styleMap tableStyleMap comments notes (ta
         Id = Guid.NewGuid().ToString("N")
         Rows =
             table.Rows
-            |> List.map (fun row -> {
-                Cells = row.Cells |> List.map (tableCell resolver images styleMap comments notes)
+            |> List.mapi (fun rowIndex row -> {
+                Cells = row.Cells |> List.map (tableCell resolver images styleMap comments notes (paragraphPropertiesForRow rowIndex))
                 IsHeader = row.IsHeader
                 Height = twipsToCanvasPixels row.Height
                 HeightRule = row.HeightRule

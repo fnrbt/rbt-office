@@ -3389,16 +3389,32 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                 let flags = conditionalFlags rowIndex 0 columnCount
                 if flags.IsFirstRow then tableStyle |> Option.bind (fun style -> style.FirstRowParagraphProperties) else None
 
+            let tableParagraphStyleProperties rowIndex =
+                let baseProperties = tableStyle |> Option.bind (fun style -> style.ParagraphProperties)
+                let conditionalProperties = conditionalParagraphStyleProperties rowIndex
+                match baseProperties, conditionalProperties with
+                | Some baseValue, Some conditionalValue -> Some (mergeParagraphProperties baseValue conditionalValue)
+                | Some value, None
+                | None, Some value -> Some value
+                | None, None -> None
+
             let intOption value =
                 value |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
 
             let convertCell rowIndex (cell: TableCell) : obj =
-                let paragraphStyle = conditionalParagraphStyleProperties rowIndex
+                let paragraphStyle = tableParagraphStyleProperties rowIndex
                 let cellParagraphs =
                     cell.Paragraphs
                     |> List.map (fun para ->
                         match paragraphStyle with
-                        | Some styleProps -> { para with Properties = mergeParagraphProperties styleProps para.Properties }
+                        | Some styleProps ->
+                            let properties = mergeParagraphProperties styleProps para.Properties
+                            let properties =
+                                if para.Properties.Style.IsNone && styleProps.Style.IsNone then
+                                    { properties with Style = Some Styles.defaultStyleId }
+                                else
+                                    properties
+                            { para with Properties = properties }
                         | None -> para)
                     |> List.map convertCellParagraph
                     |> List.toArray
