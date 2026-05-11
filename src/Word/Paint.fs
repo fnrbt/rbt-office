@@ -233,7 +233,8 @@ let paragraphCommands (settings: LayoutSettings) (fontFamily: string) (layout: B
     if layout.Prefix <> "" && not layout.Lines.IsEmpty then
         let firstLine = layout.Lines.Head
         let baseline = lineBaseline settings.FontSize firstLine
-        let prefixX = settings.PaddingLeft + layout.Indent + min 0.0 (layout.Metadata.FirstLineIndent |> Option.defaultValue 0.0)
+        let firstLineIndent = WordLayout.Paragraph.firstLineIndent layout.Metadata
+        let prefixX = settings.PaddingLeft + layout.Indent + min 0.0 firstLineIndent
         let prefixText = WordLayout.Numbering.displayMarkerText layout.Prefix
         let prefixStyle =
             if prefixText <> layout.Prefix then defaultPaintStyle settings.FontSize fontFamily

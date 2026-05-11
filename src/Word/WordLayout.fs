@@ -498,13 +498,23 @@ module Paragraph =
         WordStyles.lineSpacing paragraphStyle metadata
 
     let leftIndent (metadata: BlockMetadata) =
-        metadata.IndentLeft |> Option.defaultValue (float metadata.ListLevel * 24.0)
+        metadata.IndentLeft
+        |> Option.defaultWith (fun () ->
+            match metadata.ListStyle with
+            | NoList -> 0.0
+            | Bullet
+            | Numbered -> 48.0)
 
     let rightIndent (metadata: BlockMetadata) =
         metadata.IndentRight |> Option.defaultValue 0.0
 
     let firstLineIndent (metadata: BlockMetadata) =
-        metadata.FirstLineIndent |> Option.defaultValue 0.0
+        metadata.FirstLineIndent
+        |> Option.defaultWith (fun () ->
+            match metadata.ListStyle with
+            | NoList -> 0.0
+            | Bullet
+            | Numbered -> -48.0)
 
 module Numbering =
     let private markerFontFamily (metadata: BlockMetadata) marker =

@@ -381,6 +381,40 @@
 
       <tr>
         <td>
+          <strong>Nested lists without explicit numbering indents</strong>
+          <span class="meta">Repro: <code>tests/repros/word/list-default-indent.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-lists.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:92px; --y:105px; --s:.78" alt="Word reference nested list default indent">
+          </div>
+          <div class="caption">Word keeps all text starts at the same 0.5-inch indent when the numbering levels omit explicit <code>w:ind</code> values.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/list-default-indent-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before nested list default indent fix">
+          </div>
+          <div class="caption">Before: fallback indentation multiplied by list nesting level, pushing nested list text 20-44px too far right.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/list-default-indent-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After nested list default indent fix">
+          </div>
+          <div class="caption">After: missing numbering indents use Word's default hanging list geometry, aligning all nested text starts.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> default list paragraphs with no explicit indent to a 48px text indent and -48px first-line hanging marker offset. DOCX-provided indentation still overrides this fallback.</p>
+          <ul>
+            <li>Before guard: focused repro nested rows had <code>dx=20</code>, <code>dx=23</code>, and <code>dx=44</code>.</li>
+            <li>After guard: focused repro and <code>test-lists.docx</code> both compare below the 6px threshold.</li>
+            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Normal paragraph pitch and style spacing</strong>
           <span class="meta">Repro: <code>tests/repros/word/normal-paragraph-line-pitch.docx</code></span>
           <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-complex-tables.docx</code></span>
