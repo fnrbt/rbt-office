@@ -24,6 +24,7 @@ def esc(text):
 def paragraph(
     text="",
     style=None,
+    alignment=None,
     spacing_before=None,
     spacing_after=None,
     list_id=None,
@@ -35,6 +36,8 @@ def paragraph(
     props = []
     if style:
         props.append(f'<w:pStyle w:val="{esc(style)}"/>')
+    if alignment:
+        props.append(f'<w:jc w:val="{esc(alignment)}"/>')
     spacing_attrs = []
     if spacing_before is not None:
         spacing_attrs.append(f'w:before="{spacing_before}"')
@@ -69,14 +72,18 @@ def empty_paragraph():
     return "<w:p/>"
 
 
-def cell(text, width=2400, spacing_after=None, padding_left=None):
+def cell(text, width=2400, spacing_after=None, padding_left=None, alignment=None, valign=None, shading=None):
     tc_props = [f'<w:tcW w:w="{width}" w:type="dxa"/>']
+    if shading:
+        tc_props.append(f'<w:shd w:val="{esc(shading)}" w:color="auto" w:fill="auto"/>')
+    if valign:
+        tc_props.append(f'<w:vAlign w:val="{esc(valign)}"/>')
     if padding_left is not None:
         tc_props.append(f'<w:tcMar><w:left w:w="{padding_left}" w:type="dxa"/></w:tcMar>')
     return (
         "<w:tc>"
         f"<w:tcPr>{''.join(tc_props)}</w:tcPr>"
-        f"{paragraph(text, spacing_after=spacing_after)}"
+        f"{paragraph(text, alignment=alignment, spacing_after=spacing_after)}"
         "</w:tc>"
     )
 
@@ -93,12 +100,18 @@ def cell_paragraphs(paragraphs, width=2400, padding_left=None):
     )
 
 
-def row(values, spacing_after=None):
-    return "<w:tr>" + "".join(cell(value, spacing_after=spacing_after) for value in values) + "</w:tr>"
+def row(values, spacing_after=None, height=None):
+    tr_props = f'<w:trPr><w:trHeight w:val="{height}"/></w:trPr>' if height is not None else ""
+    return "<w:tr>" + tr_props + "".join(cell(value, spacing_after=spacing_after) for value in values) + "</w:tr>"
 
 
 def row_cells(cells):
     return "<w:tr>" + "".join(cells) + "</w:tr>"
+
+
+def row_cells_props(cells, height=None):
+    tr_props = f'<w:trPr><w:trHeight w:val="{height}"/></w:trPr>' if height is not None else ""
+    return "<w:tr>" + tr_props + "".join(cells) + "</w:tr>"
 
 
 def table(rows, width_pct=5000):
@@ -109,6 +122,21 @@ def table(rows, width_pct=5000):
     return (
         "<w:tbl>"
         f'<w:tblPr><w:tblW w:w="{width_pct}" w:type="pct"/><w:tblBorders>{borders}</w:tblBorders></w:tblPr>'
+        + "".join(row_values for row_values in rows)
+        + "</w:tbl>"
+    )
+
+
+def table_with_grid(rows, grid_widths, table_width="0", width_type="auto"):
+    borders = "".join(
+        f'<w:{name} w:val="single" w:sz="4" w:color="000000"/>'
+        for name in ["top", "left", "bottom", "right", "insideH", "insideV"]
+    )
+    grid = "".join(f'<w:gridCol w:w="{grid_width}"/>' for grid_width in grid_widths)
+    return (
+        "<w:tbl>"
+        f'<w:tblPr><w:tblW w:w="{table_width}" w:type="{width_type}"/><w:tblBorders>{borders}</w:tblBorders></w:tblPr>'
+        f"<w:tblGrid>{grid}</w:tblGrid>"
         + "".join(row_values for row_values in rows)
         + "</w:tbl>"
     )
@@ -465,6 +493,20 @@ def main():
                 ]),
             ])
             + paragraph("After padded table")
+        )),
+        "table-dxa-grid-alignment-row-height.docx": (False, (
+            paragraph("Table DXA grid alignment row height repro", "Heading1")
+            + table_with_grid([
+                row_cells_props([
+                    cell("A", width=4606),
+                    cell("B", width=4606, alignment="right"),
+                ], height=1134),
+                row_cells_props([
+                    cell("C", width=4606),
+                    cell("D", width=4606, alignment="right"),
+                ], height=1134),
+            ], [4606, 4606])
+            + paragraph("After table")
         )),
         "table-cell-explicit-before-spacing.docx": (False, (
             paragraph("Table cell before-spacing repro", "Heading1")

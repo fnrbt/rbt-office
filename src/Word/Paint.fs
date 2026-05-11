@@ -331,7 +331,7 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
         let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
         let tableMaxWidth = maxWidth + outerLeft + outerRight
         let tableX = settings.PaddingLeft - outerLeft - WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock
-        let resolvedTable = WordLayout.Table.resolveTable WordLayout.printScale (Some tableMaxWidth) tableBlock
+        let resolvedTable = WordLayout.Table.resolveTable WordLayout.canvasScale (Some tableMaxWidth) tableBlock
         let columnWidths = resolvedTable.ColumnWidths
         let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
 

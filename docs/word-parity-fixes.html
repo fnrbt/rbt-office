@@ -451,6 +451,42 @@
 
       <tr>
         <td>
+          <strong>DXA table grid width and row height scale</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-dxa-grid-alignment-row-height.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>this commit</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-dxa-grid-alignment-row-height-word.png" style="--w:1224px; --x:115px; --y:145px; --s:.42" alt="Word reference DXA table grid width">
+          </div>
+          <div class="caption">Word lays out the two <code>4606</code> dxa grid columns across the body width and right-aligns <code>B/D</code> at the cell edge.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-dxa-grid-alignment-row-height-before.png" style="--w:900px; --x:60px; --y:85px; --s:.56" alt="Before DXA table grid scale fix">
+          </div>
+          <div class="caption">Before: table grid and row-height dxa values used the print point scale, shrinking the table and pulling right-aligned cell text left.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-dxa-grid-alignment-row-height-after.png" style="--w:900px; --x:60px; --y:85px; --s:.56" alt="After DXA table grid scale fix">
+          </div>
+          <div class="caption">After: shared table layout resolves dxa lengths in canvas units, so the table width, row height, and following paragraph position match the Word query.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> resolve table grid columns, row minimum heights, and cached border plans with <code>WordLayout.canvasScale</code>. The native import now keeps <code>DxaWidth</code> values raw so shared layout performs the conversion exactly once.</p>
+          <ul>
+            <li>Focused guard: <code>B/D</code> right-edge drift went from <code>153.40px</code> to <code>5 matched lines</code>.</li>
+            <li>Real guard: <code>docx4j-tables.docx</code> right-cell drift dropped from about <code>145px</code> to about <code>8px</code>.</li>
+            <li>Remaining real-fixture deltas are vertical alignment/shading follow-ups, not the grid-width conversion bug.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Running header pushes body start</strong>
           <span class="meta">Repro: <code>tests/repros/word/running-header-body-offset.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-features/test-header-footer.docx</code></span>

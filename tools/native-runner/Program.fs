@@ -136,7 +136,7 @@ let private tableWidth width widthType =
     | Some "auto", _
     | Some "nil", _ -> Some { Kind = AutoWidth; Value = None }
     | Some "pct", Some value -> Some { Kind = PercentWidth; Value = Some (value / 50.0) }
-    | Some "dxa", Some _ -> Some { Kind = DxaWidth; Value = twipsToCanvasPixels width }
+    | Some "dxa", Some value -> Some { Kind = DxaWidth; Value = Some value }
     | _, Some value -> Some { Kind = PointWidth; Value = Some value }
     | _ -> None
 

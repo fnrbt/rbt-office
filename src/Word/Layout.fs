@@ -381,7 +381,7 @@ let rangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : TextRangeMeasure
         else measureText (text.Substring(startIndex, endIndex - startIndex)) style
 
 let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
-    WordLayout.Table.tableColumnWidths WordLayout.printScale (Some maxWidth) tableBlock
+    WordLayout.Table.tableColumnWidths WordLayout.canvasScale (Some maxWidth) tableBlock
 
 // Word line boxes include font leading beyond the nominal font size.
 let private wordLineBoxFactor = 1.20
@@ -975,7 +975,7 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
     let numColumns = WordLayout.Table.columnCount tableBlock
     let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
     let outerStartInset = outerLeft + cellSpacing
-    let mutable rowHeight = WordLayout.Table.rowMinHeight WordLayout.printScale settings.LineHeight row
+    let mutable rowHeight = WordLayout.Table.rowMinHeight WordLayout.canvasScale settings.LineHeight row
     let mutable cellGroups = []
     let mutable traces = []
 
@@ -1074,7 +1074,7 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
     let tableBlock = plan.Table
     let numColumns = WordLayout.Table.columnCount tableBlock
     let resolvedRows =
-        WordLayout.Table.resolveTable WordLayout.printScale (Some plan.TableMaxWidth) tableBlock
+        WordLayout.Table.resolveTable WordLayout.canvasScale (Some plan.TableMaxWidth) tableBlock
         |> fun resolved -> resolved.BodyRows |> List.toArray
     plan.Rows
     |> List.collect (fun planRow ->
