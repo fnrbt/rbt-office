@@ -174,10 +174,16 @@ let forBlock = function
     | TextBox _ -> normal
 
 let forBlockInDocument (doc: Document) block =
-    let baseStyle = forBlock block |> applyDocumentDefaults doc
+    let styles = styleMap doc
+    let baseStyle =
+        match block with
+        | Heading (_, para) when para.Metadata.Style |> Option.bind (resolveNamedStyle styles "paragraph") |> Option.isSome ->
+            normal |> applyDocumentDefaults doc
+        | _ ->
+            forBlock block |> applyDocumentDefaults doc
     match block with
     | Paragraph para
-    | Heading (_, para) -> applyNamedParagraphStyle (styleMap doc) para.Metadata baseStyle
+    | Heading (_, para) -> applyNamedParagraphStyle styles para.Metadata baseStyle
     | Table _
     | TextBox _ -> baseStyle
 

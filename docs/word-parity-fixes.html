@@ -517,6 +517,40 @@
 
       <tr>
         <td>
+          <strong>Imported heading style spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/heading-style-no-spacing.docx</code></span>
+          <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-lists.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/heading-style-no-spacing-word.png" style="--w:1224px; --x:92px; --y:95px; --s:.76" alt="Word reference imported heading style spacing">
+          </div>
+          <div class="caption">Word uses the spacing from the imported Heading styles; these styles omit explicit before/after spacing.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/heading-style-no-spacing-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before imported heading style spacing fix">
+          </div>
+          <div class="caption">Before: imported headings still inherited the editor's built-in heading spacing, adding drift after blank paragraphs.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/heading-style-no-spacing-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After imported heading style spacing fix">
+          </div>
+          <div class="caption">After: named DOCX heading styles apply over Normal, so omitted heading spacing stays omitted.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> when a heading block has a named paragraph style from DOCX, use the document Normal style as the base before applying the named style.</p>
+          <ul>
+            <li>Focused guard: <code>Section B</code> moved from <code>dy=6.29</code> to <code>dy=0.29</code>.</li>
+            <li><code>test-formatting.docx</code>, <code>test-lists.docx</code>, and <code>test-multi-headers.docx</code> now compare below the 6px threshold.</li>
+            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Widow control for last-line split</strong>
           <span class="meta">Repro: <code>tests/repros/word/widow-control-last-line.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-features/test-multi-headers.docx</code></span>

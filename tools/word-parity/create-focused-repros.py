@@ -116,7 +116,9 @@ def document(body_xml, leading_section_properties=False, include_header_footer=F
     )
 
 
-def styles():
+def styles(include_heading_spacing=True):
+    heading1_spacing = '<w:spacing w:after="240"/>' if include_heading_spacing else ""
+    heading2_spacing = '<w:spacing w:before="240" w:after="160"/>' if include_heading_spacing else ""
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         f'<w:styles xmlns:w="{WORD_NS}" xmlns:r="{REL_NS}">'
@@ -124,8 +126,8 @@ def styles():
         '<w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>'
         "</w:docDefaults>"
         '<w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style>'
-        '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="240"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
-        '<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="Heading 2"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="240" w:after="160"/><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="26"/></w:rPr></w:style>'
+        f'<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/><w:pPr>{heading1_spacing}<w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
+        f'<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="Heading 2"/><w:basedOn w:val="Normal"/><w:pPr>{heading2_spacing}<w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="26"/></w:rPr></w:style>'
         "</w:styles>"
     )
 
@@ -225,7 +227,7 @@ def footer_xml():
     )
 
 
-def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440):
+def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -234,7 +236,7 @@ def write_docx(path, body_xml, include_numbering=False, leading_section_properti
         (root / "[Content_Types].xml").write_text(content_types(include_numbering, include_header_footer), encoding="utf-8")
         (root / "_rels" / ".rels").write_text(root_rels(), encoding="utf-8")
         (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer, margin_bottom), encoding="utf-8")
-        (root / "word" / "styles.xml").write_text(styles(), encoding="utf-8")
+        (root / "word" / "styles.xml").write_text(styles(include_heading_spacing), encoding="utf-8")
         if include_numbering:
             (root / "word" / "numbering.xml").write_text(numbering(), encoding="utf-8")
         if include_header_footer:
@@ -278,6 +280,16 @@ def main():
             + paragraph("Third normal line")
             + paragraph("Wrapped line pitch - Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.")
         )),
+        "heading-style-no-spacing.docx": (False, False, False, (
+            paragraph("Heading style no spacing repro", "Heading1")
+            + paragraph("")
+            + paragraph("Section A", "Heading2")
+            + paragraph("First normal line")
+            + paragraph("Second normal line")
+            + paragraph("")
+            + paragraph("Section B", "Heading2")
+            + paragraph("Third normal line")
+        ), False),
         "wrapped-paragraph-line-pitch.docx": (False, (
             paragraph("Wrapped paragraph line pitch repro", "Heading1")
             + repeated_long_paragraphs(18)
@@ -307,6 +319,7 @@ def main():
     }
     for name, value in repros.items():
         margin_bottom = 1440
+        include_heading_spacing = True
         if len(value) == 2:
             include_numbering, body = value
             leading_section_properties = False
@@ -320,9 +333,11 @@ def main():
                 include_numbering, leading_section_properties, body = value
                 include_header_footer = False
         else:
-            include_numbering, leading_section_properties, include_header_footer, body = value
+            include_numbering, leading_section_properties, include_header_footer, body = value[:4]
+            if len(value) > 4:
+                include_heading_spacing = value[4]
         path = out_dir / name
-        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom)
+        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom, include_heading_spacing)
         print(path)
 
 
