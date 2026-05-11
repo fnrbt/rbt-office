@@ -96,6 +96,8 @@
       height: auto;
       max-width: none;
       transform-origin: top left;
+      /* x/y are output-pixel offsets after scaling. Keep them matched across columns;
+         Word PDF rasters are 144 dpi, so their scale is browser scale / 1.5. */
       transform: translate(calc(-1 * var(--x)), calc(-1 * var(--y))) scale(var(--s));
     }
 
@@ -149,13 +151,13 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-grid-style-borders-word.png" style="--w:1224px; --x:110px; --y:150px; --s:.62" alt="Word reference TableGrid style borders">
+            <img src="../artifacts/word/table-grid-style-borders-word.png" style="--w:1224px; --x:60px; --y:85px; --s:0.567" alt="Word reference TableGrid style borders">
           </div>
           <div class="caption">Word paints borders from the table style even when the table itself has no direct <code>w:tblBorders</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-grid-style-borders-before.png" style="--w:900px; --x:60px; --y:85px; --s:.85" alt="Before TableGrid style border fix">
+            <img src="../artifacts/baseline/table-grid-style-borders-before.png" style="--w:900px; --x:60px; --y:85px; --s:0.85" alt="Before TableGrid style border fix">
           </div>
           <div class="caption">Before: text positions were correct, but style-derived table borders were dropped during DOCX import.</div>
         </td>
@@ -185,13 +187,13 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-dxa-grid-alignment-row-height-word.png" style="--w:1224px; --x:115px; --y:145px; --s:.42" alt="Word reference DXA table grid width">
+            <img src="../artifacts/word/table-dxa-grid-alignment-row-height-word.png" style="--w:1224px; --x:60px; --y:85px; --s:0.373" alt="Word reference DXA table grid width">
           </div>
           <div class="caption">Word lays out the two <code>4606</code> dxa grid columns across the body width and right-aligns <code>B/D</code> at the cell edge.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-dxa-grid-alignment-row-height-before.png" style="--w:900px; --x:60px; --y:85px; --s:.56" alt="Before DXA table grid scale fix">
+            <img src="../artifacts/baseline/table-dxa-grid-alignment-row-height-before.png" style="--w:900px; --x:60px; --y:85px; --s:0.56" alt="Before DXA table grid scale fix">
           </div>
           <div class="caption">Before: table grid and row-height dxa values used the print point scale, shrinking the table and pulling right-aligned cell text left.</div>
         </td>
@@ -220,7 +222,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:92px; --y:105px; --s:.78" alt="Word reference list marker glyph width">
+            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:68px; --y:72px; --s:0.7" alt="Word reference list marker glyph width">
           </div>
           <div class="caption">Word draws bullet and number markers at their glyph width inside the hanging marker area.</div>
         </td>
@@ -257,7 +259,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-explicit-left-padding-word.png" style="--w:1224px; --x:125px; --y:190px; --s:1.18" alt="Word reference explicit table cell left padding">
+            <img src="../artifacts/word/table-cell-explicit-left-padding-word.png" style="--w:1224px; --x:78px; --y:125px; --s:1.1" alt="Word reference explicit table cell left padding">
           </div>
           <div class="caption">Word applies the explicit <code>w:tcMar/w:left="108"</code> inset inside each cell.</div>
         </td>
@@ -293,7 +295,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/heading-cambria-font-wrap-word.png" style="--w:1224px; --x:105px; --y:470px; --s:.82" alt="Word reference Cambria heading wrap">
+            <img src="../artifacts/word/heading-cambria-font-wrap-word.png" style="--w:1224px; --x:68px; --y:320px; --s:0.693" alt="Word reference Cambria heading wrap">
           </div>
           <div class="caption">Word resolves the theme major font to Cambria and wraps the legal Heading 1 before <code>license.</code>.</div>
         </td>
@@ -329,7 +331,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/top-heading-before-spacing-word.png" style="--w:1224px; --x:70px; --y:90px; --s:.78" alt="Word reference top heading before spacing">
+            <img src="../artifacts/word/top-heading-before-spacing-word.png" style="--w:1224px; --x:52px; --y:62px; --s:0.7" alt="Word reference top heading before spacing">
           </div>
           <div class="caption">Word honors imported paragraph <code>w:before</code> spacing even when the paragraph starts at the top of the body area.</div>
         </td>
@@ -365,7 +367,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table cell before spacing">
+            <img src="../artifacts/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table cell before spacing">
           </div>
           <div class="caption">Word honors explicit paragraph <code>w:before</code> spacing inside each table cell, including empty cell paragraphs.</div>
         </td>
@@ -401,7 +403,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/empty-paragraph-mark-size-word.png" style="--w:1224px; --x:92px; --y:92px; --s:.76" alt="Word reference empty paragraph mark size">
+            <img src="../artifacts/word/empty-paragraph-mark-size-word.png" style="--w:1224px; --x:68px; --y:62px; --s:0.68" alt="Word reference empty paragraph mark size">
           </div>
           <div class="caption">Word gives a true empty Normal paragraph the same fallback paragraph-mark height as nearby 11 pt text.</div>
         </td>
@@ -436,7 +438,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/heading-style-no-spacing-word.png" style="--w:1224px; --x:92px; --y:95px; --s:.76" alt="Word reference imported heading style spacing">
+            <img src="../artifacts/word/heading-style-no-spacing-word.png" style="--w:1224px; --x:68px; --y:62px; --s:0.68" alt="Word reference imported heading style spacing">
           </div>
           <div class="caption">Word uses the spacing from the imported Heading styles; these styles omit explicit before/after spacing.</div>
         </td>
@@ -471,7 +473,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/widow-control-last-line-word.png" style="--w:1224px; --x:92px; --y:700px; --s:.78" alt="Word reference widow control last line split">
+            <img src="../artifacts/word/widow-control-last-line-word.png" style="--w:1224px; --x:68px; --y:650px; --s:0.693" alt="Word reference widow control last line split">
           </div>
           <div class="caption">Word moves the whole short paragraph when only its last line would be alone on the next page.</div>
         </td>
@@ -506,7 +508,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/wrapped-paragraph-line-pitch-word.png" style="--w:1224px; --x:92px; --y:700px; --s:.78" alt="Word reference wrapped paragraph line pitch">
+            <img src="../artifacts/word/wrapped-paragraph-line-pitch-word.png" style="--w:1224px; --x:68px; --y:650px; --s:0.693" alt="Word reference wrapped paragraph line pitch">
           </div>
           <div class="caption">Word uses roughly 19-20 CSS-equivalent pixels between wrapped 11 pt Calibri line baselines.</div>
         </td>
@@ -541,7 +543,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/running-header-body-offset-word.png" style="--w:1224px; --x:92px; --y:55px; --s:.74" alt="Word reference running header body offset">
+            <img src="../artifacts/word/running-header-body-offset-word.png" style="--w:1224px; --x:68px; --y:35px; --s:0.68" alt="Word reference running header body offset">
           </div>
           <div class="caption">Word starts body text below the running header when the header extends past the top margin.</div>
         </td>
@@ -576,7 +578,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:92px; --y:105px; --s:.78" alt="Word reference nested list default indent">
+            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:68px; --y:72px; --s:0.7" alt="Word reference nested list default indent">
           </div>
           <div class="caption">Word keeps all text starts at the same 0.5-inch indent when the numbering levels omit explicit <code>w:ind</code> values.</div>
         </td>
@@ -611,13 +613,13 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/normal-paragraph-line-pitch-word.png" style="--w:1224px; --x:92px; --y:115px; --s:.74" alt="Word reference normal paragraph pitch">
+            <img src="../artifacts/word/normal-paragraph-line-pitch-word.png" style="--w:1224px; --x:70px; --y:75px; --s:0.653" alt="Word reference normal paragraph pitch">
           </div>
           <div class="caption">Word advances consecutive Normal paragraphs by 30 CSS-equivalent pixels in this repro.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/normal-paragraph-line-pitch-before-fix.png" style="--w:900px; --x:70px; --y:75px; --s:.98" alt="Before normal paragraph pitch fix">
+            <img src="../artifacts/baseline/normal-paragraph-line-pitch-before-fix.png" style="--w:900px; --x:70px; --y:75px; --s:0.98" alt="Before normal paragraph pitch fix">
           </div>
           <div class="caption">Before: Normal paragraph gaps were 27.6px, and style spacing from DOCX styles was converted as points instead of canvas pixels.</div>
         </td>
@@ -646,13 +648,13 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:95px; --y:130px; --s:.74" alt="Word reference table following paragraph spacing">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:70px; --y:105px; --s:0.653" alt="Word reference table following paragraph spacing">
           </div>
           <div class="caption">Word starts the paragraph immediately below the table border.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-after-spacing-before-fix.png" style="--w:900px; --x:70px; --y:105px; --s:.98" alt="Before table following paragraph spacing fix">
+            <img src="../artifacts/baseline/table-after-spacing-before-fix.png" style="--w:900px; --x:70px; --y:105px; --s:0.98" alt="Before table following paragraph spacing fix">
           </div>
           <div class="caption">Before: an extra table block gap pushed <code>After table</code> down by 10 layout units.</div>
         </td>
@@ -681,7 +683,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table cell inset alignment">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table cell inset alignment">
           </div>
           <div class="caption">Word aligns the heading, table left border, and cell text to the same left edge for this default table.</div>
         </td>
@@ -716,13 +718,13 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/raster/test-complex-tables-word.png" style="--w:1224px; --x:70px; --y:150px; --s:.58" alt="Word reference complex table borders">
+            <img src="../artifacts/raster/test-complex-tables-word.png" style="--w:1224px; --x:40px; --y:90px; --s:0.547" alt="Word reference complex table borders">
           </div>
           <div class="caption">Word anchors each table border grid to its own table text.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/complex-tables-border-before-fix.png" style="--w:900px; --x:40px; --y:90px; --s:.82" alt="Before cached table border anchor fix">
+            <img src="../artifacts/baseline/complex-tables-border-before-fix.png" style="--w:900px; --x:40px; --y:90px; --s:0.82" alt="Before cached table border anchor fix">
           </div>
           <div class="caption">Before: the second table's border grid was painted too high, crossing the prior table/heading area.</div>
         </td>
@@ -750,7 +752,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference without caret">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference without caret">
           </div>
           <div class="caption">Word print/PDF reference has no active editor caret in the rendered page.</div>
         </td>
@@ -784,7 +786,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference native text scale repro">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:60px; --y:75px; --s:0.773" alt="Word reference native text scale repro">
           </div>
           <div class="caption">Word renders 11 pt Calibri as roughly 14.7 CSS pixels on the page surface.</div>
         </td>
@@ -818,7 +820,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table spacing repro">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table spacing repro">
           </div>
           <div class="caption">Word applies the Normal paragraph after-spacing in table cells when the DOCX omits explicit spacing.</div>
         </td>
@@ -852,7 +854,7 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-import-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table import repro">
+            <img src="../artifacts/word/repro-table-import-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table import repro">
           </div>
           <div class="caption">Word keeps <code>A1/B1</code> on the same row and <code>A2/B2</code> on the next row.</div>
         </td>
