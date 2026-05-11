@@ -7,6 +7,7 @@ Const wdFirstCharacterLineNumber = 10
 Const wdWithInTable = 12
 Const wdPrintView = 3
 Const wdDoNotSaveChanges = 0
+Const wdAlertsNone = 0
 
 Dim fso, inputPath, outputPath
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -28,6 +29,7 @@ Dim word, doc, outFile
 Set word = CreateObject("Word.Application")
 word.Visible = False
 word.ScreenUpdating = False
+word.DisplayAlerts = wdAlertsNone
 
 On Error Resume Next
 word.Options.Pagination = True
@@ -79,62 +81,121 @@ Sub EmitParagraphLines(docObj, docPath, fileObj, paragraph, paragraphIndex)
     Exit Sub
   End If
 
-  Dim currentPage, currentLine, currentX, currentY, currentLastX, currentLastY, currentStart, currentEnd, currentText
-  currentPage = Empty
-  currentLine = Empty
-  currentX = Empty
-  currentY = Empty
-  currentLastX = Empty
-  currentLastY = Empty
-  currentStart = 0
-  currentEnd = 0
-  currentText = ""
+  Dim offset
+  offset = NextVisibleOffset(docObj, baseEnd, baseStart)
 
-  Dim i, r, pageNum, lineNum, x, y, ch
-  For i = 0 To charCount - 1
-    Set r = docObj.Range(baseStart + i, baseStart + i + 1)
-    ch = r.Text
+  Do While offset < baseEnd
+    Dim r, pageNum, lineNum, x, y, lineEnd, textEnd, lineText, lastRange, lastX, lastY
+    Set r = docObj.Range(offset, offset + 1)
+    pageNum = SafeInfo(r, wdActiveEndPageNumber)
+    lineNum = SafeInfo(r, wdFirstCharacterLineNumber)
+    x = SafeInfo(r, wdHorizontalPositionRelativeToPage)
+    y = SafeInfo(r, wdVerticalPositionRelativeToPage)
 
-    If ch <> Chr(13) And ch <> Chr(7) Then
-      pageNum = SafeInfo(r, wdActiveEndPageNumber)
-      lineNum = SafeInfo(r, wdFirstCharacterLineNumber)
-      x = SafeInfo(r, wdHorizontalPositionRelativeToPage)
-      y = SafeInfo(r, wdVerticalPositionRelativeToPage)
+    If pageNum = "" Or lineNum = "" Then
+      offset = NextVisibleOffset(docObj, baseEnd, offset + 1)
+    Else
+      lineEnd = FindLineEnd(docObj, baseEnd, offset, pageNum, lineNum)
+      textEnd = TrimTrailingSkipped(docObj, offset, lineEnd)
 
-      If IsEmpty(currentLine) Then
-        currentPage = pageNum
-        currentLine = lineNum
-        currentX = x
-        currentY = y
-        currentLastX = x
-        currentLastY = y
-        currentStart = i
-        currentEnd = i + 1
-        currentText = ch
-      ElseIf pageNum = currentPage And lineNum = currentLine Then
-        currentEnd = i + 1
-        currentLastX = x
-        currentLastY = y
-        currentText = currentText & ch
-      Else
-        WriteLine fileObj, docObj, docPath, paragraph, paragraphIndex, currentPage, currentLine, currentStart, currentEnd, currentX, currentY, currentLastX, currentLastY, currentText
-        currentPage = pageNum
-        currentLine = lineNum
-        currentX = x
-        currentY = y
-        currentLastX = x
-        currentLastY = y
-        currentStart = i
-        currentEnd = i + 1
-        currentText = ch
+      If textEnd > offset Then
+        Set lastRange = docObj.Range(textEnd - 1, textEnd)
+        lastX = SafeInfo(lastRange, wdHorizontalPositionRelativeToPage)
+        lastY = SafeInfo(lastRange, wdVerticalPositionRelativeToPage)
+        lineText = docObj.Range(offset, textEnd).Text
+
+        WriteLine fileObj, docObj, docPath, paragraph, paragraphIndex, pageNum, lineNum, offset - baseStart, textEnd - baseStart, x, y, lastX, lastY, lineText
       End If
-    End If
-  Next
 
-  If Not IsEmpty(currentLine) Then
-    WriteLine fileObj, docObj, docPath, paragraph, paragraphIndex, currentPage, currentLine, currentStart, currentEnd, currentX, currentY, currentLastX, currentLastY, currentText
-  End If
+      offset = NextVisibleOffset(docObj, baseEnd, lineEnd)
+    End If
+  Loop
 End Sub
+
+Function FindLineEnd(docObj, baseEnd, startOffset, pageNum, lineNum)
+  Dim lo, hi, stepSize
+  lo = startOffset
+  hi = startOffset + 1
+  stepSize = 1
+
+  Do While hi < baseEnd And OffsetOnLine(docObj, hi, pageNum, lineNum)
+    lo = hi
+    stepSize = stepSize * 2
+    hi = startOffset + stepSize
+    If hi > baseEnd Then
+      hi = baseEnd
+    End If
+  Loop
+
+  If hi >= baseEnd Then
+    If OffsetOnLine(docObj, baseEnd - 1, pageNum, lineNum) Then
+      FindLineEnd = baseEnd
+      Exit Function
+    End If
+  End If
+
+  Dim low, high, mid
+  low = lo + 1
+  high = hi
+
+  Do While low < high
+    mid = (low + high) \ 2
+    If OffsetOnLine(docObj, mid, pageNum, lineNum) Then
+      low = mid + 1
+    Else
+      high = mid
+    End If
+  Loop
+
+  FindLineEnd = low
+End Function
+
+Function OffsetOnLine(docObj, offset, pageNum, lineNum)
+  Dim r, ch
+  Set r = docObj.Range(offset, offset + 1)
+  ch = r.Text
+
+  If IsSkippedLayoutChar(ch) Then
+    OffsetOnLine = False
+    Exit Function
+  End If
+
+  OffsetOnLine = (SafeInfo(r, wdActiveEndPageNumber) = pageNum And SafeInfo(r, wdFirstCharacterLineNumber) = lineNum)
+End Function
+
+Function NextVisibleOffset(docObj, baseEnd, offset)
+  Dim pos, ch
+  pos = offset
+
+  Do While pos < baseEnd
+    ch = docObj.Range(pos, pos + 1).Text
+    If Not IsSkippedLayoutChar(ch) Then
+      Exit Do
+    End If
+    pos = pos + 1
+  Loop
+
+  NextVisibleOffset = pos
+End Function
+
+Function TrimTrailingSkipped(docObj, startOffset, endOffset)
+  Dim pos, ch
+  pos = endOffset
+
+  Do While pos > startOffset
+    ch = docObj.Range(pos - 1, pos).Text
+    If Not IsSkippedLayoutChar(ch) Then
+      Exit Do
+    End If
+    pos = pos - 1
+  Loop
+
+  TrimTrailingSkipped = pos
+End Function
+
+Function IsSkippedLayoutChar(ch)
+  IsSkippedLayoutChar = (ch = Chr(13) Or ch = Chr(7))
+End Function
 
 Function SafeInfo(rangeObj, infoKind)
   On Error Resume Next

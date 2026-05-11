@@ -25,6 +25,35 @@ if ($outputParent -and -not (Test-Path -LiteralPath $outputParent)) {
   New-Item -ItemType Directory -Force -Path $outputParent | Out-Null
 }
 
+function Stop-InteractiveWord {
+  $cleanupCmd = Join-Path $workDir ("kill-word-" + ([guid]::NewGuid().ToString("N")) + ".cmd")
+  Set-Content -LiteralPath $cleanupCmd -Encoding ASCII -Value @(
+    "@echo off",
+    "for /L %%i in (1,1,5) do (",
+    "  taskkill /F /T /IM WINWORD.EXE >nul 2>nul",
+    "  ping 127.0.0.1 -n 2 >nul",
+    ")"
+  )
+
+  try {
+    $cleanupTaskName = "RedBatWordParity-KillWord-" + ([guid]::NewGuid().ToString("N"))
+    try {
+      $cleanupRun = 'cmd.exe /c "' + $cleanupCmd + '"'
+      & schtasks.exe /Create /TN $cleanupTaskName /TR $cleanupRun /SC ONCE /ST ((Get-Date).AddMinutes(10).ToString("HH:mm")) /F /IT 2>$null | Out-Null
+      if ($LASTEXITCODE -eq 0) {
+        & schtasks.exe /Run /TN $cleanupTaskName 2>$null | Out-Null
+        Start-Sleep -Seconds 7
+      }
+    }
+    finally {
+      & schtasks.exe /Delete /TN $cleanupTaskName /F 2>$null | Out-Null
+    }
+  }
+  finally {
+    Remove-Item -LiteralPath $cleanupCmd -Force -ErrorAction SilentlyContinue
+  }
+}
+
 $cmd = @"
 @echo off
 cd /d "$workDir"
@@ -72,9 +101,12 @@ try {
   if (Test-Path -LiteralPath $logPath) {
     Get-Content -LiteralPath $logPath | Write-Error
   }
+  & schtasks.exe /End /TN $taskName 2>$null | Out-Null
+  Stop-InteractiveWord
   throw "Timed out waiting for VBS task after $TimeoutSeconds seconds"
 }
 finally {
   & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
   Remove-Item -LiteralPath $cmdPath -Force -ErrorAction SilentlyContinue
+  Stop-InteractiveWord
 }
