@@ -91,6 +91,48 @@ let private tableBorders (value: DocxReader.CellBorders option) : TableBorders o
         InsideV = border b.InsideV
     })
 
+let private mergeCellBorders (baseBorders: DocxReader.CellBorders option) (borders: DocxReader.CellBorders option) =
+    match baseBorders, borders with
+    | None, value -> value
+    | value, None -> value
+    | Some baseValue, Some value ->
+        Some {
+            Top = value.Top |> Option.orElse baseValue.Top
+            Bottom = value.Bottom |> Option.orElse baseValue.Bottom
+            Left = value.Left |> Option.orElse baseValue.Left
+            Right = value.Right |> Option.orElse baseValue.Right
+            InsideH = value.InsideH |> Option.orElse baseValue.InsideH
+            InsideV = value.InsideV |> Option.orElse baseValue.InsideV
+        }
+
+let private mergeTableStyleProperties (baseProps: DocxReader.TableStyleProperties) (props: DocxReader.TableStyleProperties) : DocxReader.TableStyleProperties = {
+    Borders = mergeCellBorders baseProps.Borders props.Borders
+    Shading = props.Shading |> Option.orElse baseProps.Shading
+    PaddingTop = props.PaddingTop |> Option.orElse baseProps.PaddingTop
+    PaddingRight = props.PaddingRight |> Option.orElse baseProps.PaddingRight
+    PaddingBottom = props.PaddingBottom |> Option.orElse baseProps.PaddingBottom
+    PaddingLeft = props.PaddingLeft |> Option.orElse baseProps.PaddingLeft
+}
+
+let private resolveTableStyleProperties (styleMap: Map<string, DocxReader.StyleDefinition>) styleId =
+    let rec resolve visited id =
+        if Set.contains id visited then None
+        else
+            match Map.tryFind id styleMap with
+            | None -> None
+            | Some style ->
+                let baseProps =
+                    match style.BasedOn with
+                    | Some basedOn when basedOn <> id -> resolve (Set.add id visited) basedOn
+                    | _ -> None
+                match baseProps, style.TableProperties with
+                | Some baseValue, Some value -> Some (mergeTableStyleProperties baseValue value)
+                | None, Some value -> Some value
+                | Some value, None -> Some value
+                | None, None -> None
+
+    styleId |> Option.bind (resolve Set.empty)
+
 let private paraBorder (value: DocxReader.ParagraphBorder option) : RedBat.Word.Document.ParagraphBorder option =
     value |> Option.map (fun b -> {
         Style = b.Style
@@ -303,7 +345,21 @@ let private tableCell resolver images styleMap comments notes (cell: DocxReader.
         PaddingLeft = props |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingLeft)
     }
 
-let private tableBlock resolver images styleMap comments notes (table: DocxReader.Table) =
+let private tableBlock resolver images styleMap tableStyleMap comments notes (table: DocxReader.Table) =
+    let styleProperties = resolveTableStyleProperties tableStyleMap table.StyleId
+    let tablePadding selector =
+        table.Properties
+        |> Option.bind selector
+        |> Option.orElseWith (fun () -> styleProperties |> Option.bind selector)
+        |> twipsToCanvasPixels
+    let tableShading =
+        table.Properties
+        |> Option.bind (fun p -> p.Shading)
+        |> Option.orElseWith (fun () -> styleProperties |> Option.bind (fun p -> p.Shading))
+    let tableBorderProperties =
+        table.Borders
+        |> Option.orElseWith (fun () -> table.Properties |> Option.bind (fun p -> p.Borders))
+        |> Option.orElseWith (fun () -> styleProperties |> Option.bind (fun p -> p.Borders))
     Table {
         Id = Guid.NewGuid().ToString("N")
         Rows =
@@ -328,13 +384,13 @@ let private tableBlock resolver images styleMap comments notes (table: DocxReade
             | Some "autoFit" -> Some AutoFitTableLayout
             | _ -> None
         GridColumns = table.GridColumns |> List.choose (fun width -> tableWidth (Some width) (Some "dxa"))
-        Borders = tableBorders table.Borders
-        BackgroundColor = table.Properties |> Option.bind (fun p -> p.Shading) |> Option.bind (fun s -> color s.Fill)
+        Borders = tableBorders tableBorderProperties
+        BackgroundColor = tableShading |> Option.bind (fun s -> color s.Fill)
         CellSpacing = twipsToCanvasPixels table.CellSpacing
-        PaddingTop = table.Properties |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingTop)
-        PaddingRight = table.Properties |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingRight)
-        PaddingBottom = table.Properties |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingBottom)
-        PaddingLeft = table.Properties |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingLeft)
+        PaddingTop = tablePadding (fun p -> p.PaddingTop)
+        PaddingRight = tablePadding (fun p -> p.PaddingRight)
+        PaddingBottom = tablePadding (fun p -> p.PaddingBottom)
+        PaddingLeft = tablePadding (fun p -> p.PaddingLeft)
         Floating = table.Floating
     }
 
@@ -412,6 +468,7 @@ let private headerFooterPart resolver images styleMap comments notes (item: Docx
 
 let importDoc (doc: DocxReader.WordDocument) =
     let styleMap = DocumentProcessors.StyleResolution.buildStyleMapWithTheme doc.Theme doc.Styles
+    let tableStyleMap = doc.Styles |> List.map (fun style -> style.Id, style) |> Map.ofList
     let resolver = numberingResolver doc.NumberingDefinitions
     let comments = doc.Comments |> List.map (fun c -> c.Id, c) |> Map.ofList
     let notes =
@@ -428,7 +485,7 @@ let importDoc (doc: DocxReader.WordDocument) =
         doc.Content
         |> List.map (function
             | DocxReader.Para para -> Paragraph (mkPara resolver doc.Images styleMap comments notes para)
-            | DocxReader.Tbl table -> tableBlock resolver doc.Images styleMap comments notes table)
+            | DocxReader.Tbl table -> tableBlock resolver doc.Images styleMap tableStyleMap comments notes table)
 
     let firstParagraph =
         blocks

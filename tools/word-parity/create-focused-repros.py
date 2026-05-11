@@ -142,6 +142,19 @@ def table_with_grid(rows, grid_widths, table_width="0", width_type="auto"):
     )
 
 
+def table_grid_style_table(rows, grid_widths, table_width="0", width_type="auto"):
+    grid = "".join(f'<w:gridCol w:w="{grid_width}"/>' for grid_width in grid_widths)
+    return (
+        "<w:tbl>"
+        f'<w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="{table_width}" w:type="{width_type}"/>'
+        '<w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/>'
+        "</w:tblPr>"
+        f"<w:tblGrid>{grid}</w:tblGrid>"
+        + "".join(row_values for row_values in rows)
+        + "</w:tbl>"
+    )
+
+
 def repeated_long_paragraphs(count):
     text = (
         "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
@@ -204,6 +217,33 @@ def styles(include_heading_spacing=True, include_doc_defaults=True):
         '<w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style>'
         f'<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/><w:pPr>{heading1_spacing}<w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
         f'<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="Heading 2"/><w:basedOn w:val="Normal"/><w:pPr>{heading2_spacing}<w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/><w:sz w:val="26"/></w:rPr></w:style>'
+        "</w:styles>"
+    )
+
+
+def table_grid_styles():
+    borders = "".join(
+        f'<w:{name} w:val="single" w:sz="4" w:space="0" w:color="000000"/>'
+        for name in ["top", "left", "bottom", "right", "insideH", "insideV"]
+    )
+    cell_margin = (
+        '<w:tblCellMar>'
+        '<w:top w:w="0" w:type="dxa"/>'
+        '<w:left w:w="0" w:type="dxa"/>'
+        '<w:bottom w:w="0" w:type="dxa"/>'
+        '<w:right w:w="0" w:type="dxa"/>'
+        '</w:tblCellMar>'
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:styles xmlns:w="{WORD_NS}" xmlns:r="{REL_NS}">'
+        "<w:docDefaults>"
+        '<w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>'
+        "</w:docDefaults>"
+        '<w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style>'
+        '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="240"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
+        f'<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:tblPr>{cell_margin}</w:tblPr></w:style>'
+        f'<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/><w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblBorders>{borders}</w:tblBorders>{cell_margin}</w:tblPr></w:style>'
         "</w:styles>"
     )
 
@@ -508,6 +548,20 @@ def main():
             ], [4606, 4606])
             + paragraph("After table")
         )),
+        "table-grid-style-borders.docx": (False, False, False, (
+            paragraph("TableGrid style border repro", "Heading1")
+            + table_grid_style_table([
+                row_cells([
+                    cell("A", width=3000),
+                    cell("B", width=3000),
+                ]),
+                row_cells([
+                    cell("C", width=3000),
+                    cell("D", width=3000),
+                ]),
+            ], [3000, 3000])
+            + paragraph("After styled table")
+        ), True, True, table_grid_styles()),
         "table-cell-explicit-before-spacing.docx": (False, (
             paragraph("Table cell before-spacing repro", "Heading1")
             + table([

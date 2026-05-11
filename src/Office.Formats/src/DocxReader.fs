@@ -3339,6 +3339,11 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                 ] @ paragraphLayoutProps paragraphFontSize effectiveParaProps)
 
             let tableStyle = resolveTableStyle styleMap table.StyleId
+            let tableStyleProperties = tableStyle |> Option.bind (fun style -> style.TableProperties)
+            let tableBorders =
+                table.Borders
+                |> Option.orElseWith (fun () -> table.Properties |> Option.bind (fun props -> props.Borders))
+                |> Option.orElseWith (fun () -> tableStyleProperties |> Option.bind (fun props -> props.Borders))
             let rowCount = table.Rows.Length
             let cellSpan (cell: TableCell) = cell.Properties |> Option.bind (fun props -> props.ColSpan) |> Option.defaultValue 1 |> max 1
             let columnCount = table.Rows |> List.map (fun row -> row.Cells |> List.sumBy cellSpan) |> function | [] -> 0 | counts -> List.max counts
@@ -3473,6 +3478,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
             let tableBackgroundColor =
                 table.Properties
                 |> Option.bind (fun props -> props.Shading)
+                |> Option.orElseWith (fun () -> tableStyleProperties |> Option.bind (fun props -> props.Shading))
                 |> Option.bind (fun shading -> shading.Fill)
                 |> Option.bind (fun fill -> if fill = "auto" || fill = "" then None else Some ("#" + fill))
 
@@ -3490,7 +3496,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                 "LayoutMode" ==> table.LayoutMode
                 "GridColumns" ==> (table.GridColumns |> List.toArray)
                 "Floating" ==> table.Floating
-                "Borders" ==> bordersToEditor table.Borders
+                "Borders" ==> bordersToEditor tableBorders
             ])
     )
     |> List.toArray

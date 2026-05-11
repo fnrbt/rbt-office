@@ -487,6 +487,42 @@
 
       <tr>
         <td>
+          <strong>TableGrid style borders</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-grid-style-borders.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>this commit</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-grid-style-borders-word.png" style="--w:1224px; --x:110px; --y:150px; --s:.62" alt="Word reference TableGrid style borders">
+          </div>
+          <div class="caption">Word paints borders from the table style even when the table itself has no direct <code>w:tblBorders</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-grid-style-borders-before.png" style="--w:900px; --x:60px; --y:85px; --s:.85" alt="Before TableGrid style border fix">
+          </div>
+          <div class="caption">Before: text positions were correct, but style-derived table borders were dropped during DOCX import.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-grid-style-borders-after.png" style="--w:900px; --x:60px; --y:85px; --s:.85" alt="After TableGrid style border fix">
+          </div>
+          <div class="caption">After: browser render receives the style table borders and paints the same grid as Word; native and PDF render the same border surface.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> apply resolved table-style <code>TableProperties.Borders</code> when direct table borders are absent, and carry the same style fallback through the native importer used by native PNG and PDF.</p>
+          <ul>
+            <li>Focused guard: <code>table-grid-style-borders.docx</code> compares cleanly with <code>5 matched lines</code>.</li>
+            <li>Visual guard: the pre-fix browser image has no table lines; the after image paints all outer and inner borders.</li>
+            <li>Real guard: <code>docx4j-tables.docx</code> now shows its TableGrid borders; shading and merge-height residuals remain separate work.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Running header pushes body start</strong>
           <span class="meta">Repro: <code>tests/repros/word/running-header-body-offset.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-features/test-header-footer.docx</code></span>
