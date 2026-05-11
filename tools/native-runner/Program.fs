@@ -57,6 +57,24 @@ let private intOpt (value: string option) =
 
 let private color value = TC.normalizeColor value
 
+let private shadingColorValue value =
+    match value with
+    | Some "" -> None
+    | Some "auto" -> Some "auto"
+    | _ -> color value
+
+let private shading (value: DocxReader.Shading) : Shading = {
+    Pattern = value.Pattern
+    ForegroundColor = shadingColorValue value.Color
+    BackgroundColor = shadingColorValue value.Fill
+}
+
+let private directShadingBackgroundColor (shading: DocxReader.Shading) =
+    match shading.Pattern with
+    | None
+    | Some "clear" -> color shading.Fill
+    | _ -> None
+
 let private alignment = function
     | "center" -> Center
     | "right" -> Right
@@ -421,7 +439,8 @@ let private tableCell resolver images styleMap comments notes (paragraphProperti
     {
         Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes (applyTableParagraphProperties emptyPara)] else content
         ColSpan = props |> Option.bind (fun p -> p.ColSpan) |> Option.defaultValue 1
-        BackgroundColor = props |> Option.bind (fun p -> p.Shading) |> Option.bind (fun s -> color s.Fill)
+        BackgroundColor = props |> Option.bind (fun p -> p.Shading) |> Option.bind directShadingBackgroundColor
+        Shading = props |> Option.bind (fun p -> p.Shading) |> Option.map shading
         Width = props |> Option.bind (fun p -> twipsToCanvasPixels p.Width)
         PreferredWidth = props |> Option.bind (fun p -> tableWidth p.Width p.WidthType)
         BorderColor = None
@@ -486,7 +505,8 @@ let private tableBlock resolver images styleMap tableStyleMap comments notes (ta
             | _ -> None
         GridColumns = table.GridColumns |> List.choose (fun width -> tableWidth (Some width) (Some "dxa"))
         Borders = tableBorders tableBorderProperties
-        BackgroundColor = tableShading |> Option.bind (fun s -> color s.Fill)
+        BackgroundColor = tableShading |> Option.bind directShadingBackgroundColor
+        Shading = tableShading |> Option.map shading
         CellSpacing = twipsToCanvasPixels table.CellSpacing
         PaddingTop = tablePadding (fun p -> p.PaddingTop)
         PaddingRight = tablePadding (fun p -> p.PaddingRight)

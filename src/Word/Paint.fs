@@ -91,6 +91,137 @@ let private dashStyleForTableBorderStyle style =
     | "dashdotstroked" -> 3
     | _ -> 0
 
+let private usableColor fallback value =
+    match value with
+    | Some color when color <> "" && color <> "auto" -> color
+    | _ -> fallback
+
+let private patternKey (shading: Shading) =
+    shading.Pattern |> Option.map (fun value -> value.ToLowerInvariant())
+
+let private percentPatternCoverage (key: string option) =
+    match key with
+    | Some value when value.StartsWith("pct") ->
+        match System.Double.TryParse(value.Substring(3)) with
+        | true, percent -> Some (max 0.0 (min 1.0 (percent / 100.0)))
+        | false, _ -> None
+    | _ -> None
+
+let private shadingBackgroundColor (shading: Shading) =
+    match patternKey shading with
+    | Some "nil" -> None
+    | Some "solid" -> Some (usableColor "#000000" shading.ForegroundColor)
+    | _ -> Some (usableColor "#FFFFFF" shading.BackgroundColor)
+
+let private tryParseHexColor (value: string) =
+    let value = value.Trim()
+    let hex =
+        if value.StartsWith("#") then value.Substring(1)
+        else value
+    if hex.Length = 6 then
+        let hexValue ch =
+            if ch >= '0' && ch <= '9' then Some (int ch - int '0')
+            elif ch >= 'a' && ch <= 'f' then Some (10 + int ch - int 'a')
+            elif ch >= 'A' && ch <= 'F' then Some (10 + int ch - int 'A')
+            else None
+        let parse start =
+            match hexValue hex.[start], hexValue hex.[start + 1] with
+            | Some hi, Some lo -> Some (hi * 16 + lo)
+            | _ -> None
+        match parse 0, parse 2, parse 4 with
+        | Some r, Some g, Some b -> Some (r, g, b)
+        | _ -> None
+    else
+        None
+
+let private blendedColor background foreground coverage =
+    match tryParseHexColor background, tryParseHexColor foreground with
+    | Some (br, bg, bb), Some (fr, fg, fb) ->
+        let mix b f = int (round (float b + (float f - float b) * coverage)) |> max 0 |> min 255
+        sprintf "#%02X%02X%02X" (mix br fr) (mix bg fg) (mix bb fb)
+    | _ -> foreground
+
+let private fillRectClipped color x y width height =
+    if width <= 0.0 || height <= 0.0 then []
+    else [FillRect (color, x, y, width, height)]
+
+let private horizontalStripeCommands color x y width height =
+    let commands = ResizeArray<PaintCommand>()
+    let spacing = 2.0
+    let mutable yy = y + 0.5
+    while yy <= y + height do
+        commands.Add(StrokeLine (color, 1.0, 0, 0.0, x, yy, x + width, yy))
+        yy <- yy + spacing
+    List.ofSeq commands
+
+let private verticalStripeCommands color x y width height =
+    let commands = ResizeArray<PaintCommand>()
+    let spacing = 2.0
+    let mutable xx = x + 0.5
+    while xx <= x + width do
+        commands.Add(StrokeLine (color, 1.0, 0, 0.0, xx, y, xx, y + height))
+        xx <- xx + spacing
+    List.ofSeq commands
+
+let private diagonalStripeCommands reverse color x y width height =
+    let commands = ResizeArray<PaintCommand>()
+    let spacing = 2.0
+    if reverse then
+        let mutable c = 0.0
+        while c <= width + height do
+            let u0 = max 0.0 (c - height)
+            let u1 = min width c
+            if u1 >= u0 then
+                commands.Add(StrokeLine (color, 1.0, 0, 0.0, x + u0, y + c - u0, x + u1, y + c - u1))
+            c <- c + spacing
+    else
+        let mutable c = -width
+        while c <= height do
+            let u0 = max 0.0 (-c)
+            let u1 = min width (height - c)
+            if u1 >= u0 then
+                commands.Add(StrokeLine (color, 1.0, 0, 0.0, x + u0, y + u0 + c, x + u1, y + u1 + c))
+            c <- c + spacing
+    List.ofSeq commands
+
+let private shadingRectCommands (shading: Shading) x y width height =
+    if width <= 0.0 || height <= 0.0 then []
+    else
+        let key = patternKey shading
+        let foreground = usableColor "#000000" shading.ForegroundColor
+        let backgroundColor = shadingBackgroundColor shading
+        let background = backgroundColor |> Option.map (fun color -> FillRect (color, x, y, width, height) |> List.singleton) |> Option.defaultValue []
+        let percentCoverage = percentPatternCoverage key
+        let pattern =
+            match key with
+            | Some "nil"
+            | None
+            | Some "clear"
+            | Some "solid" -> []
+            | Some "horzstripe" -> horizontalStripeCommands foreground x y width height
+            | Some "vertstripe" -> verticalStripeCommands foreground x y width height
+            | Some "diagstripe" -> diagonalStripeCommands false foreground x y width height
+            | Some "reversediagstripe" -> diagonalStripeCommands true foreground x y width height
+            | Some "horzcross" -> horizontalStripeCommands foreground x y width height @ verticalStripeCommands foreground x y width height
+            | Some "diagcross" -> diagonalStripeCommands false foreground x y width height @ diagonalStripeCommands true foreground x y width height
+            | key ->
+                match percentCoverage with
+                | Some coverage when coverage >= 1.0 -> fillRectClipped foreground x y width height
+                | Some coverage when coverage > 0.0 ->
+                    backgroundColor
+                    |> Option.map (fun bg -> fillRectClipped (blendedColor bg foreground coverage) x y width height)
+                    |> Option.defaultValue (fillRectClipped foreground x y width height)
+                | _ -> []
+        if percentCoverage.IsSome then pattern else background @ pattern
+
+let private tableFillCommands backgroundColor shading x y width height =
+    match shading with
+    | Some value -> shadingRectCommands value x y width height
+    | None ->
+        match backgroundColor with
+        | Some color -> [FillRect (color, x, y, width, height)]
+        | None -> []
+
 let private tableBorderStrokeParts width style =
     let width = max 0.25 width
     RedBat.BorderGrid.strokePattern style
@@ -121,9 +252,8 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
                 && fragment.ConsumedLineStart = fragment.ConsumedLineEnd
                 && fragment.ConsumedLineStart > 0
             if not alreadyConsumedEmptyContinuation then
-                match plan.Table.BackgroundColor with
-                | Some color -> commands.Add(FillRect (color, tableBackgroundX, fragment.Y, plan.TableWidth, fragment.Height))
-                | None -> ()
+                tableFillCommands plan.Table.BackgroundColor plan.Table.Shading tableBackgroundX fragment.Y plan.TableWidth fragment.Height
+                |> List.iter commands.Add
 
                 let rowFragments =
                     cellFragmentsByRowFragment
@@ -132,11 +262,12 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
 
                 for cellFragment in rowFragments do
                     let sourceRow = plan.Table.Rows.[cellFragment.RowIndex]
-                    match sourceRow.Cells |> List.tryItem cellFragment.CellIndex |> Option.bind _.BackgroundColor with
-                    | Some color ->
+                    sourceRow.Cells
+                    |> List.tryItem cellFragment.CellIndex
+                    |> Option.iter (fun cell ->
                         let fillHeight = if cellFragment.CellSpacing > 0.0 then cellFragment.FragmentHeight else cellFragment.CellHeight
-                        commands.Add(FillRect (color, cellFragment.CellX - cellFragment.CellSpacing, cellFragment.CellY, cellFragment.CellWidth, fillHeight))
-                    | None -> ()
+                        tableFillCommands cell.BackgroundColor cell.Shading (cellFragment.CellX - cellFragment.CellSpacing) cellFragment.CellY cellFragment.CellWidth fillHeight
+                        |> List.iter commands.Add)
 
                 let paintCells =
                     rowFragments
@@ -391,9 +522,7 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
         let addRowCommands (row: WordLayout.Table.ResolvedRow) currentY rowHeight =
             let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row.Source
             for fragmentY, fragmentHeight in rowFragments settings currentY rowHeight do
-                match tableBlock.BackgroundColor with
-                | Some color -> commands <- commands @ [FillRect (color, tableX, fragmentY, tableWidth, fragmentHeight)]
-                | None -> ()
+                commands <- commands @ tableFillCommands tableBlock.BackgroundColor tableBlock.Shading tableX fragmentY tableWidth fragmentHeight
 
             let cells =
                 row.Cells
@@ -404,9 +533,7 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                     let cellY = currentY + cellSpacing
                     let cellHeight = max 0.0 (rowHeight - cellSpacing)
                     for fragmentY, fragmentHeight in rowFragments settings cellY cellHeight do
-                        match cell.BackgroundColor with
-                        | Some color -> commands <- commands @ [FillRect (color, x, fragmentY, width, fragmentHeight)]
-                        | None -> ()
+                        commands <- commands @ tableFillCommands cell.BackgroundColor cell.Shading x fragmentY width fragmentHeight
                     ({
                         Row = 0
                         Column = resolved.StartColumn

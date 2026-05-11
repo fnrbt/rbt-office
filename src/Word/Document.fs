@@ -170,6 +170,7 @@ and TableBlock = {
     GridColumns: TableWidth list
     Borders: TableBorders option
     BackgroundColor: string option
+    Shading: Shading option
     CellSpacing: float option
     PaddingTop: float option
     PaddingRight: float option
@@ -210,6 +211,7 @@ and TableCell = {
     Content: ParagraphBlock list  // Cells can contain multiple paragraphs
     ColSpan: int
     BackgroundColor: string option
+    Shading: Shading option
     Width: float option
     PreferredWidth: TableWidth option
     BorderColor: string option
@@ -221,6 +223,12 @@ and TableCell = {
     PaddingRight: float option
     PaddingBottom: float option
     PaddingLeft: float option
+}
+
+and Shading = {
+    Pattern: string option
+    ForegroundColor: string option
+    BackgroundColor: string option
 }
 
 and TableWidthKind =
@@ -767,6 +775,7 @@ let private emptyTableCell () =
         ]
         ColSpan = 1
         BackgroundColor = None
+        Shading = None
         Width = None
         PreferredWidth = None
         BorderColor = None
@@ -1444,6 +1453,7 @@ let insertTable rows columns doc =
         GridColumns = []
         Borders = None
         BackgroundColor = None
+        Shading = None
         CellSpacing = None
         PaddingTop = None
         PaddingRight = None
@@ -1854,6 +1864,7 @@ let setSelectedTableCellStyle backgroundColor width borderColor borderWidth vert
                                         else
                                             { cell with
                                                 BackgroundColor = backgroundColor
+                                                Shading = None
                                                 Width = width
                                                 BorderColor = borderColor
                                                 BorderWidth = borderWidth

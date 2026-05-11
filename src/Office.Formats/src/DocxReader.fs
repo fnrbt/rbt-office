@@ -2486,6 +2486,25 @@ let private wordColorToCss (color: string option) =
     | Some value -> Some ("#" + value.ToUpper())
     | None -> None
 
+let private wordShadingColorToEditor (color: string option) =
+    match color with
+    | Some value when value = "" -> None
+    | Some "auto" -> Some "auto"
+    | value -> wordColorToCss value
+
+let private wordShadingToEditor (shading: Shading) =
+    createObj [
+        "Pattern" ==> shading.Pattern
+        "ForegroundColor" ==> wordShadingColorToEditor shading.Color
+        "BackgroundColor" ==> wordShadingColorToEditor shading.Fill
+    ]
+
+let private directShadingBackgroundColor (shading: Shading) =
+    match shading.Pattern with
+    | None
+    | Some "clear" -> wordColorToCss shading.Fill
+    | _ -> None
+
 let private wordTwipsToPoints (twips: string option) =
     twips
     |> Option.bind (fun value ->
@@ -3422,11 +3441,12 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                 let backgroundColor =
                     cell.Properties
                     |> Option.bind (fun props -> props.Shading)
-                    |> Option.bind (fun shading ->
-                        match shading.Pattern, shading.Fill with
-                        | Some "clear", Some "auto" -> Some "#FFFFFF"
-                        | _, Some fill when fill <> "auto" && fill <> "" -> Some ("#" + fill)
-                        | _ -> None)
+                    |> Option.bind directShadingBackgroundColor
+
+                let shading =
+                    cell.Properties
+                    |> Option.bind (fun props -> props.Shading)
+                    |> Option.map wordShadingToEditor
 
                 let width =
                     cell.Properties
@@ -3446,6 +3466,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                     "Paragraphs" ==> cellParagraphs
                     "ColSpan" ==> (cell.Properties |> Option.bind (fun props -> props.ColSpan) |> Option.defaultValue 1)
                     "BackgroundColor" ==> backgroundColor
+                    "Shading" ==> shading
                     "Width" ==> width
                     "WidthType" ==> (cell.Properties |> Option.bind (fun props -> props.WidthType))
                     "PreferredWidth" ==> width
@@ -3495,8 +3516,13 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                 table.Properties
                 |> Option.bind (fun props -> props.Shading)
                 |> Option.orElseWith (fun () -> tableStyleProperties |> Option.bind (fun props -> props.Shading))
-                |> Option.bind (fun shading -> shading.Fill)
-                |> Option.bind (fun fill -> if fill = "auto" || fill = "" then None else Some ("#" + fill))
+                |> Option.bind directShadingBackgroundColor
+
+            let tableShading =
+                table.Properties
+                |> Option.bind (fun props -> props.Shading)
+                |> Option.orElseWith (fun () -> tableStyleProperties |> Option.bind (fun props -> props.Shading))
+                |> Option.map wordShadingToEditor
 
             Some (createObj [
                 "Type" ==> "Table"
@@ -3504,6 +3530,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                 "PreferredWidth" ==> table.Width
                 "PreferredWidthType" ==> table.WidthType
                 "BackgroundColor" ==> tableBackgroundColor
+                "Shading" ==> tableShading
                 "CellSpacing" ==> intOption table.CellSpacing
                 "PaddingTop" ==> intOption (table.Properties |> Option.bind (fun props -> props.PaddingTop) |> Option.orElseWith (fun () -> tableStyle |> Option.bind (fun style -> style.TableProperties) |> Option.bind (fun props -> props.PaddingTop)))
                 "PaddingRight" ==> intOption (table.Properties |> Option.bind (fun props -> props.PaddingRight) |> Option.orElseWith (fun () -> tableStyle |> Option.bind (fun style -> style.TableProperties) |> Option.bind (fun props -> props.PaddingRight)))

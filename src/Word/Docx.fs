@@ -113,6 +113,37 @@ let private sectionPageSetupToEditor (setup: SectionPageSetup) =
         "EvenAndOddHeaders" ==> setup.EvenAndOddHeaders
     ]
 
+let private shadingFromEditor (value: obj) : Shading option =
+    if isNullOrUndefined value then None
+    else
+        let shading = {
+            Pattern = optionalString (value?Pattern)
+            ForegroundColor = optionalString (value?ForegroundColor)
+            BackgroundColor = optionalString (value?BackgroundColor)
+        }
+        if shading.Pattern.IsNone && shading.ForegroundColor.IsNone && shading.BackgroundColor.IsNone then None
+        else Some shading
+
+let private shadingFromEditorFields (value: obj) =
+    shadingFromEditor (value?Shading)
+    |> Option.orElseWith (fun () ->
+        let shading = {
+            Pattern = optionalString (value?ShadingPattern)
+            ForegroundColor = optionalString (value?ShadingForegroundColor)
+            BackgroundColor = optionalString (value?ShadingBackgroundColor)
+        }
+        if shading.Pattern.IsNone && shading.ForegroundColor.IsNone && shading.BackgroundColor.IsNone then None
+        else Some shading)
+
+let private shadingToEditor (shading: Shading option) =
+    shading
+    |> Option.map (fun value ->
+        createObj [
+            "Pattern" ==> value.Pattern
+            "ForegroundColor" ==> value.ForegroundColor
+            "BackgroundColor" ==> value.BackgroundColor
+        ])
+
 /// Convert alignment string to Alignment type
 let private alignmentFromString (align: string) : Alignment =
     match align.ToLower() with
@@ -773,6 +804,7 @@ let private blockFromEditor (item: obj) =
                             Content = cellParagraphs
                             ColSpan = optionalInt (cell?ColSpan) |> Option.defaultValue 1 |> max 1
                             BackgroundColor = optionalString (cell?BackgroundColor)
+                            Shading = shadingFromEditorFields cell
                             Width = optionalIntAsFloat (cell?Width)
                             PreferredWidth = tableWidthFromEditor (cell?PreferredWidth) (cell?PreferredWidthType)
                             BorderColor = optionalString (cell?BorderColor)
@@ -815,6 +847,7 @@ let private blockFromEditor (item: obj) =
             GridColumns = gridColumns
             Borders = tableBordersFromEditor (item?Borders)
             BackgroundColor = optionalString (item?BackgroundColor)
+            Shading = shadingFromEditorFields item
             CellSpacing = optionalDxaAsCanvasPixels (item?CellSpacing)
             PaddingTop = optionalDxaAsCanvasPixels (item?PaddingTop)
             PaddingRight = optionalDxaAsCanvasPixels (item?PaddingRight)
@@ -1085,6 +1118,7 @@ let rec private blockToEditor block =
                                 "Paragraphs" ==> (cell.Content |> List.map (paragraphToEditor "Paragraph" 0) |> List.toArray)
                                 "ColSpan" ==> cell.ColSpan
                                 "BackgroundColor" ==> cell.BackgroundColor
+                                "Shading" ==> shadingToEditor cell.Shading
                                 "Width" ==> cell.Width
                                 "PreferredWidth" ==> tableWidthToEditor cell.PreferredWidth
                                 "PreferredWidthType" ==> tableWidthTypeToEditor cell.PreferredWidth
@@ -1123,6 +1157,7 @@ let rec private blockToEditor block =
                 "GridColumns" ==> (table.GridColumns |> List.map (fun width -> width.Value |> Option.defaultValue 0.0) |> List.toArray)
                 "Borders" ==> tableBordersToEditor table.Borders
                 "BackgroundColor" ==> table.BackgroundColor
+                "Shading" ==> shadingToEditor table.Shading
                 "CellSpacing" ==> table.CellSpacing
                 "PaddingTop" ==> table.PaddingTop
                 "PaddingRight" ==> table.PaddingRight

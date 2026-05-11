@@ -143,6 +143,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Auto pattern table-cell shading</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-auto-pattern-shading.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>pending</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-cell-auto-pattern-shading-word.png" style="--w:1224px; --x:20px; --y:35px; --s:0.3" alt="Word reference auto pattern table-cell shading">
+          </div>
+          <div class="caption">Word paints <code>w:shd</code> pattern fills even when the background <code>w:fill</code> is <code>auto</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-cell-auto-pattern-shading-before.png" style="--w:900px; --x:20px; --y:35px; --s:0.45" alt="Before auto pattern table-cell shading fix">
+          </div>
+          <div class="caption">Before: all <code>fill="auto"</code> pattern shadings were imported as no cell background, leaving the table unshaded.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-cell-auto-pattern-shading-after.png" style="--w:900px; --x:20px; --y:35px; --s:0.45" alt="After auto pattern table-cell shading fix">
+          </div>
+          <div class="caption">After: percentage shadings resolve to Word-like coverage fills, and hatch shadings keep their foreground/background pattern data.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> carry <code>w:shd</code> as structured pattern, foreground, and background color data through import/export and the shared document model. The renderer now paints <code>pctN</code> shadings as coverage over the cell background and paints hatch/stripe shadings as repeatable pattern strokes.</p>
+          <ul>
+            <li>Focused guard: <code>table-cell-auto-pattern-shading.docx</code> compares cleanly with <code>5 matched lines</code>.</li>
+            <li>Visual guard: the saved before image has no shaded cells; the after image restores gray percentage fills and the green diagonal stripe pattern.</li>
+            <li>Real guard: <code>docx4j-tables.docx</code> now shows the first table's gray and green shaded cells in the browser path.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Table style paragraph spacing</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-style-paragraph-spacing.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>

@@ -856,6 +856,27 @@ let private optionalTableWidth elementName value typeValue =
     | None, Some widthType when widthType = "auto" || widthType = "nil" -> Some (selfClosing elementName [("w:w", "0"); ("w:type", widthType)])
     | _ -> None
 
+let private wordColorOrAuto value =
+    optionalString value
+    |> Option.map (fun color ->
+        if color = "auto" then "auto"
+        else InverseConversion.cssColorToWord (Some color) |> Option.defaultValue color)
+    |> Option.defaultValue "auto"
+
+let private shadingElement (value: obj) =
+    if isNullOrUndefined value then None
+    else
+        let pattern = optionalString (value?Pattern) |> Option.defaultValue "clear"
+        let foreground = wordColorOrAuto (value?ForegroundColor)
+        let background = wordColorOrAuto (value?BackgroundColor)
+        Some (selfClosing "w:shd" [("w:val", pattern); ("w:color", foreground); ("w:fill", background)])
+
+let private backgroundShadingElement (value: obj) =
+    optionalString value
+    |> Option.map (fun color ->
+        let wordColor = InverseConversion.cssColorToWord (Some color) |> Option.defaultValue color
+        selfClosing "w:shd" [("w:val", "clear"); ("w:color", "auto"); ("w:fill", wordColor)])
+
 let private generateTableCell (hyperlinks: Map<string, string>) (images: ImageScope) (cell: obj) : string =
     let paragraphs =
         if isNullOrUndefined cell?Paragraphs then
@@ -875,12 +896,9 @@ let private generateTableCell (hyperlinks: Map<string, string>) (images: ImageSc
                 let width = cell?Width |> unbox<float> |> int |> string
                 yield selfClosing "w:tcW" [("w:w", width); ("w:type", "dxa")]
 
-        if not (isNullOrUndefined cell?BackgroundColor) then
-            match unbox<string option> cell?BackgroundColor with
-            | Some color when color <> "" ->
-                let wordColor = InverseConversion.cssColorToWord (Some color) |> Option.defaultValue color
-                yield selfClosing "w:shd" [("w:val", "clear"); ("w:color", "auto"); ("w:fill", wordColor)]
-            | _ -> ()
+        match shadingElement (cell?Shading) |> Option.orElseWith (fun () -> backgroundShadingElement (cell?BackgroundColor)) with
+        | Some shading -> yield shading
+        | None -> ()
 
         match bordersElement "w:tcBorders" (cell?Borders) with
         | Some borders -> yield borders
@@ -996,6 +1014,9 @@ let private generateTable (hyperlinks: Map<string, string>) (images: ImageScope)
             let docxMode = if mode = "fixed" then "fixed" else "autofit"
             yield selfClosing "w:tblLayout" [("w:type", docxMode)]
         | _ -> ()
+        match shadingElement (table?Shading) |> Option.orElseWith (fun () -> backgroundShadingElement (table?BackgroundColor)) with
+        | Some shading -> yield shading
+        | None -> ()
         match bordersElement "w:tblBorders" (table?Borders) with
         | Some borders -> yield borders
         | None -> yield defaultTableBorders ()

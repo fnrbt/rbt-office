@@ -952,6 +952,7 @@ module API =
         { Content = [paragraphFromText id text]
           ColSpan = 1
           BackgroundColor = None
+          Shading = None
           Width = None
           PreferredWidth = None
           BorderColor = None
@@ -972,6 +973,7 @@ module API =
           GridColumns = [{ Kind = Doc.PercentWidth; Value = Some 50.0 }; { Kind = Doc.PercentWidth; Value = Some 50.0 }]
           Borders = None
           BackgroundColor = None
+          Shading = None
           CellSpacing = None
           PaddingTop = None
           PaddingRight = None

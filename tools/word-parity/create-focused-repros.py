@@ -72,10 +72,22 @@ def empty_paragraph():
     return "<w:p/>"
 
 
-def cell(text, width=2400, spacing_after=None, padding_left=None, alignment=None, valign=None, shading=None):
+def cell(
+    text,
+    width=2400,
+    spacing_after=None,
+    padding_left=None,
+    alignment=None,
+    valign=None,
+    shading=None,
+    shading_color="auto",
+    shading_fill="auto",
+):
     tc_props = [f'<w:tcW w:w="{width}" w:type="dxa"/>']
     if shading:
-        tc_props.append(f'<w:shd w:val="{esc(shading)}" w:color="auto" w:fill="auto"/>')
+        tc_props.append(
+            f'<w:shd w:val="{esc(shading)}" w:color="{esc(shading_color)}" w:fill="{esc(shading_fill)}"/>'
+        )
     if valign:
         tc_props.append(f'<w:vAlign w:val="{esc(valign)}"/>')
     if padding_left is not None:
@@ -575,6 +587,20 @@ def main():
                 ], height=1134),
             ], [4606, 4606])
             + paragraph("After table")
+        )),
+        "table-cell-auto-pattern-shading.docx": (False, (
+            paragraph("Table cell auto pattern shading repro", "Heading1")
+            + table_with_grid([
+                row_cells_props([
+                    cell("pct5 auto", width=4606, shading="pct5"),
+                    cell("pct10 auto", width=4606, shading="pct10"),
+                ], height=720),
+                row_cells_props([
+                    cell("plain", width=4606),
+                    cell("green stripe", width=4606, shading="reverseDiagStripe", shading_color="6FB31A"),
+                ], height=720),
+            ], [4606, 4606])
+            + paragraph("After shaded table")
         )),
         "table-grid-style-borders.docx": (False, False, False, (
             paragraph("TableGrid style border repro", "Heading1")
