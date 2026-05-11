@@ -122,7 +122,7 @@
 <body>
   <h1>Word Render/Layout Parity Fixes</h1>
   <p class="lede">
-    Focused regression table for DOCX render/layout parity work. Each row keeps the real Word reference,
+    Focused regression table for DOCX render/layout parity work, newest fixes first. Each row keeps the real Word reference,
     our saved pre-fix rendering, and the current post-fix rendering. The frames are cropped into the problem
     area rather than full-page screenshots. Baseline images live under <code>artifacts/baseline/</code> and
     are intentionally not committed.
@@ -141,34 +141,671 @@
     <tbody>
       <tr>
         <td>
-          <strong>DOCX table import preserves structure</strong>
-          <span class="meta">Repro: <code>tests/repros/word/table-import-preserves-structure.docx</code></span>
-          <span class="meta">Fix commit: <code>ca4e9e0</code></span>
+          <strong>TableGrid style borders</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-grid-style-borders.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>dfc27d9</code></span>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-import-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table import repro">
+            <img src="../artifacts/word/table-grid-style-borders-word.png" style="--w:1224px; --x:110px; --y:150px; --s:.62" alt="Word reference TableGrid style borders">
           </div>
-          <div class="caption">Word keeps <code>A1/B1</code> on the same row and <code>A2/B2</code> on the next row.</div>
+          <div class="caption">Word paints borders from the table style even when the table itself has no direct <code>w:tblBorders</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-import-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before fix table import repro">
+            <img src="../artifacts/baseline/table-grid-style-borders-before.png" style="--w:900px; --x:60px; --y:85px; --s:.85" alt="Before TableGrid style border fix">
           </div>
-          <div class="caption">Before: browser import flattened table cells into ordinary paragraphs; <code>B1</code> stacked under <code>A1</code> at <code>x=0</code>.</div>
+          <div class="caption">Before: text positions were correct, but style-derived table borders were dropped during DOCX import.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/repro-table-import-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After fix table import repro">
+            <img src="../artifacts/browser/table-grid-style-borders-after.png" style="--w:900px; --x:60px; --y:85px; --s:.85" alt="After TableGrid style border fix">
           </div>
-          <div class="caption">After: browser import emits table objects, so same-row cells share Y and distinct X positions.</div>
+          <div class="caption">After: browser render receives the style table borders and paints the same grid as Word; native and PDF render the same border surface.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> <code>Processors.forEditorPackage</code> now uses the typed DOCX-to-editor package path, including tables, headers/footers, page setup, and numbering.</p>
+          <p><strong>Fix:</strong> apply resolved table-style <code>TableProperties.Borders</code> when direct table borders are absent, and carry the same style fallback through the native importer used by native PNG and PDF.</p>
           <ul>
-            <li>Before guard: <code>B1 x=0, y=150.4</code></li>
-            <li>After guard: <code>B1 x=318, y=142.7</code></li>
-            <li>Check with <code>capture-browser-docx.mjs</code> JSON output.</li>
+            <li>Focused guard: <code>table-grid-style-borders.docx</code> compares cleanly with <code>5 matched lines</code>.</li>
+            <li>Visual guard: the pre-fix browser image has no table lines; the after image paints all outer and inner borders.</li>
+            <li>Real guard: <code>docx4j-tables.docx</code> now shows its TableGrid borders; shading and merge-height residuals remain separate work.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>DXA table grid width and row height scale</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-dxa-grid-alignment-row-height.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>65928de</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-dxa-grid-alignment-row-height-word.png" style="--w:1224px; --x:115px; --y:145px; --s:.42" alt="Word reference DXA table grid width">
+          </div>
+          <div class="caption">Word lays out the two <code>4606</code> dxa grid columns across the body width and right-aligns <code>B/D</code> at the cell edge.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-dxa-grid-alignment-row-height-before.png" style="--w:900px; --x:60px; --y:85px; --s:.56" alt="Before DXA table grid scale fix">
+          </div>
+          <div class="caption">Before: table grid and row-height dxa values used the print point scale, shrinking the table and pulling right-aligned cell text left.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-dxa-grid-alignment-row-height-after.png" style="--w:900px; --x:60px; --y:85px; --s:.56" alt="After DXA table grid scale fix">
+          </div>
+          <div class="caption">After: shared table layout resolves dxa lengths in canvas units, so the table width, row height, and following paragraph position match the Word query.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> resolve table grid columns, row minimum heights, and cached border plans with <code>WordLayout.canvasScale</code>. The native import now keeps <code>DxaWidth</code> values raw so shared layout performs the conversion exactly once.</p>
+          <ul>
+            <li>Focused guard: <code>B/D</code> right-edge drift went from <code>153.40px</code> to <code>5 matched lines</code>.</li>
+            <li>Real guard: <code>docx4j-tables.docx</code> right-cell drift dropped from about <code>145px</code> to about <code>8px</code>.</li>
+            <li>Remaining real-fixture deltas are vertical alignment/shading follow-ups, not the grid-width conversion bug.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>List marker glyph width</strong>
+          <span class="meta">Repro: <code>tests/repros/word/list-default-indent.docx</code></span>
+          <span class="meta">Fix commit: <code>bbf2279</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:92px; --y:105px; --s:.78" alt="Word reference list marker glyph width">
+          </div>
+          <div class="caption">Word draws bullet and number markers at their glyph width inside the hanging marker area.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/list-marker-stretch-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before list marker glyph width fix">
+          </div>
+          <div class="caption">Before: the browser renderer stretched marker glyphs to the reserved marker box, turning bullets into horizontal ovals.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/list-marker-stretch-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After list marker glyph width fix">
+          </div>
+          <div class="caption">After: markers keep their measured glyph width while the paragraph still reserves the same hanging marker space.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> paint list prefixes with their measured marker width instead of the wider layout reserve used for indentation.</p>
+          <ul>
+            <li>Before guard: bullet markers were horizontally scaled in the existing nested-list after image.</li>
+            <li>After guard: focused repro layout still compares cleanly with <code>7 matched lines</code>.</li>
+            <li>Native/PDF smoke import now resolves <code>numbering.xml</code>, so this repro exercises real markers there too.</li>
+            <li>The browser paint fix leaves text indentation and line positions unchanged.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Explicit table cell left padding</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-explicit-left-padding.docx</code></span>
+          <span class="meta">Fix commit: <code>d559b7c</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-cell-explicit-left-padding-word.png" style="--w:1224px; --x:125px; --y:190px; --s:1.18" alt="Word reference explicit table cell left padding">
+          </div>
+          <div class="caption">Word applies the explicit <code>w:tcMar/w:left="108"</code> inset inside each cell.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-cell-explicit-left-padding-before.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="Before explicit table cell left padding fix">
+          </div>
+          <div class="caption">Before: imported cell padding was canceled by the table outer-inset adjustment, so text started at the cell border.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-cell-explicit-left-padding-after.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="After explicit table cell left padding fix">
+          </div>
+          <div class="caption">After: explicit cell padding offsets text within the table cell, matching Word's queried left edge.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> stop using cell margins as table outer insets, and convert imported table/cell padding from DOCX twips to canvas pixels.</p>
+          <ul>
+            <li>Before guard: focused repro had <code>dx=-7.00</code> for first-column cell text and <code>dx=-8.30</code> for second-column text.</li>
+            <li>After guard: focused repro compares cleanly with <code>5 matched lines</code>.</li>
+            <li>Real guard: legal-contributor form labels no longer report the repeated <code>dx=-7.00</code> table-cell offsets.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Cambria theme heading metrics</strong>
+          <span class="meta">Repro: <code>tests/repros/word/heading-cambria-font-wrap.docx</code></span>
+          <span class="meta">Fix commit: <code>bd9e533</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/heading-cambria-font-wrap-word.png" style="--w:1224px; --x:105px; --y:470px; --s:.82" alt="Word reference Cambria heading wrap">
+          </div>
+          <div class="caption">Word resolves the theme major font to Cambria and wraps the legal Heading 1 before <code>license.</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/heading-cambria-font-wrap-before.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="Before Cambria heading metric fix">
+          </div>
+          <div class="caption">Before: the browser runner had no Cambria face, so the heading used fallback metrics, stayed on one line, and pulled following text upward.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/heading-cambria-font-wrap-after.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="After Cambria heading metric fix">
+          </div>
+          <div class="caption">After: the browser runner uses the fetched Windows Cambria faces, and the same heading wraps at the Word break.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> register Cambria in the browser runner, add Cambria bold/italic to the PDF runner, and teach the native Word renderer to resolve Word font families from the fetched Windows font directory.</p>
+          <ul>
+            <li>Before guard: focused repro shifted following text by about <code>29px</code> because the heading did not wrap.</li>
+            <li>After guard: focused repro compares cleanly with <code>10 matched lines</code>.</li>
+            <li>Real guard: <code>docx4j-legal-contributor.docx</code> now keeps the employer paragraph split on page 3 like Word.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Top heading before-spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/top-heading-before-spacing.docx</code></span>
+          <span class="meta">Fix commit: <code>28ad834</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/top-heading-before-spacing-word.png" style="--w:1224px; --x:70px; --y:90px; --s:.78" alt="Word reference top heading before spacing">
+          </div>
+          <div class="caption">Word honors imported paragraph <code>w:before</code> spacing even when the paragraph starts at the top of the body area.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/top-heading-before-spacing-before.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="Before top heading before spacing fix">
+          </div>
+          <div class="caption">Before: page-top layout suppressed the imported before-spacing, placing both headings 32px too high.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/top-heading-before-spacing-after.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="After top heading before spacing fix">
+          </div>
+          <div class="caption">After: body layout applies the paragraph before-spacing and matches Word within the line-position threshold.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> remove the generic page-top suppression of paragraph before-spacing. Table-cell spacing had already been handled separately; body paragraphs now use their imported/effective spacing consistently.</p>
+          <ul>
+            <li>Before guard: focused headings were at <code>dy=-32.00</code> and <code>dy=-32.43</code>.</li>
+            <li>After guard: focused headings are within <code>0.43px</code> of Word.</li>
+            <li>Real guard: early legal-contributor drift drops by one imported heading before-spacing step.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Explicit before-spacing inside table cells</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-explicit-before-spacing.docx</code></span>
+          <span class="meta">Fix commit: <code>7c48939</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table cell before spacing">
+          </div>
+          <div class="caption">Word honors explicit paragraph <code>w:before</code> spacing inside each table cell, including empty cell paragraphs.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-cell-before-spacing-before.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before table cell before spacing fix">
+          </div>
+          <div class="caption">Before: row-local table measurement treated cell paragraphs as page-top paragraphs and suppressed their before-spacing.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-cell-before-spacing-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After table cell before spacing fix">
+          </div>
+          <div class="caption">After: explicit cell paragraph before-spacing contributes to row height, matching the Word row rhythm.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> preserve imported/effective table-cell paragraph <code>SpacingBefore</code>, and skip page-top before-spacing suppression when measuring paragraphs inside table cells.</p>
+          <ul>
+            <li>Before guard: focused repro had <code>First dy=-6.93</code>, <code>Second dy=-14.33</code>, and <code>Third dy=-39.95</code>.</li>
+            <li>After guard: focused repro compares below threshold with all matched lines within 1px.</li>
+            <li>Real guard: the legal-contributor table row drift dropped from 18-46px high to single-digit offsets.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Empty Normal paragraph mark size</strong>
+          <span class="meta">Repro: <code>tests/repros/word/empty-normal-paragraph-mark-size.docx</code></span>
+          <span class="meta">Fix commit: <code>a0a0b75</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-unmarshall-template.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/empty-paragraph-mark-size-word.png" style="--w:1224px; --x:92px; --y:92px; --s:.76" alt="Word reference empty paragraph mark size">
+          </div>
+          <div class="caption">Word gives a true empty Normal paragraph the same fallback paragraph-mark height as nearby 11 pt text.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/empty-paragraph-mark-size-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before empty paragraph mark size fix">
+          </div>
+          <div class="caption">Before: when the DOCX omitted document defaults, empty paragraphs fell back to the editor's hardcoded 11px style and were 4.82px too short.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/empty-paragraph-mark-size-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After empty paragraph mark size fix">
+          </div>
+          <div class="caption">After: empty paragraphs honor the imported <code>ParagraphMarkFontSize</code>, removing the accumulated upward drift.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> use the imported paragraph mark font size for empty paragraph line-height instead of discarding it when it is larger than the base paragraph style.</p>
+          <ul>
+            <li>Focused guard: the blank-paragraph gap moved from <code>55.18</code> to <code>60.00</code> browser pixels.</li>
+            <li>Real guard: <code>docx4j-unmarshall-template.docx</code> moved from <code>dy=-9.65</code> to <code>dy=0.01</code>.</li>
+            <li>The repro intentionally omits DOCX document defaults to match the docx4j fixture shape.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Imported heading style spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/heading-style-no-spacing.docx</code></span>
+          <span class="meta">Fix commit: <code>39125c1</code></span>
+          <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-lists.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/heading-style-no-spacing-word.png" style="--w:1224px; --x:92px; --y:95px; --s:.76" alt="Word reference imported heading style spacing">
+          </div>
+          <div class="caption">Word uses the spacing from the imported Heading styles; these styles omit explicit before/after spacing.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/heading-style-no-spacing-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before imported heading style spacing fix">
+          </div>
+          <div class="caption">Before: imported headings still inherited the editor's built-in heading spacing, adding drift after blank paragraphs.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/heading-style-no-spacing-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After imported heading style spacing fix">
+          </div>
+          <div class="caption">After: named DOCX heading styles apply over Normal, so omitted heading spacing stays omitted.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> when a heading block has a named paragraph style from DOCX, use the document Normal style as the base before applying the named style.</p>
+          <ul>
+            <li>Focused guard: <code>Section B</code> moved from <code>dy=6.29</code> to <code>dy=0.29</code>.</li>
+            <li><code>test-formatting.docx</code>, <code>test-lists.docx</code>, and <code>test-multi-headers.docx</code> now compare below the 6px threshold.</li>
+            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Widow control for last-line split</strong>
+          <span class="meta">Repro: <code>tests/repros/word/widow-control-last-line.docx</code></span>
+          <span class="meta">Fix commit: <code>1bb384d</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-multi-headers.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/widow-control-last-line-word.png" style="--w:1224px; --x:92px; --y:700px; --s:.78" alt="Word reference widow control last line split">
+          </div>
+          <div class="caption">Word moves the whole short paragraph when only its last line would be alone on the next page.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/widow-control-last-line-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before widow control last line split fix">
+          </div>
+          <div class="caption">Before: the first two lines stayed at the page bottom and the final line started the next page by itself.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/widow-control-last-line-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After widow control last line split fix">
+          </div>
+          <div class="caption">After: the short paragraph moves as a unit, matching Word's widow-control behavior.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> extend the widow-control pre-pass to move short paragraphs when the split would leave exactly one trailing line on the next page.</p>
+          <ul>
+            <li>Before guard: paragraph 13 crossed the page with a page-level <code>dy</code> above 800px.</li>
+            <li>After guard: <code>widow-control-last-line.docx</code> compares cleanly with 40 matched lines.</li>
+            <li><code>test-multi-headers.docx</code> now has only one residual above 6px, at <code>dy=6.12</code>.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Wrapped Normal line pitch</strong>
+          <span class="meta">Repro: <code>tests/repros/word/wrapped-paragraph-line-pitch.docx</code></span>
+          <span class="meta">Fix commit: <code>1bb384d</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-multi-headers.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/wrapped-paragraph-line-pitch-word.png" style="--w:1224px; --x:92px; --y:700px; --s:.78" alt="Word reference wrapped paragraph line pitch">
+          </div>
+          <div class="caption">Word uses roughly 19-20 CSS-equivalent pixels between wrapped 11 pt Calibri line baselines.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/wrapped-paragraph-line-pitch-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before wrapped paragraph line pitch fix">
+          </div>
+          <div class="caption">Before: wrapped lines advanced by 17.6px, accumulating enough vertical drift to keep text on the wrong page.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/wrapped-paragraph-line-pitch-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After wrapped paragraph line pitch fix">
+          </div>
+          <div class="caption">After: wrapped line baselines and page break position match the Word reference in the focused repro.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> use a Word-like single-spaced body line box for Normal text and rebalance default after-spacing so single-line paragraph gaps remain at 30px.</p>
+          <ul>
+            <li>Before guard: the focused repro split at the wrong place with a page-level <code>dy</code> above 800px.</li>
+            <li>After guard: <code>wrapped-paragraph-line-pitch.docx</code> compares cleanly with 55 matched lines.</li>
+            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Running header pushes body start</strong>
+          <span class="meta">Repro: <code>tests/repros/word/running-header-body-offset.docx</code></span>
+          <span class="meta">Fix commit: <code>d9d8209</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-header-footer.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/running-header-body-offset-word.png" style="--w:1224px; --x:92px; --y:55px; --s:.74" alt="Word reference running header body offset">
+          </div>
+          <div class="caption">Word starts body text below the running header when the header extends past the top margin.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/running-header-body-offset-before.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="Before running header body offset fix">
+          </div>
+          <div class="caption">Before: body layout always started at the page top margin, placing the first heading 12px above Word.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/running-header-body-offset-after.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="After running header body offset fix">
+          </div>
+          <div class="caption">After: body layout starts at the larger of the top margin and running-header depth.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> compute the body content top from the first-page running header and share that top padding across browser canvas, native PNG, and PDF layout settings.</p>
+          <ul>
+            <li>Focused guard: first body line moved from <code>dy=-12</code> to <code>dy=0</code>.</li>
+            <li><code>test-header-footer.docx</code> now has 16 matched lines below the 6px comparator threshold.</li>
+            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Nested lists without explicit numbering indents</strong>
+          <span class="meta">Repro: <code>tests/repros/word/list-default-indent.docx</code></span>
+          <span class="meta">Fix commit: <code>de55362</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-lists.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:92px; --y:105px; --s:.78" alt="Word reference nested list default indent">
+          </div>
+          <div class="caption">Word keeps all text starts at the same 0.5-inch indent when the numbering levels omit explicit <code>w:ind</code> values.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/list-default-indent-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before nested list default indent fix">
+          </div>
+          <div class="caption">Before: fallback indentation multiplied by list nesting level, pushing nested list text 20-44px too far right.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/list-default-indent-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After nested list default indent fix">
+          </div>
+          <div class="caption">After: missing numbering indents use Word's default hanging list geometry, aligning all nested text starts.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> default list paragraphs with no explicit indent to a 48px text indent and -48px first-line hanging marker offset. DOCX-provided indentation still overrides this fallback.</p>
+          <ul>
+            <li>Before guard: focused repro nested rows had <code>dx=20</code>, <code>dx=23</code>, and <code>dx=44</code>.</li>
+            <li>After guard: focused repro and <code>test-lists.docx</code> both compare below the 6px threshold.</li>
+            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Normal paragraph pitch and style spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/normal-paragraph-line-pitch.docx</code></span>
+          <span class="meta">Fix commit: <code>318b336</code></span>
+          <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-complex-tables.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/normal-paragraph-line-pitch-word.png" style="--w:1224px; --x:92px; --y:115px; --s:.74" alt="Word reference normal paragraph pitch">
+          </div>
+          <div class="caption">Word advances consecutive Normal paragraphs by 30 CSS-equivalent pixels in this repro.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/normal-paragraph-line-pitch-before-fix.png" style="--w:900px; --x:70px; --y:75px; --s:.98" alt="Before normal paragraph pitch fix">
+          </div>
+          <div class="caption">Before: Normal paragraph gaps were 27.6px, and style spacing from DOCX styles was converted as points instead of canvas pixels.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/normal-paragraph-line-pitch-after.png" style="--w:900px; --x:70px; --y:75px; --s:.98" alt="After normal paragraph pitch fix">
+          </div>
+          <div class="caption">After: consecutive Normal paragraph gaps match Word, and Heading style spacing no longer accumulates vertical drift.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> normalize the built-in Normal paragraph rhythm and convert style-level DOCX twips/font sizes to CSS-pixel units in the browser package bridge.</p>
+          <ul>
+            <li>Focused guard: Normal paragraph gaps stay at <code>30.0</code> browser pixels.</li>
+            <li>The wrapped-line and widow-control rows below cover the later page-break precision pass.</li>
+            <li>Current real-fixture residuals in formatting/list headings are tracked separately near the comparator threshold.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Table following paragraph spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Fix commit: <code>fa4ac11</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:95px; --y:130px; --s:.74" alt="Word reference table following paragraph spacing">
+          </div>
+          <div class="caption">Word starts the paragraph immediately below the table border.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-after-spacing-before-fix.png" style="--w:900px; --x:70px; --y:105px; --s:.98" alt="Before table following paragraph spacing fix">
+          </div>
+          <div class="caption">Before: an extra table block gap pushed <code>After table</code> down by 10 layout units.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/repro-table-after-spacing-after.png" style="--w:900px; --x:70px; --y:105px; --s:.98" alt="After table following paragraph spacing fix">
+          </div>
+          <div class="caption">After: the following paragraph moves up to match the Word table edge spacing more closely.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> remove the unconditional post-table spacing from shared Word table layout. Paragraph spacing now comes from the surrounding paragraph/table content instead of an added table gap.</p>
+          <ul>
+            <li>Before guard: browser JSON placed <code>After table</code> at <code>y=208.51</code>.</li>
+            <li>After guard: current browser JSON places <code>After table</code> at <code>y=203.31</code>, within 1.4px of Word.</li>
+            <li>The same focused repro was captured through native PNG and the PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Default table cell inset alignment</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-complex-tables.docx</code></span>
+          <span class="meta">Fix commit: <code>8f771f3</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table cell inset alignment">
+          </div>
+          <div class="caption">Word aligns the heading, table left border, and cell text to the same left edge for this default table.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/repro-table-default-cell-padding-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before default table cell inset alignment fix">
+          </div>
+          <div class="caption">Before: the table border was shifted left and the cell text was padded right of the table edge.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/repro-table-cell-padding-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After default table cell inset alignment fix">
+          </div>
+          <div class="caption">After: default table padding is zero, so heading, border, and cell text share the left edge unless the DOCX specifies padding.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> set the Word table layout default cell padding to zero for canvas and print scales. Explicit DOCX table, row, and cell padding values still flow through the existing padding code.</p>
+          <ul>
+            <li>Before guard: table border was offset left of the surrounding paragraph text by the default cell inset.</li>
+            <li>After guard: <code>Alpha</code> and the table border start at the same x-position.</li>
+            <li>The complex-table heading now lines up with the table below it.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Cached table border Y anchor</strong>
+          <span class="meta">Repro: <code>tests/repros/word/two-tables-border-position.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-complex-tables.docx</code></span>
+          <span class="meta">Fix commit: <code>bf25883</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/raster/test-complex-tables-word.png" style="--w:1224px; --x:70px; --y:150px; --s:.58" alt="Word reference complex table borders">
+          </div>
+          <div class="caption">Word anchors each table border grid to its own table text.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/complex-tables-border-before-fix.png" style="--w:900px; --x:40px; --y:90px; --s:.82" alt="Before cached table border anchor fix">
+          </div>
+          <div class="caption">Before: the second table's border grid was painted too high, crossing the prior table/heading area.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/test-complex-tables-border-after.png" style="--w:900px; --x:40px; --y:90px; --s:.82" alt="After cached table border anchor fix">
+          </div>
+          <div class="caption">After: cached table border paint derives the table anchor from planned block layout Y, not planned line Y.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> align cached table border plans by comparing actual table-cell paragraph block Y to planned table-cell paragraph block Y. The previous line-Y comparison over-subtracted the first line offset.</p>
+          <ul>
+            <li>Before guard: data-table vertical borders started in the first table region.</li>
+            <li>After guard: data-table borders start at the data table top.</li>
+            <li>Focused repro is kept for the multi-table shape; the visible failure was first caught on the real complex-table fixture.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Static runner captures omit editor caret</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Fix commit: <code>4ecb24e</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference without caret">
+          </div>
+          <div class="caption">Word print/PDF reference has no active editor caret in the rendered page.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/browser-caret-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before caret capture fix">
+          </div>
+          <div class="caption">Before: browser and native snapshot runners captured the initial collapsed selection as a blue caret.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After caret capture fix">
+          </div>
+          <div class="caption">After: automated snapshots clear selection before reading layout JSON or taking screenshots.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add a browser <code>clearSelection</code> API for capture tools and import native runner documents with <code>Selection = None</code>.</p>
+          <ul>
+            <li>Before guard: blue caret appeared in browser/native PNG artifacts.</li>
+            <li>After guard: static parity artifacts match Word’s non-editing render surface.</li>
+            <li>Interactive editor behavior is unchanged outside the snapshot runners.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
+          <strong>Native Word text size uses CSS-pixel scale</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Fix commit: <code>a925d9c</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference native text scale repro">
+          </div>
+          <div class="caption">Word renders 11 pt Calibri as roughly 14.7 CSS pixels on the page surface.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/native-text-size-before-fix.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="Before native text scale fix">
+          </div>
+          <div class="caption">Before: native measurement and glyph drawing passed Word point sizes directly to <code>../renderer</code>, shrinking Calibri text.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="After native text scale fix">
+          </div>
+          <div class="caption">After: native measurement and glyph drawing use the same <code>96/72</code> point-to-pixel conversion as the browser canvas path.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> convert Word paint-command font sizes from points to canvas pixels before calling <code>Renderer.Text.measureWidth</code> and <code>Renderer.Text.layout</code> in <code>word-native</code>.</p>
+          <ul>
+            <li>Before guard: native Calibri body text was visibly smaller than Word/browser.</li>
+            <li>After guard: native body text scale matches the browser path and the Word reference more closely.</li>
+            <li>Check with <code>tools/native-runner</code> on the focused repro.</li>
           </ul>
         </td>
       </tr>
@@ -209,658 +846,34 @@
 
       <tr>
         <td>
-          <strong>Explicit before-spacing inside table cells</strong>
-          <span class="meta">Repro: <code>tests/repros/word/table-cell-explicit-before-spacing.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
-          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <strong>DOCX table import preserves structure</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-import-preserves-structure.docx</code></span>
+          <span class="meta">Fix commit: <code>ca4e9e0</code></span>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table cell before spacing">
+            <img src="../artifacts/word/repro-table-import-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table import repro">
           </div>
-          <div class="caption">Word honors explicit paragraph <code>w:before</code> spacing inside each table cell, including empty cell paragraphs.</div>
+          <div class="caption">Word keeps <code>A1/B1</code> on the same row and <code>A2/B2</code> on the next row.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-before-spacing-before.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before table cell before spacing fix">
+            <img src="../artifacts/baseline/table-import-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before fix table import repro">
           </div>
-          <div class="caption">Before: row-local table measurement treated cell paragraphs as page-top paragraphs and suppressed their before-spacing.</div>
+          <div class="caption">Before: browser import flattened table cells into ordinary paragraphs; <code>B1</code> stacked under <code>A1</code> at <code>x=0</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-cell-before-spacing-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After table cell before spacing fix">
+            <img src="../artifacts/browser/repro-table-import-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After fix table import repro">
           </div>
-          <div class="caption">After: explicit cell paragraph before-spacing contributes to row height, matching the Word row rhythm.</div>
+          <div class="caption">After: browser import emits table objects, so same-row cells share Y and distinct X positions.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> preserve imported/effective table-cell paragraph <code>SpacingBefore</code>, and skip page-top before-spacing suppression when measuring paragraphs inside table cells.</p>
+          <p><strong>Fix:</strong> <code>Processors.forEditorPackage</code> now uses the typed DOCX-to-editor package path, including tables, headers/footers, page setup, and numbering.</p>
           <ul>
-            <li>Before guard: focused repro had <code>First dy=-6.93</code>, <code>Second dy=-14.33</code>, and <code>Third dy=-39.95</code>.</li>
-            <li>After guard: focused repro compares below threshold with all matched lines within 1px.</li>
-            <li>Real guard: the legal-contributor table row drift dropped from 18-46px high to single-digit offsets.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Native Word text size uses CSS-pixel scale</strong>
-          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
-          <span class="meta">Fix commit: <code>this commit</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference native text scale repro">
-          </div>
-          <div class="caption">Word renders 11 pt Calibri as roughly 14.7 CSS pixels on the page surface.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/native-text-size-before-fix.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="Before native text scale fix">
-          </div>
-          <div class="caption">Before: native measurement and glyph drawing passed Word point sizes directly to <code>../renderer</code>, shrinking Calibri text.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/native/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="After native text scale fix">
-          </div>
-          <div class="caption">After: native measurement and glyph drawing use the same <code>96/72</code> point-to-pixel conversion as the browser canvas path.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> convert Word paint-command font sizes from points to canvas pixels before calling <code>Renderer.Text.measureWidth</code> and <code>Renderer.Text.layout</code> in <code>word-native</code>.</p>
-          <ul>
-            <li>Before guard: native Calibri body text was visibly smaller than Word/browser.</li>
-            <li>After guard: native body text scale matches the browser path and the Word reference more closely.</li>
-            <li>Check with <code>tools/native-runner</code> on the focused repro.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Static runner captures omit editor caret</strong>
-          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
-          <span class="meta">Fix commit: <code>this commit</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference without caret">
-          </div>
-          <div class="caption">Word print/PDF reference has no active editor caret in the rendered page.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/browser-caret-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before caret capture fix">
-          </div>
-          <div class="caption">Before: browser and native snapshot runners captured the initial collapsed selection as a blue caret.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After caret capture fix">
-          </div>
-          <div class="caption">After: automated snapshots clear selection before reading layout JSON or taking screenshots.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> add a browser <code>clearSelection</code> API for capture tools and import native runner documents with <code>Selection = None</code>.</p>
-          <ul>
-            <li>Before guard: blue caret appeared in browser/native PNG artifacts.</li>
-            <li>After guard: static parity artifacts match Word’s non-editing render surface.</li>
-            <li>Interactive editor behavior is unchanged outside the snapshot runners.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Cached table border Y anchor</strong>
-          <span class="meta">Repro: <code>tests/repros/word/two-tables-border-position.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-features/test-complex-tables.docx</code></span>
-          <span class="meta">Fix commit: <code>this commit</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/raster/test-complex-tables-word.png" style="--w:1224px; --x:70px; --y:150px; --s:.58" alt="Word reference complex table borders">
-          </div>
-          <div class="caption">Word anchors each table border grid to its own table text.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/complex-tables-border-before-fix.png" style="--w:900px; --x:40px; --y:90px; --s:.82" alt="Before cached table border anchor fix">
-          </div>
-          <div class="caption">Before: the second table's border grid was painted too high, crossing the prior table/heading area.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/test-complex-tables-border-after.png" style="--w:900px; --x:40px; --y:90px; --s:.82" alt="After cached table border anchor fix">
-          </div>
-          <div class="caption">After: cached table border paint derives the table anchor from planned block layout Y, not planned line Y.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> align cached table border plans by comparing actual table-cell paragraph block Y to planned table-cell paragraph block Y. The previous line-Y comparison over-subtracted the first line offset.</p>
-          <ul>
-            <li>Before guard: data-table vertical borders started in the first table region.</li>
-            <li>After guard: data-table borders start at the data table top.</li>
-            <li>Focused repro is kept for the multi-table shape; the visible failure was first caught on the real complex-table fixture.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Default table cell inset alignment</strong>
-          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-features/test-complex-tables.docx</code></span>
-          <span class="meta">Fix commit: <code>this commit</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:75px; --y:95px; --s:.82" alt="Word reference table cell inset alignment">
-          </div>
-          <div class="caption">Word aligns the heading, table left border, and cell text to the same left edge for this default table.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/repro-table-default-cell-padding-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before default table cell inset alignment fix">
-          </div>
-          <div class="caption">Before: the table border was shifted left and the cell text was padded right of the table edge.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/repro-table-cell-padding-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After default table cell inset alignment fix">
-          </div>
-          <div class="caption">After: default table padding is zero, so heading, border, and cell text share the left edge unless the DOCX specifies padding.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> set the Word table layout default cell padding to zero for canvas and print scales. Explicit DOCX table, row, and cell padding values still flow through the existing padding code.</p>
-          <ul>
-            <li>Before guard: table border was offset left of the surrounding paragraph text by the default cell inset.</li>
-            <li>After guard: <code>Alpha</code> and the table border start at the same x-position.</li>
-            <li>The complex-table heading now lines up with the table below it.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Explicit table cell left padding</strong>
-          <span class="meta">Repro: <code>tests/repros/word/table-cell-explicit-left-padding.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
-          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/table-cell-explicit-left-padding-word.png" style="--w:1224px; --x:125px; --y:190px; --s:1.18" alt="Word reference explicit table cell left padding">
-          </div>
-          <div class="caption">Word applies the explicit <code>w:tcMar/w:left="108"</code> inset inside each cell.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-explicit-left-padding-before.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="Before explicit table cell left padding fix">
-          </div>
-          <div class="caption">Before: imported cell padding was canceled by the table outer-inset adjustment, so text started at the cell border.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/table-cell-explicit-left-padding-after.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="After explicit table cell left padding fix">
-          </div>
-          <div class="caption">After: explicit cell padding offsets text within the table cell, matching Word's queried left edge.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> stop using cell margins as table outer insets, and convert imported table/cell padding from DOCX twips to canvas pixels.</p>
-          <ul>
-            <li>Before guard: focused repro had <code>dx=-7.00</code> for first-column cell text and <code>dx=-8.30</code> for second-column text.</li>
-            <li>After guard: focused repro compares cleanly with <code>5 matched lines</code>.</li>
-            <li>Real guard: legal-contributor form labels no longer report the repeated <code>dx=-7.00</code> table-cell offsets.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Table following paragraph spacing</strong>
-          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
-          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:95px; --y:130px; --s:.74" alt="Word reference table following paragraph spacing">
-          </div>
-          <div class="caption">Word starts the paragraph immediately below the table border.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/table-after-spacing-before-fix.png" style="--w:900px; --x:70px; --y:105px; --s:.98" alt="Before table following paragraph spacing fix">
-          </div>
-          <div class="caption">Before: an extra table block gap pushed <code>After table</code> down by 10 layout units.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/repro-table-after-spacing-after.png" style="--w:900px; --x:70px; --y:105px; --s:.98" alt="After table following paragraph spacing fix">
-          </div>
-          <div class="caption">After: the following paragraph moves up to match the Word table edge spacing more closely.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> remove the unconditional post-table spacing from shared Word table layout. Paragraph spacing now comes from the surrounding paragraph/table content instead of an added table gap.</p>
-          <ul>
-            <li>Before guard: browser JSON placed <code>After table</code> at <code>y=208.51</code>.</li>
-            <li>After guard: current browser JSON places <code>After table</code> at <code>y=203.31</code>, within 1.4px of Word.</li>
-            <li>The same focused repro was captured through native PNG and the PDF backend.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>DXA table grid width and row height scale</strong>
-          <span class="meta">Repro: <code>tests/repros/word/table-dxa-grid-alignment-row-height.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
-          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
-          <span class="meta">Fix commit: <code>this commit</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/table-dxa-grid-alignment-row-height-word.png" style="--w:1224px; --x:115px; --y:145px; --s:.42" alt="Word reference DXA table grid width">
-          </div>
-          <div class="caption">Word lays out the two <code>4606</code> dxa grid columns across the body width and right-aligns <code>B/D</code> at the cell edge.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/table-dxa-grid-alignment-row-height-before.png" style="--w:900px; --x:60px; --y:85px; --s:.56" alt="Before DXA table grid scale fix">
-          </div>
-          <div class="caption">Before: table grid and row-height dxa values used the print point scale, shrinking the table and pulling right-aligned cell text left.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/table-dxa-grid-alignment-row-height-after.png" style="--w:900px; --x:60px; --y:85px; --s:.56" alt="After DXA table grid scale fix">
-          </div>
-          <div class="caption">After: shared table layout resolves dxa lengths in canvas units, so the table width, row height, and following paragraph position match the Word query.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> resolve table grid columns, row minimum heights, and cached border plans with <code>WordLayout.canvasScale</code>. The native import now keeps <code>DxaWidth</code> values raw so shared layout performs the conversion exactly once.</p>
-          <ul>
-            <li>Focused guard: <code>B/D</code> right-edge drift went from <code>153.40px</code> to <code>5 matched lines</code>.</li>
-            <li>Real guard: <code>docx4j-tables.docx</code> right-cell drift dropped from about <code>145px</code> to about <code>8px</code>.</li>
-            <li>Remaining real-fixture deltas are vertical alignment/shading follow-ups, not the grid-width conversion bug.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>TableGrid style borders</strong>
-          <span class="meta">Repro: <code>tests/repros/word/table-grid-style-borders.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
-          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
-          <span class="meta">Fix commit: <code>this commit</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/table-grid-style-borders-word.png" style="--w:1224px; --x:110px; --y:150px; --s:.62" alt="Word reference TableGrid style borders">
-          </div>
-          <div class="caption">Word paints borders from the table style even when the table itself has no direct <code>w:tblBorders</code>.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/table-grid-style-borders-before.png" style="--w:900px; --x:60px; --y:85px; --s:.85" alt="Before TableGrid style border fix">
-          </div>
-          <div class="caption">Before: text positions were correct, but style-derived table borders were dropped during DOCX import.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/table-grid-style-borders-after.png" style="--w:900px; --x:60px; --y:85px; --s:.85" alt="After TableGrid style border fix">
-          </div>
-          <div class="caption">After: browser render receives the style table borders and paints the same grid as Word; native and PDF render the same border surface.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> apply resolved table-style <code>TableProperties.Borders</code> when direct table borders are absent, and carry the same style fallback through the native importer used by native PNG and PDF.</p>
-          <ul>
-            <li>Focused guard: <code>table-grid-style-borders.docx</code> compares cleanly with <code>5 matched lines</code>.</li>
-            <li>Visual guard: the pre-fix browser image has no table lines; the after image paints all outer and inner borders.</li>
-            <li>Real guard: <code>docx4j-tables.docx</code> now shows its TableGrid borders; shading and merge-height residuals remain separate work.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Running header pushes body start</strong>
-          <span class="meta">Repro: <code>tests/repros/word/running-header-body-offset.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-features/test-header-footer.docx</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/running-header-body-offset-word.png" style="--w:1224px; --x:92px; --y:55px; --s:.74" alt="Word reference running header body offset">
-          </div>
-          <div class="caption">Word starts body text below the running header when the header extends past the top margin.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/running-header-body-offset-before.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="Before running header body offset fix">
-          </div>
-          <div class="caption">Before: body layout always started at the page top margin, placing the first heading 12px above Word.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/running-header-body-offset-after.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="After running header body offset fix">
-          </div>
-          <div class="caption">After: body layout starts at the larger of the top margin and running-header depth.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> compute the body content top from the first-page running header and share that top padding across browser canvas, native PNG, and PDF layout settings.</p>
-          <ul>
-            <li>Focused guard: first body line moved from <code>dy=-12</code> to <code>dy=0</code>.</li>
-            <li><code>test-header-footer.docx</code> now has 16 matched lines below the 6px comparator threshold.</li>
-            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Nested lists without explicit numbering indents</strong>
-          <span class="meta">Repro: <code>tests/repros/word/list-default-indent.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-features/test-lists.docx</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:92px; --y:105px; --s:.78" alt="Word reference nested list default indent">
-          </div>
-          <div class="caption">Word keeps all text starts at the same 0.5-inch indent when the numbering levels omit explicit <code>w:ind</code> values.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/list-default-indent-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before nested list default indent fix">
-          </div>
-          <div class="caption">Before: fallback indentation multiplied by list nesting level, pushing nested list text 20-44px too far right.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/list-default-indent-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After nested list default indent fix">
-          </div>
-          <div class="caption">After: missing numbering indents use Word's default hanging list geometry, aligning all nested text starts.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> default list paragraphs with no explicit indent to a 48px text indent and -48px first-line hanging marker offset. DOCX-provided indentation still overrides this fallback.</p>
-          <ul>
-            <li>Before guard: focused repro nested rows had <code>dx=20</code>, <code>dx=23</code>, and <code>dx=44</code>.</li>
-            <li>After guard: focused repro and <code>test-lists.docx</code> both compare below the 6px threshold.</li>
-            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>List marker glyph width</strong>
-          <span class="meta">Repro: <code>tests/repros/word/list-default-indent.docx</code></span>
-          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:92px; --y:105px; --s:.78" alt="Word reference list marker glyph width">
-          </div>
-          <div class="caption">Word draws bullet and number markers at their glyph width inside the hanging marker area.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/list-marker-stretch-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before list marker glyph width fix">
-          </div>
-          <div class="caption">Before: the browser renderer stretched marker glyphs to the reserved marker box, turning bullets into horizontal ovals.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/list-marker-stretch-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After list marker glyph width fix">
-          </div>
-          <div class="caption">After: markers keep their measured glyph width while the paragraph still reserves the same hanging marker space.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> paint list prefixes with their measured marker width instead of the wider layout reserve used for indentation.</p>
-          <ul>
-            <li>Before guard: bullet markers were horizontally scaled in the existing nested-list after image.</li>
-            <li>After guard: focused repro layout still compares cleanly with <code>7 matched lines</code>.</li>
-            <li>Native/PDF smoke import now resolves <code>numbering.xml</code>, so this repro exercises real markers there too.</li>
-            <li>The browser paint fix leaves text indentation and line positions unchanged.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Normal paragraph pitch and style spacing</strong>
-          <span class="meta">Repro: <code>tests/repros/word/normal-paragraph-line-pitch.docx</code></span>
-          <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-complex-tables.docx</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/normal-paragraph-line-pitch-word.png" style="--w:1224px; --x:92px; --y:115px; --s:.74" alt="Word reference normal paragraph pitch">
-          </div>
-          <div class="caption">Word advances consecutive Normal paragraphs by 30 CSS-equivalent pixels in this repro.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/normal-paragraph-line-pitch-before-fix.png" style="--w:900px; --x:70px; --y:75px; --s:.98" alt="Before normal paragraph pitch fix">
-          </div>
-          <div class="caption">Before: Normal paragraph gaps were 27.6px, and style spacing from DOCX styles was converted as points instead of canvas pixels.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/normal-paragraph-line-pitch-after.png" style="--w:900px; --x:70px; --y:75px; --s:.98" alt="After normal paragraph pitch fix">
-          </div>
-          <div class="caption">After: consecutive Normal paragraph gaps match Word, and Heading style spacing no longer accumulates vertical drift.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> normalize the built-in Normal paragraph rhythm and convert style-level DOCX twips/font sizes to CSS-pixel units in the browser package bridge.</p>
-          <ul>
-            <li>Focused guard: Normal paragraph gaps stay at <code>30.0</code> browser pixels.</li>
-            <li>The wrapped-line and widow-control rows below cover the later page-break precision pass.</li>
-            <li>Current real-fixture residuals in formatting/list headings are tracked separately near the comparator threshold.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Empty Normal paragraph mark size</strong>
-          <span class="meta">Repro: <code>tests/repros/word/empty-normal-paragraph-mark-size.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-unmarshall-template.docx</code></span>
-          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/empty-paragraph-mark-size-word.png" style="--w:1224px; --x:92px; --y:92px; --s:.76" alt="Word reference empty paragraph mark size">
-          </div>
-          <div class="caption">Word gives a true empty Normal paragraph the same fallback paragraph-mark height as nearby 11 pt text.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/empty-paragraph-mark-size-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before empty paragraph mark size fix">
-          </div>
-          <div class="caption">Before: when the DOCX omitted document defaults, empty paragraphs fell back to the editor's hardcoded 11px style and were 4.82px too short.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/empty-paragraph-mark-size-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After empty paragraph mark size fix">
-          </div>
-          <div class="caption">After: empty paragraphs honor the imported <code>ParagraphMarkFontSize</code>, removing the accumulated upward drift.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> use the imported paragraph mark font size for empty paragraph line-height instead of discarding it when it is larger than the base paragraph style.</p>
-          <ul>
-            <li>Focused guard: the blank-paragraph gap moved from <code>55.18</code> to <code>60.00</code> browser pixels.</li>
-            <li>Real guard: <code>docx4j-unmarshall-template.docx</code> moved from <code>dy=-9.65</code> to <code>dy=0.01</code>.</li>
-            <li>The repro intentionally omits DOCX document defaults to match the docx4j fixture shape.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Wrapped Normal line pitch</strong>
-          <span class="meta">Repro: <code>tests/repros/word/wrapped-paragraph-line-pitch.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-features/test-multi-headers.docx</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/wrapped-paragraph-line-pitch-word.png" style="--w:1224px; --x:92px; --y:700px; --s:.78" alt="Word reference wrapped paragraph line pitch">
-          </div>
-          <div class="caption">Word uses roughly 19-20 CSS-equivalent pixels between wrapped 11 pt Calibri line baselines.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/wrapped-paragraph-line-pitch-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before wrapped paragraph line pitch fix">
-          </div>
-          <div class="caption">Before: wrapped lines advanced by 17.6px, accumulating enough vertical drift to keep text on the wrong page.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/wrapped-paragraph-line-pitch-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After wrapped paragraph line pitch fix">
-          </div>
-          <div class="caption">After: wrapped line baselines and page break position match the Word reference in the focused repro.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> use a Word-like single-spaced body line box for Normal text and rebalance default after-spacing so single-line paragraph gaps remain at 30px.</p>
-          <ul>
-            <li>Before guard: the focused repro split at the wrong place with a page-level <code>dy</code> above 800px.</li>
-            <li>After guard: <code>wrapped-paragraph-line-pitch.docx</code> compares cleanly with 55 matched lines.</li>
-            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Top heading before-spacing</strong>
-          <span class="meta">Repro: <code>tests/repros/word/top-heading-before-spacing.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
-          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/top-heading-before-spacing-word.png" style="--w:1224px; --x:70px; --y:90px; --s:.78" alt="Word reference top heading before spacing">
-          </div>
-          <div class="caption">Word honors imported paragraph <code>w:before</code> spacing even when the paragraph starts at the top of the body area.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/top-heading-before-spacing-before.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="Before top heading before spacing fix">
-          </div>
-          <div class="caption">Before: page-top layout suppressed the imported before-spacing, placing both headings 32px too high.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/top-heading-before-spacing-after.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="After top heading before spacing fix">
-          </div>
-          <div class="caption">After: body layout applies the paragraph before-spacing and matches Word within the line-position threshold.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> remove the generic page-top suppression of paragraph before-spacing. Table-cell spacing had already been handled separately; body paragraphs now use their imported/effective spacing consistently.</p>
-          <ul>
-            <li>Before guard: focused headings were at <code>dy=-32.00</code> and <code>dy=-32.43</code>.</li>
-            <li>After guard: focused headings are within <code>0.43px</code> of Word.</li>
-            <li>Real guard: early legal-contributor drift drops by one imported heading before-spacing step.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Cambria theme heading metrics</strong>
-          <span class="meta">Repro: <code>tests/repros/word/heading-cambria-font-wrap.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code></span>
-          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/heading-cambria-font-wrap-word.png" style="--w:1224px; --x:105px; --y:470px; --s:.82" alt="Word reference Cambria heading wrap">
-          </div>
-          <div class="caption">Word resolves the theme major font to Cambria and wraps the legal Heading 1 before <code>license.</code>.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/heading-cambria-font-wrap-before.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="Before Cambria heading metric fix">
-          </div>
-          <div class="caption">Before: the browser runner had no Cambria face, so the heading used fallback metrics, stayed on one line, and pulled following text upward.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/heading-cambria-font-wrap-after.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="After Cambria heading metric fix">
-          </div>
-          <div class="caption">After: the browser runner uses the fetched Windows Cambria faces, and the same heading wraps at the Word break.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> register Cambria in the browser runner, add Cambria bold/italic to the PDF runner, and teach the native Word renderer to resolve Word font families from the fetched Windows font directory.</p>
-          <ul>
-            <li>Before guard: focused repro shifted following text by about <code>29px</code> because the heading did not wrap.</li>
-            <li>After guard: focused repro compares cleanly with <code>10 matched lines</code>.</li>
-            <li>Real guard: <code>docx4j-legal-contributor.docx</code> now keeps the employer paragraph split on page 3 like Word.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Imported heading style spacing</strong>
-          <span class="meta">Repro: <code>tests/repros/word/heading-style-no-spacing.docx</code></span>
-          <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-lists.docx</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/heading-style-no-spacing-word.png" style="--w:1224px; --x:92px; --y:95px; --s:.76" alt="Word reference imported heading style spacing">
-          </div>
-          <div class="caption">Word uses the spacing from the imported Heading styles; these styles omit explicit before/after spacing.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/heading-style-no-spacing-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before imported heading style spacing fix">
-          </div>
-          <div class="caption">Before: imported headings still inherited the editor's built-in heading spacing, adding drift after blank paragraphs.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/heading-style-no-spacing-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After imported heading style spacing fix">
-          </div>
-          <div class="caption">After: named DOCX heading styles apply over Normal, so omitted heading spacing stays omitted.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> when a heading block has a named paragraph style from DOCX, use the document Normal style as the base before applying the named style.</p>
-          <ul>
-            <li>Focused guard: <code>Section B</code> moved from <code>dy=6.29</code> to <code>dy=0.29</code>.</li>
-            <li><code>test-formatting.docx</code>, <code>test-lists.docx</code>, and <code>test-multi-headers.docx</code> now compare below the 6px threshold.</li>
-            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
-          </ul>
-        </td>
-      </tr>
-
-      <tr>
-        <td>
-          <strong>Widow control for last-line split</strong>
-          <span class="meta">Repro: <code>tests/repros/word/widow-control-last-line.docx</code></span>
-          <span class="meta">Real fixture: <code>tests/test-documents-features/test-multi-headers.docx</code></span>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/word/widow-control-last-line-word.png" style="--w:1224px; --x:92px; --y:700px; --s:.78" alt="Word reference widow control last line split">
-          </div>
-          <div class="caption">Word moves the whole short paragraph when only its last line would be alone on the next page.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/baseline/widow-control-last-line-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before widow control last line split fix">
-          </div>
-          <div class="caption">Before: the first two lines stayed at the page bottom and the final line started the next page by itself.</div>
-        </td>
-        <td>
-          <div class="zoom">
-            <img src="../artifacts/browser/widow-control-last-line-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After widow control last line split fix">
-          </div>
-          <div class="caption">After: the short paragraph moves as a unit, matching Word's widow-control behavior.</div>
-        </td>
-        <td>
-          <p><strong>Fix:</strong> extend the widow-control pre-pass to move short paragraphs when the split would leave exactly one trailing line on the next page.</p>
-          <ul>
-            <li>Before guard: paragraph 13 crossed the page with a page-level <code>dy</code> above 800px.</li>
-            <li>After guard: <code>widow-control-last-line.docx</code> compares cleanly with 40 matched lines.</li>
-            <li><code>test-multi-headers.docx</code> now has only one residual above 6px, at <code>dy=6.12</code>.</li>
+            <li>Before guard: <code>B1 x=0, y=150.4</code></li>
+            <li>After guard: <code>B1 x=318, y=142.7</code></li>
+            <li>Check with <code>capture-browser-docx.mjs</code> JSON output.</li>
           </ul>
         </td>
       </tr>
