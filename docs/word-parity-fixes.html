@@ -519,6 +519,41 @@
 
       <tr>
         <td>
+          <strong>List marker glyph width</strong>
+          <span class="meta">Repro: <code>tests/repros/word/list-default-indent.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:92px; --y:105px; --s:.78" alt="Word reference list marker glyph width">
+          </div>
+          <div class="caption">Word draws bullet and number markers at their glyph width inside the hanging marker area.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/list-marker-stretch-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before list marker glyph width fix">
+          </div>
+          <div class="caption">Before: the browser renderer stretched marker glyphs to the reserved marker box, turning bullets into horizontal ovals.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/list-marker-stretch-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After list marker glyph width fix">
+          </div>
+          <div class="caption">After: markers keep their measured glyph width while the paragraph still reserves the same hanging marker space.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> paint list prefixes with their measured marker width instead of the wider layout reserve used for indentation.</p>
+          <ul>
+            <li>Before guard: bullet markers were horizontally scaled in the existing nested-list after image.</li>
+            <li>After guard: focused repro layout still compares cleanly with <code>7 matched lines</code>.</li>
+            <li>Native/PDF smoke import now resolves <code>numbering.xml</code>, so this repro exercises real markers there too.</li>
+            <li>The browser paint fix leaves text indentation and line positions unchanged.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Normal paragraph pitch and style spacing</strong>
           <span class="meta">Repro: <code>tests/repros/word/normal-paragraph-line-pitch.docx</code></span>
           <span class="meta">Real fixtures: <code>test-formatting.docx</code>, <code>test-complex-tables.docx</code></span>

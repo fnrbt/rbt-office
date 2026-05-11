@@ -208,7 +208,7 @@ let private rowFragments settings y height =
         pageTop <- pageTop + pageHeight settings + pageGap
     fragments
 
-let paragraphCommands (settings: LayoutSettings) (fontFamily: string) (layout: BlockLayout) =
+let paragraphCommands (settings: LayoutSettings) (fontFamily: string) (measureText: TextMeasurer) (layout: BlockLayout) =
     let mutable commands = []
 
     match layout.Metadata.BackgroundColor with
@@ -242,7 +242,13 @@ let paragraphCommands (settings: LayoutSettings) (fontFamily: string) (layout: B
                 layout.PrefixStyle
                 |> Option.map styleFromTextStyle
                 |> Option.defaultValue (defaultPaintStyle settings.FontSize fontFamily)
-        commands <- commands @ [DrawText (prefixText, prefixStyle, prefixX, baseline, layout.PrefixWidth)]
+        let prefixDrawWidth =
+            if prefixText <> layout.Prefix then 0.0
+            else
+                layout.PrefixStyle
+                |> Option.map (measureText prefixText)
+                |> Option.defaultValue 0.0
+        commands <- commands @ [DrawText (prefixText, prefixStyle, prefixX, baseline, prefixDrawWidth)]
 
     for line in layout.Lines do
         let baseline = lineBaseline settings.FontSize line
@@ -572,7 +578,7 @@ let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureT
         | Heading (_, para) ->
             let safePara = { para with Metadata = { para.Metadata with PageBreakAfter = false } }
             let layout, _ = layoutParagraphAtWithRange repeatedSettings measureText measureRange maxWidth y 0.0 safePara Map.empty
-            commands.AddRange(paragraphCommands settings fontFamily layout)
+            commands.AddRange(paragraphCommands settings fontFamily measureText layout)
             y <- layout.Y + layout.Height
         | Table table ->
             let tableCommands, nextY = tableBorderCommandsWithRange repeatedSettings measureText measureRange table y
@@ -607,7 +613,7 @@ let private textBoxCommands (settings: LayoutSettings) fontFamily measureText me
 
     for para in textBox.Content do
         let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth paraY (floatingBox.X + padding - settings.PaddingLeft) para Map.empty
-        commands.AddRange(paragraphCommands settings fontFamily layout)
+        commands.AddRange(paragraphCommands settings fontFamily measureText layout)
         paraY <- layout.Y + layout.Height
 
     List.ofSeq commands
@@ -658,7 +664,7 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
                 for cell in row.Cells do
                     for para in cell.Content do
                         match Map.tryFind para.Id layoutsById with
-                        | Some paraLayouts -> paraLayouts |> List.iter (paragraphCommands settings fontFamily >> commands.AddRange)
+                        | Some paraLayouts -> paraLayouts |> List.iter (paragraphCommands settings fontFamily measureText >> commands.AddRange)
                         | None -> ()
         | TextBox textBox -> commands.AddRange(textBoxCommands settings fontFamily measureText measureRange textBox)
         | _ ->
@@ -668,7 +674,7 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
                 match Map.tryFind para.Id layoutsById with
                 | None -> ()
                 | Some (layout :: _ as paraLayouts) ->
-                    paraLayouts |> List.iter (paragraphCommands settings fontFamily >> commands.AddRange)
+                    paraLayouts |> List.iter (paragraphCommands settings fontFamily measureText >> commands.AddRange)
                     currentY <- layout.Y + layout.Height
                     if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
                         currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
