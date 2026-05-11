@@ -107,6 +107,30 @@ let private paraBorders (value: DocxReader.ParagraphBorders option) : RedBat.Wor
         Left = paraBorder b.Left
     })
 
+type private NumberingResolver = {
+    ById: Map<string * int, DocxReader.NumberingDefinition>
+    ByStyle: Map<string, DocxReader.NumberingDefinition>
+}
+
+let private numberingResolver (definitions: DocxReader.NumberingDefinition list) =
+    {
+        ById = definitions |> List.map (fun def -> (def.NumId, def.Level), def) |> Map.ofList
+        ByStyle =
+            definitions
+            |> List.choose (fun def -> def.ParagraphStyle |> Option.map (fun styleId -> styleId, def))
+            |> Map.ofList
+    }
+
+let private resolvedNumberingDefinition resolver (props: DocxReader.ParagraphProperties) =
+    let fromDirectList =
+        props.ListInfo
+        |> Option.bind (fun info -> resolver.ById |> Map.tryFind (info.ListId, info.Level))
+
+    fromDirectList
+    |> Option.orElseWith (fun () ->
+        props.Style
+        |> Option.bind (fun styleId -> resolver.ByStyle |> Map.tryFind styleId))
+
 let private tableWidth width widthType =
     match widthType, parseFloat width with
     | Some "auto", _
@@ -192,8 +216,18 @@ let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun
 
     { Rope = Rope.ofString (String.Concat parts); Runs = bufferRuns |> Seq.toList }
 
-let private paraMetadata (para: DocxReader.Paragraph) (editorPara: EP.EditorParagraph) =
+let private paraMetadata resolver (para: DocxReader.Paragraph) (editorPara: EP.EditorParagraph) =
     let props = para.Properties
+    let numberingDef = resolvedNumberingDefinition resolver props
+    let numberingIndentLeft = numberingDef |> Option.bind (fun def -> twipsToPoints def.IndentLeft)
+    let numberingRightTab = numberingDef |> Option.bind (fun def -> twipsToPoints def.RightTabPosition)
+    let numberingFirstLineIndent =
+        numberingDef
+        |> Option.bind (fun def ->
+            match twipsToPoints def.FirstLineIndent, twipsToPoints def.HangingIndent with
+            | Some firstLine, _ -> Some firstLine
+            | None, Some hanging -> Some -hanging
+            | None, None -> None)
     {
         defaultMetadata with
             Style = props.Style
@@ -201,13 +235,13 @@ let private paraMetadata (para: DocxReader.Paragraph) (editorPara: EP.EditorPara
             ContentControlTag = props.ContentControlTag
             ContentControlAlias = props.ContentControlAlias
             Alignment = alignment editorPara.Alignment
-            IndentLeft = editorPara.IndentLeft
+            IndentLeft = editorPara.IndentLeft |> Option.orElse numberingIndentLeft
             IndentRight = editorPara.IndentRight
             FirstLineIndent =
                 match twipsToPoints props.HangingIndent with
                 | Some hanging -> Some -hanging
-                | None -> editorPara.FirstLineIndent
-            RightTabPosition = twipsToPoints props.RightTabPosition
+                | None -> editorPara.FirstLineIndent |> Option.orElse numberingFirstLineIndent
+            RightTabPosition = twipsToPoints props.RightTabPosition |> Option.orElse numberingRightTab
             SpacingBefore = editorPara.SpacingBefore
             SpacingAfter = editorPara.SpacingAfter
             ContextualSpacing = props.ContextualSpacing
@@ -222,28 +256,35 @@ let private paraMetadata (para: DocxReader.Paragraph) (editorPara: EP.EditorPara
             RenderedPageBreakBefore = props.RenderedPageBreakBefore
             HeaderReferences = props.HeaderReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
             FooterReferences = props.FooterReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
-            ListStyle = props.ListInfo |> Option.map (fun li -> li.NumberFormat) |> Option.defaultValue None |> listStyle
-            ListLevel = props.ListInfo |> Option.map (fun li -> li.Level + 1) |> Option.defaultValue 0
-            ListId = props.ListInfo |> Option.map (fun li -> li.ListId)
-            ListNumberFormat = props.ListInfo |> Option.bind (fun li -> li.NumberFormat)
-            ListLevelText = props.ListInfo |> Option.bind (fun li -> li.LevelText)
-            ListStart = props.ListInfo |> Option.bind (fun li -> li.Start)
+            ListStyle =
+                match numberingDef with
+                | Some def when def.NumberFormat = "bullet" -> Bullet
+                | Some _ -> Numbered
+                | None -> props.ListInfo |> Option.map (fun li -> li.NumberFormat) |> Option.defaultValue None |> listStyle
+            ListLevel =
+                match numberingDef with
+                | Some def -> def.Level + 1
+                | None -> props.ListInfo |> Option.map (fun li -> li.Level + 1) |> Option.defaultValue 0
+            ListId = numberingDef |> Option.map _.NumId |> Option.orElse (props.ListInfo |> Option.map _.ListId)
+            ListNumberFormat = numberingDef |> Option.map _.NumberFormat |> Option.orElse (props.ListInfo |> Option.bind _.NumberFormat)
+            ListLevelText = numberingDef |> Option.bind _.LevelText |> Option.orElse (props.ListInfo |> Option.bind _.LevelText)
+            ListStart = numberingDef |> Option.bind _.Start |> Option.orElse (props.ListInfo |> Option.bind _.Start)
             ParagraphMarkFontSize = props.ParagraphRunProperties |> Option.map (fun rPr -> TC.fontSizeToPoints rPr.FontSize)
     }
 
-let private mkPara images styleMap comments notes para =
+let private mkPara resolver images styleMap comments notes para =
     let editorPara = EP.toEditorParagraph None styleMap comments notes para
     {
         Id = Guid.NewGuid().ToString("N")
         Buffer = editorRunsToBuffer images editorPara.Runs
-        Metadata = paraMetadata para editorPara
+        Metadata = paraMetadata resolver para editorPara
     }
 
-let private tableCell images styleMap comments notes (cell: DocxReader.TableCell) =
+let private tableCell resolver images styleMap comments notes (cell: DocxReader.TableCell) =
     let props = cell.Properties
-    let content = cell.Paragraphs |> List.map (mkPara images styleMap comments notes)
+    let content = cell.Paragraphs |> List.map (mkPara resolver images styleMap comments notes)
     {
-        Content = if content.IsEmpty then [mkPara images styleMap comments notes { Runs = []; Properties = DocxReader.Docx.paragraphProps XmlDsl.Empty }] else content
+        Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes { Runs = []; Properties = DocxReader.Docx.paragraphProps XmlDsl.Empty }] else content
         ColSpan = props |> Option.bind (fun p -> p.ColSpan) |> Option.defaultValue 1
         BackgroundColor = props |> Option.bind (fun p -> p.Shading) |> Option.bind (fun s -> color s.Fill)
         Width = props |> Option.bind (fun p -> twipsToCanvasPixels p.Width)
@@ -262,13 +303,13 @@ let private tableCell images styleMap comments notes (cell: DocxReader.TableCell
         PaddingLeft = props |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingLeft)
     }
 
-let private tableBlock images styleMap comments notes (table: DocxReader.Table) =
+let private tableBlock resolver images styleMap comments notes (table: DocxReader.Table) =
     Table {
         Id = Guid.NewGuid().ToString("N")
         Rows =
             table.Rows
             |> List.map (fun row -> {
-                Cells = row.Cells |> List.map (tableCell images styleMap comments notes)
+                Cells = row.Cells |> List.map (tableCell resolver images styleMap comments notes)
                 IsHeader = row.IsHeader
                 Height = twipsToCanvasPixels row.Height
                 HeightRule = row.HeightRule
@@ -362,15 +403,16 @@ let private pageSetup (doc: DocxReader.WordDocument) =
             EvenAndOddHeaders = setup.EvenAndOddHeaders |> Option.defaultValue defaultPageSetup.EvenAndOddHeaders
         }
 
-let private headerFooterPart images styleMap comments notes (item: DocxReader.HeaderFooter) =
+let private headerFooterPart resolver images styleMap comments notes (item: DocxReader.HeaderFooter) =
     {
         Kind = item.Type
         RelationshipId = item.RelationshipId
-        Blocks = item.Content |> List.map (mkPara images styleMap comments notes >> Paragraph)
+        Blocks = item.Content |> List.map (mkPara resolver images styleMap comments notes >> Paragraph)
     }
 
 let importDoc (doc: DocxReader.WordDocument) =
     let styleMap = DocumentProcessors.StyleResolution.buildStyleMapWithTheme doc.Theme doc.Styles
+    let resolver = numberingResolver doc.NumberingDefinitions
     let comments = doc.Comments |> List.map (fun c -> c.Id, c) |> Map.ofList
     let notes =
         let noteText (note: DocxReader.Note) =
@@ -385,8 +427,8 @@ let importDoc (doc: DocxReader.WordDocument) =
     let blocks =
         doc.Content
         |> List.map (function
-            | DocxReader.Para para -> Paragraph (mkPara doc.Images styleMap comments notes para)
-            | DocxReader.Tbl table -> tableBlock doc.Images styleMap comments notes table)
+            | DocxReader.Para para -> Paragraph (mkPara resolver doc.Images styleMap comments notes para)
+            | DocxReader.Tbl table -> tableBlock resolver doc.Images styleMap comments notes table)
 
     let firstParagraph =
         blocks
@@ -396,8 +438,8 @@ let importDoc (doc: DocxReader.WordDocument) =
             | Table table -> table.Rows |> List.tryPick (fun row -> row.Cells |> List.tryPick (fun cell -> cell.Content |> List.tryHead))
             | TextBox textBox -> textBox.Content |> List.tryHead)
 
-    let headerParts = doc.Headers |> List.map (headerFooterPart doc.Images styleMap comments notes)
-    let footerParts = doc.Footers |> List.map (headerFooterPart doc.Images styleMap comments notes)
+    let headerParts = doc.Headers |> List.map (headerFooterPart resolver doc.Images styleMap comments notes)
+    let footerParts = doc.Footers |> List.map (headerFooterPart resolver doc.Images styleMap comments notes)
 
     {
         Blocks = blocks
