@@ -67,12 +67,26 @@ def table(rows, width_pct=5000):
     )
 
 
-def document(body_xml):
+def section_properties(include_header_footer=False):
+    refs = (
+        '<w:headerReference w:type="default" r:id="rId3"/>'
+        '<w:footerReference w:type="default" r:id="rId4"/>'
+        if include_header_footer
+        else ""
+    )
+    return f'<w:sectPr>{refs}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/></w:sectPr>'
+
+
+def document(body_xml, leading_section_properties=False, include_header_footer=False):
+    sectpr = section_properties(include_header_footer)
+    if leading_section_properties:
+        body = f"{sectpr}{body_xml}"
+    else:
+        body = f"{body_xml}{sectpr}"
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         f'<w:document xmlns:w="{WORD_NS}" xmlns:r="{REL_NS}"><w:body>'
-        f"{body_xml}"
-        '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/></w:sectPr>'
+        f"{body}"
         "</w:body></w:document>"
     )
 
@@ -91,10 +105,16 @@ def styles():
     )
 
 
-def content_types(include_numbering=False):
+def content_types(include_numbering=False, include_header_footer=False):
     numbering_override = (
         '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>'
         if include_numbering
+        else ""
+    )
+    running_overrides = (
+        '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>'
+        '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>'
+        if include_header_footer
         else ""
     )
     return (
@@ -105,6 +125,7 @@ def content_types(include_numbering=False):
         '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
         '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
         f"{numbering_override}"
+        f"{running_overrides}"
         "</Types>"
     )
 
@@ -118,10 +139,16 @@ def root_rels():
     )
 
 
-def document_rels(include_numbering=False):
+def document_rels(include_numbering=False, include_header_footer=False):
     numbering_rel = (
         '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>'
         if include_numbering
+        else ""
+    )
+    running_rels = (
+        '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>'
+        '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>'
+        if include_header_footer
         else ""
     )
     return (
@@ -129,6 +156,7 @@ def document_rels(include_numbering=False):
         f'<Relationships xmlns="{PKG_REL_NS}">'
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
         f"{numbering_rel}"
+        f"{running_rels}"
         "</Relationships>"
     )
 
@@ -153,19 +181,41 @@ def numbering():
     )
 
 
-def write_docx(path, body_xml, include_numbering=False):
+def header_xml():
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:hdr xmlns:w="{WORD_NS}">'
+        '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Focused Header</w:t></w:r></w:p>'
+        '<w:p><w:pPr><w:jc w:val="right"/></w:pPr><w:r><w:t>Page 1</w:t></w:r></w:p>'
+        '</w:hdr>'
+    )
+
+
+def footer_xml():
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:ftr xmlns:w="{WORD_NS}">'
+        '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:sz w:val="18"/></w:rPr><w:t>Focused Footer</w:t></w:r></w:p>'
+        '</w:ftr>'
+    )
+
+
+def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "_rels").mkdir()
         (root / "word" / "_rels").mkdir(parents=True)
-        (root / "[Content_Types].xml").write_text(content_types(include_numbering), encoding="utf-8")
+        (root / "[Content_Types].xml").write_text(content_types(include_numbering, include_header_footer), encoding="utf-8")
         (root / "_rels" / ".rels").write_text(root_rels(), encoding="utf-8")
-        (root / "word" / "document.xml").write_text(document(body_xml), encoding="utf-8")
+        (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer), encoding="utf-8")
         (root / "word" / "styles.xml").write_text(styles(), encoding="utf-8")
         if include_numbering:
             (root / "word" / "numbering.xml").write_text(numbering(), encoding="utf-8")
-        (root / "word" / "_rels" / "document.xml.rels").write_text(document_rels(include_numbering), encoding="utf-8")
+        if include_header_footer:
+            (root / "word" / "header1.xml").write_text(header_xml(), encoding="utf-8")
+            (root / "word" / "footer1.xml").write_text(footer_xml(), encoding="utf-8")
+        (root / "word" / "_rels" / "document.xml.rels").write_text(document_rels(include_numbering, include_header_footer), encoding="utf-8")
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file in sorted(root.rglob("*")):
                 if file.is_file():
@@ -201,7 +251,7 @@ def main():
             + paragraph("Third normal line")
             + paragraph("Wrapped line pitch - Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.")
         )),
-        "list-default-indent.docx": (True, (
+        "list-default-indent.docx": (True, False, (
             paragraph("List default indent repro", "Heading1")
             + paragraph("Top bullet", list_id=2, list_level=0)
             + paragraph("Nested bullet", list_id=2, list_level=1)
@@ -211,10 +261,24 @@ def main():
             + paragraph("Deep number", list_id=1, list_level=2)
             + paragraph("After list")
         )),
+        "running-header-body-offset.docx": (False, True, True, (
+            paragraph("Running header body offset repro", "Heading1")
+            + paragraph("First body paragraph")
+            + paragraph("Second body paragraph")
+        )),
     }
-    for name, (include_numbering, body) in repros.items():
+    for name, value in repros.items():
+        if len(value) == 2:
+            include_numbering, body = value
+            leading_section_properties = False
+            include_header_footer = False
+        elif len(value) == 3:
+            include_numbering, leading_section_properties, body = value
+            include_header_footer = False
+        else:
+            include_numbering, leading_section_properties, include_header_footer, body = value
         path = out_dir / name
-        write_docx(path, body, include_numbering)
+        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer)
         print(path)
 
 

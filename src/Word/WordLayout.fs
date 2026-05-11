@@ -142,6 +142,30 @@ module Page =
     let minBodyTop paddingTop fontSize pageTop =
         pageTop + max paddingTop (fontSize * 2.0)
 
+    let private blockParagraphCount = function
+        | Paragraph _
+        | Heading _ -> 1
+        | Table table ->
+            table.Rows
+            |> List.sumBy (fun row -> row.Cells |> List.sumBy (fun cell -> cell.Content.Length))
+        | TextBox textBox -> textBox.Content.Length
+
+    let private firstPageHeaderBlocks (doc: Document) =
+        if doc.PageSetup.DifferentFirstPage then
+            let first = firstHeaderBlocks doc
+            if first.IsEmpty then defaultHeaderBlocks doc else first
+        else
+            defaultHeaderBlocks doc
+
+    let bodyTopWithRunningHeader (doc: Document) =
+        let headers = firstPageHeaderBlocks doc
+        if headers.IsEmpty then
+            doc.PageSetup.MarginTop
+        else
+            let headerLinePitch = 30.0
+            let headerDepth = headers |> List.sumBy blockParagraphCount |> float |> (*) headerLinePitch
+            max doc.PageSetup.MarginTop (doc.PageSetup.HeaderDistance + headerDepth)
+
     let advanceToNextPage pageHeight paddingTop y =
         let pageTop = pageTopForY pageHeight y
         contentTop paddingTop (pageTop + pageHeight + gap)

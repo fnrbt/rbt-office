@@ -588,7 +588,7 @@ let collectPaintCommandsWithLayouts defaultFontFamily (measureText: WordCanvasLa
         FontSize = 14.0
         LineHeight = lineHeight
         PaddingLeft = doc.PageSetup.MarginLeft
-        PaddingTop = doc.PageSetup.MarginTop
+        PaddingTop = WordModelLayout.Page.bodyTopWithRunningHeader doc
         MarginRight = doc.PageSetup.MarginRight
         MarginBottom = max doc.PageSetup.MarginBottom footerReserve
         InTableCell = false

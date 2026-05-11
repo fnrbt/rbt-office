@@ -381,6 +381,40 @@
 
       <tr>
         <td>
+          <strong>Running header pushes body start</strong>
+          <span class="meta">Repro: <code>tests/repros/word/running-header-body-offset.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-features/test-header-footer.docx</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/running-header-body-offset-word.png" style="--w:1224px; --x:92px; --y:55px; --s:.74" alt="Word reference running header body offset">
+          </div>
+          <div class="caption">Word starts body text below the running header when the header extends past the top margin.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/running-header-body-offset-before.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="Before running header body offset fix">
+          </div>
+          <div class="caption">Before: body layout always started at the page top margin, placing the first heading 12px above Word.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/running-header-body-offset-after.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="After running header body offset fix">
+          </div>
+          <div class="caption">After: body layout starts at the larger of the top margin and running-header depth.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> compute the body content top from the first-page running header and share that top padding across browser canvas, native PNG, and PDF layout settings.</p>
+          <ul>
+            <li>Focused guard: first body line moved from <code>dy=-12</code> to <code>dy=0</code>.</li>
+            <li><code>test-header-footer.docx</code> now has 16 matched lines below the 6px comparator threshold.</li>
+            <li>Paths checked: browser canvas, native PNG, PDF backend.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Nested lists without explicit numbering indents</strong>
           <span class="meta">Repro: <code>tests/repros/word/list-default-indent.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-features/test-lists.docx</code></span>
