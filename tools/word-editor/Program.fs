@@ -324,6 +324,17 @@ let main argv =
     let state = shellState editor
     let actions = shellActions editor status
 
+    /// Status string. Falls back to the editor's current cursor / selection
+    /// summary if no transient message has been set (the `Ready` literal).
+    let statusText () =
+        let doc = editor.Document.Value
+        match status.Value, doc.Selection with
+        | message, _ when message <> "Ready" && message <> "" -> message
+        | _, Some sel when not sel.IsCollapsed ->
+            let text = Doc.getSelectionText doc
+            sprintf "%d characters selected" text.Length
+        | _, _ -> "Ready"
+
     let title =
         match argv |> Array.tryHead with
         | Some path -> sprintf "RedBat Word - %s" (Path.GetFileName path)
@@ -358,7 +369,7 @@ let main argv =
         let bodyHeight = max 200.0 (float appState.Height - bodyOverhead)
         let editorWidget = Editor.scrollWidget workspaceWidth bodyHeight (fun _ -> None) editor
         let workspace = Chrome.documentWorkspace editorWidget
-        Chrome.viewWith renderState title (fun () -> status.Value) state actions workspace
+        Chrome.viewWith renderState title statusText state actions workspace
 
     Platform.requestRedraw <- fun () -> window.RequestRedraw()
     Platform.setTimeout <- fun ms cb -> window.SetTimeout(ms, cb)
