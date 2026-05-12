@@ -230,12 +230,46 @@ let private tableBorderStrokeParts width style =
     RedBat.BorderGrid.strokePattern style
     |> List.map (fun (offset, partWidth) -> offset * width, max 0.25 (partWidth * width))
 
-let private strokeTableBorderCommands color width style x1 y1 x2 y2 =
+let private borderJoinEpsilon = 0.01
+
+let private segmentIsHorizontal (segment: RedBat.BorderGrid.Segment) =
+    abs (segment.Y1 - segment.Y2) < borderJoinEpsilon
+
+let private segmentIsVertical (segment: RedBat.BorderGrid.Segment) =
+    abs (segment.X1 - segment.X2) < borderJoinEpsilon
+
+let private coversCoordinate value first second =
+    value >= min first second - borderJoinEpsilon
+    && value <= max first second + borderJoinEpsilon
+
+let private tableBorderJoinCaps (segments: RedBat.BorderGrid.Segment list) (segment: RedBat.BorderGrid.Segment) =
+    let perpendicularHalfWidth x y =
+        segments
+        |> List.choose (fun candidate ->
+            if segmentIsHorizontal segment
+               && segmentIsVertical candidate
+               && abs (candidate.X1 - x) < borderJoinEpsilon
+               && coversCoordinate y candidate.Y1 candidate.Y2 then
+                Some (candidate.Stroke.Width / 2.0)
+            elif segmentIsVertical segment
+                 && segmentIsHorizontal candidate
+                 && abs (candidate.Y1 - y) < borderJoinEpsilon
+                 && coversCoordinate x candidate.X1 candidate.X2 then
+                Some (candidate.Stroke.Width / 2.0)
+            else
+                None)
+        |> function
+            | [] -> 0.0
+            | values -> values |> List.max
+
+    perpendicularHalfWidth segment.X1 segment.Y1, perpendicularHalfWidth segment.X2 segment.Y2
+
+let private strokeTableBorderCommands color width style x1 y1 x2 y2 startCap endCap =
     let dashStyle = dashStyleForTableBorderStyle style
     tableBorderStrokeParts width style
     |> List.map (fun (offset, partWidth) ->
-        if y1 = y2 then StrokeLine (color, partWidth, dashStyle, 0.0, x1, y1 + offset, x2, y2 + offset)
-        else StrokeLine (color, partWidth, dashStyle, 0.0, x1 + offset, y1, x2 + offset, y2))
+        if y1 = y2 then StrokeLine (color, partWidth, dashStyle, 0.0, x1 - startCap, y1 + offset, x2 + endCap, y2 + offset)
+        else StrokeLine (color, partWidth, dashStyle, 0.0, x1 + offset, y1 - startCap, x2 + offset, y2 + endCap))
 
 let tableFragmentPaintCommands (plan: TableLayoutPlan) =
     let commands = ResizeArray<PaintCommand>()
@@ -282,10 +316,14 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
                                 BorderTop = if fragmentStartsAfterRow then None else cell.BorderTop
                                 BorderBottom = if fragmentEndsBeforeRow then None else cell.BorderBottom
                         })
-                tableCellFragmentBorderCells paintCells
-                |> RedBat.BorderGrid.resolve
+                let borderSegments =
+                    tableCellFragmentBorderCells paintCells
+                    |> RedBat.BorderGrid.resolve
+
+                borderSegments
                 |> List.iter (fun segment ->
-                    strokeTableBorderCommands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 segment.Y1 segment.X2 segment.Y2
+                    let startCap, endCap = tableBorderJoinCaps borderSegments segment
+                    strokeTableBorderCommands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 segment.Y1 segment.X2 segment.Y2 startCap endCap
                     |> List.iter commands.Add)
 
     let bottomSpacing = WordLayout.Table.cellSpacing WordLayout.canvasScale plan.Table
@@ -501,30 +539,6 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                 Priority = priority
             }: RedBat.BorderGrid.Stroke))
 
-        let borderStyleKey = RedBat.BorderGrid.styleKey
-
-        let dashStyleForBorderStyle style =
-            match borderStyleKey style with
-            | "dotted" -> 1
-            | "dashed"
-            | "dashsmallgap" -> 2
-            | "dotdash"
-            | "dotdotdash"
-            | "dashdotstroked" -> 3
-            | _ -> 0
-
-        let styleStrokeParts width style =
-            let width = max 0.25 width
-            RedBat.BorderGrid.strokePattern style
-            |> List.map (fun (offset, partWidth) -> offset * width, max 0.25 (partWidth * width))
-
-        let strokeBorderCommands color width style x1 y1 x2 y2 =
-            let dashStyle = dashStyleForBorderStyle style
-            styleStrokeParts width style
-            |> List.map (fun (offset, partWidth) ->
-                if y1 = y2 then StrokeLine (color, partWidth, dashStyle, 0.0, x1, y1 + offset, x2, y2 + offset)
-                else StrokeLine (color, partWidth, dashStyle, 0.0, x1 + offset, y1, x2 + offset, y2))
-
         let rowHeightAt (row: WordLayout.Table.ResolvedRow) =
             let paragraphStyleForParagraph, effectiveBufferForParagraph =
                 match styleContext with
@@ -592,16 +606,20 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                 |> List.map _.Height
                 |> List.fold max rowHeight
 
-            RedBat.BorderGrid.resolve cells
+            let borderSegments = RedBat.BorderGrid.resolve cells
+            borderSegments
             |> List.iter (fun segment ->
+                let startCap, endCap = tableBorderJoinCaps borderSegments segment
                 for fragmentY, fragmentHeight in rowFragments settings currentY borderFragmentHeight do
                     let y1 = max segment.Y1 fragmentY
                     let y2 = min segment.Y2 (fragmentY + fragmentHeight)
                     if segment.Y1 = segment.Y2 then
                         if segment.Y1 >= fragmentY && segment.Y1 <= fragmentY + fragmentHeight then
-                            commands <- commands @ strokeBorderCommands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 segment.Y1 segment.X2 segment.Y2
+                            commands <- commands @ strokeTableBorderCommands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 segment.Y1 segment.X2 segment.Y2 startCap endCap
                     elif y2 > y1 then
-                        commands <- commands @ strokeBorderCommands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 y1 segment.X2 y2)
+                        let clippedStartCap = if abs (y1 - segment.Y1) < borderJoinEpsilon then startCap else 0.0
+                        let clippedEndCap = if abs (y2 - segment.Y2) < borderJoinEpsilon then endCap else 0.0
+                        commands <- commands @ strokeTableBorderCommands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 y1 segment.X2 y2 clippedStartCap clippedEndCap)
 
         let headerRows = resolvedTable.HeaderRows
         let rows = resolvedTable.BodyRows
