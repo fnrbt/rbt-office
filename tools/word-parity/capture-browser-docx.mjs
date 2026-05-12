@@ -99,7 +99,16 @@ try {
   );
   await page.evaluate(() => window.rbWordRunner.clearSelection());
   if (outputJson) {
-    const layout = layoutMode === 'vba' || layoutMode === 'vba-lines'
+    const layout = layoutMode === 'range-info' || layoutMode === 'vba-range-info'
+      ? await page.evaluate(() =>
+          window.rbWordRunner.getVbaLayoutLines().map(line => ({
+            ...line,
+            Information: window.rbWordRunner.getRangeInformation(line.BlockId, line.StartOffset, line.EndOffset),
+            Statistics: window.rbWordRunner.computeRangeStatistics(line.BlockId, line.StartOffset, line.EndOffset),
+            Bounds: window.rbWordRunner.getRangeBounds(line.BlockId, line.StartOffset, line.EndOffset),
+          }))
+        )
+      : layoutMode === 'vba' || layoutMode === 'vba-lines'
       ? await page.evaluate(() => window.rbWordRunner.getVbaLayoutLines())
       : layoutMode === 'lines'
         ? await page.evaluate(() => window.rbWordRunner.getLayoutLines())

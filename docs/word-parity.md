@@ -81,6 +81,7 @@ For each identified bug, prefer this stricter loop:
 - `tools/word-parity/create-focused-repros.py` writes deterministic minimal DOCX repro files.
 - `tools/word-parity/capture-browser-docx.mjs` captures a browser canvas PNG and optional layout JSON for a DOCX. Set `OFFICE_ROOT=/path/to/worktree` to capture from an old commit.
 - `tools/word-parity/compare-word-browser-layouts.mjs` runs Word TSV extraction plus browser line capture for one or more DOCX files/directories, then writes per-document layout diffs and a ranked summary.
+- `tools/word-parity/compare-vba-layout-results.mjs` runs Word TSV extraction plus browser `getRangeInformation`/`computeRangeStatistics` calls for matched line ranges. Use it to verify that our VBA-style layout query results match Microsoft Word separately from rendered screenshot comparison.
 - `tools/word-parity/fetch-windows-fonts.sh` copies Calibri, Arial, Times New Roman, and related Windows fonts from `wordvm` into `artifacts/fonts/windows`.
 - `tools/browser-runner/` is a standalone Fable/Vite browser harness for the canvas renderer. It loads DOCX files through `Office.Formats`, imports them into `RedBat.Word.API`, exposes `window.rbWordRunner`, and can write segment JSON, line-box JSON, plus canvas screenshots through Playwright.
 - `window.rbWordRunner.getVbaLayoutLines()`, `getRangeInformation(...)`, `getSelectionInformation()`, `getRangeBounds(...)`, and `computeRangeStatistics(...)` expose VBA-style layout probes on our browser path.
@@ -210,6 +211,22 @@ This writes:
 - `artifacts/layout-compare-current/<doc>/word-layout.tsv`: raw Word line geometry in points.
 - `artifacts/layout-compare-current/<doc>/browser-lines.json`: browser line boxes in CSS pixels.
 - `artifacts/layout-compare-current/<doc>/layout-diff.tsv`: matched Word/browser line pairs with `dx`, `dy`, and consecutive-line `gapDy`.
+
+Word/browser VBA-style result comparison:
+
+```sh
+node tools/word-parity/compare-vba-layout-results.mjs \
+  --out artifacts/vba-layout-compare-current \
+  tests/repros/word/table-valign-row-height.docx \
+  tests/repros/word/list-default-indent.docx
+```
+
+This writes:
+
+- `artifacts/vba-layout-compare-current/summary.tsv`: ranked mismatches in VBA-style call results.
+- `artifacts/vba-layout-compare-current/<doc>/word-layout.tsv`: raw Word `Range.Information`/`ComputeStatistics` values emitted by VBS.
+- `artifacts/vba-layout-compare-current/<doc>/browser-range-info.json`: browser line ranges with direct `getRangeInformation`/`computeRangeStatistics` results.
+- `artifacts/vba-layout-compare-current/<doc>/vba-diff.tsv`: matched Word/browser call-result pairs, including page, text-boundary, table, list-column, and statistics fields.
 
 Old-render capture example:
 
