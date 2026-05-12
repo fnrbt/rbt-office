@@ -79,6 +79,10 @@ def empty_paragraph():
     return "<w:p/>"
 
 
+def empty_paragraph_with_run_props():
+    return '<w:p><w:pPr><w:rPr><w:lang w:val="en-US"/></w:rPr></w:pPr></w:p>'
+
+
 def page_break_paragraph():
     return '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
 
@@ -910,6 +914,53 @@ def main():
             ], [3070, 3071, 3071])
             + paragraph("After gridspan table")
         ), True, True, table_grid_dense_row_pitch_styles(), False, False, docx4j_page_geometry()),
+        "table-spaced-sequence-page-break.docx": (False, False, False, (
+            paragraph("Table spaced sequence page-break repro", preserve_space=False)
+            + page_break_paragraph()
+            + exact_height_spacer_table(9650)
+            + paragraph("Shading, Margins, Cell spacing", preserve_space=False)
+            + table_grid_style_table_with_pr([
+                row_cells([
+                    cell("Cell 1a", width=2303, shading="clear", shading_fill="auto", preserve_space=False),
+                    cell("Cell 1b", width=2303, shading="clear", shading_fill="auto", preserve_space=False),
+                    cell("Cell 1c", width=2303, shading="clear", shading_fill="auto", preserve_space=False),
+                    cell("Cell 1d", width=2303, shading="clear", shading_fill="auto", preserve_space=False),
+                ]),
+                row_cells([
+                    cell("Cell 2a", width=2303, shading="pct5", shading_fill="FFC000", preserve_space=False),
+                    cell("Cell 2b", width=2303, shading="pct5", shading_fill="FFC000", preserve_space=False),
+                    cell("Cell 2c", width=2303, shading="pct5", shading_fill="FFC000", preserve_space=False),
+                    cell("Cell 2d", width=2303, shading="pct5", shading_fill="FFC000", padding_top=284, padding_right=567, padding_bottom=284, padding_left=567, preserve_space=False),
+                ]),
+            ], [2583, 2440, 2440, 2651],
+                '<w:tblCellSpacing w:w="142" w:type="dxa"/>'
+                '<w:shd w:val="clear" w:color="auto" w:fill="FFC000"/>'
+                '<w:tblCellMar><w:top w:w="113" w:type="dxa"/><w:left w:w="227" w:type="dxa"/><w:bottom w:w="113" w:type="dxa"/><w:right w:w="227" w:type="dxa"/></w:tblCellMar>')
+            + empty_paragraph()
+            + paragraph("Mergin, Auto size", preserve_space=False)
+            + table_grid_style_table([
+                row_cells([
+                    cell("A", width=6141, grid_span=2, preserve_space=False),
+                    cell("B", width=3071, preserve_space=False),
+                ]),
+                row_cells([
+                    cell("C", width=3070, preserve_space=False),
+                    cell("D", width=6142, grid_span=2, preserve_space=False),
+                ]),
+            ], [3070, 3071, 3071])
+            + empty_paragraph_with_run_props()
+            + paragraph("Auto size", preserve_space=False)
+            + table_grid_style_table([
+                row_cells([
+                    cell("A", width=375, preserve_space=False),
+                    cell("B", width=375, preserve_space=False),
+                ]),
+                row_cells([
+                    cell("C", width=375, preserve_space=False),
+                    cell("D", width=375, preserve_space=False),
+                ]),
+            ], [375, 375])
+        ), True, True, docx4j_table_grid_styles(), True, True, docx4j_page_geometry(), 12, docx4j_word_settings_xml(), docx4j_theme_xml()),
         "table-valign-row-height.docx": (False, False, False, (
             paragraph("Table valign row height repro", "Heading1")
             + table_grid_style_table([

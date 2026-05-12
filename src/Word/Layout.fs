@@ -1446,6 +1446,26 @@ let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasure
             | Heading (_, para) -> Some (blocks.[index], para)
             | _ -> None
 
+    let paragraphTextIsEmpty (para: ParagraphBlock) =
+        TextBuffer.toString para.Buffer |> fun text -> text.Trim() = ""
+
+    let previousBlockIsTextTable index =
+        index > 0
+        && match blocks.[index - 1] with
+           | Table table ->
+               table.Rows
+               |> List.exists (fun row ->
+                   row.Cells
+                   |> List.exists (fun cell ->
+                       cell.Content
+                       |> List.exists (fun para -> not (paragraphTextIsEmpty para))))
+           | _ -> false
+
+    let nextBlockIsEmptyParagraph index =
+        match paragraphBlockAt (index + 1) with
+        | Some (_, nextPara) -> paragraphTextIsEmpty nextPara
+        | None -> false
+
     let shouldMoveKeepGroup currentY groupHeight =
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) currentY
         let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
@@ -1702,7 +1722,19 @@ let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasure
                     if groupIsMoveable && probedLines > 0 && shouldMoveKeepGroup y groupHeight then advanceToNextPage settings y else y
                 else y
             let initialLinesSpanPages = linesSpanPages settings initialLayout.Lines
-            let initialFitHeight = paragraphVisibleFitHeight paragraphStyle initialLayout
+            let normalInitialFitHeight = paragraphVisibleFitHeight paragraphStyle initialLayout
+            let emptyParagraphWouldMovePage =
+                if initialLinesSpanPages then
+                    false
+                else
+                    let pagedY = paginateBlock settings keepWithNextY normalInitialFitHeight
+                    let pagedY = paginateBlockWithFootnotes settings footnotesByPage pagedY normalInitialFitHeight
+                    abs (pagedY - keepWithNextY) > 0.01
+            let initialFitHeight =
+                if initialLayout.Lines.IsEmpty && previousBlockIsTextTable index && not (nextBlockIsEmptyParagraph index) && emptyParagraphWouldMovePage then
+                    0.0
+                else
+                    normalInitialFitHeight
             let pagedY = if initialLinesSpanPages then keepWithNextY else paginateBlock settings keepWithNextY initialFitHeight
             let pagedY = if initialLinesSpanPages then pagedY else paginateBlockWithFootnotes settings footnotesByPage pagedY initialFitHeight
             let nextLineCount =
