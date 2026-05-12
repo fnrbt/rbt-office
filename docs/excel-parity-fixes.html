@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Excel Render/Layout Parity Fixes</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f3f5f7;
+      color: #17202a;
+    }
+
+    body {
+      margin: 0;
+      padding: 28px;
+      min-width: 1760px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .lede {
+      max-width: 980px;
+      margin: 0 0 22px;
+      color: #4b5563;
+      line-height: 1.45;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      background: #fff;
+      border: 1px solid #d8dee6;
+    }
+
+    th,
+    td {
+      vertical-align: top;
+      border: 1px solid #d8dee6;
+      padding: 12px;
+    }
+
+    th {
+      background: #e9edf2;
+      text-align: left;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    td {
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .case {
+      width: 12%;
+    }
+
+    .render {
+      width: 23%;
+    }
+
+    .summary {
+      width: 19%;
+    }
+
+    .meta {
+      display: block;
+      margin-top: 8px;
+      color: #637083;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+
+    .zoom {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 1.25 / 1;
+      min-height: 260px;
+      overflow: hidden;
+      background: #fff;
+      border: 1px solid #cfd6df;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.7);
+    }
+
+    .zoom img {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: var(--w);
+      height: auto;
+      max-width: none;
+      transform-origin: top left;
+      /* x/y are output-pixel offsets after scaling. Keep them matched across columns;
+         Excel PDF rasters are 150 dpi, so their scale is browser scale * 96/150. */
+      transform: translate(calc(-1 * var(--x)), calc(-1 * var(--y))) scale(var(--s));
+    }
+
+    .zoom.placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #98a4b5;
+      font-size: 13px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .caption {
+      margin-top: 8px;
+      color: #4b5563;
+      font-size: 12px;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: #eef2f6;
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+
+    ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Excel Render/Layout Parity Fixes</h1>
+  <p class="lede">
+    Focused regression table for XLSX render/layout parity work, newest fixes first. Each row keeps the real Excel reference,
+    our saved pre-fix rendering, and the current post-fix rendering. The frames are cropped into the problem
+    area rather than full-sheet screenshots. Baseline images live under <code>artifacts/baseline/</code> and
+    are intentionally not committed. This page mirrors <code>docs/word-parity-fixes.html</code>; expect rows to land as Excel
+    fixes do. Current corpus health: <strong>53 / 53</strong> XLSX fixtures under <code>tests/test-documents-excel/</code> render through
+    <code>tools/excel-native-runner</code> without error.
+  </p>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="case">Case</th>
+        <th class="render">Excel Reference</th>
+        <th class="render">Ours Before</th>
+        <th class="render">Ours After</th>
+        <th class="summary">Fix / Guard</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>
+          <strong>Date/time format interpretation</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test_types.xlsx</code></span>
+          <span class="meta">Real fixture class: any XLSX whose date cells carry a format code that maps to a date or time pattern. <code>pandas-test_types</code> uses a custom <code>numFmtId="164"</code> with code <code>m/d/yyyy;@</code>; <code>pandas-test1</code> uses built-in <code>numFmtId="22"</code> (<code>m/d/yyyy h:mm</code>). Both depend on this iteration.</span>
+          <span class="meta">Paths checked: native PNG, native cell-info JSON. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test_types-headings.png" style="--w:1275px; --x:50px; --y:80px; --s:0.45" alt="Excel reference render of pandas-test_types.xlsx">
+          </div>
+          <div class="caption">Excel reference: <code>DateCol</code> renders as real dates — <code>10/30/2013</code>, <code>10/31/2013</code>, <code>1/1/1905</code>, <code>12/14/2013</code>, <code>3/14/2015</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test_types-iter5-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before date interpretation">
+          </div>
+          <div class="caption">Before: <code>cellDisplayText</code> for <code>Number</code> cells called <code>formatNumber</code> with the raw Excel format code. <code>m/d/yyyy;@</code> isn't one of the legacy tags it understood, so the path fell through to <code>string value</code> and printed the raw Excel serials <code>41577</code>, <code>41578</code>, <code>1828</code>, <code>41622</code>, <code>42077</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test_types-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after date interpretation">
+          </div>
+          <div class="caption">After: <code>isDateFormat</code> / <code>isTimeFormat</code> detect Excel date/time codes; <code>formatExcelDate</code> converts the serial via <code>excelSerialToDate</code> (handles the 1900-leap-year quirk), maps the Excel format tokens to .NET ones, and respects the <code>;@</code> text-section separator. <code>DateCol</code> matches Excel exactly.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add the OOXML built-in <code>numFmtId</code> table to <code>Xlsx.parseCellXf</code> in <code>src/Office.Formats/src/XlsxReader.fs</code> (so files like <code>pandas-test1</code> with <code>numFmtId="22"</code> and no custom <code>&lt;numFmt&gt;</code> still get the <code>m/d/yyyy h:mm</code> code). In <code>src/Spreadsheet/Paint.fs</code>, add date/time detection, the <code>excelSerialToDate</code> converter, and a token mapper that translates Excel's <code>m/d/yyyy</code>, <code>h:mm</code>, <code>mmm-yy</code>, etc. into .NET's format codes. Strip the <code>;@</code> section before interpreting. Guard <code>DateTime.AddDays</code> against out-of-range serials so <code>pandas-testdateoverflow.xlsx</code> doesn't crash a render.</p>
+          <ul>
+            <li>Focused guard: <code>pandas-test_types.xlsx</code> <code>DateCol</code> matches Excel exactly across all 5 dates.</li>
+            <li>Built-in-id guard: <code>pandas-test1.xlsx</code> column A now correctly renders as <code>#####</code> (the formatted <code>m/d/yyyy h:mm</code> is wider than the 95 px column), matching Excel.</li>
+            <li>Corpus guard: all 53 downloaded XLSX fixtures render without error (was 52/53 before adding the overflow guard).</li>
+            <li>Regression guard: explicit non-date number formats and the General number trimming still route through their existing paths.</li>
+            <li>Path guard: native PNG and cell-info JSON regenerated. Date conversion lives in shared <code>Paint.fs</code>, so the Fable web app picks the same behaviour up.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Hide active-cell border on snapshot</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code></span>
+          <span class="meta">Real fixture class: any XLSX rendered for visual parity comparison. Our model always starts with a <code>SingleCell(0,0)</code> selection and the paint layer draws the green active-cell border around it; Excel print/screenshot output never shows the active-cell border.</span>
+          <span class="meta">Paths checked: native PNG (<code>tools/excel-native-runner</code>).</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1275px; --x:50px; --y:50px; --s:0.45" alt="Excel reference render with no active-cell border">
+          </div>
+          <div class="caption">Excel reference: cell <code>A1</code> has no green border. The print path strips the active-cell highlight even when <code>A1</code> is the active cell at save time.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-iter4-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before selection-snapshot fix">
+          </div>
+          <div class="caption">Before: <code>createEmpty</code> always parks the selection at <code>SingleCell(0,0)</code>, so the paint layer drew the green active-cell border around <code>A1</code> in every snapshot.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test1-iter4.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after selection-snapshot fix">
+          </div>
+          <div class="caption">After: the native runner overrides the model's <code>Selection</code> to <code>SingleCell(-1,-1)</code> (off-grid) before rendering, so the green active-cell box never gets drawn. The Fable interactive shell still gets its <code>SingleCell(0,0)</code> default.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>tools/excel-native-runner/Program.fs</code>, override <code>Selection</code> to an off-grid sentinel before handing the model to <code>SpreadsheetGrid.widget</code>. Paint's <code>isSelected</code> returns false for every visible cell, so the green border and the green fill are both suppressed.</p>
+          <ul>
+            <li>Focused guard: <code>pandas-test1.xlsx</code> A1 no longer renders with the green active-cell rectangle.</li>
+            <li>Regression guard: the Fable web app keeps the original <code>SingleCell(0,0)</code> default; only the snapshot runner opts out.</li>
+            <li>Path guard: native PNG regenerated. Browser path not affected.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>General number format trimming</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code></span>
+          <span class="meta">Real fixture class: XLSX cells with no explicit <code>numFmtId</code> that store high-precision floats (pandas <code>DataFrame.to_excel</code> output, scientific results). Excel's General format trims to fit the cell width and falls back to <code>#####</code> when even the integer part doesn't fit.</span>
+          <span class="meta">Paths checked: native PNG, native cell-info JSON.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1275px; --x:50px; --y:50px; --s:0.45" alt="Excel reference showing trimmed General format numbers">
+          </div>
+          <div class="caption">Excel reference: <code>B2 = 0.98026851</code> (8 significant digits — fits the 88 px column), <code>C2 = 3.68573088</code>, <code>D2 = -0.3642168</code>, <code>E2 = -1.1597381</code>. Excel's General format trims the precision to match the column width.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-iter3-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before General format trimming">
+          </div>
+          <div class="caption">Before: <code>displayValue</code> used .NET's <code>n.ToString("G")</code>, which keeps up to 15 significant digits. Numbers like <code>0.980268513777</code> overflowed the cell and spilled visually into the neighbouring column on the left (after right-alignment).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test1-iter3.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after General format trimming">
+          </div>
+          <div class="caption">After: <code>cellDisplayText</code> picks the longest <code>G&lt;n&gt;</code> representation that fits the cell width (8 px padding, ~7 px per character), and falls back to <code>#####</code> when even the shortest formatting doesn't fit.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>src/Spreadsheet/Paint.fs</code>, route <code>Number</code> cells through a new <code>generalNumberDisplay</code> that respects <code>cell.Rect.Width</code>. Tries <code>G10</code>, <code>G8</code>, <code>G6</code>, <code>G5</code>, <code>G4</code>, <code>G3</code>, <code>G2</code>, <code>G1</code> in order; returns <code>String('#', maxChars)</code> if nothing fits.</p>
+          <ul>
+            <li>Focused guard: <code>B2/E2</code> now match Excel exactly; <code>C2/D2</code> have one trailing digit too many (we pick <code>G10</code> when Excel would have used <code>G9</code> — same width but one fewer significant digit). Tunable in a follow-up.</li>
+            <li>Regression guard: explicit number formats (currency, percent, etc.) still route through <code>formatNumber</code> unchanged.</li>
+            <li>Path guard: native PNG regenerated. The Fable web app inherits the same change via shared <code>Paint.fs</code>.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Right-align numeric cells (General alignment)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code></span>
+          <span class="meta">Real fixture class: any XLSX with numeric cells and no explicit horizontal alignment. Excel's General alignment puts numbers/dates/booleans on the right and strings on the left.</span>
+          <span class="meta">Paths checked: native PNG, native cell-info JSON.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1275px; --x:50px; --y:50px; --s:0.45" alt="Excel reference with numbers right-aligned">
+          </div>
+          <div class="caption">Excel reference: column-A integers, columns B–E floats are right-aligned; row-1 header strings (<code>A</code>, <code>B</code>, <code>C</code>, <code>D</code>) are left-aligned.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-iter2-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before alignment fix">
+          </div>
+          <div class="caption">Before: <code>alignFromFormat</code> only looked at <code>format.HorizontalAlign</code>; an absent value fell through to <code>AlignLeft</code>. Every numeric cell rendered left-aligned, which never matches Excel.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test1-iter2.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after alignment fix">
+          </div>
+          <div class="caption">After: alignment falls through to a new <code>generalAlign</code> helper that mirrors Excel's General alignment — <code>Number</code>/<code>Formula</code> → right, <code>Boolean</code>/<code>Error</code> → center, <code>String</code>/<code>Empty</code> → left.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>src/Spreadsheet/Paint.fs</code>, extend <code>alignFromFormat</code> to accept the cell value and call <code>generalAlign value</code> when no explicit alignment is set on the format. The Fable web app and the native runner share <code>Paint.fs</code>, so both get the fix.</p>
+          <ul>
+            <li>Focused guard: B2/C2/D2/E2 in <code>pandas-test1.xlsx</code> now right-align like Excel; row-1 string headers stay left-aligned.</li>
+            <li>Regression guard: cells with an explicit <code>HorizontalAlign</code> on the format still honour the explicit value.</li>
+            <li>Path guard: native PNG regenerated for the same fixture.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>sheetFormatPr default column width</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code></span>
+          <span class="meta">Real fixture class: XLSX workbooks that set a per-sheet <code>&lt;sheetFormatPr baseColWidth="..."&gt;</code> instead of per-column <code>&lt;col width="..."&gt;</code> entries. Pandas-written workbooks routinely take this path.</span>
+          <span class="meta">Paths checked: native PNG (<code>tools/excel-native-runner</code>), VBA range comparison via <code>tools/excel-parity/excel-layout-tsv.sh</code>.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1275px; --x:50px; --y:50px; --s:0.45" alt="Excel reference render of pandas-test1.xlsx Sheet1 with row/column headers">
+          </div>
+          <div class="caption">Excel reports <code>B1</code> at <code>x = 71.25 pt</code> (95 CSS px) with <code>width = 66 pt</code> (88 CSS px). B/C/D/E all use the sheet's <code>&lt;sheetFormatPr baseColWidth="10"&gt;</code> default. Print captured with <code>PageSetup.PrintHeadings = True</code> so row numbers and column letters are visible (column A renders as <code>######</code> because the explicit 11.83-char width is still too narrow for the datetime values).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before sheetFormatPr fix">
+          </div>
+          <div class="caption">Before: with no <code>&lt;col&gt;</code> entry our loader fell back to the generic <code>RedBat.Spreadsheet.Model</code> defaults (column 100 px, row 25 px). The data table extends to ~535 CSS px wide; every column past A drifted ~12 px wider than Excel.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after sheetFormatPr fix">
+          </div>
+          <div class="caption">After: <code>Xlsx.sheetFormatPr</code> seeds the per-sheet default into <code>ColumnWidths</code> for every used column. The data table now extends to ~495 CSS px wide; <code>B1</code> width matches Excel within 0 px and <code>X</code>-origin within 0.4 px (vs 12 px before).</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> parse <code>&lt;sheetFormatPr&gt;</code> in <code>src/Office.Formats/src/XlsxReader.fs</code>, store the <code>baseColWidth</code>/<code>defaultColWidth</code>/<code>defaultRowHeight</code> on <code>Worksheet.Format</code>, and have <code>tools/excel-native-runner</code> seed each used column/row with that default before falling back to the generic spreadsheet model defaults. Tune the char→pixel ratio to <code>8.0</code> and add <code>+1.0</code> char padding to <code>baseColWidth</code> (matches Excel's auto-pad for default columns).</p>
+          <ul>
+            <li>Focused guard: <code>pandas-test1.xlsx</code> first-row columns B–E now match Excel within 0 px width / 0.4 px X-origin (was 12 px / 5.6 px).</li>
+            <li>Regression guard: explicit-width column A (<code>customWidth="1"</code>) still renders at <code>11.83 * 8.0 = 94.6 px</code> against Excel's <code>95 px</code> (delta <code>0.4 px</code>).</li>
+            <li>Path guard: native PNG and cell-info JSON regenerated. Browser path not yet wired; planned via <code>RedBat.Spreadsheet.API.getLayoutCells</code>.</li>
+            <li>Authoring guard: pure renderer/import behavior — no new UI surface.</li>
+          </ul>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</body>
+</html>
