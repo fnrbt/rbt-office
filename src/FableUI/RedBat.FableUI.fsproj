@@ -8,7 +8,12 @@
     <Compile Include="Reactive.fs" />
     <Compile Include="Dom.fs" />
     <Compile Include="UI.fs" />
+    <Compile Include="OfficeUiDialog.fs" />
     <Compile Include="ParagraphStyleDialogTest.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../OfficeUi/RedBat.OfficeUi.fsproj" />
   </ItemGroup>
 
   <ItemGroup>
