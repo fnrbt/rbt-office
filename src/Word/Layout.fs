@@ -994,7 +994,9 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
     let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
     let rowSpacingAdvance = WordLayout.Table.rowSpacingAdvance cellSpacing
     let outerStartInset = outerLeft + cellSpacing
-    let mutable rowHeight = WordLayout.Table.rowMinHeight WordLayout.canvasScale settings.LineHeight row
+    let rowMinHeight = WordLayout.Table.rowMinHeight WordLayout.canvasScale settings.LineHeight row
+    let mutable rowHeight = rowMinHeight
+    let mutable contentDrivenRowHeight = 0.0
     let mutable cellGroups = []
     let mutable traces = []
 
@@ -1039,7 +1041,9 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
             paraY <- paraY + layout.Height
 
         let contentHeight = max 0.0 (paraY - contentStartY)
-        rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + rowSpacingAdvance)
+        let requiredHeight = contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + rowSpacingAdvance
+        contentDrivenRowHeight <- max contentDrivenRowHeight requiredHeight
+        rowHeight <- max rowHeight requiredHeight
         cellGroups <- cellGroups @ [{ VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top; PaddingBottom = textPadding.Bottom; ContentHeight = contentHeight; Layouts = cellLayouts }]
         let totalLines = cellLayouts |> List.sumBy (fun layout -> layout.Lines.Length)
         let cellSnippet =
@@ -1049,6 +1053,15 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
             |> Option.map snippet
             |> Option.defaultValue ""
         traces <- traces @ [sprintf "c%d/%d w=%.2f cw=%.2f h=%.2f lines=%d text=%s" positioned.StartColumn positioned.Span colWidth cellMaxWidth contentHeight totalLines cellSnippet]
+
+    let exactRowHeight =
+        row.HeightRule
+        |> Option.map (fun rule -> rule.ToLowerInvariant() = "exact")
+        |> Option.defaultValue false
+    let alignAgainstRowHeight = exactRowHeight || contentDrivenRowHeight > rowMinHeight + 0.01
+    let cellGroups =
+        if alignAgainstRowHeight then cellGroups
+        else cellGroups |> List.map (fun group -> { group with VerticalAlignment = None })
 
     { Height = rowHeight; CellGroups = cellGroups; Traces = traces }
 
