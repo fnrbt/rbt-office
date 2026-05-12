@@ -296,7 +296,9 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 else format.BgColor |> Option.defaultValue "#ffffff"
 
             yield FillRect (cell.Rect, background)
-            yield StrokeRect (cell.Rect, (if selected then "#217346" else "#e0e0e0"), (if selected then 2.0 else 1.0))
+            // Excel print gridlines render as a medium gray; matches our column-
+            // header stroke #a6a6a6 so cells and headers form a continuous grid.
+            yield StrokeRect (cell.Rect, (if selected then "#217346" else "#a6a6a6"), (if selected then 2.0 else 1.0))
 
             let displayText = cellDisplayText cell.Rect.Width format value
 
