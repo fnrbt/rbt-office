@@ -559,13 +559,18 @@
           <div class="zoom">
             <img src="../artifacts/native/pandas-test_decimal-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after table style support">
           </div>
-          <div class="caption">After: <code>tableAccentColor</code> resolves <code>TableStyleMedium7</code> to the workbook's <code>accent6</code> color. The header row picks up the dark green fill + white bold; <code>tintHex …  0.80</code> lightens the same accent to the banded stripe color used on rows 3 and 5.</div>
+          <div class="caption">After: <code>tableAccentColor</code> resolves <code>TableStyleMedium7</code> to the workbook's <code>accent6</code> color. The header row picks up the dark green fill + white bold; <code>tintHex … 0.80</code> lightens the same accent to the banded stripe color on rows 3 and 5. A forced medium <code>#404040</code> border on every table cell keeps the column/row dividers visible against the saturated green where the default <code>#a6a6a6</code> grid stroke would disappear.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> add <code>TableStyleInfo</code>/<code>TableDefinition</code>/<code>ThemeAccents</code> to <code>XlsxReader</code> and parse the sheet relationship chain (<code>xl/worksheets/_rels/sheet#.xml.rels</code> → <code>xl/tables/table#.xml</code>) in the native loader. Read <code>xl/theme/theme1.xml</code> for <code>accent1..accent6</code>. In <code>tools/excel-native-runner</code>, every cell inside a table's range gets BgColor/TextColor/Bold overrides derived from <code>TableStyleMedium# → accent(N-2)</code>; explicit cellXf values still win via <code>Option.orElse</code>.</p>
+          <p><strong>Fix:</strong> three layered changes:</p>
+          <ol>
+            <li>Add <code>TableStyleInfo</code>/<code>TableDefinition</code>/<code>ThemeAccents</code> to <code>XlsxReader</code> and parse the sheet relationship chain (<code>xl/worksheets/_rels/sheet#.xml.rels</code> → <code>xl/tables/table#.xml</code>) in the native loader; read <code>xl/theme/theme1.xml</code> for <code>accent1..accent6</code>.</li>
+            <li>In <code>tools/excel-native-runner</code>, every cell inside a table's range gets BgColor/TextColor/Bold overrides derived from <code>TableStyleMedium# → accent(N-2)</code>, plus a forced medium <code>#404040</code> border on all four sides. Explicit cellXf values still win via <code>Option.orElse</code>.</li>
+            <li>Split <code>buildCellPaintItems</code> in <code>src/Spreadsheet/Paint.fs</code> into three passes — all fills, then all strokes/borders, then all text — so adjacent cells' fills no longer overdraw the previous cell's right/bottom border. The single-pass loop was invisible against white but obvious once a saturated accent fill landed on adjacent header cells.</li>
+          </ol>
           <ul>
-            <li>Focused guard: <code>pandas-test_decimal.xlsx</code> now matches Excel's banded green look; header row is bold white on accent6.</li>
-            <li>Regression guard: TableStyleLight*/Dark* are intentionally not overlaid yet, so files that don't use Medium variants render exactly as before.</li>
+            <li>Focused guard: <code>pandas-test_decimal.xlsx</code> now matches Excel's banded green look; header row is bold white on accent6 with visible dividers between <code>Column1..Column6</code> and a sharp underline at the header/data boundary.</li>
+            <li>Regression guard: TableStyleLight*/Dark* are intentionally not overlaid yet, so files that don't use Medium variants render exactly as before. The multi-pass split is value-equivalent for cells on white backgrounds.</li>
             <li>Path guard: 53/53 corpus fixtures still load. Tables on fixtures without a usable range (<code>poi-55864</code>, <code>tableSingleCells1.xml</code>) are silently skipped.</li>
             <li>Authoring guard: pure renderer/import behavior — no schema or UI changes; <code>parseWorkbook</code> (Fable path) still passes an empty <code>Tables</code> list with default theme accents.</li>
           </ul>
