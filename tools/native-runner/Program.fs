@@ -389,6 +389,7 @@ let private paraMetadata resolver (para: DocxReader.Paragraph) (editorPara: EP.E
             BackgroundColor = color props.BackgroundColor
             ParagraphBorders = paraBorders props.ParagraphBorders
             PageBreakBefore = props.PageBreakBefore |> Option.defaultValue false
+            PageBreakAfter = para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false)
             SectionBreak = props.SectionBreak
             SectionPageNumberStart = props.SectionPageNumberStart
             RenderedPageBreakBefore = props.RenderedPageBreakBefore
@@ -487,7 +488,7 @@ let private tableBlock resolver images styleMap tableStyleMap comments notes (ta
             |> List.mapi (fun rowIndex row -> {
                 Cells = row.Cells |> List.map (tableCell resolver images styleMap comments notes (paragraphPropertiesForRow rowIndex))
                 IsHeader = row.IsHeader
-                Height = twipsToCanvasPixels row.Height
+                Height = parseFloat row.Height
                 HeightRule = row.HeightRule
                 CanSplit = row.CanSplit
                 CellSpacing = twipsToCanvasPixels row.CellSpacing
