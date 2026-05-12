@@ -151,7 +151,10 @@ let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: 
                     | None -> None
                     | Some accentHex ->
                         let isHeader = row < t.StartRow + t.HeaderRowCount
-                        let edge : BorderStyle = { Style = "thin"; Color = Some "#808080" }
+                        // Dark slate gray at medium width — survives the HTML
+                        // parity tracker's 0.65× scale where #808080 thin
+                        // borders fade out below the antialiasing threshold.
+                        let edge : BorderStyle = { Style = "medium"; Color = Some "#404040" }
                         let baseOverlay = {
                             BgColor = None
                             TextColor = None
