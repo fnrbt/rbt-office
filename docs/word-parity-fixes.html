@@ -143,6 +143,44 @@
     <tbody>
       <tr>
         <td>
+          <strong>Explicit TableGrid row pitch accumulation</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-grid-dense-row-pitch.docx</code></span>
+          <span class="meta">Real fixture class: dense single-line tables using explicit table-style paragraph line spacing.</span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend, PDF-backed Word visual comparison.</span>
+          <span class="meta">Fix commit: <code>88275e4</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-grid-dense-row-pitch-word.png" style="--w:1224px; --x:40px; --y:80px; --s:0.58" alt="Word reference explicit TableGrid row pitch accumulation">
+          </div>
+          <div class="caption">Word advances the dense table rows at about <code>18.56px</code> CSS-equivalent pitch, keeping the last row and following paragraph from drifting.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-grid-dense-row-pitch-before-explicit-linebox-retune.png" style="--w:900px; --x:40px; --y:80px; --s:0.87" alt="Before explicit TableGrid row pitch retune">
+          </div>
+          <div class="caption">Before: the explicit table-cell line box was slightly short, accumulating about <code>7px</code> upward drift by row 14.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-grid-dense-row-pitch-after-explicit-linebox-retune.png" style="--w:900px; --x:40px; --y:80px; --s:0.87" alt="After explicit TableGrid row pitch retune">
+          </div>
+          <div class="caption">After: the per-row pitch matches Word's PDF-extracted visual text boxes, so the row-14 and post-table text stay aligned with the reference.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> retune the explicit table-cell line-box factor from the earlier coarse TableGrid value to the measured Word visual row pitch.</p>
+          <ul>
+            <li>Focused guard: <code>table-grid-dense-row-pitch.docx</code> now compares cleanly with <code>58 matched lines</code>.</li>
+            <li>VBA guard: <code>compare-vba-layout-results</code> reports <code>ok</code> with <code>57 matched ranges</code>.</li>
+            <li>Regression guard: the focused table suite reports <code>ok</code> for spacing/margins, margin origin, DXA row height, vertical alignment, borders, table-style paragraph spacing, default after spacing, explicit before spacing, and explicit left padding.</li>
+            <li>Path guard: native PNG and PDF backend outputs were regenerated for the same repro; the PDF text extraction now shows the same dense row pitch.</li>
+            <li>Authoring guard: paragraph line spacing is already exposed in the interactive paragraph style dialog; this change corrects renderer measurement for explicit table-style line spacing.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Visual table-cell vertical alignment</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-valign-row-height.docx</code></span>
           <span class="meta">Real fixture class: fixed/minimum-height tables with cell <code>w:vAlign</code>.</span>

@@ -388,7 +388,8 @@ let private wordLineBoxFactor = 1.20
 let private wordSingleLineBoxFactor = 1.316
 let private monospaceLineBoxFactor = 1.18
 let private tableCellDefaultLineBoxFactor = 1.336
-let private tableCellExplicitLineBoxFactor = 1.25
+// Matches Word's visual single-line pitch for explicit 11pt TableGrid cell paragraphs.
+let private tableCellExplicitLineBoxFactor = 1.266
 
 let private tableCellLineBoxFontSize fontSize =
     // Browser import stores DOCX point sizes as CSS-pixel sizes. The native/PDF
