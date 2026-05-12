@@ -14,9 +14,8 @@ let withOpenMenu = OfficeShell.withOpenMenu
 
 let private palette = OfficeShell.palette WordUi.chrome
 
-/// Word's document workspace — paper desk + page frame + ruler. The shared
-/// shell wraps this in titlebar/menubar/toolbar/status chrome.
-let private ruler =
+/// Word's classic horizontal ruler — the strip above the document area.
+let ruler =
     sizedH 18.0 (
         stack [
             box (Color.rgb 250uy 248uy 242uy) empty
@@ -28,7 +27,9 @@ let private ruler =
             ]
         ])
 
-let private documentWorkspace =
+/// Static placeholder workspace — a blank page on the paper desk. Used when
+/// no real document widget has been provided.
+let placeholderWorkspace =
     box palette.PaperDesk (
         pad 20.0 (
             center (
@@ -36,18 +37,29 @@ let private documentWorkspace =
                     border palette.Border 1.0 0.0 (
                         sized palette.DocumentTrackWidth 360.0 (box Palette.white empty))))))
 
-let private workspace = column [ ruler; documentWorkspace ]
+/// Wrap an editor surface in the paper-desk background so it matches the
+/// rest of the Word chrome aesthetic.
+let documentWorkspace (editor: Widget) =
+    box palette.PaperDesk (pad 12.0 (center editor))
 
-let view (renderState: ShellRenderState) (state: WordUi.ShellState) (actions: WordUi.ShellActions) =
+let viewWith (renderState: ShellRenderState)
+             (title: string)
+             (statusText: unit -> string)
+             (state: WordUi.ShellState)
+             (actions: WordUi.ShellActions)
+             (workspace: Widget) =
     let config : OfficeShell.ShellConfig = {
         Chrome = WordUi.chrome
-        Title = "RedBat Word - Document1"
-        StatusText = fun () -> "Ready"
+        Title = title
+        StatusText = statusText
         Menus = WordUi.menus state actions
         ToolbarRows = WordUi.toolbarRows state actions
         ToolbarGlyph = WordUi.toolbarGlyph
         MenuLeft = WordUi.menuLeft
         ShowToolbarPressed = WordUi.showToolbarPressed
-        Workspace = workspace
+        Workspace = column [ ruler; workspace ]
     }
     OfficeShell.view renderState config
+
+let view (renderState: ShellRenderState) (state: WordUi.ShellState) (actions: WordUi.ShellActions) =
+    viewWith renderState "RedBat Word - Document1" (fun () -> "Ready") state actions placeholderWorkspace
