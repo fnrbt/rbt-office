@@ -88,7 +88,7 @@ let private renderField (values: Dictionary<string, Signal<string>>) (field: Dia
         let toggle (event: Browser.Types.Event) =
             let target = event.target :?> Browser.Types.HTMLInputElement
             valueSignal.Value <- if target.``checked`` then "true" else "false"
-        div [ cls "dlg-field dlg-field-checkbox" ] [
+        div [ cls "dlg-field"; cls "dlg-field-checkbox" ] [
             label [ cls "dlg-label-inline" ] [
                 input [
                     cls "dlg-checkbox"
@@ -115,7 +115,7 @@ let private renderField (values: Dictionary<string, Signal<string>>) (field: Dia
                 option [ attr "value" choice.Value ] [ text choice.Label ]))
         ]
     | DialogStatusField ->
-        div [ cls "dlg-field dlg-field-status" ] [
+        div [ cls "dlg-field"; cls "dlg-field-status" ] [
             label [ cls "dlg-label" ] [ text field.Label ]
             div [ cls "dlg-status"; attr "data-testid" fieldTestId ] [
                 textR (fun () -> valueSignal.Value)
@@ -131,15 +131,12 @@ let private renderButton (state: DialogState) (values: Dictionary<string, Signal
         let shouldClose = btn.Action snapshot
         if shouldClose then closeDialog state
 
-    let classes =
-        if btn.IsPrimary then "dlg-button dlg-button-primary"
-        else "dlg-button"
-
-    button [
-        rawCls classes
-        attr "data-testid" btn.TestId
-        onClick activate
-    ] [ text btn.Label ]
+    let primaryClass =
+        if btn.IsPrimary then [ cls "dlg-button-primary" ] else []
+    button (
+        [ cls "dlg-button"; attr "data-testid" btn.TestId; onClick activate ]
+        @ primaryClass)
+        [ text btn.Label ]
 
 /// Render the dialog overlay. The caller mounts this once and the renderer
 /// becomes active/inactive based on the DialogState's open-signal.

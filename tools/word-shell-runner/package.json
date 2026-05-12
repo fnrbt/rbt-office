@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:fable": "dotnet tool restore && dotnet fable . --outDir src --lang JavaScript",
+    "dev": "vite --host 127.0.0.1",
+    "check": "node scripts/check-shell-runner.mjs"
+  },
+  "dependencies": {
+    "vite": "^7.1.12"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.1"
+  }
+}
