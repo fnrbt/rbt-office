@@ -155,6 +155,40 @@
     <tbody>
       <tr>
         <td>
+          <strong>Pass-through Excel number-format codes</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/poi-47813.xlsx</code></span>
+          <span class="meta">Real fixture class: XLSX cells whose <code>numFmtId</code> is a real Excel custom format code (<code>0.000</code>, <code>#,##0.00</code>, <code>0%</code>, <code>0.00E+00</code>, etc.) rather than one of the legacy <code>currency</code>/<code>percentage</code>/<code>date</code> tags the Fable web UI emits. The poi-47813 sine/cosine table uses <code>0.000</code> on B and C so they fit a 6-char-wide column.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/poi-47813-headings.png" style="--w:1275px; --x:50px; --y:60px; --s:0.6" alt="Excel reference render of poi-47813.xlsx">
+          </div>
+          <div class="caption">Excel reference: Sine/Cosine columns render with three fixed decimal places (<code>0.000</code>, <code>0.017</code>, <code>0.035</code>, …) per the cellXf's <code>numFmt 164 = "0.000"</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/poi-47813-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.8" alt="Ours before format code support">
+          </div>
+          <div class="caption">Before: <code>cellDisplayText</code> for non-date format codes called <code>Model.formatNumber</code>, which only recognised the legacy <code>currency</code>/<code>percentage</code>/<code>decimal2</code>/<code>number</code>/<code>date</code> tags and fell through to <code>string n</code> for everything else. <code>0.000</code> didn't match any tag → raw <code>G</code> representation → didn't fit the narrow column → <code>fitOrOverflow</code> emitted <code>#####</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/poi-47813-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.8" alt="Ours after format code support">
+          </div>
+          <div class="caption">After: real Excel format codes pass through a new <code>formatExcelNumber</code> helper that hands the (positive section of the) format string directly to <code>Double.ToString</code>, which natively understands <code>0.000</code>, <code>#,##0.00</code>, <code>0%</code>, scientific, etc. Sine/Cosine values match Excel exactly to 3 decimals.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>src/Spreadsheet/Paint.fs</code>, split <code>cellDisplayText</code>'s number branch into three: explicit named formats (<code>currency</code>/<code>percentage</code>/…) still go through <code>Model.formatNumber</code>; <code>General</code> goes through <code>generalNumberDisplay</code>; everything else routes to <code>formatExcelNumber</code>, which strips the section separator, converts <code>\x</code> escapes to <code>'x'</code> literals, and passes the format directly to <code>Double.ToString</code> with a <code>G</code> fallback if .NET rejects it.</p>
+          <ul>
+            <li>Focused guard: <code>poi-47813.xlsx</code> Sine/Cosine cells match Excel to 3 decimal places (was <code>#####</code> in every cell).</li>
+            <li>Regression guard: <code>pandas-test1.xlsx</code> column A (numFmtId 22 → date), <code>pandas-test_types.xlsx</code> DateCol (numFmtId 164 → m/d/yyyy), and <code>phpsp-32chartreadwrite.xlsx</code> cached-formula numbers all still render correctly — the new branch only kicks in for non-date, non-named format codes.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Cached formula values, cellXf alignment, Excel 8.43-char default column width</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/phpsp-32chartreadwrite.xlsx</code></span>
           <span class="meta">Real fixture class: XLSX workbooks that combine three traits that all rendered wrong together — (a) shared-formula cells with cached <code>&lt;v&gt;</code> results (the Budget/Projected/Actual/Forecast <code>RANDBETWEEN</code> rows), (b) explicit <code>&lt;alignment horizontal="center"&gt;</code> on merged-header cellXfs, and (c) no <code>&lt;sheetFormatPr defaultColWidth&gt;</code> so the renderer needs Excel's implicit 8.43-character fallback.</span>

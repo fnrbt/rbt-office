@@ -219,6 +219,31 @@ let private generalNumberDisplay (cellWidthPx: float) (n: float): string =
     | Some s -> s
     | None -> System.String('#', maxChars)
 
+/// Apply an Excel non-date number-format code (`0.000`, `#,##0.00`, `0%`,
+/// `0.00E+00`, etc.) using .NET's custom-format-string support. Excel's
+/// number-format grammar is largely compatible with .NET's; we strip the
+/// section separator first and pass the positive section to `Double.ToString`,
+/// falling back to `G` if .NET rejects it.
+let private formatExcelNumber (code: string) (n: float) : string =
+    let inv = System.Globalization.CultureInfo.InvariantCulture
+    let pos = firstSection code
+    let cleaned =
+        // Replace literal-backslash-escapes with .NET single-quote literals.
+        let sb = System.Text.StringBuilder(pos.Length)
+        let mutable i = 0
+        while i < pos.Length do
+            if pos.[i] = '\\' && i + 1 < pos.Length then
+                sb.Append('\'').Append(pos.[i + 1]).Append('\'') |> ignore
+                i <- i + 2
+            else
+                sb.Append(pos.[i]) |> ignore
+                i <- i + 1
+        sb.ToString()
+    try n.ToString(cleaned, inv)
+    with _ ->
+        try n.ToString("G", inv)
+        with _ -> string n
+
 /// Excel shows ##### when a number's display string is wider than the cell.
 let private fitOrOverflow (cellWidth: float) (text: string) : string =
     let usableWidth = max 0.0 (cellWidth - 8.0)
@@ -233,11 +258,19 @@ let rec private cellDisplayText (cellWidth: float) (format: CellFormat) (value: 
         match format.NumberFormat with
         | Some code when isDateFormat code || isTimeFormat code ->
             fitOrOverflow cellWidth (formatExcelDate code n)
-        | Some _ ->
-            // Existing legacy format codes ("currency", "percentage", etc.) and
-            // pass-through Excel codes that aren't date/time still go through
-            // `formatNumber`. Width-overflow guard still applies.
+        | Some "currency"
+        | Some "percentage"
+        | Some "date"
+        | Some "decimal2"
+        | Some "number" ->
+            // Legacy named format codes from the Fable web UI's formatting
+            // commands. Keep these on the original Model.formatNumber path.
             fitOrOverflow cellWidth (formatNumber format.NumberFormat n)
+        | Some "General"
+        | Some "" -> generalNumberDisplay cellWidth n
+        | Some code ->
+            // Real Excel format code (0.000, #,##0.00, 0%, 0.00E+00, etc.).
+            fitOrOverflow cellWidth (formatExcelNumber code n)
         | None -> generalNumberDisplay cellWidth n
     | String s -> s
     | Boolean b -> if b then "TRUE" else "FALSE"
