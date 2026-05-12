@@ -2469,13 +2469,17 @@ let private wordFontSizeToPoints (fontSize: string option) =
         | false, _ -> 11.0 * 96.0 / 72.0
     | None -> 11.0 * 96.0 / 72.0
 
-let private wordFontFamilyToCss (props: RunProperties) =
+let private resolveThemeFont (theme: Theme option) (themeFont: string option) =
+    match theme, themeFont with
+    | Some theme, Some value when value.StartsWith("major") -> theme.MajorFont
+    | Some theme, Some value when value.StartsWith("minor") -> theme.MinorFont
+    | _, Some value when value.StartsWith("major") -> Some "Cambria"
+    | _, Some value when value.StartsWith("minor") -> Some "Calibri"
+    | _ -> None
+
+let private wordFontFamilyToCss (theme: Theme option) (props: RunProperties) =
     props.FontFamily
-    |> Option.orElseWith (fun () ->
-        match props.ThemeFont with
-        | Some "majorHAnsi" -> Some "Cambria"
-        | Some "minorHAnsi" -> Some "Calibri"
-        | _ -> None)
+    |> Option.orElseWith (fun () -> resolveThemeFont theme props.ThemeFont)
     |> Option.defaultValue "Calibri"
 
 let private wordColorToCss (color: string option) =
@@ -2856,7 +2860,7 @@ let private resolvedRunProperties (styleMap: Map<string, StyleDefinition>) (para
     let paragraphRun = paraProps.ParagraphRunProperties |> Option.defaultValue emptyRunProperties
     mergeRunProperties (mergeRunProperties (mergeRunProperties (mergeRunProperties docDefaultRun baseRun) paragraphRun) characterRun) runProps
 
-let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) : obj array =
+let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) : obj array =
     let styleMap = buildStyleMap styles
     content
     |> List.choose (fun item ->
@@ -2900,7 +2904,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                             "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                             "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                            "FontFamily" ==> wordFontFamilyToCss effectiveRunProps
+                            "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                             "Color" ==> wordColorToCss effectiveRunProps.Color
                             "Highlight" ==> effectiveRunProps.Highlight
                             "VertAlign" ==> effectiveRunProps.VertAlign
@@ -2960,7 +2964,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                             "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                             "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                            "FontFamily" ==> wordFontFamilyToCss effectiveRunProps
+                            "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                             "Color" ==> wordColorToCss effectiveRunProps.Color
                             "Highlight" ==> effectiveRunProps.Highlight
                             "VertAlign" ==> effectiveRunProps.VertAlign
@@ -3040,7 +3044,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                                "FontFamily" ==> wordFontFamilyToCss effectiveRunProps
+                                "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                                 "Color" ==> wordColorToCss effectiveRunProps.Color
                                 "Highlight" ==> effectiveRunProps.Highlight
                                 "VertAlign" ==> effectiveRunProps.VertAlign
@@ -3141,7 +3145,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                                "FontFamily" ==> wordFontFamilyToCss effectiveRunProps
+                                "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                                 "Color" ==> wordColorToCss effectiveRunProps.Color
                                 "Highlight" ==> effectiveRunProps.Highlight
                                 "VertAlign" ==> effectiveRunProps.VertAlign
@@ -3200,7 +3204,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                                 "SmallCaps" ==> effectiveOnOff effectiveLinkProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveLinkProps.Strike
                                 "FontSize" ==> wordFontSizeToPoints effectiveLinkProps.FontSize
-                                "FontFamily" ==> wordFontFamilyToCss effectiveLinkProps
+                                "FontFamily" ==> wordFontFamilyToCss theme effectiveLinkProps
                                 "Color" ==> wordColorToCss effectiveLinkProps.Color
                                 "Highlight" ==> effectiveLinkProps.Highlight
                                 "VertAlign" ==> effectiveLinkProps.VertAlign
@@ -3280,7 +3284,7 @@ let private toEditorParagraphsInternal (styles: StyleDefinition list) (content: 
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                                "FontFamily" ==> wordFontFamilyToCss effectiveRunProps
+                                "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                                 "Color" ==> wordColorToCss effectiveRunProps.Color
                                 "Highlight" ==> effectiveRunProps.Highlight
                                 "VertAlign" ==> effectiveRunProps.VertAlign
@@ -3620,13 +3624,20 @@ let private applyNumberingDefinitions (numberingDefinitions: NumberingDefinition
     items |> Array.map apply
 
 let toEditorParagraphs (content: DocumentContent list) (images: Map<string, string>) : obj array =
-    toEditorParagraphsInternal [] content images
+    toEditorParagraphsInternal None [] content images
 
 let toEditorParagraphsWithStyles (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
-    toEditorParagraphsInternal styles content images
+    toEditorParagraphsInternal None styles content images
+
+let toEditorParagraphsWithStylesAndTheme (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
+    toEditorParagraphsInternal theme styles content images
 
 let toEditorParagraphsWithStylesAndNumbering (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) : obj array =
-    toEditorParagraphsInternal styles content images
+    toEditorParagraphsInternal None styles content images
+    |> applyNumberingDefinitions numberingDefinitions
+
+let toEditorParagraphsWithStylesThemeAndNumbering (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) : obj array =
+    toEditorParagraphsInternal theme styles content images
     |> applyNumberingDefinitions numberingDefinitions
 
 let toEditorHeaderFooters (items: HeaderFooter list) (images: Map<string, string>) : obj array =
@@ -3646,6 +3657,16 @@ let toEditorHeaderFootersWithStyles (items: HeaderFooter list) (images: Map<stri
             "Type" ==> item.Type
             "RelationshipId" ==> item.RelationshipId
             "Paragraphs" ==> toEditorParagraphsWithStyles (item.Content |> List.map Para) images styles
+        ])
+    |> List.toArray
+
+let toEditorHeaderFootersWithStylesAndTheme (theme: Theme option) (items: HeaderFooter list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
+    items
+    |> List.map (fun item ->
+        createObj [
+            "Type" ==> item.Type
+            "RelationshipId" ==> item.RelationshipId
+            "Paragraphs" ==> toEditorParagraphsWithStylesAndTheme theme (item.Content |> List.map Para) images styles
         ])
     |> List.toArray
 

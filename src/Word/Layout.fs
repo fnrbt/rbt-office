@@ -394,6 +394,7 @@ let private monospaceLineBoxFactor = 1.18
 let private tableCellDefaultLineBoxFactor = 1.336
 // Matches Word's visual single-line pitch for explicit 11pt TableGrid cell paragraphs.
 let private tableCellExplicitLineBoxFactor = 1.266
+let private arialTableCellExplicitLineBoxFactor = 1.193
 
 let private tableCellLineBoxFontSize fontSize =
     // Browser import stores DOCX point sizes as CSS-pixel sizes. The native/PDF
@@ -408,6 +409,14 @@ let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
     | Some "courier" -> monospaceLineBoxFactor
     | _ -> wordLineBoxFactor
 
+let private tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing (style: TextBuffer.TextStyle) =
+    if not hasExplicitLineSpacing then
+        tableCellDefaultLineBoxFactor
+    else
+        match style.FontFamily |> Option.map (fun family -> family.Trim().ToLowerInvariant()) with
+        | Some "arial" -> arialTableCellExplicitLineBoxFactor
+        | _ -> tableCellExplicitLineBoxFactor
+
 let private wordLineHeight textStyle fontSize lineSpacing =
     let factor =
         if abs (lineSpacing - 1.0) < 0.001 then
@@ -419,7 +428,7 @@ let private wordLineHeight textStyle fontSize lineSpacing =
 let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing =
     let automatic =
         if settings.InTableCell then
-            let factor = if hasExplicitLineSpacing then tableCellExplicitLineBoxFactor else tableCellDefaultLineBoxFactor
+            let factor = tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing textStyle
             tableCellLineBoxFontSize fontSize * lineSpacing * factor
         else
             wordLineHeight textStyle fontSize lineSpacing
@@ -921,7 +930,15 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         |> function
             | [] -> metadata.ParagraphMarkFontSize |> Option.defaultValue paragraphStyle.Text.FontSize
             | sizes -> List.max sizes
-    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings paragraphStyle.Text contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing }
+    let contentTextStyle =
+        buffer.Runs
+        |> List.choose (function
+            | Text run -> Some run.Style
+            | Image _ -> None)
+        |> List.sortByDescending WordLayout.Text.displayFontSize
+        |> List.tryHead
+        |> Option.defaultValue paragraphStyle.Text
+    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing }
     let lines, updatedObstacles, updatedPlacedBoxes = layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.RightTabPosition initialObstacles initialPlacedBoxes
 
     let adjustedLines =
@@ -953,7 +970,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let pagedLines = paginateLines settings (widowControl paragraphStyle metadata) adjustedLines
 
     let blockHeight =
-        if pagedLines.IsEmpty then lineHeightForSettings settings paragraphStyle.Text contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing
+        if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing
         else
             let lastLine = List.last pagedLines
             (lastLine.Y - contentY) + lastLine.Height

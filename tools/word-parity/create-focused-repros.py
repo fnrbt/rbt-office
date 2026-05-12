@@ -32,12 +32,17 @@ def paragraph(
     indent_left=None,
     hanging=None,
     first_line=None,
+    bold=False,
+    paragraph_bold=False,
+    preserve_space=True,
 ):
     props = []
     if style:
         props.append(f'<w:pStyle w:val="{esc(style)}"/>')
     if alignment:
         props.append(f'<w:jc w:val="{esc(alignment)}"/>')
+    if paragraph_bold:
+        props.append("<w:rPr><w:b/></w:rPr>")
     spacing_attrs = []
     if spacing_before is not None:
         spacing_attrs.append(f'w:before="{spacing_before}"')
@@ -63,8 +68,10 @@ def paragraph(
     if indent_attrs:
         props.append(f"<w:ind {' '.join(indent_attrs)}/>")
     ppr = f"<w:pPr>{''.join(props)}</w:pPr>" if props else ""
+    rpr = "<w:rPr><w:b/></w:rPr>" if bold else ""
+    space = ' xml:space="preserve"' if preserve_space else ""
     return (
-        f"<w:p>{ppr}<w:r><w:t xml:space=\"preserve\">{esc(text)}</w:t></w:r></w:p>"
+        f"<w:p>{ppr}<w:r>{rpr}<w:t{space}>{esc(text)}</w:t></w:r></w:p>"
     )
 
 
@@ -90,6 +97,9 @@ def cell(
     shading=None,
     shading_color="auto",
     shading_fill="auto",
+    bold=False,
+    paragraph_bold=False,
+    preserve_space=True,
 ):
     tc_props = [f'<w:tcW w:w="{width}" w:type="dxa"/>']
     if grid_span is not None:
@@ -114,7 +124,7 @@ def cell(
     return (
         "<w:tc>"
         f"<w:tcPr>{''.join(tc_props)}</w:tcPr>"
-        f"{paragraph(text, alignment=alignment, spacing_after=spacing_after)}"
+        f"{paragraph(text, alignment=alignment, spacing_after=spacing_after, bold=bold, paragraph_bold=paragraph_bold, preserve_space=preserve_space)}"
         "</w:tc>"
     )
 
@@ -143,6 +153,10 @@ def row_cells(cells):
 def row_cells_props(cells, height=None):
     tr_props = f'<w:trPr><w:trHeight w:val="{height}"/></w:trPr>' if height is not None else ""
     return "<w:tr>" + tr_props + "".join(cells) + "</w:tr>"
+
+
+def header_row_cells(cells):
+    return "<w:tr><w:trPr><w:tblHeader/></w:trPr>" + "".join(cells) + "</w:tr>"
 
 
 def table(rows, width_pct=5000):
@@ -236,6 +250,7 @@ def docx4j_page_geometry():
         "margin_left": 1417,
         "header": 708,
         "footer": 708,
+        "doc_grid": '<w:docGrid w:linePitch="360"/>',
     }
 
 
@@ -265,7 +280,7 @@ def section_properties(include_header_footer=False, margin_bottom=1440, include_
     margin_left = page_geometry.get("margin_left", 1440)
     header = page_geometry.get("header", 720)
     footer = page_geometry.get("footer", 720)
-    doc_grid = '<w:docGrid w:type="default" w:linePitch="360" w:charSpace="4294965247"/>' if include_doc_grid else ""
+    doc_grid = page_geometry.get("doc_grid", '<w:docGrid w:type="default" w:linePitch="360" w:charSpace="4294965247"/>') if include_doc_grid else ""
     return f'<w:sectPr>{refs}<w:pgSz w:w="{page_width}" w:h="{page_height}"/><w:pgMar w:top="{margin_top}" w:right="{margin_right}" w:bottom="{margin_bottom}" w:left="{margin_left}" w:header="{header}" w:footer="{footer}"/>{doc_grid}</w:sectPr>'
 
 
@@ -383,6 +398,35 @@ def table_grid_dense_row_pitch_styles():
         '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="240"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
         f'<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:tblPr>{cell_margin}</w:tblPr></w:style>'
         f'<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblBorders>{borders}</w:tblBorders>{cell_margin}</w:tblPr></w:style>'
+        "</w:styles>"
+    )
+
+
+def docx4j_table_grid_styles():
+    borders = "".join(
+        f'<w:{name} w:val="single" w:sz="4" w:space="0" w:color="17220B" w:themeColor="background1" w:themeShade="1A"/>'
+        for name in ["top", "left", "bottom", "right", "insideH", "insideV"]
+    )
+    cell_margin = (
+        '<w:tblCellMar>'
+        '<w:top w:w="0" w:type="dxa"/>'
+        '<w:left w:w="108" w:type="dxa"/>'
+        '<w:bottom w:w="0" w:type="dxa"/>'
+        '<w:right w:w="108" w:type="dxa"/>'
+        '</w:tblCellMar>'
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:styles xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:r="{REL_NS}" xmlns:w="{WORD_NS}" xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14">'
+        "<w:docDefaults>"
+        '<w:rPrDefault><w:rPr><w:rFonts w:asciiTheme="minorHAnsi" w:eastAsiaTheme="minorHAnsi" w:hAnsiTheme="minorHAnsi" w:cstheme="minorBidi"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="de-DE" w:eastAsia="en-US" w:bidi="ar-SA"/></w:rPr></w:rPrDefault>'
+        '<w:pPrDefault><w:pPr><w:spacing w:after="200" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault>'
+        "</w:docDefaults>"
+        '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/><w:rPr><w:sz w:val="24"/></w:rPr></w:style>'
+        '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="480" w:after="0"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:rFonts w:asciiTheme="majorHAnsi" w:eastAsiaTheme="majorEastAsia" w:hAnsiTheme="majorHAnsi" w:cstheme="majorBidi"/><w:b/><w:bCs/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style>'
+        f'<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/><w:tblPr><w:tblInd w:w="0" w:type="dxa"/>{cell_margin}</w:tblPr></w:style>'
+        '<w:style w:type="numbering" w:default="1" w:styleId="NoList"><w:name w:val="No List"/><w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/></w:style>'
+        f'<w:style w:type="table" w:styleId="TableGrid"><w:name w:val="Table Grid"/><w:basedOn w:val="TableNormal"/><w:uiPriority w:val="59"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblBorders>{borders}</w:tblBorders>{cell_margin}</w:tblPr></w:style>'
         "</w:styles>"
     )
 
@@ -536,19 +580,37 @@ def footer_xml():
     )
 
 
-def word_settings_xml():
+def word_settings_xml(compatibility_mode=14):
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         f'<w:settings xmlns:w="{WORD_NS}">'
         '<w:zoom w:percent="100"/>'
         '<w:defaultTabStop w:val="720"/>'
         '<w:compat>'
-        '<w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="14"/>'
+        f'<w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="{compatibility_mode}"/>'
         '<w:compatSetting w:name="overrideTableStyleFontSizeAndJustification" w:uri="http://schemas.microsoft.com/office/word" w:val="1"/>'
         '<w:compatSetting w:name="enableOpenTypeFeatures" w:uri="http://schemas.microsoft.com/office/word" w:val="1"/>'
         '<w:compatSetting w:name="doNotFlipMirrorIndents" w:uri="http://schemas.microsoft.com/office/word" w:val="1"/>'
         '</w:compat>'
         '<w:themeFontLang w:val="en-US" w:eastAsia="en-US" w:bidi=""/>'
+        '</w:settings>'
+    )
+
+
+def docx4j_word_settings_xml():
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:settings xmlns:w="{WORD_NS}">'
+        '<w:zoom w:percent="100"/>'
+        '<w:defaultTabStop w:val="708"/>'
+        '<w:hyphenationZone w:val="425"/>'
+        '<w:characterSpacingControl w:val="doNotCompress"/>'
+        '<w:compat>'
+        '<w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="12"/>'
+        '</w:compat>'
+        '<w:themeFontLang w:val="de-DE" w:eastAsia="ko-KR"/>'
+        '<w:decimalSymbol w:val="."/>'
+        '<w:listSeparator w:val=","/>'
         '</w:settings>'
     )
 
@@ -565,7 +627,7 @@ def font_table_xml():
     )
 
 
-def theme_xml():
+def office_theme_xml(major_font="Cambria", minor_font="Calibri"):
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">'
@@ -585,8 +647,8 @@ def theme_xml():
         '<a:folHlink><a:srgbClr val="800080"/></a:folHlink>'
         '</a:clrScheme>'
         '<a:fontScheme name="Office">'
-        '<a:majorFont><a:latin typeface="Cambria"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>'
-        '<a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>'
+        f'<a:majorFont><a:latin typeface="{esc(major_font)}"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>'
+        f'<a:minorFont><a:latin typeface="{esc(minor_font)}"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>'
         '</a:fontScheme>'
         '<a:fmtScheme name="Office">'
         '<a:fillStyleLst>'
@@ -617,7 +679,15 @@ def theme_xml():
     )
 
 
-def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True, styles_xml=None, include_office_theme=False, include_doc_grid=False, page_geometry=None):
+def theme_xml():
+    return office_theme_xml()
+
+
+def docx4j_theme_xml():
+    return office_theme_xml("Arial", "Arial")
+
+
+def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True, styles_xml=None, include_office_theme=False, include_doc_grid=False, page_geometry=None, compatibility_mode=14, settings_xml=None, theme_xml_value=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -634,9 +704,9 @@ def write_docx(path, body_xml, include_numbering=False, leading_section_properti
             (root / "word" / "footer1.xml").write_text(footer_xml(), encoding="utf-8")
         if include_office_theme:
             (root / "word" / "theme").mkdir()
-            (root / "word" / "settings.xml").write_text(word_settings_xml(), encoding="utf-8")
+            (root / "word" / "settings.xml").write_text(settings_xml or word_settings_xml(compatibility_mode), encoding="utf-8")
             (root / "word" / "fontTable.xml").write_text(font_table_xml(), encoding="utf-8")
-            (root / "word" / "theme" / "theme1.xml").write_text(theme_xml(), encoding="utf-8")
+            (root / "word" / "theme" / "theme1.xml").write_text(theme_xml_value or theme_xml(), encoding="utf-8")
         (root / "word" / "_rels" / "document.xml.rels").write_text(document_rels(include_numbering, include_header_footer, include_office_theme), encoding="utf-8")
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file in sorted(root.rglob("*")):
@@ -746,6 +816,83 @@ def main():
             ], [2303, 2303, 2303, 2303])
             + paragraph("After dense table")
         ), True, True, table_grid_dense_row_pitch_styles()),
+        "table-header-dense-row-pitch.docx": (False, False, False, (
+            paragraph("Headers")
+            + table_grid_style_table([
+                header_row_cells([
+                    cell("Header1ab", width=4606, grid_span=2, shading="pct5", shading_fill="auto", alignment="center"),
+                    cell("Header1cd", width=4606, grid_span=2, shading="pct5", shading_fill="auto", alignment="center"),
+                ]),
+                header_row_cells([
+                    cell("Header2a", width=2303, shading="pct5", shading_fill="auto", alignment="center"),
+                    cell("Header2b", width=2303, shading="pct5", shading_fill="auto", alignment="center"),
+                    cell("Header2c", width=2303, shading="pct5", shading_fill="auto", alignment="center"),
+                    cell("Header2d", width=2303, shading="pct5", shading_fill="auto", alignment="center"),
+                ]),
+                *[
+                    row_cells([
+                        cell(f"row {index:02d} a", width=2303),
+                        cell(f"row {index:02d} b", width=2303),
+                        cell(f"row {index:02d} c", width=2303),
+                        cell(f"row {index:02d} d", width=2303),
+                    ])
+                    for index in range(1, 15)
+                ],
+            ], [2303, 2303, 2303, 2303])
+            + paragraph("After header dense table")
+        ), True, True, table_grid_dense_row_pitch_styles(), True, True, docx4j_page_geometry(), 12, docx4j_word_settings_xml()),
+        "table-header-docx4j-style-row-pitch.docx": (False, False, False, (
+            paragraph("Headers", preserve_space=False)
+            + table_grid_style_table([
+                header_row_cells([
+                    cell("Header1ab", width=4606, grid_span=2, shading="pct5", shading_fill="auto", alignment="center", bold=True, paragraph_bold=True, preserve_space=False),
+                    cell("Header1cd", width=4606, grid_span=2, shading="pct5", shading_fill="auto", alignment="center", bold=True, paragraph_bold=True, preserve_space=False),
+                ]),
+                header_row_cells([
+                    cell("Header2a", width=2303, shading="pct5", shading_fill="auto", alignment="center", preserve_space=False),
+                    cell("Header2b", width=2303, shading="pct5", shading_fill="auto", alignment="center", preserve_space=False),
+                    cell("Header2c", width=2303, shading="pct5", shading_fill="auto", alignment="center", preserve_space=False),
+                    cell("Header2d", width=2303, shading="pct5", shading_fill="auto", alignment="center", preserve_space=False),
+                ]),
+                *[
+                    row_cells([
+                        cell(f"row {index:02d} a", width=2303, preserve_space=False),
+                        cell(f"row {index:02d} b", width=2303, preserve_space=False),
+                        cell(f"row {index:02d} c", width=2303, preserve_space=False),
+                        cell(f"row {index:02d} d", width=2303, preserve_space=False),
+                    ])
+                    for index in range(1, 15)
+                ],
+            ], [2303, 2303, 2303, 2303])
+            + paragraph("After header dense table", preserve_space=False)
+        ), True, True, docx4j_table_grid_styles(), True, True, docx4j_page_geometry(), 12, docx4j_word_settings_xml(), docx4j_theme_xml()),
+        "table-header-page2-docx4j-row-pitch.docx": (False, False, False, (
+            page_break_paragraph()
+            + exact_height_spacer_table(1020)
+            + paragraph("Headers", preserve_space=False)
+            + table_grid_style_table([
+                header_row_cells([
+                    cell("Header1ab", width=4606, grid_span=2, shading="pct5", shading_fill="auto", alignment="center", bold=True, paragraph_bold=True, preserve_space=False),
+                    cell("Header1cd", width=4606, grid_span=2, shading="pct5", shading_fill="auto", alignment="center", bold=True, paragraph_bold=True, preserve_space=False),
+                ]),
+                header_row_cells([
+                    cell("Header2a", width=2303, shading="pct5", shading_fill="auto", alignment="center", preserve_space=False),
+                    cell("Header2b", width=2303, shading="pct5", shading_fill="auto", alignment="center", preserve_space=False),
+                    cell("Header2c", width=2303, shading="pct5", shading_fill="auto", alignment="center", preserve_space=False),
+                    cell("Header2d", width=2303, shading="pct5", shading_fill="auto", alignment="center", preserve_space=False),
+                ]),
+                *[
+                    row_cells([
+                        cell(f"row {index:02d} a", width=2303, preserve_space=False),
+                        cell(f"row {index:02d} b", width=2303, preserve_space=False),
+                        cell(f"row {index:02d} c", width=2303, preserve_space=False),
+                        cell(f"row {index:02d} d", width=2303, preserve_space=False),
+                    ])
+                    for index in range(1, 15)
+                ],
+            ], [2303, 2303, 2303, 2303])
+            + paragraph("After header dense table", preserve_space=False)
+        ), True, True, docx4j_table_grid_styles(), True, True, docx4j_page_geometry(), 12, docx4j_word_settings_xml(), docx4j_theme_xml()),
         "table-gridspan-bottom-fit.docx": (False, False, False, (
             paragraph("Table gridspan bottom-fit repro", "Heading1")
             + page_break_paragraph()
@@ -899,13 +1046,20 @@ def main():
         include_office_theme = False
         include_doc_grid = False
         page_geometry = None
+        theme_xml_value = None
         if len(value) == 2:
             include_numbering, body = value
             leading_section_properties = False
             include_header_footer = False
             styles_xml = None
+            compatibility_mode = 14
+            settings_xml = None
+            theme_xml_value = None
         elif len(value) == 3:
             styles_xml = None
+            compatibility_mode = 14
+            settings_xml = None
+            theme_xml_value = None
             if isinstance(value[2], int):
                 include_numbering, body, margin_bottom = value
                 leading_section_properties = False
@@ -916,6 +1070,9 @@ def main():
         else:
             include_numbering, leading_section_properties, include_header_footer, body = value[:4]
             styles_xml = None
+            compatibility_mode = 14
+            settings_xml = None
+            theme_xml_value = None
             if len(value) > 4:
                 include_heading_spacing = value[4]
             if len(value) > 5:
@@ -928,8 +1085,14 @@ def main():
                 include_doc_grid = value[8]
             if len(value) > 9:
                 page_geometry = value[9]
+            if len(value) > 10:
+                compatibility_mode = value[10]
+            if len(value) > 11:
+                settings_xml = value[11]
+            if len(value) > 12:
+                theme_xml_value = value[12]
         path = out_dir / name
-        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom, include_heading_spacing, include_doc_defaults, styles_xml, include_office_theme, include_doc_grid, page_geometry)
+        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom, include_heading_spacing, include_doc_defaults, styles_xml, include_office_theme, include_doc_grid, page_geometry, compatibility_mode, settings_xml, theme_xml_value)
         print(path)
 
 

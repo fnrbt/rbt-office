@@ -143,6 +143,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Theme Arial TableGrid row pitch</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-header-page2-docx4j-row-pitch.docx</code></span>
+          <span class="meta">Real fixture class: docx4j tables whose document theme maps <code>minorHAnsi</code> to Arial instead of the Office Calibri default.</span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend, VBS range comparison.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-header-page2-docx4j-row-pitch-word.png" style="--w:1191px; --x:42px; --y:823px; --s:0.433" alt="Word reference Arial themed TableGrid row pitch">
+          </div>
+          <div class="caption">Word resolves the docx4j theme's minor font to Arial and advances the dense TableGrid rows at about <code>17.5px</code> CSS-equivalent pitch.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-header-page2-docx4j-row-pitch-theme-before.png" style="--w:900px; --x:42px; --y:823px; --s:0.65" alt="Before Arial theme TableGrid row pitch fix">
+          </div>
+          <div class="caption">Before: the package importer hardcoded <code>minorHAnsi</code> as Calibri and the table-cell line box stayed at the Calibri pitch, pushing row 14 about <code>16.4px</code> too low.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-header-page2-docx4j-row-pitch-theme-after.png" style="--w:900px; --x:42px; --y:823px; --s:0.65" alt="After Arial theme TableGrid row pitch fix">
+          </div>
+          <div class="caption">After: resolved Arial theme fonts flow through the table-preserving importer and the row-14 delta drops to about <code>0.34px</code>.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> pass the parsed DOCX theme into the legacy table-preserving package converter, resolve major/minor theme run fonts there, and use Word's tighter explicit TableGrid line box for resolved Arial table cells.</p>
+          <ul>
+            <li>Focused guard: <code>table-header-page2-docx4j-row-pitch.docx</code> now compares cleanly with <code>63 matched lines</code>.</li>
+            <li>Regression guard: the Calibri header-table control <code>table-header-dense-row-pitch.docx</code> still compares cleanly with <code>63 matched lines</code>.</li>
+            <li>Real guard: the mined <code>docx4j-tables.docx</code> header table no longer accumulates the old row-pitch drift; remaining real-doc failures are separate merged-row and auto-size table issues.</li>
+            <li>Path guard: native PNG and PDF backend snapshots were regenerated for the same focused repro.</li>
+            <li>Authoring guard: font family and paragraph line spacing are already exposed in the interactive toolbar/dialog; this change corrects imported theme-font display and layout.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Single-line paragraph bottom fit after table</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-gridspan-bottom-fit.docx</code></span>
           <span class="meta">Real fixture class: grid-span tables positioned at the page bottom, followed by a one-line Normal paragraph.</span>
