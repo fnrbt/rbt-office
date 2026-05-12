@@ -190,17 +190,13 @@ let forBlockInDocument (doc: Document) block =
 let forTableCellParagraphInDocument (doc: Document) (para: ParagraphBlock) =
     let style = forBlockInDocument doc (Paragraph para)
     { style with
-        SpacingBefore = Some 0.0
-        LineSpacing = Some 1.0
-        LineSpacingRule = Some "auto" }
+        SpacingBefore = Some 0.0 }
 
 let tableCellParagraphForLayout (para: ParagraphBlock) =
     { para with
         Metadata =
             { para.Metadata with
-                SpacingBefore = para.Metadata.SpacingBefore |> Option.orElse (Some 0.0)
-                LineSpacing = Some 1.0
-                LineSpacingRule = Some "auto" } }
+                SpacingBefore = para.Metadata.SpacingBefore |> Option.orElse (Some 0.0) } }
 
 let private inheritFontFamily baseStyle runStyle =
     match runStyle.FontFamily with

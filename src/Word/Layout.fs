@@ -387,7 +387,8 @@ let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
 let private wordLineBoxFactor = 1.20
 let private wordSingleLineBoxFactor = 1.316
 let private monospaceLineBoxFactor = 1.18
-let private tableCellLineBoxFactor = 1.25
+let private tableCellDefaultLineBoxFactor = 1.336
+let private tableCellExplicitLineBoxFactor = 1.25
 
 let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
     match style.FontFamily |> Option.map (fun family -> family.Trim().ToLowerInvariant()) with
@@ -404,8 +405,14 @@ let private wordLineHeight textStyle fontSize lineSpacing =
             lineBoxFactorForTextStyle textStyle
     fontSize * lineSpacing * factor
 
-let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule =
-    let automatic = if settings.InTableCell then fontSize * lineSpacing * tableCellLineBoxFactor else wordLineHeight textStyle fontSize lineSpacing
+let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing =
+    let automatic =
+        if settings.InTableCell then
+            let factor = if hasExplicitLineSpacing then tableCellExplicitLineBoxFactor else tableCellDefaultLineBoxFactor
+            fontSize * lineSpacing * factor
+        else
+            wordLineHeight textStyle fontSize lineSpacing
+
     match lineSpacingRule with
     | "exact" -> max 1.0 lineSpacing
     | "atLeast" -> max automatic lineSpacing
@@ -871,6 +878,11 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle metadata
     let lineSpacing = WordLayout.Paragraph.lineSpacing paragraphStyle metadata
     let lineSpacingRule = WordStyles.lineSpacingRule paragraphStyle metadata
+    let hasExplicitLineSpacing =
+        metadata.LineSpacing.IsSome
+        || paragraphStyle.LineSpacing.IsSome
+        || metadata.LineSpacingRule.IsSome
+        || paragraphStyle.LineSpacingRule.IsSome
     let borderBefore, borderAfter = paragraphBorderVerticalAdvance metadata
     let borderRight = paragraphBorderRightAdvance metadata
     let contentY = y + spacingBefore + borderBefore
@@ -898,7 +910,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         |> function
             | [] -> metadata.ParagraphMarkFontSize |> Option.defaultValue paragraphStyle.Text.FontSize
             | sizes -> List.max sizes
-    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings paragraphStyle.Text contentFontSize lineSpacing lineSpacingRule }
+    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings paragraphStyle.Text contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing }
     let lines, updatedObstacles, updatedPlacedBoxes = layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.RightTabPosition initialObstacles initialPlacedBoxes
 
     let adjustedLines =
@@ -930,7 +942,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let pagedLines = paginateLines settings (widowControl paragraphStyle metadata) adjustedLines
 
     let blockHeight =
-        if pagedLines.IsEmpty then lineHeightForSettings settings paragraphStyle.Text contentFontSize lineSpacing lineSpacingRule
+        if pagedLines.IsEmpty then lineHeightForSettings settings paragraphStyle.Text contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing
         else
             let lastLine = List.last pagedLines
             (lastLine.Y - contentY) + lastLine.Height

@@ -143,6 +143,43 @@
     <tbody>
       <tr>
         <td>
+          <strong>Default table-cell line box</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-explicit-before-spacing.docx</code></span>
+          <span class="meta">Real fixtures checked: <code>tests/test-documents-business/docx4j-legal-contributor.docx</code>, <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>pending</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference default table-cell line box">
+          </div>
+          <div class="caption">Word keeps inherited/default Normal table-cell lines taller than explicit tight TableGrid lines, so stacked empty paragraphs still drive row height.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-cell-before-spacing-default-linebox-before.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before default table-cell line box fix">
+          </div>
+          <div class="caption">Before: the tight TableGrid line-box factor was applied to every table cell, pulling the third row up by accumulated empty-paragraph height.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-cell-before-spacing-default-linebox-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After default table-cell line box fix">
+          </div>
+          <div class="caption">After: default/inherited table-cell line spacing uses the taller Word-like line box, while explicit table-style line spacing keeps the tight dense-row pitch.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> distinguish inherited/default table-cell line spacing from explicit table-style or paragraph line spacing, and stop marking every table-cell paragraph as explicitly single-spaced during layout normalization.</p>
+          <ul>
+            <li>Focused guard: <code>table-cell-explicit-before-spacing.docx</code> went from <code>Third dy=-6.26</code> to <code>dy=0.05</code> and now compares cleanly.</li>
+            <li>Regression guard: the focused table suite compares cleanly, including the dense TableGrid pitch repro with <code>57 matched lines</code>.</li>
+            <li>Real guard: <code>docx4j-tables.docx</code> keeps the dense-table improvement; remaining real-fixture deltas are the existing merge/vertical-align, page-break, and later table-grid issues.</li>
+            <li>Authoring guard: the paragraph style dialog already exposes before/after spacing and line spacing, so authored explicit line spacing flows through this path without a new control.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>TableGrid dense row pitch</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-grid-dense-row-pitch.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
