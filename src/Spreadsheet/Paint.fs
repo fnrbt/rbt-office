@@ -56,11 +56,46 @@ let private alignFromFormat (format: CellFormat) (value: CellValue): TextAlign =
 /// extra day subtracted, but for typical post-1901 fixtures the simple
 /// `baseDate.AddDays(serial - 2)` covers it.
 /// Excel format codes use `;` to separate positive/negative/zero/text
-/// sections. For numeric rendering we only care about the positive section,
-/// and the `;@` text-fallback suffix shouldn't leak into the displayed value.
+/// sections (in that order). For date/time interpretation we only need the
+/// positive section, but real numeric values need the right section picked
+/// by sign so a format like `"TRUE";"TRUE";"FALSE"` renders 0 as FALSE.
+/// Splitter respects quoted segments and backslash escapes.
+let private splitSections (code: string) : string list =
+    let sections = System.Collections.Generic.List<string>()
+    let sb = System.Text.StringBuilder()
+    let mutable i = 0
+    let mutable inQuote = false
+    while i < code.Length do
+        let c = code.[i]
+        if c = '\\' && i + 1 < code.Length then
+            sb.Append(c).Append(code.[i + 1]) |> ignore
+            i <- i + 2
+        elif c = '"' then
+            inQuote <- not inQuote
+            sb.Append(c) |> ignore
+            i <- i + 1
+        elif c = ';' && not inQuote then
+            sections.Add(sb.ToString())
+            sb.Clear() |> ignore
+            i <- i + 1
+        else
+            sb.Append(c) |> ignore
+            i <- i + 1
+    sections.Add(sb.ToString())
+    List.ofSeq sections
+
 let private firstSection (code: string) =
-    let idx = code.IndexOf(';')
-    if idx >= 0 then code.Substring(0, idx) else code
+    match splitSections code with
+    | first :: _ -> first
+    | [] -> code
+
+let private sectionForValue (code: string) (n: float) : string =
+    let sections = splitSections code
+    let pick =
+        if n > 0.0 then sections |> List.tryHead
+        elif n < 0.0 then sections |> List.skip (min 1 (sections.Length - 1)) |> List.tryHead
+        else sections |> List.skip (min 2 (sections.Length - 1)) |> List.tryHead
+    pick |> Option.defaultValue (List.head sections)
 
 let private isDateFormat (code: string) =
     let lower = (firstSection code).ToLowerInvariant()
@@ -226,17 +261,27 @@ let private generalNumberDisplay (cellWidthPx: float) (n: float): string =
 /// falling back to `G` if .NET rejects it.
 let private formatExcelNumber (code: string) (n: float) : string =
     let inv = System.Globalization.CultureInfo.InvariantCulture
-    let pos = firstSection code
+    let pos = sectionForValue code n
+    // Translate Excel's escape grammar to .NET's. Excel uses `"..."` and
+    // `\x` for literal segments; .NET wants `'...'` and `\x` (\x already
+    // works). We rewrite double-quoted runs to single-quoted runs so that
+    // a format like `"TRUE"` (literal text, no digit placeholders) renders
+    // as the literal `TRUE` instead of throwing.
     let cleaned =
-        // Replace literal-backslash-escapes with .NET single-quote literals.
         let sb = System.Text.StringBuilder(pos.Length)
         let mutable i = 0
+        let mutable inDquote = false
         while i < pos.Length do
-            if pos.[i] = '\\' && i + 1 < pos.Length then
+            let c = pos.[i]
+            if c = '\\' && i + 1 < pos.Length then
                 sb.Append('\'').Append(pos.[i + 1]).Append('\'') |> ignore
                 i <- i + 2
+            elif c = '"' then
+                sb.Append('\'') |> ignore
+                inDquote <- not inDquote
+                i <- i + 1
             else
-                sb.Append(pos.[i]) |> ignore
+                sb.Append(c) |> ignore
                 i <- i + 1
         sb.ToString()
     try n.ToString(cleaned, inv)
@@ -266,8 +311,9 @@ let rec private cellDisplayText (cellWidth: float) (format: CellFormat) (value: 
             // Legacy named format codes from the Fable web UI's formatting
             // commands. Keep these on the original Model.formatNumber path.
             fitOrOverflow cellWidth (formatNumber format.NumberFormat n)
-        | Some "General"
-        | Some "" -> generalNumberDisplay cellWidth n
+        | Some code when System.String.IsNullOrWhiteSpace code ||
+                         code.Equals("general", System.StringComparison.OrdinalIgnoreCase) ->
+            generalNumberDisplay cellWidth n
         | Some code ->
             // Real Excel format code (0.000, #,##0.00, 0%, 0.00E+00, etc.).
             fitOrOverflow cellWidth (formatExcelNumber code n)
