@@ -143,6 +143,43 @@
     <tbody>
       <tr>
         <td>
+          <strong>Merged empty-cell border stress table</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-border-empty-cell-height.docx</code></span>
+          <span class="meta">Real fixture class: docx4j border stress tables with empty cells, grid spans, vertical merges, and thick/double/dotted borders.</span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend, PDF-backed Word visual comparison, VBA range comparison, table geometry TSV.</span>
+          <span class="meta">Fix commit: <code>6ef63b7</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-border-empty-cell-height-word-page1.png" style="--w:1191px; --x:60px; --y:118px; --s:0.433" alt="Word reference merged empty-cell border stress table">
+          </div>
+          <div class="caption">Word keeps the dotted vMerge box, the double-border cell, and the thick top-row borders on their intended merged-cell edges.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-border-empty-cell-height-before.png" style="--w:900px; --x:60px; --y:118px; --s:0.65" alt="Before merged empty-cell border stress fix">
+          </div>
+          <div class="caption">Before: merged-cell borders were clipped or assigned to the wrong source cells, and the following <code>Indent</code> paragraph sat about <code>33px</code> too high.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-border-empty-cell-height-after.png" style="--w:900px; --x:60px; --y:118px; --s:0.65" alt="After merged empty-cell border stress fix">
+          </div>
+          <div class="caption">After: resolved cell geometry drives the painted border fragments, compound borders render at Word-like width, and the following paragraph is within about <code>0.5px</code> in the PDF-backed text comparison.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> carry source-cell identity through resolved table rows, paint row-spanning border fragments from resolved geometry, preserve the winning collapsed-border side, and align native/PDF border import with the browser DOCX path.</p>
+          <ul>
+            <li>Focused guard: <code>table-border-empty-cell-height.docx</code> now compares cleanly visually, with the following <code>Indent</code> line at <code>0.53px</code> PDF-backed delta.</li>
+            <li>VBA guard: <code>compare-vba-layout-results</code> reports <code>ok</code> with <code>3 matched ranges</code>.</li>
+            <li>Regression guards: <code>table-grid-style-borders.docx</code>, <code>two-tables-border-position.docx</code>, and <code>table-cell-spacing-margins.docx</code> remain clean.</li>
+            <li>Real guard: in <code>docx4j-tables.docx</code>, the old <code>Indent</code> table-height delta drops out; remaining <code>A/B/D</code> deltas are the separate vMerge text vertical-positioning issue.</li>
+            <li>Authoring guard: table cell border color and width are already exposed in the interactive Cell style dialog; this change corrects imported merged-border layout and display.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Empty paragraph page break after table</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-spaced-sequence-page-break.docx</code></span>
           <span class="meta">Real fixture class: docx4j table sequences where a rendered-empty paragraph after a text table lands at the next page top.</span>
@@ -172,7 +209,7 @@
             <li>Focused guard: <code>table-spaced-sequence-page-break.docx</code> now compares cleanly with <code>16 matched lines</code>.</li>
             <li>Regression guards: <code>table-gridspan-bottom-fit.docx</code> and <code>empty-normal-paragraph-mark-size.docx</code> remain clean.</li>
             <li>Real guard: in <code>docx4j-tables.docx</code>, the old <code>Auto size</code> and <code>Grid After/Grid Before</code> page-top deltas drop out of the PDF-backed comparison.</li>
-            <li>Active follow-up: the same real fixture exposes a separate border table visual-placement issue that is still under investigation.</li>
+            <li>Follow-up guard: the separate border table visual-placement issue exposed by this fixture is covered by the newer row above.</li>
             <li>Authoring guard: no new UI is needed; normal paragraph/table authoring already creates this structure, and the fix is renderer pagination behavior.</li>
           </ul>
         </td>
