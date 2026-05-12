@@ -147,7 +147,7 @@
           <span class="meta">Repro: <code>tests/repros/word/table-border-empty-cell-height.docx</code></span>
           <span class="meta">Real fixture class: docx4j border stress tables with empty cells, grid spans, vertical merges, and thick/double/dotted borders.</span>
           <span class="meta">Paths checked: browser canvas, native PNG, PDF backend, PDF-backed Word visual comparison, VBA range comparison, table geometry TSV.</span>
-          <span class="meta">Fix commit: <code>6ef63b7</code></span>
+          <span class="meta">Fix commits: <code>6ef63b7</code>, <code>9a1091a</code>, plus empty vMerge top-edge follow-up</span>
         </td>
         <td>
           <div class="zoom">
@@ -165,12 +165,12 @@
           <div class="zoom">
             <img src="../artifacts/browser/table-border-empty-cell-height-after.png" style="--w:900px; --x:60px; --y:118px; --s:0.65" alt="After merged empty-cell border stress fix">
           </div>
-          <div class="caption">After: resolved cell geometry drives the painted border fragments, compound borders render at Word-like width, and the following paragraph is within about <code>0.5px</code> in the PDF-backed text comparison.</div>
+          <div class="caption">After: resolved cell geometry drives the painted border fragments, compound borders render at Word-like width, the dotted vMerge restart exposes the same upper-row border as Word, and the following paragraph is within about <code>0.5px</code> in the PDF-backed text comparison.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> carry source-cell identity through resolved table rows, paint row-spanning border fragments from resolved geometry, preserve the winning collapsed-border side, and align native/PDF border import with the browser DOCX path.</p>
+          <p><strong>Fix:</strong> carry source-cell identity through resolved table rows, paint row-spanning border fragments from resolved geometry, preserve the winning collapsed-border side, suppress the visual top edge on empty non-first-row vMerge restarts, and align native/PDF border import with the browser DOCX path.</p>
           <ul>
-            <li>Focused guard: <code>table-border-empty-cell-height.docx</code> now compares cleanly visually, with the following <code>Indent</code> line at <code>0.53px</code> PDF-backed delta.</li>
+            <li>Focused guard: <code>table-border-empty-cell-height.docx</code> now compares cleanly visually, including the dotted region's absent top dotted edge, with the following <code>Indent</code> line at <code>0.53px</code> PDF-backed delta.</li>
             <li>VBA guard: <code>compare-vba-layout-results</code> reports <code>ok</code> with <code>3 matched ranges</code>.</li>
             <li>Regression guards: <code>table-grid-style-borders.docx</code>, <code>two-tables-border-position.docx</code>, and <code>table-cell-spacing-margins.docx</code> remain clean.</li>
             <li>Real guard: in <code>docx4j-tables.docx</code>, the old <code>Indent</code> table-height delta drops out; remaining <code>A/B/D</code> deltas are the separate vMerge text vertical-positioning issue.</li>

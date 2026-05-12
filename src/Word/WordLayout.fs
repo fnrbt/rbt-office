@@ -1094,6 +1094,15 @@ module Table =
           InsideH = None
           InsideV = None }
 
+    let private tableCellContentIsEmpty (cell: TableCell) =
+        cell.Content
+        |> List.forall (fun para -> String.IsNullOrWhiteSpace(TextBuffer.toString para.Buffer))
+
+    let private suppressEmptyVerticalMergeRestartTopBorder rowIndex (cell: TableCell) (borders: CellPrintBorders) =
+        match cell.VerticalMerge with
+        | Some RestartMerge when rowIndex > 0 && tableCellContentIsEmpty cell -> { borders with Top = None }
+        | _ -> borders
+
     let private borderWeight = function
         | None -> 0.0
         | Some border -> border.Width
@@ -1182,7 +1191,9 @@ module Table =
             positionedCells row
             |> List.iteri (fun sourceCellIndex positioned ->
                 let cell = positioned.Cell
-                let borders = cellPrintBordersWithTableFallback table.Borders rowIndex rowCount columns positioned cell
+                let borders =
+                    cellPrintBordersWithTableFallback table.Borders rowIndex rowCount columns positioned cell
+                    |> suppressEmptyVerticalMergeRestartTopBorder rowIndex cell
                 match cell.VerticalMerge with
                 | Some ContinueMerge ->
                     match activeMerges |> Map.tryFind positioned.StartColumn with
