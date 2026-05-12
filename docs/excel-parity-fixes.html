@@ -538,6 +538,76 @@
       </tr>
       <tr>
         <td>
+          <strong>Apply built-in TableStyleMedium# overlays</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test_decimal.xlsx</code></span>
+          <span class="meta">Real fixture class: pandas-written workbooks that wrap their data in an Excel Table (<code>xl/tables/tableN.xml</code>) and reference a built-in style like <code>TableStyleMedium7</code>. Excel paints the table chrome from the theme; the cellXf entries are blank.</span>
+          <span class="meta">Paths checked: native PNG (<code>tools/excel-native-runner</code>) vs Excel print-with-headings.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test_decimal-page-1.png" style="--w:1275px; --x:50px; --y:50px; --s:0.55" alt="Excel reference render of pandas-test_decimal.xlsx">
+          </div>
+          <div class="caption">Excel paints row 1 (Column1..Column6) with the Accent6 fill (<code>#70AD47</code>) and white bold text. Rows 3 and 5 get a very light tint of the same accent (≈<code>#E2EFDA</code>); rows 2 and 4 stay white because <code>showRowStripes="1"</code> bands every other data row.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test_decimal-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before table style support">
+          </div>
+          <div class="caption">Before: every cell rendered with the default white background — the cellXf entries for the data rows define no fill of their own, so without a table-style overlay there was nothing to apply. Header row was indistinguishable from data rows.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test_decimal-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after table style support">
+          </div>
+          <div class="caption">After: <code>tableAccentColor</code> resolves <code>TableStyleMedium7</code> to the workbook's <code>accent6</code> color. The header row picks up the dark green fill + white bold; <code>tintHex …  0.80</code> lightens the same accent to the banded stripe color used on rows 3 and 5.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add <code>TableStyleInfo</code>/<code>TableDefinition</code>/<code>ThemeAccents</code> to <code>XlsxReader</code> and parse the sheet relationship chain (<code>xl/worksheets/_rels/sheet#.xml.rels</code> → <code>xl/tables/table#.xml</code>) in the native loader. Read <code>xl/theme/theme1.xml</code> for <code>accent1..accent6</code>. In <code>tools/excel-native-runner</code>, every cell inside a table's range gets BgColor/TextColor/Bold overrides derived from <code>TableStyleMedium# → accent(N-2)</code>; explicit cellXf values still win via <code>Option.orElse</code>.</p>
+          <ul>
+            <li>Focused guard: <code>pandas-test_decimal.xlsx</code> now matches Excel's banded green look; header row is bold white on accent6.</li>
+            <li>Regression guard: TableStyleLight*/Dark* are intentionally not overlaid yet, so files that don't use Medium variants render exactly as before.</li>
+            <li>Path guard: 53/53 corpus fixtures still load. Tables on fixtures without a usable range (<code>poi-55864</code>, <code>tableSingleCells1.xml</code>) are silently skipped.</li>
+            <li>Authoring guard: pure renderer/import behavior — no schema or UI changes; <code>parseWorkbook</code> (Fable path) still passes an empty <code>Tables</code> list with default theme accents.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Per-cell font family resolution</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test_converters.xlsx</code> (Arial), <code>pandas-dimension_large.xlsx</code> (Cambria), <code>phpsp-26template.xlsx</code> (Times New Roman)</span>
+          <span class="meta">Real fixture class: workbooks that declare a non-Calibri font in <code>&lt;name val="..."/&gt;</code>. ~30 of 53 corpus fixtures use Arial, Cambria, or Times.</span>
+          <span class="meta">Paths checked: native PNG (<code>tools/excel-native-runner</code>); font cache keyed on <code>(family, bold, italic)</code>.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test_converters-page-1.png" style="--w:1275px; --x:50px; --y:50px; --s:0.55" alt="Excel reference for pandas-test_converters">
+          </div>
+          <div class="caption">Excel renders pandas-test_converters in Arial (slightly wider stems and rounder counters than Calibri). All other Arial-using fixtures share that pattern.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test_converters-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before per-cell font support">
+          </div>
+          <div class="caption">Before: <code>parseFont</code> ignored the <code>&lt;name val="..."/&gt;</code> child and the native renderer hard-coded the Calibri TTFs. Every cell rendered in Calibri regardless of what the file requested.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test_converters-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after per-cell font support">
+          </div>
+          <div class="caption">After: the cell's font name flows from <code>parseFont</code> → <code>CellStyle.FontName</code> → <code>CellFormat.FontName</code> → <code>PaintText.FontName</code>. <code>SpreadsheetGrid.familyKey</code> normalizes the name to one of <code>arial</code>/<code>cambria</code>/<code>times</code>/<code>calibri</code> and picks the matching TTF set from the same <code>fontDirs</code> chain Calibri uses.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> extend <code>parseFont</code> to capture the <code>&lt;name val="..."/&gt;</code> child, add <code>FontName</code> to <code>CellStyle</code>/<code>CellFormat</code>/<code>PaintText</code>, and wire it through <code>cellFormatFromStyle</code> and <code>buildCellPaintItems</code>. In <code>spreadsheet-native/SpreadsheetGrid.fs</code>, key the font cache on <code>(family, bold, italic)</code> and pick TTFs per family (<code>arialbd</code>/<code>cambriab</code>/<code>timesbd</code>/<code>calibrib</code> etc.). Unknown families fall back to Calibri so unsupported fonts (Verdana, CJK) keep rendering instead of crashing.</p>
+          <ul>
+            <li>Focused guard: Arial fixtures now visibly differ from Calibri (wider stems, rounder shapes); regression suite all 53 fixtures keep passing.</li>
+            <li>Regression guard: <code>None</code> font name routes through <code>familyKey "calibri"</code>, preserving the previous behavior for cells without an explicit font.</li>
+            <li>Path guard: native renderer only — Fable path still skips font selection (no font file access from the browser path today).</li>
+            <li>Authoring guard: pure renderer/import behavior — no UI surface added; <code>XlsxImporter.convertCellFormat</code> defaults <code>FontName = None</code>.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Round fractional seconds to format precision</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-times_1900.xlsx</code></span>
           <span class="meta">Real fixture class: time-formatted cells whose stored serial has sub-millisecond precision (e.g. <code>3722.99999...</code> seconds) and a format whose <code>.0+</code> suffix demands explicit rounding to milliseconds/tenths/etc.</span>

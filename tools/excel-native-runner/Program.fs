@@ -84,6 +84,74 @@ let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
         BorderRight = borderSide style.BorderRight
     }
 
+    // Layer the workbook's table style (e.g. `TableStyleMedium7`) on top of
+    // the cellXf-derived CellFormat. Excel renders the table header row with
+    // a solid accent fill + white bold text, and (when ShowRowStripes is set)
+    // tints alternating data rows with a very light blend of the same accent.
+    // We only override fields the cellXf didn't already set, so explicit
+    // colors in the file still win.
+let private tintHex (hex: string) (t: float) =
+    let parseByte (s: string) =
+        try System.Convert.ToByte(s, 16) with _ -> 0uy
+    let lerp (c: byte) =
+        let f = float c
+        byte (int (System.Math.Round(f + t * (255.0 - f))))
+    if hex.Length < 6 then hex
+    else
+        sprintf "#%02X%02X%02X"
+            (lerp (parseByte (hex.Substring(0,2))))
+            (lerp (parseByte (hex.Substring(2,2))))
+            (lerp (parseByte (hex.Substring(4,2))))
+
+let private styleNumber (name: string) =
+    let digits = name |> Seq.skipWhile (System.Char.IsLetter) |> Seq.toArray |> System.String
+    match System.Int32.TryParse digits with
+    | true, n -> Some n
+    | _ -> None
+
+/// Map a `TableStyleMediumN` name to an accent color from the workbook theme.
+/// Medium2-7 → accent1-6; higher Medium variants cycle through the same six
+/// accents (the rendering differences between Medium7/Medium14/Medium21 are
+/// header banding details we don't reproduce yet).
+let private tableAccentColor (themeAccents: string array) (styleName: string) : string option =
+    let n = styleNumber styleName
+    match n with
+    | Some n when n >= 2 ->
+        let idx = (n - 2) % 6
+        if idx < themeAccents.Length then Some ("#" + themeAccents.[idx]) else None
+    | _ -> None
+
+/// For each cell coordinate inside a table range, return the BgColor + bold
+/// + font color overrides that the table's style would impose. Returns None
+/// for cells outside any table.
+let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: string array) (row: int) (col: int) : (string option * string option * bool) option =
+    // row/col are 1-indexed to match Xlsx.TableDefinition.
+    tables
+    |> List.tryPick (fun t ->
+        if row < t.StartRow || row > t.EndRow || col < t.StartCol || col > t.EndCol then None
+        else
+            match t.Style with
+            | None -> None
+            | Some style ->
+                // Light/Dark variants don't carry the same accent banding;
+                // restrict the overlay to the Medium family for now.
+                if not (style.Name.StartsWith "TableStyleMedium") then None
+                else
+                    match tableAccentColor themeAccents style.Name with
+                    | None -> None
+                    | Some accentHex ->
+                        let isHeader = row < t.StartRow + t.HeaderRowCount
+                        if isHeader then
+                            Some (Some accentHex, Some "#FFFFFF", true)
+                        elif style.ShowRowStripes then
+                            // Excel bands every other data row (the one
+                            // immediately below the header is unbanded).
+                            let dataIdx = row - t.StartRow - t.HeaderRowCount
+                            if dataIdx % 2 = 1 then
+                                Some (Some (tintHex (accentHex.TrimStart('#')) 0.80), None, false)
+                            else None
+                        else None)
+
 let private toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel =
     let mutable maxRow = 0
     let mutable maxCol = 0
@@ -97,10 +165,18 @@ let private toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : Spreadsh
                 if r < 0 || c < 0 then None
                 else
                     let value = resolveValue workbook cell.Value
-                    let format =
+                    let baseFormat =
                         cell.Style
                         |> Option.map cellFormatFromStyle
                         |> Option.defaultValue defaultFormat
+                    let format =
+                        match tableOverrideFor sheet.Tables workbook.ThemeAccents cell.Reference.Row (c + 1) with
+                        | None -> baseFormat
+                        | Some (bg, fg, bold) ->
+                            { baseFormat with
+                                BgColor = baseFormat.BgColor |> Option.orElse bg
+                                TextColor = baseFormat.TextColor |> Option.orElse fg
+                                Bold = baseFormat.Bold || bold }
                     let cellData = { Value = value; Format = format; Comment = None }
                     if r > maxRow then maxRow <- r
                     if c > maxCol then maxCol <- c

@@ -150,6 +150,28 @@ type SheetFormat = {
     DefaultRowHeight: float option
 }
 
+/// XLSX table style reference (e.g. `<tableStyleInfo name="TableStyleMedium7"
+/// showRowStripes="1"/>`). The named style is one of Excel's built-ins; we
+/// pair it with the workbook theme accent colors at render time.
+type TableStyleInfo = {
+    Name: string
+    ShowFirstColumn: bool
+    ShowLastColumn: bool
+    ShowRowStripes: bool
+    ShowColumnStripes: bool
+}
+
+/// XLSX table definition (`xl/tables/tableN.xml`). Range coordinates are
+/// 1-indexed to match the rest of the reader.
+type TableDefinition = {
+    StartRow: int
+    StartCol: int
+    EndRow: int
+    EndCol: int
+    HeaderRowCount: int
+    Style: TableStyleInfo option
+}
+
 type Worksheet = {
     Name: string
     Rows: Row list
@@ -161,6 +183,7 @@ type Worksheet = {
     DataValidations: DataValidation list
     Charts: Chart list
     PivotTables: PivotTable list
+    Tables: TableDefinition list
 }
 
 type Workbook = {
@@ -169,6 +192,7 @@ type Workbook = {
     Styles: CellStyle array
     Relationships: Relationship list
     NamedRanges: NamedRange list
+    ThemeAccents: string array
 }
 
 // DSL for XLSX-specific patterns
@@ -299,7 +323,7 @@ module Xlsx =
             }
 
     // Worksheet extraction (advanced features parsed separately)
-    let worksheet (name: string) (sheetXml: string) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) : Worksheet =
+    let worksheet (name: string) (sheetXml: string) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) : Worksheet =
         let sheet = XmlDsl.parse sheetXml
         let sheetData = sElem "sheetData" sheet
 
@@ -320,7 +344,92 @@ module Xlsx =
             DataValidations = dataVals
             Charts = charts
             PivotTables = pivotTables
+            Tables = tables
         }
+
+    /// Parse a column letter run (A, B, ..., AA) into a 1-based column index
+    /// matching the rest of the reader's `CellReference.Row/Column` convention.
+    let private columnLettersToIndex (letters: string) =
+        let mutable acc = 0
+        for c in letters do
+            if System.Char.IsLetter c then
+                acc <- acc * 26 + (int (System.Char.ToUpper c) - int 'A' + 1)
+        acc
+
+    /// Parse an `A1:F5` style range into 1-indexed inclusive bounds.
+    let private parseRange (ref: string) =
+        let parts = ref.Split(':')
+        let parseCorner (s: string) =
+            let letters = s |> Seq.takeWhile System.Char.IsLetter |> Seq.toArray |> System.String
+            let digits = s |> Seq.skipWhile System.Char.IsLetter |> Seq.toArray |> System.String
+            let row = if digits.Length > 0 then int digits else 1
+            (row, columnLettersToIndex letters)
+        if parts.Length = 1 then
+            let (r, c) = parseCorner parts.[0]
+            Some (r, c, r, c)
+        elif parts.Length = 2 then
+            let (r1, c1) = parseCorner parts.[0]
+            let (r2, c2) = parseCorner parts.[1]
+            Some (r1, c1, r2, c2)
+        else None
+
+    /// Parse `xl/tables/tableN.xml`. Skips tables with no usable range.
+    let parseTable (tableXml: string) : TableDefinition option =
+        try
+            let doc = XmlDsl.parse tableXml
+            match Xml.attr "ref" doc with
+            | None -> None
+            | Some refStr ->
+                match parseRange refStr with
+                | None -> None
+                | Some (r1, c1, r2, c2) ->
+                    let headerCount =
+                        Xml.attr "headerRowCount" doc
+                        |> Option.bind (fun v -> try Some (int v) with _ -> None)
+                        |> Option.defaultValue 1
+                    let style =
+                        sElem "tableStyleInfo" doc
+                        |> Option.bind (fun node ->
+                            Xml.attr "name" node
+                            |> Option.map (fun name ->
+                                let boolAttr key =
+                                    Xml.attr key node
+                                    |> Option.map (fun v -> v = "1" || v = "true")
+                                    |> Option.defaultValue false
+                                {
+                                    Name = name
+                                    ShowFirstColumn = boolAttr "showFirstColumn"
+                                    ShowLastColumn = boolAttr "showLastColumn"
+                                    ShowRowStripes = boolAttr "showRowStripes"
+                                    ShowColumnStripes = boolAttr "showColumnStripes"
+                                }))
+                    Some {
+                        StartRow = r1
+                        StartCol = c1
+                        EndRow = r2
+                        EndCol = c2
+                        HeaderRowCount = headerCount
+                        Style = style
+                    }
+        with _ -> None
+
+    /// Parse `xl/theme/theme1.xml` accent1..accent6 sRGB colors. Returns an
+    /// array of six "RRGGBB" strings indexed 0..5 (accent1 == [0]). When the
+    /// theme is missing or unparseable, falls back to Excel's 2013 defaults.
+    let parseThemeAccents (themeXml: string) : string array =
+        let defaults = [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
+        try
+            let doc = XmlDsl.parse themeXml
+            let pickAccent name =
+                Xml.descendants name doc
+                |> List.tryHead
+                |> Option.bind (Xml.descendants "srgbClr" >> List.tryHead)
+                |> Option.bind (Xml.attr "val")
+            let names = [| "accent1"; "accent2"; "accent3"; "accent4"; "accent5"; "accent6" |]
+            names
+            |> Array.mapi (fun i n ->
+                pickAccent n |> Option.defaultValue defaults.[i])
+        with _ -> defaults
 
     // Style parsing
     let parseFont (fontNode: XmlNode) : (bool * bool * string option * float option * string option) =
@@ -854,7 +963,10 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                                     |> Option.map PivotTables.parsePivotTables
                                     |> Option.defaultValue []
 
-                                return Some (Xlsx.worksheet info.Name xml comments condFormats dataVals charts pivots |> applyStyling styles)
+                                // Tables (header/banded styling) aren't wired
+                                // through the async loader — only the native
+                                // path consumes them today. Pass empty for now.
+                                return Some (Xlsx.worksheet info.Name xml comments condFormats dataVals charts pivots [] |> applyStyling styles)
                             | None -> return None
                         | None -> return None
                     })
@@ -869,6 +981,7 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                 Styles = styles
                 Relationships = rels
                 NamedRanges = namedRanges
+                ThemeAccents = [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
             }
 
         | None -> return None
@@ -950,6 +1063,27 @@ let sheetToArray (wb: Workbook) (sheet: Worksheet) : obj array array =
     )
 
 #if !FABLE_COMPILER
+/// Resolve a relative archive target (e.g. "../tables/table1.xml") against
+/// the directory of `basePath`. Walks `..` segments without normalizing back
+/// past the archive root.
+let private resolveArchivePath (basePath: string) (target: string) =
+    let normalized = ZipInterop.normalizePath target
+    let baseSegments = basePath.Split('/') |> Array.toList
+    let baseDir =
+        match baseSegments with
+        | [] -> []
+        | _ -> baseSegments |> List.take (List.length baseSegments - 1)
+    let targetSegments = normalized.Split('/') |> Array.toList
+    let rec walk dir parts =
+        match parts with
+        | [] -> dir
+        | ".." :: rest ->
+            let trimmed = if List.isEmpty dir then dir else List.take (List.length dir - 1) dir
+            walk trimmed rest
+        | "." :: rest -> walk dir rest
+        | p :: rest -> walk (dir @ [p]) rest
+    walk baseDir targetSegments |> String.concat "/"
+
 // Synchronous native loader. Mirrors `parseWorkbook` but uses
 // `getFileTextNative` so the native runners don't need a Promise scheduler.
 let parseWorkbookNative (archive: ZipArchive) : Workbook option =
@@ -974,7 +1108,31 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
             |> Option.map Xlsx.parseStyles
             |> Option.defaultValue [||]
 
+        let themeAccents =
+            ZipInterop.getFileTextNative archive "xl/theme/theme1.xml"
+            |> Option.map Xlsx.parseThemeAccents
+            |> Option.defaultValue [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
+
         let namedRanges = NamedRanges.parseNamedRanges wb
+
+        let loadSheetTables (sheetPath: string) =
+            // xl/worksheets/sheet1.xml -> xl/worksheets/_rels/sheet1.xml.rels
+            let lastSlash = sheetPath.LastIndexOf('/')
+            if lastSlash < 0 then []
+            else
+                let dir = sheetPath.Substring(0, lastSlash)
+                let file = sheetPath.Substring(lastSlash + 1)
+                let relsPath = sprintf "%s/_rels/%s.rels" dir file
+                match ZipInterop.getFileTextNative archive relsPath with
+                | None -> []
+                | Some relsXml ->
+                    let sheetRels = relsXml |> XmlDsl.parse |> parseRelationships
+                    sheetRels
+                    |> List.filter (fun r -> r.Type.EndsWith("/table"))
+                    |> List.choose (fun r ->
+                        let tablePath = resolveArchivePath sheetPath r.Target
+                        ZipInterop.getFileTextNative archive tablePath
+                        |> Option.bind Xlsx.parseTable)
 
         let worksheets =
             sheetInfos
@@ -987,7 +1145,8 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
                         let sheet = XmlDsl.parse xml
                         let condFormats = ConditionalFormats.parseConditionalFormats sheet
                         let dataVals = DataValidations.parseDataValidations sheet
-                        Some (Xlsx.worksheet info.Name xml [] condFormats dataVals [] [])
+                        let tables = loadSheetTables sheetPath
+                        Some (Xlsx.worksheet info.Name xml [] condFormats dataVals [] [] tables)
                     | None -> None
                 | None -> None)
 
@@ -999,6 +1158,7 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
             Styles = styles
             Relationships = rels
             NamedRanges = namedRanges
+            ThemeAccents = themeAccents
         }
 
 /// Top-level native loader: bytes -> Workbook option.
