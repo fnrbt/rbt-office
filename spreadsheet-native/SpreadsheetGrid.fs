@@ -10,7 +10,52 @@ open RedBat.Spreadsheet.Paint
 
 let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasure v
 
-let private rendererFont () = Composit.Ui.Layout.font()
+let private defaultFont () = Composit.Ui.Layout.font()
+
+/// Cache of bold/italic font variants keyed by (bold, italic). Calibri's
+/// bold/italic TTFs are the same set Word's native runner loads; falling back
+/// to the default font keeps rendering working when the variant isn't found.
+let private fontCache = System.Collections.Generic.Dictionary<bool * bool, Renderer.Text.FontData option>()
+
+let private fontDirs () =
+    let cwd = System.IO.Directory.GetCurrentDirectory()
+    [
+        System.Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
+        System.IO.Path.GetFullPath(System.IO.Path.Combine(cwd, "artifacts/fonts/windows"))
+        System.IO.Path.GetFullPath(System.IO.Path.Combine(cwd, "../../artifacts/fonts/windows"))
+        // Sibling office repo's font cache, when running from office-spreadsheet/.
+        System.IO.Path.GetFullPath(System.IO.Path.Combine(cwd, "../office/artifacts/fonts/windows"))
+    ]
+    |> List.choose (fun dir ->
+        if System.String.IsNullOrWhiteSpace dir then None
+        elif System.IO.Directory.Exists dir then Some dir
+        else None)
+
+let private fontFiles bold italic =
+    if bold && italic then ["calibriz.ttf"; "calibrib.ttf"; "calibri.ttf"]
+    elif bold then ["calibrib.ttf"; "calibri.ttf"]
+    elif italic then ["calibrii.ttf"; "calibri.ttf"]
+    else ["calibri.ttf"]
+
+let private loadVariant bold italic =
+    let key = (bold, italic)
+    match fontCache.TryGetValue key with
+    | true, cached -> cached
+    | _ ->
+        let loaded =
+            fontFiles bold italic
+            |> List.tryPick (fun name ->
+                fontDirs ()
+                |> List.tryPick (fun dir ->
+                    let path = System.IO.Path.Combine(dir, name)
+                    if System.IO.File.Exists path then
+                        try Some (Renderer.Text.loadFontFile path) with _ -> None
+                    else None))
+        fontCache.[key] <- loaded
+        loaded
+
+let private rendererFont (bold: bool) (italic: bool) =
+    loadVariant bold italic |> Option.defaultWith defaultFont
 
 let private parseHexColor (value: string) =
     let value = value.Trim()
@@ -36,7 +81,7 @@ let private parseHexColor (value: string) =
     | _ -> Color.black
 
 let private toRendererCommands (text: PaintText) =
-    let font = rendererFont ()
+    let font = rendererFont text.Bold text.Italic
     let layout = Renderer.Text.layout font text.FontSize text.Text
     let measured = Renderer.Text.measureWidth font text.FontSize text.Text
     let alignedX =
