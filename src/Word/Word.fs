@@ -237,6 +237,12 @@ module API =
             |> List.collect (fun cell -> cell.Content)
         | Doc.TextBox textBox -> textBox.Content
 
+    let private paragraphMap (doc: Doc.Document) =
+        doc.Blocks
+        |> List.collect paragraphsInBlock
+        |> List.map (fun para -> para.Id, para)
+        |> Map.ofList
+
     let private maxVisualColumns (table: Doc.TableBlock) =
         table.Rows
         |> List.map (fun row -> row.Cells |> List.sumBy (fun cell -> max 1 cell.ColSpan))
@@ -353,6 +359,21 @@ module API =
                 let right = bounds |> List.map snd |> List.max
                 left, max 0.0 (right - left)
 
+    let private isTableContext context =
+        context |> Option.bind _.TableIndex |> Option.isSome
+
+    let private textBoundaryOrigin (doc: Doc.Document) pageLeft (layout: Layout.BlockLayout) (line: Layout.MeasuredLine) context =
+        if isTableContext context then
+            match layout.Lines |> List.tryHead with
+            | Some firstLine ->
+                let firstLeft, _ = lineLeft pageLeft layout firstLine
+                firstLeft, firstLine.Y
+            | None -> pageLeft + layout.Indent, layout.Y
+        elif context |> Option.map _.InTextBox |> Option.defaultValue false then
+            pageLeft + layout.Indent, layout.Y
+        else
+            pageLeft, pageTopForYInDoc doc line.Y + doc.PageSetup.MarginTop
+
     let private rangeBounds (doc: Doc.Document) (layouts: Layout.BlockLayout list) (measureRange: Layout.TextRangeMeasurer) (blockId: string) (startOffset: int) (endOffset: int) =
         let pageLeft = doc.PageSetup.MarginLeft
         match layouts |> List.tryFind (fun layout -> layout.BlockId = blockId) with
@@ -412,6 +433,39 @@ module API =
     let private countWords (text: string) =
         text.Split([| ' '; '\t'; '\r'; '\n' |], System.StringSplitOptions.RemoveEmptyEntries).Length
 
+    let private markerColumnOffset (metadata: Doc.BlockMetadata) =
+        let markerLengthWithSeparator (marker: string) =
+            if System.String.IsNullOrEmpty marker then 0
+            elif marker.EndsWith(" ") || marker.EndsWith("\t") then marker.Length
+            else marker.Length + 1
+
+        match metadata.ListStyle with
+        | Doc.NoList -> 0
+        | Doc.Bullet ->
+            metadata.ListLevelText
+            |> Option.defaultValue "•"
+            |> markerLengthWithSeparator
+        | Doc.Numbered ->
+            let marker =
+                match metadata.ListLevelText with
+                | Some template when template.Contains("%") ->
+                    let mutable text = template
+                    for level in 1 .. 9 do
+                        text <- text.Replace("%" + string level, "1")
+                    text
+                | Some template -> template
+                | None -> "1."
+            markerLengthWithSeparator marker
+
+    let private firstCharacterColumn (paragraph: Doc.ParagraphBlock option) (line: Layout.MeasuredLine) offset =
+        let listOffset =
+            if line.StartOffset = 0 then
+                paragraph
+                |> Option.map (fun para -> markerColumnOffset para.Metadata)
+                |> Option.defaultValue 0
+            else 0
+        max 1 (offset - line.StartOffset + 1 + listOffset)
+
     let computeRangeStatistics (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
         match Doc.findParagraph editor.Doc blockId with
         | None -> null
@@ -421,6 +475,8 @@ module API =
             let boundedEnd = max boundedStart (min endOffset text.Length)
             let rangeText = text.Substring(boundedStart, boundedEnd - boundedStart)
             let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+            let context = paragraphContexts editor.Doc |> Map.tryFind blockId
+            let isInTable = context |> Option.bind _.TableIndex |> Option.isSome
             let rangeLines =
                 layouts
                 |> List.filter (fun layout -> layout.BlockId = blockId)
@@ -434,8 +490,8 @@ module API =
                 |> List.distinct
 
             createObj [
-                "Lines" ==> rangeLines.Length
-                "Pages" ==> pages.Length
+                "Lines" ==> (if isInTable then 0 else rangeLines.Length)
+                "Pages" ==> (if isInTable then 0 else pages.Length)
                 "Paragraphs" ==> 1
                 "Words" ==> countWords rangeText
                 "Characters" ==> rangeText.Length
@@ -464,6 +520,7 @@ module API =
         let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
         let contexts = paragraphContexts editor.Doc
         let sections = sectionNumbersByParagraphId editor.Doc
+        let paragraphs = paragraphMap editor.Doc
         let measureRange = measureRangeForEditor editor
         let pageCount =
             layouts
@@ -474,16 +531,16 @@ module API =
         match layouts |> List.tryFind (fun layout -> layout.BlockId = blockId) with
         | None -> null
         | Some layout ->
-            let offset = if endOffset > startOffset then endOffset - 1 else startOffset
+            let offset = startOffset
             let line = Layout.lineForOffset layout offset
             let alignOffset = Layout.alignmentOffset layout line
             let x = editor.Doc.PageSetup.MarginLeft + alignOffset + Layout.xForOffsetWithRange measureRange line offset
             let page = pageForYInDoc editor.Doc line.Y
             let pageTop = pageTopForYInDoc editor.Doc line.Y
             let pageY = line.Y - pageTop
-            let boundaryLeft = editor.Doc.PageSetup.MarginLeft + layout.Indent
-            let boundaryY = max 0.0 (line.Y - layout.Y)
             let context = contexts |> Map.tryFind blockId
+            let boundaryLeft, boundaryTop =
+                textBoundaryOrigin editor.Doc editor.Doc.PageSetup.MarginLeft layout line context
             let bounds = rangeBounds editor.Doc layouts measureRange blockId startOffset endOffset
 
             createObj [
@@ -497,8 +554,8 @@ module API =
                 "wdHorizontalPositionRelativeToPage" ==> x
                 "wdVerticalPositionRelativeToPage" ==> pageY
                 "wdHorizontalPositionRelativeToTextBoundary" ==> (x - boundaryLeft)
-                "wdVerticalPositionRelativeToTextBoundary" ==> boundaryY
-                "wdFirstCharacterColumnNumber" ==> (max 1 (offset - line.StartOffset + 1))
+                "wdVerticalPositionRelativeToTextBoundary" ==> (max 0.0 (line.Y - boundaryTop))
+                "wdFirstCharacterColumnNumber" ==> firstCharacterColumn (paragraphs |> Map.tryFind blockId) line offset
                 "wdFirstCharacterLineNumber" ==> pageLineNumber editor.Doc layouts layout line
                 "wdWithInTable" ==> (context.IsSome && context.Value.TableIndex.IsSome)
                 "wdStartOfRangeRowNumber" ==> (context |> Option.bind _.RowIndex |> jsOpt)
@@ -537,6 +594,7 @@ module API =
         let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
         let contexts = paragraphContexts editor.Doc
         let sections = sectionNumbersByParagraphId editor.Doc
+        let paragraphs = paragraphMap editor.Doc
         let pageCount =
             layouts
             |> List.collect (fun layout -> layout.Lines)
@@ -593,7 +651,9 @@ module API =
                 let pageTop = pageTopForYInDoc editor.Doc line.Y
                 let pageLine = nextPageLine page
                 let context = contexts |> Map.tryFind layout.BlockId
-                let boundaryLeft = pageLeft + layout.Indent
+                let isInTable = context |> Option.bind _.TableIndex |> Option.isSome
+                let boundaryLeft, boundaryTop =
+                    textBoundaryOrigin editor.Doc pageLeft layout line context
                 createObj [
                     "Kind" ==> "line"
                     "BlockId" ==> layout.BlockId
@@ -612,16 +672,16 @@ module API =
                     "HorizontalPositionRelativeToPage" ==> x
                     "VerticalPositionRelativeToPage" ==> (line.Y - pageTop)
                     "HorizontalPositionRelativeToTextBoundary" ==> (x - boundaryLeft)
-                    "VerticalPositionRelativeToTextBoundary" ==> (max 0.0 (line.Y - layout.Y))
+                    "VerticalPositionRelativeToTextBoundary" ==> (max 0.0 (line.Y - boundaryTop))
                     "FirstCharacterLineNumber" ==> pageLine
-                    "FirstCharacterColumnNumber" ==> 1
+                    "FirstCharacterColumnNumber" ==> firstCharacterColumn (paragraphs |> Map.tryFind layout.BlockId) line line.StartOffset
                     "StartOffset" ==> line.StartOffset
                     "EndOffset" ==> line.EndOffset
                     "BlockY" ==> layout.Y
                     "BlockHeight" ==> layout.Height
                     "AvailableWidth" ==> layout.AvailableWidth
                     "Indent" ==> layout.Indent
-                    "InTable" ==> (context |> Option.bind _.TableIndex).IsSome
+                    "InTable" ==> isInTable
                     "Table" ==> (context |> Option.bind _.TableIndex |> jsOpt)
                     "Row" ==> (context |> Option.bind _.RowIndex |> jsOpt)
                     "Column" ==> (context |> Option.bind _.ColumnIndex |> jsOpt)
@@ -637,8 +697,8 @@ module API =
                     "InFieldResult" ==> lineHasFieldResult line
                     "FrameIsSelected" ==> (context |> Option.map _.InTextBox |> Option.defaultValue false)
                     "RevisionMarking" ==> editor.Handler.TrackChanges
-                    "RangeLines" ==> 1
-                    "RangePages" ==> 1
+                    "RangeLines" ==> (if isInTable then 0 else 1)
+                    "RangePages" ==> (if isInTable then 0 else 1)
                     "Text" ==> text
                     "Segments" ==> segments
                 ])
