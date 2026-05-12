@@ -143,36 +143,36 @@
     <tbody>
       <tr>
         <td>
-          <strong>Minimum-height table-cell vertical alignment</strong>
+          <strong>Visual table-cell vertical alignment</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-valign-row-height.docx</code></span>
           <span class="meta">Real fixture class: fixed/minimum-height tables with cell <code>w:vAlign</code>.</span>
-          <span class="meta">Paths checked: browser canvas, shared layout, VBS/PDF-backed comparisons.</span>
-          <span class="meta">Fix commit: <code>2ea909b</code></span>
+          <span class="meta">Paths checked: browser canvas, shared layout, PDF-backed Word visual comparison.</span>
+          <span class="meta">Fix commit: <code>42feca2</code></span>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-row-valign-min-height-word.png" style="--w:1224px; --x:58px; --y:45px; --s:0.433" alt="Word reference minimum-height table-cell vertical alignment">
+            <img src="../artifacts/word/table-valign-row-height-word.png" style="--w:1224px; --x:58px; --y:45px; --s:0.433" alt="Word reference visual table-cell vertical alignment">
           </div>
-          <div class="caption">Word treats <code>w:trHeight</code> without <code>hRule</code> as minimum/auto height and leaves the row-two bottom-aligned text at the natural top text origin.</div>
+          <div class="caption">Word's printed output visually bottom-aligns the row-two <code>C</code>/<code>D</code> text inside the extra row height.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-row-valign-min-height-before-fix.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="Before minimum-height table-cell vertical alignment fix">
+            <img src="../artifacts/baseline/table-valign-row-height-before-visual-valign-fix.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="Before visual table-cell vertical alignment fix">
           </div>
-          <div class="caption">Before: the row-two <code>C</code>/<code>D</code> cells were shifted down into the extra minimum-height space, about <code>55px</code> below Word.</div>
+          <div class="caption">Before: matching VBS <code>Range.Information</code> y-values put <code>C</code>/<code>D</code> at the row top, about <code>61px</code> above Word's visual PDF output.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-row-valign-min-height-after.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="After minimum-height table-cell vertical alignment fix">
+            <img src="../artifacts/browser/table-valign-row-height-after-visual-valign-fix.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="After visual table-cell vertical alignment fix">
           </div>
-          <div class="caption">After: minimum-height-only extra space no longer creates a bottom/center offset; row-two text now sits on Word's natural cell text origin.</div>
+          <div class="caption">After: the rendered row-two text is bottom-aligned again, matching Word's visual output.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> apply table-cell vertical alignment against explicit exact row height or height forced by taller cell content, but not against surplus space that exists only because the row has a minimum/auto height.</p>
+          <p><strong>Fix:</strong> restore visual vertical alignment for rendered table-cell content and keep PDF-backed Word extraction as the visual oracle for this case, because VBS <code>Range.Information</code> reports a non-visual range position here.</p>
           <ul>
-            <li>Focused guard: <code>compare-vba-layout-results</code> reports <code>ok</code> with <code>5 matched ranges</code>; <code>C</code>/<code>D</code> moved from about <code>54.64px</code> low to within <code>0.96px</code>.</li>
-            <li>Layout guard: <code>compare-word-browser-layouts --word-source vbs</code> reports <code>ok</code> with <code>5 matched lines</code>.</li>
-            <li>Related query guard: <code>26024a4</code> fixed the VBA-style range/text-boundary semantics used by this check.</li>
+            <li>Focused guard: <code>compare-word-browser-layouts --word-source pdf</code> reports <code>ok</code> with <code>6 matched lines</code>.</li>
+            <li>Regression caught: the VBS-only check put <code>C</code>/<code>D</code> about <code>61px</code> too high visually, so visual layout fixes must use the PDF-backed source for this scenario.</li>
+            <li>Related query guard: <code>compare-vba-layout-results</code> remains useful for table metadata/page/text-boundary fields, but its y-values are not the visual oracle for bottom-aligned cells.</li>
           </ul>
         </td>
       </tr>
