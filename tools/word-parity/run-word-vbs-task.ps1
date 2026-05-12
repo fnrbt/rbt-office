@@ -11,6 +11,11 @@ function Quote-Arg([string]$Value) {
   '"' + $Value.Replace('"', '\"') + '"'
 }
 
+function New-TaskStartArgs([int]$MinutesFromNow) {
+  $start = (Get-Date).AddMinutes($MinutesFromNow)
+  @("/SC", "ONCE", "/SD", $start.ToString("MM/dd/yyyy"), "/ST", $start.ToString("HH:mm"))
+}
+
 $scriptFull = (Resolve-Path -LiteralPath $ScriptPath).Path
 $inputFull = (Resolve-Path -LiteralPath $InputPath).Path
 $outputFull = [System.IO.Path]::GetFullPath($OutputPath)
@@ -39,7 +44,8 @@ function Stop-InteractiveWord {
     $cleanupTaskName = "RedBatWordParity-KillWord-" + ([guid]::NewGuid().ToString("N"))
     try {
       $cleanupRun = 'cmd.exe /c "' + $cleanupCmd + '"'
-      & schtasks.exe /Create /TN $cleanupTaskName /TR $cleanupRun /SC ONCE /ST ((Get-Date).AddMinutes(10).ToString("HH:mm")) /F /IT 2>$null | Out-Null
+      $cleanupStartArgs = New-TaskStartArgs 10
+      & schtasks.exe /Create /TN $cleanupTaskName /TR $cleanupRun @cleanupStartArgs /F /IT 2>$null | Out-Null
       if ($LASTEXITCODE -eq 0) {
         & schtasks.exe /Run /TN $cleanupTaskName 2>$null | Out-Null
         Start-Sleep -Seconds 7
@@ -66,9 +72,9 @@ exit /b %RB_EXIT%
 Set-Content -LiteralPath $cmdPath -Value $cmd -Encoding ASCII
 
 try {
-  $startTime = (Get-Date).AddMinutes(10).ToString("HH:mm")
+  $startArgs = New-TaskStartArgs 10
   $taskRun = 'cmd.exe /c "' + $cmdPath + '"'
-  & schtasks.exe /Create /TN $taskName /TR $taskRun /SC ONCE /ST $startTime /F /IT | Out-Null
+  & schtasks.exe /Create /TN $taskName /TR $taskRun @startArgs /F /IT | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "schtasks /Create failed with exit code $LASTEXITCODE"
   }
