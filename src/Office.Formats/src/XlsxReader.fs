@@ -125,11 +125,20 @@ type PivotTable = {
     FilterFields: PivotTableField list
 }
 
+/// sheetFormatPr defaults captured at parse time so renderers can fall back
+/// without re-reading the sheet XML.
+type SheetFormat = {
+    BaseColWidth: float option
+    DefaultColWidth: float option
+    DefaultRowHeight: float option
+}
+
 type Worksheet = {
     Name: string
     Rows: Row list
     MergedCells: MergeCell list
     Columns: ColumnInfo list
+    Format: SheetFormat
     Comments: CellComment list
     ConditionalFormats: ConditionalFormat list
     DataValidations: DataValidation list
@@ -241,6 +250,26 @@ module Xlsx =
         |> Option.defaultValue []
         |> List.choose columnInfo
 
+    /// Excel uses sheetFormatPr defaults for any row/column without an
+    /// explicit <row ht="..."/> or <col width="..."/> entry. Without this,
+    /// renderers treat unspecified columns as if they had no defaults, which
+    /// over-widens them and drifts every column past A.
+    let emptySheetFormat : SheetFormat = {
+        BaseColWidth = None
+        DefaultColWidth = None
+        DefaultRowHeight = None
+    }
+
+    let sheetFormatPr (sheet: XmlNode) : SheetFormat =
+        match sElem "sheetFormatPr" sheet with
+        | None -> emptySheetFormat
+        | Some node ->
+            {
+                BaseColWidth = Xml.attr "baseColWidth" node |> Option.bind (fun v -> try Some (float v) with _ -> None)
+                DefaultColWidth = Xml.attr "defaultColWidth" node |> Option.bind (fun v -> try Some (float v) with _ -> None)
+                DefaultRowHeight = Xml.attr "defaultRowHeight" node |> Option.bind (fun v -> try Some (float v) with _ -> None)
+            }
+
     // Worksheet extraction (advanced features parsed separately)
     let worksheet (name: string) (sheetXml: string) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) : Worksheet =
         let sheet = XmlDsl.parse sheetXml
@@ -257,6 +286,7 @@ module Xlsx =
             Rows = rows
             MergedCells = mergeCells sheet
             Columns = columns sheet
+            Format = sheetFormatPr sheet
             Comments = comments
             ConditionalFormats = condFormats
             DataValidations = dataVals
@@ -280,6 +310,41 @@ module Xlsx =
     let parseNumberFormat (numFmtNode: XmlNode) : string option =
         Xml.attr "formatCode" numFmtNode
 
+    /// Built-in numFmtId → format code table. Per the OOXML spec, ids 0–49
+    /// are pre-defined and don't appear in the sheet's `<numFmts>` block, so
+    /// readers need their own lookup. Custom formats start at 164.
+    let builtInNumberFormat (id: int) : string option =
+        match id with
+        | 0 -> None  // General → no explicit code; renderer applies General trimming
+        | 1 -> Some "0"
+        | 2 -> Some "0.00"
+        | 3 -> Some "#,##0"
+        | 4 -> Some "#,##0.00"
+        | 9 -> Some "0%"
+        | 10 -> Some "0.00%"
+        | 11 -> Some "0.00E+00"
+        | 12 -> Some "# ?/?"
+        | 13 -> Some "# ??/??"
+        | 14 -> Some "m/d/yyyy"
+        | 15 -> Some "d-mmm-yy"
+        | 16 -> Some "d-mmm"
+        | 17 -> Some "mmm-yy"
+        | 18 -> Some "h:mm AM/PM"
+        | 19 -> Some "h:mm:ss AM/PM"
+        | 20 -> Some "h:mm"
+        | 21 -> Some "h:mm:ss"
+        | 22 -> Some "m/d/yyyy h:mm"
+        | 37 -> Some "#,##0;(#,##0)"
+        | 38 -> Some "#,##0;[Red](#,##0)"
+        | 39 -> Some "#,##0.00;(#,##0.00)"
+        | 40 -> Some "#,##0.00;[Red](#,##0.00)"
+        | 45 -> Some "mm:ss"
+        | 46 -> Some "[h]:mm:ss"
+        | 47 -> Some "mmss.0"
+        | 48 -> Some "##0.0E+0"
+        | 49 -> Some "@"
+        | _ -> None
+
     let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * string option * float option) array) (fills: string option array) (numFmts: Map<int, string>) : CellStyle =
         let fontId = Xml.attr "fontId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let fillId = Xml.attr "fillId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
@@ -293,7 +358,12 @@ module Xlsx =
             if fillId < fills.Length then fills.[fillId]
             else None
 
-        let numFmt = numFmtId |> Option.bind (fun id -> Map.tryFind id numFmts)
+        let numFmt =
+            numFmtId
+            |> Option.bind (fun id ->
+                match Map.tryFind id numFmts with
+                | Some custom -> Some custom
+                | None -> builtInNumberFormat id)
 
         {
             FontColor = fontColor

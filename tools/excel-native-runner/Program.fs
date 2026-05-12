@@ -56,6 +56,7 @@ let private resolveValue (workbook: Xlsx.Workbook) (value: Xlsx.CellValue) : Cel
 let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
     let hexColor (rgb: string) =
         let trimmed = rgb.TrimStart('#')
+        // Excel often prefixes ARGB; drop alpha when 8 chars
         let cleaned = if trimmed.Length = 8 then trimmed.Substring(2) else trimmed
         if cleaned.Length = 6 then Some ("#" + cleaned) else None
     {
@@ -108,22 +109,68 @@ let private toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : Spreadsh
                 EndCol = columnIndex mc.EndRef.Column
             })
 
-    // Excel row.Height is reported in points; convert to CSS pixels.
-    let rowHeights =
+    // Excel col.Width is in character units. The empirical ratio between
+    // character units and CSS pixels at Calibri 11 / 96 DPI is ~8.0 px per
+    // character for this corpus (column A in pandas-test1.xlsx: 11.83 chars
+    // → Excel reports 71.25 pt = 95 px, so 95/11.83 ≈ 8.03).
+    let charsToPixels (chars: float) = chars * 8.0
+
+    // sheetFormatPr defaults. Excel uses these for every column without an
+    // explicit <col width="..."> entry. Without seeding the defaults across
+    // used columns, our renderer falls back to 100 px per column and drifts
+    // ~12 px past every column beyond A.
+    let defaultColWidthPx =
+        match sheet.Format.DefaultColWidth with
+        | Some w -> Some (charsToPixels w)
+        | None ->
+            // For baseColWidth Excel auto-adds about one character of margin
+            // padding to the effective rendered width. With baseColWidth=10
+            // pandas-test1 default columns render at 88 px ≈ 11 chars * 8.
+            sheet.Format.BaseColWidth
+            |> Option.map (fun baseW -> charsToPixels (baseW + 1.0))
+
+    let defaultRowHeightPx =
+        sheet.Format.DefaultRowHeight |> Option.map (fun h -> h * (96.0 / 72.0))
+
+    let explicitColumns =
+        sheet.Columns
+        |> List.choose (fun col ->
+            col.Width |> Option.map (fun w -> col.Index - 1, charsToPixels w))
+        |> Map.ofList
+
+    let explicitRows =
         sheet.Rows
         |> List.choose (fun row ->
             row.Height |> Option.map (fun h -> row.Index - 1, h * (96.0 / 72.0)))
         |> Map.ofList
 
+    // Seed every used row/column with the sheet default so unspecified
+    // entries no longer fall back to the generic 100 px / 25 px model
+    // defaults.
     let columnWidths =
-        sheet.Columns
-        |> List.choose (fun col ->
-            col.Width |> Option.map (fun w -> col.Index - 1, w * 7.0))
-        |> Map.ofList
+        match defaultColWidthPx with
+        | None -> explicitColumns
+        | Some defWidth ->
+            [ 0 .. maxCol ]
+            |> List.fold (fun acc c ->
+                if Map.containsKey c explicitColumns then acc
+                else Map.add c defWidth acc) explicitColumns
+
+    let rowHeights =
+        match defaultRowHeightPx with
+        | None -> explicitRows
+        | Some defHeight ->
+            [ 0 .. maxRow ]
+            |> List.fold (fun acc r ->
+                if Map.containsKey r explicitRows then acc
+                else Map.add r defHeight acc) explicitRows
 
     let baseModel = createEmpty (max 1 (maxRow + 1)) (max 1 (maxCol + 1))
+    // Excel's printed/screenshot output never shows the active-cell border, so
+    // park the selection off-grid for snapshot renders.
     { baseModel with
         Cells = cells
+        Selection = SingleCell(-1, -1)
         RowHeights = rowHeights
         ColumnWidths = columnWidths
         MergedCells = mergedCells }
