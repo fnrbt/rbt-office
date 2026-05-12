@@ -217,6 +217,7 @@ let private cellInfoJson (sheetName: string) (model: SpreadsheetModel) =
                 "\"Height\":" + sprintf "%.2f" rect.Height
                 "\"Value\":" + escapeJson display
                 "\"Text\":" + escapeJson display
+                "\"NumberFormat\":" + escapeJson (data.Format.NumberFormat |> Option.defaultValue "")
             ]
             "{ " + String.concat ", " fields + " }")
     "[\n  " + String.concat ",\n  " records + "\n]\n"

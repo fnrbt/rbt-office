@@ -78,6 +78,112 @@ let private excelSerialToDate (serial: float) : System.DateTime =
     let days = if serial >= 60.0 then serial else serial + 1.0
     baseDate.AddDays(days)
 
+/// Tokenize an Excel format code into .NET DateTime.ToString format. Tracks
+/// context (after `h`/`s` → minute; after month-only marker → month) for the
+/// shared `m` token. Recognizes fractional-second suffixes `.0`/`.00`/`.000`
+/// (Excel) and emits the .NET equivalents `.f`/`.ff`/`.fff`. Quoted/escaped
+/// literals are emitted unchanged. Unrecognized tokens are wrapped in single
+/// quotes so .NET treats them as literals rather than throwing.
+let private excelToNetFormat (code: string) : string =
+    let lower = (firstSection code).ToLowerInvariant()
+    let sb = System.Text.StringBuilder()
+    let mutable i = 0
+    // mInTimeContext is true after we just emitted h/H or are about to emit
+    // s/S — Excel's `m` token resolves to minute in those positions.
+    let mutable mInTimeContext = false
+    let has12Hour = lower.Contains "am/pm" || lower.Contains "a/p"
+
+    let runOf c (s: string) =
+        let mutable n = 0
+        while i + n < s.Length && s.[i + n] = c do n <- n + 1
+        n
+
+    while i < lower.Length do
+        match lower.[i] with
+        | 'y' ->
+            let n = runOf 'y' lower
+            sb.Append(if n >= 4 then "yyyy" elif n >= 2 then "yy" else "yyyy") |> ignore
+            i <- i + n
+            mInTimeContext <- false
+        | 'd' ->
+            let n = runOf 'd' lower
+            sb.Append(System.String('d', min 4 n)) |> ignore
+            i <- i + n
+            mInTimeContext <- false
+        | 'h' ->
+            let n = runOf 'h' lower
+            let token = if has12Hour then (if n >= 2 then "hh" else "h") else (if n >= 2 then "HH" else "H")
+            sb.Append(token: string) |> ignore
+            i <- i + n
+            mInTimeContext <- true
+        | 's' ->
+            let n = runOf 's' lower
+            sb.Append(System.String('s', min 2 n)) |> ignore
+            i <- i + n
+            mInTimeContext <- true
+        | 'm' ->
+            let n = runOf 'm' lower
+            // 3+ m's are always month (mmm/mmmm). 1-2 m's: minute if adjacent
+            // to a time token, otherwise month.
+            let isMinute =
+                n <= 2 && (
+                    mInTimeContext ||
+                    (let j = i + n
+                     j < lower.Length && (lower.[j] = ':' || lower.[j] = 'h' || lower.[j] = 's')))
+            if isMinute then
+                sb.Append(System.String('m', min 2 n)) |> ignore
+                mInTimeContext <- true
+            else
+                let upper =
+                    match n with
+                    | 1 -> "M"
+                    | 2 -> "MM"
+                    | 3 -> "MMM"
+                    | 4 -> "MMMM"
+                    | _ -> "MMMMM"
+                sb.Append(upper) |> ignore
+                mInTimeContext <- false
+            i <- i + n
+        | 'a' when i + 4 < lower.Length && lower.Substring(i, 5) = "am/pm" ->
+            sb.Append("tt") |> ignore
+            i <- i + 5
+        | 'a' when i + 2 < lower.Length && lower.Substring(i, 3) = "a/p" ->
+            sb.Append("t") |> ignore
+            i <- i + 3
+        | '.' when i + 1 < lower.Length && lower.[i + 1] = '0' ->
+            let mutable n = 0
+            while i + 1 + n < lower.Length && lower.[i + 1 + n] = '0' do n <- n + 1
+            sb.Append('.') |> ignore
+            sb.Append(System.String('f', min 7 n)) |> ignore
+            i <- i + 1 + n
+        | '\\' when i + 1 < lower.Length ->
+            // Escaped literal char.
+            sb.Append('\'').Append(lower.[i + 1]).Append('\'') |> ignore
+            i <- i + 2
+        | '"' ->
+            // Quoted literal.
+            let endQuote = lower.IndexOf('"', i + 1)
+            if endQuote < 0 then i <- lower.Length
+            else
+                sb.Append('\'').Append(lower.Substring(i + 1, endQuote - i - 1)).Append('\'') |> ignore
+                i <- endQuote + 1
+        | '[' ->
+            // Elapsed-time bracket [h]/[m]/[s] — .NET can't express elapsed
+            // hours past 24 with a stock format; emit a normal token and
+            // accept the wraparound for now.
+            let endBracket = lower.IndexOf(']', i + 1)
+            if endBracket < 0 then i <- i + 1
+            else i <- endBracket + 1
+        | ':' | '/' | '-' | ' ' | ',' as c ->
+            sb.Append(c) |> ignore
+            i <- i + 1
+        | c ->
+            // Unrecognized: wrap as single-quote literal so .NET doesn't
+            // throw on it.
+            sb.Append('\'').Append(c).Append('\'') |> ignore
+            i <- i + 1
+    sb.ToString()
+
 let private formatExcelDate (code: string) (serial: float) : string =
     // Excel allows huge serials (the "testdateoverflow" fixture has values
     // that exceed DateTime.MaxValue). Catch and fall back to the raw float
@@ -89,36 +195,9 @@ let private formatExcelDate (code: string) (serial: float) : string =
     match dt with
     | None -> serial.ToString("G", inv)
     | Some dt ->
-    // Map Excel format tokens to .NET equivalents. Done character-by-character
-    // because Excel and .NET disagree on `m` (Excel: month or minute by
-    // context; .NET: minute) and `MM` (Excel: capital M is the same as `m`).
-    let lower = (firstSection code).ToLowerInvariant()
-    let netFormat =
-        if isTimeFormat lower && not (isDateFormat lower) then
-            // Pure time format.
-            lower
-                .Replace("h:mm:ss am/pm", "h:mm:ss tt")
-                .Replace("h:mm am/pm", "h:mm tt")
-                .Replace("h:mm:ss", "HH:mm:ss")
-                .Replace("h:mm", "HH:mm")
-                .Replace("mm:ss", "mm:ss")
-        else
-            // Date or datetime. Replace the longest tokens first.
-            lower
-                .Replace("mmmm", "MMMM")
-                .Replace("mmm", "MMM")
-                .Replace("yyyy", "yyyy")
-                .Replace("yy", "yy")
-                .Replace("mm/", "MM/")
-                .Replace("/mm", "/MM")
-                .Replace("m/", "M/")
-                .Replace("/m", "/M")
-                .Replace(" h:mm:ss am/pm", " h:mm:ss tt")
-                .Replace(" h:mm am/pm", " h:mm tt")
-                .Replace(" h:mm:ss", " HH:mm:ss")
-                .Replace(" h:mm", " HH:mm")
-    try dt.ToString(netFormat, inv)
-    with _ -> dt.ToString("MM/dd/yyyy", inv)
+        let netFormat = excelToNetFormat code
+        try dt.ToString(netFormat, inv)
+        with _ -> dt.ToString("MM/dd/yyyy", inv)
 
 /// Width-aware Excel "General" number formatting. Picks the longest .NET
 /// "G<n>" representation that fits the cell width. If even the shortest
