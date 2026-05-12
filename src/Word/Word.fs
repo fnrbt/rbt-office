@@ -203,14 +203,353 @@ module API =
                         ])) )
         |> List.toArray
 
-    let getLayoutLines (editor: Editor) =
-        let pageHeight = editor.Doc.PageSetup.PageHeight
-        let pageLeft = editor.Doc.PageSetup.MarginLeft
-        let pageStride = pageHeight + WordLayout.Page.gap
-        let pageForY y = int (floor (max 0.0 y / pageStride)) + 1
-        let pageTopForY y = floor (max 0.0 y / pageStride) * pageStride
+    type private ParagraphLayoutContext = {
+        ParagraphIndex: int
+        TableIndex: int option
+        RowIndex: int option
+        ColumnIndex: int option
+        EndColumnIndex: int option
+        MaxRows: int option
+        MaxColumns: int option
+        InTextBox: bool
+    }
 
-        Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+    let private jsOpt value =
+        match value with
+        | Some actual -> box actual
+        | None -> null
+
+    let private pageStride (doc: Doc.Document) =
+        doc.PageSetup.PageHeight + WordLayout.Page.gap
+
+    let private pageForYInDoc (doc: Doc.Document) y =
+        int (floor (max 0.0 y / pageStride doc)) + 1
+
+    let private pageTopForYInDoc (doc: Doc.Document) y =
+        floor (max 0.0 y / pageStride doc) * pageStride doc
+
+    let private paragraphsInBlock = function
+        | Doc.Paragraph para
+        | Doc.Heading (_, para) -> [para]
+        | Doc.Table table ->
+            table.Rows
+            |> List.collect (fun row -> row.Cells)
+            |> List.collect (fun cell -> cell.Content)
+        | Doc.TextBox textBox -> textBox.Content
+
+    let private maxVisualColumns (table: Doc.TableBlock) =
+        table.Rows
+        |> List.map (fun row -> row.Cells |> List.sumBy (fun cell -> max 1 cell.ColSpan))
+        |> function
+            | [] -> 0
+            | values -> List.max values
+
+    let private paragraphContexts (doc: Doc.Document) =
+        let mutable paragraphIndex = 0
+        let mutable tableIndex = 0
+        let mutable pairs: (string * ParagraphLayoutContext) list = []
+
+        let addContext (para: Doc.ParagraphBlock) (context: ParagraphLayoutContext) =
+            paragraphIndex <- paragraphIndex + 1
+            pairs <- (para.Id, { context with ParagraphIndex = paragraphIndex }) :: pairs
+
+        for block in doc.Blocks do
+            match block with
+            | Doc.Paragraph para
+            | Doc.Heading (_, para) ->
+                addContext para {
+                    ParagraphIndex = 0
+                    TableIndex = None
+                    RowIndex = None
+                    ColumnIndex = None
+                    EndColumnIndex = None
+                    MaxRows = None
+                    MaxColumns = None
+                    InTextBox = false
+                }
+            | Doc.Table table ->
+                tableIndex <- tableIndex + 1
+                let maxRows = table.Rows.Length
+                let maxColumns = maxVisualColumns table
+                table.Rows
+                |> List.iteri (fun rowIndex row ->
+                    let mutable columnIndex = 1
+                    for cell in row.Cells do
+                        let span = max 1 cell.ColSpan
+                        for para in cell.Content do
+                            addContext para {
+                                ParagraphIndex = 0
+                                TableIndex = Some tableIndex
+                                RowIndex = Some (rowIndex + 1)
+                                ColumnIndex = Some columnIndex
+                                EndColumnIndex = Some (columnIndex + span - 1)
+                                MaxRows = Some maxRows
+                                MaxColumns = Some maxColumns
+                                InTextBox = false
+                            }
+                        columnIndex <- columnIndex + span)
+            | Doc.TextBox textBox ->
+                for para in textBox.Content do
+                    addContext para {
+                        ParagraphIndex = 0
+                        TableIndex = None
+                        RowIndex = None
+                        ColumnIndex = None
+                        EndColumnIndex = None
+                        MaxRows = None
+                        MaxColumns = None
+                        InTextBox = true
+                    }
+
+        pairs |> Map.ofList
+
+    let private sectionNumbersByParagraphId (doc: Doc.Document) =
+        let mutable section = 1
+        let mutable pairs: (string * int) list = []
+
+        let addParagraph (para: Doc.ParagraphBlock) =
+            pairs <- (para.Id, section) :: pairs
+
+        for block in doc.Blocks do
+            match block with
+            | Doc.Paragraph para
+            | Doc.Heading (_, para) ->
+                addParagraph para
+                if para.Metadata.SectionBreak.IsSome then section <- section + 1
+            | Doc.Table _
+            | Doc.TextBox _ ->
+                for para in paragraphsInBlock block do
+                    addParagraph para
+
+        pairs |> Map.ofList
+
+    let private measureRangeForEditor (editor: Editor) =
+        match editor.Handler.RenderContext.TextRangeMeasurer with
+        | Some measureRange -> measureRange
+        | None -> Layout.rangeMeasurerFromTextMeasurer (Ren.measureTextStyled editor.Handler.RenderContext)
+
+    let private lineHasFieldCode (line: Layout.MeasuredLine) =
+        line.Segments
+        |> List.exists (function
+            | Layout.TextSegment (_, style, _, _, _) -> style.FieldCode.IsSome
+            | Layout.ImageSegment _ -> false)
+
+    let private lineHasFieldResult (line: Layout.MeasuredLine) =
+        line.Segments
+        |> List.exists (function
+            | Layout.TextSegment (_, style, _, _, _) -> style.FieldResult.IsSome
+            | Layout.ImageSegment _ -> false)
+
+    let private lineLeft pageLeft (layout: Layout.BlockLayout) (line: Layout.MeasuredLine) =
+        let alignOffset = Layout.alignmentOffset layout line
+        line.Segments
+        |> List.choose (function
+            | Layout.TextSegment (_, _, x, width, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width)
+            | Layout.ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width))
+        |> function
+            | [] -> pageLeft + alignOffset, line.Width
+            | bounds ->
+                let left = bounds |> List.map fst |> List.min
+                let right = bounds |> List.map snd |> List.max
+                left, max 0.0 (right - left)
+
+    let private rangeBounds (doc: Doc.Document) (layouts: Layout.BlockLayout list) (measureRange: Layout.TextRangeMeasurer) (blockId: string) (startOffset: int) (endOffset: int) =
+        let pageLeft = doc.PageSetup.MarginLeft
+        match layouts |> List.tryFind (fun layout -> layout.BlockId = blockId) with
+        | None -> None
+        | Some layout ->
+            let maxOffset = Layout.maxOffsetInLayout layout
+            let startOffset = max 0 (min startOffset maxOffset)
+            let endOffset = max startOffset (min endOffset maxOffset)
+            let fragments =
+                if startOffset = endOffset then
+                    let line = Layout.lineForOffset layout startOffset
+                    let alignOffset = Layout.alignmentOffset layout line
+                    let x = pageLeft + alignOffset + Layout.xForOffsetWithRange measureRange line startOffset
+                    [x, line.Y, x, line.Y + line.Height]
+                else
+                    layout.Lines
+                    |> List.choose (fun line ->
+                        let lineStart = max startOffset line.StartOffset
+                        let lineEnd = min endOffset line.EndOffset
+                        if lineEnd < lineStart || lineEnd <= line.StartOffset || lineStart >= line.EndOffset then
+                            None
+                        else
+                            let alignOffset = Layout.alignmentOffset layout line
+                            let x1 = pageLeft + alignOffset + Layout.xForOffsetWithRange measureRange line lineStart
+                            let x2 = pageLeft + alignOffset + Layout.xForOffsetWithRange measureRange line lineEnd
+                            Some (min x1 x2, line.Y, max x1 x2, line.Y + line.Height))
+
+            match fragments with
+            | [] -> None
+            | _ ->
+                let left = fragments |> List.map (fun (x1, _, _, _) -> x1) |> List.min
+                let top = fragments |> List.map (fun (_, y1, _, _) -> y1) |> List.min
+                let right = fragments |> List.map (fun (_, _, x2, _) -> x2) |> List.max
+                let bottom = fragments |> List.map (fun (_, _, _, y2) -> y2) |> List.max
+                Some (left, top, right - left, bottom - top)
+
+    let getRangeBounds (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
+        let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+        let measureRange = measureRangeForEditor editor
+        match rangeBounds editor.Doc layouts measureRange blockId startOffset endOffset with
+        | None -> null
+        | Some (x, y, width, height) ->
+            let pageTop = pageTopForYInDoc editor.Doc y
+            createObj [
+                "BlockId" ==> blockId
+                "StartOffset" ==> startOffset
+                "EndOffset" ==> endOffset
+                "X" ==> x
+                "Y" ==> y
+                "PageX" ==> x
+                "PageY" ==> (y - pageTop)
+                "Width" ==> width
+                "Height" ==> height
+                "Page" ==> pageForYInDoc editor.Doc y
+            ]
+
+    let private countWords (text: string) =
+        text.Split([| ' '; '\t'; '\r'; '\n' |], System.StringSplitOptions.RemoveEmptyEntries).Length
+
+    let computeRangeStatistics (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
+        match Doc.findParagraph editor.Doc blockId with
+        | None -> null
+        | Some para ->
+            let text = TextBuf.toString para.Buffer
+            let boundedStart = max 0 (min startOffset text.Length)
+            let boundedEnd = max boundedStart (min endOffset text.Length)
+            let rangeText = text.Substring(boundedStart, boundedEnd - boundedStart)
+            let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+            let rangeLines =
+                layouts
+                |> List.filter (fun layout -> layout.BlockId = blockId)
+                |> List.collect (fun layout -> layout.Lines)
+                |> List.filter (fun line ->
+                    if boundedStart = boundedEnd then boundedStart >= line.StartOffset && boundedStart <= line.EndOffset
+                    else boundedStart < line.EndOffset && boundedEnd > line.StartOffset)
+            let pages =
+                rangeLines
+                |> List.map (fun line -> pageForYInDoc editor.Doc line.Y)
+                |> List.distinct
+
+            createObj [
+                "Lines" ==> rangeLines.Length
+                "Pages" ==> pages.Length
+                "Paragraphs" ==> 1
+                "Words" ==> countWords rangeText
+                "Characters" ==> rangeText.Length
+                "CharactersWithSpaces" ==> rangeText.Length
+            ]
+
+    let private pageLineNumber (doc: Doc.Document) (layouts: Layout.BlockLayout list) (targetLayout: Layout.BlockLayout) (targetLine: Layout.MeasuredLine) =
+        let page = pageForYInDoc doc targetLine.Y
+        layouts
+        |> List.collect (fun layout ->
+            layout.Lines
+            |> List.map (fun line ->
+                let left, _ = lineLeft doc.PageSetup.MarginLeft layout line
+                layout.BlockId, line.StartOffset, line.EndOffset, line.Y, left, line))
+        |> List.filter (fun (_, _, _, y, _, _) -> pageForYInDoc doc y = page)
+        |> List.sortBy (fun (_, _, _, y, left, _) -> y, left)
+        |> List.tryFindIndex (fun (blockId, startOffset, endOffset, y, _, _) ->
+            blockId = targetLayout.BlockId &&
+            startOffset = targetLine.StartOffset &&
+            endOffset = targetLine.EndOffset &&
+            y = targetLine.Y)
+        |> Option.map ((+) 1)
+        |> Option.defaultValue 0
+
+    let getRangeInformation (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
+        let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+        let contexts = paragraphContexts editor.Doc
+        let sections = sectionNumbersByParagraphId editor.Doc
+        let measureRange = measureRangeForEditor editor
+        let pageCount =
+            layouts
+            |> List.collect (fun layout -> layout.Lines)
+            |> List.map (fun line -> pageForYInDoc editor.Doc (line.Y + line.Height))
+            |> List.fold max 1
+
+        match layouts |> List.tryFind (fun layout -> layout.BlockId = blockId) with
+        | None -> null
+        | Some layout ->
+            let offset = if endOffset > startOffset then endOffset - 1 else startOffset
+            let line = Layout.lineForOffset layout offset
+            let alignOffset = Layout.alignmentOffset layout line
+            let x = editor.Doc.PageSetup.MarginLeft + alignOffset + Layout.xForOffsetWithRange measureRange line offset
+            let page = pageForYInDoc editor.Doc line.Y
+            let pageTop = pageTopForYInDoc editor.Doc line.Y
+            let pageY = line.Y - pageTop
+            let boundaryLeft = editor.Doc.PageSetup.MarginLeft + layout.Indent
+            let boundaryY = max 0.0 (line.Y - layout.Y)
+            let context = contexts |> Map.tryFind blockId
+            let bounds = rangeBounds editor.Doc layouts measureRange blockId startOffset endOffset
+
+            createObj [
+                "BlockId" ==> blockId
+                "StartOffset" ==> startOffset
+                "EndOffset" ==> endOffset
+                "wdActiveEndAdjustedPageNumber" ==> page
+                "wdActiveEndPageNumber" ==> page
+                "wdActiveEndSectionNumber" ==> (sections |> Map.tryFind blockId |> Option.defaultValue 1)
+                "wdNumberOfPagesInDocument" ==> pageCount
+                "wdHorizontalPositionRelativeToPage" ==> x
+                "wdVerticalPositionRelativeToPage" ==> pageY
+                "wdHorizontalPositionRelativeToTextBoundary" ==> (x - boundaryLeft)
+                "wdVerticalPositionRelativeToTextBoundary" ==> boundaryY
+                "wdFirstCharacterColumnNumber" ==> (max 1 (offset - line.StartOffset + 1))
+                "wdFirstCharacterLineNumber" ==> pageLineNumber editor.Doc layouts layout line
+                "wdWithInTable" ==> (context.IsSome && context.Value.TableIndex.IsSome)
+                "wdStartOfRangeRowNumber" ==> (context |> Option.bind _.RowIndex |> jsOpt)
+                "wdEndOfRangeRowNumber" ==> (context |> Option.bind _.RowIndex |> jsOpt)
+                "wdMaximumNumberOfRows" ==> (context |> Option.bind _.MaxRows |> jsOpt)
+                "wdStartOfRangeColumnNumber" ==> (context |> Option.bind _.ColumnIndex |> jsOpt)
+                "wdEndOfRangeColumnNumber" ==> (context |> Option.bind _.EndColumnIndex |> jsOpt)
+                "wdMaximumNumberOfColumns" ==> (context |> Option.bind _.MaxColumns |> jsOpt)
+                "wdAtEndOfRowMarker" ==> false
+                "wdInContentControl" ==> layout.Metadata.ContentControlId.IsSome
+                "wdInFieldCode" ==> lineHasFieldCode line
+                "wdInFieldResult" ==> lineHasFieldResult line
+                "wdFrameIsSelected" ==> (context |> Option.map _.InTextBox |> Option.defaultValue false)
+                "wdRevisionMarking" ==> editor.Handler.TrackChanges
+                "Bounds" ==> (
+                    match bounds with
+                    | None -> null
+                    | Some (bx, by, bw, bh) ->
+                        createObj [
+                            "X" ==> bx
+                            "Y" ==> by
+                            "PageY" ==> (by - pageTopForYInDoc editor.Doc by)
+                            "Width" ==> bw
+                            "Height" ==> bh
+                        ])
+            ]
+
+    let getSelectionInformation (editor: Editor) =
+        match editor.Doc.Selection with
+        | None -> null
+        | Some selection ->
+            getRangeInformation editor selection.Focus.BlockId selection.Focus.Offset selection.Focus.Offset
+
+    let getLayoutLines (editor: Editor) =
+        let pageLeft = editor.Doc.PageSetup.MarginLeft
+        let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+        let contexts = paragraphContexts editor.Doc
+        let sections = sectionNumbersByParagraphId editor.Doc
+        let pageCount =
+            layouts
+            |> List.collect (fun layout -> layout.Lines)
+            |> List.map (fun line -> pageForYInDoc editor.Doc (line.Y + line.Height))
+            |> List.fold max 1
+        let mutable pageLineCounts = Map.empty<int, int>
+
+        let nextPageLine page =
+            let value = (pageLineCounts |> Map.tryFind page |> Option.defaultValue 0) + 1
+            pageLineCounts <- pageLineCounts |> Map.add page value
+            value
+
+        layouts
         |> List.mapi (fun layoutIndex layout ->
             layout.Lines
             |> List.mapi (fun lineIndex line ->
@@ -247,46 +586,68 @@ module API =
                         | Layout.ImageSegment _ -> "\uFFFC")
                     |> String.concat ""
 
-                let bounds =
-                    line.Segments
-                    |> List.choose (function
-                        | Layout.TextSegment (_, _, x, width, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width)
-                        | Layout.ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width))
-
                 let x, width =
-                    match bounds with
-                    | [] -> pageLeft + alignOffset, line.Width
-                    | _ ->
-                        let left = bounds |> List.map fst |> List.min
-                        let right = bounds |> List.map snd |> List.max
-                        left, max 0.0 (right - left)
+                    lineLeft pageLeft layout line
 
-                let page = pageForY line.Y
-                let pageTop = pageTopForY line.Y
+                let page = pageForYInDoc editor.Doc line.Y
+                let pageTop = pageTopForYInDoc editor.Doc line.Y
+                let pageLine = nextPageLine page
+                let context = contexts |> Map.tryFind layout.BlockId
+                let boundaryLeft = pageLeft + layout.Indent
                 createObj [
                     "Kind" ==> "line"
                     "BlockId" ==> layout.BlockId
                     "BlockIndex" ==> layoutIndex
                     "LineIndex" ==> lineIndex
                     "Page" ==> page
+                    "AdjustedPage" ==> page
+                    "Section" ==> (sections |> Map.tryFind layout.BlockId |> Option.defaultValue 1)
+                    "PageCount" ==> pageCount
                     "X" ==> x
                     "Y" ==> line.Y
                     "PageY" ==> (line.Y - pageTop)
                     "Width" ==> width
                     "Height" ==> line.Height
                     "LineWidth" ==> line.Width
+                    "HorizontalPositionRelativeToPage" ==> x
+                    "VerticalPositionRelativeToPage" ==> (line.Y - pageTop)
+                    "HorizontalPositionRelativeToTextBoundary" ==> (x - boundaryLeft)
+                    "VerticalPositionRelativeToTextBoundary" ==> (max 0.0 (line.Y - layout.Y))
+                    "FirstCharacterLineNumber" ==> pageLine
+                    "FirstCharacterColumnNumber" ==> 1
                     "StartOffset" ==> line.StartOffset
                     "EndOffset" ==> line.EndOffset
                     "BlockY" ==> layout.Y
                     "BlockHeight" ==> layout.Height
                     "AvailableWidth" ==> layout.AvailableWidth
                     "Indent" ==> layout.Indent
+                    "InTable" ==> (context |> Option.bind _.TableIndex).IsSome
+                    "Table" ==> (context |> Option.bind _.TableIndex |> jsOpt)
+                    "Row" ==> (context |> Option.bind _.RowIndex |> jsOpt)
+                    "Column" ==> (context |> Option.bind _.ColumnIndex |> jsOpt)
+                    "StartRow" ==> (context |> Option.bind _.RowIndex |> jsOpt)
+                    "EndRow" ==> (context |> Option.bind _.RowIndex |> jsOpt)
+                    "MaximumRows" ==> (context |> Option.bind _.MaxRows |> jsOpt)
+                    "StartColumn" ==> (context |> Option.bind _.ColumnIndex |> jsOpt)
+                    "EndColumn" ==> (context |> Option.bind _.EndColumnIndex |> jsOpt)
+                    "MaximumColumns" ==> (context |> Option.bind _.MaxColumns |> jsOpt)
+                    "AtEndOfRowMarker" ==> false
+                    "InContentControl" ==> layout.Metadata.ContentControlId.IsSome
+                    "InFieldCode" ==> lineHasFieldCode line
+                    "InFieldResult" ==> lineHasFieldResult line
+                    "FrameIsSelected" ==> (context |> Option.map _.InTextBox |> Option.defaultValue false)
+                    "RevisionMarking" ==> editor.Handler.TrackChanges
+                    "RangeLines" ==> 1
+                    "RangePages" ==> 1
                     "Text" ==> text
                     "Segments" ==> segments
                 ])
             )
         |> List.collect id
         |> List.toArray
+
+    let getVbaLayoutLines (editor: Editor) =
+        getLayoutLines editor
 
     /// Find literal text matches across editable paragraphs.
     let findText (editor: Editor) (query: string) (matchCase: bool) =
@@ -1224,6 +1585,11 @@ module API =
             "getImageHitTest" ==> getImageHitTest
             "getLayoutSegments" ==> getLayoutSegments
             "getLayoutLines" ==> getLayoutLines
+            "getVbaLayoutLines" ==> getVbaLayoutLines
+            "getRangeInformation" ==> getRangeInformation
+            "getSelectionInformation" ==> getSelectionInformation
+            "getRangeBounds" ==> getRangeBounds
+            "computeRangeStatistics" ==> computeRangeStatistics
             "findText" ==> findText
             "selectFindMatch" ==> selectFindMatch
             "selectRevisionInfo" ==> selectRevisionInfo

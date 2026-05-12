@@ -70,10 +70,21 @@ try {
   );
   await page.evaluate(() => window.rbWordRunner.clearSelection());
   const segments = await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
+  const vbaLines = await page.evaluate(() => window.rbWordRunner.getVbaLayoutLines());
+  if (!vbaLines.length || typeof vbaLines[0].HorizontalPositionRelativeToPage !== 'number') {
+    throw new Error('VBA-style layout lines are missing Word-compatible position fields');
+  }
+  const info = await page.evaluate(line =>
+    window.rbWordRunner.getRangeInformation(line.BlockId, line.StartOffset, line.EndOffset),
+    vbaLines[0]
+  );
+  if (!info || typeof info.wdActiveEndPageNumber !== 'number') {
+    throw new Error('Range.Information-compatible query did not return page information');
+  }
   await fs.writeFile(path.join(outDir, `${outputStem}-layout.json`), JSON.stringify(segments, null, 2));
   await page.locator('#word-canvas').screenshot({ path: path.join(outDir, `${outputStem}.png`) });
   await browser.close();
-  console.log(`browser runner ok: ${segments.length} layout segments`);
+  console.log(`browser runner ok: ${segments.length} layout segments, ${vbaLines.length} VBA-style lines`);
 } finally {
   server.kill('SIGKILL');
 }

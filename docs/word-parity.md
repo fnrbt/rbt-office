@@ -72,6 +72,7 @@ For each identified bug, prefer this stricter loop:
 ## Added Tooling
 
 - `tools/word-parity/extract-word-layout.vbs` extracts Microsoft Word paragraph/line geometry to TSV, including table row/column context and Word point positions.
+- `docs/word-vba-layout-api.md` tracks the Microsoft Word VBA layout-query API surface and which parts our browser API mirrors.
 - `tools/word-parity/print-word-pdf.vbs` opens a DOCX in Word and writes a PDF.
 - `tools/word-parity/run-word-vbs-on-vm.sh` copies a VBS script and DOCX to `wordvm`, runs `cscript`, and copies the output back.
 - `tools/word-parity/run-word-vbs-task.ps1` runs the copied VBS through Windows Task Scheduler with an interactive-user token.
@@ -82,6 +83,7 @@ For each identified bug, prefer this stricter loop:
 - `tools/word-parity/compare-word-browser-layouts.mjs` runs Word TSV extraction plus browser line capture for one or more DOCX files/directories, then writes per-document layout diffs and a ranked summary.
 - `tools/word-parity/fetch-windows-fonts.sh` copies Calibri, Arial, Times New Roman, and related Windows fonts from `wordvm` into `artifacts/fonts/windows`.
 - `tools/browser-runner/` is a standalone Fable/Vite browser harness for the canvas renderer. It loads DOCX files through `Office.Formats`, imports them into `RedBat.Word.API`, exposes `window.rbWordRunner`, and can write segment JSON, line-box JSON, plus canvas screenshots through Playwright.
+- `window.rbWordRunner.getVbaLayoutLines()`, `getRangeInformation(...)`, `getSelectionInformation()`, `getRangeBounds(...)`, and `computeRangeStatistics(...)` expose VBA-style layout probes on our browser path.
 - `tools/native-runner/` is a native DOCX-to-PNG snapshot harness. It loads DOCX bytes with the native `DocxReader`, maps the typed parse tree into `RedBat.Word.Document`, renders `word-native` through `../widgets` + `../renderer`, and writes a PNG.
 - `tools/pdf-runner/` is the project PDF backend harness. It reuses the native typed DOCX import, calls `RedBat.Word.Pdf.toBytes`, and writes the resulting PDF.
 

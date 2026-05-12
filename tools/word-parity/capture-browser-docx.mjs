@@ -99,9 +99,11 @@ try {
   );
   await page.evaluate(() => window.rbWordRunner.clearSelection());
   if (outputJson) {
-    const layout = layoutMode === 'lines'
-      ? await page.evaluate(() => window.rbWordRunner.getLayoutLines())
-      : await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
+    const layout = layoutMode === 'vba' || layoutMode === 'vba-lines'
+      ? await page.evaluate(() => window.rbWordRunner.getVbaLayoutLines())
+      : layoutMode === 'lines'
+        ? await page.evaluate(() => window.rbWordRunner.getLayoutLines())
+        : await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
     await fs.writeFile(outputJson, JSON.stringify(layout, null, 2));
   }
   await page.locator('#word-canvas').screenshot({ path: outputPng });

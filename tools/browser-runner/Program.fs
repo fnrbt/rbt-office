@@ -224,6 +224,11 @@ let private boot () =
         "loadDocxUrl" ==> fun (url: string) -> loadDocxUrl state url
         "getLayoutSegments" ==> fun () -> getLayoutSegments state
         "getLayoutLines" ==> fun () -> getLayoutLines state
+        "getVbaLayoutLines" ==> fun () -> ensureEditor state |> WordApi.getVbaLayoutLines
+        "getRangeInformation" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.getRangeInformation editor blockId startOffset endOffset
+        "getSelectionInformation" ==> fun () -> ensureEditor state |> WordApi.getSelectionInformation
+        "getRangeBounds" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.getRangeBounds editor blockId startOffset endOffset
+        "computeRangeStatistics" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.computeRangeStatistics editor blockId startOffset endOffset
         "getLayoutJson" ==> fun () -> stringify (box (getLayoutSegments state))
         "getLayoutLinesJson" ==> fun () -> stringify (box (getLayoutLines state))
         "clearSelection" ==> fun () -> ensureEditor state |> WordApi.clearSelection

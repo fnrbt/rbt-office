@@ -1,10 +1,28 @@
 Option Explicit
 
 Const wdActiveEndPageNumber = 3
+Const wdActiveEndAdjustedPageNumber = 1
+Const wdActiveEndSectionNumber = 2
+Const wdNumberOfPagesInDocument = 4
 Const wdHorizontalPositionRelativeToPage = 5
 Const wdVerticalPositionRelativeToPage = 6
+Const wdHorizontalPositionRelativeToTextBoundary = 7
+Const wdVerticalPositionRelativeToTextBoundary = 8
+Const wdFirstCharacterColumnNumber = 9
 Const wdFirstCharacterLineNumber = 10
 Const wdWithInTable = 12
+Const wdStartOfRangeRowNumber = 13
+Const wdEndOfRangeRowNumber = 14
+Const wdMaximumNumberOfRows = 15
+Const wdStartOfRangeColumnNumber = 16
+Const wdEndOfRangeColumnNumber = 17
+Const wdMaximumNumberOfColumns = 18
+Const wdAtEndOfRowMarker = 31
+Const wdInContentControl = 46
+Const wdInFieldCode = 44
+Const wdInFieldResult = 45
+Const wdStatisticLines = 1
+Const wdStatisticPages = 2
 Const wdPrintView = 3
 Const wdDoNotSaveChanges = 0
 Const wdAlertsNone = 0
@@ -51,6 +69,24 @@ outFile.WriteLine _
   "y" & vbTab & _
   "lastX" & vbTab & _
   "lastY" & vbTab & _
+  "adjustedPage" & vbTab & _
+  "section" & vbTab & _
+  "pageCount" & vbTab & _
+  "textBoundaryX" & vbTab & _
+  "textBoundaryY" & vbTab & _
+  "firstCharColumn" & vbTab & _
+  "startRow" & vbTab & _
+  "endRow" & vbTab & _
+  "maxRows" & vbTab & _
+  "startColumn" & vbTab & _
+  "endColumn" & vbTab & _
+  "maxColumns" & vbTab & _
+  "atEndOfRowMarker" & vbTab & _
+  "inContentControl" & vbTab & _
+  "inFieldCode" & vbTab & _
+  "inFieldResult" & vbTab & _
+  "rangeLines" & vbTab & _
+  "rangePages" & vbTab & _
   "inTable" & vbTab & _
   "table" & vbTab & _
   "row" & vbTab & _
@@ -207,6 +243,16 @@ Function SafeInfo(rangeObj, infoKind)
   On Error GoTo 0
 End Function
 
+Function SafeStatistic(rangeObj, statisticKind)
+  On Error Resume Next
+  SafeStatistic = rangeObj.ComputeStatistics(statisticKind)
+  If Err.Number <> 0 Then
+    SafeStatistic = ""
+    Err.Clear
+  End If
+  On Error GoTo 0
+End Function
+
 Function SafeStyleName(paragraph)
   On Error Resume Next
   SafeStyleName = paragraph.Range.Style.NameLocal
@@ -264,6 +310,33 @@ Function TableColumnForParagraph(paragraph)
 End Function
 
 Sub WriteLine(fileObj, docObj, docPath, paragraph, paragraphIndex, pageNum, lineNum, startOffset, endOffset, x, y, lastX, lastY, lineText)
+  Dim lineRange
+  Set lineRange = docObj.Range(paragraph.Range.Start + startOffset, paragraph.Range.Start + endOffset)
+
+  Dim adjustedPage, sectionNumber, pageCount, textBoundaryX, textBoundaryY, firstCharColumn
+  adjustedPage = SafeInfo(lineRange, wdActiveEndAdjustedPageNumber)
+  sectionNumber = SafeInfo(lineRange, wdActiveEndSectionNumber)
+  pageCount = SafeInfo(lineRange, wdNumberOfPagesInDocument)
+  textBoundaryX = SafeInfo(lineRange, wdHorizontalPositionRelativeToTextBoundary)
+  textBoundaryY = SafeInfo(lineRange, wdVerticalPositionRelativeToTextBoundary)
+  firstCharColumn = SafeInfo(lineRange, wdFirstCharacterColumnNumber)
+
+  Dim startRow, endRow, maxRows, startColumn, endColumn, maxColumns
+  startRow = SafeInfo(lineRange, wdStartOfRangeRowNumber)
+  endRow = SafeInfo(lineRange, wdEndOfRangeRowNumber)
+  maxRows = SafeInfo(lineRange, wdMaximumNumberOfRows)
+  startColumn = SafeInfo(lineRange, wdStartOfRangeColumnNumber)
+  endColumn = SafeInfo(lineRange, wdEndOfRangeColumnNumber)
+  maxColumns = SafeInfo(lineRange, wdMaximumNumberOfColumns)
+
+  Dim atEndOfRowMarker, inContentControl, inFieldCode, inFieldResult, rangeLines, rangePages
+  atEndOfRowMarker = SafeInfo(lineRange, wdAtEndOfRowMarker)
+  inContentControl = SafeInfo(lineRange, wdInContentControl)
+  inFieldCode = SafeInfo(lineRange, wdInFieldCode)
+  inFieldResult = SafeInfo(lineRange, wdInFieldResult)
+  rangeLines = SafeStatistic(lineRange, wdStatisticLines)
+  rangePages = SafeStatistic(lineRange, wdStatisticPages)
+
   Dim inTable, tableIndex, rowIndex, columnIndex, styleName
   inTable = SafeInfo(paragraph.Range, wdWithInTable)
   tableIndex = TableIndexForParagraph(docObj, paragraph)
@@ -282,6 +355,24 @@ Sub WriteLine(fileObj, docObj, docPath, paragraph, paragraphIndex, pageNum, line
     Tsv(CStr(y)) & vbTab & _
     Tsv(CStr(lastX)) & vbTab & _
     Tsv(CStr(lastY)) & vbTab & _
+    Tsv(CStr(adjustedPage)) & vbTab & _
+    Tsv(CStr(sectionNumber)) & vbTab & _
+    Tsv(CStr(pageCount)) & vbTab & _
+    Tsv(CStr(textBoundaryX)) & vbTab & _
+    Tsv(CStr(textBoundaryY)) & vbTab & _
+    Tsv(CStr(firstCharColumn)) & vbTab & _
+    Tsv(CStr(startRow)) & vbTab & _
+    Tsv(CStr(endRow)) & vbTab & _
+    Tsv(CStr(maxRows)) & vbTab & _
+    Tsv(CStr(startColumn)) & vbTab & _
+    Tsv(CStr(endColumn)) & vbTab & _
+    Tsv(CStr(maxColumns)) & vbTab & _
+    Tsv(CStr(atEndOfRowMarker)) & vbTab & _
+    Tsv(CStr(inContentControl)) & vbTab & _
+    Tsv(CStr(inFieldCode)) & vbTab & _
+    Tsv(CStr(inFieldResult)) & vbTab & _
+    Tsv(CStr(rangeLines)) & vbTab & _
+    Tsv(CStr(rangePages)) & vbTab & _
     Tsv(CStr(inTable)) & vbTab & _
     Tsv(tableIndex) & vbTab & _
     Tsv(rowIndex) & vbTab & _

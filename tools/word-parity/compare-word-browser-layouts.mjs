@@ -178,10 +178,15 @@ function parseWordTsv(file) {
     const y = num(item.y);
     const lastX = num(item.lastX);
     const lastY = num(item.lastY);
+    const textBoundaryX = num(item.textBoundaryX);
+    const textBoundaryY = num(item.textBoundaryY);
     const text = item.text ?? '';
     return {
       index,
       page: int(item.page),
+      adjustedPage: int(item.adjustedPage || item.page),
+      section: int(item.section),
+      pageCount: int(item.pageCount),
       paragraph: int(item.paragraph),
       line: int(item.line),
       xPt: x,
@@ -190,6 +195,21 @@ function parseWordTsv(file) {
       y: y * 96 / 72,
       lastX: Number.isFinite(lastX) ? lastX * 96 / 72 : NaN,
       lastY: Number.isFinite(lastY) ? lastY * 96 / 72 : NaN,
+      textBoundaryX: Number.isFinite(textBoundaryX) ? textBoundaryX * 96 / 72 : NaN,
+      textBoundaryY: Number.isFinite(textBoundaryY) ? textBoundaryY * 96 / 72 : NaN,
+      firstCharColumn: int(item.firstCharColumn),
+      startRow: tableCellValue(item.startRow),
+      endRow: tableCellValue(item.endRow),
+      maxRows: tableCellValue(item.maxRows),
+      startColumn: tableCellValue(item.startColumn),
+      endColumn: tableCellValue(item.endColumn),
+      maxColumns: tableCellValue(item.maxColumns),
+      atEndOfRowMarker: item.atEndOfRowMarker,
+      inContentControl: item.inContentControl,
+      inFieldCode: item.inFieldCode,
+      inFieldResult: item.inFieldResult,
+      rangeLines: int(item.rangeLines),
+      rangePages: int(item.rangePages),
       inTable: item.inTable,
       table: item.table,
       row: item.row,
@@ -206,6 +226,9 @@ function normalizeBrowserLine(line, index) {
   return {
     index,
     page: int(line.Page),
+    adjustedPage: int(line.AdjustedPage ?? line.Page),
+    section: int(line.Section),
+    pageCount: int(line.PageCount),
     blockId: line.BlockId ?? '',
     blockIndex: int(line.BlockIndex),
     lineIndex: int(line.LineIndex),
@@ -214,6 +237,26 @@ function normalizeBrowserLine(line, index) {
     absoluteY: num(line.Y),
     width: num(line.Width),
     height: num(line.Height),
+    textBoundaryX: num(line.HorizontalPositionRelativeToTextBoundary),
+    textBoundaryY: num(line.VerticalPositionRelativeToTextBoundary),
+    firstCharLine: int(line.FirstCharacterLineNumber),
+    firstCharColumn: int(line.FirstCharacterColumnNumber),
+    inTable: line.InTable,
+    table: line.Table ?? '',
+    row: line.Row ?? '',
+    column: line.Column ?? '',
+    startRow: line.StartRow ?? '',
+    endRow: line.EndRow ?? '',
+    maxRows: line.MaximumRows ?? '',
+    startColumn: line.StartColumn ?? '',
+    endColumn: line.EndColumn ?? '',
+    maxColumns: line.MaximumColumns ?? '',
+    atEndOfRowMarker: line.AtEndOfRowMarker,
+    inContentControl: line.InContentControl,
+    inFieldCode: line.InFieldCode,
+    inFieldResult: line.InFieldResult,
+    rangeLines: int(line.RangeLines),
+    rangePages: int(line.RangePages),
     startOffset: int(line.StartOffset),
     endOffset: int(line.EndOffset),
     text,
@@ -268,14 +311,23 @@ function buildDiffs(pairs) {
     const dx = pair.browser.x - pair.word.x;
     const dy = pair.browser.y - pair.word.y;
     const gapDy = browserGap - wordGap;
+    const textBoundaryDx = pair.browser.textBoundaryX - pair.word.textBoundaryX;
+    const textBoundaryDy = pair.browser.textBoundaryY - pair.word.textBoundaryY;
     const score = Math.max(abs(dx), abs(dy), Number.isFinite(gapDy) ? abs(gapDy) : 0);
     return {
       wordIndex: pair.word.index,
       browserIndex: pair.browser.index,
       wordPage: pair.word.page,
       browserPage: pair.browser.page,
+      wordAdjustedPage: pair.word.adjustedPage,
+      browserAdjustedPage: pair.browser.adjustedPage,
+      wordSection: pair.word.section,
+      browserSection: pair.browser.section,
+      wordPageCount: pair.word.pageCount,
+      browserPageCount: pair.browser.pageCount,
       wordParagraph: pair.word.paragraph,
       wordLine: pair.word.line,
+      browserFirstCharLine: pair.browser.firstCharLine,
       browserBlock: pair.browser.blockId,
       browserLine: pair.browser.lineIndex,
       wordX: pair.word.x,
@@ -284,14 +336,48 @@ function buildDiffs(pairs) {
       browserY: pair.browser.y,
       dx,
       dy,
+      wordTextBoundaryX: pair.word.textBoundaryX,
+      wordTextBoundaryY: pair.word.textBoundaryY,
+      browserTextBoundaryX: pair.browser.textBoundaryX,
+      browserTextBoundaryY: pair.browser.textBoundaryY,
+      textBoundaryDx,
+      textBoundaryDy,
+      wordFirstCharColumn: pair.word.firstCharColumn,
+      browserFirstCharColumn: pair.browser.firstCharColumn,
       wordGap,
       browserGap,
       gapDy,
       score,
       inTable: pair.word.inTable,
+      browserInTable: pair.browser.inTable,
       table: pair.word.table,
+      browserTable: pair.browser.table,
       row: pair.word.row,
+      browserRow: pair.browser.row,
       column: pair.word.column,
+      browserColumn: pair.browser.column,
+      wordStartRow: pair.word.startRow,
+      browserStartRow: pair.browser.startRow,
+      wordEndRow: pair.word.endRow,
+      browserEndRow: pair.browser.endRow,
+      wordMaxRows: pair.word.maxRows,
+      browserMaxRows: pair.browser.maxRows,
+      wordStartColumn: pair.word.startColumn,
+      browserStartColumn: pair.browser.startColumn,
+      wordEndColumn: pair.word.endColumn,
+      browserEndColumn: pair.browser.endColumn,
+      wordMaxColumns: pair.word.maxColumns,
+      browserMaxColumns: pair.browser.maxColumns,
+      wordInContentControl: pair.word.inContentControl,
+      browserInContentControl: pair.browser.inContentControl,
+      wordInFieldCode: pair.word.inFieldCode,
+      browserInFieldCode: pair.browser.inFieldCode,
+      wordInFieldResult: pair.word.inFieldResult,
+      browserInFieldResult: pair.browser.inFieldResult,
+      wordRangeLines: pair.word.rangeLines,
+      browserRangeLines: pair.browser.rangeLines,
+      wordRangePages: pair.word.rangePages,
+      browserRangePages: pair.browser.rangePages,
       style: pair.word.style,
       wordText: pair.word.text,
       browserText: pair.browser.text,
@@ -303,8 +389,19 @@ function writeReport(file, rows) {
   const headers = [
     'wordIndex', 'browserIndex', 'wordPage', 'browserPage', 'wordParagraph', 'wordLine',
     'browserBlock', 'browserLine', 'wordX', 'wordY', 'browserX', 'browserY',
-    'dx', 'dy', 'wordGap', 'browserGap', 'gapDy', 'score',
-    'inTable', 'table', 'row', 'column', 'style', 'wordText', 'browserText',
+    'dx', 'dy', 'wordTextBoundaryX', 'wordTextBoundaryY', 'browserTextBoundaryX',
+    'browserTextBoundaryY', 'textBoundaryDx', 'textBoundaryDy',
+    'wordFirstCharColumn', 'browserFirstCharColumn', 'wordGap', 'browserGap', 'gapDy', 'score',
+    'wordAdjustedPage', 'browserAdjustedPage', 'wordSection', 'browserSection',
+    'wordPageCount', 'browserPageCount', 'browserFirstCharLine',
+    'inTable', 'browserInTable', 'table', 'browserTable', 'row', 'browserRow',
+    'column', 'browserColumn', 'wordStartRow', 'browserStartRow', 'wordEndRow',
+    'browserEndRow', 'wordMaxRows', 'browserMaxRows', 'wordStartColumn',
+    'browserStartColumn', 'wordEndColumn', 'browserEndColumn', 'wordMaxColumns',
+    'browserMaxColumns', 'wordInContentControl', 'browserInContentControl',
+    'wordInFieldCode', 'browserInFieldCode', 'wordInFieldResult', 'browserInFieldResult',
+    'wordRangeLines', 'browserRangeLines', 'wordRangePages', 'browserRangePages',
+    'style', 'wordText', 'browserText',
   ];
   fs.writeFileSync(file, toTsv(headers, rows), 'utf8');
 }
@@ -340,6 +437,11 @@ function sanitize(name) {
 
 function cleanCell(value) {
   return String(value).replace(/[\t\r\n]+/g, ' ');
+}
+
+function tableCellValue(value) {
+  const text = String(value ?? '');
+  return text === '-1' ? '' : text;
 }
 
 function num(value) {
