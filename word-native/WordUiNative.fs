@@ -14,33 +14,42 @@ let withOpenMenu = OfficeShell.withOpenMenu
 
 let private palette = OfficeShell.palette WordUi.chrome
 
-/// Word's classic horizontal ruler — the strip above the document area.
+let private tickMark = Color.rgb 154uy 160uy 166uy
+let private subTick  = Color.rgb 218uy 220uy 224uy
+
+/// Light, flat ruler with subtle ticks. Matches the airy chrome aesthetic.
 let ruler =
-    sizedH 18.0 (
+    sizedH 22.0 (
         stack [
-            box (Color.rgb 250uy 248uy 242uy) empty
+            box palette.Chrome empty
+            canvas palette.WindowWidth 22.0 (fun _ h ->
+                [ FillRect(Renderer.Types.rect 0.0 (h - 1.0) palette.WindowWidth 1.0, palette.ChromeMid) ])
             row [
-                sizedW 38.0 (box palette.Chrome empty)
-                canvas palette.DocumentTrackWidth 18.0 (fun w _ ->
-                    [ for x in 0.0 .. 8.0 .. w -> FillRect(Renderer.Types.rect x 8.0 1.0 5.0, Color.rgb 200uy 194uy 183uy)
-                      for x in 0.0 .. 40.0 .. w -> FillRect(Renderer.Types.rect x 3.0 1.0 12.0, Color.rgb 140uy 140uy 140uy) ])
+                sizedW ((palette.WindowWidth - palette.DocumentTrackWidth) / 2.0) (box palette.Chrome empty)
+                canvas palette.DocumentTrackWidth 22.0 (fun w _ ->
+                    [ for x in 0.0 .. 8.0 .. w  -> FillRect(Renderer.Types.rect x 12.0 1.0 4.0, subTick)
+                      for x in 0.0 .. 40.0 .. w -> FillRect(Renderer.Types.rect x 8.0 1.0 9.0, tickMark) ])
             ]
         ])
 
-/// Static placeholder workspace — a blank page on the paper desk. Used when
-/// no real document widget has been provided.
+/// Static placeholder workspace — a blank page on the paper desk.
 let placeholderWorkspace =
     box palette.PaperDesk (
-        pad 20.0 (
+        pad 24.0 (
             center (
-                filtered [] (
+                filtered [DropShadow(0.0, 1.0, 4, palette.Shadow)] (
                     border palette.Border 1.0 0.0 (
-                        sized palette.DocumentTrackWidth 360.0 (box Palette.white empty))))))
+                        sized palette.DocumentTrackWidth 1056.0 (box Palette.white empty))))))
 
-/// Wrap an editor surface in the paper-desk background so it matches the
-/// rest of the Word chrome aesthetic.
+/// Wrap an editor surface in the paper-desk background. Adds the soft shadow
+/// and hairline border that make the page feel like a document floating on
+/// the desk (Google-Docs style).
 let documentWorkspace (editor: Widget) =
-    box palette.PaperDesk (pad 12.0 (center editor))
+    box palette.PaperDesk (
+        pad 24.0 (
+            center (
+                filtered [DropShadow(0.0, 1.0, 4, palette.Shadow)] (
+                    border palette.Border 1.0 0.0 editor))))
 
 let viewWith (renderState: ShellRenderState)
              (title: string)

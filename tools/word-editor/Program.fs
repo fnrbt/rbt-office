@@ -180,8 +180,10 @@ type AppState = {
     mutable LastHover: (bool -> unit) option
     mutable LastMouseX: float
     mutable LastMouseY: float
+    mutable LastCmds: Cmd list
     Window: IWindow
     EditorState: Editor.WordEditorState
+    ControlServer: ControlServer.ControlServer
 }
 
 let private handleInput (state: AppState) (ev: InputEvent) =
@@ -266,6 +268,7 @@ let private handleInput (state: AppState) (ev: InputEvent) =
         state.LastHover <- None
 
 let private renderFrame (state: AppState) (buildWidget: unit -> Widget) (w: int) (h: int) : Cmd list =
+    state.ControlServer.ProcessCommands()
     try
         state.Width <- w
         state.Height <- h
@@ -282,7 +285,9 @@ let private renderFrame (state: AppState) (buildWidget: unit -> Widget) (w: int)
         let mainCmds = paint root
         let overlayCmds = getOverlays() |> List.collect paint
         let bg = Composit.Ui.OfficeShell.palette WordUi.chrome
-        [ Clear bg.PaperDesk; yield! mainCmds; yield! overlayCmds ]
+        let cmds = [ Clear bg.PaperDesk; yield! mainCmds; yield! overlayCmds ]
+        state.LastCmds <- cmds
+        cmds
     with ex ->
         eprintfn "[render] %O" ex
         [ Clear (Color.rgb 255uy 0uy 0uy) ]
@@ -320,13 +325,15 @@ let main argv =
 
     let chrome = WordUi.chrome
     let workspaceWidth = chrome.DocumentTrackWidth
-    // Chrome bands: title 22 + menu 24 + toolbar 52 + ruler 18 + status 24, plus desk padding.
-    let bodyOverhead = 22.0 + 24.0 + 52.0 + 18.0 + 24.0 + 24.0
+    // Chrome bands: title 32 + menu 32 + toolbar (32 per row * 2) + ruler 22 + status 22, plus desk padding 48.
+    let bodyOverhead = 32.0 + 32.0 + 64.0 + 22.0 + 22.0 + 48.0
 
     let initialWidth = int chrome.WindowWidth
     let initialHeight = 1000
     let x11win = X11Window(title, initialWidth, initialHeight)
     let window = x11win :> IWindow
+
+    let controlServer = new ControlServer.ControlServer()
 
     let appState = {
         ShiftDown = false; CtrlDown = false; AltDown = false
@@ -334,8 +341,10 @@ let main argv =
         Width = initialWidth; Height = initialHeight
         LastHover = None
         LastMouseX = 0.0; LastMouseY = 0.0
+        LastCmds = []
         Window = window
         EditorState = editor
+        ControlServer = controlServer
     }
 
     let buildWidget () =
@@ -351,9 +360,31 @@ let main argv =
     Platform.onTextInputBlur <- fun () -> ()
     Platform.onCursorRectChange <- fun _ -> ()
 
+    // Control server for screenshots / synthetic input (parity with widgets/x11-viewer).
+    let rasterBackend = Raster.create()
+    controlServer.ScreenshotProvider <- Some (fun () ->
+        let cmds = appState.LastCmds
+        if cmds.IsEmpty then Array.empty
+        else
+            rasterBackend.Init appState.Width appState.Height
+            rasterBackend.Submit cmds
+            let fb = rasterBackend.Finish()
+            PngEncode.encode fb)
+    controlServer.ClickAtHandler <- Some (fun (x, y) ->
+        handleInput appState (MouseButton(0, true, x, y))
+        handleInput appState (MouseButton(0, false, x, y)))
+    controlServer.SendKeyHandler <- Some (fun keycode pressed ->
+        if pressed then handleInput appState (KeyDown(keycode, 0u))
+        else handleInput appState (KeyUp(keycode, 0u)))
+    controlServer.ExitHandler <- Some (fun () -> window.Close())
+    controlServer.OnCommandReceived <- Some (fun () -> window.RequestRedraw())
+    controlServer.Start()
+
     Focus.request editor.FocusId
 
     window.Run(
         (fun ev -> handleInput appState ev),
         (fun w h -> renderFrame appState buildWidget w h))
+
+    (controlServer :> System.IDisposable).Dispose()
     0

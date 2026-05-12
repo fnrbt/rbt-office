@@ -45,6 +45,7 @@ module Ui =
         | ToolbarButton of ButtonSpec
         | ToolbarSelect of SelectSpec
         | ToolbarInput of InputSpec
+        | ToolbarSeparator
 
     type ToolbarRowSpec = {
         Label: string
@@ -115,3 +116,5 @@ module Ui =
 
     let toolbarTextInput testId value action =
         ToolbarInput { TestId = testId; Kind = TextInput; Value = value; Min = None; Max = None; Action = action }
+
+    let toolbarSep = ToolbarSeparator

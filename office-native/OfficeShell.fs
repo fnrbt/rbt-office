@@ -3,6 +3,7 @@ module Composit.Ui.OfficeShell
 open Renderer
 open Composit.Ui.Theme
 open Composit.Ui.Widget
+open Composit.Ui.Reactive
 open RedBat.Office.Ui
 
 /// Shared chrome renderer used by every native Office app entry point.
@@ -10,12 +11,22 @@ open RedBat.Office.Ui
 /// (testId -> float) menu-x-offsets + (testId -> bool -> bool) pressed
 /// predicate + title string + status text getter + document workspace widget.
 
+/// Mutable, signal-backed state owned by the chrome itself. Apps construct
+/// one with `createState ()` and pass it to `view`; the chrome reads and
+/// writes the open-menu signal in response to menu-button clicks.
 type ShellRenderState = {
-    OpenMenuTestId: string option
+    OpenMenu: Signal<string option>
 }
 
-let closed = { OpenMenuTestId = None }
-let withOpenMenu testId = { OpenMenuTestId = Some testId }
+let createState () : ShellRenderState = { OpenMenu = signal None }
+
+/// Back-compat constants used by older callers that built ShellRenderState
+/// as a static record. These now create fresh signal-backed states.
+let closed : ShellRenderState = createState ()
+let withOpenMenu (testId: string) : ShellRenderState =
+    let state = createState ()
+    state.OpenMenu.Value <- Some testId
+    state
 
 let parseHexColor (value: string) =
     let parseByte (s: string) = System.Convert.ToByte(s, 16)
@@ -75,45 +86,44 @@ let palette (spec: ChromeSpec) : ChromePalette = {
     Shadow = Color.rgba 0uy 0uy 0uy 65uy
 }
 
-let private chromeBand (p: ChromePalette) top bottom height child =
+/// Flat chrome band. Uses the palette's ChromeTop as the fill (assumes the
+/// app supplied matching Top/Bottom for a single-tone look); the separator
+/// hairline is drawn by `chromeBandWithBorder` below.
+let private chromeBand (p: ChromePalette) top _bottom height child =
     sizedW p.WindowWidth (
         stack [
             canvas p.WindowWidth height (fun w h ->
-                [ FillRect(Renderer.Types.rect 0.0 0.0 w (h / 2.0), top)
-                  FillRect(Renderer.Types.rect 0.0 (h / 2.0) w (h / 2.0), bottom) ])
+                [ FillRect(Renderer.Types.rect 0.0 0.0 w h, top) ])
+            child
+        ])
+
+/// Same as chromeBand but draws a 1px hairline along the bottom edge.
+let private chromeBandWithBorder (p: ChromePalette) fill height child =
+    sizedW p.WindowWidth (
+        stack [
+            canvas p.WindowWidth height (fun w h ->
+                [ FillRect(Renderer.Types.rect 0.0 0.0 w h, fill)
+                  FillRect(Renderer.Types.rect 0.0 (h - 1.0) w 1.0, p.ChromeMid) ])
             child
         ])
 
 let private toolCellBg (p: ChromePalette) isActive =
-    canvas 24.0 22.0 (fun w h ->
-        let fillTop, fillBottom, line =
-            if isActive then
-                p.Pressed, Color.rgb 195uy 217uy 247uy, Color.rgb 126uy 166uy 222uy
-            else
-                let clear = Color.rgba 255uy 255uy 255uy 0uy
-                clear, clear, clear
-        [ FillRect(Renderer.Types.rect 0.0 0.0 w (h / 2.0), fillTop)
-          FillRect(Renderer.Types.rect 0.0 (h / 2.0) w (h / 2.0), fillBottom)
-          FillRect(Renderer.Types.rect 0.0 0.0 w 1.0, line)
-          FillRect(Renderer.Types.rect 0.0 0.0 1.0 h, line)
-          FillRect(Renderer.Types.rect (w - 1.0) 0.0 1.0 h, line)
-          FillRect(Renderer.Types.rect 0.0 (h - 1.0) w 1.0, line) ])
+    canvas 28.0 28.0 (fun w h ->
+        if isActive then
+            [ FillRect(Renderer.Types.rect 0.0 0.0 w h, p.Pressed) ]
+        else
+            [ FillRect(Renderer.Types.rect 0.0 0.0 w h, Color.rgba 255uy 255uy 255uy 0uy) ])
 
 let private menuButtonBg (p: ChromePalette) isOpen =
-    canvas 1.0 21.0 (fun w h ->
+    canvas 1.0 26.0 (fun w h ->
         if isOpen then
-            let line = Color.rgb 126uy 166uy 222uy
-            [ FillRect(Renderer.Types.rect 0.0 0.0 w (h / 2.0), p.HotTop)
-              FillRect(Renderer.Types.rect 0.0 (h / 2.0) w (h / 2.0), p.HotBottom)
-              FillRect(Renderer.Types.rect 0.0 0.0 w 1.0, line)
-              FillRect(Renderer.Types.rect 0.0 0.0 1.0 h, line)
-              FillRect(Renderer.Types.rect (w - 1.0) 0.0 1.0 h, line) ]
+            [ FillRect(Renderer.Types.rect 0.0 0.0 w h, p.Pressed) ]
         else
             [ FillRect(Renderer.Types.rect 0.0 0.0 w h, Palette.transparent) ])
 
 let private flatToolbarCell (p: ChromePalette) isActive content action =
     clickable action (
-        sized 24.0 22.0 (
+        sized 28.0 28.0 (
             stack [
                 toolCellBg p isActive
                 center content
@@ -299,32 +309,24 @@ let private menuButton (p: ChromePalette) label isOpen action =
     clickable action (
         stack [
             menuButtonBg p isOpen
-            padXY 7.0 4.0 (textStyled Font.sm p.Text label)
+            padXY 12.0 6.0 (textStyled Font.sm p.Text label)
         ])
 
 let private comboControl (p: ChromePalette) label action =
     clickable action (
         stack [
-            canvas 1.0 22.0 (fun w h ->
-                [ FillRect(Renderer.Types.rect 0.0 0.0 w h, p.Input)
-                  FillRect(Renderer.Types.rect 0.0 0.0 w 1.0, p.ChromeMid)
-                  FillRect(Renderer.Types.rect 0.0 0.0 1.0 h, p.ChromeMid)
-                  FillRect(Renderer.Types.rect 0.0 (h - 1.0) w 1.0, p.ChromeMid) ])
-            border p.ChromeDark 1.0 0.0 (
-                padXY 5.0 3.0 (textStyled Font.sm p.Text label))
+            box p.Input empty
+            border p.Border 1.0 4.0 (
+                padXY 8.0 5.0 (textStyled Font.sm p.Text label))
         ])
 
 let private colorControl (p: ChromePalette) value action =
     clickable action (
         stack [
-            canvas 1.0 20.0 (fun w h ->
-                [ FillRect(Renderer.Types.rect 0.0 0.0 w h, p.Input)
-                  FillRect(Renderer.Types.rect 0.0 0.0 w 1.0, p.ChromeMid)
-                  FillRect(Renderer.Types.rect 0.0 0.0 1.0 h, p.ChromeMid)
-                  FillRect(Renderer.Types.rect 0.0 (h - 1.0) w 1.0, p.ChromeMid) ])
-            border p.ChromeDark 1.0 0.0 (
-                padXY 5.0 4.0 (
-                    sized 20.0 9.0 (box (parseHexColor value) empty)))
+            box p.Input empty
+            border p.Border 1.0 4.0 (
+                padXY 4.0 4.0 (
+                    sized 20.0 16.0 (box (parseHexColor value) empty)))
         ])
 
 /// Per-app configuration handed to `view`. ToolbarGlyph maps a testId to one
@@ -344,6 +346,10 @@ type ShellConfig = {
     Workspace: Widget
 }
 
+/// Thin vertical separator between toolbar groups.
+let private toolbarSeparator (p: ChromePalette) =
+    sized 1.0 18.0 (box p.ChromeMid empty)
+
 let private renderToolbarControl (p: ChromePalette) (config: ShellConfig) = function
     | ToolbarButton spec ->
         let isActive = spec.IsActive |> Option.map (fun active -> active()) |> Option.defaultValue false
@@ -362,99 +368,118 @@ let private renderToolbarControl (p: ChromePalette) (config: ShellConfig) = func
         | NumberInput -> comboControl p (spec.Value()) (fun () -> spec.Action(spec.Value()))
         | ColorInput -> colorControl p (spec.Value()) (fun () -> spec.Action(spec.Value()))
         | TextInput -> comboControl p (spec.Value()) (fun () -> spec.Action(spec.Value()))
-
-let private toolbarGrip (p: ChromePalette) =
-    sized 7.0 18.0 (
-        stack [
-            box p.Chrome empty
-            canvas 7.0 18.0 (fun _ _ ->
-                [ FillRect(Renderer.Types.rect 1.0 2.0 1.0 14.0, p.ChromeLight)
-                  FillRect(Renderer.Types.rect 3.0 2.0 1.0 14.0, p.ChromeMid)
-                  for y in 4.0 .. 4.0 .. 14.0 do FillRect(Renderer.Types.rect 1.0 y 4.0 1.0, p.ChromeDark) ])
-        ])
+    | ToolbarSeparator -> padXY 4.0 0.0 (toolbarSeparator p)
 
 let private renderToolbarRow (p: ChromePalette) (config: ShellConfig) (row: ToolbarRowSpec) =
-    sizedH 24.0 (
-        rowAlign MStart CCenter 1.0 (toolbarGrip p :: (row.Controls |> List.map (renderToolbarControl p config))))
+    sizedH 32.0 (
+        padXY 4.0 2.0 (
+            rowAlign MStart CCenter 2.0 (row.Controls |> List.map (renderToolbarControl p config))))
 
 let private renderMenuButton (p: ChromePalette) (renderState: ShellRenderState) (spec: MenuSpec) =
-    let isOpen = renderState.OpenMenuTestId = Some spec.TestId
-    menuButton p spec.Label isOpen ignore
+    let isOpen = renderState.OpenMenu.Value = Some spec.TestId
+    let toggle () =
+        if isOpen then renderState.OpenMenu.Value <- None
+        else renderState.OpenMenu.Value <- Some spec.TestId
+    menuButton p spec.Label isOpen toggle
 
-let private renderMenuPanel (p: ChromePalette) (spec: MenuSpec) =
+let private renderMenuPanel (p: ChromePalette) (renderState: ShellRenderState) (spec: MenuSpec) =
     let gutterWidth = p.MenuGutterWidth
+    let itemHeight = 30.0
 
     let renderItem (item: MenuItemSpec) =
         let isChecked = item.IsChecked |> Option.map (fun check -> check()) |> Option.defaultValue false
-        clickable item.Action (
-            sizedH 25.0 (
+        let activate () =
+            item.Action ()
+            renderState.OpenMenu.Value <- None
+        clickable activate (
+            sizedH itemHeight (
                 stack [
-                    empty
+                    box p.MenuPanel empty
                     rowAlign MStart CCenter 0.0 [
                         sizedW gutterWidth (
-                            stack [
-                                box p.MenuGutter empty
-                                center (if isChecked then Icon.check 12.0 p.Text else empty)
-                            ])
+                            center (if isChecked then Icon.check 12.0 p.Text else empty))
                         sizedW (p.MenuWidth - gutterWidth - 8.0) (
-                            padXY 10.0 0.0 (textStyled Font.sm p.Text item.Label))
+                            padXY 8.0 0.0 (textStyled Font.sm p.Text item.Label))
                     ]
                 ]))
 
     let menuContents = spec.Items |> List.map renderItem
-    let panelHeight = float spec.Items.Length * 25.0 + 4.0
+    let panelHeight = float spec.Items.Length * itemHeight + 8.0
 
-    filtered [DropShadow(3.0, 4.0, 10, p.Shadow)] (
-        rounded 0.0 p.MenuPanel (
-            stack [
-                canvas p.MenuWidth panelHeight (fun w h ->
-                    [ FillRect(Renderer.Types.rect 0.0 0.0 w h, p.MenuPanel)
-                      FillRect(Renderer.Types.rect 0.0 0.0 gutterWidth h, p.MenuGutter) ])
-                border p.ChromeLight 1.0 0.0 empty
-                border p.Border 1.0 0.0 (
-                    pad 2.0 (columnSpaced 0.0 menuContents))
-                canvas p.MenuWidth panelHeight (fun w h ->
-                    [ FillRect(Renderer.Types.rect 1.0 1.0 (w - 2.0) 1.0, Color.rgba 255uy 255uy 255uy 160uy)
-                      FillRect(Renderer.Types.rect gutterWidth 4.0 1.0 (h - 8.0), Color.rgb 226uy 232uy 242uy) ])
-            ]))
+    filtered [DropShadow(0.0, 4.0, 12, p.Shadow)] (
+        rounded 4.0 p.MenuPanel (
+            border p.Border 1.0 4.0 (
+                pad 4.0 (columnSpaced 0.0 menuContents))))
 
-/// Assemble the chrome around the caller's workspace widget.
+/// Assemble the chrome around the caller's workspace widget. Layout:
+///
+///   ┌─────────────────────────────────┐
+///   │  Title bar         (32, white)  │
+///   ├─────────────────────────────────┤  ← hairline
+///   │  Menu bar          (32, white)  │
+///   ├─────────────────────────────────┤  ← hairline
+///   │  Toolbar (n rows)  (32 each)    │
+///   ├─────────────────────────────────┤  ← hairline
+///   │  Workspace                       │
+///   ├─────────────────────────────────┤  ← hairline
+///   │  Status bar        (22, white)  │
+///   └─────────────────────────────────┘
 let view (renderState: ShellRenderState) (config: ShellConfig) =
     let p = palette config.Chrome
-    let openMenu = renderState.OpenMenuTestId |> Option.bind (fun testId -> config.Menus |> List.tryFind (fun menu -> menu.TestId = testId))
+    let titleHeight = 32.0
+    let menuHeight  = 32.0
+    let toolbarRowHeight = 32.0
+    let statusHeight = 22.0
+    let menuBarTop = titleHeight
+
+    let openMenu () =
+        renderState.OpenMenu.Value
+        |> Option.bind (fun testId -> config.Menus |> List.tryFind (fun menu -> menu.TestId = testId))
+
+    let closeMenu () = renderState.OpenMenu.Value <- None
+
     let menuOverlay =
-        match openMenu with
-        | Some menu -> overlay (offset (config.MenuLeft menu.TestId) 46.0 (sizedW p.MenuWidth (renderMenuPanel p menu)))
-        | None -> empty
-    let titleBar =
-        chromeBand p p.TitleTop p.TitleBottom 22.0 (
-            sizedH 22.0 (
-                padXY 6.0 0.0 (
-                    rowAlign MStart CCenter 0.0 [ textBoldStyled Font.sm Palette.white config.Title ])))
+        dynamic (fun () ->
+            match openMenu () with
+            | Some menu ->
+                stack [
+                    // Click-anywhere-outside catcher (drawn behind the panel).
+                    overlay (clickable closeMenu (sized p.WindowWidth 2000.0 empty))
+                    // The actual menu panel, positioned under the menu button.
+                    overlay (offset (config.MenuLeft menu.TestId) (menuBarTop + menuHeight) (sizedW p.MenuWidth (renderMenuPanel p renderState menu)))
+                ]
+            | None -> empty)
+
     let menuBar =
-        chromeBand p (Color.rgb 255uy 255uy 255uy) (Color.rgb 236uy 243uy 252uy) 24.0 (
-            sizedH 24.0 (
-                padXY 2.0 2.0 (
-                    rowAlign MStart CCenter 1.0 (config.Menus |> List.map (renderMenuButton p renderState)))))
+        dynamic (fun () ->
+            chromeBandWithBorder p p.ChromeTop menuHeight (
+                sizedH menuHeight (
+                    padXY 6.0 0.0 (
+                        rowAlign MStart CCenter 2.0 (config.Menus |> List.map (renderMenuButton p renderState))))))
+
+    let titleBar =
+        chromeBandWithBorder p p.ChromeTop titleHeight (
+            sizedH titleHeight (
+                padXY 14.0 0.0 (
+                    rowAlign MStart CCenter 0.0 [ textBoldStyled Font.lg p.Text config.Title ])))
+    let toolbarRowCount = max 1 (List.length config.ToolbarRows)
+    let toolbarHeight = float toolbarRowCount * toolbarRowHeight
     let toolbarBand =
-        chromeBand p (Color.rgb 255uy 255uy 255uy) (Color.rgb 226uy 238uy 251uy) 52.0 (
-            padXY 2.0 2.0 (
-                column (config.ToolbarRows |> List.map (renderToolbarRow p config))))
+        chromeBandWithBorder p p.ChromeTop toolbarHeight (
+            column (config.ToolbarRows |> List.map (renderToolbarRow p config)))
     let statusBar =
-        sizedH 24.0 (
-            chromeBand p p.Chrome p.Chrome 24.0 (
-                padXY 6.0 4.0 (textStyled Font.sm p.Text (config.StatusText()))))
+        chromeBandWithBorder p p.ChromeTop statusHeight (
+            sizedH statusHeight (
+                dynamic (fun () ->
+                    padXY 12.0 4.0 (textStyled Font.sm p.Text (config.StatusText())))))
     let windowBody =
-        filtered [DropShadow(0.0, 16.0, 38, p.Shadow)] (
-            rounded 0.0 p.Chrome (
-                border p.Border 1.0 0.0 (
-                    column [
-                        titleBar
-                        menuBar
-                        toolbarBand
-                        config.Workspace
-                        statusBar
-                    ])))
+        column [
+            titleBar
+            menuBar
+            toolbarBand
+            expanded config.Workspace
+            statusBar
+        ]
 
     sizedW p.WindowWidth (
         stack [

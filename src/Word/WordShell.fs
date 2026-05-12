@@ -78,6 +78,7 @@ module Shell =
         | ToolbarButton buttonSpec -> renderToolbarButton buttonSpec
         | ToolbarSelect selectSpec -> renderToolbarSelect selectSpec
         | ToolbarInput inputSpec -> renderToolbarInput inputSpec
+        | ToolbarSeparator -> div [ cls "word-toolbar-separator" ] []
 
     let private renderToolbarRow (rowSpec: WordUi.ToolbarRowSpec) =
         div [ cls "word-toolbar-row"; attr "data-toolbar-row" rowSpec.Label ] [

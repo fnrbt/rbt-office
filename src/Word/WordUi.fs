@@ -30,27 +30,29 @@ module Ui =
     let inline RulerTrackWidth (spec: ChromeSpec) = spec.DocumentTrackWidth
 
     let chrome : ChromeSpec = {
-        WindowWidth = 980.0
-        MenuWidth = 190.0
-        MenuGutterWidth = 30.0
-        DocumentTrackWidth = 900.0
-        TitleTop = "#2159AA"
-        TitleBottom = "#407ECE"
-        Chrome = "#F4F7FB"
+        WindowWidth = 1100.0
+        MenuWidth = 220.0
+        MenuGutterWidth = 28.0
+        DocumentTrackWidth = 816.0
+        // Flat, white-first palette. Top == Bottom on each band so the chrome
+        // looks like a single sheet of paper rather than gradient banding.
+        TitleTop = "#FFFFFF"
+        TitleBottom = "#FFFFFF"
+        Chrome = "#FFFFFF"
         ChromeTop = "#FFFFFF"
-        ChromeBottom = "#E8EFF8"
+        ChromeBottom = "#FFFFFF"
         ChromeLight = "#FFFFFF"
-        ChromeMid = "#BFCDE0"
-        ChromeDark = "#7487A0"
-        Pressed = "#D3E3F9"
-        HotTop = "#E5F1FF"
-        HotBottom = "#CDE0FB"
+        ChromeMid = "#E1E5EA"      // hairline separators
+        ChromeDark = "#B9C0C8"     // subtler than before
+        Pressed = "#E8F0FE"         // soft blue tint (Google Docs active)
+        HotTop = "#F1F3F4"          // Google-grey hover
+        HotBottom = "#F1F3F4"
         Input = "#FFFFFF"
         MenuPanel = "#FFFFFF"
-        MenuGutter = "#F6F8FC"
-        PaperDesk = "#E8EEF6"
-        Border = "#8FA2BC"
-        Text = "#111111"
+        MenuGutter = "#FFFFFF"      // no gutter color difference
+        PaperDesk = "#F8F9FA"       // very light desk
+        Border = "#DADCE0"          // Google border grey
+        Text = "#202124"            // Google text grey
     }
 
     let chromeCssVariables = [
@@ -422,45 +424,11 @@ module Ui =
         button "word-paragraph-style" "Paragraph" None actions.OpenParagraphStyle
     ]
 
+    let private sep = toolbarSep
+
+    /// Single, focused toolbar. Niche actions live in menus.
     let toolbarRows state actions = [
-        { Label = "Standard"; Controls = [
-            button "word-find-replace" "Find" None actions.OpenFindReplace
-            button "word-insert-image" "Picture" None actions.OpenImagePicker
-            button "word-image-size" "Size" None actions.OpenImageSize
-            button "word-page-setup" "Page" None actions.OpenPageSetup
-            button "word-header-footer" "Head" None actions.OpenHeaderFooter
-            button "word-insert-date-time" "Date" None actions.InsertDateTime
-            button "word-insert-page-number" "Page #" None actions.InsertPageNumber
-            button "word-insert-textbox" "Box" None actions.InsertTextBox
-            button "word-textbox-style" "Box fmt" None actions.OpenTextBoxStyle
-            button "word-insert-caption" "Caption" None actions.OpenCaption
-            button "word-insert-cross-reference" "X-ref" None actions.OpenCrossReference
-            button "word-bookmark" "Mark" None actions.OpenBookmark
-            button "word-content-control" "Ctrl" None actions.OpenContentControl
-            button "word-insert-field" "Field" None actions.OpenField
-            button "word-refresh-fields" "Refresh" None actions.RefreshFields
-            button "word-insert-equation" "Eq" None actions.OpenEquation
-            button "word-revision" "Rev" None actions.OpenRevision
-            button "word-track-changes" "Track" (Some state.IsTrackChangesActive) actions.ToggleTrackChanges
-            button "word-next-revision" "Next" None actions.SelectNextRevision
-            button "word-previous-revision" "Prev" None actions.SelectPreviousRevision
-            button "word-accept-revision" "Accept" None actions.AcceptSelectedRevision
-            button "word-reject-revision" "Reject" None actions.RejectSelectedRevision
-            button "word-accept-all-revisions" "All+" None actions.AcceptAllRevisions
-            button "word-reject-all-revisions" "All-" None actions.RejectAllRevisions
-            button "word-insert-link" "Link" None (fun () -> actions.OpenAnnotation "hyperlink")
-            button "word-insert-comment" "Comment" None (fun () -> actions.OpenAnnotation "comment")
-            button "word-insert-note" "Note" None (fun () -> actions.OpenAnnotation "note")
-            button "word-insert-table" "Table" None actions.InsertDefaultTable
-            button "word-insert-row-after" "+Row" None actions.InsertTableRow
-            button "word-insert-column-after" "+Col" None actions.InsertTableColumn
-            button "word-delete-row" "-Row" None actions.DeleteTableRow
-            button "word-delete-column" "-Col" None actions.DeleteTableColumn
-            button "word-table-cell-style" "Cell" None actions.OpenTableCellStyle
-            button "word-table-margins" "Margins" None actions.OpenTableMargins
-            button "word-print-pdf" "PDF" None actions.PrintPdf
-        ] }
-        { Label = "Formatting"; Controls = [
+        { Label = "Main"; Controls = [
             toolbarSelect "word-paragraph-style-select" state.BlockStyle state.ParagraphStyles (fun value ->
                 match value with
                 | "heading-1" -> actions.ApplyHeading 1
@@ -468,33 +436,32 @@ module Ui =
                 | "heading-3" -> actions.ApplyHeading 3
                 | "normal" -> actions.ApplyNormalParagraph ()
                 | _ -> actions.ApplyParagraphStyle value)
-            toolbarSelect "word-character-style-select" (fun () -> "") state.CharacterStyles actions.ApplyCharacterStyle
             toolbarSelect "word-font-family" state.FontFamily (fun () -> fontFamilies) actions.ApplyFontFamily
             toolbarNumberInput "word-font-size" state.FontSize (Some "8") (Some "72") actions.ApplyFontSize
+            sep
             button "word-bold" "B" (Some state.IsBoldActive) actions.ToggleBold
             button "word-italic" "I" (Some state.IsItalicActive) actions.ToggleItalic
             button "word-underline" "U" (Some state.IsUnderlineActive) actions.ToggleUnderline
-            button "word-all-caps" "AA" (Some state.IsAllCapsActive) actions.ToggleAllCaps
-            button "word-small-caps" "Aa" (Some state.IsSmallCapsActive) actions.ToggleSmallCaps
             button "word-strike" "S" (Some state.IsStrikeActive) actions.ToggleStrike
-            button "word-clear-formatting" "Clear" None actions.ClearFormatting
-            button "word-superscript" "x²" (Some (fun () -> state.VertAlign() = "superscript")) (fun () -> actions.ApplyVertAlign (if state.VertAlign() = "superscript" then "baseline" else "superscript"))
-            button "word-subscript" "x₂" (Some (fun () -> state.VertAlign() = "subscript")) (fun () -> actions.ApplyVertAlign (if state.VertAlign() = "subscript" then "baseline" else "subscript"))
+            sep
             toolbarColorInput "word-text-color" state.TextColor actions.ApplyTextColor
             toolbarColorInput "word-highlight-color" state.HighlightColor actions.ApplyHighlight
-            button "word-align-left" "Left" (Some (fun () -> state.Alignment() = "left")) (fun () -> actions.ApplyAlignment "left")
-            button "word-align-center" "Center" (Some (fun () -> state.Alignment() = "center")) (fun () -> actions.ApplyAlignment "center")
-            button "word-align-right" "Right" (Some (fun () -> state.Alignment() = "right")) (fun () -> actions.ApplyAlignment "right")
-            button "word-align-justify" "Justify" (Some (fun () -> state.Alignment() = "justify")) (fun () -> actions.ApplyAlignment "justify")
-            button "word-bullet-list" "Bullet" (Some (fun () -> state.ListStyle() = "bullet")) actions.ToggleBullet
-            button "word-numbered-list" "Numbered" (Some (fun () -> state.ListStyle() = "numbered")) actions.ToggleNumbered
-            toolbarSelect "word-number-format" state.NumberFormat (fun () -> numberFormats) actions.ApplyNumberFormat
-            button "word-decrease-indent" "Out" None actions.DecreaseListIndent
-            button "word-increase-indent" "In" None actions.IncreaseListIndent
-            button "word-heading-1" "H1" (Some (fun () -> state.BlockStyle() = "heading-1")) (fun () -> actions.ApplyHeading 1)
-            button "word-heading-2" "H2" (Some (fun () -> state.BlockStyle() = "heading-2")) (fun () -> actions.ApplyHeading 2)
-            button "word-heading-3" "H3" (Some (fun () -> state.BlockStyle() = "heading-3")) (fun () -> actions.ApplyHeading 3)
-            button "word-normal-paragraph" "Normal" (Some (fun () -> state.BlockStyle() = "normal")) actions.ApplyNormalParagraph
-            button "word-paragraph-style" "Paragraph" None actions.OpenParagraphStyle
+            sep
+            button "word-align-left" "L" (Some (fun () -> state.Alignment() = "left")) (fun () -> actions.ApplyAlignment "left")
+            button "word-align-center" "C" (Some (fun () -> state.Alignment() = "center")) (fun () -> actions.ApplyAlignment "center")
+            button "word-align-right" "R" (Some (fun () -> state.Alignment() = "right")) (fun () -> actions.ApplyAlignment "right")
+            button "word-align-justify" "J" (Some (fun () -> state.Alignment() = "justify")) (fun () -> actions.ApplyAlignment "justify")
+            sep
+            button "word-bullet-list" "•" (Some (fun () -> state.ListStyle() = "bullet")) actions.ToggleBullet
+            button "word-numbered-list" "#" (Some (fun () -> state.ListStyle() = "numbered")) actions.ToggleNumbered
+            button "word-decrease-indent" "<" None actions.DecreaseListIndent
+            button "word-increase-indent" ">" None actions.IncreaseListIndent
+            sep
+            button "word-insert-image" "Img" None actions.OpenImagePicker
+            button "word-insert-table" "Tbl" None actions.InsertDefaultTable
+            button "word-insert-link" "Lnk" None (fun () -> actions.OpenAnnotation "hyperlink")
+            button "word-insert-comment" "Cmt" None (fun () -> actions.OpenAnnotation "comment")
+            sep
+            button "word-find-replace" "Q" None actions.OpenFindReplace
         ] }
     ]

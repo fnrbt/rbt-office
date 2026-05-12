@@ -6,6 +6,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../../widgets/x11-viewer/PngEncode.fs" />
+    <Compile Include="../../../widgets/x11-viewer/ControlServer.fs" />
     <Compile Include="../../../widgets/x11-viewer/KeyMap.fs" />
     <Compile Include="../native-runner/Program.fs" />
     <Compile Include="Program.fs" />
