@@ -1129,6 +1129,14 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
                 let fallbackWidth = plan.TableMaxWidth / float numColumns
                 let cellX = plan.TableX + WordLayout.Table.positionedSpacedCellX plan.ColumnWidths cellSpacing positioned - WordLayout.Table.spacedCellPaintXOffset cellSpacing positioned.StartColumn
                 let cellWidth = WordLayout.Table.positionedSpacedCellPaintWidth numColumns plan.ColumnWidths cellSpacing fallbackWidth positioned
+                let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row positioned.Cell
+                let textPadding =
+                    if cellSpacing > 0.0 then
+                        let rowPadding = WordLayout.Table.rowCellPaddingDefaults WordLayout.canvasScale tableBlock row
+                        { cellPadding with Top = rowPadding.Top; Bottom = rowPadding.Bottom }
+                    else
+                        cellPadding
+                let paintTopAdjustment = WordLayout.Table.spacedCellPaintTopAdjustment cellSpacing textPadding cellPadding
                 let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment planRow.Height group.PaddingTop group.PaddingBottom group.ContentHeight
                 let visibleLines =
                     group.Layouts
@@ -1165,8 +1173,8 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
                     FragmentHeight = fragment.Height
                     CellX = cellX
                     CellWidth = cellWidth
-                    CellY = fragment.Y + WordLayout.Table.spacedCellPaintTopOffset cellSpacing
-                    CellHeight = WordLayout.Table.spacedCellPaintHeight fragment.Height cellSpacing
+                    CellY = fragment.Y + WordLayout.Table.spacedCellPaintTopOffset cellSpacing - paintTopAdjustment
+                    CellHeight = WordLayout.Table.spacedCellPaintHeight fragment.Height cellSpacing + paintTopAdjustment
                     CellSpacing = cellSpacing
                     PaddingTop = group.PaddingTop
                     PaddingBottom = group.PaddingBottom

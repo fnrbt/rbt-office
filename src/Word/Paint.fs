@@ -70,7 +70,7 @@ let private borderDashStyle (style: string option) =
     | Some "dotdash" -> 3
     | _ -> 0
 
-let private lineBaseline (fallbackFontSize: float) (line: MeasuredLine) =
+let private lineBaselineWithOffset baselineOffset (fallbackFontSize: float) (line: MeasuredLine) =
     let fontSize =
         line.Segments
         |> List.choose (function
@@ -79,7 +79,10 @@ let private lineBaseline (fallbackFontSize: float) (line: MeasuredLine) =
         |> function
             | [] -> fallbackFontSize
             | sizes -> List.max sizes
-    line.Y + fontSize
+    line.Y + fontSize + baselineOffset
+
+let private lineBaseline fallbackFontSize line =
+    lineBaselineWithOffset 0.0 fallbackFontSize line
 
 let private dashStyleForTableBorderStyle style =
     match RedBat.BorderGrid.styleKey style with
@@ -347,7 +350,7 @@ let private rowFragments settings y height =
         pageTop <- pageTop + pageHeight settings + pageGap
     fragments
 
-let paragraphCommands (settings: LayoutSettings) (fontFamily: string) (measureText: TextMeasurer) (layout: BlockLayout) =
+let private paragraphCommandsWithBaselineOffset baselineOffset (settings: LayoutSettings) (fontFamily: string) (measureText: TextMeasurer) (layout: BlockLayout) =
     let mutable commands = []
 
     match layout.Metadata.BackgroundColor with
@@ -371,7 +374,7 @@ let paragraphCommands (settings: LayoutSettings) (fontFamily: string) (measureTe
 
     if layout.Prefix <> "" && not layout.Lines.IsEmpty then
         let firstLine = layout.Lines.Head
-        let baseline = lineBaseline settings.FontSize firstLine
+        let baseline = lineBaselineWithOffset baselineOffset settings.FontSize firstLine
         let firstLineIndent = WordLayout.Paragraph.firstLineIndent layout.Metadata
         let prefixX = settings.PaddingLeft + layout.Indent + min 0.0 firstLineIndent
         let prefixText = WordLayout.Numbering.displayMarkerText layout.Prefix
@@ -390,7 +393,7 @@ let paragraphCommands (settings: LayoutSettings) (fontFamily: string) (measureTe
         commands <- commands @ [DrawText (prefixText, prefixStyle, prefixX, baseline, prefixDrawWidth)]
 
     for line in layout.Lines do
-        let baseline = lineBaseline settings.FontSize line
+        let baseline = lineBaselineWithOffset baselineOffset settings.FontSize line
         let lineAlignmentOffset = alignmentOffset layout line
 
         for segment in line.Segments do
@@ -430,6 +433,13 @@ let paragraphCommands (settings: LayoutSettings) (fontFamily: string) (measureTe
                     ]
 
     commands
+
+let paragraphCommands settings fontFamily measureText layout =
+    paragraphCommandsWithBaselineOffset 0.0 settings fontFamily measureText layout
+
+// Keep line layout stable and correct only the drawn glyph baseline for Word's
+// spaced table cells, whose visual text boxes sit higher than our default paint.
+let private spacedTableCellBaselineOffset = -4.0
 
 let markupMarkerCommands (settings: LayoutSettings) (layouts: BlockLayout list) =
     let mutable commands = []
@@ -540,8 +550,16 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                     let cell = resolved.Cell
                     let x = columnX cellSpacing resolved.StartColumn
                     let width = columnWidth cellSpacing resolved.StartColumn resolved.ColSpan
-                    let cellY = currentY + WordLayout.Table.spacedCellPaintTopOffset cellSpacing
-                    let cellHeight = WordLayout.Table.spacedCellPaintHeight rowHeight cellSpacing
+                    let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row.Source cell
+                    let textPadding =
+                        if cellSpacing > 0.0 then
+                            let rowPadding = WordLayout.Table.rowCellPaddingDefaults WordLayout.canvasScale tableBlock row.Source
+                            { cellPadding with Top = rowPadding.Top; Bottom = rowPadding.Bottom }
+                        else
+                            cellPadding
+                    let paintTopAdjustment = WordLayout.Table.spacedCellPaintTopAdjustment cellSpacing textPadding cellPadding
+                    let cellY = currentY + WordLayout.Table.spacedCellPaintTopOffset cellSpacing - paintTopAdjustment
+                    let cellHeight = WordLayout.Table.spacedCellPaintHeight rowHeight cellSpacing + paintTopAdjustment
                     for fragmentY, fragmentHeight in rowFragments settings cellY cellHeight do
                         commands <- commands @ tableFillCommands cell.BackgroundColor cell.Shading x fragmentY width fragmentHeight
                     ({
@@ -802,10 +820,12 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
             commands.AddRange(tableCommands)
             if not tableBlock.Floating then currentY <- nextY
             for row in tableBlock.Rows do
+                let tableCellBaselineOffset =
+                    if WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row > 0.0 then spacedTableCellBaselineOffset else 0.0
                 for cell in row.Cells do
                     for para in cell.Content do
                         match Map.tryFind para.Id layoutsById with
-                        | Some paraLayouts -> paraLayouts |> List.iter (paragraphCommands settings fontFamily measureText >> commands.AddRange)
+                        | Some paraLayouts -> paraLayouts |> List.iter (paragraphCommandsWithBaselineOffset tableCellBaselineOffset settings fontFamily measureText >> commands.AddRange)
                         | None -> ()
         | TextBox textBox -> commands.AddRange(textBoxCommands settings fontFamily measureText measureRange textBox)
         | _ ->

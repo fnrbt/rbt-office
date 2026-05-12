@@ -787,6 +787,9 @@ module Table =
     let spacedCellPaintHeight rowHeight spacing =
         if spacing > 0.0 then max 0.0 (rowHeight - rowSpacingAdvance spacing) else max 0.0 (rowHeight - spacing)
 
+    let spacedCellPaintTopAdjustment spacing (textPadding: CellPadding) (cellPadding: CellPadding) =
+        if spacing > 0.0 then max 0.0 (cellPadding.Top - textPadding.Top) else 0.0
+
     let spacedCellPaintXOffset spacing columnIndex =
         if spacing > 0.0 && columnIndex > 0 then spacing else 0.0
 
