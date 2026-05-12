@@ -219,6 +219,24 @@ let private excelToNetFormat (code: string) : string =
             i <- i + 1
     sb.ToString()
 
+/// Excel rounds sub-second time values to the precision implied by the
+/// format's `.0+` suffix. .NET's `fff` truncates instead, so we pre-round
+/// to that precision before formatting. Returns -1 when no fractional
+/// suffix is present (no rounding needed).
+let private fractionalSecondPrecision (code: string) : int =
+    let lower = (firstSection code).ToLowerInvariant()
+    let mutable i = 0
+    let mutable maxRun = -1
+    while i < lower.Length do
+        if lower.[i] = '.' && i + 1 < lower.Length && lower.[i + 1] = '0' then
+            let mutable n = 0
+            while i + 1 + n < lower.Length && lower.[i + 1 + n] = '0' do n <- n + 1
+            if n > maxRun then maxRun <- n
+            i <- i + 1 + n
+        else
+            i <- i + 1
+    maxRun
+
 let private formatExcelDate (code: string) (serial: float) : string =
     // Excel allows huge serials (the "testdateoverflow" fixture has values
     // that exceed DateTime.MaxValue). Catch and fall back to the raw float
@@ -230,9 +248,19 @@ let private formatExcelDate (code: string) (serial: float) : string =
     match dt with
     | None -> serial.ToString("G", inv)
     | Some dt ->
+        let dtRounded =
+            let prec = fractionalSecondPrecision code
+            if prec < 0 then dt
+            else
+                let unitsPerSecond = pown 10L prec
+                let ticksPerUnit = System.TimeSpan.TicksPerSecond / unitsPerSecond
+                if ticksPerUnit <= 0L then dt
+                else
+                    let rounded = (dt.Ticks + ticksPerUnit / 2L) / ticksPerUnit * ticksPerUnit
+                    try System.DateTime(rounded) with _ -> dt
         let netFormat = excelToNetFormat code
-        try dt.ToString(netFormat, inv)
-        with _ -> dt.ToString("MM/dd/yyyy", inv)
+        try dtRounded.ToString(netFormat, inv)
+        with _ -> dtRounded.ToString("MM/dd/yyyy", inv)
 
 /// Width-aware Excel "General" number formatting. Picks the longest .NET
 /// "G<n>" representation that fits the cell width. If even the shortest

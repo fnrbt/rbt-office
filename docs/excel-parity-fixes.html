@@ -536,6 +536,41 @@
           </ul>
         </td>
       </tr>
+      <tr>
+        <td>
+          <strong>Round fractional seconds to format precision</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-times_1900.xlsx</code></span>
+          <span class="meta">Real fixture class: time-formatted cells whose stored serial has sub-millisecond precision (e.g. <code>3722.99999...</code> seconds) and a format whose <code>.0+</code> suffix demands explicit rounding to milliseconds/tenths/etc.</span>
+          <span class="meta">Paths checked: native PNG (<code>tools/excel-native-runner</code>) vs Excel print-with-headings.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-times_1900-headings.png" style="--w:1275px; --x:50px; --y:50px; --s:0.55" alt="Excel reference render of pandas-times_1900.xlsx">
+          </div>
+          <div class="caption">Excel rounds row 2 to <code>01:02:03.000</code>, row 5 to <code>06:13:42.300</code>, row 6 to <code>07:57:35.400</code>. The format code <code>h:mm:ss.000</code> requests three-digit fractional precision, and Excel applies banker's-rounding to that precision before display.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-times_1900-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before millisecond rounding">
+          </div>
+          <div class="caption">Before: rows 2/5/6 rendered as <code>01:02:02.999</code>, <code>06:13:42.299</code>, <code>07:57:35.399</code>. .NET's <code>fff</code> custom-format token truncates ticks past the millisecond boundary rather than rounding, so values that Excel rolls up to the next whole millisecond rendered one tick low.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-times_1900-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after millisecond rounding">
+          </div>
+          <div class="caption">After: every row matches Excel's print — <code>01:02:03.000</code>, <code>06:13:42.300</code>, <code>07:57:35.400</code> and the rest. The 12 rows that Excel shows are all preserved bit-for-bit.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add <code>fractionalSecondPrecision</code> in <code>src/Spreadsheet/Paint.fs</code> to scan the format code for <code>.0+</code> runs, then in <code>formatExcelDate</code> round the converted <code>DateTime.Ticks</code> to <code>TimeSpan.TicksPerSecond / 10ⁿ</code> before passing to <code>ToString</code>. Apply only when the format has an explicit fractional-second suffix.</p>
+          <ul>
+            <li>Focused guard: <code>pandas-times_1900.xlsx</code> rows 2/5/6 now print identical strings to Excel; rows that already aligned (e.g. <code>02:45:56.100</code>) are unchanged.</li>
+            <li>Regression guard: dates without a <code>.0+</code> suffix bypass the rounding entirely (precision returns -1), so <code>m/d/yyyy</code>-style formats are untouched.</li>
+            <li>Path guard: 53/53 corpus fixtures still render without error.</li>
+            <li>Authoring guard: pure renderer behavior — no schema, model, or UI changes.</li>
+          </ul>
+        </td>
+      </tr>
     </tbody>
   </table>
 </body>
