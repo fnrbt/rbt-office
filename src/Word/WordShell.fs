@@ -9,6 +9,7 @@ module Shell =
     open Browser.Dom
     open RedBat.FableUI.Reactive
     open RedBat.FableUI.Dom
+    open RedBat.Office.Ui
 
     module WordApi = RedBat.Word.API
     module WordHost = RedBat.Word.Host
@@ -58,11 +59,12 @@ module Shell =
     let private renderToolbarInput (inputSpec: WordUi.InputSpec) =
         let inputType =
             match inputSpec.Kind with
-            | WordUi.NumberInput -> "number"
-            | WordUi.ColorInput -> "color"
+            | NumberInput -> "number"
+            | ColorInput -> "color"
+            | TextInput -> "text"
 
         let attrs =
-            [ cls (if inputSpec.Kind = WordUi.ColorInput then "word-tool-color" else "word-tool-input")
+            [ cls (if inputSpec.Kind = ColorInput then "word-tool-color" else "word-tool-input")
               typ inputType
               attr "data-testid" inputSpec.TestId
               propR "value" (fun () -> box (inputSpec.Value()))
@@ -73,9 +75,9 @@ module Shell =
         input attrs
 
     let private renderToolbarControl = function
-        | WordUi.ToolbarButton buttonSpec -> renderToolbarButton buttonSpec
-        | WordUi.ToolbarSelect selectSpec -> renderToolbarSelect selectSpec
-        | WordUi.ToolbarInput inputSpec -> renderToolbarInput inputSpec
+        | ToolbarButton buttonSpec -> renderToolbarButton buttonSpec
+        | ToolbarSelect selectSpec -> renderToolbarSelect selectSpec
+        | ToolbarInput inputSpec -> renderToolbarInput inputSpec
 
     let private renderToolbarRow (rowSpec: WordUi.ToolbarRowSpec) =
         div [ cls "word-toolbar-row"; attr "data-toolbar-row" rowSpec.Label ] [

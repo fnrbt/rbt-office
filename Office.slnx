@@ -6,6 +6,9 @@
   <Folder Name="/src/Grid/">
     <Project Path="src/Grid/RedBat.Grid.fsproj" />
   </Folder>
+  <Folder Name="/src/OfficeUi/">
+    <Project Path="src/OfficeUi/RedBat.OfficeUi.fsproj" />
+  </Folder>
   <Folder Name="/src/Office.Formats/">
     <Project Path="src/Office.Formats/OfficeFormat.fsproj" />
   </Folder>

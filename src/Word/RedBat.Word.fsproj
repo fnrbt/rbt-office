@@ -27,6 +27,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../FableUI/RedBat.FableUI.fsproj" />
+    <ProjectReference Include="../OfficeUi/RedBat.OfficeUi.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,91 +1,39 @@
 namespace RedBat.Word
 
+/// Word-specific UI specs. Generic types live in RedBat.Office.Ui; this module
+/// supplies Word's chrome palette, menus, toolbar rows, and the
+/// ShellState/ShellActions records that the shell renderers consume.
 module Ui =
-    type ChoiceSpec = {
-        Value: string
-        Label: string
-    }
+    open RedBat.Office.Ui
 
-    type ButtonSpec = {
-        TestId: string
-        Label: string
-        IsActive: (unit -> bool) option
-        Action: unit -> unit
-    }
+    // Re-export the generic spec types so consumers that look them up via
+    // RedBat.Word.Ui keep working. RedBat.Office.Ui is the authoritative home.
+    type ChoiceSpec = RedBat.Office.Ui.ChoiceSpec
+    type ButtonSpec = RedBat.Office.Ui.ButtonSpec
+    type SelectSpec = RedBat.Office.Ui.SelectSpec
+    type InputSpec = RedBat.Office.Ui.InputSpec
+    type InputKind = RedBat.Office.Ui.InputKind
+    type ToolbarControlSpec = RedBat.Office.Ui.ToolbarControlSpec
+    type ToolbarRowSpec = RedBat.Office.Ui.ToolbarRowSpec
+    type MenuItemSpec = RedBat.Office.Ui.MenuItemSpec
+    type MenuSpec = RedBat.Office.Ui.MenuSpec
+    type ChromeSpec = RedBat.Office.Ui.ChromeSpec
 
-    type SelectSpec = {
-        TestId: string
-        Value: unit -> string
-        Options: unit -> ChoiceSpec list
-        Action: string -> unit
-    }
+    /// Helper re-exports so external code keeps using `WordUi.choice`.
+    let choice = RedBat.Office.Ui.choice
 
-    type InputKind =
-        | NumberInput
-        | ColorInput
+    /// Generic chrome uses DocumentTrackWidth; Word's older paths called this
+    /// the ruler track width.
+    let inline rulerTrackWidth (spec: ChromeSpec) = spec.DocumentTrackWidth
+    /// Older Word code referenced `chrome.RulerTrackWidth`. Alias kept for the
+    /// existing call sites that read it through `WordUi.chrome.RulerTrackWidth`.
+    let inline RulerTrackWidth (spec: ChromeSpec) = spec.DocumentTrackWidth
 
-    type InputSpec = {
-        TestId: string
-        Kind: InputKind
-        Value: unit -> string
-        Min: string option
-        Max: string option
-        Action: string -> unit
-    }
-
-    type ToolbarControlSpec =
-        | ToolbarButton of ButtonSpec
-        | ToolbarSelect of SelectSpec
-        | ToolbarInput of InputSpec
-
-    type ToolbarRowSpec = {
-        Label: string
-        Controls: ToolbarControlSpec list
-    }
-
-    type MenuItemSpec = {
-        TestId: string
-        Label: string
-        IsChecked: (unit -> bool) option
-        Action: unit -> unit
-    }
-
-    type MenuSpec = {
-        TestId: string
-        PanelTestId: string
-        Label: string
-        Items: MenuItemSpec list
-    }
-
-    type ChromeSpec = {
-        WindowWidth: float
-        MenuWidth: float
-        MenuGutterWidth: float
-        RulerTrackWidth: float
-        TitleTop: string
-        TitleBottom: string
-        Chrome: string
-        ChromeTop: string
-        ChromeBottom: string
-        ChromeLight: string
-        ChromeMid: string
-        ChromeDark: string
-        Pressed: string
-        HotTop: string
-        HotBottom: string
-        Input: string
-        MenuPanel: string
-        MenuGutter: string
-        PaperDesk: string
-        Border: string
-        Text: string
-    }
-
-    let chrome = {
+    let chrome : ChromeSpec = {
         WindowWidth = 980.0
         MenuWidth = 190.0
         MenuGutterWidth = 30.0
-        RulerTrackWidth = 900.0
+        DocumentTrackWidth = 900.0
         TitleTop = "#2159AA"
         TitleBottom = "#407ECE"
         Chrome = "#F4F7FB"
@@ -283,8 +231,6 @@ module Ui =
         ApplyHighlight: string -> unit
     }
 
-    let choice value label = { Value = value; Label = label }
-
     let fontFamilies = [
         choice "Calibri" "Calibri"
         choice "Aptos" "Aptos"
@@ -316,15 +262,8 @@ module Ui =
         choice "upperRoman" "I, II, III"
     ]
 
-    let private item testId label isChecked action = {
-        TestId = testId
-        Label = label
-        IsChecked = isChecked
-        Action = action
-    }
-
-    let private button testId label active action =
-        ToolbarButton { TestId = testId; Label = label; IsActive = active; Action = action }
+    let private item = menuItem
+    let private button = toolbarButton
 
     let menus state actions = [
         {
@@ -443,10 +382,10 @@ module Ui =
         button "word-numbered-list" "Numbered" (Some (fun () -> state.ListStyle() = "numbered")) actions.ToggleNumbered
         button "word-decrease-indent" "Out" None actions.DecreaseListIndent
         button "word-increase-indent" "In" None actions.IncreaseListIndent
-        ToolbarSelect { TestId = "word-font-family"; Value = state.FontFamily; Options = (fun () -> fontFamilies); Action = actions.ApplyFontFamily }
-        ToolbarInput { TestId = "word-font-size"; Kind = NumberInput; Value = state.FontSize; Min = Some "8"; Max = Some "72"; Action = actions.ApplyFontSize }
-        ToolbarInput { TestId = "word-text-color"; Kind = ColorInput; Value = state.TextColor; Min = None; Max = None; Action = actions.ApplyTextColor }
-        ToolbarInput { TestId = "word-highlight-color"; Kind = ColorInput; Value = state.HighlightColor; Min = None; Max = None; Action = actions.ApplyHighlight }
+        toolbarSelect "word-font-family" state.FontFamily (fun () -> fontFamilies) actions.ApplyFontFamily
+        toolbarNumberInput "word-font-size" state.FontSize (Some "8") (Some "72") actions.ApplyFontSize
+        toolbarColorInput "word-text-color" state.TextColor actions.ApplyTextColor
+        toolbarColorInput "word-highlight-color" state.HighlightColor actions.ApplyHighlight
         button "word-print-pdf" "PDF" None actions.PrintPdf
         button "word-find-replace" "Find" None actions.OpenFindReplace
         button "word-insert-image" "Image" None actions.OpenImagePicker
@@ -522,26 +461,16 @@ module Ui =
             button "word-print-pdf" "PDF" None actions.PrintPdf
         ] }
         { Label = "Formatting"; Controls = [
-            ToolbarSelect {
-                TestId = "word-paragraph-style-select"
-                Value = state.BlockStyle
-                Options = state.ParagraphStyles
-                Action = fun value ->
-                    match value with
-                    | "heading-1" -> actions.ApplyHeading 1
-                    | "heading-2" -> actions.ApplyHeading 2
-                    | "heading-3" -> actions.ApplyHeading 3
-                    | "normal" -> actions.ApplyNormalParagraph ()
-                    | _ -> actions.ApplyParagraphStyle value
-            }
-            ToolbarSelect {
-                TestId = "word-character-style-select"
-                Value = fun () -> ""
-                Options = state.CharacterStyles
-                Action = actions.ApplyCharacterStyle
-            }
-            ToolbarSelect { TestId = "word-font-family"; Value = state.FontFamily; Options = (fun () -> fontFamilies); Action = actions.ApplyFontFamily }
-            ToolbarInput { TestId = "word-font-size"; Kind = NumberInput; Value = state.FontSize; Min = Some "8"; Max = Some "72"; Action = actions.ApplyFontSize }
+            toolbarSelect "word-paragraph-style-select" state.BlockStyle state.ParagraphStyles (fun value ->
+                match value with
+                | "heading-1" -> actions.ApplyHeading 1
+                | "heading-2" -> actions.ApplyHeading 2
+                | "heading-3" -> actions.ApplyHeading 3
+                | "normal" -> actions.ApplyNormalParagraph ()
+                | _ -> actions.ApplyParagraphStyle value)
+            toolbarSelect "word-character-style-select" (fun () -> "") state.CharacterStyles actions.ApplyCharacterStyle
+            toolbarSelect "word-font-family" state.FontFamily (fun () -> fontFamilies) actions.ApplyFontFamily
+            toolbarNumberInput "word-font-size" state.FontSize (Some "8") (Some "72") actions.ApplyFontSize
             button "word-bold" "B" (Some state.IsBoldActive) actions.ToggleBold
             button "word-italic" "I" (Some state.IsItalicActive) actions.ToggleItalic
             button "word-underline" "U" (Some state.IsUnderlineActive) actions.ToggleUnderline
@@ -551,15 +480,15 @@ module Ui =
             button "word-clear-formatting" "Clear" None actions.ClearFormatting
             button "word-superscript" "x²" (Some (fun () -> state.VertAlign() = "superscript")) (fun () -> actions.ApplyVertAlign (if state.VertAlign() = "superscript" then "baseline" else "superscript"))
             button "word-subscript" "x₂" (Some (fun () -> state.VertAlign() = "subscript")) (fun () -> actions.ApplyVertAlign (if state.VertAlign() = "subscript" then "baseline" else "subscript"))
-            ToolbarInput { TestId = "word-text-color"; Kind = ColorInput; Value = state.TextColor; Min = None; Max = None; Action = actions.ApplyTextColor }
-            ToolbarInput { TestId = "word-highlight-color"; Kind = ColorInput; Value = state.HighlightColor; Min = None; Max = None; Action = actions.ApplyHighlight }
+            toolbarColorInput "word-text-color" state.TextColor actions.ApplyTextColor
+            toolbarColorInput "word-highlight-color" state.HighlightColor actions.ApplyHighlight
             button "word-align-left" "Left" (Some (fun () -> state.Alignment() = "left")) (fun () -> actions.ApplyAlignment "left")
             button "word-align-center" "Center" (Some (fun () -> state.Alignment() = "center")) (fun () -> actions.ApplyAlignment "center")
             button "word-align-right" "Right" (Some (fun () -> state.Alignment() = "right")) (fun () -> actions.ApplyAlignment "right")
             button "word-align-justify" "Justify" (Some (fun () -> state.Alignment() = "justify")) (fun () -> actions.ApplyAlignment "justify")
             button "word-bullet-list" "Bullet" (Some (fun () -> state.ListStyle() = "bullet")) actions.ToggleBullet
             button "word-numbered-list" "Numbered" (Some (fun () -> state.ListStyle() = "numbered")) actions.ToggleNumbered
-            ToolbarSelect { TestId = "word-number-format"; Value = state.NumberFormat; Options = (fun () -> numberFormats); Action = actions.ApplyNumberFormat }
+            toolbarSelect "word-number-format" state.NumberFormat (fun () -> numberFormats) actions.ApplyNumberFormat
             button "word-decrease-indent" "Out" None actions.DecreaseListIndent
             button "word-increase-indent" "In" None actions.IncreaseListIndent
             button "word-heading-1" "H1" (Some (fun () -> state.BlockStyle() = "heading-1")) (fun () -> actions.ApplyHeading 1)

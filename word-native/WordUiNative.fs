@@ -4,6 +4,8 @@ open Renderer
 open Composit.Ui.Theme
 open Composit.Ui.Widget
 
+open RedBat.Office.Ui
+
 module WordUi = RedBat.Word.Ui
 
 type ShellRenderState = {
@@ -25,7 +27,7 @@ module private WordChrome =
     let windowWidth = spec.WindowWidth
     let menuWidth = spec.MenuWidth
     let menuGutterWidth = spec.MenuGutterWidth
-    let rulerTrackWidth = spec.RulerTrackWidth
+    let rulerTrackWidth = spec.DocumentTrackWidth
     let titleTop = colorFromHex spec.TitleTop
     let titleBottom = colorFromHex spec.TitleBottom
     let chrome = colorFromHex spec.Chrome
@@ -236,20 +238,21 @@ let private colorControl value action =
         ])
 
 let private renderToolbarControl = function
-    | WordUi.ToolbarButton spec ->
+    | ToolbarButton spec ->
         let isActive = spec.IsActive |> Option.map (fun active -> active()) |> Option.defaultValue false
         flatToolbarCell (shouldShowPressed spec isActive) (toolbarIcon spec) spec.Action
-    | WordUi.ToolbarSelect spec ->
+    | ToolbarSelect spec ->
         let label =
             spec.Options()
             |> List.tryFind (fun option -> option.Value = spec.Value())
             |> Option.map _.Label
             |> Option.defaultValue (spec.Value())
         comboControl label (fun () -> spec.Action(spec.Value()))
-    | WordUi.ToolbarInput spec ->
+    | ToolbarInput spec ->
         match spec.Kind with
-        | WordUi.NumberInput -> comboControl (spec.Value()) (fun () -> spec.Action(spec.Value()))
-        | WordUi.ColorInput -> colorControl (spec.Value()) (fun () -> spec.Action(spec.Value()))
+        | NumberInput -> comboControl (spec.Value()) (fun () -> spec.Action(spec.Value()))
+        | ColorInput -> colorControl (spec.Value()) (fun () -> spec.Action(spec.Value()))
+        | TextInput -> comboControl (spec.Value()) (fun () -> spec.Action(spec.Value()))
 
 let private toolbarGrip =
     sized 7.0 18.0 (
