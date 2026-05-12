@@ -8,6 +8,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../widgets/Widgets.fsproj" />
+    <ProjectReference Include="../office-native/OfficeShell.fsproj" />
     <ProjectReference Include="../src/Word/RedBat.Word.fsproj" />
   </ItemGroup>
 </Project>
