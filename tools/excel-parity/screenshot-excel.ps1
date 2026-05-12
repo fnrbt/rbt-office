@@ -16,12 +16,44 @@ Add-Type -AssemblyName System.Drawing
 Add-Type -Namespace RbExcelShot -Name Win32 -MemberDefinition @'
 [StructLayout(LayoutKind.Sequential)]
 public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+public delegate bool EnumChildProc(IntPtr hwnd, IntPtr lParam);
 [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr hWnd);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+[DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr hwndParent, EnumChildProc lpEnumFunc, IntPtr lParam);
+[DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
 '@
+
+# Walk Excel's child window tree and return the screen rect of every visible
+# pane whose class name is "EXCEL7" (the worksheet pane class — there's one
+# per visible split/scroll region, but the one we want is the largest by
+# area). The largest such pane is the main worksheet area whose top-left
+# corner is the corner gray box where col/row headers begin.
+function Find-WorksheetPane([IntPtr]$rootHwnd) {
+  $candidates = New-Object System.Collections.Generic.List[object]
+  $callback = [RbExcelShot.Win32+EnumChildProc] {
+    param([IntPtr]$h, [IntPtr]$lp)
+    $sb = New-Object System.Text.StringBuilder 128
+    [RbExcelShot.Win32]::GetClassName($h, $sb, $sb.Capacity) | Out-Null
+    if ($sb.ToString() -eq "EXCEL7") {
+      $r = New-Object RbExcelShot.Win32+RECT
+      if ([RbExcelShot.Win32]::GetWindowRect($h, [ref]$r)) {
+        $candidates.Add([pscustomobject]@{
+          Hwnd = $h
+          Rect = $r
+          Area = [Math]::Max(0, $r.Right - $r.Left) * [Math]::Max(0, $r.Bottom - $r.Top)
+        })
+      }
+    }
+    return $true
+  }
+  [RbExcelShot.Win32]::EnumChildWindows($rootHwnd, $callback, [IntPtr]::Zero) | Out-Null
+  if ($candidates.Count -eq 0) { return $null }
+  $candidates | Sort-Object -Property Area -Descending | Select-Object -First 1
+}
 
 $outputFull = [System.IO.Path]::GetFullPath($OutputPath)
 $outputParent = Split-Path -Parent $outputFull
@@ -66,9 +98,21 @@ try {
     [RbExcelShot.Win32]::SetForegroundWindow($hwnd) | Out-Null
     Start-Sleep -Milliseconds 750
 
-    $rect = New-Object RbExcelShot.Win32+RECT
-    if (-not [RbExcelShot.Win32]::GetWindowRect($hwnd, [ref]$rect)) {
-      throw "GetWindowRect failed"
+    # Prefer the worksheet pane: it begins exactly at the corner gray box
+    # (the top-left of the row/column headers), so the capture aligns with
+    # our renderer's (0, 0). Fall back to the full window otherwise.
+    $pane = Find-WorksheetPane $hwnd
+    $targetHwnd = $hwnd
+    $rect = $null
+    if ($null -ne $pane) {
+      $targetHwnd = $pane.Hwnd
+      $rect = $pane.Rect
+    } else {
+      Write-Warning "EXCEL7 worksheet pane not found; falling back to full Excel window"
+      $rect = New-Object RbExcelShot.Win32+RECT
+      if (-not [RbExcelShot.Win32]::GetWindowRect($hwnd, [ref]$rect)) {
+        throw "GetWindowRect failed and no EXCEL7 pane was found"
+      }
     }
 
     $width = [Math]::Max(1, $rect.Right - $rect.Left)
@@ -77,7 +121,21 @@ try {
     $bitmap = New-Object System.Drawing.Bitmap $width, $height
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     try {
-      $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, [System.Drawing.Size]::new($width, $height))
+      # CopyFromScreen needs an active desktop session; the wordvm sessions
+      # are disconnected, so we use PrintWindow which asks the target window
+      # to render itself into our DC and works without a visible desktop.
+      # PW_RENDERFULLCONTENT (0x00000002) is required for DirectComposition
+      # surfaces — Office 2016+ uses DC for its content rendering.
+      $hdc = $graphics.GetHdc()
+      try {
+        $ok = [RbExcelShot.Win32]::PrintWindow($targetHwnd, $hdc, 2)
+        if (-not $ok) {
+          throw "PrintWindow returned false (no display session and Excel refused to render)"
+        }
+      }
+      finally {
+        $graphics.ReleaseHdc($hdc)
+      }
       $bitmap.Save($outputFull, [System.Drawing.Imaging.ImageFormat]::Png)
     }
     finally {
