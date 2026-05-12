@@ -75,11 +75,15 @@ try {
     try { $excel.Calculation = -4135 } catch { }
     try { $excel.WindowState = -4137 } catch { }   # xlMaximized
     # Activate the first visible sheet, freeze the view at A1 so the
-    # screenshot composition is reproducible across runs.
+    # screenshot composition is reproducible across runs. Park the active
+    # cell at the bottom-right corner of the sheet (off-screen) so the
+    # selection-highlight green border doesn't appear over A1 in the
+    # screenshot — our renderer hides its selection, so the comparison
+    # otherwise has an extra Excel-only artifact.
     foreach ($sheet in $workbook.Worksheets) {
       if ($sheet.Visible -eq $true -or $sheet.Visible -eq -1) {
         $sheet.Activate()
-        $sheet.Range("A1").Select()
+        try { $sheet.Range("XFD1048576").Select() } catch { $sheet.Range("A1").Select() }
         $excel.ActiveWindow.ScrollRow = 1
         $excel.ActiveWindow.ScrollColumn = 1
         break
