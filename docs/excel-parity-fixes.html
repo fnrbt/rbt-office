@@ -155,6 +155,40 @@
     <tbody>
       <tr>
         <td>
+          <strong>Honor cellXf <code>&lt;alignment&gt;</code> horizontal/vertical/wrap</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/phpsp-32chartreadwrite.xlsx</code></span>
+          <span class="meta">Real fixture class: XLSX cells with explicit <code>&lt;alignment horizontal="center"&gt;</code> inside their <code>&lt;xf&gt;</code> entry. Common for merged header cells that span multiple columns (year/quarter banners, "Financial Period" titles, etc.). Our <code>parseCellXf</code> only reads font/fill/numFmt — alignment was always <code>None</code>, so numbers fell through to General (right) regardless of the explicit center.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/phpsp-32chartreadwrite-headings.png" style="--w:1275px; --x:50px; --y:60px; --s:0.45" alt="Excel reference render of phpsp-32chartreadwrite.xlsx">
+          </div>
+          <div class="caption">Excel reference: the merged header banners — "Financial Period" (B1:M1), "2008" (B2:E2), "2009" (F2:I2), "2010" (J2:M2) — render centered across their merged ranges per the explicit <code>horizontal="center"</code> on the cellXf.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/phpsp-32chartreadwrite-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before alignment fix">
+          </div>
+          <div class="caption">Before: <code>cellFormatFromStyle</code> hard-coded <code>HorizontalAlign = None</code>. The merged-cell payload (number 2008, 2009, 2010) fell through to General → right-aligned, so the banners hugged the right edge of the merged range instead of centring.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/phpsp-32chartreadwrite-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after alignment fix">
+          </div>
+          <div class="caption">After: <code>Xlsx.parseCellXf</code> reads <code>&lt;alignment&gt;</code>'s <code>horizontal</code>, <code>vertical</code>, and <code>wrapText</code> attributes; <code>cellFormatFromStyle</code> propagates them; <code>Paint.alignFromFormat</code> already honoured explicit alignment over General. Merged banners now centre correctly.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> extend <code>Xlsx.CellStyle</code> with <code>HorizontalAlign</code>, <code>VerticalAlign</code>, and <code>WrapText</code>. Parse them out of the <code>&lt;alignment&gt;</code> child of <code>&lt;xf&gt;</code> in <code>Xlsx.parseCellXf</code>. Wire them through <code>cellFormatFromStyle</code> in the runner so <code>Paint.alignFromFormat</code> sees the explicit override.</p>
+          <ul>
+            <li>Focused guard: <code>phpsp-32chartreadwrite.xlsx</code> merged header banners now centre, matching Excel.</li>
+            <li>Regression guard: <code>pandas-test1.xlsx</code> and <code>pandas-test_types.xlsx</code> — both have no explicit <code>&lt;alignment&gt;</code> on their cellXfs — still render with General alignment (numbers right, strings left).</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Bold/italic font variants in native render</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-testmultiindex.xlsx</code></span>
           <span class="meta">Real fixture class: XLSX cells whose <code>cellXf</code> points to a font record with <code>&lt;b/&gt;</code>/<code>&lt;i/&gt;</code> (pandas writes the row-index column bold, and the column-header row bold). Our paint pipeline carries <code>Bold</code>/<code>Italic</code> through to the <code>PaintText</code>, but <code>SpreadsheetGrid</code> only ever loaded the default Calibri TTF — the flags never reached the glyph layout step.</span>

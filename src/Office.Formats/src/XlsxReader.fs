@@ -27,6 +27,9 @@ type CellStyle = {
     Italic: bool
     FontSize: float option
     NumberFormat: string option
+    HorizontalAlign: string option
+    VerticalAlign: string option
+    WrapText: bool
 }
 
 type MergeCell = {
@@ -365,6 +368,16 @@ module Xlsx =
                 | Some custom -> Some custom
                 | None -> builtInNumberFormat id)
 
+        // <xf><alignment horizontal="..." vertical="..." wrapText="1"/></xf>
+        let alignmentNode = sElem "alignment" xfNode
+        let horizontalAlign = alignmentNode |> Option.bind (Xml.attr "horizontal")
+        let verticalAlign = alignmentNode |> Option.bind (Xml.attr "vertical")
+        let wrapText =
+            alignmentNode
+            |> Option.bind (Xml.attr "wrapText")
+            |> Option.map (fun v -> v = "1" || v = "true")
+            |> Option.defaultValue false
+
         {
             FontColor = fontColor
             FillColor = fillColor
@@ -372,6 +385,9 @@ module Xlsx =
             Italic = italic
             FontSize = fontSize
             NumberFormat = numFmt
+            HorizontalAlign = horizontalAlign
+            VerticalAlign = verticalAlign
+            WrapText = wrapText
         }
 
     let parseStyles (stylesXml: string) : CellStyle array =
