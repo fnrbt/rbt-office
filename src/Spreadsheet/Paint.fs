@@ -439,9 +439,10 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
             yield FillRect (cell.Rect, background)
 
         // Pass 2: per-cell strokes + cellXf borders, drawn on top of every
-        // fill. Excel print gridlines render as a medium gray; the same tone
-        // matches our column-header stroke (#a6a6a6) so cells and headers
-        // form a continuous grid.
+        // fill. Match Excel's *interactive* view: a light gray gridline
+        // around every cell — not the near-black grid that print mode emits
+        // with PrintGridlines on. Our reference PNGs come from print, but the
+        // renderer's target is the on-screen view.
         for (cell, format, _value, selected, _background) in states do
             yield StrokeRect (cell.Rect, (if selected then "#217346" else "#a6a6a6"), (if selected then 2.0 else 1.0))
             let rect = cell.Rect
