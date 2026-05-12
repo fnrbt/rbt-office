@@ -362,6 +362,23 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                 }
     ]
 
+/// Translate an OOXML border style name into an approximate stroke width in
+/// CSS pixels. Excel has many variants (hair, thin, medium, thick, double,
+/// dashed/dotted in three weights, slantDashDot, etc.); we collapse them into
+/// thin/medium/thick stroke widths and a default black color.
+let private borderStrokeWidth (style: string) : float =
+    match style.ToLowerInvariant() with
+    | "hair" -> 0.5
+    | "thin" | "dashed" | "dotted" | "dashdot" | "dashdotdot" -> 1.0
+    | "medium" | "mediumdashed" | "mediumdotted" | "mediumdashdot" | "mediumdashdotdot" -> 1.5
+    | "thick" -> 2.5
+    | "double" -> 2.0
+    | "slantdashdot" -> 1.5
+    | _ -> 1.0
+
+let private borderColor (side: BorderStyle) : string =
+    side.Color |> Option.defaultValue "#000000"
+
 let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
     [
         for cell in visibleCells model viewport do
@@ -378,6 +395,32 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
             // Excel print gridlines render as a medium gray; matches our column-
             // header stroke #a6a6a6 so cells and headers form a continuous grid.
             yield StrokeRect (cell.Rect, (if selected then "#217346" else "#a6a6a6"), (if selected then 2.0 else 1.0))
+
+            // Per-cell borders from cellXf.borderId override the default grid
+            // stroke on whichever sides are set.
+            let rect = cell.Rect
+            match format.BorderTop with
+            | Some side ->
+                let w = borderStrokeWidth side.Style
+                yield GridLine (rect.X, rect.Y, rect.X + rect.Width, rect.Y, borderColor side, w)
+            | None -> ()
+            match format.BorderBottom with
+            | Some side ->
+                let w = borderStrokeWidth side.Style
+                let y = rect.Y + rect.Height
+                yield GridLine (rect.X, y, rect.X + rect.Width, y, borderColor side, w)
+            | None -> ()
+            match format.BorderLeft with
+            | Some side ->
+                let w = borderStrokeWidth side.Style
+                yield GridLine (rect.X, rect.Y, rect.X, rect.Y + rect.Height, borderColor side, w)
+            | None -> ()
+            match format.BorderRight with
+            | Some side ->
+                let w = borderStrokeWidth side.Style
+                let x = rect.X + rect.Width
+                yield GridLine (x, rect.Y, x, rect.Y + rect.Height, borderColor side, w)
+            | None -> ()
 
             let displayText = cellDisplayText cell.Rect.Width format value
 

@@ -155,6 +155,40 @@
     <tbody>
       <tr>
         <td>
+          <strong>Render per-cell <code>&lt;border&gt;</code> from <code>cellXf borderId</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-testmultiindex.xlsx</code></span>
+          <span class="meta">Real fixture class: XLSX cells whose <code>&lt;xf borderId="N"/&gt;</code> references a non-zero <code>&lt;border&gt;</code> entry. Excel renders these as solid black borders on each side; we previously only drew the default light gridline. pandas writes <code>thin</code> borders on every row-index / column-header / data cell in its multiindex export.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-testmultiindex-headings.png" style="--w:1275px; --x:70px; --y:80px; --s:0.5" alt="Excel reference render of pandas-testmultiindex.xlsx with per-cell borders">
+          </div>
+          <div class="caption">Excel reference: every cell in rows 1–5 / cols A–E has a solid black border (cellXf <code>borderId=1</code> → <code>&lt;border&gt;</code> with <code>&lt;top/&gt;&lt;bottom/&gt;&lt;left/&gt;&lt;right style="thin"/&gt;</code>).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/testmultiindex-before-borders.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before per-cell border rendering">
+          </div>
+          <div class="caption">Before: <code>parseStyles</code> ignored the <code>&lt;borders&gt;</code> block entirely. The cell paint pipeline only drew the default <code>#a6a6a6</code> gridline, so the rendered table looked faint compared to Excel's strong cell grid.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/testmultiindex-after-borders.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after per-cell border rendering">
+          </div>
+          <div class="caption">After: <code>parseBorder</code> reads each side's <code>style</code> + <code>&lt;color&gt;</code>; <code>parseCellXf</code> indexes into the borders array via <code>borderId</code>; <code>cellFormatFromStyle</code> maps to <code>BorderStyle option</code>; <code>buildCellPaintItems</code> emits <code>GridLine</code> commands per side at a stroke width chosen by the OOXML style (<code>thin</code> → 1.0 px, <code>medium</code> → 1.5 px, <code>thick</code> → 2.5 px).</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> end-to-end border plumbing. <code>src/Office.Formats/src/XlsxReader.fs</code>: add <code>CellBorderSide</code> + <code>BorderRecord</code>, parse the <code>&lt;borders&gt;</code> block, extend <code>CellStyle</code> with <code>BorderTop</code>/<code>BorderBottom</code>/<code>BorderLeft</code>/<code>BorderRight</code>, and have <code>parseCellXf</code> look up the cellXf's <code>borderId</code>. <code>tools/excel-native-runner/Program.fs</code>: forward the four sides through <code>cellFormatFromStyle</code>. <code>src/Spreadsheet/Paint.fs</code>: per-cell <code>GridLine</code> emits for whichever sides are set, with <code>borderStrokeWidth</code> mapping OOXML style names to stroke widths.</p>
+          <ul>
+            <li>Focused guard: <code>pandas-testmultiindex.xlsx</code> now renders the dark cell grid that Excel shows.</li>
+            <li>Regression guard: cells with <code>borderId=0</code> (no border) still get just the default <code>#a6a6a6</code> gridline.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Fan <code>&lt;col min..max&gt;</code> width across the full range</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-multiindex_no_index_names.xlsx</code></span>
           <span class="meta">Real fixture class: XLSX <code>&lt;cols&gt;</code> entries that cover a range — <code>&lt;col min="4" max="7" width="5.41"/&gt;</code> means columns 4, 5, 6, 7 all share that width. Excel writes ranges aggressively (anything with the same width gets collapsed into one entry). Our <code>parseCellXf</code>/<code>columnInfo</code> only read <code>min</code> and discarded <code>max</code>, so only the first column in the range got the width — every other column in the range fell back to the per-sheet default.</span>

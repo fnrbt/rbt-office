@@ -59,6 +59,13 @@ let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
         // Excel often prefixes ARGB; drop alpha when 8 chars
         let cleaned = if trimmed.Length = 8 then trimmed.Substring(2) else trimmed
         if cleaned.Length = 6 then Some ("#" + cleaned) else None
+    let borderSide (side: Xlsx.CellBorderSide option) : BorderStyle option =
+        side
+        |> Option.map (fun s ->
+            {
+                Style = s.Style
+                Color = s.Color |> Option.bind hexColor
+            })
     {
         Bold = style.Bold
         Italic = style.Italic
@@ -70,10 +77,10 @@ let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
         VerticalAlign = style.VerticalAlign
         WrapText = style.WrapText
         NumberFormat = style.NumberFormat
-        BorderTop = None
-        BorderBottom = None
-        BorderLeft = None
-        BorderRight = None
+        BorderTop = borderSide style.BorderTop
+        BorderBottom = borderSide style.BorderBottom
+        BorderLeft = borderSide style.BorderLeft
+        BorderRight = borderSide style.BorderRight
     }
 
 let private toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel =

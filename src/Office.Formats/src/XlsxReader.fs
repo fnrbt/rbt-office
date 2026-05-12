@@ -20,6 +20,14 @@ type CellValue =
     | Formula of string
     | Empty
 
+/// One side of a cell border. `Style` is the OOXML border style name
+/// (thin/medium/thick/dashed/dotted/double/...), `Color` is an ARGB hex
+/// string when explicit (or None when Excel's "automatic" black).
+type CellBorderSide = {
+    Style: string
+    Color: string option
+}
+
 type CellStyle = {
     FontColor: string option
     FillColor: string option
@@ -30,6 +38,10 @@ type CellStyle = {
     HorizontalAlign: string option
     VerticalAlign: string option
     WrapText: bool
+    BorderTop: CellBorderSide option
+    BorderBottom: CellBorderSide option
+    BorderLeft: CellBorderSide option
+    BorderRight: CellBorderSide option
 }
 
 type MergeCell = {
@@ -322,6 +334,39 @@ module Xlsx =
         |> Option.bind (sElem "fgColor")
         |> Option.bind (Xml.attr "rgb")
 
+    /// Parse a single <left>/<right>/<top>/<bottom> child of a <border>.
+    /// Returns Some when the side has a `style` attribute; None for empty
+    /// (unstyled) sides.
+    let parseBorderSide (sideNode: XmlNode) : CellBorderSide option =
+        Xml.attr "style" sideNode
+        |> Option.map (fun style ->
+            let color =
+                sElem "color" sideNode
+                |> Option.bind (Xml.attr "rgb")
+            { Style = style; Color = color })
+
+    type BorderRecord = {
+        Top: CellBorderSide option
+        Bottom: CellBorderSide option
+        Left: CellBorderSide option
+        Right: CellBorderSide option
+    }
+
+    let emptyBorder : BorderRecord = {
+        Top = None
+        Bottom = None
+        Left = None
+        Right = None
+    }
+
+    let parseBorder (borderNode: XmlNode) : BorderRecord =
+        {
+            Top = sElem "top" borderNode |> Option.bind parseBorderSide
+            Bottom = sElem "bottom" borderNode |> Option.bind parseBorderSide
+            Left = sElem "left" borderNode |> Option.bind parseBorderSide
+            Right = sElem "right" borderNode |> Option.bind parseBorderSide
+        }
+
     let parseNumberFormat (numFmtNode: XmlNode) : string option =
         Xml.attr "formatCode" numFmtNode
 
@@ -360,9 +405,10 @@ module Xlsx =
         | 49 -> Some "@"
         | _ -> None
 
-    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * string option * float option) array) (fills: string option array) (numFmts: Map<int, string>) : CellStyle =
+    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * string option * float option) array) (fills: string option array) (borders: BorderRecord array) (numFmts: Map<int, string>) : CellStyle =
         let fontId = Xml.attr "fontId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let fillId = Xml.attr "fillId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
+        let borderId = Xml.attr "borderId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let numFmtId = Xml.attr "numFmtId" xfNode |> Option.bind (fun id -> Some (int id))
 
         let (bold, italic, fontColor, fontSize) =
@@ -372,6 +418,10 @@ module Xlsx =
         let fillColor =
             if fillId < fills.Length then fills.[fillId]
             else None
+
+        let border =
+            if borderId < borders.Length then borders.[borderId]
+            else emptyBorder
 
         let numFmt =
             numFmtId
@@ -400,6 +450,10 @@ module Xlsx =
             HorizontalAlign = horizontalAlign
             VerticalAlign = verticalAlign
             WrapText = wrapText
+            BorderTop = border.Top
+            BorderBottom = border.Bottom
+            BorderLeft = border.Left
+            BorderRight = border.Right
         }
 
     let parseStyles (stylesXml: string) : CellStyle array =
@@ -421,6 +475,14 @@ module Xlsx =
             |> List.map parseFill
             |> List.toArray
 
+        // Parse borders
+        let borders =
+            sElem "borders" doc
+            |> Option.map (sElems "border")
+            |> Option.defaultValue []
+            |> List.map parseBorder
+            |> List.toArray
+
         // Parse number formats
         let numFmts =
             sElem "numFmts" doc
@@ -438,7 +500,7 @@ module Xlsx =
         sElem "cellXfs" doc
         |> Option.map (sElems "xf")
         |> Option.defaultValue []
-        |> List.map (fun xf -> parseCellXf xf fonts fills numFmts)
+        |> List.map (fun xf -> parseCellXf xf fonts fills borders numFmts)
         |> List.toArray
 
     // Shared strings extraction
