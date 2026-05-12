@@ -410,25 +410,40 @@ let private borderStrokeWidth (style: string) : float =
 let private borderColor (side: BorderStyle) : string =
     side.Color |> Option.defaultValue "#000000"
 
+/// Multi-pass cell rendering. Drawing fill+stroke per cell in a single loop
+/// lets the next cell's fill overwrite the previous cell's right/bottom edge
+/// — invisible against white but obvious when a cell has a non-default fill
+/// (Table styles, fills baked into cellXf). Splitting into three passes
+/// (fills → strokes/borders → text) keeps all borders on top of all fills.
 let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
+    let cells = visibleCells model viewport
+    let cellState (cell: _) =
+        let addr = cell.Address
+        let cellData = getCell addr model
+        let value = getCellValue addr model
+        let format = cellData |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
+        let selected = isSelected model.Selection addr.Row addr.Col
+        let background =
+            if selected then "#E8F5E9"
+            else format.BgColor |> Option.defaultValue "#ffffff"
+        cell, format, value, selected, background
+
+    let states = cells |> List.map cellState
+
     [
-        for cell in visibleCells model viewport do
-            let addr = cell.Address
-            let cellData = getCell addr model
-            let value = getCellValue addr model
-            let format = cellData |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
-            let selected = isSelected model.Selection addr.Row addr.Col
-            let background =
-                if selected then "#E8F5E9"
-                else format.BgColor |> Option.defaultValue "#ffffff"
-
+        // Pass 1: all backgrounds. Adjacent cells share an edge, so when a
+        // cell with a non-default fill is followed by another cell, the
+        // second cell's fill would overdraw the first cell's right/bottom
+        // stroke if we drew them in the same per-cell loop.
+        for (cell, _format, _value, _selected, background) in states do
             yield FillRect (cell.Rect, background)
-            // Excel print gridlines render as a medium gray; matches our column-
-            // header stroke #a6a6a6 so cells and headers form a continuous grid.
-            yield StrokeRect (cell.Rect, (if selected then "#217346" else "#a6a6a6"), (if selected then 2.0 else 1.0))
 
-            // Per-cell borders from cellXf.borderId override the default grid
-            // stroke on whichever sides are set.
+        // Pass 2: per-cell strokes + cellXf borders, drawn on top of every
+        // fill. Excel print gridlines render as a medium gray; the same tone
+        // matches our column-header stroke (#a6a6a6) so cells and headers
+        // form a continuous grid.
+        for (cell, format, _value, selected, _background) in states do
+            yield StrokeRect (cell.Rect, (if selected then "#217346" else "#a6a6a6"), (if selected then 2.0 else 1.0))
             let rect = cell.Rect
             match format.BorderTop with
             | Some side ->
@@ -453,8 +468,9 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 yield GridLine (x, rect.Y, x, rect.Y + rect.Height, borderColor side, w)
             | None -> ()
 
+        // Pass 3: text on top of all strokes/borders.
+        for (cell, format, value, _selected, _background) in states do
             let displayText = cellDisplayText cell.Rect.Width format value
-
             if displayText <> "" then
                 yield DrawText {
                     Text = displayText

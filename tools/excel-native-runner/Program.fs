@@ -121,10 +121,20 @@ let private tableAccentColor (themeAccents: string array) (styleName: string) : 
         if idx < themeAccents.Length then Some ("#" + themeAccents.[idx]) else None
     | _ -> None
 
-/// For each cell coordinate inside a table range, return the BgColor + bold
-/// + font color overrides that the table's style would impose. Returns None
-/// for cells outside any table.
-let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: string array) (row: int) (col: int) : (string option * string option * bool) option =
+type private TableOverlay = {
+    BgColor: string option
+    TextColor: string option
+    Bold: bool
+    /// Sides where the overlay forces a thin border. Required because the
+    /// default #a6a6a6 grid stroke is too pale to see against a saturated
+    /// accent fill — adjacent header cells lose their dividers otherwise.
+    Border: BorderStyle option
+}
+
+/// For each cell coordinate inside a table range, return the table-derived
+/// overlay (background/foreground/bold + a forced border). Returns None for
+/// cells outside any table.
+let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: string array) (row: int) (col: int) : TableOverlay option =
     // row/col are 1-indexed to match Xlsx.TableDefinition.
     tables
     |> List.tryPick (fun t ->
@@ -141,16 +151,27 @@ let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: 
                     | None -> None
                     | Some accentHex ->
                         let isHeader = row < t.StartRow + t.HeaderRowCount
+                        let edge : BorderStyle = { Style = "thin"; Color = Some "#808080" }
+                        let baseOverlay = {
+                            BgColor = None
+                            TextColor = None
+                            Bold = false
+                            Border = Some edge
+                        }
                         if isHeader then
-                            Some (Some accentHex, Some "#FFFFFF", true)
+                            Some { baseOverlay with
+                                    BgColor = Some accentHex
+                                    TextColor = Some "#FFFFFF"
+                                    Bold = true }
                         elif style.ShowRowStripes then
                             // Excel bands every other data row (the one
                             // immediately below the header is unbanded).
                             let dataIdx = row - t.StartRow - t.HeaderRowCount
                             if dataIdx % 2 = 1 then
-                                Some (Some (tintHex (accentHex.TrimStart('#')) 0.80), None, false)
-                            else None
-                        else None)
+                                Some { baseOverlay with
+                                        BgColor = Some (tintHex (accentHex.TrimStart('#')) 0.80) }
+                            else Some baseOverlay
+                        else Some baseOverlay)
 
 let private toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel =
     let mutable maxRow = 0
@@ -172,11 +193,15 @@ let private toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : Spreadsh
                     let format =
                         match tableOverrideFor sheet.Tables workbook.ThemeAccents cell.Reference.Row (c + 1) with
                         | None -> baseFormat
-                        | Some (bg, fg, bold) ->
+                        | Some overlay ->
                             { baseFormat with
-                                BgColor = baseFormat.BgColor |> Option.orElse bg
-                                TextColor = baseFormat.TextColor |> Option.orElse fg
-                                Bold = baseFormat.Bold || bold }
+                                BgColor = baseFormat.BgColor |> Option.orElse overlay.BgColor
+                                TextColor = baseFormat.TextColor |> Option.orElse overlay.TextColor
+                                Bold = baseFormat.Bold || overlay.Bold
+                                BorderTop = baseFormat.BorderTop |> Option.orElse overlay.Border
+                                BorderBottom = baseFormat.BorderBottom |> Option.orElse overlay.Border
+                                BorderLeft = baseFormat.BorderLeft |> Option.orElse overlay.Border
+                                BorderRight = baseFormat.BorderRight |> Option.orElse overlay.Border }
                     let cellData = { Value = value; Format = format; Comment = None }
                     if r > maxRow then maxRow <- r
                     if c > maxCol then maxCol <- c
