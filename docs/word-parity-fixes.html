@@ -143,6 +143,44 @@
     <tbody>
       <tr>
         <td>
+          <strong>TableGrid dense row pitch</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-grid-dense-row-pitch.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>pending</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-grid-dense-row-pitch-word.png" style="--w:1224px; --x:40px; --y:80px; --s:0.58" alt="Word reference TableGrid dense row pitch">
+          </div>
+          <div class="caption">Word keeps the single-line TableGrid rows tightly pitched, so the bottom border and following paragraph remain high on the page.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-grid-dense-row-pitch-before.png" style="--w:900px; --x:47px; --y:80px; --s:0.87" alt="Before TableGrid dense row pitch fix">
+          </div>
+          <div class="caption">Before: the table-cell automatic line box was too tall, accumulating visible vertical drift through the dense rows.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-grid-dense-row-pitch-after.png" style="--w:900px; --x:47px; --y:80px; --s:0.87" alt="After TableGrid dense row pitch fix">
+          </div>
+          <div class="caption">After: the browser row gaps are close to Word's pitch; the native PNG and PDF paths use the same shared table-cell measurement.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> tune the table-cell automatic line box toward Word's single-line row pitch instead of using the looser generic paragraph line box.</p>
+          <ul>
+            <li>Focused guard: <code>table-grid-dense-row-pitch.docx</code> compares cleanly with <code>57 matched lines</code>.</li>
+            <li>Visual guard: row border gaps moved from about <code>19-20px</code> before to about <code>18-18.5px</code> after, close to Word's <code>18-18.7px</code> CSS-equivalent pitch.</li>
+            <li>Regression guard: TableGrid paragraph spacing, table margin origin, explicit padding, style borders, DXA row height, import structure, default after spacing, and auto pattern shading focused repros still pass.</li>
+            <li>Real guard: <code>docx4j-tables.docx</code> no longer accumulates the old dense-table row-pitch drift; remaining table deltas are merge/vertical-align and later table spacing cases.</li>
+            <li>Authoring guard: paragraph line spacing is already exposed in the interactive paragraph style dialog; this fix corrects renderer measurement for automatic table-cell lines and does not need a new authoring control.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Table style cell margin origin</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-style-cell-margin-origin.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>

@@ -387,7 +387,7 @@ let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
 let private wordLineBoxFactor = 1.20
 let private wordSingleLineBoxFactor = 1.316
 let private monospaceLineBoxFactor = 1.18
-let private tableCellLineBoxFactor = 1.336
+let private tableCellLineBoxFactor = 1.25
 
 let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
     match style.FontFamily |> Option.map (fun family -> family.Trim().ToLowerInvariant()) with
