@@ -57,6 +57,12 @@ let private intOpt (value: string option) =
 
 let private color value = TC.normalizeColor value
 
+let private borderColor value =
+    match value with
+    | Some ""
+    | Some "auto" -> Some "#000000"
+    | _ -> color value
+
 let private shadingColorValue value =
     match value with
     | Some "" -> None
@@ -95,8 +101,8 @@ let private listStyle = function
 let private border (value: DocxReader.BorderStyle option) : TableBorder option =
     value |> Option.map (fun b -> {
         Style = b.BorderType
-        Color = color b.Color
-        Width = parseFloat b.Size |> Option.map (fun size -> size / 8.0)
+        Color = borderColor b.Color
+        Width = parseFloat b.Size |> Option.map (fun size -> size / 6.0)
     })
 
 let private tableBorders (value: DocxReader.CellBorders option) : TableBorders option =
@@ -232,8 +238,8 @@ let private resolveTableParagraphProperties selector (styleMap: Map<string, Docx
 let private paraBorder (value: DocxReader.ParagraphBorder option) : RedBat.Word.Document.ParagraphBorder option =
     value |> Option.map (fun b -> {
         Style = b.Style
-        Color = color b.Color
-        Width = parseFloat b.Width |> Option.map (fun size -> size / 8.0)
+        Color = borderColor b.Color
+        Width = parseFloat b.Width |> Option.map (fun size -> size / 6.0)
         Space = parseFloat b.Space
     })
 

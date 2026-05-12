@@ -2538,7 +2538,7 @@ let private borderWidthToPoints (border: BorderStyle option) =
     |> Option.bind (fun border -> border.Size)
     |> Option.bind (fun value ->
         match System.Double.TryParse(value) with
-        | true, parsed -> Some (parsed / 8.0)
+        | true, parsed -> Some (parsed / 6.0)
         | false, _ -> None)
 
 let private borderToEditor (border: BorderStyle option) =
@@ -2561,7 +2561,7 @@ let private paragraphBorderWidthToPoints (border: ParagraphBorder option) =
     |> Option.bind (fun border -> border.Width)
     |> Option.bind (fun value ->
         match System.Double.TryParse(value) with
-        | true, parsed -> Some (parsed / 8.0)
+        | true, parsed -> Some (parsed / 6.0)
         | false, _ -> None)
 
 let private paragraphBorderSpaceToPoints (border: ParagraphBorder option) =

@@ -225,6 +225,7 @@ let private boot () =
         "getLayoutSegments" ==> fun () -> getLayoutSegments state
         "getLayoutLines" ==> fun () -> getLayoutLines state
         "getVbaLayoutLines" ==> fun () -> ensureEditor state |> WordApi.getVbaLayoutLines
+        "getTableGeometry" ==> fun () -> ensureEditor state |> WordApi.getTableGeometry
         "getRangeInformation" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.getRangeInformation editor blockId startOffset endOffset
         "getSelectionInformation" ==> fun () -> ensureEditor state |> WordApi.getSelectionInformation
         "getRangeBounds" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.getRangeBounds editor blockId startOffset endOffset

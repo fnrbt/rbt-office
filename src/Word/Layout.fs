@@ -1129,6 +1129,11 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
     let resolvedRows =
         WordLayout.Table.resolveTable WordLayout.canvasScale (Some plan.TableMaxWidth) tableBlock
         |> fun resolved -> resolved.BodyRows |> List.toArray
+    let rowHeights = plan.Rows |> List.map _.Height |> List.toArray
+    let rowSpanHeightAt rowIndex rowSpan fallback =
+        [rowIndex .. rowIndex + max 1 rowSpan - 1]
+        |> List.sumBy (fun index -> rowHeights |> Array.tryItem index |> Option.defaultValue 0.0)
+        |> max fallback
     plan.Rows
     |> List.collect (fun planRow ->
         let row = tableBlock.Rows.[planRow.RowIndex]
@@ -1144,70 +1149,78 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
         |> List.collect (fun fragment ->
             let fragmentEnd = fragment.Y + fragment.Height
             let contentOriginDelta = fragment.RowContentY - fragment.RowPlanY
-            [0 .. min positionedCells.Length cellGroups.Length - 1]
-            |> List.map (fun cellIndex ->
-                let positioned = positionedCells.[cellIndex]
-                let group = cellGroups.[cellIndex]
-                let resolvedCell = resolvedCells |> Array.tryItem cellIndex
-                let fallbackWidth = plan.TableMaxWidth / float numColumns
-                let cellX = plan.TableX + WordLayout.Table.positionedSpacedCellX plan.ColumnWidths cellSpacing positioned - WordLayout.Table.spacedCellPaintXOffset cellSpacing positioned.StartColumn
-                let cellWidth = WordLayout.Table.positionedSpacedCellPaintWidth numColumns plan.ColumnWidths cellSpacing fallbackWidth positioned
-                let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row positioned.Cell
-                let textPadding =
-                    if cellSpacing > 0.0 then
-                        let rowPadding = WordLayout.Table.rowCellPaddingDefaults WordLayout.canvasScale tableBlock row
-                        { cellPadding with Top = rowPadding.Top; Bottom = rowPadding.Bottom }
-                    else
-                        cellPadding
-                let paintTopAdjustment = WordLayout.Table.spacedCellPaintTopAdjustment cellSpacing textPadding cellPadding
-                let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment planRow.Height group.PaddingTop group.PaddingBottom group.ContentHeight
-                let visibleLines =
-                    group.Layouts
-                    |> List.filter (fun layout -> fragment.BlockIds |> List.contains layout.BlockId)
-                    |> List.collect (fun layout ->
-                        layout.Lines
-                        |> List.map (fun line -> { line with Y = line.Y + offset + contentOriginDelta }))
-                    |> List.filter (fun line -> line.Y >= fragment.Y && line.Y + line.Height <= fragmentEnd)
-                let visibleY = visibleLines |> List.map _.Y |> function | [] -> None | values -> Some (List.min values)
-                let visibleEnd = visibleLines |> List.map (fun line -> line.Y + line.Height) |> function | [] -> None | values -> Some (List.max values)
-                let visibleHeight =
-                    match visibleY, visibleEnd with
-                    | Some startY, Some endY -> Some (endY - startY)
-                    | _ -> None
-                let blockIds =
-                    group.Layouts
-                    |> List.filter (fun layout -> fragment.BlockIds |> List.contains layout.BlockId)
-                    |> List.map _.BlockId
-                    |> List.distinct
-                {
-                    RowIndex = planRow.RowIndex
-                    CellIndex = cellIndex
-                    StartColumn = resolvedCell |> Option.map _.StartColumn |> Option.defaultValue positioned.StartColumn
-                    ColumnSpan = resolvedCell |> Option.map _.ColSpan |> Option.defaultValue positioned.Span
-                    RowSpan = resolvedCell |> Option.map _.RowSpan |> Option.defaultValue 1
-                    BorderTop = resolvedCell |> Option.bind (fun cell -> cell.Borders.Top)
-                    BorderRight = resolvedCell |> Option.bind (fun cell -> cell.Borders.Right)
-                    BorderBottom = resolvedCell |> Option.bind (fun cell -> cell.Borders.Bottom)
-                    BorderLeft = resolvedCell |> Option.bind (fun cell -> cell.Borders.Left)
-                    Page = fragment.Page
-                    RowY = planRow.Y
-                    RowHeight = planRow.Height
-                    FragmentY = fragment.Y
-                    FragmentHeight = fragment.Height
-                    CellX = cellX
-                    CellWidth = cellWidth
-                    CellY = fragment.Y + WordLayout.Table.spacedCellPaintTopOffset cellSpacing - paintTopAdjustment
-                    CellHeight = WordLayout.Table.spacedCellPaintHeight fragment.Height cellSpacing + paintTopAdjustment
-                    CellSpacing = cellSpacing
-                    PaddingTop = group.PaddingTop
-                    PaddingBottom = group.PaddingBottom
-                    ContentY = fragment.RowContentY + cellSpacing + group.PaddingTop + offset
-                    ContentHeight = group.ContentHeight
-                    VisibleY = visibleY
-                    VisibleHeight = visibleHeight
-                    VisibleLineCount = visibleLines.Length
-                    BlockIds = blockIds
-                })))
+            resolvedCells
+            |> Array.toList
+            |> List.choose (fun resolvedCell ->
+                match positionedCells |> Array.tryItem resolvedCell.SourceCellIndex, cellGroups |> Array.tryItem resolvedCell.SourceCellIndex with
+                | Some positioned, Some group ->
+                    let fallbackWidth = plan.TableMaxWidth / float numColumns
+                    let cellX =
+                        plan.TableX
+                        + WordLayout.Table.spacedStartOffset plan.ColumnWidths cellSpacing resolvedCell.StartColumn
+                        - WordLayout.Table.spacedCellPaintXOffset cellSpacing resolvedCell.StartColumn
+                    let cellWidth =
+                        WordLayout.Table.spacedSpannedWidth plan.ColumnWidths cellSpacing resolvedCell.StartColumn resolvedCell.ColSpan fallbackWidth
+                        - WordLayout.Table.spacedCellPaintWidthAdjustment cellSpacing numColumns resolvedCell.StartColumn resolvedCell.ColSpan
+                        |> max 0.0
+                    let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row positioned.Cell
+                    let textPadding =
+                        if cellSpacing > 0.0 then
+                            let rowPadding = WordLayout.Table.rowCellPaddingDefaults WordLayout.canvasScale tableBlock row
+                            { cellPadding with Top = rowPadding.Top; Bottom = rowPadding.Bottom }
+                        else
+                            cellPadding
+                    let paintTopAdjustment = WordLayout.Table.spacedCellPaintTopAdjustment cellSpacing textPadding cellPadding
+                    let cellFragmentHeight = rowSpanHeightAt planRow.RowIndex resolvedCell.RowSpan fragment.Height
+                    let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment planRow.Height group.PaddingTop group.PaddingBottom group.ContentHeight
+                    let visibleLines =
+                        group.Layouts
+                        |> List.filter (fun layout -> fragment.BlockIds |> List.contains layout.BlockId)
+                        |> List.collect (fun layout ->
+                            layout.Lines
+                            |> List.map (fun line -> { line with Y = line.Y + offset + contentOriginDelta }))
+                        |> List.filter (fun line -> line.Y >= fragment.Y && line.Y + line.Height <= fragmentEnd)
+                    let visibleY = visibleLines |> List.map _.Y |> function | [] -> None | values -> Some (List.min values)
+                    let visibleEnd = visibleLines |> List.map (fun line -> line.Y + line.Height) |> function | [] -> None | values -> Some (List.max values)
+                    let visibleHeight =
+                        match visibleY, visibleEnd with
+                        | Some startY, Some endY -> Some (endY - startY)
+                        | _ -> None
+                    let blockIds =
+                        group.Layouts
+                        |> List.filter (fun layout -> fragment.BlockIds |> List.contains layout.BlockId)
+                        |> List.map _.BlockId
+                        |> List.distinct
+                    Some {
+                        RowIndex = planRow.RowIndex
+                        CellIndex = resolvedCell.SourceCellIndex
+                        StartColumn = resolvedCell.StartColumn
+                        ColumnSpan = resolvedCell.ColSpan
+                        RowSpan = resolvedCell.RowSpan
+                        BorderTop = resolvedCell.Borders.Top
+                        BorderRight = resolvedCell.Borders.Right
+                        BorderBottom = resolvedCell.Borders.Bottom
+                        BorderLeft = resolvedCell.Borders.Left
+                        Page = fragment.Page
+                        RowY = planRow.Y
+                        RowHeight = planRow.Height
+                        FragmentY = fragment.Y
+                        FragmentHeight = fragment.Height
+                        CellX = cellX
+                        CellWidth = cellWidth
+                        CellY = fragment.Y + WordLayout.Table.spacedCellPaintTopOffset cellSpacing - paintTopAdjustment
+                        CellHeight = WordLayout.Table.spacedCellPaintHeight cellFragmentHeight cellSpacing + paintTopAdjustment
+                        CellSpacing = cellSpacing
+                        PaddingTop = group.PaddingTop
+                        PaddingBottom = group.PaddingBottom
+                        ContentY = fragment.RowContentY + cellSpacing + group.PaddingTop + offset
+                        ContentHeight = group.ContentHeight
+                        VisibleY = visibleY
+                        VisibleHeight = visibleHeight
+                        VisibleLineCount = visibleLines.Length
+                        BlockIds = blockIds
+                    }
+                | _ -> None)))
 
 let private borderGridStroke priority (stroke: WordLayout.Table.PrintStroke option) =
     stroke
@@ -1459,7 +1472,13 @@ let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasure
                    row.Cells
                    |> List.exists (fun cell ->
                        cell.Content
-                       |> List.exists (fun para -> not (paragraphTextIsEmpty para))))
+                           |> List.exists (fun para -> not (paragraphTextIsEmpty para))))
+           | _ -> false
+
+    let previousBlockIsTable index =
+        index > 0
+        && match blocks.[index - 1] with
+           | Table _ -> true
            | _ -> false
 
     let nextBlockIsEmptyParagraph index =
@@ -1766,6 +1785,11 @@ let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasure
                         layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth pagedY 0.0 paragraphStyle (effectiveBufferInDocument doc) para numberedCounters floatingObstacles placedFloatingBoxes
                     traceSlow (sprintf "block[%d]:relayout" index) relayoutStart
                     result
+            let layout =
+                if layout.Lines.IsEmpty && previousBlockIsTable index && not (previousBlockIsTextTable index) && not emptyParagraphWouldMovePage then
+                    { layout with Height = layout.Height + 5.0 }
+                else
+                    layout
             numberedCounters <- counters
             floatingObstacles <- obstacles
             placedFloatingBoxes <- placedBoxes

@@ -663,6 +663,7 @@ module Table =
 
     type ResolvedCell = {
         Cell: TableCell
+        SourceCellIndex: int
         StartColumn: int
         ColSpan: int
         RowSpan: int
@@ -997,7 +998,16 @@ module Table =
 
     let cellVerticalBorderExtent (cell: TableCell) =
         match cell.Borders with
-        | Some borders -> visibleBorderWidth borders.Top + visibleBorderWidth borders.Bottom
+        | Some borders ->
+            let top = visibleBorderWidth borders.Top
+            let bottom = visibleBorderWidth borders.Bottom
+            let continuationBottomAllowance =
+                match cell.VerticalMerge with
+                // Word gives continuation rows a small extra reserve when the
+                // spanning cell restates only the bottom border.
+                | Some ContinueMerge when top = 0.0 && bottom > 0.0 -> bottom * 0.75
+                | _ -> 0.0
+            max top bottom + continuationBottomAllowance
         | None -> 0.0
 
     let verticalContentOffset verticalAlignment rowHeight paddingTop paddingBottom contentHeight =
@@ -1041,6 +1051,12 @@ module Table =
         | Some value -> printBorderStrokeWithStyle value.Style (value.Color |> Option.orElse fallbackColor) (value.Width |> Option.orElse fallbackWidth)
         | None -> printBorderStroke fallbackColor fallbackWidth
 
+    let private printExplicitBorderStrokeFromBorder (border: TableBorder option) fallbackColor fallbackWidth =
+        match border with
+        | Some value when RedBat.BorderGrid.styleKey value.Style = "nil" || RedBat.BorderGrid.styleKey value.Style = "none" -> None
+        | Some value -> printBorderStrokeWithStyle value.Style (value.Color |> Option.orElse fallbackColor) (value.Width |> Option.orElse fallbackWidth)
+        | None -> None
+
     let cellPrintBorderStroke (cell: TableCell) =
         printBorderStroke cell.BorderColor cell.BorderWidth
 
@@ -1050,12 +1066,12 @@ module Table =
             let stroke = cellPrintBorderStroke cell
             { Top = stroke; Right = stroke; Bottom = stroke; Left = stroke; InsideH = None; InsideV = None }
         | Some borders ->
-            { Top = printBorderStrokeFromBorder borders.Top cell.BorderColor cell.BorderWidth
-              Right = printBorderStrokeFromBorder borders.Right cell.BorderColor cell.BorderWidth
-              Bottom = printBorderStrokeFromBorder borders.Bottom cell.BorderColor cell.BorderWidth
-              Left = printBorderStrokeFromBorder borders.Left cell.BorderColor cell.BorderWidth
-              InsideH = printBorderStrokeFromBorder borders.InsideH cell.BorderColor cell.BorderWidth
-              InsideV = printBorderStrokeFromBorder borders.InsideV cell.BorderColor cell.BorderWidth }
+            { Top = printExplicitBorderStrokeFromBorder borders.Top cell.BorderColor cell.BorderWidth
+              Right = printExplicitBorderStrokeFromBorder borders.Right cell.BorderColor cell.BorderWidth
+              Bottom = printExplicitBorderStrokeFromBorder borders.Bottom cell.BorderColor cell.BorderWidth
+              Left = printExplicitBorderStrokeFromBorder borders.Left cell.BorderColor cell.BorderWidth
+              InsideH = printExplicitBorderStrokeFromBorder borders.InsideH cell.BorderColor cell.BorderWidth
+              InsideV = printExplicitBorderStrokeFromBorder borders.InsideV cell.BorderColor cell.BorderWidth }
 
     let private tablePrintBorders (borders: TableBorders option) : CellPrintBorders =
         match borders with
@@ -1090,6 +1106,14 @@ module Table =
             if borderWeight (Some secondBorder) > borderWeight (Some firstBorder) then Some secondBorder
             else Some firstBorder
 
+    let private resolveBorderConflictWithWinner first second =
+        match first, second with
+        | None, winner -> winner, true
+        | winner, None -> winner, false
+        | Some firstBorder, Some secondBorder ->
+            if borderWeight (Some secondBorder) > borderWeight (Some firstBorder) then Some secondBorder, true
+            else Some firstBorder, false
+
     let private setCellBorders rowIndex cellIndex borders (rows: ResizeArray<ResolvedRow>) =
         let row = rows.[rowIndex]
         let cells = row.Cells |> List.toArray
@@ -1111,9 +1135,13 @@ module Table =
                     if left.StartColumn + left.ColSpan = right.StartColumn then
                         let currentLeft = mutableRows.[rowIndex].Cells.[leftIndex]
                         let currentRight = mutableRows.[rowIndex].Cells.[rightIndex]
-                        let winner = resolveBorderConflict currentLeft.Borders.Right currentRight.Borders.Left
-                        setCellBorders rowIndex leftIndex { currentLeft.Borders with Right = winner; InsideH = None; InsideV = None } mutableRows
-                        setCellBorders rowIndex rightIndex { currentRight.Borders with Left = None; InsideH = None; InsideV = None } mutableRows
+                        let winner, rightWins = resolveBorderConflictWithWinner currentLeft.Borders.Right currentRight.Borders.Left
+                        if rightWins then
+                            setCellBorders rowIndex leftIndex { currentLeft.Borders with Right = None; InsideH = None; InsideV = None } mutableRows
+                            setCellBorders rowIndex rightIndex { currentRight.Borders with Left = winner; InsideH = None; InsideV = None } mutableRows
+                        else
+                            setCellBorders rowIndex leftIndex { currentLeft.Borders with Right = winner; InsideH = None; InsideV = None } mutableRows
+                            setCellBorders rowIndex rightIndex { currentRight.Borders with Left = None; InsideH = None; InsideV = None } mutableRows
 
             for upperIndex in 0 .. mutableRows.[rowIndex].Cells.Length - 1 do
                 let upper = mutableRows.[rowIndex].Cells.[upperIndex]
@@ -1124,9 +1152,13 @@ module Table =
                         if overlaps upper.StartColumn upper.ColSpan lower.StartColumn lower.ColSpan then
                             let currentUpper = mutableRows.[rowIndex].Cells.[upperIndex]
                             let currentLower = mutableRows.[lowerRowIndex].Cells.[lowerIndex]
-                            let winner = resolveBorderConflict currentUpper.Borders.Bottom currentLower.Borders.Top
-                            setCellBorders rowIndex upperIndex { currentUpper.Borders with Bottom = winner; InsideH = None; InsideV = None } mutableRows
-                            setCellBorders lowerRowIndex lowerIndex { currentLower.Borders with Top = None; InsideH = None; InsideV = None } mutableRows
+                            let winner, lowerWins = resolveBorderConflictWithWinner currentUpper.Borders.Bottom currentLower.Borders.Top
+                            if lowerWins then
+                                setCellBorders rowIndex upperIndex { currentUpper.Borders with Bottom = None; InsideH = None; InsideV = None } mutableRows
+                                setCellBorders lowerRowIndex lowerIndex { currentLower.Borders with Top = winner; InsideH = None; InsideV = None } mutableRows
+                            else
+                                setCellBorders rowIndex upperIndex { currentUpper.Borders with Bottom = winner; InsideH = None; InsideV = None } mutableRows
+                                setCellBorders lowerRowIndex lowerIndex { currentLower.Borders with Top = None; InsideH = None; InsideV = None } mutableRows
 
         mutableRows |> Seq.toList
 
@@ -1148,7 +1180,7 @@ module Table =
             let resolvedCells = ResizeArray<ResolvedCell>()
 
             positionedCells row
-            |> List.iter (fun positioned ->
+            |> List.iteri (fun sourceCellIndex positioned ->
                 let cell = positioned.Cell
                 let borders = cellPrintBordersWithTableFallback table.Borders rowIndex rowCount columns positioned cell
                 match cell.VerticalMerge with
@@ -1159,9 +1191,9 @@ module Table =
                         setResolvedCellRowSpan rowIndex cellIndex nextSpan resolvedRows
                         activeMerges <- activeMerges |> Map.add positioned.StartColumn (rowIndex, cellIndex, nextSpan)
                     | None ->
-                        resolvedCells.Add({ Cell = cell; StartColumn = positioned.StartColumn; ColSpan = positioned.Span; RowSpan = 1; Borders = borders })
+                        resolvedCells.Add({ Cell = cell; SourceCellIndex = sourceCellIndex; StartColumn = positioned.StartColumn; ColSpan = positioned.Span; RowSpan = 1; Borders = borders })
                 | _ ->
-                    let resolvedCell = { Cell = cell; StartColumn = positioned.StartColumn; ColSpan = positioned.Span; RowSpan = 1; Borders = borders }
+                    let resolvedCell = { Cell = cell; SourceCellIndex = sourceCellIndex; StartColumn = positioned.StartColumn; ColSpan = positioned.Span; RowSpan = 1; Borders = borders }
                     let cellIndex = resolvedCells.Count
                     resolvedCells.Add(resolvedCell)
                     match cell.VerticalMerge with

@@ -539,7 +539,14 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
             let measurement = measureTableRowWithStyle rowLocalSettings measureText measureRange tableBlock tableMaxWidth columnWidths outerLeft row.Source 0.0 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
             measurement.Height
 
-        let addRowCommands (row: WordLayout.Table.ResolvedRow) currentY rowHeight =
+        let rowHeights = resolvedTable.BodyRows |> List.map rowHeightAt |> List.toArray
+
+        let rowSpanHeightAt rowIndex rowSpan fallback =
+            [rowIndex .. rowIndex + max 1 rowSpan - 1]
+            |> List.sumBy (fun index -> rowHeights |> Array.tryItem index |> Option.defaultValue 0.0)
+            |> max fallback
+
+        let addRowCommands rowIndex (row: WordLayout.Table.ResolvedRow) currentY rowHeight =
             let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row.Source
             for fragmentY, fragmentHeight in rowFragments settings currentY rowHeight do
                 commands <- commands @ tableFillCommands tableBlock.BackgroundColor tableBlock.Shading tableX fragmentY tableWidth fragmentHeight
@@ -559,7 +566,8 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                             cellPadding
                     let paintTopAdjustment = WordLayout.Table.spacedCellPaintTopAdjustment cellSpacing textPadding cellPadding
                     let cellY = currentY + WordLayout.Table.spacedCellPaintTopOffset cellSpacing - paintTopAdjustment
-                    let cellHeight = WordLayout.Table.spacedCellPaintHeight rowHeight cellSpacing + paintTopAdjustment
+                    let spannedRowHeight = rowSpanHeightAt rowIndex resolved.RowSpan rowHeight
+                    let cellHeight = WordLayout.Table.spacedCellPaintHeight spannedRowHeight cellSpacing + paintTopAdjustment
                     for fragmentY, fragmentHeight in rowFragments settings cellY cellHeight do
                         commands <- commands @ tableFillCommands cell.BackgroundColor cell.Shading x fragmentY width fragmentHeight
                     ({
@@ -579,9 +587,14 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                         }
                     }: RedBat.BorderGrid.Cell))
 
+            let borderFragmentHeight =
+                cells
+                |> List.map _.Height
+                |> List.fold max rowHeight
+
             RedBat.BorderGrid.resolve cells
             |> List.iter (fun segment ->
-                for fragmentY, fragmentHeight in rowFragments settings currentY rowHeight do
+                for fragmentY, fragmentHeight in rowFragments settings currentY borderFragmentHeight do
                     let y1 = max segment.Y1 fragmentY
                     let y2 = min segment.Y2 (fragmentY + fragmentHeight)
                     if segment.Y1 = segment.Y2 then
@@ -595,25 +608,28 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
 
         let headerHeightAt rowY =
             headerRows
-            |> List.fold (fun (currentY, totalHeight) headerRow ->
-                let headerHeight = rowHeightAt headerRow
+            |> List.indexed
+            |> List.fold (fun (currentY, totalHeight) (headerIndex, headerRow) ->
+                let headerHeight = rowHeights |> Array.tryItem headerIndex |> Option.defaultWith (fun () -> rowHeightAt headerRow)
                 currentY + headerHeight, totalHeight + headerHeight) (rowY, 0.0)
             |> snd
 
-        for row in rows do
-            let rowHeight = rowHeightAt row
+        for rowIndex in 0 .. rows.Length - 1 do
+            let row = rows.[rowIndex]
+            let rowHeight = rowHeights.[rowIndex]
             let pagedY = paginateTableRow settings row.Source currentY rowHeight
 
             if pagedY <> currentY && not row.IsHeader && not headerRows.IsEmpty then
                 currentY <- pagedY
-                for headerRow in headerRows do
-                    let headerHeight = rowHeightAt headerRow
-                    addRowCommands headerRow currentY headerHeight
+                for headerIndex in 0 .. headerRows.Length - 1 do
+                    let headerRow = headerRows.[headerIndex]
+                    let headerHeight = rowHeights |> Array.tryItem headerIndex |> Option.defaultWith (fun () -> rowHeightAt headerRow)
+                    addRowCommands headerIndex headerRow currentY headerHeight
                     currentY <- currentY + headerHeight
             else
                 currentY <- pagedY
 
-            addRowCommands row currentY rowHeight
+            addRowCommands rowIndex row currentY rowHeight
             currentY <- currentY + rowHeight
 
         let bottomSpacing = WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock

@@ -58,29 +58,18 @@ module BorderGrid =
         |> Option.defaultValue "single"
 
     let strokePattern style =
-        let fromWidthsAndGaps values =
-            let total = values |> List.sum
-            let mutable cursor = -total / 2.0
-            values
-            |> List.mapi (fun index value ->
-                let start = cursor
-                cursor <- cursor + value
-                if index % 2 = 0 then Some (start + value / 2.0, value) else None)
-            |> List.choose id
-            |> List.map (fun (offset, width) -> offset / total, width / total)
-
         match styleKey style with
-        | "double" -> fromWidthsAndGaps [1.0; 1.0; 1.0]
-        | "triple" -> fromWidthsAndGaps [1.0; 1.0; 1.0; 1.0; 1.0]
-        | "thinthicksmallgap" -> fromWidthsAndGaps [1.0; 1.0; 2.0]
-        | "thickthinsmallgap" -> fromWidthsAndGaps [2.0; 1.0; 1.0]
-        | "thinthickthinsmallgap" -> fromWidthsAndGaps [1.0; 1.0; 2.0; 1.0; 1.0]
-        | "thinthickmediumgap" -> fromWidthsAndGaps [1.0; 2.0; 2.0]
-        | "thickthinmediumgap" -> fromWidthsAndGaps [2.0; 2.0; 1.0]
-        | "thinthickthinmediumgap" -> fromWidthsAndGaps [1.0; 2.0; 2.0; 2.0; 1.0]
-        | "thinthicklargegap" -> fromWidthsAndGaps [1.0; 3.0; 2.0]
-        | "thickthinlargegap" -> fromWidthsAndGaps [2.0; 3.0; 1.0]
-        | "thinthickthinlargegap" -> fromWidthsAndGaps [1.0; 3.0; 2.0; 3.0; 1.0]
+        | "double" -> [ -1.0, 1.0; 1.0, 1.0 ]
+        | "triple" -> [ -2.0, 1.0; 0.0, 1.0; 2.0, 1.0 ]
+        | "thinthicksmallgap" -> [ -1.5, 1.0; 1.0, 2.0 ]
+        | "thickthinsmallgap" -> [ -1.0, 2.0; 1.5, 1.0 ]
+        | "thinthickthinsmallgap" -> [ -2.0, 1.0; 0.0, 2.0; 2.0, 1.0 ]
+        | "thinthickmediumgap" -> [ -2.0, 1.0; 1.0, 2.0 ]
+        | "thickthinmediumgap" -> [ -1.0, 2.0; 2.0, 1.0 ]
+        | "thinthickthinmediumgap" -> [ -3.0, 1.0; 0.0, 2.0; 3.0, 1.0 ]
+        | "thinthicklargegap" -> [ -2.5, 1.0; 1.5, 2.0 ]
+        | "thickthinlargegap" -> [ -1.5, 2.0; 2.5, 1.0 ]
+        | "thinthickthinlargegap" -> [ -4.0, 1.0; 0.0, 2.0; 4.0, 1.0 ]
         | _ -> [0.0, 1.0]
 
     let private normalizedStyle stroke = styleKey stroke.Style

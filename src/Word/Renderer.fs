@@ -93,7 +93,7 @@ let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.Tex
     ctx.Ctx.font <- sprintf "%s %fpx %s" fontStyle fontSize (cssFontFamily fontFamily)
     ctx.Ctx.measureText(text).width
 
-let private layoutSettings (ctx: RenderContext) (doc: Document) =
+let layoutSettings (ctx: RenderContext) (doc: Document) =
     let hasFooter = not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty
     let footerReserve =
         if hasFooter then doc.PageSetup.FooterDistance + ctx.LineHeight * 1.5
@@ -111,12 +111,12 @@ let private layoutSettings (ctx: RenderContext) (doc: Document) =
     TableContinuationHeaderHeight = 0.0
     }
 
-let private measureWithContext ctx text style =
+let measureWithContext ctx text style =
     match ctx.TextMeasurer with
     | Some measure -> measure text style
     | None -> measureTextStyled ctx text style
 
-let private measureRangeWithContext ctx text style start length =
+let measureRangeWithContext ctx text style start length =
     match ctx.TextRangeMeasurer with
     | Some measureRange -> measureRange text style start length
     | None -> rangeMeasurerFromTextMeasurer (measureWithContext ctx) text style start length

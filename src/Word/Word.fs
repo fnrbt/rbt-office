@@ -309,6 +309,142 @@ module API =
 
         pairs |> Map.ofList
 
+    let private tableParagraphIds (table: Doc.TableBlock) =
+        table.Rows
+        |> List.collect (fun row ->
+            row.Cells
+            |> List.collect (fun cell -> cell.Content |> List.map _.Id))
+
+    let private canonicalTableYFromLayouts settings measureText measureRange doc (layouts: Layout.BlockLayout list) (table: Doc.TableBlock) =
+        let layoutById = layouts |> List.map (fun layout -> layout.BlockId, layout) |> Map.ofList
+        let actualContentY =
+            tableParagraphIds table
+            |> List.choose (fun id -> layoutById |> Map.tryFind id |> Option.map _.Y)
+
+        match actualContentY with
+        | [] -> None
+        | values ->
+            let planAtZero = Layout.buildTableLayoutPlanForDocumentAt settings measureText measureRange doc table 0.0
+            let plannedContentY =
+                planAtZero.Rows
+                |> List.collect (fun row ->
+                    row.Measurement.CellGroups
+                    |> List.collect (fun group ->
+                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment row.Height group.PaddingTop group.PaddingBottom group.ContentHeight
+                        group.Layouts |> List.map (fun layout -> layout.Y + offset)))
+            match plannedContentY with
+            | [] -> None
+            | plannedValues -> Some ((values |> List.min) - (plannedValues |> List.min))
+
+    let private strokeGeometry (stroke: WordLayout.Table.PrintStroke option) =
+        match stroke with
+        | None -> null
+        | Some value ->
+            createObj [
+                "Color" ==> value.Color
+                "Width" ==> value.Width
+                "Style" ==> value.Style
+            ]
+
+    let getTableGeometry (editor: Editor) =
+        let ctx = editor.Handler.RenderContext
+        let settings = Ren.layoutSettings ctx editor.Doc
+        let measureText = Ren.measureWithContext ctx
+        let measureRange = Ren.measureRangeWithContext ctx
+        let layouts = Ren.layoutDocument ctx editor.Doc
+        let layoutsById = layouts |> List.groupBy _.BlockId |> Map.ofList
+        let mutable currentY = editor.Doc.PageSetup.MarginTop
+        let mutable tableIndex = 0
+        let mutable rows: obj list = []
+        let mutable cells: obj list = []
+        let mutable segments: obj list = []
+
+        let paragraphEndY (para: Doc.ParagraphBlock) =
+            layoutsById
+            |> Map.tryFind para.Id
+            |> Option.bind List.tryHead
+            |> Option.map (fun layout -> layout.Y + layout.Height)
+
+        for block in editor.Doc.Blocks do
+            match block with
+            | Doc.Paragraph para
+            | Doc.Heading (_, para) ->
+                paragraphEndY para |> Option.iter (fun y -> currentY <- y)
+                if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
+                    currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
+            | Doc.Table table ->
+                tableIndex <- tableIndex + 1
+                let tableY =
+                    canonicalTableYFromLayouts settings measureText measureRange editor.Doc layouts table
+                    |> Option.defaultValue currentY
+                let plan = Layout.buildTableLayoutPlanForDocumentAt settings measureText measureRange editor.Doc table tableY
+
+                rows <-
+                    rows @ (
+                        plan.Rows
+                        |> List.map (fun row ->
+                            createObj [
+                                "Kind" ==> "table-row"
+                                "Table" ==> tableIndex
+                                "Row" ==> (row.RowIndex + 1)
+                                "Y" ==> row.Y
+                                "PageY" ==> (row.Y - pageTopForYInDoc editor.Doc row.Y)
+                                "Height" ==> row.Height
+                                "FragmentCount" ==> row.Fragments.Length
+                                "IsHeader" ==> row.IsHeader
+                                "CanSplit" ==> row.CanSplit
+                            ]))
+
+                let cellFragments = Layout.tableCellFragmentPlans plan
+                cells <-
+                    cells @ (
+                        cellFragments
+                        |> List.map (fun cell ->
+                            createObj [
+                                "Kind" ==> "table-cell"
+                                "Table" ==> tableIndex
+                                "Row" ==> (cell.RowIndex + 1)
+                                "Cell" ==> (cell.CellIndex + 1)
+                                "StartColumn" ==> (cell.StartColumn + 1)
+                                "ColumnSpan" ==> cell.ColumnSpan
+                                "RowSpan" ==> cell.RowSpan
+                                "Page" ==> cell.Page
+                                "X" ==> cell.CellX
+                                "Y" ==> cell.CellY
+                                "PageY" ==> (cell.CellY - pageTopForYInDoc editor.Doc cell.CellY)
+                                "Width" ==> cell.CellWidth
+                                "Height" ==> cell.CellHeight
+                                "BorderTop" ==> strokeGeometry cell.BorderTop
+                                "BorderRight" ==> strokeGeometry cell.BorderRight
+                                "BorderBottom" ==> strokeGeometry cell.BorderBottom
+                                "BorderLeft" ==> strokeGeometry cell.BorderLeft
+                            ]))
+
+                segments <-
+                    segments @ (
+                        cellFragments
+                        |> Layout.tableCellFragmentBorderCells
+                        |> RedBat.BorderGrid.resolve
+                        |> List.map (fun segment ->
+                            createObj [
+                                "Kind" ==> "table-border-segment"
+                                "Table" ==> tableIndex
+                                "X1" ==> segment.X1
+                                "Y1" ==> segment.Y1
+                                "X2" ==> segment.X2
+                                "Y2" ==> segment.Y2
+                                "PageY1" ==> (segment.Y1 - pageTopForYInDoc editor.Doc segment.Y1)
+                                "PageY2" ==> (segment.Y2 - pageTopForYInDoc editor.Doc segment.Y2)
+                                "Color" ==> segment.Stroke.Color
+                                "Width" ==> segment.Stroke.Width
+                                "Style" ==> segment.Stroke.Style
+                            ]))
+
+                currentY <- plan.NextY
+            | Doc.TextBox _ -> ()
+
+        (rows @ cells @ segments) |> List.toArray
+
     let private sectionNumbersByParagraphId (doc: Doc.Document) =
         let mutable section = 1
         let mutable pairs: (string * int) list = []

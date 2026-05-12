@@ -108,6 +108,8 @@ try {
             Bounds: window.rbWordRunner.getRangeBounds(line.BlockId, line.StartOffset, line.EndOffset),
           }))
         )
+      : layoutMode === 'table-geometry'
+        ? await page.evaluate(() => window.rbWordRunner.getTableGeometry())
       : layoutMode === 'vba' || layoutMode === 'vba-lines'
       ? await page.evaluate(() => window.rbWordRunner.getVbaLayoutLines())
       : layoutMode === 'lines'
