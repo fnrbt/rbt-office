@@ -11,6 +11,7 @@ const options = {
   limit: Infinity,
   maxLines: 500,
   threshold: 6,
+  wordSource: 'vbs',
 };
 
 const inputs = [];
@@ -20,11 +21,16 @@ for (let i = 0; i < args.length; i++) {
   else if (arg === '--limit') options.limit = Number(args[++i]);
   else if (arg === '--max-lines') options.maxLines = Number(args[++i]);
   else if (arg === '--threshold') options.threshold = Number(args[++i]);
+  else if (arg === '--word-source') options.wordSource = args[++i];
   else if (arg === '-h' || arg === '--help') usage(0);
   else inputs.push(arg);
 }
 
 if (inputs.length === 0) usage(2);
+if (!['vbs', 'pdf'].includes(options.wordSource)) {
+  console.error(`unsupported --word-source ${options.wordSource}; expected vbs or pdf`);
+  process.exit(2);
+}
 
 fs.mkdirSync(options.outDir, { recursive: true });
 
@@ -42,12 +48,13 @@ for (const docx of docs) {
   fs.mkdirSync(docOut, { recursive: true });
 
   const wordTsv = path.join(docOut, 'word-layout.tsv');
+  const wordPdf = path.join(docOut, 'word.pdf');
   const browserJson = path.join(docOut, 'browser-lines.json');
   const browserPng = path.join(docOut, 'browser.png');
   const reportTsv = path.join(docOut, 'layout-diff.tsv');
 
   console.log(`compare: ${rel}`);
-  const wordOk = run('tools/word-parity/word-layout-tsv.sh', [docx, wordTsv]);
+  const wordOk = captureWordLayout(docx, wordTsv, wordPdf);
   const browserOk = run('node', ['tools/word-parity/capture-browser-docx.mjs', docx, browserPng, browserJson], {
     BROWSER_CAPTURE_LAYOUT: 'lines',
   });
@@ -71,6 +78,16 @@ for (const docx of docs) {
   const pairs = alignLines(wordLines, browserLines);
   const diffs = buildDiffs(pairs);
   writeReport(reportTsv, diffs);
+
+  if (pairs.length === 0) {
+    summaryRows.push({
+      doc: rel,
+      status: 'no-matches',
+      score: '',
+      detail: `0 matched lines: word=${wordLines.length} browser=${browserLines.length}`,
+    });
+    continue;
+  }
 
   const suspicious = diffs
     .filter(row => row.score >= options.threshold)
@@ -107,11 +124,20 @@ Options:
   --limit N       max number of discovered DOCX files
   --max-lines N   compare first N non-empty lines per document (default: 500)
   --threshold N   include rows at or above this CSS-pixel delta (default: 6)
+  --word-source S extract Word reference positions from vbs or printed pdf (default: vbs)
 
 Outputs per document:
-  word-layout.tsv, browser-lines.json, browser.png, layout-diff.tsv
+  word-layout.tsv, browser-lines.json, browser.png, layout-diff.tsv; pdf mode also keeps word.pdf
 `);
   process.exit(code);
+}
+
+function captureWordLayout(docx, wordTsv, wordPdf) {
+  if (options.wordSource === 'pdf') {
+    return run('tools/word-parity/word-print-pdf.sh', [docx, wordPdf])
+      && run('python3', ['tools/word-parity/extract-pdf-text-layout.py', wordPdf, wordTsv]);
+  }
+  return run('tools/word-parity/word-layout-tsv.sh', [docx, wordTsv]);
 }
 
 function collectDocx(paths) {

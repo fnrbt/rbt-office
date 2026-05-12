@@ -14,7 +14,12 @@ const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1900, height: 1400 }, deviceScaleFactor: 1 });
   await page.goto(pathToFileURL(html).href, { waitUntil: 'load' });
-  await page.screenshot({ path: output, fullPage: true });
+  try {
+    await page.screenshot({ path: output, fullPage: true });
+  } catch (error) {
+    console.warn(`full-page screenshot failed, falling back to viewport: ${error.message}`);
+    await page.screenshot({ path: output, fullPage: false });
+  }
   console.log(`gallery screenshot ok: ${html} -> ${output}`);
 } finally {
   await browser.close();

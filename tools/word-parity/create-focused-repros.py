@@ -675,6 +675,20 @@ def main():
             ], [2303, 2303, 2303, 2303])
             + paragraph("After dense table")
         ), True, True, table_grid_dense_row_pitch_styles()),
+        "table-valign-row-height.docx": (False, False, False, (
+            paragraph("Table valign row height repro", "Heading1")
+            + table_grid_style_table([
+                row_cells_props([
+                    cell("A", width=4606),
+                    cell("B", width=4606, alignment="right"),
+                ], height=1134),
+                row_cells_props([
+                    cell("C", width=4606, valign="bottom"),
+                    cell("D", width=4606, alignment="right", valign="bottom"),
+                ], height=1134),
+            ], [4606, 4606])
+            + paragraph("After valign table")
+        ), True, True, table_grid_paragraph_spacing_styles()),
         "table-cell-explicit-before-spacing.docx": (False, (
             paragraph("Table cell before-spacing repro", "Heading1")
             + table([
