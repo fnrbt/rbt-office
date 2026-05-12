@@ -147,8 +147,8 @@
       <tr>
         <th class="case">Case</th>
         <th class="render">Excel Reference</th>
-        <th class="render">Ours Before</th>
         <th class="render">Ours After</th>
+        <th class="render">Ours Before</th>
         <th class="summary">Fix / Guard</th>
       </tr>
     </thead>
@@ -168,15 +168,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/testmultiindex-before-borders.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before per-cell border rendering">
-          </div>
-          <div class="caption">Before: <code>parseStyles</code> ignored the <code>&lt;borders&gt;</code> block entirely. The cell paint pipeline only drew the default <code>#a6a6a6</code> gridline, so the rendered table looked faint compared to Excel's strong cell grid.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/testmultiindex-after-borders.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after per-cell border rendering">
           </div>
           <div class="caption">After: <code>parseBorder</code> reads each side's <code>style</code> + <code>&lt;color&gt;</code>; <code>parseCellXf</code> indexes into the borders array via <code>borderId</code>; <code>cellFormatFromStyle</code> maps to <code>BorderStyle option</code>; <code>buildCellPaintItems</code> emits <code>GridLine</code> commands per side at a stroke width chosen by the OOXML style (<code>thin</code> → 1.0 px, <code>medium</code> → 1.5 px, <code>thick</code> → 2.5 px).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/testmultiindex-before-borders.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before per-cell border rendering">
+          </div>
+          <div class="caption">Before: <code>parseStyles</code> ignored the <code>&lt;borders&gt;</code> block entirely. The cell paint pipeline only drew the default <code>#a6a6a6</code> gridline, so the rendered table looked faint compared to Excel's strong cell grid.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> end-to-end border plumbing. <code>src/Office.Formats/src/XlsxReader.fs</code>: add <code>CellBorderSide</code> + <code>BorderRecord</code>, parse the <code>&lt;borders&gt;</code> block, extend <code>CellStyle</code> with <code>BorderTop</code>/<code>BorderBottom</code>/<code>BorderLeft</code>/<code>BorderRight</code>, and have <code>parseCellXf</code> look up the cellXf's <code>borderId</code>. <code>tools/excel-native-runner/Program.fs</code>: forward the four sides through <code>cellFormatFromStyle</code>. <code>src/Spreadsheet/Paint.fs</code>: per-cell <code>GridLine</code> emits for whichever sides are set, with <code>borderStrokeWidth</code> mapping OOXML style names to stroke widths.</p>
@@ -202,15 +202,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/multiindex_no_index_names-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before range fix">
-          </div>
-          <div class="caption">Before: only column D (the <code>min</code>) got the 5.41-char width; cols E / F / G fell back to the 8.43-char sheet default (≈ 67 px each), so the right-hand block widened by ~70 px and broke the spacing of the merged headers above.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/multiindex_no_index_names-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after range fix">
           </div>
           <div class="caption">After: <code>columnInfo</code> records both <code>min</code> and <code>max</code>; the runner fans the same width into every column in the range. Cols D–G now share the 43-px width and the table footprint matches Excel.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/multiindex_no_index_names-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before range fix">
+          </div>
+          <div class="caption">Before: only column D (the <code>min</code>) got the 5.41-char width; cols E / F / G fell back to the 8.43-char sheet default (≈ 67 px each), so the right-hand block widened by ~70 px and broke the spacing of the merged headers above.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> add <code>MaxIndex</code> to <code>Xlsx.ColumnInfo</code> in <code>src/Office.Formats/src/XlsxReader.fs</code>, parse the <code>max</code> attribute (default to <code>min</code>), and in <code>tools/excel-native-runner/Program.fs</code> emit one <code>ColumnWidths</code> entry per column in <code>min..max</code> instead of just one for the first.</p>
@@ -236,15 +236,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/poi-47813-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.8" alt="Ours before format code support">
-          </div>
-          <div class="caption">Before: <code>cellDisplayText</code> for non-date format codes called <code>Model.formatNumber</code>, which only recognised the legacy <code>currency</code>/<code>percentage</code>/<code>decimal2</code>/<code>number</code>/<code>date</code> tags and fell through to <code>string n</code> for everything else. <code>0.000</code> didn't match any tag → raw <code>G</code> representation → didn't fit the narrow column → <code>fitOrOverflow</code> emitted <code>#####</code>.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/poi-47813-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.8" alt="Ours after format code support">
           </div>
           <div class="caption">After: real Excel format codes pass through a new <code>formatExcelNumber</code> helper that hands the (positive section of the) format string directly to <code>Double.ToString</code>, which natively understands <code>0.000</code>, <code>#,##0.00</code>, <code>0%</code>, scientific, etc. Sine/Cosine values match Excel exactly to 3 decimals.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/poi-47813-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.8" alt="Ours before format code support">
+          </div>
+          <div class="caption">Before: <code>cellDisplayText</code> for non-date format codes called <code>Model.formatNumber</code>, which only recognised the legacy <code>currency</code>/<code>percentage</code>/<code>decimal2</code>/<code>number</code>/<code>date</code> tags and fell through to <code>string n</code> for everything else. <code>0.000</code> didn't match any tag → raw <code>G</code> representation → didn't fit the narrow column → <code>fitOrOverflow</code> emitted <code>#####</code>.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> in <code>src/Spreadsheet/Paint.fs</code>, split <code>cellDisplayText</code>'s number branch into three: explicit named formats (<code>currency</code>/<code>percentage</code>/…) still go through <code>Model.formatNumber</code>; <code>General</code> goes through <code>generalNumberDisplay</code>; everything else routes to <code>formatExcelNumber</code>, which strips the section separator, converts <code>\x</code> escapes to <code>'x'</code> literals, and passes the format directly to <code>Double.ToString</code> with a <code>G</code> fallback if .NET rejects it.</p>
@@ -270,15 +270,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/phpsp-32chartreadwrite-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before fix">
-          </div>
-          <div class="caption">Before: rows 4–7 rendered <em>empty</em> because <code>Xlsx.cellValue</code> matched <code>&lt;f&gt;</code> before <code>&lt;v&gt;</code> and returned <code>Formula expr</code> with no cache; the runner translated that to <code>Formula (expr, Empty)</code> so <code>cellDisplayText</code> drew nothing. Year banners hugged the right edge of their merged ranges (<code>HorizontalAlign = None</code> → General → right). Default columns rendered at 100 px (generic <code>SpreadsheetModel</code> fallback), spreading the table about 1.5× wider than Excel.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/phpsp-32chartreadwrite-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after fix">
           </div>
           <div class="caption">After: cached <code>&lt;v&gt;</code> values populate every data cell, merged banners centre, default columns shrink to 8.43 × 8 ≈ 67 px. Now matches Excel's structural layout (same merged regions, same alignment, same bold, same right-aligned numerics). Data values differ because <code>RANDBETWEEN</code> recomputed between Excel's save and ours.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/phpsp-32chartreadwrite-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before fix">
+          </div>
+          <div class="caption">Before: rows 4–7 rendered <em>empty</em> because <code>Xlsx.cellValue</code> matched <code>&lt;f&gt;</code> before <code>&lt;v&gt;</code> and returned <code>Formula expr</code> with no cache; the runner translated that to <code>Formula (expr, Empty)</code> so <code>cellDisplayText</code> drew nothing. Year banners hugged the right edge of their merged ranges (<code>HorizontalAlign = None</code> → General → right). Default columns rendered at 100 px (generic <code>SpreadsheetModel</code> fallback), spreading the table about 1.5× wider than Excel.</div>
         </td>
         <td>
           <p><strong>Three combined fixes:</strong></p>
@@ -309,15 +309,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-testmultiindex-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before bold font fix">
-          </div>
-          <div class="caption">Before: every glyph went through the default Calibri TTF regardless of <code>PaintText.Bold</code>. Column A index values and the header row rendered visually identical to the data rows.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-testmultiindex-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after bold font fix">
           </div>
           <div class="caption">After: a font-variant cache picks <code>calibrib.ttf</code> / <code>calibrii.ttf</code> / <code>calibriz.ttf</code> for bold / italic / bold-italic cells, mirroring the WordEditor cache. Header row and column-A index now render bold like Excel.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-testmultiindex-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before bold font fix">
+          </div>
+          <div class="caption">Before: every glyph went through the default Calibri TTF regardless of <code>PaintText.Bold</code>. Column A index values and the header row rendered visually identical to the data rows.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> port WordEditor's font-variant cache into <code>spreadsheet-native/SpreadsheetGrid.fs</code>. <code>loadVariant bold italic</code> picks the matching Calibri TTF from <code>RB_WORD_FONT_DIR</code> / <code>artifacts/fonts/windows</code> / sibling <code>office/artifacts/fonts/windows</code>, falling back to the default font when the variant isn't present so the renderer keeps working without Windows fonts.</p>
@@ -343,15 +343,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-times_1900-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before tokenizer fix">
-          </div>
-          <div class="caption">Before: the substring-replace tokenizer plus a <code>runOf</code> helper that used the outer index on a substring (length 0 against the substring) lost both the leading hour digit and every fractional millisecond — every cell rendered as <code>HH:mm:ss.000</code>.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-times_1900-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after tokenizer fix">
           </div>
           <div class="caption">After: a proper character-level tokenizer walks the Excel format, tracks date-vs-time context for the shared <code>m</code> token, maps <code>hh/h</code> to <code>HH/H</code> (or <code>hh/h</code> when <code>am/pm</code> is present), wraps unknown chars as <code>'…'</code> literals, and translates <code>.000</code> to <code>.fff</code>. Output matches Excel within ~1 ms (rounding artifact between Excel's banker's rounding and .NET's truncation).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-times_1900-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before tokenizer fix">
+          </div>
+          <div class="caption">Before: the substring-replace tokenizer plus a <code>runOf</code> helper that used the outer index on a substring (length 0 against the substring) lost both the leading hour digit and every fractional millisecond — every cell rendered as <code>HH:mm:ss.000</code>.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> rewrite the Excel-format → .NET-format converter in <code>src/Spreadsheet/Paint.fs</code> as a character-level tokenizer (<code>excelToNetFormat</code>). Recognizes <code>y[y[y[y]]]</code>, <code>d[d[d[d]]]</code>, <code>h[h]</code>, <code>m[m[m[m[m]]]]</code>, <code>s[s]</code>, <code>am/pm</code> / <code>a/p</code>, <code>.0</code>/<code>.00</code>/<code>.000</code> fractional-second suffixes, quoted/escaped literals, and elapsed-time brackets. <code>m</code> resolves to minute when adjacent to <code>h</code>/<code>s</code>/<code>:</code> tokens, month otherwise.</p>
@@ -378,15 +378,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test_types-iter5-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before date interpretation">
-          </div>
-          <div class="caption">Before: <code>cellDisplayText</code> for <code>Number</code> cells called <code>formatNumber</code> with the raw Excel format code. <code>m/d/yyyy;@</code> isn't one of the legacy tags it understood, so the path fell through to <code>string value</code> and printed the raw Excel serials <code>41577</code>, <code>41578</code>, <code>1828</code>, <code>41622</code>, <code>42077</code>.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-test_types-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after date interpretation">
           </div>
           <div class="caption">After: <code>isDateFormat</code> / <code>isTimeFormat</code> detect Excel date/time codes; <code>formatExcelDate</code> converts the serial via <code>excelSerialToDate</code> (handles the 1900-leap-year quirk), maps the Excel format tokens to .NET ones, and respects the <code>;@</code> text-section separator. <code>DateCol</code> matches Excel exactly.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test_types-iter5-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before date interpretation">
+          </div>
+          <div class="caption">Before: <code>cellDisplayText</code> for <code>Number</code> cells called <code>formatNumber</code> with the raw Excel format code. <code>m/d/yyyy;@</code> isn't one of the legacy tags it understood, so the path fell through to <code>string value</code> and printed the raw Excel serials <code>41577</code>, <code>41578</code>, <code>1828</code>, <code>41622</code>, <code>42077</code>.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> add the OOXML built-in <code>numFmtId</code> table to <code>Xlsx.parseCellXf</code> in <code>src/Office.Formats/src/XlsxReader.fs</code> (so files like <code>pandas-test1</code> with <code>numFmtId="22"</code> and no custom <code>&lt;numFmt&gt;</code> still get the <code>m/d/yyyy h:mm</code> code). In <code>src/Spreadsheet/Paint.fs</code>, add date/time detection, the <code>excelSerialToDate</code> converter, and a token mapper that translates Excel's <code>m/d/yyyy</code>, <code>h:mm</code>, <code>mmm-yy</code>, etc. into .NET's format codes. Strip the <code>;@</code> section before interpreting. Guard <code>DateTime.AddDays</code> against out-of-range serials so <code>pandas-testdateoverflow.xlsx</code> doesn't crash a render.</p>
@@ -414,15 +414,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-iter4-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before selection-snapshot fix">
-          </div>
-          <div class="caption">Before: <code>createEmpty</code> always parks the selection at <code>SingleCell(0,0)</code>, so the paint layer drew the green active-cell border around <code>A1</code> in every snapshot.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-test1-iter4.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after selection-snapshot fix">
           </div>
           <div class="caption">After: the native runner overrides the model's <code>Selection</code> to <code>SingleCell(-1,-1)</code> (off-grid) before rendering, so the green active-cell box never gets drawn. The Fable interactive shell still gets its <code>SingleCell(0,0)</code> default.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-iter4-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before selection-snapshot fix">
+          </div>
+          <div class="caption">Before: <code>createEmpty</code> always parks the selection at <code>SingleCell(0,0)</code>, so the paint layer drew the green active-cell border around <code>A1</code> in every snapshot.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> in <code>tools/excel-native-runner/Program.fs</code>, override <code>Selection</code> to an off-grid sentinel before handing the model to <code>SpreadsheetGrid.widget</code>. Paint's <code>isSelected</code> returns false for every visible cell, so the green border and the green fill are both suppressed.</p>
@@ -448,15 +448,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-iter3-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before General format trimming">
-          </div>
-          <div class="caption">Before: <code>displayValue</code> used .NET's <code>n.ToString("G")</code>, which keeps up to 15 significant digits. Numbers like <code>0.980268513777</code> overflowed the cell and spilled visually into the neighbouring column on the left (after right-alignment).</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-test1-iter3.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after General format trimming">
           </div>
           <div class="caption">After: <code>cellDisplayText</code> picks the longest <code>G&lt;n&gt;</code> representation that fits the cell width (8 px padding, ~7 px per character), and falls back to <code>#####</code> when even the shortest formatting doesn't fit.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-iter3-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before General format trimming">
+          </div>
+          <div class="caption">Before: <code>displayValue</code> used .NET's <code>n.ToString("G")</code>, which keeps up to 15 significant digits. Numbers like <code>0.980268513777</code> overflowed the cell and spilled visually into the neighbouring column on the left (after right-alignment).</div>
         </td>
         <td>
           <p><strong>Fix:</strong> in <code>src/Spreadsheet/Paint.fs</code>, route <code>Number</code> cells through a new <code>generalNumberDisplay</code> that respects <code>cell.Rect.Width</code>. Tries <code>G10</code>, <code>G8</code>, <code>G6</code>, <code>G5</code>, <code>G4</code>, <code>G3</code>, <code>G2</code>, <code>G1</code> in order; returns <code>String('#', maxChars)</code> if nothing fits.</p>
@@ -482,15 +482,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-iter2-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before alignment fix">
-          </div>
-          <div class="caption">Before: <code>alignFromFormat</code> only looked at <code>format.HorizontalAlign</code>; an absent value fell through to <code>AlignLeft</code>. Every numeric cell rendered left-aligned, which never matches Excel.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-test1-iter2.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after alignment fix">
           </div>
           <div class="caption">After: alignment falls through to a new <code>generalAlign</code> helper that mirrors Excel's General alignment — <code>Number</code>/<code>Formula</code> → right, <code>Boolean</code>/<code>Error</code> → center, <code>String</code>/<code>Empty</code> → left.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-iter2-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before alignment fix">
+          </div>
+          <div class="caption">Before: <code>alignFromFormat</code> only looked at <code>format.HorizontalAlign</code>; an absent value fell through to <code>AlignLeft</code>. Every numeric cell rendered left-aligned, which never matches Excel.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> in <code>src/Spreadsheet/Paint.fs</code>, extend <code>alignFromFormat</code> to accept the cell value and call <code>generalAlign value</code> when no explicit alignment is set on the format. The Fable web app and the native runner share <code>Paint.fs</code>, so both get the fix.</p>
@@ -516,15 +516,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before sheetFormatPr fix">
-          </div>
-          <div class="caption">Before: with no <code>&lt;col&gt;</code> entry our loader fell back to the generic <code>RedBat.Spreadsheet.Model</code> defaults (column 100 px, row 25 px). The data table extends to ~535 CSS px wide; every column past A drifted ~12 px wider than Excel.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after sheetFormatPr fix">
           </div>
           <div class="caption">After: <code>Xlsx.sheetFormatPr</code> seeds the per-sheet default into <code>ColumnWidths</code> for every used column. The data table now extends to ~495 CSS px wide; <code>B1</code> width matches Excel within 0 px and <code>X</code>-origin within 0.4 px (vs 12 px before).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before sheetFormatPr fix">
+          </div>
+          <div class="caption">Before: with no <code>&lt;col&gt;</code> entry our loader fell back to the generic <code>RedBat.Spreadsheet.Model</code> defaults (column 100 px, row 25 px). The data table extends to ~535 CSS px wide; every column past A drifted ~12 px wider than Excel.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> parse <code>&lt;sheetFormatPr&gt;</code> in <code>src/Office.Formats/src/XlsxReader.fs</code>, store the <code>baseColWidth</code>/<code>defaultColWidth</code>/<code>defaultRowHeight</code> on <code>Worksheet.Format</code>, and have <code>tools/excel-native-runner</code> seed each used column/row with that default before falling back to the generic spreadsheet model defaults. Tune the char→pixel ratio to <code>8.0</code> and add <code>+1.0</code> char padding to <code>baseColWidth</code> (matches Excel's auto-pad for default columns).</p>
@@ -551,15 +551,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test_decimal-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before table style support">
-          </div>
-          <div class="caption">Before: every cell rendered with the default white background — the cellXf entries for the data rows define no fill of their own, so without a table-style overlay there was nothing to apply. Header row was indistinguishable from data rows.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-test_decimal-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after table style support">
           </div>
           <div class="caption">After: <code>tableAccentColor</code> resolves <code>TableStyleMedium7</code> to the workbook's <code>accent6</code> color. The header row picks up the dark green fill + white bold; <code>tintHex … 0.80</code> lightens the same accent to the banded stripe color on rows 3 and 5. A forced medium <code>#404040</code> border on every table cell keeps the column/row dividers visible against the saturated green where the default <code>#a6a6a6</code> grid stroke would disappear.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test_decimal-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before table style support">
+          </div>
+          <div class="caption">Before: every cell rendered with the default white background — the cellXf entries for the data rows define no fill of their own, so without a table-style overlay there was nothing to apply. Header row was indistinguishable from data rows.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> three layered changes:</p>
@@ -591,15 +591,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test_converters-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before per-cell font support">
-          </div>
-          <div class="caption">Before: <code>parseFont</code> ignored the <code>&lt;name val="..."/&gt;</code> child and the native renderer hard-coded the Calibri TTFs. Every cell rendered in Calibri regardless of what the file requested.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-test_converters-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after per-cell font support">
           </div>
           <div class="caption">After: the cell's font name flows from <code>parseFont</code> → <code>CellStyle.FontName</code> → <code>CellFormat.FontName</code> → <code>PaintText.FontName</code>. <code>SpreadsheetGrid.familyKey</code> normalizes the name to one of <code>arial</code>/<code>cambria</code>/<code>times</code>/<code>calibri</code> and picks the matching TTF set from the same <code>fontDirs</code> chain Calibri uses.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test_converters-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before per-cell font support">
+          </div>
+          <div class="caption">Before: <code>parseFont</code> ignored the <code>&lt;name val="..."/&gt;</code> child and the native renderer hard-coded the Calibri TTFs. Every cell rendered in Calibri regardless of what the file requested.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> extend <code>parseFont</code> to capture the <code>&lt;name val="..."/&gt;</code> child, add <code>FontName</code> to <code>CellStyle</code>/<code>CellFormat</code>/<code>PaintText</code>, and wire it through <code>cellFormatFromStyle</code> and <code>buildCellPaintItems</code>. In <code>spreadsheet-native/SpreadsheetGrid.fs</code>, key the font cache on <code>(family, bold, italic)</code> and pick TTFs per family (<code>arialbd</code>/<code>cambriab</code>/<code>timesbd</code>/<code>calibrib</code> etc.). Unknown families fall back to Calibri so unsupported fonts (Verdana, CJK) keep rendering instead of crashing.</p>
@@ -626,15 +626,15 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-times_1900-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before millisecond rounding">
-          </div>
-          <div class="caption">Before: rows 2/5/6 rendered as <code>01:02:02.999</code>, <code>06:13:42.299</code>, <code>07:57:35.399</code>. .NET's <code>fff</code> custom-format token truncates ticks past the millisecond boundary rather than rounding, so values that Excel rolls up to the next whole millisecond rendered one tick low.</div>
-        </td>
-        <td>
-          <div class="zoom">
             <img src="../artifacts/native/pandas-times_1900-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after millisecond rounding">
           </div>
           <div class="caption">After: every row matches Excel's print — <code>01:02:03.000</code>, <code>06:13:42.300</code>, <code>07:57:35.400</code> and the rest. The 12 rows that Excel shows are all preserved bit-for-bit.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-times_1900-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before millisecond rounding">
+          </div>
+          <div class="caption">Before: rows 2/5/6 rendered as <code>01:02:02.999</code>, <code>06:13:42.299</code>, <code>07:57:35.399</code>. .NET's <code>fff</code> custom-format token truncates ticks past the millisecond boundary rather than rounding, so values that Excel rolls up to the next whole millisecond rendered one tick low.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> add <code>fractionalSecondPrecision</code> in <code>src/Spreadsheet/Paint.fs</code> to scan the format code for <code>.0+</code> runs, then in <code>formatExcelDate</code> round the converted <code>DateTime.Ticks</code> to <code>TimeSpan.TicksPerSecond / 10ⁿ</code> before passing to <code>ToString</code>. Apply only when the format has an explicit fractional-second suffix.</p>
