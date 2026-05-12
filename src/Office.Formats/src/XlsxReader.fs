@@ -785,3 +785,61 @@ let sheetToArray (wb: Workbook) (sheet: Worksheet) : obj array array =
             | _ -> box ""
         )
     )
+
+#if !FABLE_COMPILER
+// Synchronous native loader. Mirrors `parseWorkbook` but uses
+// `getFileTextNative` so the native runners don't need a Promise scheduler.
+let parseWorkbookNative (archive: ZipArchive) : Workbook option =
+    match ZipInterop.getFileTextNative archive "xl/workbook.xml" with
+    | None -> None
+    | Some wbXml ->
+        let wb = XmlDsl.parse wbXml
+        let sheetInfos = Xlsx.sheets wb
+
+        let rels =
+            ZipInterop.getFileTextNative archive "xl/_rels/workbook.xml.rels"
+            |> Option.map (XmlDsl.parse >> parseRelationships)
+            |> Option.defaultValue []
+
+        let sharedStrings =
+            ZipInterop.getFileTextNative archive "xl/sharedStrings.xml"
+            |> Option.map Xlsx.sharedStrings
+            |> Option.defaultValue [||]
+
+        let styles =
+            ZipInterop.getFileTextNative archive "xl/styles.xml"
+            |> Option.map Xlsx.parseStyles
+            |> Option.defaultValue [||]
+
+        let namedRanges = NamedRanges.parseNamedRanges wb
+
+        let worksheets =
+            sheetInfos
+            |> List.choose (fun info ->
+                match Office.relById info.RelationshipId rels with
+                | Some r ->
+                    let sheetPath = "xl/" + ZipInterop.normalizePath r.Target
+                    match ZipInterop.getFileTextNative archive sheetPath with
+                    | Some xml ->
+                        let sheet = XmlDsl.parse xml
+                        let condFormats = ConditionalFormats.parseConditionalFormats sheet
+                        let dataVals = DataValidations.parseDataValidations sheet
+                        Some (Xlsx.worksheet info.Name xml [] condFormats dataVals [] [])
+                    | None -> None
+                | None -> None)
+
+        let styledSheets = worksheets |> List.map (applyStyling styles)
+
+        Some {
+            Sheets = styledSheets
+            SharedStrings = sharedStrings
+            Styles = styles
+            Relationships = rels
+            NamedRanges = namedRanges
+        }
+
+/// Top-level native loader: bytes -> Workbook option.
+let loadBytesNative (data: byte[]) : Workbook option =
+    let archive = ZipInterop.loadArchiveNative data
+    parseWorkbookNative archive
+#endif
