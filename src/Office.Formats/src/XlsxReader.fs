@@ -172,25 +172,28 @@ module Xlsx =
             Row = if digits.Length > 0 then int digits else 0
         }
 
-    // Cell value extraction with pattern matching
+    // Cell value extraction with pattern matching. Excel formula cells
+    // store both the expression and a cached result in <v>; we can't
+    // evaluate the expression, so prefer the cached value (matching what
+    // any XLSX viewer shows) and only fall back to the formula text when
+    // no cache is present (uncalculated workbooks).
     let cellValue (cNode: XmlNode) : CellValue =
         let cellType = Xml.attr "t" cNode
         let formula = sElem "f" cNode |> Option.bind Xml.text
+        let value = sElem "v" cNode |> Option.bind Xml.text
 
-        match formula with
-        | Some f -> Formula f
-        | None ->
-            let value = sElem "v" cNode |> Option.bind Xml.text
-
-            match cellType, value with
-            | Some "s", Some v -> SharedString (int v)
-            | Some "b", Some v -> Boolean (v = "1")
-            | Some "str", Some v -> String v
-            | _, Some v ->
-                match System.Double.TryParse(v) with
-                | true, n -> Number n
-                | false, _ -> String v
-            | _ -> Empty
+        match cellType, value with
+        | Some "s", Some v -> SharedString (int v)
+        | Some "b", Some v -> Boolean (v = "1")
+        | Some "str", Some v -> String v
+        | _, Some v ->
+            match System.Double.TryParse(v) with
+            | true, n -> Number n
+            | false, _ -> String v
+        | _ ->
+            match formula with
+            | Some f -> Formula f
+            | None -> Empty
 
     // Cell extraction with applicative style
     let cell (cNode: XmlNode) : Cell option =

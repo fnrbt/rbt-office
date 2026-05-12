@@ -118,16 +118,19 @@ let private toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : Spreadsh
     // sheetFormatPr defaults. Excel uses these for every column without an
     // explicit <col width="..."> entry. Without seeding the defaults across
     // used columns, our renderer falls back to 100 px per column and drifts
-    // ~12 px past every column beyond A.
+    // every column past A. Excel's implicit default when sheetFormatPr is
+    // absent is 8.43 character units (the same value Excel writes when you
+    // explicitly request "AutoFit Column Width" on an unsized column).
     let defaultColWidthPx =
         match sheet.Format.DefaultColWidth with
-        | Some w -> Some (charsToPixels w)
+        | Some w -> charsToPixels w
         | None ->
+            match sheet.Format.BaseColWidth with
             // For baseColWidth Excel auto-adds about one character of margin
             // padding to the effective rendered width. With baseColWidth=10
             // pandas-test1 default columns render at 88 px ≈ 11 chars * 8.
-            sheet.Format.BaseColWidth
-            |> Option.map (fun baseW -> charsToPixels (baseW + 1.0))
+            | Some baseW -> charsToPixels (baseW + 1.0)
+            | None -> charsToPixels 8.43
 
     let defaultRowHeightPx =
         sheet.Format.DefaultRowHeight |> Option.map (fun h -> h * (96.0 / 72.0))
@@ -148,13 +151,10 @@ let private toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : Spreadsh
     // entries no longer fall back to the generic 100 px / 25 px model
     // defaults.
     let columnWidths =
-        match defaultColWidthPx with
-        | None -> explicitColumns
-        | Some defWidth ->
-            [ 0 .. maxCol ]
-            |> List.fold (fun acc c ->
-                if Map.containsKey c explicitColumns then acc
-                else Map.add c defWidth acc) explicitColumns
+        [ 0 .. maxCol ]
+        |> List.fold (fun acc c ->
+            if Map.containsKey c explicitColumns then acc
+            else Map.add c defaultColWidthPx acc) explicitColumns
 
     let rowHeights =
         match defaultRowHeightPx with

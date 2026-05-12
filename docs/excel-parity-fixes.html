@@ -155,36 +155,41 @@
     <tbody>
       <tr>
         <td>
-          <strong>Honor cellXf <code>&lt;alignment&gt;</code> horizontal/vertical/wrap</strong>
+          <strong>Cached formula values, cellXf alignment, Excel 8.43-char default column width</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/phpsp-32chartreadwrite.xlsx</code></span>
-          <span class="meta">Real fixture class: XLSX cells with explicit <code>&lt;alignment horizontal="center"&gt;</code> inside their <code>&lt;xf&gt;</code> entry. Common for merged header cells that span multiple columns (year/quarter banners, "Financial Period" titles, etc.). Our <code>parseCellXf</code> only reads font/fill/numFmt — alignment was always <code>None</code>, so numbers fell through to General (right) regardless of the explicit center.</span>
+          <span class="meta">Real fixture class: XLSX workbooks that combine three traits that all rendered wrong together — (a) shared-formula cells with cached <code>&lt;v&gt;</code> results (the Budget/Projected/Actual/Forecast <code>RANDBETWEEN</code> rows), (b) explicit <code>&lt;alignment horizontal="center"&gt;</code> on merged-header cellXfs, and (c) no <code>&lt;sheetFormatPr defaultColWidth&gt;</code> so the renderer needs Excel's implicit 8.43-character fallback.</span>
           <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
         </td>
         <td>
           <div class="zoom">
             <img src="../artifacts/excel/phpsp-32chartreadwrite-headings.png" style="--w:1275px; --x:50px; --y:60px; --s:0.45" alt="Excel reference render of phpsp-32chartreadwrite.xlsx">
           </div>
-          <div class="caption">Excel reference: the merged header banners — "Financial Period" (B1:M1), "2008" (B2:E2), "2009" (F2:I2), "2010" (J2:M2) — render centered across their merged ranges per the explicit <code>horizontal="center"</code> on the cellXf.</div>
+          <div class="caption">Excel reference: merged banners "Financial Period" / "2008" / "2009" render centred and bold; rows 4–7 (Budget / Projected / Actual / Forecast) show the cached <code>RANDBETWEEN</code> values right-aligned with default-width columns. (Excel's PDF print is page-cropped at column I; the 2010 group sits outside the printable width but exists in the file.)</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/phpsp-32chartreadwrite-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before alignment fix">
+            <img src="../artifacts/baseline/phpsp-32chartreadwrite-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before fix">
           </div>
-          <div class="caption">Before: <code>cellFormatFromStyle</code> hard-coded <code>HorizontalAlign = None</code>. The merged-cell payload (number 2008, 2009, 2010) fell through to General → right-aligned, so the banners hugged the right edge of the merged range instead of centring.</div>
+          <div class="caption">Before: rows 4–7 rendered <em>empty</em> because <code>Xlsx.cellValue</code> matched <code>&lt;f&gt;</code> before <code>&lt;v&gt;</code> and returned <code>Formula expr</code> with no cache; the runner translated that to <code>Formula (expr, Empty)</code> so <code>cellDisplayText</code> drew nothing. Year banners hugged the right edge of their merged ranges (<code>HorizontalAlign = None</code> → General → right). Default columns rendered at 100 px (generic <code>SpreadsheetModel</code> fallback), spreading the table about 1.5× wider than Excel.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/phpsp-32chartreadwrite-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after alignment fix">
+            <img src="../artifacts/native/phpsp-32chartreadwrite-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after fix">
           </div>
-          <div class="caption">After: <code>Xlsx.parseCellXf</code> reads <code>&lt;alignment&gt;</code>'s <code>horizontal</code>, <code>vertical</code>, and <code>wrapText</code> attributes; <code>cellFormatFromStyle</code> propagates them; <code>Paint.alignFromFormat</code> already honoured explicit alignment over General. Merged banners now centre correctly.</div>
+          <div class="caption">After: cached <code>&lt;v&gt;</code> values populate every data cell, merged banners centre, default columns shrink to 8.43 × 8 ≈ 67 px. Now matches Excel's structural layout (same merged regions, same alignment, same bold, same right-aligned numerics). Data values differ because <code>RANDBETWEEN</code> recomputed between Excel's save and ours.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> extend <code>Xlsx.CellStyle</code> with <code>HorizontalAlign</code>, <code>VerticalAlign</code>, and <code>WrapText</code>. Parse them out of the <code>&lt;alignment&gt;</code> child of <code>&lt;xf&gt;</code> in <code>Xlsx.parseCellXf</code>. Wire them through <code>cellFormatFromStyle</code> in the runner so <code>Paint.alignFromFormat</code> sees the explicit override.</p>
+          <p><strong>Three combined fixes:</strong></p>
           <ul>
-            <li>Focused guard: <code>phpsp-32chartreadwrite.xlsx</code> merged header banners now centre, matching Excel.</li>
-            <li>Regression guard: <code>pandas-test1.xlsx</code> and <code>pandas-test_types.xlsx</code> — both have no explicit <code>&lt;alignment&gt;</code> on their cellXfs — still render with General alignment (numbers right, strings left).</li>
-            <li>Corpus guard: all 53 fixtures still render without error.</li>
+            <li><strong>Cached formula values</strong> (<code>XlsxReader.fs</code>): in <code>Xlsx.cellValue</code>, prefer the cached <code>&lt;v&gt;</code> element over the formula text. XLSX viewers show the cached result; only fall back to <code>Formula expr</code> when there's no cache (uncalculated workbook).</li>
+            <li><strong>Explicit cell alignment</strong> (<code>XlsxReader.fs</code> + runner): extend <code>Xlsx.CellStyle</code> with <code>HorizontalAlign</code> / <code>VerticalAlign</code> / <code>WrapText</code>, parse them out of <code>&lt;xf&gt;&lt;alignment&gt;</code>, and forward them through <code>cellFormatFromStyle</code>. <code>Paint.alignFromFormat</code> already prefers explicit alignment over General.</li>
+            <li><strong>Excel 8.43-char default</strong> (runner): when neither <code>sheetFormatPr.defaultColWidth</code> nor <code>baseColWidth</code> is set, seed every used column with Excel's implicit default (8.43 × 8 ≈ 67 px) instead of falling back to the generic <code>SpreadsheetModel</code> 100 px.</li>
           </ul>
+          <p>
+            Focused guard: <code>phpsp-32chartreadwrite.xlsx</code> now renders all data, banners centre, columns match Excel's default width.
+            Regression guard: <code>pandas-test1.xlsx</code> (has explicit <code>baseColWidth="10"</code>) and <code>pandas-test_types.xlsx</code> (has explicit <code>&lt;col width&gt;</code>) still render with their explicit widths, not the new fallback.
+            Corpus guard: all 53 fixtures still render without error.
+          </p>
         </td>
       </tr>
       <tr>
