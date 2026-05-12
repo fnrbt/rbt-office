@@ -143,6 +143,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Spaced table paint boxes and label centering</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-spacing-margins.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>23d57a7</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-cell-spacing-margins-word.png" style="--w:1191px; --x:26px; --y:52px; --s:0.3867" alt="Word reference spaced table paint boxes and label centering">
+          </div>
+          <div class="caption">Word paints the direct top cell margin as extra border-box height on <code>Cell 2d</code>, while the text stays on the row/table margin origin.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-cell-spacing-margins-pre-border-adjust.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="Before spaced table paint-box refinement">
+          </div>
+          <div class="caption">Before: <code>Cell 2d</code> used the same top and height as <code>2a-2c</code>, and spaced-table labels painted about <code>4px</code> too low.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-cell-spacing-margins-after.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="After spaced table paint-box refinement">
+          </div>
+          <div class="caption">After: <code>Cell 2d</code> extends upward like Word, top-row labels are visually centered, and row-two labels sit at Word's height.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> keep spaced-table text origin on row/table vertical margins, but apply direct vertical <code>tcMar</code> to the painted cell box and shift only the painted glyph baseline for spaced table cells.</p>
+          <ul>
+            <li>Focused guard: layout comparison is unchanged and still reports <code>10 matched lines</code>, with <code>Cell 1a dy=0.01</code>, <code>Cell 2a dy=-0.40</code>, <code>Cell 2d dy=-0.40</code>, and following paragraph <code>dy=-0.14</code>.</li>
+            <li>Visual guard: browser yellow table box is <code>673x152</code> against Word's <code>674x152</code>; text-box gaps now match the called-out cells within about <code>1-2px</code>.</li>
+            <li>Native/PDF guard: both paths share the same corrected paint model; the remaining page-origin differences are path setup, not table geometry.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Table cell spacing and margin origins</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-cell-spacing-margins.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
