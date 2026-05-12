@@ -150,8 +150,12 @@ let private renderPaintItem = function
         [ Cmd.StrokePath([MoveTo (vec2 x1 y1); LineTo (vec2 x2 y2)], style) ]
 
 let private viewportOf (model: SpreadsheetModel) width height : Viewport =
-    let headerHeight = 22.0
-    let rowHeaderWidth = 48.0
+    // Match Excel's column/row header pixel sizes at 96 DPI / 100% zoom so
+    // parity screenshots align cell-for-cell with our PNG renders. Excel's
+    // column-header strip is ~18 px tall (Calibri 11) and the row-header
+    // strip is ~28 px wide for fixtures whose row numbers fit in two digits.
+    let headerHeight = 18.0
+    let rowHeaderWidth = 28.0
     { ScrollX = 0.0
       ScrollY = 0.0
       Width = width
