@@ -135,10 +135,15 @@ let private toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : Spreadsh
     let defaultRowHeightPx =
         sheet.Format.DefaultRowHeight |> Option.map (fun h -> h * (96.0 / 72.0))
 
+    // <col min=M max=N width=W/> applies W to every column in M..N (inclusive).
     let explicitColumns =
         sheet.Columns
-        |> List.choose (fun col ->
-            col.Width |> Option.map (fun w -> col.Index - 1, charsToPixels w))
+        |> List.collect (fun col ->
+            match col.Width with
+            | None -> []
+            | Some w ->
+                let px = charsToPixels w
+                [ for idx in col.Index .. col.MaxIndex -> idx - 1, px ])
         |> Map.ofList
 
     let explicitRows =

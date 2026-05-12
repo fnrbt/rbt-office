@@ -52,6 +52,7 @@ type Row = {
 
 type ColumnInfo = {
     Index: int
+    MaxIndex: int
     Width: float option
     Hidden: bool
 }
@@ -238,14 +239,22 @@ module Xlsx =
             Xml.attr "ref" mc
             |> Option.bind parseMergeCell)
 
-    // Column info extraction
+    // Column info extraction. <col min="4" max="7"/> describes columns 4..7
+    // sharing the same width/hidden setting, so we keep both ends of the
+    // range so the runner can fan the width out to every column in it.
     let columnInfo (colNode: XmlNode) : ColumnInfo option =
         Xml.attr "min" colNode
         |> Option.map (fun minCol ->
+            let minIdx = int minCol
+            let maxIdx =
+                Xml.attr "max" colNode
+                |> Option.map int
+                |> Option.defaultValue minIdx
             let width = Xml.attr "width" colNode |> Option.map float
             let hidden = Xml.attr "hidden" colNode |> Option.map (fun h -> h = "1") |> Option.defaultValue false
             {
-                Index = int minCol
+                Index = minIdx
+                MaxIndex = maxIdx
                 Width = width
                 Hidden = hidden
             })

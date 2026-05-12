@@ -155,6 +155,40 @@
     <tbody>
       <tr>
         <td>
+          <strong>Fan <code>&lt;col min..max&gt;</code> width across the full range</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-multiindex_no_index_names.xlsx</code></span>
+          <span class="meta">Real fixture class: XLSX <code>&lt;cols&gt;</code> entries that cover a range — <code>&lt;col min="4" max="7" width="5.41"/&gt;</code> means columns 4, 5, 6, 7 all share that width. Excel writes ranges aggressively (anything with the same width gets collapsed into one entry). Our <code>parseCellXf</code>/<code>columnInfo</code> only read <code>min</code> and discarded <code>max</code>, so only the first column in the range got the width — every other column in the range fell back to the per-sheet default.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-multiindex_no_index_names-headings.png" style="--w:1275px; --x:100px; --y:80px; --s:0.55" alt="Excel reference render of pandas-multiindex_no_index_names.xlsx">
+          </div>
+          <div class="caption">Excel reference: cols D / E / F / G all render at the same narrow width (≈ 43 px each) per the shared <code>&lt;col min="4" max="7" width="5.41"/&gt;</code> entry; the table stays compact (~340 px total).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/multiindex_no_index_names-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before range fix">
+          </div>
+          <div class="caption">Before: only column D (the <code>min</code>) got the 5.41-char width; cols E / F / G fell back to the 8.43-char sheet default (≈ 67 px each), so the right-hand block widened by ~70 px and broke the spacing of the merged headers above.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/multiindex_no_index_names-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after range fix">
+          </div>
+          <div class="caption">After: <code>columnInfo</code> records both <code>min</code> and <code>max</code>; the runner fans the same width into every column in the range. Cols D–G now share the 43-px width and the table footprint matches Excel.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add <code>MaxIndex</code> to <code>Xlsx.ColumnInfo</code> in <code>src/Office.Formats/src/XlsxReader.fs</code>, parse the <code>max</code> attribute (default to <code>min</code>), and in <code>tools/excel-native-runner/Program.fs</code> emit one <code>ColumnWidths</code> entry per column in <code>min..max</code> instead of just one for the first.</p>
+          <ul>
+            <li>Focused guard: <code>pandas-multiindex_no_index_names.xlsx</code> footprint shrinks from ~480 px wide to ~340 px (matching Excel).</li>
+            <li>Regression guard: explicit single-column entries (<code>&lt;col min="1" max="1"/&gt;</code>) still set just one column's width because <code>min == max</code> there.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Pass-through Excel number-format codes</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/poi-47813.xlsx</code></span>
           <span class="meta">Real fixture class: XLSX cells whose <code>numFmtId</code> is a real Excel custom format code (<code>0.000</code>, <code>#,##0.00</code>, <code>0%</code>, <code>0.00E+00</code>, etc.) rather than one of the legacy <code>currency</code>/<code>percentage</code>/<code>date</code> tags the Fable web UI emits. The poi-47813 sine/cosine table uses <code>0.000</code> on B and C so they fit a 6-char-wide column.</span>
