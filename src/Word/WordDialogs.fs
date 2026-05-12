@@ -51,6 +51,7 @@ module Dialogs =
         PaddingRight: Signal<string>
         PaddingBottom: Signal<string>
         PaddingLeft: Signal<string>
+        CellSpacing: Signal<string>
     }
 
     type InsertTableState = {
@@ -212,6 +213,7 @@ module Dialogs =
         PaddingRight = signal "7.2"
         PaddingBottom = signal "0"
         PaddingLeft = signal "7.2"
+        CellSpacing = signal "0"
     }
 
     let insertTableState () = {
@@ -511,6 +513,10 @@ module Dialogs =
                 label [] [
                     span [] [ text "Default cell margin left" ]
                     Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-margin-left"; valueS state.PaddingLeft; onInput (fun value -> state.PaddingLeft.Value <- value) ]
+                ]
+                label [] [
+                    span [] [ text "Cell spacing" ]
+                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-cell-spacing"; valueS state.CellSpacing; onInput (fun value -> state.CellSpacing.Value <- value) ]
                 ]
             ]
             DialogFooter [] [

@@ -823,6 +823,13 @@ module API =
         Inp.updateDocument editor.Handler newDoc
         editor.Doc <- newDoc
 
+    let setCurrentTableCellMarginsAndSpacing (editor: Editor) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) (cellSpacing: float) =
+        let optionalPadding value = if value >= 0.0 then Some value else None
+        let optionalSpacing value = if value >= 0.0 then Some value else None
+        let newDoc = Doc.setCurrentTableCellMarginsAndSpacing (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) (optionalSpacing cellSpacing) editor.Doc
+        Inp.updateDocument editor.Handler newDoc
+        editor.Doc <- newDoc
+
     /// Align justify
     let alignJustify (editor: Editor) =
         let newDoc = Doc.alignJustify editor.Doc
@@ -1282,6 +1289,7 @@ module API =
             "setSelectedTableCellStyle" ==> setSelectedTableCellStyle
             "setSelectedTableCellStyleWithShading" ==> setSelectedTableCellStyleWithShading
             "setCurrentTableCellMargins" ==> setCurrentTableCellMargins
+            "setCurrentTableCellMarginsAndSpacing" ==> setCurrentTableCellMarginsAndSpacing
             "setSectionBreak" ==> setSectionBreak
             "importFromDocx" ==> importFromDocx
             "importFromDocxWithHeaderFooters" ==> importFromDocxWithHeaderFooters

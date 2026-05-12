@@ -1888,6 +1888,18 @@ let setCurrentTableCellMargins paddingTop paddingRight paddingBottom paddingLeft
                 PaddingBottom = paddingBottom
                 PaddingLeft = paddingLeft })
 
+let setCurrentTableCellMarginsAndSpacing paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc =
+    match currentTableCell doc with
+    | None -> doc
+    | Some (tableId, _, _) ->
+        updateTable doc tableId (fun table ->
+            { table with
+                PaddingTop = paddingTop
+                PaddingRight = paddingRight
+                PaddingBottom = paddingBottom
+                PaddingLeft = paddingLeft
+                CellSpacing = cellSpacing })
+
 let private headingFontSize level =
     match level with
     | 1 -> 24.0

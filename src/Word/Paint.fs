@@ -265,8 +265,7 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
                     sourceRow.Cells
                     |> List.tryItem cellFragment.CellIndex
                     |> Option.iter (fun cell ->
-                        let fillHeight = if cellFragment.CellSpacing > 0.0 then cellFragment.FragmentHeight else cellFragment.CellHeight
-                        tableFillCommands cell.BackgroundColor cell.Shading (cellFragment.CellX - cellFragment.CellSpacing) cellFragment.CellY cellFragment.CellWidth fillHeight
+                        tableFillCommands cell.BackgroundColor cell.Shading (cellFragment.CellX - cellFragment.CellSpacing) cellFragment.CellY cellFragment.CellWidth cellFragment.CellHeight
                         |> List.iter commands.Add)
 
                 let paintCells =
@@ -588,7 +587,7 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
             addRowCommands row currentY rowHeight
             currentY <- currentY + rowHeight
 
-        (commands, currentY + WordLayout.Table.afterSpacing)
+        (commands, currentY + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock)
 
 let tableBorderCommandsForDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (tableBlock: TableBlock) (y: float) =
     tableBorderCommandsCore (Some doc) settings measureText measureRange tableBlock y

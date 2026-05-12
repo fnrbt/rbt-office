@@ -486,8 +486,9 @@ module Host =
         let paddingRight = parseFloat 7.2 state.PaddingRight.Value
         let paddingBottom = parseFloat 0.0 state.PaddingBottom.Value
         let paddingLeft = parseFloat 7.2 state.PaddingLeft.Value
-        runCommand host (fun editor -> WordApi.setCurrentTableCellMargins editor paddingTop paddingRight paddingBottom paddingLeft)
-        host.Status.Value <- sprintf "Table cell margins: %s/%s/%s/%s" state.PaddingTop.Value state.PaddingRight.Value state.PaddingBottom.Value state.PaddingLeft.Value
+        let cellSpacing = parseFloat 0.0 state.CellSpacing.Value
+        runCommand host (fun editor -> WordApi.setCurrentTableCellMarginsAndSpacing editor paddingTop paddingRight paddingBottom paddingLeft cellSpacing)
+        host.Status.Value <- sprintf "Table cell margins: %s/%s/%s/%s, spacing %s" state.PaddingTop.Value state.PaddingRight.Value state.PaddingBottom.Value state.PaddingLeft.Value state.CellSpacing.Value
         state.IsOpen.Value <- false
 
     let applyAnnotation host =

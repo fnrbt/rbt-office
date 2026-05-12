@@ -770,6 +770,14 @@ module Table =
         |> Option.defaultValue (cellSpacing scale table)
         |> max 0.0
 
+    let rowSpacingAdvance spacing =
+        // Word keeps a spacing band above, between, and below spaced rows.
+        if spacing > 0.0 then spacing * 3.0 else 0.0
+
+    let internalSpacingTextOffset spacing columnIndex =
+        // Internal cell text starts one spacing unit before the spaced cell border box.
+        if spacing > 0.0 && columnIndex > 0 then spacing else 0.0
+
     let cellSpan (cell: TableCell) = max 1 cell.ColSpan
 
     let positionedCells (row: TableRow) =
@@ -898,6 +906,10 @@ module Table =
         columnWidths |> List.sum
 
     let afterSpacing = 0.0
+
+    let tableAfterSpacing scale (table: TableBlock) =
+        // The last row leaves the table-level spacing band before following content.
+        cellSpacing scale table
 
     let defaultRowHeight (_lineHeight: float) =
         0.0

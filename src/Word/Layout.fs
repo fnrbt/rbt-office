@@ -986,6 +986,7 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
     }
     let numColumns = WordLayout.Table.columnCount tableBlock
     let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
+    let rowSpacingAdvance = WordLayout.Table.rowSpacingAdvance cellSpacing
     let outerStartInset = outerLeft + cellSpacing
     let mutable rowHeight = WordLayout.Table.rowMinHeight WordLayout.canvasScale settings.LineHeight row
     let mutable cellGroups = []
@@ -996,7 +997,15 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
         let fallbackWidth = tableMaxWidth / float numColumns
         let colWidth = WordLayout.Table.positionedSpacedCellWidth columnWidths cellSpacing fallbackWidth positioned
         let padding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row cell
-        let cellX = WordLayout.Table.positionedSpacedCellX columnWidths cellSpacing positioned + padding.Left - outerStartInset
+        let padding =
+            if cellSpacing > 0.0 then
+                // Word still honors horizontal tcMar overrides in spaced cells, but vertical
+                // text origin and row advance follow the row/table defaults.
+                let rowPadding = WordLayout.Table.rowCellPaddingDefaults WordLayout.canvasScale tableBlock row
+                { padding with Top = rowPadding.Top; Bottom = rowPadding.Bottom }
+            else
+                padding
+        let cellX = WordLayout.Table.positionedSpacedCellX columnWidths cellSpacing positioned + padding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing positioned.StartColumn
         let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth padding
         let cellY = rowY + cellSpacing
         let mutable paraY = WordLayout.Table.cellContentStartY cellY padding
@@ -1021,7 +1030,7 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
             paraY <- paraY + layout.Height
 
         let contentHeight = WordLayout.Table.cellContentHeight cellY padding.Top paraY
-        rowHeight <- max rowHeight (contentHeight + padding.Top + padding.Bottom + cellSpacing)
+        rowHeight <- max rowHeight (contentHeight + padding.Top + padding.Bottom + rowSpacingAdvance)
         cellGroups <- cellGroups @ [{ VerticalAlignment = cell.VerticalAlignment; PaddingTop = padding.Top; PaddingBottom = padding.Bottom; ContentHeight = contentHeight; Layouts = cellLayouts }]
         let totalLines = cellLayouts |> List.sumBy (fun layout -> layout.Lines.Length)
         let cellSnippet =
@@ -1360,7 +1369,7 @@ let buildTableLayoutPlanForDocument settings measureText measureRange doc tableB
         ColumnWidths = columnWidths
         HeaderRowCount = headerRowCount
         Rows = rows
-        NextY = rowY + WordLayout.Table.afterSpacing
+        NextY = rowY + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock
     }
 
 let buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY =
@@ -1546,7 +1555,7 @@ let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasure
                         footnotesByPage <- adjustedLayouts |> List.fold (addLayoutFootnotes settings) footnotesByPage
                     rowY <- rowY + rowHeight
 
-                rowY + WordLayout.Table.afterSpacing, WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
+                rowY + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock, WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
             else
                 tableY + WordLayout.Table.emptyTableAdvance settings.LineHeight, 0.0
         traceSlow (sprintf "table rows=%d" tableBlock.Rows.Length) tableStart

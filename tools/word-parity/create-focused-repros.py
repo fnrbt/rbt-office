@@ -77,6 +77,9 @@ def cell(
     width=2400,
     spacing_after=None,
     padding_left=None,
+    padding_top=None,
+    padding_right=None,
+    padding_bottom=None,
     alignment=None,
     valign=None,
     shading=None,
@@ -90,8 +93,17 @@ def cell(
         )
     if valign:
         tc_props.append(f'<w:vAlign w:val="{esc(valign)}"/>')
+    padding = []
+    if padding_top is not None:
+        padding.append(f'<w:top w:w="{padding_top}" w:type="dxa"/>')
     if padding_left is not None:
-        tc_props.append(f'<w:tcMar><w:left w:w="{padding_left}" w:type="dxa"/></w:tcMar>')
+        padding.append(f'<w:left w:w="{padding_left}" w:type="dxa"/>')
+    if padding_bottom is not None:
+        padding.append(f'<w:bottom w:w="{padding_bottom}" w:type="dxa"/>')
+    if padding_right is not None:
+        padding.append(f'<w:right w:w="{padding_right}" w:type="dxa"/>')
+    if padding:
+        tc_props.append(f"<w:tcMar>{''.join(padding)}</w:tcMar>")
     return (
         "<w:tc>"
         f"<w:tcPr>{''.join(tc_props)}</w:tcPr>"
@@ -167,6 +179,20 @@ def table_grid_style_table(rows, grid_widths, table_width="0", width_type="auto"
     )
 
 
+def table_grid_style_table_with_pr(rows, grid_widths, extra_tbl_pr="", table_width="0", width_type="auto"):
+    grid = "".join(f'<w:gridCol w:w="{grid_width}"/>' for grid_width in grid_widths)
+    return (
+        "<w:tbl>"
+        f'<w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="{table_width}" w:type="{width_type}"/>'
+        f"{extra_tbl_pr}"
+        '<w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/>'
+        "</w:tblPr>"
+        f"<w:tblGrid>{grid}</w:tblGrid>"
+        + "".join(row_values for row_values in rows)
+        + "</w:tbl>"
+    )
+
+
 def repeated_long_paragraphs(count):
     text = (
         "Lorem ipsum dolor sit amet, consectetur adipiscing elit. "
@@ -175,6 +201,19 @@ def repeated_long_paragraphs(count):
         "Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua."
     )
     return "".join(paragraph(text) for _ in range(count))
+
+
+def docx4j_page_geometry():
+    return {
+        "page_width": 11906,
+        "page_height": 16838,
+        "margin_top": 1417,
+        "margin_right": 1417,
+        "margin_bottom": 1134,
+        "margin_left": 1417,
+        "header": 708,
+        "footer": 708,
+    }
 
 
 def long_paragraph(spacing_before=None):
@@ -187,19 +226,28 @@ def long_paragraph(spacing_before=None):
     return paragraph(text, spacing_before=spacing_before)
 
 
-def section_properties(include_header_footer=False, margin_bottom=1440, include_doc_grid=False):
+def section_properties(include_header_footer=False, margin_bottom=1440, include_doc_grid=False, page_geometry=None):
     refs = (
         '<w:headerReference w:type="default" r:id="rId3"/>'
         '<w:footerReference w:type="default" r:id="rId4"/>'
         if include_header_footer
         else ""
     )
+    page_geometry = page_geometry or {}
+    page_width = page_geometry.get("page_width", 12240)
+    page_height = page_geometry.get("page_height", 15840)
+    margin_top = page_geometry.get("margin_top", 1440)
+    margin_right = page_geometry.get("margin_right", 1440)
+    margin_bottom = page_geometry.get("margin_bottom", margin_bottom)
+    margin_left = page_geometry.get("margin_left", 1440)
+    header = page_geometry.get("header", 720)
+    footer = page_geometry.get("footer", 720)
     doc_grid = '<w:docGrid w:type="default" w:linePitch="360" w:charSpace="4294965247"/>' if include_doc_grid else ""
-    return f'<w:sectPr>{refs}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="{margin_bottom}" w:left="1440" w:header="720" w:footer="720"/>{doc_grid}</w:sectPr>'
+    return f'<w:sectPr>{refs}<w:pgSz w:w="{page_width}" w:h="{page_height}"/><w:pgMar w:top="{margin_top}" w:right="{margin_right}" w:bottom="{margin_bottom}" w:left="{margin_left}" w:header="{header}" w:footer="{footer}"/>{doc_grid}</w:sectPr>'
 
 
-def document(body_xml, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_doc_grid=False):
-    sectpr = section_properties(include_header_footer, margin_bottom, include_doc_grid)
+def document(body_xml, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_doc_grid=False, page_geometry=None):
+    sectpr = section_properties(include_header_footer, margin_bottom, include_doc_grid, page_geometry)
     if leading_section_properties:
         body = f"{sectpr}{body_xml}"
     else:
@@ -546,7 +594,7 @@ def theme_xml():
     )
 
 
-def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True, styles_xml=None, include_office_theme=False, include_doc_grid=False):
+def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True, styles_xml=None, include_office_theme=False, include_doc_grid=False, page_geometry=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -554,7 +602,7 @@ def write_docx(path, body_xml, include_numbering=False, leading_section_properti
         (root / "word" / "_rels").mkdir(parents=True)
         (root / "[Content_Types].xml").write_text(content_types(include_numbering, include_header_footer, include_office_theme), encoding="utf-8")
         (root / "_rels" / ".rels").write_text(root_rels(), encoding="utf-8")
-        (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer, margin_bottom, include_doc_grid), encoding="utf-8")
+        (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer, margin_bottom, include_doc_grid, page_geometry), encoding="utf-8")
         (root / "word" / "styles.xml").write_text(styles_xml or styles(include_heading_spacing, include_doc_defaults), encoding="utf-8")
         if include_numbering:
             (root / "word" / "numbering.xml").write_text(numbering(), encoding="utf-8")
@@ -689,6 +737,27 @@ def main():
             ], [4606, 4606])
             + paragraph("After valign table")
         ), True, True, table_grid_paragraph_spacing_styles()),
+        "table-cell-spacing-margins.docx": (False, False, False, (
+            paragraph("Table cell spacing and margins repro", spacing_after=0)
+            + table_grid_style_table_with_pr([
+                row_cells([
+                    cell("Cell 1a", width=2303, shading="clear", shading_fill="auto"),
+                    cell("Cell 1b", width=2303, shading="clear", shading_fill="auto"),
+                    cell("Cell 1c", width=2303, shading="clear", shading_fill="auto"),
+                    cell("Cell 1d", width=2303, shading="clear", shading_fill="auto"),
+                ]),
+                row_cells([
+                    cell("Cell 2a", width=2303, shading="pct5", shading_fill="FFC000"),
+                    cell("Cell 2b", width=2303, shading="pct5", shading_fill="FFC000"),
+                    cell("Cell 2c", width=2303, shading="pct5", shading_fill="FFC000"),
+                    cell("Cell 2d", width=2303, shading="pct5", shading_fill="FFC000", padding_top=284, padding_right=567, padding_bottom=284, padding_left=567),
+                ]),
+            ], [2583, 2440, 2440, 2651],
+                '<w:tblCellSpacing w:w="142" w:type="dxa"/>'
+                '<w:shd w:val="clear" w:color="auto" w:fill="FFC000"/>'
+                '<w:tblCellMar><w:top w:w="113" w:type="dxa"/><w:left w:w="227" w:type="dxa"/><w:bottom w:w="113" w:type="dxa"/><w:right w:w="227" w:type="dxa"/></w:tblCellMar>')
+            + paragraph("After spaced margin table")
+        ), True, True, table_grid_paragraph_spacing_styles(), False, False, docx4j_page_geometry()),
         "table-cell-explicit-before-spacing.docx": (False, (
             paragraph("Table cell before-spacing repro", "Heading1")
             + table([
@@ -789,6 +858,7 @@ def main():
         include_doc_defaults = True
         include_office_theme = False
         include_doc_grid = False
+        page_geometry = None
         if len(value) == 2:
             include_numbering, body = value
             leading_section_properties = False
@@ -816,8 +886,10 @@ def main():
                 include_office_theme = value[7]
             if len(value) > 8:
                 include_doc_grid = value[8]
+            if len(value) > 9:
+                page_geometry = value[9]
         path = out_dir / name
-        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom, include_heading_spacing, include_doc_defaults, styles_xml, include_office_theme, include_doc_grid)
+        write_docx(path, body, include_numbering, leading_section_properties, include_header_footer, margin_bottom, include_heading_spacing, include_doc_defaults, styles_xml, include_office_theme, include_doc_grid, page_geometry)
         print(path)
 
 

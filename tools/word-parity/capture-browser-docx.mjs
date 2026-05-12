@@ -12,6 +12,10 @@ const outputJson = process.argv[4] ? path.resolve(process.argv[4]) : null;
 const port = Number(process.env.BROWSER_CAPTURE_PORT ?? 5181);
 const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(officeRoot, 'artifacts/fonts/windows'));
 const layoutMode = process.env.BROWSER_CAPTURE_LAYOUT ?? 'segments';
+const viewportWidth = Number(process.env.BROWSER_CAPTURE_VIEWPORT_WIDTH ?? 1100);
+const viewportHeight = Number(process.env.BROWSER_CAPTURE_VIEWPORT_HEIGHT ?? 1800);
+const canvasWidth = Number(process.env.BROWSER_CAPTURE_CANVAS_WIDTH ?? 900);
+const canvasHeight = Number(process.env.BROWSER_CAPTURE_CANVAS_HEIGHT ?? 1600);
 
 if (!process.argv[2] || !process.argv[3]) {
   console.error('Usage: OFFICE_ROOT=/path/to/office node tools/word-parity/capture-browser-docx.mjs input.docx output.png [layout.json]');
@@ -77,7 +81,7 @@ if (!serverReady) {
 
 try {
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1100, height: 1800 } });
+  const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight } });
   const docUrl = `/@fs/${servedFixture}`;
   const params = new URLSearchParams({ doc: docUrl });
   if (await fileExists(path.join(fontDir, 'calibri.ttf'))) {
@@ -88,6 +92,10 @@ try {
     () => window.rbWordRunner && document.querySelector('#status')?.textContent?.startsWith('Loaded '),
     null,
     { timeout: 30000 }
+  );
+  await page.evaluate(
+    ({ width, height }) => window.rbWordRunner.setCanvasSize(width, height),
+    { width: canvasWidth, height: canvasHeight }
   );
   await page.evaluate(() => window.rbWordRunner.clearSelection());
   if (outputJson) {
