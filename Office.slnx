@@ -30,6 +30,9 @@
   <Folder Name="/office-native/">
     <Project Path="office-native/OfficeShell.fsproj" />
   </Folder>
+  <Folder Name="/spreadsheet-native/">
+    <Project Path="spreadsheet-native/SpreadsheetWidgets.fsproj" />
+  </Folder>
   <Folder Name="/word-native/">
     <Project Path="word-native/WordWidgets.fsproj" />
   </Folder>

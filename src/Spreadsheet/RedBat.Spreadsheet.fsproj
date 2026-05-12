@@ -15,10 +15,12 @@
     <Compile Include="Tabs.fs" />
     <Compile Include="Spreadsheet.fs" />
     <Compile Include="Toolbar.fs" />
+    <Compile Include="SpreadsheetUi.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../Grid/RedBat.Grid.fsproj" />
+    <ProjectReference Include="../OfficeUi/RedBat.OfficeUi.fsproj" />
   </ItemGroup>
 
   <ItemGroup>
