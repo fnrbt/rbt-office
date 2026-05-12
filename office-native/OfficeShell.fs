@@ -11,14 +11,36 @@ open RedBat.Office.Ui
 /// (testId -> float) menu-x-offsets + (testId -> bool -> bool) pressed
 /// predicate + title string + status text getter + document workspace widget.
 
+/// Captures the open dialog plus per-field value signals so the renderer
+/// can read and write field values reactively. Defined as a class so it
+/// uses reference equality (the underlying Dictionary and function-valued
+/// DialogButton fields don't admit structural equality).
+type OpenDialogState(spec: DialogSpec, values: System.Collections.Generic.Dictionary<string, Signal<string>>) =
+    member _.Spec = spec
+    member _.Values = values
+
 /// Mutable, signal-backed state owned by the chrome itself. Apps construct
 /// one with `createState ()` and pass it to `view`; the chrome reads and
-/// writes the open-menu signal in response to menu-button clicks.
+/// writes the open-menu / open-dialog signals in response to user input.
 type ShellRenderState = {
     OpenMenu: Signal<string option>
+    /// Currently-open dialog, if any. Apps set this with `openDialog`.
+    OpenDialog: Signal<OpenDialogState option>
 }
 
-let createState () : ShellRenderState = { OpenMenu = signal None }
+let createState () : ShellRenderState =
+    { OpenMenu = signal None
+      OpenDialog = signal None }
+
+let openDialog (state: ShellRenderState) (spec: DialogSpec) =
+    let values = System.Collections.Generic.Dictionary<string, Signal<string>>()
+    for field in spec.Fields do
+        values.[field.Id] <- signal field.Initial
+    state.OpenMenu.Value <- None
+    state.OpenDialog.Value <- Some (OpenDialogState(spec, values))
+
+let closeDialog (state: ShellRenderState) =
+    state.OpenDialog.Value <- None
 
 /// Back-compat constants used by older callers that built ShellRenderState
 /// as a static record. These now create fresh signal-backed states.
@@ -401,6 +423,132 @@ let private renderMenuPanel (p: ChromePalette) (renderState: ShellRenderState) (
             border p.Border 1.0 4.0 (
                 pad 4.0 (columnSpaced 0.0 menuContents))))
 
+// ── Dialog renderer ───────────────────────────────────────────
+
+let private dialogFieldWidth = 360.0
+
+let private renderDialogField (p: ChromePalette) (values: System.Collections.Generic.Dictionary<string, Signal<string>>) (field: DialogField) : Widget =
+    let valueSignal = values.[field.Id]
+    let labelLine = textStyled Font.sm (parseHexColor "#5F6368") field.Label
+    let inputBox =
+        match field.Kind with
+        | DialogTextField placeholder ->
+            sized dialogFieldWidth 30.0 (
+                stack [
+                    rounded 4.0 p.Input empty
+                    border p.Border 1.0 4.0 (
+                        padXY 8.0 6.0 (textInput valueSignal placeholder))
+                ])
+        | DialogNumberField(_, _) ->
+            sized dialogFieldWidth 30.0 (
+                stack [
+                    rounded 4.0 p.Input empty
+                    border p.Border 1.0 4.0 (
+                        padXY 8.0 6.0 (textInput valueSignal ""))
+                ])
+        | DialogCheckboxField ->
+            let toggle () =
+                valueSignal.Value <- if valueSignal.Value = "true" then "false" else "true"
+            clickable toggle (
+                rowAlign MStart CCenter 8.0 [
+                    dynamic (fun () ->
+                        let isChecked = valueSignal.Value = "true"
+                        sized 16.0 16.0 (
+                            stack [
+                                rounded 3.0 (if isChecked then parseHexColor "#1A73E8" else p.Input) empty
+                                border (if isChecked then parseHexColor "#1A73E8" else p.Border) 1.0 3.0 (
+                                    if isChecked then center (Icon.check 10.0 Palette.white)
+                                    else empty)
+                            ]))
+                    textStyled Font.sm p.Text field.Label
+                ])
+        | DialogSelectField options ->
+            let cycle () =
+                let current = valueSignal.Value
+                let idx = options |> List.tryFindIndex (fun o -> o.Value = current) |> Option.defaultValue -1
+                let next = (idx + 1) % options.Length
+                valueSignal.Value <- options.[next].Value
+            clickable cycle (
+                sized dialogFieldWidth 30.0 (
+                    stack [
+                        rounded 4.0 p.Input empty
+                        border p.Border 1.0 4.0 (
+                            padXY 8.0 6.0 (
+                                dynamic (fun () ->
+                                    let label =
+                                        options
+                                        |> List.tryFind (fun o -> o.Value = valueSignal.Value)
+                                        |> Option.map (fun o -> o.Label)
+                                        |> Option.defaultValue valueSignal.Value
+                                    rowAlign MSpaceBetween CCenter 0.0 [
+                                        textStyled Font.sm p.Text label
+                                        textStyled Font.sm (parseHexColor "#5F6368") "▾"
+                                    ])))
+                    ]))
+        | DialogStatusField ->
+            dynamic (fun () ->
+                textStyled Font.sm (parseHexColor "#5F6368") valueSignal.Value)
+
+    match field.Kind with
+    | DialogCheckboxField ->
+        // Checkbox has its label inline; skip the separate label line.
+        inputBox
+    | _ ->
+        columnSpaced 4.0 [ labelLine; inputBox ]
+
+let private renderDialogButton (p: ChromePalette) (renderState: ShellRenderState) (values: System.Collections.Generic.Dictionary<string, Signal<string>>) (btn: DialogButton) : Widget =
+    let activate () =
+        let snapshot = values |> Seq.map (fun kv -> kv.Key, kv.Value.Value) |> Map.ofSeq
+        let shouldClose = btn.Action snapshot
+        if shouldClose then renderState.OpenDialog.Value <- None
+    let textColor = if btn.IsPrimary then Palette.white else p.Text
+    let bgColor = if btn.IsPrimary then parseHexColor "#1A73E8" else p.Input
+    let borderColor = if btn.IsPrimary then parseHexColor "#1A73E8" else p.Border
+    clickable activate (
+        sizedH 32.0 (
+            stack [
+                rounded 4.0 bgColor empty
+                border borderColor 1.0 4.0 (
+                    padXY 16.0 6.0 (textStyled Font.sm textColor btn.Label))
+            ]))
+
+let private renderDialog (p: ChromePalette) (renderState: ShellRenderState) (state: OpenDialogState) : Widget =
+    let spec = state.Spec
+    let title = textBoldStyled Font.lg p.Text spec.Title
+    let subtitle =
+        match spec.Subtitle with
+        | Some s -> textStyled Font.sm (parseHexColor "#5F6368") s
+        | None -> empty
+    let header = columnSpaced 4.0 [ title; subtitle ]
+
+    let fields =
+        spec.Fields
+        |> List.map (renderDialogField p state.Values)
+        |> columnSpaced 14.0
+
+    let buttons =
+        spec.Buttons
+        |> List.map (renderDialogButton p renderState state.Values)
+        |> rowAlign MEnd CCenter 8.0
+
+    let panel =
+        sizedW (dialogFieldWidth + 56.0) (
+            filtered [DropShadow(0.0, 8.0, 24, Color.rgba 0uy 0uy 0uy 96uy)] (
+                rounded 8.0 p.MenuPanel (
+                    border p.Border 1.0 8.0 (
+                        pad 24.0 (
+                            columnSpaced 18.0 [
+                                header
+                                fields
+                                buttons
+                            ])))))
+    center panel
+
+let private dialogScrim () =
+    // Half-transparent dark layer over the whole window; clicking it does
+    // nothing (force the user to use Cancel / OK to dismiss).
+    sized 4000.0 4000.0 (box (Color.rgba 0uy 0uy 0uy 64uy) empty)
+
 /// Assemble the chrome around the caller's workspace widget. Layout:
 ///
 ///   ┌─────────────────────────────────┐
@@ -440,6 +588,16 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
                 ]
             | None -> empty)
 
+    let dialogOverlay =
+        dynamic (fun () ->
+            match renderState.OpenDialog.Value with
+            | Some state ->
+                stack [
+                    overlay (dialogScrim ())
+                    overlay (renderDialog p renderState state)
+                ]
+            | None -> empty)
+
     let menuBar =
         dynamic (fun () ->
             chromeBandWithBorder p p.ChromeTop menuHeight (
@@ -475,4 +633,5 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
         stack [
             windowBody
             menuOverlay
+            dialogOverlay
         ])

@@ -465,3 +465,143 @@ module Ui =
             button "word-find-replace" "Q" None actions.OpenFindReplace
         ] }
     ]
+
+    // ── Dialog specs ─────────────────────────────────────────
+    //
+    // Backend-agnostic dialog descriptors. The app passes in callbacks that
+    // perform the underlying document mutation; the spec describes the form
+    // and binds the buttons to those callbacks.
+
+    /// Find / Replace.
+    ///
+    /// `onFindNext q matchCase`      → status string to show (e.g. "1 of 5").
+    /// `onReplaceAll q r matchCase`  → status string (e.g. "Replaced 3").
+    let findReplaceDialog (onFindNext: string -> bool -> string) (onReplaceAll: string -> string -> bool -> string) : DialogSpec =
+        let statusFieldId = "result"
+        {
+            TestId = "word-dlg-find-replace"
+            Title = "Find and replace"
+            Subtitle = None
+            Fields = [
+                dialogText "find" "Find" "Search text" ""
+                dialogText "replace" "Replace with" "Replacement text" ""
+                dialogCheckbox "case" "Match case" false
+                dialogStatus statusFieldId "Result" ""
+            ]
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-find-next" "Find next" false (fun values ->
+                    let q = Map.find "find" values
+                    let mc = (Map.find "case" values) = "true"
+                    let _ = onFindNext q mc
+                    // keep open (status updated externally via callback writing to the renderer)
+                    false)
+                dialogButton "dlg-replace-all" "Replace all" true (fun values ->
+                    let q = Map.find "find" values
+                    let r = Map.find "replace" values
+                    let mc = (Map.find "case" values) = "true"
+                    let _ = onReplaceAll q r mc
+                    true)
+            ]
+        }
+
+    /// Insert hyperlink. Submit invokes `apply` with the URL value.
+    let insertLinkDialog (apply: string -> unit) : DialogSpec = {
+        TestId = "word-dlg-insert-link"
+        Title = "Insert link"
+        Subtitle = Some "The URL is applied to the current selection."
+        Fields = [
+            dialogText "url" "URL" "https://" ""
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-insert-link-ok" "Insert" true (fun values ->
+                apply (Map.find "url" values)
+                true)
+        ]
+    }
+
+    /// Insert table. Rows and columns are integers, defaults 2x3.
+    let insertTableDialog (apply: int -> int -> unit) : DialogSpec = {
+        TestId = "word-dlg-insert-table"
+        Title = "Insert table"
+        Subtitle = None
+        Fields = [
+            dialogNumber "rows" "Rows" (Some "1") (Some "100") "2"
+            dialogNumber "cols" "Columns" (Some "1") (Some "20") "3"
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-insert-table-ok" "Insert" true (fun values ->
+                let rows = System.Int32.TryParse(Map.find "rows" values) |> snd
+                let cols = System.Int32.TryParse(Map.find "cols" values) |> snd
+                if rows > 0 && cols > 0 then
+                    apply rows cols
+                    true
+                else
+                    false)
+        ]
+    }
+
+    /// Page setup. Values are in points; margins typically 36..144 (0.5..2 inches).
+    let pageSetupDialog
+            (initialOrientation: string)
+            (initialMarginLeft: float)
+            (initialMarginRight: float)
+            (initialMarginTop: float)
+            (initialMarginBottom: float)
+            (apply: string * float * float * float * float -> unit) : DialogSpec =
+        let orientations = [
+            choice "portrait" "Portrait"
+            choice "landscape" "Landscape"
+        ]
+        {
+            TestId = "word-dlg-page-setup"
+            Title = "Page setup"
+            Subtitle = Some "Margins are in points (72 pt = 1 inch)."
+            Fields = [
+                dialogSelect "orientation" "Orientation" orientations initialOrientation
+                dialogNumber "marginLeft" "Left margin" (Some "0") (Some "500") (sprintf "%g" initialMarginLeft)
+                dialogNumber "marginRight" "Right margin" (Some "0") (Some "500") (sprintf "%g" initialMarginRight)
+                dialogNumber "marginTop" "Top margin" (Some "0") (Some "500") (sprintf "%g" initialMarginTop)
+                dialogNumber "marginBottom" "Bottom margin" (Some "0") (Some "500") (sprintf "%g" initialMarginBottom)
+            ]
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-page-setup-ok" "Apply" true (fun values ->
+                    let parse k =
+                        match System.Double.TryParse(Map.find k values) with
+                        | true, v -> v
+                        | _ -> nan
+                    let orient = Map.find "orientation" values
+                    let ml = parse "marginLeft"
+                    let mr = parse "marginRight"
+                    let mt = parse "marginTop"
+                    let mb = parse "marginBottom"
+                    if System.Double.IsNaN ml || System.Double.IsNaN mr || System.Double.IsNaN mt || System.Double.IsNaN mb then
+                        false
+                    else
+                        apply (orient, ml, mr, mt, mb)
+                        true)
+            ]
+        }
+
+    /// Insert image. v1 takes only a URL / src string; native side may
+    /// later swap this for a file picker.
+    let insertImageDialog (apply: string -> unit) : DialogSpec = {
+        TestId = "word-dlg-insert-image"
+        Title = "Insert image"
+        Subtitle = Some "Paste a file path or URL."
+        Fields = [
+            dialogText "src" "Image source" "/path/or/url" ""
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-insert-image-ok" "Insert" true (fun values ->
+                let src = (Map.find "src" values).Trim()
+                if src = "" then false
+                else
+                    apply src
+                    true)
+        ]
+    }

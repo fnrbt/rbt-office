@@ -90,7 +90,10 @@ let private shellState (_state: Editor.WordEditorState) : WordUi.ShellState =
         CharacterStyles = fun () -> []
     }
 
-let private shellActions (state: Editor.WordEditorState) (status: Signal<string>) : WordUi.ShellActions =
+let private shellActions
+        (state: Editor.WordEditorState)
+        (status: Signal<string>)
+        (renderState: Chrome.ShellRenderState) : WordUi.ShellActions =
     let apply transform () = applyChange state transform
     let applyArg transform arg = applyChange state (transform arg)
     let say message () = status.Value <- message
@@ -103,13 +106,61 @@ let private shellActions (state: Editor.WordEditorState) (status: Signal<string>
     let heading level =
         if level <= 0 then Doc.clearHeading
         else Doc.setHeadingLevel level
+
+    // Dialog-driven actions.
+    let openLinkDialog () =
+        WordUi.insertLinkDialog (fun url ->
+            applyChange state (Doc.setHyperlink (Some url))
+            status.Value <- sprintf "Linked to %s" url)
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let openImageDialog () =
+        WordUi.insertImageDialog (fun src ->
+            applyChange state (Doc.insertImageAtCursor src (Some 320.0) (Some 240.0) None)
+            status.Value <- sprintf "Inserted image %s" src)
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let openInsertTableDialog () =
+        WordUi.insertTableDialog (fun rows cols ->
+            applyChange state (Doc.insertTable rows cols)
+            status.Value <- sprintf "Inserted %dx%d table" rows cols)
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let openFindReplaceDialog () =
+        WordUi.findReplaceDialog
+            (fun q _ ->
+                let matches = Doc.findText q false state.Document.Value
+                status.Value <- sprintf "%d matches for %s" matches.Length q
+                "")
+            (fun q r _ ->
+                let nextDoc, count = Doc.replaceAllText q r false state.Document.Value
+                if count > 0 then applyChange state (fun _ -> nextDoc)
+                status.Value <- sprintf "Replaced %d occurrence(s)" count
+                "")
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let openPageSetupDialog () =
+        let doc = state.Document.Value
+        let ps = doc.PageSetup
+        let orient = if ps.PageWidth > ps.PageHeight then "landscape" else "portrait"
+        WordUi.pageSetupDialog orient ps.MarginLeft ps.MarginRight ps.MarginTop ps.MarginBottom
+            (fun (orient, ml, mr, mt, mb) ->
+                applyChange state (fun d ->
+                    let setup = d.PageSetup
+                    let w, h =
+                        match orient with
+                        | "landscape" -> max setup.PageWidth setup.PageHeight, min setup.PageWidth setup.PageHeight
+                        | _           -> min setup.PageWidth setup.PageHeight, max setup.PageWidth setup.PageHeight
+                    { d with PageSetup = { setup with PageWidth = w; PageHeight = h; MarginLeft = ml; MarginRight = mr; MarginTop = mt; MarginBottom = mb } })
+                status.Value <- "Page setup applied")
+        |> Composit.Ui.OfficeShell.openDialog renderState
+
+    let openAnnotation = function
+        | "hyperlink" -> openLinkDialog ()
+        | other -> status.Value <- sprintf "%s annotation not wired" other
     {
         PrintPdf = say "Print PDF not wired in native shell"
-        OpenFindReplace = say "Find/replace dialog not wired"
-        OpenImagePicker = say "Image picker not wired"
+        OpenFindReplace = openFindReplaceDialog
+        OpenImagePicker = openImageDialog
         OpenImageSize = say "Image size dialog not wired"
         OpenTextBoxStyle = say "Text-box style dialog not wired"
-        OpenPageSetup = say "Page setup dialog not wired"
+        OpenPageSetup = openPageSetupDialog
         OpenHeaderFooter = say "Header/footer dialog not wired"
         InsertDateTime = apply (fun doc ->
             Doc.insertText (DateTime.Now.ToString("yyyy-MM-dd HH:mm")) doc)
@@ -131,11 +182,11 @@ let private shellActions (state: Editor.WordEditorState) (status: Signal<string>
         AcceptAllRevisions = say "No revisions"
         RejectAllRevisions = say "No revisions"
         InsertSectionBreak = sayArg "Section break not wired"
-        OpenAnnotation = sayArg "Annotation dialog not wired"
+        OpenAnnotation = openAnnotation
         OpenParagraphStyle = say "Paragraph style dialog not wired"
         OpenTableCellStyle = say "Cell style dialog not wired"
         OpenTableMargins = say "Cell margins dialog not wired"
-        OpenInsertTable = say "Insert-table dialog not wired"
+        OpenInsertTable = openInsertTableDialog
         InsertDefaultTable = apply (Doc.insertTable 2 3)
         InsertTableRow = apply Doc.insertTableRowAfterSelection
         InsertTableColumn = apply Doc.insertTableColumnAfterSelection
@@ -322,7 +373,7 @@ let main argv =
     let status = signal "Ready"
     let renderState = Chrome.closed
     let state = shellState editor
-    let actions = shellActions editor status
+    let actions = shellActions editor status renderState
 
     /// Status string. Falls back to the editor's current cursor / selection
     /// summary if no transient message has been set (the `Ready` literal).

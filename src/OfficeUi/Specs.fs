@@ -118,3 +118,71 @@ module Ui =
         ToolbarInput { TestId = testId; Kind = TextInput; Value = value; Min = None; Max = None; Action = action }
 
     let toolbarSep = ToolbarSeparator
+
+    // ── Dialogs ──────────────────────────────────────────────
+    //
+    // Backend-agnostic dialog spec. Apps build a DialogSpec value and hand
+    // it to the shell, which renders it (native = widget overlay; Fable =
+    // DOM dialog). The submit callback receives a `Map<fieldId, value>` so
+    // the renderer can carry field state internally without the app
+    // pre-creating Signals.
+
+    type DialogFieldKind =
+        | DialogTextField of placeholder: string
+        | DialogNumberField of minValue: string option * maxValue: string option
+        | DialogCheckboxField
+        | DialogSelectField of options: ChoiceSpec list
+        /// Multi-line read-only label, e.g. a result/status line.
+        | DialogStatusField
+
+    type DialogField = {
+        /// Stable id used as the key in the submit callback's value map.
+        Id: string
+        /// Display label.
+        Label: string
+        Kind: DialogFieldKind
+        /// Initial value. Booleans serialize as "true"/"false".
+        Initial: string
+    }
+
+    type DialogButton = {
+        /// `data-testid` and visible button label.
+        TestId: string
+        Label: string
+        /// Primary button gets accent styling and is triggered by Enter.
+        IsPrimary: bool
+        /// Receives the latest field values keyed by field id. Return true to
+        /// close the dialog, false to leave it open (e.g. validation error).
+        Action: Map<string, string> -> bool
+    }
+
+    type DialogSpec = {
+        /// `data-testid` for the dialog root element.
+        TestId: string
+        Title: string
+        /// Optional one-line description shown under the title.
+        Subtitle: string option
+        Fields: DialogField list
+        Buttons: DialogButton list
+    }
+
+    let dialogText id label placeholder initial =
+        { Id = id; Label = label; Kind = DialogTextField placeholder; Initial = initial }
+
+    let dialogNumber id label minValue maxValue initial =
+        { Id = id; Label = label; Kind = DialogNumberField(minValue, maxValue); Initial = initial }
+
+    let dialogCheckbox id label initial =
+        { Id = id; Label = label; Kind = DialogCheckboxField; Initial = (if initial then "true" else "false") }
+
+    let dialogSelect id label options initial =
+        { Id = id; Label = label; Kind = DialogSelectField options; Initial = initial }
+
+    let dialogStatus id label initial =
+        { Id = id; Label = label; Kind = DialogStatusField; Initial = initial }
+
+    let dialogButton testId label isPrimary action =
+        { TestId = testId; Label = label; IsPrimary = isPrimary; Action = action }
+
+    /// Standard Cancel button — closes the dialog without doing anything.
+    let dialogCancel = dialogButton "dlg-cancel" "Cancel" false (fun _ -> true)
