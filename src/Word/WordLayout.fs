@@ -1121,7 +1121,7 @@ module Table =
         cells.[cellIndex] <- { cells.[cellIndex] with RowSpan = rowSpan }
         rows.[rowIndex] <- { row with Cells = cells |> Array.toList }
 
-    let private resolveRows (table: TableBlock) =
+    let private resolveRows scale (table: TableBlock) =
         let rows = table.Rows
         let rowCount = rows.Length
         let columns = columnCount table
@@ -1155,10 +1155,12 @@ module Table =
 
             resolvedRows.Add({ Source = row; Cells = resolvedCells |> Seq.toList; IsHeader = row.IsHeader; CanSplit = row.CanSplit |> Option.defaultValue true }))
 
-        resolvedRows |> Seq.toList |> collapseResolvedBorders
+        let rows = resolvedRows |> Seq.toList
+        let hasCellSpacing = table.Rows |> List.exists (fun row -> rowCellSpacing scale table row > 0.0)
+        if hasCellSpacing then rows else collapseResolvedBorders rows
 
     let resolveTable scale maxWidth (table: TableBlock) =
-        let rows = resolveRows table
+        let rows = resolveRows scale table
         { ColumnWidths = tableColumnWidths scale maxWidth table
           HeaderRows = rows |> List.takeWhile _.IsHeader
           BodyRows = rows }
