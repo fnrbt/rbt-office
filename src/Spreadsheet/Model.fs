@@ -28,6 +28,7 @@ type CellFormat = {
     Bold: bool
     Italic: bool
     Underline: bool
+    FontName: string option
     TextColor: string option
     BgColor: string option
     FontSize: int option
@@ -46,6 +47,7 @@ let defaultFormat = {
     Bold = false
     Italic = false
     Underline = false
+    FontName = None
     TextColor = None
     BgColor = None
     FontSize = None

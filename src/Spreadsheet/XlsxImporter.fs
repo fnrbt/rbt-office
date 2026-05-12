@@ -102,6 +102,7 @@ let private convertCellFormat (excelCell: ExcelCell): CellFormat =
             Bold = excelCell.bold |> Option.defaultValue false
             Italic = excelCell.italic |> Option.defaultValue false
             Underline = excelCell.underline |> Option.defaultValue false
+            FontName = None
             TextColor = excelCell.fontColor
             BgColor = excelCell.fillColor
             FontSize = excelCell.fontSize |> Option.map int  // Convert float to int

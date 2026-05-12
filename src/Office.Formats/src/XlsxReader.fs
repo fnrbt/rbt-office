@@ -29,6 +29,7 @@ type CellBorderSide = {
 }
 
 type CellStyle = {
+    FontName: string option
     FontColor: string option
     FillColor: string option
     Bold: bool
@@ -322,12 +323,13 @@ module Xlsx =
         }
 
     // Style parsing
-    let parseFont (fontNode: XmlNode) : (bool * bool * string option * float option) =
+    let parseFont (fontNode: XmlNode) : (bool * bool * string option * float option * string option) =
         let bold = sElem "b" fontNode |> Option.isSome
         let italic = sElem "i" fontNode |> Option.isSome
         let color = sElem "color" fontNode |> Option.bind (Xml.attr "rgb")
         let size = sElem "sz" fontNode |> Option.bind (Xml.attr "val") |> Option.map float
-        (bold, italic, color, size)
+        let name = sElem "name" fontNode |> Option.bind (Xml.attr "val")
+        (bold, italic, color, size, name)
 
     let parseFill (fillNode: XmlNode) : string option =
         sElem "patternFill" fillNode
@@ -405,15 +407,15 @@ module Xlsx =
         | 49 -> Some "@"
         | _ -> None
 
-    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * string option * float option) array) (fills: string option array) (borders: BorderRecord array) (numFmts: Map<int, string>) : CellStyle =
+    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * string option * float option * string option) array) (fills: string option array) (borders: BorderRecord array) (numFmts: Map<int, string>) : CellStyle =
         let fontId = Xml.attr "fontId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let fillId = Xml.attr "fillId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let borderId = Xml.attr "borderId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let numFmtId = Xml.attr "numFmtId" xfNode |> Option.bind (fun id -> Some (int id))
 
-        let (bold, italic, fontColor, fontSize) =
+        let (bold, italic, fontColor, fontSize, fontName) =
             if fontId < fonts.Length then fonts.[fontId]
-            else (false, false, None, None)
+            else (false, false, None, None, None)
 
         let fillColor =
             if fillId < fills.Length then fills.[fillId]
@@ -441,6 +443,7 @@ module Xlsx =
             |> Option.defaultValue false
 
         {
+            FontName = fontName
             FontColor = fontColor
             FillColor = fillColor
             Bold = bold

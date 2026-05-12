@@ -12,10 +12,10 @@ let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasu
 
 let private defaultFont () = Composit.Ui.Layout.font()
 
-/// Cache of bold/italic font variants keyed by (bold, italic). Calibri's
-/// bold/italic TTFs are the same set Word's native runner loads; falling back
-/// to the default font keeps rendering working when the variant isn't found.
-let private fontCache = System.Collections.Generic.Dictionary<bool * bool, Renderer.Text.FontData option>()
+/// Cache of font variants keyed by (familyKey, bold, italic). familyKey is the
+/// normalized lower-case font name we use to pick a TTF set ("calibri",
+/// "arial", "cambria", "times"); unknown families fall back to "calibri".
+let private fontCache = System.Collections.Generic.Dictionary<string * bool * bool, Renderer.Text.FontData option>()
 
 let private fontDirs () =
     let cwd = System.IO.Directory.GetCurrentDirectory()
@@ -31,19 +31,51 @@ let private fontDirs () =
         elif System.IO.Directory.Exists dir then Some dir
         else None)
 
-let private fontFiles bold italic =
-    if bold && italic then ["calibriz.ttf"; "calibrib.ttf"; "calibri.ttf"]
-    elif bold then ["calibrib.ttf"; "calibri.ttf"]
-    elif italic then ["calibrii.ttf"; "calibri.ttf"]
-    else ["calibri.ttf"]
+/// Map an XLSX font `name val="..."` to a normalized family key. Anything we
+/// don't have a TTF for falls back to "calibri" — the renderer keeps working
+/// even when we encounter Asian/script fonts we can't substitute properly.
+let private familyKey (name: string option) =
+    match name with
+    | None -> "calibri"
+    | Some n ->
+        let lower = n.Trim().ToLowerInvariant()
+        if lower.StartsWith "arial" then "arial"
+        elif lower.StartsWith "calibri" then "calibri"
+        elif lower.StartsWith "cambria" then "cambria"
+        elif lower.StartsWith "times" then "times"
+        else "calibri"
 
-let private loadVariant bold italic =
-    let key = (bold, italic)
+let private fontFiles family bold italic =
+    match family with
+    | "arial" ->
+        if bold && italic then ["arialbi.ttf"; "arialbd.ttf"; "arial.ttf"]
+        elif bold then ["arialbd.ttf"; "arial.ttf"]
+        elif italic then ["ariali.ttf"; "arial.ttf"]
+        else ["arial.ttf"]
+    | "cambria" ->
+        // Cambria ships only regular/bold/italic — no bold-italic TTF.
+        if bold && italic then ["cambriab.ttf"; "cambriai.ttf"; "cambria.ttc"]
+        elif bold then ["cambriab.ttf"; "cambria.ttc"]
+        elif italic then ["cambriai.ttf"; "cambria.ttc"]
+        else ["cambria.ttc"]
+    | "times" ->
+        if bold && italic then ["timesbi.ttf"; "timesbd.ttf"; "times.ttf"]
+        elif bold then ["timesbd.ttf"; "times.ttf"]
+        elif italic then ["timesi.ttf"; "times.ttf"]
+        else ["times.ttf"]
+    | _ ->
+        if bold && italic then ["calibriz.ttf"; "calibrib.ttf"; "calibri.ttf"]
+        elif bold then ["calibrib.ttf"; "calibri.ttf"]
+        elif italic then ["calibrii.ttf"; "calibri.ttf"]
+        else ["calibri.ttf"]
+
+let private loadVariant family bold italic =
+    let key = (family, bold, italic)
     match fontCache.TryGetValue key with
     | true, cached -> cached
     | _ ->
         let loaded =
-            fontFiles bold italic
+            fontFiles family bold italic
             |> List.tryPick (fun name ->
                 fontDirs ()
                 |> List.tryPick (fun dir ->
@@ -54,8 +86,15 @@ let private loadVariant bold italic =
         fontCache.[key] <- loaded
         loaded
 
-let private rendererFont (bold: bool) (italic: bool) =
-    loadVariant bold italic |> Option.defaultWith defaultFont
+let private rendererFont (fontName: string option) (bold: bool) (italic: bool) =
+    let family = familyKey fontName
+    match loadVariant family bold italic with
+    | Some f -> f
+    | None ->
+        // Family lookup failed — try Calibri before falling back to the
+        // built-in default so we don't lose bold/italic for Arial/Times etc.
+        loadVariant "calibri" bold italic
+        |> Option.defaultWith defaultFont
 
 let private parseHexColor (value: string) =
     let value = value.Trim()
@@ -81,7 +120,7 @@ let private parseHexColor (value: string) =
     | _ -> Color.black
 
 let private toRendererCommands (text: PaintText) =
-    let font = rendererFont text.Bold text.Italic
+    let font = rendererFont text.FontName text.Bold text.Italic
     let layout = Renderer.Text.layout font text.FontSize text.Text
     let measured = Renderer.Text.measureWidth font text.FontSize text.Text
     let alignedX =

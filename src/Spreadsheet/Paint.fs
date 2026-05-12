@@ -15,6 +15,7 @@ type PaintText = {
     Rect: Rect
     Color: Color
     FontSize: float
+    FontName: string option
     Bold: bool
     Italic: bool
     Align: TextAlign
@@ -372,6 +373,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Rect = rect
                     Color = "#444444"
                     FontSize = 11.0
+                    FontName = None
                     Bold = false
                     Italic = false
                     Align = AlignCenter
@@ -384,6 +386,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Rect = rect
                     Color = "#444444"
                     FontSize = 11.0
+                    FontName = None
                     Bold = false
                     Italic = false
                     Align = AlignCenter
@@ -458,6 +461,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     Rect = { cell.Rect with X = cell.Rect.X + 4.0; Width = max 0.0 (cell.Rect.Width - 8.0) }
                     Color = format.TextColor |> Option.defaultValue "#000000"
                     FontSize = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+                    FontName = format.FontName
                     Bold = format.Bold
                     Italic = format.Italic
                     Align = alignFromFormat format value
@@ -504,6 +508,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             Rect = rect
                             Color = "#444444"
                             FontSize = 11.0
+                            FontName = None
                             Bold = false
                             Italic = false
                             Align = AlignCenter
@@ -521,6 +526,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             Rect = rect
                             Color = "#444444"
                             FontSize = 11.0
+                            FontName = None
                             Bold = false
                             Italic = false
                             Align = AlignCenter

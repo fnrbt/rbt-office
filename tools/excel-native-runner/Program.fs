@@ -70,6 +70,7 @@ let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
         Bold = style.Bold
         Italic = style.Italic
         Underline = false
+        FontName = style.FontName
         TextColor = style.FontColor |> Option.bind hexColor
         BgColor = style.FillColor |> Option.bind hexColor
         FontSize = style.FontSize |> Option.map int
