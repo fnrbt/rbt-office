@@ -1035,6 +1035,7 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
                 cellPadding
         let verticalMarginExcess =
             if cellSpacing > 0.0 then WordLayout.Table.spacedVerticalMarginExcess textPadding cellPadding else 0.0
+        let verticalBorderExtent = WordLayout.Table.cellVerticalBorderExtent cell
         let cellX = WordLayout.Table.positionedSpacedCellX columnWidths cellSpacing positioned + textPadding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing positioned.StartColumn
         let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth textPadding
         let cellY = rowY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
@@ -1061,7 +1062,7 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
             paraY <- paraY + layout.Height
 
         let contentHeight = max 0.0 (paraY - contentStartY)
-        rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + rowSpacingAdvance)
+        rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + verticalBorderExtent + rowSpacingAdvance)
         cellGroups <- cellGroups @ [{ VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top; PaddingBottom = textPadding.Bottom; ContentHeight = contentHeight; Layouts = cellLayouts }]
         let totalLines = cellLayouts |> List.sumBy (fun layout -> layout.Lines.Length)
         let cellSnippet =

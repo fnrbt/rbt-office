@@ -2528,7 +2528,10 @@ let private wordLineSpacingToMultiple fontSize (line: string option) (lineRule: 
 
 let private borderColorToCss (border: BorderStyle option) =
     border
-    |> Option.bind (fun border -> wordColorToCss border.Color)
+    |> Option.bind (fun border ->
+        match border.Color with
+        | Some value when value = "" || value = "auto" -> Some "#000000"
+        | value -> wordColorToCss value)
 
 let private borderWidthToPoints (border: BorderStyle option) =
     border
@@ -2548,7 +2551,10 @@ let private borderToEditor (border: BorderStyle option) =
 
 let private paragraphBorderColorToCss (border: ParagraphBorder option) =
     border
-    |> Option.bind (fun border -> wordColorToCss border.Color)
+    |> Option.bind (fun border ->
+        match border.Color with
+        | Some value when value = "" || value = "auto" -> Some "#000000"
+        | value -> wordColorToCss value)
 
 let private paragraphBorderWidthToPoints (border: ParagraphBorder option) =
     border

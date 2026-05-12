@@ -133,6 +133,48 @@ def cell(
     )
 
 
+def table_border(side, val, sz=None, color="auto"):
+    attrs = [f'w:val="{esc(val)}"']
+    if sz is not None:
+        attrs.append(f'w:sz="{sz}"')
+    if color is not None:
+        attrs.append(f'w:color="{esc(color)}"')
+    return f"<w:{side} {' '.join(attrs)}/>"
+
+
+def cell_borders(**sides):
+    ordered = ["top", "left", "bottom", "right", "insideH", "insideV"]
+    parts = []
+    for side in ordered:
+        value = sides.get(side)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            parts.append(table_border(side, value, None, None))
+        else:
+            parts.append(table_border(side, *value))
+    return f"<w:tcBorders>{''.join(parts)}</w:tcBorders>" if parts else ""
+
+
+def empty_cell_with_props(width=2303, grid_span=None, vertical_merge=None, borders_xml=""):
+    tc_props = [f'<w:tcW w:w="{width}" w:type="dxa"/>']
+    if grid_span is not None:
+        tc_props.append(f'<w:gridSpan w:val="{grid_span}"/>')
+    if vertical_merge is not None:
+        if vertical_merge == "continue":
+            tc_props.append("<w:vMerge/>")
+        else:
+            tc_props.append(f'<w:vMerge w:val="{esc(vertical_merge)}"/>')
+    if borders_xml:
+        tc_props.append(borders_xml)
+    return (
+        "<w:tc>"
+        f"<w:tcPr>{''.join(tc_props)}</w:tcPr>"
+        "<w:p/>"
+        "</w:tc>"
+    )
+
+
 def cell_paragraphs(paragraphs, width=2400, padding_left=None):
     tc_props = [f'<w:tcW w:w="{width}" w:type="dxa"/>']
     if padding_left is not None:
@@ -232,6 +274,37 @@ def exact_height_spacer_table(height, width=9212):
         '</w:tr>'
         '</w:tbl>'
     )
+
+
+def border_stress_table():
+    return table_grid_style_table([
+        row_cells([
+            empty_cell_with_props(2303, borders_xml=cell_borders(right=("single", 8, "17220B"))),
+            empty_cell_with_props(2303, borders_xml=cell_borders(top=("single", 8, "17220B"), left=("single", 8, "17220B"), bottom=("single", 8, "17220B"), right=("single", 8, "17220B"))),
+            empty_cell_with_props(2303, borders_xml=cell_borders(top=("single", 24, "17220B"), left=("single", 8, "17220B"), bottom=("single", 24, "17220B"), right=("single", 24, "17220B"))),
+            empty_cell_with_props(2303, borders_xml=cell_borders(top=("single", 48, "17220B"), left=("single", 24, "17220B"), bottom=("single", 48, "17220B"), right=("single", 48, "17220B"))),
+        ]),
+        row_cells([
+            empty_cell_with_props(2303),
+            empty_cell_with_props(4606, grid_span=2, vertical_merge="restart"),
+            empty_cell_with_props(2303, borders_xml=cell_borders(top=("single", 48, "17220B"), bottom=("double", 12, "auto"))),
+        ]),
+        row_cells([
+            empty_cell_with_props(2303),
+            empty_cell_with_props(4606, grid_span=2, vertical_merge="continue", borders_xml=cell_borders(right=("double", 12, "auto"))),
+            empty_cell_with_props(2303, borders_xml=cell_borders(top=("double", 12, "auto"), left=("double", 12, "auto"), bottom=("double", 12, "auto"), right=("double", 12, "auto"))),
+        ]),
+        row_cells([
+            empty_cell_with_props(4606, grid_span=2, vertical_merge="restart", borders_xml=cell_borders(top=("dotted", 24, "auto"), left=("dotted", 24, "auto"), bottom=("dotted", 24, "auto"), right=("dotted", 24, "auto"))),
+            empty_cell_with_props(2303, borders_xml=cell_borders(left=("dotted", 24, "auto"))),
+            empty_cell_with_props(2303, vertical_merge="restart", borders_xml=cell_borders(top=("double", 12, "auto"))),
+        ]),
+        row_cells([
+            empty_cell_with_props(4606, grid_span=2, vertical_merge="continue", borders_xml=cell_borders(top="nil", left=("dotted", 24, "auto"), bottom=("dotted", 24, "auto"), right=("dotted", 24, "auto"))),
+            empty_cell_with_props(2303, borders_xml=cell_borders(left=("dotted", 24, "auto"))),
+            empty_cell_with_props(2303, vertical_merge="continue"),
+        ]),
+    ], [2303, 2303, 2303, 2303])
 
 
 def repeated_long_paragraphs(count):
@@ -960,6 +1033,31 @@ def main():
                     cell("D", width=375, preserve_space=False),
                 ]),
             ], [375, 375])
+        ), True, True, docx4j_table_grid_styles(), True, True, docx4j_page_geometry(), 12, docx4j_word_settings_xml(), docx4j_theme_xml()),
+        "table-border-empty-cell-height.docx": (False, False, False, (
+            paragraph("Border empty-cell height repro", preserve_space=False)
+            + paragraph("Borders", preserve_space=False)
+            + border_stress_table()
+            + empty_paragraph_with_run_props()
+            + paragraph("Indent (WW uses gridBefore/gridAfter as above)", preserve_space=False)
+            + table_grid_style_table([
+                row_cells([
+                    empty_cell_with_props(1535, grid_span=2),
+                    empty_cell_with_props(1535, grid_span=2),
+                    empty_cell_with_props(1535, grid_span=2),
+                    empty_cell_with_props(1535, grid_span=2),
+                    empty_cell_with_props(1536, grid_span=2),
+                    empty_cell_with_props(1536, grid_span=2),
+                ]),
+                row_cells([
+                    empty_cell_with_props(1535, grid_span=2),
+                    empty_cell_with_props(1535, grid_span=2),
+                    empty_cell_with_props(1535, grid_span=2),
+                    empty_cell_with_props(1535, grid_span=2),
+                    empty_cell_with_props(1536, grid_span=2),
+                    empty_cell_with_props(1536, grid_span=2),
+                ]),
+            ], [708, 827, 708, 827, 708, 827, 708, 827, 708, 828, 708, 828, 708], table_width="9920", width_type="dxa")
         ), True, True, docx4j_table_grid_styles(), True, True, docx4j_page_geometry(), 12, docx4j_word_settings_xml(), docx4j_theme_xml()),
         "table-valign-row-height.docx": (False, False, False, (
             paragraph("Table valign row height repro", "Heading1")

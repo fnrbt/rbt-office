@@ -985,6 +985,21 @@ module Table =
     let rowHeightForContent (currentRowHeight: float) (padding: CellPadding) (contentHeight: float) =
         max currentRowHeight (contentHeight + padding.Top + padding.Bottom)
 
+    let private visibleBorderWidth (border: TableBorder option) =
+        match border with
+        | Some value ->
+            match RedBat.BorderGrid.styleKey value.Style with
+            | "nil"
+            | "none"
+            | "hidden" -> 0.0
+            | _ -> value.Width |> Option.defaultValue 1.0
+        | None -> 0.0
+
+    let cellVerticalBorderExtent (cell: TableCell) =
+        match cell.Borders with
+        | Some borders -> visibleBorderWidth borders.Top + visibleBorderWidth borders.Bottom
+        | None -> 0.0
+
     let verticalContentOffset verticalAlignment rowHeight paddingTop paddingBottom contentHeight =
         let available = max 0.0 (rowHeight - paddingTop - paddingBottom - contentHeight)
         match verticalAlignment with
