@@ -143,6 +143,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Spaced table separate borders</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-spacing-margins.docx</code></span>
+          <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
+          <span class="meta">Fix commit: <code>6e932b2</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-cell-spacing-margins-word.png" style="--w:1191px; --x:26px; --y:52px; --s:0.3867" alt="Word reference spaced table separate borders">
+          </div>
+          <div class="caption">Word paints each spaced cell as its own bordered box, including the left edges of <code>1b-1d</code> and the top edges of row 2.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-cell-spacing-margins-pre-separate-borders.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="Before spaced table separate border fix">
+          </div>
+          <div class="caption">Before: collapsed-border conflict resolution removed internal left borders and row-two top borders even though the table had cell spacing.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-cell-spacing-margins-after.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="After spaced table separate border fix">
+          </div>
+          <div class="caption">After: non-zero <code>tblCellSpacing</code> keeps separate cell borders, so all visible cell edges match Word's spaced-table boxes.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> skip collapsed-border conflict resolution for tables with non-zero cell spacing, preserving each cell's own top/left/right/bottom edges while ordinary zero-spacing tables still collapse borders.</p>
+          <ul>
+            <li>Focused guard: browser screenshot now shows <code>1b-1d</code> left borders and all row-two top borders.</li>
+            <li>Layout guard: PDF-backed comparison remains stable at <code>10 matched lines</code>; text deltas are unchanged from the prior geometry fix.</li>
+            <li>Path guard: native and PDF regenerated with the same restored spaced-cell edge model.</li>
+          </ul>
+        </td>
+      </tr>
+
+      <tr>
+        <td>
           <strong>Spaced table paint boxes and label centering</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-cell-spacing-margins.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
