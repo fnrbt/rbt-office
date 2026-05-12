@@ -771,8 +771,35 @@ module Table =
         |> max 0.0
 
     let rowSpacingAdvance spacing =
-        // Word keeps a spacing band above, between, and below spaced rows.
-        if spacing > 0.0 then spacing * 3.0 else 0.0
+        // Word keeps the cell border box separate from the inter-cell spacing bands.
+        // The measured advance is slightly larger than three spacing units because
+        // the following row's top band participates in the preceding row advance.
+        if spacing > 0.0 then spacing * 3.25 else 0.0
+
+    let spacedCellTextTopOffset spacing paddingTop =
+        // Spaced table text starts from the visual cell box, plus Word's internal
+        // top inset.  Direct cell tcMar can change row height, but not this origin.
+        if spacing > 0.0 then spacing + paddingTop * (2.0 / 3.0) else 0.0
+
+    let spacedCellPaintTopOffset spacing =
+        if spacing > 0.0 then spacing * 2.0 else spacing
+
+    let spacedCellPaintHeight rowHeight spacing =
+        if spacing > 0.0 then max 0.0 (rowHeight - rowSpacingAdvance spacing) else max 0.0 (rowHeight - spacing)
+
+    let spacedCellPaintXOffset spacing columnIndex =
+        if spacing > 0.0 && columnIndex > 0 then spacing else 0.0
+
+    let spacedCellPaintWidthAdjustment spacing columnCount start span =
+        if spacing <= 0.0 then
+            0.0
+        else
+            let left = if start = 0 then spacing else 0.0
+            let right = if start + span >= columnCount then spacing else 0.0
+            left + right
+
+    let spacedVerticalMarginExcess (textPadding: CellPadding) (cellPadding: CellPadding) =
+        max 0.0 (max (cellPadding.Top - textPadding.Top) (cellPadding.Bottom - textPadding.Bottom))
 
     let internalSpacingTextOffset spacing columnIndex =
         // Internal cell text starts one spacing unit before the spaced cell border box.
@@ -902,14 +929,25 @@ module Table =
     let positionedSpacedCellX columnWidths spacing (positioned: PositionedCell) =
         spacedStartOffset columnWidths spacing positioned.StartColumn
 
+    let positionedSpacedCellPaintWidth columnCount columnWidths spacing fallback (positioned: PositionedCell) =
+        positionedSpacedCellWidth columnWidths spacing fallback positioned
+        - spacedCellPaintWidthAdjustment spacing columnCount positioned.StartColumn positioned.Span
+        |> max 0.0
+
     let tableWidthWithSpacing (columnWidths: float list) spacing =
         columnWidths |> List.sum
 
     let afterSpacing = 0.0
 
     let tableAfterSpacing scale (table: TableBlock) =
-        // The last row leaves the table-level spacing band before following content.
-        cellSpacing scale table
+        let spacing = cellSpacing scale table
+        if spacing > 0.0 then
+            // The table's bottom spacing band participates in the following block
+            // advance.  Word includes a small contribution from the table top cell
+            // margin here for spaced tables.
+            spacing + optionalLength scale 0.0 table.PaddingTop * 0.5
+        else
+            0.0
 
     let defaultRowHeight (_lineHeight: float) =
         0.0

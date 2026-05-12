@@ -285,6 +285,15 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
                     strokeTableBorderCommands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 segment.Y1 segment.X2 segment.Y2
                     |> List.iter commands.Add)
 
+    let bottomSpacing = WordLayout.Table.cellSpacing WordLayout.canvasScale plan.Table
+    if bottomSpacing > 0.0 then
+        plan.Rows
+        |> List.tryLast
+        |> Option.bind (fun row -> row.Fragments |> List.tryLast)
+        |> Option.iter (fun fragment ->
+            tableFillCommands plan.Table.BackgroundColor plan.Table.Shading tableBackgroundX (fragment.Y + fragment.Height) plan.TableWidth bottomSpacing
+            |> List.iter commands.Add)
+
     List.ofSeq commands
 
 let private paragraphBorderCommands (settings: LayoutSettings) (layout: BlockLayout) =
@@ -466,10 +475,12 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
         let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
 
         let columnX spacing startColumn =
-            tableX + WordLayout.Table.spacedStartOffset columnWidths spacing startColumn
+            tableX + WordLayout.Table.spacedStartOffset columnWidths spacing startColumn - WordLayout.Table.spacedCellPaintXOffset spacing startColumn
 
         let columnWidth spacing startColumn span =
             WordLayout.Table.spacedSpannedWidth columnWidths spacing startColumn span (tableMaxWidth / float numColumns)
+            - WordLayout.Table.spacedCellPaintWidthAdjustment spacing numColumns startColumn span
+            |> max 0.0
 
         let borderStroke priority (stroke: WordLayout.Table.PrintStroke option) =
             stroke
@@ -529,8 +540,8 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                     let cell = resolved.Cell
                     let x = columnX cellSpacing resolved.StartColumn
                     let width = columnWidth cellSpacing resolved.StartColumn resolved.ColSpan
-                    let cellY = currentY + cellSpacing
-                    let cellHeight = max 0.0 (rowHeight - cellSpacing)
+                    let cellY = currentY + WordLayout.Table.spacedCellPaintTopOffset cellSpacing
+                    let cellHeight = WordLayout.Table.spacedCellPaintHeight rowHeight cellSpacing
                     for fragmentY, fragmentHeight in rowFragments settings cellY cellHeight do
                         commands <- commands @ tableFillCommands cell.BackgroundColor cell.Shading x fragmentY width fragmentHeight
                     ({
@@ -586,6 +597,10 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
 
             addRowCommands row currentY rowHeight
             currentY <- currentY + rowHeight
+
+        let bottomSpacing = WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock
+        if bottomSpacing > 0.0 then
+            commands <- commands @ tableFillCommands tableBlock.BackgroundColor tableBlock.Shading tableX currentY tableWidth bottomSpacing
 
         (commands, currentY + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock)
 

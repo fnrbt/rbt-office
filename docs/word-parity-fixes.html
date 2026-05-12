@@ -147,32 +147,32 @@
           <span class="meta">Repro: <code>tests/repros/word/table-cell-spacing-margins.docx</code></span>
           <span class="meta">Real fixture: <code>tests/test-documents-business/docx4j-tables.docx</code></span>
           <span class="meta">Paths checked: browser canvas, native PNG, PDF backend.</span>
-          <span class="meta">Fix commit: <code>5aedb08</code></span>
+          <span class="meta">Fix commit: <code>97e789c</code></span>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/docx4j-tables-spacing-word-crop.png" style="--w:1117px; --x:120px; --y:0px; --s:0.58" alt="Word reference table cell spacing and margins">
+            <img src="../artifacts/word/table-cell-spacing-margins-word.png" style="--w:1191px; --x:26px; --y:52px; --s:0.3867" alt="Word reference table cell spacing and margins">
           </div>
-          <div class="caption">Word keeps the spaced table's internal text origins one cell-spacing unit tighter and leaves the following paragraph close to the table bottom.</div>
+          <div class="caption">Word keeps a two-spacing outer band, compact cell border boxes, and a small gap before the following paragraph.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/docx4j-tables-spacing-before-crop.png" style="--w:1117px; --x:120px; --y:0px; --s:0.58" alt="Before table cell spacing and margins fix">
+            <img src="../artifacts/baseline/table-cell-spacing-margins-before.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="Before table cell spacing and margins fix">
           </div>
-          <div class="caption">Before: internal cell text was shifted right by about <code>9.3px</code>, the second row was about <code>18px</code> high, and the next paragraph was about <code>25px</code> high.</div>
+          <div class="caption">Before: the table was about <code>25px</code> too low, row text was high inside the cells, and the spaced table was about <code>31px</code> too short.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/docx4j-tables-spacing-after-crop.png" style="--w:1117px; --x:120px; --y:0px; --s:0.58" alt="After table cell spacing and margins fix">
+            <img src="../artifacts/browser/table-cell-spacing-margins-after.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="After table cell spacing and margins fix">
           </div>
-          <div class="caption">After: the real fixture's internal text origins are within <code>0.21px</code>, row-two text is within <code>0.77px</code>, and the next paragraph is within <code>0.31px</code>.</div>
+          <div class="caption">After: browser table lines are within <code>0.4px</code>; table height is <code>152px</code> in both Word and browser, with matching cell boxes.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> model Word's spaced-table text origin and vertical advance rules: internal columns subtract one spacing unit, spaced rows advance with Word's extra row gap, table cell spacing contributes a bottom gap, and vertical direct cell margins are normalized for spaced rows while horizontal margins still apply.</p>
+          <p><strong>Fix:</strong> model Word's spaced-table text origin and paint boxes separately: text uses row/table vertical margins, direct vertical cell margins still increase row height, cell fills start after the outer spacing band, and outer paint widths leave the right spacing band visible.</p>
           <ul>
-            <li>Focused guard: <code>table-cell-spacing-margins.docx</code> preserves the old bad render and keeps the row-to-row gap regression visible.</li>
-            <li>Real guard: <code>docx4j-tables.docx</code> changed <code>Cell 2a dy=-18.16</code> to <code>dy=0.77</code>, internal cell <code>dx=+9.3</code> to about <code>-0.2</code>, and <code>Mergin, Auto size dy=-24.85</code> to <code>dy=-0.31</code>.</li>
-            <li>Authoring guard: the interactive table cell margins dialog now exposes table cell spacing.</li>
+            <li>Focused guard: <code>table-cell-spacing-margins.docx</code> now has <code>Cell 1a dy=0.01</code>, <code>Cell 2a dy=-0.40</code>, and following paragraph <code>dy=-0.14</code>.</li>
+            <li>Visual guard: geometry probe reports Word/browser table height <code>152px</code> and top cell height about <code>34px</code>.</li>
+            <li>Native/PDF guard: both paths now use the same spaced-table paint model; native/PDF table heights are about <code>153px</code> on the focused repro.</li>
           </ul>
         </td>
       </tr>

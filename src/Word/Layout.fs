@@ -390,6 +390,12 @@ let private monospaceLineBoxFactor = 1.18
 let private tableCellDefaultLineBoxFactor = 1.336
 let private tableCellExplicitLineBoxFactor = 1.25
 
+let private tableCellLineBoxFontSize fontSize =
+    // Browser import stores DOCX point sizes as CSS-pixel sizes. The native/PDF
+    // import path still carries Word point values, so normalize the common
+    // 8-12pt table-cell range before computing Word's automatic line box.
+    if fontSize <= 12.0 then fontSize * 96.0 / 72.0 else fontSize
+
 let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
     match style.FontFamily |> Option.map (fun family -> family.Trim().ToLowerInvariant()) with
     | Some "consolas"
@@ -409,7 +415,7 @@ let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize 
     let automatic =
         if settings.InTableCell then
             let factor = if hasExplicitLineSpacing then tableCellExplicitLineBoxFactor else tableCellDefaultLineBoxFactor
-            fontSize * lineSpacing * factor
+            tableCellLineBoxFontSize fontSize * lineSpacing * factor
         else
             wordLineHeight textStyle fontSize lineSpacing
 
@@ -996,19 +1002,22 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
         let cell = positioned.Cell
         let fallbackWidth = tableMaxWidth / float numColumns
         let colWidth = WordLayout.Table.positionedSpacedCellWidth columnWidths cellSpacing fallbackWidth positioned
-        let padding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row cell
-        let padding =
+        let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row cell
+        let textPadding =
             if cellSpacing > 0.0 then
                 // Word still honors horizontal tcMar overrides in spaced cells, but vertical
-                // text origin and row advance follow the row/table defaults.
+                // text origin follows the row/table defaults.
                 let rowPadding = WordLayout.Table.rowCellPaddingDefaults WordLayout.canvasScale tableBlock row
-                { padding with Top = rowPadding.Top; Bottom = rowPadding.Bottom }
+                { cellPadding with Top = rowPadding.Top; Bottom = rowPadding.Bottom }
             else
-                padding
-        let cellX = WordLayout.Table.positionedSpacedCellX columnWidths cellSpacing positioned + padding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing positioned.StartColumn
-        let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth padding
-        let cellY = rowY + cellSpacing
-        let mutable paraY = WordLayout.Table.cellContentStartY cellY padding
+                cellPadding
+        let verticalMarginExcess =
+            if cellSpacing > 0.0 then WordLayout.Table.spacedVerticalMarginExcess textPadding cellPadding else 0.0
+        let cellX = WordLayout.Table.positionedSpacedCellX columnWidths cellSpacing positioned + textPadding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing positioned.StartColumn
+        let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth textPadding
+        let cellY = rowY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
+        let contentStartY = WordLayout.Table.cellContentStartY cellY textPadding
+        let mutable paraY = contentStartY
         let mutable cellLayouts = []
 
         let cellParagraphs = cell.Content |> List.toArray
@@ -1029,9 +1038,9 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
             pendingEmptyHeight <- if layout.Lines.IsEmpty then pendingEmptyHeight + layout.Height else 0.0
             paraY <- paraY + layout.Height
 
-        let contentHeight = WordLayout.Table.cellContentHeight cellY padding.Top paraY
-        rowHeight <- max rowHeight (contentHeight + padding.Top + padding.Bottom + rowSpacingAdvance)
-        cellGroups <- cellGroups @ [{ VerticalAlignment = cell.VerticalAlignment; PaddingTop = padding.Top; PaddingBottom = padding.Bottom; ContentHeight = contentHeight; Layouts = cellLayouts }]
+        let contentHeight = max 0.0 (paraY - contentStartY)
+        rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + rowSpacingAdvance)
+        cellGroups <- cellGroups @ [{ VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top; PaddingBottom = textPadding.Bottom; ContentHeight = contentHeight; Layouts = cellLayouts }]
         let totalLines = cellLayouts |> List.sumBy (fun layout -> layout.Lines.Length)
         let cellSnippet =
             cell.Content
@@ -1118,8 +1127,8 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
                 let group = cellGroups.[cellIndex]
                 let resolvedCell = resolvedCells |> Array.tryItem cellIndex
                 let fallbackWidth = plan.TableMaxWidth / float numColumns
-                let cellX = plan.TableX + WordLayout.Table.positionedSpacedCellX plan.ColumnWidths cellSpacing positioned
-                let cellWidth = WordLayout.Table.positionedSpacedCellWidth plan.ColumnWidths cellSpacing fallbackWidth positioned
+                let cellX = plan.TableX + WordLayout.Table.positionedSpacedCellX plan.ColumnWidths cellSpacing positioned - WordLayout.Table.spacedCellPaintXOffset cellSpacing positioned.StartColumn
+                let cellWidth = WordLayout.Table.positionedSpacedCellPaintWidth numColumns plan.ColumnWidths cellSpacing fallbackWidth positioned
                 let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment planRow.Height group.PaddingTop group.PaddingBottom group.ContentHeight
                 let visibleLines =
                     group.Layouts
@@ -1156,8 +1165,8 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
                     FragmentHeight = fragment.Height
                     CellX = cellX
                     CellWidth = cellWidth
-                    CellY = fragment.Y + cellSpacing
-                    CellHeight = max 0.0 (fragment.Height - cellSpacing)
+                    CellY = fragment.Y + WordLayout.Table.spacedCellPaintTopOffset cellSpacing
+                    CellHeight = WordLayout.Table.spacedCellPaintHeight fragment.Height cellSpacing
                     CellSpacing = cellSpacing
                     PaddingTop = group.PaddingTop
                     PaddingBottom = group.PaddingBottom
