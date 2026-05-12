@@ -183,6 +183,7 @@ type AppState = {
     mutable LastCmds: Cmd list
     Window: IWindow
     EditorState: Editor.WordEditorState
+    RenderState: Chrome.ShellRenderState
     ControlServer: ControlServer.ControlServer
 }
 
@@ -198,12 +199,17 @@ let private handleInput (state: AppState) (ev: InputEvent) =
         if not (KeyMap.isModifier keycode) then
             match KeyMap.translate keycode state.ShiftDown with
             | Some key ->
-                let ke : KeyEvent = { Key = key; Shift = state.ShiftDown; Ctrl = state.CtrlDown; Alt = state.AltDown }
-                match state.LayoutRoot with
-                | Some root ->
-                    let _ = dispatchKey root ke
+                // Escape closes an open menu first; otherwise falls through to editor.
+                if key = "Escape" && state.RenderState.OpenMenu.Value.IsSome then
+                    state.RenderState.OpenMenu.Value <- None
                     state.Window.RequestRedraw()
-                | None -> ()
+                else
+                    let ke : KeyEvent = { Key = key; Shift = state.ShiftDown; Ctrl = state.CtrlDown; Alt = state.AltDown }
+                    match state.LayoutRoot with
+                    | Some root ->
+                        let _ = dispatchKey root ke
+                        state.Window.RequestRedraw()
+                    | None -> ()
             | None -> ()
 
     | KeyUp(keycode, _) ->
@@ -344,6 +350,7 @@ let main argv =
         LastCmds = []
         Window = window
         EditorState = editor
+        RenderState = renderState
         ControlServer = controlServer
     }
 

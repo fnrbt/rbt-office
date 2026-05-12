@@ -17,6 +17,19 @@ pkill -9 -f "/word-editor/bin/" 2>/dev/null
 sleep 0.2
 
 EXE="tools/word-editor/bin/Debug/net10.0/WordEditor"
+
+# Auto-detect a Word font directory if RB_WORD_FONT_DIR isn't set.
+if [ -z "${RB_WORD_FONT_DIR:-}" ]; then
+    for candidate in \
+        /home/dave/.cache/camoufox/fonts/windows \
+        /home/dave/Dev/redbatnet/mega/frontend/public/word-text-stack/fonts; do
+        if [ -d "$candidate" ]; then
+            export RB_WORD_FONT_DIR="$candidate"
+            break
+        fi
+    done
+fi
+
 (
     if [ -n "$DOC" ]; then
         "$EXE" "$DOC" >/tmp/word-editor.log 2>&1

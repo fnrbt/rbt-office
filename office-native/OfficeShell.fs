@@ -107,27 +107,17 @@ let private chromeBandWithBorder (p: ChromePalette) fill height child =
             child
         ])
 
-let private toolCellBg (p: ChromePalette) isActive =
-    canvas 28.0 28.0 (fun w h ->
-        if isActive then
-            [ FillRect(Renderer.Types.rect 0.0 0.0 w h, p.Pressed) ]
-        else
-            [ FillRect(Renderer.Types.rect 0.0 0.0 w h, Color.rgba 255uy 255uy 255uy 0uy) ])
-
-let private menuButtonBg (p: ChromePalette) isOpen =
-    canvas 1.0 26.0 (fun w h ->
-        if isOpen then
-            [ FillRect(Renderer.Types.rect 0.0 0.0 w h, p.Pressed) ]
-        else
-            [ FillRect(Renderer.Types.rect 0.0 0.0 w h, Palette.transparent) ])
-
 let private flatToolbarCell (p: ChromePalette) isActive content action =
+    let bg = if isActive then rounded 4.0 p.Pressed empty else empty
     clickable action (
         sized 28.0 28.0 (
             stack [
-                toolCellBg p isActive
+                bg
                 center content
             ]))
+
+let private menuButtonChrome (p: ChromePalette) isOpen =
+    if isOpen then rounded 4.0 p.Pressed empty else empty
 
 let private toolbarTextIcon (p: ChromePalette) value = textStyled Font.sm p.Text value
 
@@ -308,7 +298,7 @@ let private renderGlyph (p: ChromePalette) (label: string) (glyph: string) =
 let private menuButton (p: ChromePalette) label isOpen action =
     clickable action (
         stack [
-            menuButtonBg p isOpen
+            menuButtonChrome p isOpen
             padXY 12.0 6.0 (textStyled Font.sm p.Text label)
         ])
 
