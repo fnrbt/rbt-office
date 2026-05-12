@@ -291,9 +291,13 @@ let private paragraphVisibleFitHeight (paragraphStyle: ParagraphStyle) (layout: 
         layout.Height
     else
         let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata
-        match layout.Lines |> List.rev with
+        match layout.Lines with
         | [] -> max 0.0 (layout.Height - spacingAfter)
-        | lastLine :: _ ->
+        // Word does not place a one-line paragraph at the page bottom unless its
+        // full paragraph box, including after-spacing, fits on that page.
+        | [_] -> layout.Height
+        | _ ->
+            let lastLine = layout.Lines |> List.last
             max 0.0 ((lastLine.Y - layout.Y) + lineVisibleFitHeight lastLine)
 
 let private paginateTableRow settings (row: TableRow) y rowHeight =

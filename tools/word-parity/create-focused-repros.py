@@ -72,9 +72,14 @@ def empty_paragraph():
     return "<w:p/>"
 
 
+def page_break_paragraph():
+    return '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+
+
 def cell(
     text,
     width=2400,
+    grid_span=None,
     spacing_after=None,
     padding_left=None,
     padding_top=None,
@@ -87,6 +92,8 @@ def cell(
     shading_fill="auto",
 ):
     tc_props = [f'<w:tcW w:w="{width}" w:type="dxa"/>']
+    if grid_span is not None:
+        tc_props.append(f'<w:gridSpan w:val="{grid_span}"/>')
     if shading:
         tc_props.append(
             f'<w:shd w:val="{esc(shading)}" w:color="{esc(shading_color)}" w:fill="{esc(shading_fill)}"/>'
@@ -190,6 +197,22 @@ def table_grid_style_table_with_pr(rows, grid_widths, extra_tbl_pr="", table_wid
         f"<w:tblGrid>{grid}</w:tblGrid>"
         + "".join(row_values for row_values in rows)
         + "</w:tbl>"
+    )
+
+
+def exact_height_spacer_table(height, width=9212):
+    return (
+        "<w:tbl>"
+        '<w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>'
+        f'<w:tblGrid><w:gridCol w:w="{width}"/></w:tblGrid>'
+        '<w:tr><w:trPr>'
+        f'<w:trHeight w:val="{height}" w:hRule="exact"/>'
+        '</w:trPr>'
+        '<w:tc><w:tcPr>'
+        f'<w:tcW w:w="{width}" w:type="dxa"/>'
+        '</w:tcPr><w:p/></w:tc>'
+        '</w:tr>'
+        '</w:tbl>'
     )
 
 
@@ -723,6 +746,23 @@ def main():
             ], [2303, 2303, 2303, 2303])
             + paragraph("After dense table")
         ), True, True, table_grid_dense_row_pitch_styles()),
+        "table-gridspan-bottom-fit.docx": (False, False, False, (
+            paragraph("Table gridspan bottom-fit repro", "Heading1")
+            + page_break_paragraph()
+            + exact_height_spacer_table(12900)
+            + paragraph("Mergin, Auto size")
+            + table_grid_style_table([
+                row_cells([
+                    cell("A", width=6141, grid_span=2),
+                    cell("B", width=3071),
+                ]),
+                row_cells([
+                    cell("C", width=3070),
+                    cell("D", width=6142, grid_span=2),
+                ]),
+            ], [3070, 3071, 3071])
+            + paragraph("After gridspan table")
+        ), True, True, table_grid_dense_row_pitch_styles(), False, False, docx4j_page_geometry()),
         "table-valign-row-height.docx": (False, False, False, (
             paragraph("Table valign row height repro", "Heading1")
             + table_grid_style_table([

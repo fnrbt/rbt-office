@@ -143,6 +143,43 @@
     <tbody>
       <tr>
         <td>
+          <strong>Single-line paragraph bottom fit after table</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-gridspan-bottom-fit.docx</code></span>
+          <span class="meta">Real fixture class: grid-span tables positioned at the page bottom, followed by a one-line Normal paragraph.</span>
+          <span class="meta">Paths checked: browser canvas, native PNG, PDF backend, PDF-backed Word visual comparison, VBA range comparison.</span>
+          <span class="meta">Fix commit: <code>pending</code></span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/word/table-gridspan-bottom-fit-word.png" style="--w:1191px; --x:40px; --y:1860px; --s:0.6" alt="Word reference single-line paragraph bottom fit after table">
+          </div>
+          <div class="caption">Word leaves the bottom-fit table on page 2 but starts the following one-line paragraph at the top of page 3.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/table-gridspan-bottom-fit-before-single-line-full-fit.png" style="--w:900px; --x:40px; --y:1860px; --s:0.9" alt="Before single-line paragraph bottom fit fix">
+          </div>
+          <div class="caption">Before: the page-fit check ignored the paragraph after-spacing, so <code>After gridspan table</code> was allowed into the last page-2 sliver.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/browser/table-gridspan-bottom-fit-after-single-line-full-fit.png" style="--w:900px; --x:40px; --y:1860px; --s:0.9" alt="After single-line paragraph bottom fit fix">
+          </div>
+          <div class="caption">After: single-line paragraphs require their full paragraph box to fit, matching Word's page break.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> keep the existing visible-last-line fit behavior for wrapped paragraphs, but require a one-line non-list paragraph to fit with its after-spacing before placing it at the bottom of a page.</p>
+          <ul>
+            <li>Focused guard: <code>table-gridspan-bottom-fit.docx</code> now compares cleanly with <code>7 matched lines</code>.</li>
+            <li>Regression guard: <code>wrapped-paragraph-line-pitch.docx</code>, <code>widow-control-last-line.docx</code>, <code>normal-paragraph-line-pitch.docx</code>, and <code>table-cell-default-after-spacing.docx</code> remain clean.</li>
+            <li>VBA guard: page count now matches Word; remaining VBA deltas are table grid-span metadata fields rather than page placement.</li>
+            <li>Path guard: native/PDF import now preserves the page-break paragraph and exact spacer row height for this repro; print/native text metrics still leave a smaller follow-up drift than the browser path.</li>
+            <li>Authoring guard: paragraph after-spacing is already exposed in the paragraph style dialog; this change corrects the renderer's page-fit model for that authored spacing.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Explicit TableGrid row pitch accumulation</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-grid-dense-row-pitch.docx</code></span>
           <span class="meta">Real fixture class: dense single-line tables using explicit table-style paragraph line spacing.</span>
