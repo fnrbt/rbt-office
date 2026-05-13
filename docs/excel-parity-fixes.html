@@ -155,6 +155,52 @@
     <tbody>
       <tr>
         <td>
+          <strong>Resolve <code>indexed=</code>, <code>theme=</code> + <code>tint=</code> color attributes (cells, fonts, borders)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/poi-49156.xlsx</code> (banded form template using <code>&lt;fgColor indexed="22"|"41"|"43"|"45"/&gt;</code> across rows 10-21) and <code>poi-51710.xlsx</code> (column-A / row-2 use <code>&lt;fgColor theme="0" tint="-0.249977…"/&gt;</code> for a darker-gray header band).</span>
+          <span class="meta">Real fixture class: every XLSX that doesn't write rgb fills directly — POI-written sheets lean on the legacy indexed palette, Excel's own theme-emitted sheets lean on theme+tint. The parser was reading only <code>rgb=</code>, so all of these resolved to <code>None</code> and rendered as cells with no fill / fallback-black text. Affected: poi-49156, poi-51585, poi-51710, phpsp-27template, phpsp-31docproperties, phpsp-32chartreadwrite.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/poi-49156-after.png" style="--w:1100px; --x:0px; --y:230px; --s:0.85" alt="No Excel reference — see internal before/after">
+          </div>
+          <div class="caption">No Excel-rendered reference in the corpus for this fixture (POI sample workbook). The verification here is that the indexed colors land at the documented Excel 8 palette values — index 22 = <code>#C0C0C0</code> (light gray), index 41 = <code>#CCFFFF</code> (cyan), index 45 = <code>#FF99CC</code> (pink), 43 = <code>#FFFF99</code>. Compare to the OOXML transitional spec's <em>IndexedColors</em> table.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/poi-49156-after.png" style="--w:1100px; --x:0px; --y:230px; --s:0.85" alt="Ours after indexed/theme/tint resolution">
+          </div>
+          <div class="caption">After: rows 10-13 paint cyan in D, pink in E, gray in F (indexed 41/45/22). Row 14-16 / 18-20 use the same palette spread across additional columns. Without these resolved, the page was a uniform white slab — losing the entire visual layout of the form template.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/poi-49156-pre-indexed.png" style="--w:1100px; --x:0px; --y:230px; --s:0.85" alt="Ours before indexed color support">
+          </div>
+          <div class="caption">Before: every <code>&lt;fgColor indexed="N"/&gt;</code> hit <code>Xml.attr "rgb"</code> in parseFill, returned None, so all fill colors dropped to default white. The structural borders are still visible because <code>parseBorderSide</code> reads <code>style=</code> which doesn't depend on color resolution.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add a generalized color element resolver and route every color path (font, fill, border) through it.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>:
+              <ul>
+                <li><code>resolveColorElement themeColors node</code> tries <code>rgb</code> → <code>theme</code> (+ optional <code>tint</code>) → <code>indexed</code> in that order, returning the first hit as a 6-char hex.</li>
+                <li><code>parseThemeColors</code> reads all 12 slots of the theme <code>&lt;a:clrScheme&gt;</code> in XLSX <code>theme="N"</code> integer order — note that OOXML swaps <code>dk1</code>/<code>lt1</code> (and <code>dk2</code>/<code>lt2</code>) between the theme XML element order and the theme-N value space. Without all 12, <code>theme="0"</code> (background) and <code>theme="1"</code> (text) would silently fall back to defaults. <code>parseThemeAccents</code> stays as a 6-entry array for the existing TableStyleMedium# overlay code that indexes accent1..accent6.</li>
+                <li><code>indexedPaletteColor i</code> encodes Excel 8 / BIFF8's 64-slot legacy palette as a static table, plus indices 64 (system fg → black) and 65 (system bg → white).</li>
+                <li><code>applyColorTint rgb tint</code> implements the OOXML formula: convert RGB → HLS, adjust L by <code>L * (1 + tint)</code> when tint &lt; 0 else <code>L * (1 - tint) + tint</code>, convert back. Tint = -0.5 darkens by ~half, tint = +0.5 lightens.</li>
+                <li><code>parseFont</code>, <code>parseFill</code>, <code>parseBorderSide</code>, <code>parseBorder</code>, <code>parseStyles</code> all take <code>themeColors: string array</code> threaded down from the workbook loader. <code>parseFill</code> additionally treats <code>patternType="none"</code> and <code>patternType="gray125"</code> (openpyxl's no-fill sentinel) as explicit None, and falls back to <code>bgColor</code> when <code>fgColor</code> is absent — POI-written workbooks sometimes only set <code>bgColor</code> for the solid case.</li>
+              </ul>
+            </li>
+            <li>Workbook loader (<code>parseWorkbookNative</code> and the Promise-based <code>parseWorkbook</code>) reads <code>xl/theme/theme1.xml</code> first, derives <code>themeColors</code> with Office 2013 defaults as fallback, then passes it into <code>parseStyles</code> so every color element has a resolution context.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: poi-49156 banded rows now show the 4-color form palette (cyan/pink/light-gray on a white base). poi-51710 column-A and row-2 darker gray now matches the Excel reference's header band rather than blending into the body.</li>
+            <li>Regression guard: every fixture that was already using <code>rgb=</code> colors keeps the exact same hex value (resolveColorElement tries <code>rgb</code> first); pandas* fixtures, phpsp-26template, the table fixtures all produce byte-identical PNGs.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Measure MDW from the workbook's real default font (and ship Verdana to the font cache)</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/poi-47813.xlsx</code> Sheet "Numbers" (Verdana 10, columns sized for "###.000" values).</span>
           <span class="meta">Real fixture class: every XLSX whose default font isn't Calibri/Arial. Excel sizes columns in "Maximum Digit Width" units — the rendered pixel width of '0' in the workbook's default font at default size. We used a Calibri-anchored linear fit (<code>round(fontSize × 7/11)</code>) that gives 7 px for any 10-11 pt font, but Verdana 10's '0' is ~8 px. Column A in poi-47813 came out 7 px short → "10.000" through "47.000" rendered as <code>#####</code>.</span>
