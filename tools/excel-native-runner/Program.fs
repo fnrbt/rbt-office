@@ -20,10 +20,16 @@ let private existingFile path =
     if File.Exists path then Some path else None
 
 let private findFont () =
+    let cwd = Directory.GetCurrentDirectory()
     [
         Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "artifacts/fonts/windows"))
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../artifacts/fonts/windows"))
+        Path.GetFullPath(Path.Combine(cwd, "artifacts/fonts/windows"))
+        Path.GetFullPath(Path.Combine(cwd, "../../artifacts/fonts/windows"))
+        // Sibling office repo's font cache, when running from office-spreadsheet/.
+        // SpreadsheetGrid.fontDirs already includes this — keep the runner's
+        // own font lookup in sync so the default UI font (row/column headers,
+        // chrome) loads from the same Calibri Windows TTF Excel rendered with.
+        Path.GetFullPath(Path.Combine(cwd, "../office/artifacts/fonts/windows"))
     ]
     |> List.choose (fun dir ->
         if String.IsNullOrWhiteSpace dir then None
@@ -31,8 +37,10 @@ let private findFont () =
     |> List.tryHead
 
 let private initFont () =
-    findFont ()
-    |> Option.iter Composit.Ui.Layout.initFont
+    match findFont () with
+    | Some path -> Composit.Ui.Layout.initFont path
+    | None ->
+        eprintfn "warning: calibri.ttf not found in RB_WORD_FONT_DIR or known font dirs; row/column headers will fall back to NotoSans"
 
 let private columnIndex (letters: string) : int =
     let mutable acc = 0
@@ -208,11 +216,18 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                 EndCol = columnIndex mc.EndRef.Column
             })
 
-    // Excel col.Width is in character units. The empirical ratio between
-    // character units and CSS pixels at Calibri 11 / 96 DPI is ~8.0 px per
-    // character for this corpus (column A in pandas-test1.xlsx: 11.83 chars
-    // → Excel reports 71.25 pt = 95 px, so 95/11.83 ≈ 8.03).
-    let charsToPixels (chars: float) = chars * 8.0
+    // Excel col.Width is in character units. The chars-to-pixels ratio is the
+    // "Maximum Digit Width" (MDW) of the workbook's default font: 7 px for
+    // Calibri 11 (pandas-testmultiindex defaultColWidth=8.85546875 → 62 px),
+    // 8 px for Calibri 12 (pandas-test1 col A width=11.83 → 95 px). Linear
+    // scaling from the 11-pt / 7-px anchor handles other sizes (size 14 → 9,
+    // size 16 → 10) close enough to Excel's per-size MDW table.
+    let defaultFontSize =
+        if workbook.Styles.Length > 0 then
+            workbook.Styles.[0].FontSize |> Option.defaultValue 11.0
+        else 11.0
+    let mdw = max 1.0 (System.Math.Round(defaultFontSize * 7.0 / 11.0))
+    let charsToPixels (chars: float) = chars * mdw
 
     // sheetFormatPr defaults. Excel uses these for every column without an
     // explicit <col width="..."> entry. Without seeding the defaults across

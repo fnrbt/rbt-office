@@ -120,15 +120,21 @@ let private parseHexColor (value: string) =
     | _ -> Color.black
 
 let private toRendererCommands (text: PaintText) =
+    // Excel font sizes (XLSX <sz val="11"/>) are in points, but the Renderer
+    // takes pixel units. Convert pt→px at the rendering boundary so a Calibri
+    // 11-pt cell renders at the same glyph height Excel produces (~10 px cap
+    // height) instead of an 8-px miniature. Row/column heights are already
+    // converted via 96/72 in the runner; this keeps text scale consistent.
     let font = rendererFont text.FontName text.Bold text.Italic
-    let layout = Renderer.Text.layout font text.FontSize text.Text
-    let measured = Renderer.Text.measureWidth font text.FontSize text.Text
+    let pxSize = text.FontSize * 96.0 / 72.0
+    let layout = Renderer.Text.layout font pxSize text.Text
+    let measured = Renderer.Text.measureWidth font pxSize text.Text
     let alignedX =
         match text.Align with
         | AlignLeft -> text.Rect.X
         | AlignCenter -> text.Rect.X + (text.Rect.Width - measured) / 2.0
         | AlignRight -> text.Rect.X + text.Rect.Width - measured
-    let baseline = text.Rect.Y + (text.Rect.Height + text.FontSize) / 2.0 - 2.0
+    let baseline = text.Rect.Y + (text.Rect.Height + pxSize) / 2.0 - 2.0
     [ Cmd.DrawGlyphs(vec2 alignedX baseline, layout, Solid (parseHexColor text.Color)) ]
 
 let private renderPaintItem = function
@@ -151,10 +157,12 @@ let private renderPaintItem = function
 
 let private viewportOf (model: SpreadsheetModel) width height : Viewport =
     // Match Excel's column/row header pixel sizes at 96 DPI / 100% zoom so
-    // parity screenshots align cell-for-cell with our PNG renders. Excel's
-    // column-header strip is ~18 px tall (Calibri 11) and the row-header
-    // strip is ~28 px wide for fixtures whose row numbers fit in two digits.
-    let headerHeight = 18.0
+    // parity screenshots align cell-for-cell with our PNG renders. Measured
+    // against artifacts/excel/pandas-test1-sheet1-headings.png: the column
+    // header strip is 20 px tall (Calibri 11), the row header strip is 28 px
+    // wide for two-digit row numbers, and each row in the default 15-pt
+    // height renders at 21 source px.
+    let headerHeight = 20.0
     let rowHeaderWidth = 28.0
     { ScrollX = 0.0
       ScrollY = 0.0

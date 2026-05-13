@@ -155,6 +155,79 @@
     <tbody>
       <tr>
         <td>
+          <strong>Convert Excel font sizes from points to pixels at the render boundary</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code> (Calibri 12pt default font; data rows + column/row headers).</span>
+          <span class="meta">Real fixture class: every XLSX in the corpus. XLSX <code>&lt;sz val="11"/&gt;</code> means 11 <em>points</em>, but our renderer's <code>Renderer.Text.layout font fontSize text</code> takes a <em>pixel</em> em size. Without conversion every glyph rendered at 0.75× of Excel's size and every text run came out visibly narrower than the cell width Excel sized for.</span>
+          <span class="meta">Paths checked: native PNG, per-glyph height/width via PIL scan against the Excel pane capture. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test1.xlsx Sheet1">
+          </div>
+          <div class="caption">Excel reference: column-header "B" glyph occupies <code>y = 6..15</code> (10 px cap height — matches Calibri 11 pt × 96/72 dpi). Cell B2 "0.98026851" runs <code>x = 133..207</code> (75 px wide × 10 px tall).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after pt→px font scaling">
+          </div>
+          <div class="caption">After: <code>toRendererCommands</code> now multiplies <code>text.FontSize</code> by <code>96/72</code> before calling <code>Renderer.Text.layout</code>. Column-header "B" glyph occupies <code>y = 6..15</code>, cell B2 number runs <code>x = 136..205</code> (70 px wide × 11 px tall). All glyphs sit at the same source-pixel positions as Excel within ±1 px, so the cell-by-cell overlay in this tracker actually shows like-for-like text.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-pre-pt2px.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before pt→px font scaling">
+          </div>
+          <div class="caption">Before: <code>FontSize</code> reached the renderer as-is, so "11" got interpreted as 11 px of em-square instead of <code>11 pt = 14.67 px</code>. Column-header "B" glyph was only 8 px tall (vs Excel's 10), cell B2 number ran 52 px × 7 px (vs Excel's 75 × 10). Every glyph rendered ~75% the size Excel showed — fine in isolation, useless for overlay comparison.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>spreadsheet-native/SpreadsheetGrid.fs</code>'s <code>toRendererCommands</code>, compute <code>pxSize = text.FontSize * 96.0 / 72.0</code> and feed that to both <code>Renderer.Text.layout</code> / <code>measureWidth</code> and the baseline math. Row/column heights were already pt→px-converted (<code>h * 96/72</code>) inside <code>tools/excel-native-runner</code>; this brings text into the same coordinate system.</p>
+          <p>Companion change to the font lookup: <code>tools/excel-native-runner</code>'s <code>findFont</code> now also checks <code>../office/artifacts/fonts/windows/</code> (matching <code>SpreadsheetGrid.fontDirs</code>) and stderr-warns if <code>calibri.ttf</code> can't be found. The runner's <code>Composit.Ui.Layout.initFont</code> path was previously silent on miss → fell back to NotoSans for any chrome that went through the Composit font path. Cell rendering already used Calibri via <code>SpreadsheetGrid.loadVariant</code>; this just makes the runner-level font init consistent.</p>
+          <ul>
+            <li>Focused guard: pandas-test1 column-header glyph height 8 → 10 px; cell B2 number width 52 → 70 px (vs Excel 75 px — remaining 5 px is digit-spacing hinting jitter, not font size).</li>
+            <li>Regression guard: all 53 corpus fixtures still render without error after pt→px. Native-runner unit conversion (pt → px) now applies consistently to row heights, column widths, and text.</li>
+            <li>Path guard: native PNG only. The Fable web app already renders fontSize via CSS <code>font-size: …pt</code>, which the browser converts automatically — no change needed there.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Scale chars→pixels by workbook default font size; bump column-header strip to 20 px</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-testmultiindex.xlsx</code> (Calibri 11, 62-px default columns).</span>
+          <span class="meta">Real fixture class: workbooks whose default font is anything other than Calibri 12. The runner was hard-coded to 8 px per character unit, so size-11 sheets (the most common case — pandas, openpyxl, POI all default to Calibri 11) rendered every column ~15% wider than Excel.</span>
+          <span class="meta">Paths checked: native PNG + source-pixel column boundaries via PIL scan. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference render of pandas-testmultiindex.xlsx — 62-px columns">
+          </div>
+          <div class="caption">Excel reference: <code>defaultColWidth="8.85546875"</code> + Calibri 11 → 62 px per column (column boundaries at source <code>x = 25, 87, 149, 211, 273, …</code>). Column-header strip is 20 px tall; row 1 starts at <code>y = 20</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-testmultiindex-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after MDW-by-font-size and 20-px header fix">
+          </div>
+          <div class="caption">After: <code>charsToPixels</code> reads the workbook's default <code>FontSize</code> (<code>workbook.Styles.[0]</code>) and derives MDW = <code>round(size × 7/11)</code> — 7 for size 11, 8 for size 12. Pandas-testmultiindex columns now render at 62 px (boundaries at source <code>x = 27, 89, 151, 213, 275, …</code>) and row 1 starts at <code>y = 20</code>. With the parity HTML and Excel screenshot sharing the same per-row <code>--s</code> scale, cells now occupy the same on-page rectangle in both columns.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-testmultiindex-pre-mdw.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before MDW-by-font-size fix">
+          </div>
+          <div class="caption">Before: every fixture used <code>chars * 8.0</code>, so size-11 columns rendered at <code>8.85546875 × 8 ≈ 71</code> px (boundaries at source <code>x = 27, 98, 169, 240, 311, …</code>) — ~14% wider than Excel. The header strip was 18 px, so row 1 started at <code>y = 18</code> while Excel's started at <code>y = 20</code>; the 2-px drift compounded with the column drift to misalign every cell when the two PNGs were overlaid in the parity tracker.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> two coordinated changes that together make Excel screenshots and our native render share the same source-pixel grid.</p>
+          <ul>
+            <li><code>tools/excel-native-runner/Program.fs</code>: read <code>workbook.Styles.[0].FontSize</code> (defaults to 11) and derive <code>mdw = max 1.0 (round(size × 7.0 / 11.0))</code>. <code>charsToPixels</code> uses this per-workbook MDW instead of a literal 8.0. Calibri 11 sheets get 7 px/char, Calibri 12 sheets stay at 8 px/char.</li>
+            <li><code>spreadsheet-native/SpreadsheetGrid.fs</code>: bump <code>headerHeight</code> from 18 → 20 px to match the Excel pane capture (measured with a horizontal-line scan: the first row of dark pixels that spans the full pane is at <code>y = 20</code>).</li>
+          </ul>
+          <ul>
+            <li>Focused guard: <code>pandas-testmultiindex.xlsx</code> default columns drop from 71 px to 62 px; A1 anchor moves from <code>(28, 18)</code> to <code>(28, 20)</code>, identical to Excel.</li>
+            <li>Regression guard: <code>pandas-test1.xlsx</code> (Calibri 12 → MDW 8) keeps its 88-px default columns and 95-px column A — no change vs the previous <code>chars * 8</code> behavior.</li>
+            <li>Corpus guard: all 53 fixtures still render without error after the MDW change.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Render per-cell <code>&lt;border&gt;</code> from <code>cellXf borderId</code></strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-testmultiindex.xlsx</code></span>
           <span class="meta">Real fixture class: XLSX cells whose <code>&lt;xf borderId="N"/&gt;</code> references a non-zero <code>&lt;border&gt;</code> entry. Excel renders these as solid black borders on each side; we previously only drew the default light gridline. pandas writes <code>thin</code> borders on every row-index / column-header / data cell in its multiindex export.</span>
