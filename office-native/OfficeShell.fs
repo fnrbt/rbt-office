@@ -380,15 +380,19 @@ let private menuButton (p: ChromePalette) (renderState: ShellRenderState) (id: s
             ]))
 
 let private comboControl (p: ChromePalette) label action =
+    // Matches widgets/Widgets.fs `select` styling: 28-30px tall, rounded
+    // hairline border, label + chevron on the right.
     clickable action (
-        stack [
-            box p.Input empty
-            border p.Border 1.0 4.0 (
-                rowAlign MStart CCenter 0.0 [
-                    padXY 8.0 5.0 (textStyled Font.sm p.Text label)
-                    padXY 4.0 0.0 (textStyled Font.sm (parseHexColor "#5F6368") "▾")
-                ])
-        ])
+        sizedH 28.0 (
+            stack [
+                rounded 4.0 p.Input empty
+                border p.Border 1.0 4.0 (
+                    padXY 10.0 0.0 (
+                        rowAlign MSpaceBetween CCenter 0.0 [
+                            textStyled Font.sm p.Text label
+                            padXY 6.0 0.0 (textStyled Font.sm (parseHexColor "#5F6368") "▾")
+                        ]))
+            ]))
 
 /// Standard 8x5 Word-style color palette. Apps may swap this for a richer
 /// picker later.
