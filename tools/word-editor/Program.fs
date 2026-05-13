@@ -286,6 +286,12 @@ let private handleInput (state: AppState) (ev: InputEvent) =
                 | Some(h, lx, ly) -> h (PointerUp(lx, ly))
                 | None -> ()
             state.Window.RequestRedraw()
+        | Some root when button = 2 && pressed ->
+            // Right-click: fire the deepest ContextMenuRegion handler if any.
+            match contextMenuHitTestAll root x y with
+            | Some handler -> handler (x, y)
+            | None -> ()
+            state.Window.RequestRedraw()
         | _ -> ()
 
     | MouseMove(x, y) ->
@@ -416,10 +422,44 @@ let main argv =
         ControlServer = controlServer
     }
 
+    // Right-click context menu over the document workspace. Items are a
+    // mix of clipboard ops, character formatting, and paragraph style — the
+    // most useful subset of what's in the menus.
+    let openDocContextMenu (x, y) =
+        let item label isChecked action =
+            RedBat.Office.Ui.menuItem (sprintf "ctx-%s" label) label isChecked action
+        let items = [
+            item "Cut" None (fun () ->
+                let text = Doc.getSelectionText editor.Document.Value
+                if text <> "" then
+                    Platform.clipboard.SetText text
+                    applyChange editor Doc.deleteSelection
+                    status.Value <- sprintf "Cut %d chars" text.Length)
+            item "Copy" None (fun () ->
+                let text = Doc.getSelectionText editor.Document.Value
+                if text <> "" then
+                    Platform.clipboard.SetText text
+                    status.Value <- sprintf "Copied %d chars" text.Length)
+            item "Paste" None (fun () ->
+                match Platform.clipboard.GetText() with
+                | Some text when text <> "" ->
+                    applyChange editor (Doc.insertText text)
+                    status.Value <- sprintf "Pasted %d chars" text.Length
+                | _ -> ())
+            item "Bold" None (fun () -> applyChange editor Doc.toggleBold)
+            item "Italic" None (fun () -> applyChange editor Doc.toggleItalic)
+            item "Underline" None (fun () -> applyChange editor Doc.toggleUnderline)
+            item "Insert link..." None (fun () -> actions.OpenAnnotation "hyperlink")
+            item "Page setup..." None actions.OpenPageSetup
+        ]
+        Composit.Ui.OfficeShell.openContextMenu renderState x y items
+
     let buildWidget () =
         let bodyHeight = max 200.0 (float appState.Height - bodyOverhead)
         let editorWidget = Editor.scrollWidget workspaceWidth bodyHeight (fun _ -> None) editor
-        let workspace = Chrome.documentWorkspace editorWidget
+        let workspace =
+            Chrome.documentWorkspace editorWidget
+            |> onContextMenu openDocContextMenu
         Chrome.viewWith renderState title statusText state actions workspace
 
     Platform.requestRedraw <- fun () -> window.RequestRedraw()
@@ -442,6 +482,9 @@ let main argv =
     controlServer.ClickAtHandler <- Some (fun (x, y) ->
         handleInput appState (MouseButton(0, true, x, y))
         handleInput appState (MouseButton(0, false, x, y)))
+    controlServer.RightClickAtHandler <- Some (fun (x, y) ->
+        handleInput appState (MouseButton(2, true, x, y))
+        handleInput appState (MouseButton(2, false, x, y)))
     controlServer.SendKeyHandler <- Some (fun keycode pressed ->
         if pressed then handleInput appState (KeyDown(keycode, 0u))
         else handleInput appState (KeyUp(keycode, 0u)))

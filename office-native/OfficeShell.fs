@@ -19,18 +19,37 @@ type OpenDialogState(spec: DialogSpec, values: System.Collections.Generic.Dictio
     member _.Spec = spec
     member _.Values = values
 
+/// Captures an open context (right-click) menu plus its anchor coordinates
+/// in screen space. Reference equality (the MenuItemSpec list contains
+/// function-valued Action fields).
+type OpenContextMenuState(x: float, y: float, items: MenuItemSpec list) =
+    member _.X = x
+    member _.Y = y
+    member _.Items = items
+
 /// Mutable, signal-backed state owned by the chrome itself. Apps construct
 /// one with `createState ()` and pass it to `view`; the chrome reads and
-/// writes the open-menu / open-dialog signals in response to user input.
+/// writes these signals in response to user input.
 type ShellRenderState = {
     OpenMenu: Signal<string option>
     /// Currently-open dialog, if any. Apps set this with `openDialog`.
     OpenDialog: Signal<OpenDialogState option>
+    /// Currently-open right-click menu (anchor + items). Apps set this
+    /// with `openContextMenu`.
+    OpenContextMenu: Signal<OpenContextMenuState option>
 }
 
 let createState () : ShellRenderState =
     { OpenMenu = signal None
-      OpenDialog = signal None }
+      OpenDialog = signal None
+      OpenContextMenu = signal None }
+
+let openContextMenu (state: ShellRenderState) (x: float) (y: float) (items: MenuItemSpec list) =
+    state.OpenMenu.Value <- None
+    state.OpenContextMenu.Value <- Some (OpenContextMenuState(x, y, items))
+
+let closeContextMenu (state: ShellRenderState) =
+    state.OpenContextMenu.Value <- None
 
 let openDialog (state: ShellRenderState) (spec: DialogSpec) =
     let values = System.Collections.Generic.Dictionary<string, Signal<string>>()
@@ -598,6 +617,43 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
                 ]
             | None -> empty)
 
+    let closeCtxMenu () = renderState.OpenContextMenu.Value <- None
+
+    let renderContextMenuItem (item: MenuItemSpec) =
+        let isChecked = item.IsChecked |> Option.map (fun check -> check()) |> Option.defaultValue false
+        let activate () =
+            item.Action ()
+            closeCtxMenu ()
+        clickable activate (
+            sizedH 28.0 (
+                stack [
+                    box p.MenuPanel empty
+                    rowAlign MStart CCenter 0.0 [
+                        sizedW p.MenuGutterWidth (
+                            center (if isChecked then Icon.check 12.0 p.Text else empty))
+                        padXY 8.0 0.0 (textStyled Font.sm p.Text item.Label)
+                    ]
+                ]))
+
+    let renderContextMenuPanel (state: OpenContextMenuState) =
+        filtered [DropShadow(0.0, 4.0, 12, p.Shadow)] (
+            rounded 4.0 p.MenuPanel (
+                border p.Border 1.0 4.0 (
+                    pad 4.0 (
+                        columnSpaced 0.0 (state.Items |> List.map renderContextMenuItem)))))
+
+    let contextMenuOverlay =
+        dynamic (fun () ->
+            match renderState.OpenContextMenu.Value with
+            | Some state ->
+                stack [
+                    overlay (clickable closeCtxMenu (sized 4000.0 4000.0 empty))
+                    overlay (
+                        offset state.X state.Y (
+                            sizedW p.MenuWidth (renderContextMenuPanel state)))
+                ]
+            | None -> empty)
+
     let menuBar =
         dynamic (fun () ->
             chromeBandWithBorder p p.ChromeTop menuHeight (
@@ -633,5 +689,6 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
         stack [
             windowBody
             menuOverlay
+            contextMenuOverlay
             dialogOverlay
         ])

@@ -3,6 +3,7 @@
 
 Usage:
     control.py <pid> click <x> <y>
+    control.py <pid> rightclick <x> <y>
     control.py <pid> key <keycode> <press|release>
     control.py <pid> snapshot <out.png>
     control.py <pid> exit
@@ -16,6 +17,7 @@ import time
 CMD_SCREENSHOT = 1
 CMD_EXIT = 2
 CMD_CLICK_AT = 11
+CMD_RIGHT_CLICK_AT = 12
 CMD_SEND_KEY = 14
 
 
@@ -65,6 +67,9 @@ def main() -> int:
     if op == "click":
         x, y = float(args[2]), float(args[3])
         send(pid, CMD_CLICK_AT, f"{x},{y}".encode())
+    elif op == "rightclick":
+        x, y = float(args[2]), float(args[3])
+        send(pid, CMD_RIGHT_CLICK_AT, f"{x},{y}".encode())
     elif op == "key":
         keycode = int(args[2])
         pressed = 1 if args[3] == "press" else 0
