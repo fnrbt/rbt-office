@@ -72,6 +72,7 @@ let private runOverrideOf (props: Xlsx.RunProps) : RunOverride =
         Bold = boolOpt props.Bold
         Italic = boolOpt props.Italic
         Underline = boolOpt props.Underline
+        Strikethrough = boolOpt props.Strikethrough
         Color = props.Color |> Option.bind hexColor
         FontName = props.FontName
         FontSize = props.FontSize
@@ -106,7 +107,8 @@ let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
     {
         Bold = style.Bold
         Italic = style.Italic
-        Underline = false
+        Underline = style.Underline
+        Strikethrough = style.Strikethrough
         FontName = style.FontName
         TextColor = style.FontColor |> Option.bind hexColor
         BgColor = style.FillColor |> Option.bind hexColor

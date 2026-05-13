@@ -258,25 +258,35 @@ let private toRendererCommands (text: PaintText) =
         for (_, layout, width) in segmentLayouts do
             yield Cmd.DrawGlyphs(vec2 cursor baseline, layout, color)
             cursor <- cursor + width
+        let lineStyle = {
+            Width = px 1.0
+            Cap = Butt
+            Join = Miter
+            Paint = color
+            DashArray = []
+            DashOffset = px 0.0
+            MiterLimit = 4.0
+        }
         if text.Underline && totalWidth > 0.0 then
             // Single underline stroke spans all glyph segments. Position at
             // ~1 px below the baseline (matches Excel/GDI; OpenType's
             // OS/2.sxUnderlinePosition isn't surfaced by our font loader,
             // so use a Calibri-tuned constant). Stroke thickness 1 px.
             let underlineY = baseline + max 1.0 (pxSize * 0.08)
-            let style = {
-                Width = px 1.0
-                Cap = Butt
-                Join = Miter
-                Paint = color
-                DashArray = []
-                DashOffset = px 0.0
-                MiterLimit = 4.0
-            }
             yield Cmd.StrokePath(
                 [ MoveTo (vec2 alignedX underlineY)
                   LineTo (vec2 (alignedX + totalWidth) underlineY) ],
-                style)
+                lineStyle)
+        if text.Strikethrough && totalWidth > 0.0 then
+            // Strikethrough at ~30% above baseline — visually centers on
+            // the lowercase x-height. (OpenType yStrikeoutPosition would
+            // be more accurate; using a Calibri-tuned constant to match
+            // Excel/GDI.)
+            let strikeY = baseline - pxSize * 0.28
+            yield Cmd.StrokePath(
+                [ MoveTo (vec2 alignedX strikeY)
+                  LineTo (vec2 (alignedX + totalWidth) strikeY) ],
+                lineStyle)
     ]
 
 let private renderPaintItem = function

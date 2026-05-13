@@ -27,6 +27,7 @@ type RunProps = {
     Bold: bool
     Italic: bool
     Underline: bool
+    Strikethrough: bool
     Color: string option       // ARGB hex without '#' prefix
     FontName: string option
     FontSize: float option     // points
@@ -36,6 +37,7 @@ let emptyRunProps = {
     Bold = false
     Italic = false
     Underline = false
+    Strikethrough = false
     Color = None
     FontName = None
     FontSize = None
@@ -63,6 +65,8 @@ type CellStyle = {
     FillColor: string option
     Bold: bool
     Italic: bool
+    Underline: bool
+    Strikethrough: bool
     FontSize: float option
     NumberFormat: string option
     HorizontalAlign: string option
@@ -477,13 +481,15 @@ module Xlsx =
         with _ -> defaults
 
     // Style parsing
-    let parseFont (fontNode: XmlNode) : (bool * bool * string option * float option * string option) =
+    let parseFont (fontNode: XmlNode) : (bool * bool * bool * bool * string option * float option * string option) =
         let bold = sElem "b" fontNode |> Option.isSome
         let italic = sElem "i" fontNode |> Option.isSome
+        let underline = sElem "u" fontNode |> Option.isSome
+        let strike = sElem "strike" fontNode |> Option.isSome
         let color = sElem "color" fontNode |> Option.bind (Xml.attr "rgb")
         let size = sElem "sz" fontNode |> Option.bind (Xml.attr "val") |> Option.map float
         let name = sElem "name" fontNode |> Option.bind (Xml.attr "val")
-        (bold, italic, color, size, name)
+        (bold, italic, underline, strike, color, size, name)
 
     let parseFill (fillNode: XmlNode) : string option =
         sElem "patternFill" fillNode
@@ -561,15 +567,15 @@ module Xlsx =
         | 49 -> Some "@"
         | _ -> None
 
-    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * string option * float option * string option) array) (fills: string option array) (borders: BorderRecord array) (numFmts: Map<int, string>) : CellStyle =
+    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * bool * bool * string option * float option * string option) array) (fills: string option array) (borders: BorderRecord array) (numFmts: Map<int, string>) : CellStyle =
         let fontId = Xml.attr "fontId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let fillId = Xml.attr "fillId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let borderId = Xml.attr "borderId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let numFmtId = Xml.attr "numFmtId" xfNode |> Option.bind (fun id -> Some (int id))
 
-        let (bold, italic, fontColor, fontSize, fontName) =
+        let (bold, italic, underline, strikethrough, fontColor, fontSize, fontName) =
             if fontId < fonts.Length then fonts.[fontId]
-            else (false, false, None, None, None)
+            else (false, false, false, false, None, None, None)
 
         let fillColor =
             if fillId < fills.Length then fills.[fillId]
@@ -602,6 +608,8 @@ module Xlsx =
             FillColor = fillColor
             Bold = bold
             Italic = italic
+            Underline = underline
+            Strikethrough = strikethrough
             FontSize = fontSize
             NumberFormat = numFmt
             HorizontalAlign = horizontalAlign
@@ -691,6 +699,7 @@ module Xlsx =
             Bold = boolChild "b"
             Italic = boolChild "i"
             Underline = boolChild "u"
+            Strikethrough = boolChild "strike"
             Color = colorHex
             FontName = fontName
             FontSize = fontSize

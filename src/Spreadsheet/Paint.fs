@@ -30,6 +30,8 @@ type PaintText = {
     Italic: bool
     /// Render a horizontal stroke under the text (XLSX `<u/>` font flag).
     Underline: bool
+    /// Render a horizontal stroke through the text (XLSX `<strike/>` flag).
+    Strikethrough: bool
     Align: TextAlign
     /// Vertical alignment within Rect. Excel "General" = VAlignBottom.
     VerticalAlign: VerticalAlign
@@ -474,6 +476,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Bold = false
                     Italic = false
                     Underline = false
+                    Strikethrough = false
                     Align = AlignCenter
                     VerticalAlign = VAlignMiddle
                     LineIndex = 0
@@ -491,6 +494,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Bold = false
                     Italic = false
                     Underline = false
+                    Strikethrough = false
                     Align = AlignCenter
                     VerticalAlign = VAlignMiddle
                     LineIndex = 0
@@ -597,51 +601,92 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     | Some "center" | Some "middle" -> VAlignMiddle
                     | _ -> VAlignBottom
                 let lineCount = lines.Length
-                // Rich-text path: only when the cell has SST-derived runs AND
-                // we're not wrapping (multi-line rich text would need run
-                // chunking per line, not yet implemented). Emit one DrawText
-                // per run, positioned along x using the measurer.
-                let richRuns =
-                    if lineCount = 1 && not hasHardBreak then
-                        Map.tryFind cell.Address model.RichRuns
-                    else None
+                let richRuns = Map.tryFind cell.Address model.RichRuns
                 match richRuns, viewport.Measurer with
                 | Some runs, Some m when not (List.isEmpty runs) ->
-                    // Per-run width using each run's effective font.
-                    let runMetrics =
-                        runs
-                        |> List.map (fun (text, ovr) ->
-                            let bold = ovr.Bold |> Option.defaultValue format.Bold
-                            let italic = ovr.Italic |> Option.defaultValue format.Italic
-                            let fName = ovr.FontName |> Option.orElse format.FontName
-                            let fSize = ovr.FontSize |> Option.defaultValue fontPt
-                            let width = m text fSize fName bold italic
-                            text, ovr, bold, italic, fName, fSize, width)
-                    let totalWidth = runMetrics |> List.sumBy (fun (_, _, _, _, _, _, w) -> w)
-                    let baseLineX =
-                        match align with
-                        | AlignLeft -> textRect.X
-                        | AlignCenter -> textRect.X + (textRect.Width - totalWidth) / 2.0
-                        | AlignRight -> textRect.X + textRect.Width - totalWidth
-                    let mutable cursor = baseLineX
-                    for (text, ovr, bold, italic, fName, fSize, width) in runMetrics do
+                    // Rich-text rendering. For single-line cells we emit one
+                    // DrawText per run. For wrapped/multi-line cells we walk
+                    // a position cursor through the concatenated source text
+                    // and chunk runs that straddle line boundaries — each
+                    // line gets per-run DrawTexts at its own y, with the
+                    // breaking whitespace dropped by wrapLines absorbed into
+                    // the cursor (so a run that ends with " " before a line
+                    // break still aligns with the next line's start).
+                    let resolveRun (ovr: RunOverride) =
+                        let bold = ovr.Bold |> Option.defaultValue format.Bold
+                        let italic = ovr.Italic |> Option.defaultValue format.Italic
+                        let underline = ovr.Underline |> Option.defaultValue format.Underline
+                        let strike = ovr.Strikethrough |> Option.defaultValue format.Strikethrough
+                        let fName = ovr.FontName |> Option.orElse format.FontName
+                        let fSize = ovr.FontSize |> Option.defaultValue fontPt
                         let runColor = ovr.Color |> Option.defaultValue color
-                        let runUnderline = ovr.Underline |> Option.defaultValue format.Underline
-                        yield DrawText {
-                            Text = text
-                            Rect = { textRect with X = cursor; Width = width }
-                            Color = runColor
-                            FontSize = fSize
-                            FontName = fName
-                            Bold = bold
-                            Italic = italic
-                            Underline = runUnderline
-                            Align = AlignLeft
-                            VerticalAlign = vAlign
-                            LineIndex = 0
-                            LineCount = 1
-                        }
-                        cursor <- cursor + width
+                        bold, italic, underline, strike, fName, fSize, runColor
+                    // Mutable list of remaining runs. We consume from the
+                    // head; if a wrap break splits a run, the head is
+                    // replaced with the unconsumed suffix.
+                    let mutable remaining: (string * RunOverride) list = runs
+                    let displayConcat = runs |> List.map fst |> String.concat ""
+                    let mutable docPos = 0
+                    for i, line in List.indexed lines do
+                        let slices = System.Collections.Generic.List<string * RunOverride>()
+                        let mutable lineRem = line.Length
+                        while lineRem > 0 && not (List.isEmpty remaining) do
+                            let (runText, runProps) = List.head remaining
+                            let take = min lineRem runText.Length
+                            slices.Add(runText.Substring(0, take), runProps)
+                            lineRem <- lineRem - take
+                            if take = runText.Length then
+                                remaining <- List.tail remaining
+                            else
+                                // Suffix of the current run stays at head.
+                                remaining <- (runText.Substring(take), runProps) :: List.tail remaining
+                        docPos <- docPos + line.Length
+                        // Skip the breaking space wrapLines drops between
+                        // non-final lines. Also consume the matching space
+                        // from the run queue head so positions stay aligned.
+                        if i < lines.Length - 1
+                           && docPos < displayConcat.Length
+                           && displayConcat.[docPos] = ' ' then
+                            docPos <- docPos + 1
+                            match remaining with
+                            | (rt, rp) :: rest when rt.StartsWith " " ->
+                                if rt.Length > 1 then
+                                    remaining <- (rt.Substring(1), rp) :: rest
+                                else
+                                    remaining <- rest
+                            | _ -> ()
+                        // Measure this line's segments and emit.
+                        let metrics =
+                            slices
+                            |> Seq.map (fun (t, ovr) ->
+                                let bold, italic, underline, strike, fName, fSize, runColor = resolveRun ovr
+                                let width = m t fSize fName bold italic
+                                t, ovr, bold, italic, underline, strike, fName, fSize, runColor, width)
+                            |> Seq.toList
+                        let totalWidth = metrics |> List.sumBy (fun (_, _, _, _, _, _, _, _, _, w) -> w)
+                        let baseLineX =
+                            match align with
+                            | AlignLeft -> textRect.X
+                            | AlignCenter -> textRect.X + (textRect.Width - totalWidth) / 2.0
+                            | AlignRight -> textRect.X + textRect.Width - totalWidth
+                        let mutable cursor = baseLineX
+                        for (t, _ovr, bold, italic, underline, strike, fName, fSize, runColor, width) in metrics do
+                            yield DrawText {
+                                Text = t
+                                Rect = { textRect with X = cursor; Width = width }
+                                Color = runColor
+                                FontSize = fSize
+                                FontName = fName
+                                Bold = bold
+                                Italic = italic
+                                Underline = underline
+                                Strikethrough = strike
+                                Align = AlignLeft
+                                VerticalAlign = vAlign
+                                LineIndex = i
+                                LineCount = lineCount
+                            }
+                            cursor <- cursor + width
                 | _ ->
                     // Plain (or wrapped) cell text — one DrawText per line.
                     for i, line in List.indexed lines do
@@ -654,6 +699,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             Bold = format.Bold
                             Italic = format.Italic
                             Underline = format.Underline
+                            Strikethrough = format.Strikethrough
                             Align = align
                             VerticalAlign = vAlign
                             LineIndex = i
@@ -725,6 +771,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             Bold = false
                             Italic = false
                             Underline = false
+                            Strikethrough = false
                             Align = AlignCenter
                             VerticalAlign = VAlignMiddle
                             LineIndex = 0
@@ -747,6 +794,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             Bold = false
                             Italic = false
                             Underline = false
+                            Strikethrough = false
                             Align = AlignCenter
                             VerticalAlign = VAlignMiddle
                             LineIndex = 0

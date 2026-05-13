@@ -28,6 +28,7 @@ type CellFormat = {
     Bold: bool
     Italic: bool
     Underline: bool
+    Strikethrough: bool
     FontName: string option
     TextColor: string option
     BgColor: string option
@@ -50,6 +51,7 @@ let defaultFormat = {
     Bold = false
     Italic = false
     Underline = false
+    Strikethrough = false
     FontName = None
     TextColor = None
     BgColor = None
@@ -78,6 +80,7 @@ type RunOverride = {
     Bold: bool option
     Italic: bool option
     Underline: bool option
+    Strikethrough: bool option
     Color: string option       // hex with leading '#'
     FontName: string option
     FontSize: float option     // points
@@ -87,6 +90,7 @@ let emptyRunOverride = {
     Bold = None
     Italic = None
     Underline = None
+    Strikethrough = None
     Color = None
     FontName = None
     FontSize = None
