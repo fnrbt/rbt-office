@@ -164,10 +164,13 @@ let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: 
                                 TextColor = Some "#FFFFFF"
                                 Bold = true }
                         elif style.ShowRowStripes then
-                            // Excel bands every other data row (the one
-                            // immediately below the header is unbanded).
+                            // Excel bands every other data row. Pixel-sampled
+                            // against artifacts/excel/pandas-test_decimal-
+                            // headings.png: the first data row (immediately
+                            // below the header) renders at #E2EFDA (light
+                            // accent tint); the second is white; alternates.
                             let dataIdx = row - t.StartRow - t.HeaderRowCount
-                            if dataIdx % 2 = 1 then
+                            if dataIdx % 2 = 0 then
                                 Some {
                                     BgColor = Some (tintHex (accentHex.TrimStart('#')) 0.80)
                                     TextColor = None
