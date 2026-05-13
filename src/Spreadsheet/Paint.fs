@@ -263,14 +263,22 @@ let private formatExcelDate (code: string) (serial: float) : string =
         try dtRounded.ToString(netFormat, inv)
         with _ -> dtRounded.ToString("MM/dd/yyyy", inv)
 
+/// Approximate rendered Maximum Digit Width (MDW) in CSS pixels for a given
+/// XLSX font size (in points). Anchored at Calibri 11 pt → 7 px MDW; scales
+/// linearly so size 12 pt → 8 px and size 14 pt → ~9 px. Matches the same
+/// scaling the native runner uses for chars→pixels column-width math.
+let private mdwPx (fontPt: float) : float =
+    max 1.0 (System.Math.Round(fontPt * 7.0 / 11.0))
+
 /// Width-aware Excel "General" number formatting. Picks the longest .NET
 /// "G<n>" representation that fits the cell width. If even the shortest
 /// representation overflows, returns `#####` like Excel does.
-let private generalNumberDisplay (cellWidthPx: float) (n: float): string =
-    // Calibri 11 max-digit-width ≈ 7 px at 96 DPI. Leave 4 px padding on
-    // each side (matches the cell-text inset in buildCellPaintItems).
+let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float): string =
+    // Leave 4 px padding on each side (matches the cell-text inset in
+    // buildCellPaintItems). maxChars scales with font size so size-12 cells
+    // get fewer chars per column than size-11 cells.
     let usableWidth = max 0.0 (cellWidthPx - 8.0)
-    let maxChars = max 1 (int (usableWidth / 7.0))
+    let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
 
     let inv = System.Globalization.CultureInfo.InvariantCulture
     let candidates = [ "G10"; "G8"; "G6"; "G5"; "G4"; "G3"; "G2"; "G1" ]
@@ -319,19 +327,20 @@ let private formatExcelNumber (code: string) (n: float) : string =
         with _ -> string n
 
 /// Excel shows ##### when a number's display string is wider than the cell.
-let private fitOrOverflow (cellWidth: float) (text: string) : string =
+let private fitOrOverflow (cellWidth: float) (fontPt: float) (text: string) : string =
     let usableWidth = max 0.0 (cellWidth - 8.0)
-    let maxChars = max 1 (int (usableWidth / 7.0))
+    let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
     if text.Length <= maxChars then text
     else System.String('#', maxChars)
 
 let rec private cellDisplayText (cellWidth: float) (format: CellFormat) (value: CellValue): string =
+    let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
     match value with
     | CellValue.Empty -> ""
     | Number n ->
         match format.NumberFormat with
         | Some code when isDateFormat code || isTimeFormat code ->
-            fitOrOverflow cellWidth (formatExcelDate code n)
+            fitOrOverflow cellWidth fontPt (formatExcelDate code n)
         | Some "currency"
         | Some "percentage"
         | Some "date"
@@ -339,14 +348,14 @@ let rec private cellDisplayText (cellWidth: float) (format: CellFormat) (value: 
         | Some "number" ->
             // Legacy named format codes from the Fable web UI's formatting
             // commands. Keep these on the original Model.formatNumber path.
-            fitOrOverflow cellWidth (formatNumber format.NumberFormat n)
+            fitOrOverflow cellWidth fontPt (formatNumber format.NumberFormat n)
         | Some code when System.String.IsNullOrWhiteSpace code ||
                          code.Equals("general", System.StringComparison.OrdinalIgnoreCase) ->
-            generalNumberDisplay cellWidth n
+            generalNumberDisplay cellWidth fontPt n
         | Some code ->
             // Real Excel format code (0.000, #,##0.00, 0%, 0.00E+00, etc.).
-            fitOrOverflow cellWidth (formatExcelNumber code n)
-        | None -> generalNumberDisplay cellWidth n
+            fitOrOverflow cellWidth fontPt (formatExcelNumber code n)
+        | None -> generalNumberDisplay cellWidth fontPt n
     | String s -> s
     | Boolean b -> if b then "TRUE" else "FALSE"
     | Error e -> sprintf "#%s" e
