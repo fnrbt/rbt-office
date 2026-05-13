@@ -262,21 +262,36 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                 EndCol = columnIndex mc.EndRef.Column
             })
 
-    // Excel col.Width is in character units. The chars-to-pixels ratio is the
-    // "Maximum Digit Width" (MDW) of the workbook's default font: 7 px for
-    // Calibri 11 (pandas-testmultiindex defaultColWidth=8.85546875 → 62 px),
-    // 8 px for Calibri 12 (pandas-test1 col A width=11.83 → 95 px). Linear
-    // scaling from the 11-pt / 7-px anchor handles other sizes (size 14 → 9,
-    // size 16 → 10) close enough to Excel's per-size MDW table.
+    // Excel col.Width is in character units. The chars-to-pixels ratio is
+    // the "Maximum Digit Width" (MDW) of the workbook's default font —
+    // technically the rendered pixel width of the widest digit 0-9 in that
+    // font at the workbook's default size, as Excel computes it. Use the
+    // real loaded font instead of a Calibri-anchored linear fit, since
+    // fonts vary enough at the same point size to skew column widths
+    // (Verdana 10 needs 8 px/char, not the 7 a Calibri-only estimate gives).
     let defaultFontSize =
         if workbook.Styles.Length > 0 then
             workbook.Styles.[0].FontSize |> Option.defaultValue 11.0
         else 11.0
-    // Mirror the floor in src/Spreadsheet/Paint.fs's mdwPx: Excel uses MDW 7
-    // for every Calibri / Arial size from 8 pt up through 11 pt, then 8 px
-    // at 12 pt and 9 px at 14 pt. Plain `round(size * 7/11)` rounds 10 pt
-    // down to 6 and shrinks column widths below what Excel renders.
-    let mdw = max 7.0 (System.Math.Round(defaultFontSize * 7.0 / 11.0))
+    let defaultFontName =
+        if workbook.Styles.Length > 0 then
+            workbook.Styles.[0].FontName
+        else None
+    let mdw =
+        try
+            let font = Composit.Ui.SpreadsheetGrid.rendererFontFor defaultFontName false false
+            let pxSize = defaultFontSize * 96.0 / 72.0
+            // Excel's MDW is max-of-digits rounded up to the next integer.
+            // We approximate by measuring the literal '0' (typically the
+            // widest digit in monospaced-figure fonts like Calibri/Verdana)
+            // and ceiling. Floor at 7 px so the Calibri-anchored fallback
+            // chain doesn't drift sub-pixel.
+            let zero = Renderer.Text.measureWidth font pxSize "0"
+            max 7.0 (System.Math.Ceiling zero)
+        with _ ->
+            // Renderer unavailable (font cache miss, etc.) — fall back to
+            // the original Calibri-anchored linear estimate.
+            max 7.0 (System.Math.Round(defaultFontSize * 7.0 / 11.0))
     let charsToPixels (chars: float) = chars * mdw
 
     // sheetFormatPr defaults. Excel uses these for every column without an

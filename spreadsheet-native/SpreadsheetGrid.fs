@@ -43,6 +43,7 @@ let private familyKey (name: string option) =
         elif lower.StartsWith "calibri" then "calibri"
         elif lower.StartsWith "cambria" then "cambria"
         elif lower.StartsWith "times" then "times"
+        elif lower.StartsWith "verdana" then "verdana"
         else "calibri"
 
 let private fontFiles family bold italic =
@@ -63,6 +64,11 @@ let private fontFiles family bold italic =
         elif bold then ["timesbd.ttf"; "times.ttf"]
         elif italic then ["timesi.ttf"; "times.ttf"]
         else ["times.ttf"]
+    | "verdana" ->
+        if bold && italic then ["verdanaz.ttf"; "verdanab.ttf"; "verdana.ttf"]
+        elif bold then ["verdanab.ttf"; "verdana.ttf"]
+        elif italic then ["verdanai.ttf"; "verdana.ttf"]
+        else ["verdana.ttf"]
     | _ ->
         if bold && italic then ["calibriz.ttf"; "calibrib.ttf"; "calibri.ttf"]
         elif bold then ["calibrib.ttf"; "calibri.ttf"]
@@ -95,6 +101,12 @@ let private rendererFont (fontName: string option) (bold: bool) (italic: bool) =
         // built-in default so we don't lose bold/italic for Arial/Times etc.
         loadVariant "calibri" bold italic
         |> Option.defaultWith defaultFont
+
+/// Public mirror of `rendererFont` so external callers (notably the native
+/// runner, which needs to measure the workbook's default font for MDW)
+/// resolve fonts through the same family map and cache as the renderer.
+let rendererFontFor (fontName: string option) (bold: bool) (italic: bool) =
+    rendererFont fontName bold italic
 
 /// Load a CJK fallback by file name. Mirrors loadVariant's caching and
 /// fontDirs lookup. Returns None when the file is absent (older Windows

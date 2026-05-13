@@ -28,6 +28,10 @@ fonts=(
   timesbd.ttf
   timesbi.ttf
   timesi.ttf
+  verdana.ttf
+  verdanab.ttf
+  verdanai.ttf
+  verdanaz.ttf
   # CJK font-link fallbacks Excel uses when a Calibri/Arial cell hits a
   # codepoint outside the Latin set. Matches the GDI font-link chain
   # that Office uses on a stock Win10/11 install: Yu Gothic for
