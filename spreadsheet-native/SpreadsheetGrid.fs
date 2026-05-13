@@ -120,11 +120,9 @@ let private parseHexColor (value: string) =
     | _ -> Color.black
 
 let private toRendererCommands (text: PaintText) =
-    // Excel font sizes (XLSX <sz val="11"/>) are in points, but the Renderer
-    // takes pixel units. Convert pt→px at the rendering boundary so a Calibri
-    // 11-pt cell renders at the same glyph height Excel produces (~10 px cap
-    // height) instead of an 8-px miniature. Row/column heights are already
-    // converted via 96/72 in the runner; this keeps text scale consistent.
+    // Excel font sizes (XLSX <sz val="11"/>) are in points; the Renderer takes
+    // pixel units. Convert pt→px so a Calibri 11-pt cell renders at Excel's
+    // glyph height. Row/column heights are pre-converted via 96/72 upstream.
     let font = rendererFont text.FontName text.Bold text.Italic
     let pxSize = text.FontSize * 96.0 / 72.0
     let layout = Renderer.Text.layout font pxSize text.Text
@@ -134,7 +132,25 @@ let private toRendererCommands (text: PaintText) =
         | AlignLeft -> text.Rect.X
         | AlignCenter -> text.Rect.X + (text.Rect.Width - measured) / 2.0
         | AlignRight -> text.Rect.X + text.Rect.Width - measured
-    let baseline = text.Rect.Y + (text.Rect.Height + pxSize) / 2.0 - 2.0
+    // Baseline from OS/2 winAscent/winDescent. These (not hhea/typo) are the
+    // metrics Excel + GDI use for box layout: `winAscent` is em-top→baseline,
+    // `winDescent` is baseline→em-bottom (positive), `winLineHeight` is the
+    // single-line vertical reservation. hhea.ascender is smaller (cap+accent
+    // height for typographic stacking) — using it would land the baseline ~3
+    // px above where Excel renders. blockTopY positions the line block:
+    //   top    → em-top of first line at cell.top
+    //   middle → block centered in cell
+    //   bottom → em-bottom of last line at cell.bottom (descender flush)
+    // Excel's "General" (no explicit vertical align) is VAlignBottom.
+    let ascent = Renderer.Text.winAscent font pxSize
+    let lineHeight = Renderer.Text.winLineHeight font pxSize
+    let blockHeight = lineHeight * float text.LineCount
+    let blockTopY =
+        match text.VerticalAlign with
+        | VAlignTop -> text.Rect.Y
+        | VAlignMiddle -> text.Rect.Y + (text.Rect.Height - blockHeight) / 2.0
+        | VAlignBottom -> text.Rect.Y + text.Rect.Height - blockHeight
+    let baseline = blockTopY + float text.LineIndex * lineHeight + ascent
     [ Cmd.DrawGlyphs(vec2 alignedX baseline, layout, Solid (parseHexColor text.Color)) ]
 
 let private renderPaintItem = function

@@ -53,7 +53,7 @@ let private canvasStrokeRect (ctx: obj) (x: float) (y: float) (width: float) (he
 [<Emit("$0.strokeStyle = $5; $0.lineWidth = $6; $0.beginPath(); $0.moveTo($1, $2); $0.lineTo($3, $4); $0.stroke()")>]
 let private canvasLine (ctx: obj) (x1: float) (y1: float) (x2: float) (y2: float) (color: string) (lineWidth: float): unit = jsNative
 
-[<Emit("$0.fillStyle = $5; $0.font = ($6 ? 'bold ' : '') + ($7 ? 'italic ' : '') + $4 + 'px Arial, sans-serif'; $0.textBaseline = 'middle'; $0.textAlign = $8; $0.fillText($1, $2, $3)")>]
+[<Emit("$0.fillStyle = $5; $0.font = ($6 ? 'bold ' : '') + ($7 ? 'italic ' : '') + $4 + 'px Arial, sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = $8; $0.fillText($1, $2, $3)")>]
 let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize: float) (color: string) (bold: bool) (italic: bool) (align: string): unit = jsNative
 
 /// Spreadsheet component
@@ -112,7 +112,20 @@ type Spreadsheet(container: Element) =
                     | SpreadsheetPaint.AlignCenter -> text.Rect.X + text.Rect.Width / 2.0
                     | SpreadsheetPaint.AlignRight -> text.Rect.X + text.Rect.Width
                     | SpreadsheetPaint.AlignLeft -> text.Rect.X
-                canvasText ctx text.Text x (text.Rect.Y + text.Rect.Height / 2.0) text.FontSize text.Color text.Bold text.Italic align
+                // Approximate Calibri's em-relative metrics (asc 0.952, desc
+                // -0.266, lineHeight 1.218). Browser canvas doesn't expose
+                // font metrics portably, so we accept a small drift for
+                // non-Calibri fonts — Excel ships Calibri as the default.
+                let ascent = text.FontSize * 0.952
+                let lineHeight = text.FontSize * 1.218
+                let blockHeight = lineHeight * float text.LineCount
+                let blockTopY =
+                    match text.VerticalAlign with
+                    | SpreadsheetPaint.VAlignTop -> text.Rect.Y
+                    | SpreadsheetPaint.VAlignMiddle -> text.Rect.Y + (text.Rect.Height - blockHeight) / 2.0
+                    | SpreadsheetPaint.VAlignBottom -> text.Rect.Y + text.Rect.Height - blockHeight
+                let baseline = blockTopY + float text.LineIndex * lineHeight + ascent
+                canvasText ctx text.Text x baseline text.FontSize text.Color text.Bold text.Italic align
             canvasRestore ctx
 
     let recalculateFormulas () =

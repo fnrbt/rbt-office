@@ -99,9 +99,20 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
                     | AlignLeft -> rectXPt
                     | AlignCenter -> rectXPt + (rectWidthPt - measuredPt) / 2.0
                     | AlignRight -> rectXPt + rectWidthPt - measuredPt
-                // Baseline mirrors SpreadsheetGrid.toRendererCommands:
-                // baseline = rect.Y + (height + fontSize)/2 - 2.
-                let baselineY = t.Rect.Y + (t.Rect.Height + t.FontSize) / 2.0 - 2.0
+                // Baseline from OS/2 win-metrics (Excel/GDI convention).
+                // Mirrors SpreadsheetGrid.toRendererCommands so PDF and PNG
+                // outputs agree on text placement.
+                let scaleY = t.FontSize / float ttf.UnitsPerEm
+                let ascent = float ttf.WinAscent * scaleY
+                let descent = float ttf.WinDescent * scaleY  // positive
+                let lineHeight = ascent + descent
+                let blockHeight = lineHeight * float t.LineCount
+                let blockTopY =
+                    match t.VerticalAlign with
+                    | VAlignTop -> t.Rect.Y
+                    | VAlignMiddle -> t.Rect.Y + (t.Rect.Height - blockHeight) / 2.0
+                    | VAlignBottom -> t.Rect.Y + t.Rect.Height - blockHeight
+                let baselineY = blockTopY + float t.LineIndex * lineHeight + ascent
                 let hex = PdfFont.toGlyphHex ttf t.Text
                 // addPage remaps SetFont (family, size) into the page's
                 // resource name by looking the family up in builder.Fonts;

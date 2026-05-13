@@ -10,15 +10,31 @@ type TextAlign =
     | AlignCenter
     | AlignRight
 
+type VerticalAlign =
+    | VAlignTop
+    | VAlignMiddle
+    | VAlignBottom
+
 type PaintText = {
     Text: string
+    /// The full cell (or header) rectangle. Per-line offset is derived from
+    /// LineIndex/LineCount and font metrics in the renderer — Paint.fs does
+    /// not pack baseline math into the rect.
     Rect: Rect
     Color: Color
+    /// Font size in points, as written in the source XLSX. Each renderer
+    /// converts to its native unit (px for raster, pt for PDF, css-pt for DOM).
     FontSize: float
     FontName: string option
     Bold: bool
     Italic: bool
     Align: TextAlign
+    /// Vertical alignment within Rect. Excel "General" = VAlignBottom.
+    VerticalAlign: VerticalAlign
+    /// 0-based line index within a wrapped block; 0 if not wrapped.
+    LineIndex: int
+    /// Total lines in the wrapped block; 1 if not wrapped.
+    LineCount: int
 }
 
 type PaintItem =
@@ -439,6 +455,9 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Bold = false
                     Italic = false
                     Align = AlignCenter
+                    VerticalAlign = VAlignMiddle
+                    LineIndex = 0
+                    LineCount = 1
                 }
             | RowHeader (row, rect) ->
                 yield FillRect (rect, "#f2f2f2")
@@ -452,6 +471,9 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Bold = false
                     Italic = false
                     Align = AlignCenter
+                    VerticalAlign = VAlignMiddle
+                    LineIndex = 0
+                    LineCount = 1
                 }
     ]
 
@@ -548,47 +570,27 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     if format.WrapText || hasHardBreak then
                         wrapLines textRect.Width fontPt displayText
                     else [ displayText ]
-                // Vertical alignment: anchor the LAST line's baseline per
-                // vAlign and stride earlier lines up by lineHeightPx. We pin
-                // the default (bottom / Excel General) baseline to the same
-                // whole-cell formula the renderer uses for a single-line rect,
-                // so single-line cells keep their original descender pad.
-                // Top/middle/bottom map to MS Office strings; "center" is
-                // accepted as middle. Units are pixels (textRect.Y/.Height
-                // are pre-converted pt→px in the runner).
-                let pxSize = fontPt * 96.0 / 72.0
-                let lineHeightPx = pxSize * 1.2
-                let blockHeightPx = lineHeightPx * float lines.Length
-                let lastBaseline =
-                    let vAlign = format.VerticalAlign |> Option.map (fun s -> s.ToLowerInvariant())
-                    match vAlign with
-                    | Some "top" ->
-                        // First line's cap sits near the cell top. With a
-                        // per-line rect of H=pxSize and Y=textRect.Y, the
-                        // renderer formula puts baseline at textRect.Y+pxSize-2.
-                        textRect.Y + pxSize - 2.0 + float (lines.Length - 1) * lineHeightPx
-                    | Some "center" | Some "middle" ->
-                        let blockBottom = textRect.Y + (textRect.Height + blockHeightPx) / 2.0
-                        blockBottom - (lineHeightPx - pxSize) / 2.0 - 2.0
-                    | _ ->
-                        // Default bottom (Excel General): mirror the original
-                        // whole-cell baseline formula so the descender pad
-                        // matches what cellPaint used pre-wrap.
-                        textRect.Y + (textRect.Height + pxSize) / 2.0 - 2.0
+                // Map Excel's vertical-alignment string to our DU. Excel's
+                // "General" (no explicit setting) is VAlignBottom.
+                let vAlign =
+                    match format.VerticalAlign |> Option.map (fun s -> s.ToLowerInvariant()) with
+                    | Some "top" -> VAlignTop
+                    | Some "center" | Some "middle" -> VAlignMiddle
+                    | _ -> VAlignBottom
+                let lineCount = lines.Length
                 for i, line in List.indexed lines do
-                    let baseline = lastBaseline - float (lines.Length - 1 - i) * lineHeightPx
-                    // toRendererCommands: baseline = Y + (H + pxSize)/2 - 2.
-                    // Pick H = pxSize, so Y = baseline - pxSize + 2.
-                    let lineY = baseline - pxSize + 2.0
                     yield DrawText {
                         Text = line
-                        Rect = { textRect with Y = lineY; Height = pxSize }
+                        Rect = textRect
                         Color = color
                         FontSize = fontPt
                         FontName = format.FontName
                         Bold = format.Bold
                         Italic = format.Italic
                         Align = align
+                        VerticalAlign = vAlign
+                        LineIndex = i
+                        LineCount = lineCount
                     }
     ]
 
@@ -636,6 +638,9 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             Bold = false
                             Italic = false
                             Align = AlignCenter
+                            VerticalAlign = VAlignMiddle
+                            LineIndex = 0
+                            LineCount = 1
                         })
                 }
             | RowHeader (row, rect) ->
@@ -654,6 +659,9 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             Bold = false
                             Italic = false
                             Align = AlignCenter
+                            VerticalAlign = VAlignMiddle
+                            LineIndex = 0
+                            LineCount = 1
                         })
                 }
 
