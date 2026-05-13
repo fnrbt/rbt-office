@@ -524,7 +524,14 @@ let private borderColor (side: BorderStyle) : string =
 /// — invisible against white but obvious when a cell has a non-default fill
 /// (Table styles, fills baked into cellXf). Splitting into three passes
 /// (fills → strokes/borders → text) keeps all borders on top of all fills.
-let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
+///
+/// Items are tagged with the ViewportZone of the cell they came from so the
+/// interactive renderer can scroll the body without sliding frozen
+/// rows/cols. The static (PNG/PDF) renderer ignores the tag — at
+/// ScrollX/Y=0 every zone paints at its absolute position anyway, so the
+/// only visible effect of frozen panes there is the divider lines emitted
+/// below.
+let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
     let cells = visibleCells model viewport
     let cellState (cell: _) =
         let addr = cell.Address
@@ -535,7 +542,8 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         let background =
             if selected then "#E8F5E9"
             else format.BgColor |> Option.defaultValue "#ffffff"
-        cell, format, value, selected, background
+        let zone = zoneForCell model addr.Row addr.Col
+        cell, format, value, selected, background, zone
 
     let states = cells |> List.map cellState
 
@@ -544,8 +552,8 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // cell with a non-default fill is followed by another cell, the
         // second cell's fill would overdraw the first cell's right/bottom
         // stroke if we drew them in the same per-cell loop.
-        for (cell, _format, _value, _selected, background) in states do
-            yield FillRect (cell.Rect, background)
+        for (cell, _format, _value, _selected, background, zone) in states do
+            yield zone, FillRect (cell.Rect, background)
 
         // Pass 2: per-cell strokes + cellXf borders, drawn on top of every
         // fill. Match Excel's *interactive* view: a light gray gridline
@@ -572,30 +580,34 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
             else
                 [ GridLine (x1, y1, x2, y2, color, w) ]
 
-        for (cell, format, _value, selected, _background) in states do
-            yield StrokeRect (cell.Rect, (if selected then "#217346" else "#a6a6a6"), (if selected then 2.0 else 1.0))
+        for (cell, format, _value, selected, _background, zone) in states do
+            yield zone, StrokeRect (cell.Rect, (if selected then "#217346" else "#a6a6a6"), (if selected then 2.0 else 1.0))
             let rect = cell.Rect
             match format.BorderTop with
             | Some side ->
-                yield! emitBorderSide true side (rect.X, rect.Y) (rect.X + rect.Width, rect.Y)
+                for item in emitBorderSide true side (rect.X, rect.Y) (rect.X + rect.Width, rect.Y) do
+                    yield zone, item
             | None -> ()
             match format.BorderBottom with
             | Some side ->
                 let y = rect.Y + rect.Height
-                yield! emitBorderSide true side (rect.X, y) (rect.X + rect.Width, y)
+                for item in emitBorderSide true side (rect.X, y) (rect.X + rect.Width, y) do
+                    yield zone, item
             | None -> ()
             match format.BorderLeft with
             | Some side ->
-                yield! emitBorderSide false side (rect.X, rect.Y) (rect.X, rect.Y + rect.Height)
+                for item in emitBorderSide false side (rect.X, rect.Y) (rect.X, rect.Y + rect.Height) do
+                    yield zone, item
             | None -> ()
             match format.BorderRight with
             | Some side ->
                 let x = rect.X + rect.Width
-                yield! emitBorderSide false side (x, rect.Y) (x, rect.Y + rect.Height)
+                for item in emitBorderSide false side (x, rect.Y) (x, rect.Y + rect.Height) do
+                    yield zone, item
             | None -> ()
 
         // Pass 3: text on top of all strokes/borders.
-        for (cell, format, value, _selected, _background) in states do
+        for (cell, format, value, _selected, _background, zone) in states do
             let displayText = cellDisplayText cell.Rect.Width format value
             if displayText <> "" then
                 let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
@@ -687,7 +699,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             | AlignRight -> textRect.X + textRect.Width - totalWidth
                         let mutable cursor = baseLineX
                         for (t, _ovr, bold, italic, underline, strike, fName, fSize, runColor, width) in metrics do
-                            yield DrawText {
+                            yield zone, DrawText {
                                 Text = t
                                 Rect = { textRect with X = cursor; Width = width }
                                 Color = runColor
@@ -706,7 +718,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 | _ ->
                     // Plain (or wrapped) cell text — one DrawText per line.
                     for i, line in List.indexed lines do
-                        yield DrawText {
+                        yield zone, DrawText {
                             Text = line
                             Rect = textRect
                             Color = color
@@ -727,7 +739,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // header cell whose column falls within the table's <autoFilter>
         // range. The triangle is drawn over the header's accent fill — same
         // color as the header text (white on a Medium-style accent).
-        for (cell, format, _value, _selected, _background) in states do
+        for (cell, format, _value, _selected, _background, zone) in states do
             if format.FilterButton then
                 let color = format.TextColor |> Option.defaultValue "#FFFFFF"
                 // 7-px-wide, 4-px-tall triangle centered in a 16-px right-edge
@@ -740,14 +752,53 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 for i in 0 .. 3 do
                     let shrink = float i * (triHalfWidth / 4.0)
                     let y = triTopY + float i
-                    yield GridLine (centerX - triHalfWidth + shrink, y, centerX + triHalfWidth - shrink, y, color, 1.0)
+                    yield zone, GridLine (centerX - triHalfWidth + shrink, y, centerX + triHalfWidth - shrink, y, color, 1.0)
+    ]
+
+/// Freeze-divider strokes drawn on top of the cell layer. Excel renders
+/// this as a single ~1 px line slightly darker than the regular gridline,
+/// at the split's right (cols) / bottom (rows) edge. Matches the line
+/// Excel draws in both interactive and print-snapshot views. Coordinates
+/// are in the same space as cellRect (post-HeaderHeight / -RowHeaderWidth
+/// offset) so the line lands flush with the bottom/right of the last
+/// frozen row/column.
+let private buildFreezeDividerItems (model: SpreadsheetModel) (viewport: Viewport) : PaintItem list =
+    // Slightly darker than the regular gridline. Excel uses a fixed
+    // medium-gray (~#595959 in print mode).
+    let color = "#595959"
+    let w = 1.0
+    [
+        if model.FrozenRows > 0 then
+            let y =
+                viewport.HeaderHeight
+                + ([ 0 .. model.FrozenRows - 1 ] |> List.sumBy (fun r -> getRowHeight r model))
+            let totalWidth =
+                viewport.RowHeaderWidth
+                + ([ 0 .. model.ColCount - 1 ] |> List.sumBy (fun c -> getColumnWidth c model))
+            yield GridLine (viewport.RowHeaderWidth, y, totalWidth, y, color, w)
+        if model.FrozenCols > 0 then
+            let x =
+                viewport.RowHeaderWidth
+                + ([ 0 .. model.FrozenCols - 1 ] |> List.sumBy (fun c -> getColumnWidth c model))
+            let totalHeight =
+                viewport.HeaderHeight
+                + ([ 0 .. model.RowCount - 1 ] |> List.sumBy (fun r -> getRowHeight r model))
+            yield GridLine (x, viewport.HeaderHeight, x, totalHeight, color, w)
     ]
 
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
     [
         yield FillRect ({ X = 0.0; Y = 0.0; Width = viewport.Width; Height = viewport.Height }, "#ffffff")
         yield! buildHeaderPaintItems model viewport
-        yield! buildCellPaintItems model viewport
+        // Static (PNG/PDF) path: drop the zone tag; everything paints at
+        // absolute cell coordinates because ScrollX/Y are zero.
+        for (_zone, item) in buildCellPaintItems model viewport do
+            yield item
+        // Freeze divider lines on top of cell strokes but under any
+        // selection / DrawText emitted later. The cell-item zone tag is
+        // irrelevant here; we draw the divider in the model coordinate
+        // system that's already baked into the cell rects above.
+        yield! buildFreezeDividerItems model viewport
     ]
 
 let private translatePaintItem viewport zone item =
@@ -818,6 +869,24 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                         })
                 }
 
-        for item in buildCellPaintItems model viewport do
-            yield { Zone = BodyZone; Item = translatePaintItem viewport BodyZone item }
+        for (zone, item) in buildCellPaintItems model viewport do
+            yield { Zone = zone; Item = translatePaintItem viewport zone item }
+
+        // Freeze dividers paint with the same zone as the body they border,
+        // so they scroll with the body horizontally (row divider) or
+        // vertically (col divider) and disappear under the frozen band when
+        // the body scrolls past them. Excel does the same: the divider
+        // moves with the scrolling region, not the frozen one.
+        for item in buildFreezeDividerItems model viewport do
+            let zone =
+                match item with
+                | GridLine (x1, _, x2, _, _, _) when x1 = x2 ->
+                    // Vertical line (cols divider) — scrolls vertically with
+                    // body but its X is pinned (no horizontal scroll).
+                    FrozenRowsZone
+                | _ ->
+                    // Horizontal line (rows divider) — scrolls horizontally
+                    // with body, pinned vertically.
+                    FrozenColsZone
+            yield { Zone = zone; Item = translatePaintItem viewport zone item }
     ]

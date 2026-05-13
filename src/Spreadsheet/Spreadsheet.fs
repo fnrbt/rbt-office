@@ -92,7 +92,9 @@ type Spreadsheet(container: Element) =
         setCanvasSize canvas viewport.Width viewport.Height
 
         for painted in SpreadsheetPaint.buildViewportPaintItems model viewport do
-            let clip = SpreadsheetLayout.viewportClip viewport painted.Zone
+            // viewportClipFor narrows BodyZone to the area past the frozen
+            // rows/cols so the body paint can't bleed into the pinned bands.
+            let clip = SpreadsheetLayout.viewportClipFor model viewport painted.Zone
             canvasSave ctx
             canvasClipRect ctx clip.X clip.Y clip.Width clip.Height
             match painted.Item with
@@ -792,10 +794,28 @@ type Spreadsheet(container: Element) =
                 | None ->
                     getColumnWidth col model, getRowHeight row model
 
+            // Frozen-pane compensation. The DOM cell sits inside `content`,
+            // which scrolls natively under `gridDiv`. To make a frozen cell
+            // appear pinned, offset its absolute top/left by the current
+            // scroll position so the browser's scroll cancels out. Same
+            // trick the corner header at line 1030 uses for itself.
+            let inFrozenRow = model.FrozenRows > 0 && row < model.FrozenRows
+            let inFrozenCol = model.FrozenCols > 0 && col < model.FrozenCols
+            let topOffset = if inFrozenRow then scrollTop else 0.0
+            let leftOffset = if inFrozenCol then scrollLeft else 0.0
+            // Z-index stacks frozen cells over body cells; frozen corner
+            // over both single-axis frozen zones.
+            let zIndex =
+                match inFrozenRow, inFrozenCol with
+                | true, true -> 7    // corner — above both single-axis bands
+                | true, false -> 6
+                | false, true -> 6
+                | false, false -> 1
+
             setStyles cell [
                 "position", "absolute"
-                "top", sprintf "%.0fpx" cellY
-                "left", sprintf "%.0fpx" cellX
+                "top", sprintf "%.0fpx" (cellY + topOffset)
+                "left", sprintf "%.0fpx" (cellX + leftOffset)
                 "width", sprintf "%.0fpx" cellW
                 "height", sprintf "%.0fpx" cellH
                 "border", borderStyle
@@ -809,6 +829,7 @@ type Spreadsheet(container: Element) =
                 "font-size", "11px"
                 "line-height", sprintf "%.0fpx" (cellH - 4.0)
                 "cursor", "default"
+                "z-index", string zIndex
             ]
 
             if isEditing then

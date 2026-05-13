@@ -210,6 +210,15 @@ type TableDefinition = {
     AutoFilter: (int * int) option
 }
 
+/// `<pane xSplit ySplit state="frozen" topLeftCell=…/>` inside a sheet's
+/// `<sheetView>`. xSplit / ySplit are the column / row counts that stay
+/// pinned (NOT pixel offsets — Excel treats them as integer cell counts
+/// when state="frozen"). Sheets without a frozen pane omit this entirely.
+type FrozenPane = {
+    XSplit: int
+    YSplit: int
+}
+
 type Worksheet = {
     Name: string
     Rows: Row list
@@ -222,6 +231,7 @@ type Worksheet = {
     Charts: Chart list
     PivotTables: PivotTable list
     Tables: TableDefinition list
+    FrozenPane: FrozenPane option
 }
 
 type Workbook = {
@@ -366,6 +376,31 @@ module Xlsx =
             }
 
     // Worksheet extraction (advanced features parsed separately)
+    /// Read `<sheetView><pane xSplit ySplit state="frozen"/></sheetView>`.
+    /// Excel only renders the freeze divider when state is "frozen" (or
+    /// "frozenSplit"); plain "split" puts a draggable bar in instead and
+    /// the screenshots in our corpus never use it. Returns None when the
+    /// pane is missing or in a non-frozen state.
+    let private frozenPane (sheet: XmlNode) : FrozenPane option =
+        sElem "sheetViews" sheet
+        |> Option.bind (sElem "sheetView")
+        |> Option.bind (sElem "pane")
+        |> Option.bind (fun pane ->
+            let state = Xml.attr "state" pane |> Option.defaultValue ""
+            if state <> "frozen" && state <> "frozenSplit" then None
+            else
+                let parseSplit a =
+                    Xml.attr a pane
+                    |> Option.bind (fun s ->
+                        match System.Double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+                        | true, v -> Some (int v)
+                        | _ -> None)
+                    |> Option.defaultValue 0
+                let x = parseSplit "xSplit"
+                let y = parseSplit "ySplit"
+                if x <= 0 && y <= 0 then None
+                else Some { XSplit = x; YSplit = y })
+
     let worksheet (name: string) (sheetXml: string) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) : Worksheet =
         let sheet = XmlDsl.parse sheetXml
         let sheetData = sElem "sheetData" sheet
@@ -388,6 +423,7 @@ module Xlsx =
             Charts = charts
             PivotTables = pivotTables
             Tables = tables
+            FrozenPane = frozenPane sheet
         }
 
     /// Parse a column letter run (A, B, ..., AA) into a 1-based column index

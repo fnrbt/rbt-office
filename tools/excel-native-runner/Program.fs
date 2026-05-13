@@ -361,7 +361,9 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         RowHeights = rowHeights
         ColumnWidths = columnWidths
         MergedCells = mergedCells
-        RichRuns = richRunsMap }
+        RichRuns = richRunsMap
+        FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
+        FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0 }
 
 let private escapeJson (value: string) =
     let sb = System.Text.StringBuilder(value.Length + 2)

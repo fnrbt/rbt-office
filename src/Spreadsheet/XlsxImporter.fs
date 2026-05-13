@@ -296,6 +296,8 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 ConditionalFormats = Map.empty
                 RichRuns = Map.empty
                 MergedCells = mergedCellList
+                FrozenRows = 0
+                FrozenCols = 0
             }
             recalculateAllFormulas None importedModel
 
@@ -321,6 +323,8 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 ConditionalFormats = Map.empty
                 RichRuns = Map.empty
                 MergedCells = []
+                FrozenRows = 0
+                FrozenCols = 0
             }
 
     /// <summary>
@@ -362,6 +366,8 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
                     ConditionalFormats = Map.empty
                     RichRuns = Map.empty
                     MergedCells = []
+                    FrozenRows = 0
+                    FrozenCols = 0
                 }
         }
 

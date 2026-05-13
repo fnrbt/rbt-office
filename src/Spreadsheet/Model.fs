@@ -206,6 +206,16 @@ type SpreadsheetModel = {
     /// bold, font). Each entry is the list of (text, override) pairs in
     /// source order; the runs concatenate to the plain cell value.
     RichRuns: Map<CellAddress, (string * RunOverride) list>
+
+    /// Number of rows that stay pinned at the top while the body scrolls
+    /// vertically. Set from `<pane ySplit="N" state="frozen"/>` in the
+    /// sheet's sheetView. Zero = no freeze.
+    FrozenRows: int
+
+    /// Number of columns that stay pinned on the left while the body
+    /// scrolls horizontally. Set from `<pane xSplit="N" state="frozen"/>`.
+    /// Zero = no freeze.
+    FrozenCols: int
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -249,6 +259,8 @@ let createEmpty rowCount colCount = {
     ConditionalFormats = Map.empty
     MergedCells = []
     RichRuns = Map.empty
+    FrozenRows = 0
+    FrozenCols = 0
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")
