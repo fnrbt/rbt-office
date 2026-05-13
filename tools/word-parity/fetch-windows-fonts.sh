@@ -28,12 +28,31 @@ fonts=(
   timesbd.ttf
   timesbi.ttf
   timesi.ttf
+  # CJK font-link fallbacks Excel uses when a Calibri/Arial cell hits a
+  # codepoint outside the Latin set. Matches the GDI font-link chain
+  # that Office uses on a stock Win10/11 install: Yu Gothic for
+  # Japanese, Microsoft YaHei for Simplified Chinese, Microsoft
+  # JhengHei for Traditional, Malgun Gothic for Korean. msgothic kept
+  # as a legacy fallback for older fixtures.
+  YuGothR.ttc
+  YuGothB.ttc
+  msgothic.ttc
+  msyh.ttc
+  msyhbd.ttc
+  msjh.ttc
+  msjhbd.ttc
+  malgun.ttf
+  malgunbd.ttf
 )
 
 mkdir -p "$out_dir"
 
 for font in "${fonts[@]}"; do
-  scp -q "${vm}:C:/Windows/Fonts/${font}" "${out_dir}/${font}"
+  # Tolerate missing fonts — older Windows images don't always ship
+  # every CJK face — but keep the standard ones load-bearing.
+  if ! scp -q "${vm}:C:/Windows/Fonts/${font}" "${out_dir}/${font}"; then
+    printf '  warning: failed to copy %s\n' "$font" >&2
+  fi
 done
 
 chmod u+rw,go-rwx "$out_dir"/* || true

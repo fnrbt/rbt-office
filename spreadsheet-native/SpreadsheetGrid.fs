@@ -96,6 +96,44 @@ let private rendererFont (fontName: string option) (bold: bool) (italic: bool) =
         loadVariant "calibri" bold italic
         |> Option.defaultWith defaultFont
 
+/// Load a CJK fallback by file name. Mirrors loadVariant's caching and
+/// fontDirs lookup. Returns None when the file is absent (older Windows
+/// images don't ship every face).
+let private cjkFontCache = System.Collections.Generic.Dictionary<string, Renderer.Text.FontData option>()
+let private loadCjkFile (fileName: string) : Renderer.Text.FontData option =
+    match cjkFontCache.TryGetValue fileName with
+    | true, cached -> cached
+    | _ ->
+        let loaded =
+            fontDirs ()
+            |> List.tryPick (fun dir ->
+                let path = System.IO.Path.Combine(dir, fileName)
+                if System.IO.File.Exists path then
+                    try Some (Renderer.Text.loadFontFile path) with _ -> None
+                else None)
+        cjkFontCache.[fileName] <- loaded
+        loaded
+
+/// CJK fallback chain in the order Windows GDI / Excel resolves missing
+/// glyphs when the primary font (Calibri, Arial, etc.) doesn't cover a
+/// codepoint. Yu Gothic is the modern Japanese default; Microsoft YaHei
+/// covers Simplified Chinese; JhengHei Traditional; Malgun Korean. MS
+/// Gothic stays as a legacy fallback for fixtures with older glyph data.
+let private cjkFallbackChain (bold: bool) : string list =
+    if bold then
+        [ "YuGothB.ttc"; "msgothic.ttc"; "msyhbd.ttc"; "msjhbd.ttc"; "malgunbd.ttf" ]
+    else
+        [ "YuGothR.ttc"; "msgothic.ttc"; "msyh.ttc"; "msjh.ttc"; "malgun.ttf" ]
+
+/// For a codepoint not covered by the primary font, find the first font in
+/// the fallback chain whose cmap maps it. Returns None when no chain font
+/// is installed or none covers the codepoint (will render .notdef = box).
+let private fallbackFontFor (codepoint: int) (bold: bool) : Renderer.Text.FontData option =
+    cjkFallbackChain bold
+    |> List.tryPick (fun name ->
+        loadCjkFile name
+        |> Option.bind (fun f -> if Renderer.Text.hasGlyph f codepoint then Some f else None))
+
 let private parseHexColor (value: string) =
     let value = value.Trim()
     let parseByte (s: string) =
@@ -123,27 +161,67 @@ let private toRendererCommands (text: PaintText) =
     // Excel font sizes (XLSX <sz val="11"/>) are in points; the Renderer takes
     // pixel units. Convert pt→px so a Calibri 11-pt cell renders at Excel's
     // glyph height. Row/column heights are pre-converted via 96/72 upstream.
-    let font = rendererFont text.FontName text.Bold text.Italic
+    let primary = rendererFont text.FontName text.Bold text.Italic
     let pxSize = text.FontSize * 96.0 / 72.0
-    let layout = Renderer.Text.layout font pxSize text.Text
-    let measured = Renderer.Text.measureWidth font pxSize text.Text
+
+    // Font-fallback for CJK / other glyphs not covered by the primary font.
+    // Walk codepoints, partition into contiguous segments by which font
+    // covers each, then layout/measure per segment. Excel uses GDI font
+    // linking with similar fallback chains; we mirror the common case
+    // (Latin primary → CJK fallback) so 切手/横浜/東京 etc. render rather
+    // than printing .notdef boxes. Surrogate pairs are folded into one
+    // segment with their lead surrogate's font choice.
+    let fontFor (cp: int) : Renderer.Text.FontData =
+        if Renderer.Text.hasGlyph primary cp then primary
+        else
+            match fallbackFontFor cp text.Bold with
+            | Some fb -> fb
+            | None -> primary  // no fallback installed — keep using primary, render as .notdef
+    let segments : (Renderer.Text.FontData * string) list =
+        let txt = text.Text
+        let result = System.Collections.Generic.List<Renderer.Text.FontData * string>()
+        let buf = System.Text.StringBuilder()
+        let mutable currentFont : Renderer.Text.FontData voption = ValueNone
+        let mutable i = 0
+        while i < txt.Length do
+            let ch = txt.[i]
+            let cp, width =
+                if System.Char.IsHighSurrogate ch && i + 1 < txt.Length && System.Char.IsLowSurrogate txt.[i+1] then
+                    System.Char.ConvertToUtf32(ch, txt.[i+1]), 2
+                else int ch, 1
+            let f = fontFor cp
+            match currentFont with
+            | ValueNone -> currentFont <- ValueSome f
+            | ValueSome cf when obj.ReferenceEquals(cf, f) -> ()
+            | ValueSome cf ->
+                result.Add(cf, buf.ToString())
+                buf.Clear() |> ignore
+                currentFont <- ValueSome f
+            for k in 0 .. width - 1 do buf.Append(txt.[i + k]) |> ignore
+            i <- i + width
+        match currentFont with
+        | ValueSome f when buf.Length > 0 -> result.Add(f, buf.ToString())
+        | _ -> ()
+        List.ofSeq result
+
+    let segmentLayouts =
+        segments
+        |> List.map (fun (f, s) ->
+            let l = Renderer.Text.layout f pxSize s
+            let w = Renderer.Text.measureWidth f pxSize s
+            f, l, w)
+    let totalWidth = segmentLayouts |> List.sumBy (fun (_, _, w) -> w)
     let alignedX =
         match text.Align with
         | AlignLeft -> text.Rect.X
-        | AlignCenter -> text.Rect.X + (text.Rect.Width - measured) / 2.0
-        | AlignRight -> text.Rect.X + text.Rect.Width - measured
-    // Baseline from OS/2 winAscent/winDescent. These (not hhea/typo) are the
-    // metrics Excel + GDI use for box layout: `winAscent` is em-top→baseline,
-    // `winDescent` is baseline→em-bottom (positive), `winLineHeight` is the
-    // single-line vertical reservation. hhea.ascender is smaller (cap+accent
-    // height for typographic stacking) — using it would land the baseline ~3
-    // px above where Excel renders. blockTopY positions the line block:
-    //   top    → em-top of first line at cell.top
-    //   middle → block centered in cell
-    //   bottom → em-bottom of last line at cell.bottom (descender flush)
-    // Excel's "General" (no explicit vertical align) is VAlignBottom.
-    let ascent = Renderer.Text.winAscent font pxSize
-    let lineHeight = Renderer.Text.winLineHeight font pxSize
+        | AlignCenter -> text.Rect.X + (text.Rect.Width - totalWidth) / 2.0
+        | AlignRight -> text.Rect.X + text.Rect.Width - totalWidth
+    // Baseline from OS/2 winAscent/winDescent of the PRIMARY font. Mixing
+    // ascents across fallback fonts would jitter the baseline; sticking to
+    // the primary's ascent matches Excel/GDI's font-linking behavior, which
+    // keeps the baseline anchored to the primary font's metrics.
+    let ascent = Renderer.Text.winAscent primary pxSize
+    let lineHeight = Renderer.Text.winLineHeight primary pxSize
     let blockHeight = lineHeight * float text.LineCount
     let blockTopY =
         match text.VerticalAlign with
@@ -151,7 +229,13 @@ let private toRendererCommands (text: PaintText) =
         | VAlignMiddle -> text.Rect.Y + (text.Rect.Height - blockHeight) / 2.0
         | VAlignBottom -> text.Rect.Y + text.Rect.Height - blockHeight
     let baseline = blockTopY + float text.LineIndex * lineHeight + ascent
-    [ Cmd.DrawGlyphs(vec2 alignedX baseline, layout, Solid (parseHexColor text.Color)) ]
+    let color = Solid (parseHexColor text.Color)
+    let mutable cursor = alignedX
+    [
+        for (_, layout, width) in segmentLayouts do
+            yield Cmd.DrawGlyphs(vec2 cursor baseline, layout, color)
+            cursor <- cursor + width
+    ]
 
 let private renderPaintItem = function
     | FillRect (rect, color) ->
