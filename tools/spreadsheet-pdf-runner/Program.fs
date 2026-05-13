@@ -52,9 +52,9 @@ let private pdfOptions (pageWidth: float) (pageHeight: float) : RedBat.Spreadshe
             tryFace "Arial-Bold" "Arial" true false "arialbd.ttf"
             tryFace "Arial-Italic" "Arial" false true "ariali.ttf"
             tryFace "Arial-BoldItalic" "Arial" true true "arialbi.ttf"
-            // Cambria ships as a TrueType collection (.ttc); FsPdf only
-            // parses single-face TTFs today. Skip the regular weight; load
-            // the standalone bold/italic faces.
+            // Cambria ships as a TrueType collection (.ttc); FsPdf now
+            // pulls font 0 out of any .ttc so we can load the regular too.
+            tryFace "Cambria" "Cambria" false false "cambria.ttc"
             tryFace "Cambria-Bold" "Cambria" true false "cambriab.ttf"
             tryFace "Cambria-Italic" "Cambria" false true "cambriai.ttf"
             // PDF /Name tokens can't contain literal spaces — use a flat
@@ -64,12 +64,35 @@ let private pdfOptions (pageWidth: float) (pageHeight: float) : RedBat.Spreadshe
             tryFace "TimesNewRoman-Bold" "Times New Roman" true false "timesbd.ttf"
             tryFace "TimesNewRoman-Italic" "Times New Roman" false true "timesi.ttf"
             tryFace "TimesNewRoman-BoldItalic" "Times New Roman" true true "timesbi.ttf"
+            tryFace "Verdana" "Verdana" false false "verdana.ttf"
+            tryFace "Verdana-Bold" "Verdana" true false "verdanab.ttf"
+            tryFace "Verdana-Italic" "Verdana" false true "verdanai.ttf"
+            tryFace "Verdana-BoldItalic" "Verdana" true true "verdanaz.ttf"
+        ]
+        |> List.choose id
+
+    // CJK fallback chain — matches the GDI font-link order Windows uses when
+    // Calibri/Arial don't cover a codepoint. PDF /Name tokens can't contain
+    // spaces, so use single-word internal names; Family doesn't matter here
+    // since these faces are picked by codepoint coverage, not family lookup.
+    let cjkFallback =
+        [
+            tryFace "YuGothic-Regular" "_cjk" false false "YuGothR.ttc"
+            tryFace "YuGothic-Bold" "_cjk" true false "YuGothB.ttc"
+            tryFace "MSGothic" "_cjk" false false "msgothic.ttc"
+            tryFace "MSYaHei" "_cjk" false false "msyh.ttc"
+            tryFace "MSYaHei-Bold" "_cjk" true false "msyhbd.ttc"
+            tryFace "MSJhengHei" "_cjk" false false "msjh.ttc"
+            tryFace "MSJhengHei-Bold" "_cjk" true false "msjhbd.ttc"
+            tryFace "MalgunGothic" "_cjk" false false "malgun.ttf"
+            tryFace "MalgunGothic-Bold" "_cjk" true false "malgunbd.ttf"
         ]
         |> List.choose id
 
     {
         DefaultFontFamily = "Calibri"
         Fonts = faces
+        CjkFallback = cjkFallback
         PageWidth = pageWidth
         PageHeight = pageHeight
     }
