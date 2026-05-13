@@ -155,6 +155,44 @@
     <tbody>
       <tr>
         <td>
+          <strong>Trim General-format numbers to Excel's column-derived digit budget</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code> Sheet1 (Calibri 12 default font, body cells use Calibri 11 General format; values are full-precision floats like <code>0.98026851377699997</code>).</span>
+          <span class="meta">Real fixture class: every workbook whose default font and cell font differ AND whose values rely on General format. Column-width math uses the workbook default-font MDW, but General-format trim used to consult the cell font's MDW; the asymmetry let cells show more sig digits than Excel's display in the same column.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference: General-format trim">
+          </div>
+          <div class="caption">Excel reference: row 2 col B = <code>0.98026851</code> (8 sig digits, 10 chars), col C = <code>3.68573088</code> (9 sig digits, 10 chars), col D = <code>-0.3642168</code>, col E = <code>-1.1597381</code>. Cell font Calibri 11, column sized to baseColWidth=10 against the workbook default Calibri 12 (MDW = 8).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test1-after.png" style="--w:1100px; --x:0px; --y:0px; --s:1" alt="Ours after General-format trim">
+          </div>
+          <div class="caption">After: same values as Excel — <code>0.98026851 / 3.68573088 / -0.3642168 / -1.1597381</code>. MDW now floors instead of ceils (Calibri 11 = 7 not 8, Calibri 12 = 8 not 9, etc.) and General-format reserves one extra MDW char of right buffer so the trim ladder lands on Excel's effective digit count.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-pre-generaltrim.png" style="--w:1100px; --x:0px; --y:0px; --s:1" alt="Ours before General-format trim">
+          </div>
+          <div class="caption">Before: row 2 col B = <code>0.9802685138</code> (10 sig digits, 12 chars), col C = <code>3.685730879</code>, col D = <code>-0.36421681</code>, etc. The cell font's MDW (Calibri 11 = 7) made <code>maxChars = (cellWidth-8)/7 = 11</code>, enough for G10 to fit even though the column was sized against the default font's MDW (Calibri 12 = 8) at 88 px and Excel would only have used 10 chars worth of digits.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> two coordinated changes so the trim aligns with what Excel displays in the same column.</p>
+          <ul>
+            <li><code>tools/excel-native-runner/Program.fs</code>: switch the per-workbook MDW measurement from <code>Math.Ceiling</code> to <code>Math.Floor</code>. Microsoft's documented MDW table at 96 DPI floors the measured "0" advance: Calibri 11 = 7 (measured 7.43), Calibri 12 = 8 (measured 8.11), Arial 10 = 7 (measured 7.42), Verdana 10 = 8 (measured 8.48). Ceiling pushed Calibri 11 to 8 — a ~22 px-per-column inflation that propagated through every default-width column. The 7-px floor stays as a safety net for very small fonts.</li>
+            <li><code>src/Spreadsheet/Paint.fs</code> <code>generalNumberDisplay</code>: reserve one extra <code>mdwPx fontPt</code> char of right buffer on top of the existing 4 px-per-side text inset. Also widen the candidate Gn ladder from <code>[G10; G8; G6; …]</code> to <code>[G11; G10; G9; G8; G7; …]</code> so the trim can land on 9 or 7 sig digits when Excel does — without this the trim jumps straight from G10 to G8 and skips Excel's intermediate values.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: pandas-test1 rows 2-8 across cols B-E now match the Excel reference within rounding (full audit reproduced 8/8 cells).</li>
+            <li>Regression guard: poi-47813 (Verdana 10 baseline, MDW already floored to 8), pandas-test_decimal (TableStyleMedium2, explicit number format), pandas-test_types (mixed types, explicit formats), and every fixture whose values use a number format other than General all unchanged. Cells whose values have ≤ 8 sig digits to begin with (most pandas exports) get the same render as before.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Frozen panes — render the divider line and pin frozen rows/cols in the interactive view</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-df_header_oob.xlsx</code> (<code>xSplit="1" ySplit="3"</code>). Also: pandas-df_empty / df_equals / df_mangle_dup_col_dtypes (ySplit=1) and poi-47813 (ySplit=1).</span>
           <span class="meta">Real fixture class: every pandas-written multi-row export, every workbook with sticky header rows. Excel encodes this as <code>&lt;sheetView&gt;&lt;pane xSplit ySplit state="frozen"/&gt;</code> and draws a single ~1 px darker-gray line where the split sits; we were ignoring the element entirely.</span>
