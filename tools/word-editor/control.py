@@ -19,6 +19,7 @@ CMD_EXIT = 2
 CMD_CLICK_AT = 11
 CMD_RIGHT_CLICK_AT = 12
 CMD_SEND_KEY = 14
+CMD_MOVE_AT = 15
 
 
 def send(pid: int, cmd_id: int, payload: bytes = b"") -> bytes:
@@ -70,6 +71,9 @@ def main() -> int:
     elif op == "rightclick":
         x, y = float(args[2]), float(args[3])
         send(pid, CMD_RIGHT_CLICK_AT, f"{x},{y}".encode())
+    elif op == "move":
+        x, y = float(args[2]), float(args[3])
+        send(pid, CMD_MOVE_AT, f"{x},{y}".encode())
     elif op == "key":
         keycode = int(args[2])
         pressed = 1 if args[3] == "press" else 0

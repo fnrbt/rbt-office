@@ -41,13 +41,27 @@ type ShellRenderState = {
     /// should update this from their handleInput so that combobox / color
     /// dropdowns know where to anchor.
     LastClickPos: Signal<float * float>
+    /// Identifier of the cell currently under the cursor (toolbar button,
+    /// menu item, etc). Cells stamp this when their hoverable fires; the
+    /// chrome reads it to render a hover background.
+    HoveredId: Signal<string option>
 }
 
 let createState () : ShellRenderState =
     { OpenMenu = signal None
       OpenDialog = signal None
       OpenContextMenu = signal None
-      LastClickPos = signal (0.0, 0.0) }
+      LastClickPos = signal (0.0, 0.0)
+      HoveredId = signal None }
+
+/// Wrap a child so it stamps `HoveredId` with `id` while the cursor is
+/// inside and clears it on exit (only if it's still the current id, so
+/// that fast moves between cells don't clobber the new one).
+let private withHover (renderState: ShellRenderState) (id: string) (child: Widget) : Widget =
+    hoverable (fun h ->
+        if h then renderState.HoveredId.Value <- Some id
+        elif renderState.HoveredId.Value = Some id then renderState.HoveredId.Value <- None)
+        child
 
 let openContextMenu (state: ShellRenderState) (x: float) (y: float) (items: MenuItemSpec list) =
     state.OpenMenu.Value <- None
@@ -153,17 +167,25 @@ let private chromeBandWithBorder (p: ChromePalette) fill height child =
             child
         ])
 
-let private flatToolbarCell (p: ChromePalette) isActive content action =
-    let bg = if isActive then rounded 4.0 p.Pressed empty else empty
-    clickable action (
-        sized 28.0 28.0 (
-            stack [
-                bg
-                center content
-            ]))
+let private flatToolbarCell (p: ChromePalette) (renderState: ShellRenderState) (id: string) isActive content action =
+    let bg =
+        dynamic (fun () ->
+            if isActive then rounded 4.0 p.Pressed empty
+            elif renderState.HoveredId.Value = Some id then rounded 4.0 p.HotTop empty
+            else empty)
+    withHover renderState id (
+        clickable action (
+            sized 28.0 28.0 (
+                stack [
+                    bg
+                    center content
+                ])))
 
-let private menuButtonChrome (p: ChromePalette) isOpen =
-    if isOpen then rounded 4.0 p.Pressed empty else empty
+let private menuButtonChrome (p: ChromePalette) (renderState: ShellRenderState) (id: string) isOpen =
+    dynamic (fun () ->
+        if isOpen then rounded 4.0 p.Pressed empty
+        elif renderState.HoveredId.Value = Some id then rounded 4.0 p.HotTop empty
+        else empty)
 
 let private toolbarTextIcon (p: ChromePalette) value = textStyled Font.sm p.Text value
 
@@ -341,12 +363,13 @@ let private renderGlyph (p: ChromePalette) (label: string) (glyph: string) =
     | "small-caps" -> toolbarTextIcon p "Aa"
     | _ -> toolbarTextIcon p label
 
-let private menuButton (p: ChromePalette) label isOpen action =
-    clickable action (
-        stack [
-            menuButtonChrome p isOpen
-            padXY 12.0 6.0 (textStyled Font.sm p.Text label)
-        ])
+let private menuButton (p: ChromePalette) (renderState: ShellRenderState) (id: string) label isOpen action =
+    withHover renderState id (
+        clickable action (
+            stack [
+                menuButtonChrome p renderState id isOpen
+                padXY 12.0 6.0 (textStyled Font.sm p.Text label)
+            ]))
 
 let private comboControl (p: ChromePalette) label action =
     clickable action (
@@ -415,7 +438,7 @@ let private renderToolbarControl (p: ChromePalette) (renderState: ShellRenderSta
         let isActive = spec.IsActive |> Option.map (fun active -> active()) |> Option.defaultValue false
         let pressed = config.ShowToolbarPressed spec.TestId isActive
         let icon = renderGlyph p spec.Label (config.ToolbarGlyph spec.TestId)
-        flatToolbarCell p pressed icon spec.Action
+        flatToolbarCell p renderState spec.TestId pressed icon spec.Action
     | ToolbarSelect spec ->
         let label =
             spec.Options()
@@ -466,28 +489,38 @@ let private renderMenuButton (p: ChromePalette) (renderState: ShellRenderState) 
     let toggle () =
         if isOpen then renderState.OpenMenu.Value <- None
         else renderState.OpenMenu.Value <- Some spec.TestId
-    menuButton p spec.Label isOpen toggle
+    menuButton p renderState spec.TestId spec.Label isOpen toggle
 
 let private renderMenuPanel (p: ChromePalette) (renderState: ShellRenderState) (spec: MenuSpec) =
     let gutterWidth = p.MenuGutterWidth
-    let itemHeight = 30.0
+    let itemHeight = 34.0
 
     let renderItem (item: MenuItemSpec) =
         let isChecked = item.IsChecked |> Option.map (fun check -> check()) |> Option.defaultValue false
         let activate () =
             item.Action ()
             renderState.OpenMenu.Value <- None
-        clickable activate (
-            sizedH itemHeight (
-                stack [
-                    box p.MenuPanel empty
-                    rowAlign MStart CCenter 0.0 [
-                        sizedW gutterWidth (
-                            center (if isChecked then Icon.check 12.0 p.Text else empty))
-                        sizedW (p.MenuWidth - gutterWidth - 8.0) (
-                            padXY 8.0 0.0 (textStyled Font.sm p.Text item.Label))
-                    ]
-                ]))
+        let bg =
+            dynamic (fun () ->
+                if renderState.HoveredId.Value = Some item.TestId then box p.HotTop empty
+                else box p.MenuPanel empty)
+        let shortcutWidget =
+            match item.Shortcut with
+            | Some s -> padXY 12.0 0.0 (textStyled Font.sm (parseHexColor "#5F6368") s)
+            | None -> empty
+        withHover renderState item.TestId (
+            clickable activate (
+                sized p.MenuWidth itemHeight (
+                    stack [
+                        bg
+                        rowAlign MStart CCenter 0.0 [
+                            sizedW gutterWidth (
+                                center (if isChecked then Icon.check 12.0 p.Text else empty))
+                            padXY 4.0 0.0 (textStyled Font.sm p.Text item.Label)
+                            expanded empty
+                            shortcutWidget
+                        ]
+                    ])))
 
     let menuContents = spec.Items |> List.map renderItem
     let panelHeight = float spec.Items.Length * itemHeight + 8.0
@@ -650,6 +683,27 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
 
     let closeMenu () = renderState.OpenMenu.Value <- None
 
+    // Compute the actual left x of each menu button by measuring labels.
+    // Mirrors the layout used by the menu bar: padXY 6 0 (rowAlign 2 [..]).
+    // Each button is `menuButton` = padXY 12 6 around the label, so the
+    // button width is labelWidth + 24.
+    let menuLeftMap : Map<string, float> =
+        let font = Composit.Ui.Layout.font ()
+        let menuBarLeftPad = 6.0
+        let menuGap = 2.0
+        let mutable x = menuBarLeftPad
+        let mutable acc = Map.empty
+        for m in config.Menus do
+            acc <- Map.add m.TestId x acc
+            let labelW = Text.measureWidth font Font.sm m.Label
+            x <- x + labelW + 24.0 + menuGap
+        acc
+
+    let menuLeftFor testId =
+        match Map.tryFind testId menuLeftMap with
+        | Some v -> v
+        | None -> config.MenuLeft testId
+
     let menuOverlay =
         dynamic (fun () ->
             match openMenu () with
@@ -658,7 +712,7 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
                     // Click-anywhere-outside catcher (drawn behind the panel).
                     overlay (clickable closeMenu (sized p.WindowWidth 2000.0 empty))
                     // The actual menu panel, positioned under the menu button.
-                    overlay (offset (config.MenuLeft menu.TestId) (menuBarTop + menuHeight) (sizedW p.MenuWidth (renderMenuPanel p renderState menu)))
+                    overlay (offset (menuLeftFor menu.TestId) (menuBarTop + menuHeight) (sizedW p.MenuWidth (renderMenuPanel p renderState menu)))
                 ]
             | None -> empty)
 
@@ -679,16 +733,21 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
         let activate () =
             item.Action ()
             closeCtxMenu ()
-        clickable activate (
-            sizedH 28.0 (
-                stack [
-                    box p.MenuPanel empty
-                    rowAlign MStart CCenter 0.0 [
-                        sizedW p.MenuGutterWidth (
-                            center (if isChecked then Icon.check 12.0 p.Text else empty))
-                        padXY 8.0 0.0 (textStyled Font.sm p.Text item.Label)
-                    ]
-                ]))
+        let bg =
+            dynamic (fun () ->
+                if renderState.HoveredId.Value = Some item.TestId then box p.HotTop empty
+                else box p.MenuPanel empty)
+        withHover renderState item.TestId (
+            clickable activate (
+                sizedH 28.0 (
+                    stack [
+                        bg
+                        rowAlign MStart CCenter 0.0 [
+                            sizedW p.MenuGutterWidth (
+                                center (if isChecked then Icon.check 12.0 p.Text else empty))
+                            padXY 8.0 0.0 (textStyled Font.sm p.Text item.Label)
+                        ]
+                    ])))
 
     let renderContextMenuPanel (state: OpenContextMenuState) =
         filtered [DropShadow(0.0, 4.0, 12, p.Shadow)] (

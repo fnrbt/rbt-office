@@ -174,6 +174,11 @@ let private emptyDoc () : Doc.Document =
 
 // ── Editor state mutation with undo tracking ───────────────────────
 
+/// Number of mutations applied since the last save / load. Reset to 0 by
+/// SaveFile; bumped by applyChange. The title bar uses this for the "•"
+/// unsaved indicator.
+let private editsSinceSave : Signal<int> = signal 0
+
 let private applyChange (state: Editor.WordEditorState) (transform: Doc.Document -> Doc.Document) =
     let before = state.Document.Value
     let after = transform before
@@ -181,6 +186,7 @@ let private applyChange (state: Editor.WordEditorState) (transform: Doc.Document
         state.UndoStack.Value <- before :: state.UndoStack.Value
         state.RedoStack.Value <- []
         state.Document.Value <- after
+        editsSinceSave.Value <- editsSinceSave.Value + 1
         Platform.requestRedraw()
 
 // ── ShellState / ShellActions wiring ───────────────────────────────
@@ -331,6 +337,7 @@ let private shellActions
                 state.UndoStack.Value <- []
                 state.RedoStack.Value <- []
                 currentPath.Value <- Some path
+                editsSinceSave.Value <- 0
                 status.Value <- sprintf "Opened %s" (Path.GetFileName path)
             | None -> status.Value <- sprintf "Failed to open %s" path)
         |> Composit.Ui.OfficeShell.openDialog renderState
@@ -339,6 +346,7 @@ let private shellActions
         try
             DocxWrite.save state.Document.Value path
             currentPath.Value <- Some path
+            editsSinceSave.Value <- 0
             status.Value <- sprintf "Saved %s" (Path.GetFileName path)
         with ex ->
             status.Value <- sprintf "Save failed: %s" ex.Message
@@ -457,6 +465,10 @@ let private handleInput (state: AppState) (ev: InputEvent) =
                 // Ctrl+O triggers open.
                 elif state.CtrlDown && (key = "o" || key = "O") then
                     state.Actions.OpenFile ()
+                    state.Window.RequestRedraw()
+                // Ctrl+F triggers find / replace.
+                elif state.CtrlDown && (key = "f" || key = "F") then
+                    state.Actions.OpenFindReplace ()
                     state.Window.RequestRedraw()
                 else
                     let ke : KeyEvent = { Key = key; Shift = state.ShiftDown; Ctrl = state.CtrlDown; Alt = state.AltDown }
@@ -589,6 +601,11 @@ let main argv =
     let state = shellState editor
     let actions = shellActions editor status currentPath renderState
 
+    // Any change to the document — typing, toolbar mutation, undo — bumps
+    // the unsaved-edits counter. openFileAction / writeTo reset it to 0
+    // after they finish mutating Document so the load itself doesn't count.
+    editor.Document.Subscribe(fun () -> editsSinceSave.Value <- editsSinceSave.Value + 1)
+
     /// Status string. Falls back to the editor's current cursor / selection
     /// summary if no transient message has been set (the `Ready` literal).
     let statusText () =
@@ -600,10 +617,13 @@ let main argv =
             sprintf "%d characters selected" text.Length
         | _, _ -> "Ready"
 
-    let title =
-        match argv |> Array.tryHead with
-        | Some path -> sprintf "RedBat Word - %s" (Path.GetFileName path)
-        | None -> "RedBat Word - Untitled"
+    let titleText () =
+        let prefix = if editsSinceSave.Value > 0 then "• " else ""
+        let file =
+            match currentPath.Value with
+            | Some path -> Path.GetFileName path
+            | None -> "Untitled"
+        sprintf "%sRedBat Word - %s" prefix file
 
     let chrome = WordUi.chrome
     let workspaceWidth = chrome.DocumentTrackWidth
@@ -612,7 +632,7 @@ let main argv =
 
     let initialWidth = int chrome.WindowWidth
     let initialHeight = 1000
-    let x11win = X11Window(title, initialWidth, initialHeight)
+    let x11win = X11Window(titleText (), initialWidth, initialHeight)
     let window = x11win :> IWindow
 
     let controlServer = new ControlServer.ControlServer()
@@ -669,7 +689,7 @@ let main argv =
         let workspace =
             Chrome.documentWorkspace editorWidget
             |> onContextMenu openDocContextMenu
-        Chrome.viewWith renderState title statusText state actions workspace
+        Chrome.viewWith renderState (titleText ()) statusText state actions workspace
 
     Platform.requestRedraw <- fun () -> window.RequestRedraw()
     Platform.setTimeout <- fun ms cb -> window.SetTimeout(ms, cb)
@@ -694,6 +714,8 @@ let main argv =
     controlServer.RightClickAtHandler <- Some (fun (x, y) ->
         handleInput appState (MouseButton(2, true, x, y))
         handleInput appState (MouseButton(2, false, x, y)))
+    controlServer.MoveAtHandler <- Some (fun (x, y) ->
+        handleInput appState (MouseMove(x, y)))
     controlServer.SendKeyHandler <- Some (fun keycode pressed ->
         if pressed then handleInput appState (KeyDown(keycode, 0u))
         else handleInput appState (KeyUp(keycode, 0u)))

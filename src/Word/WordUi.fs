@@ -31,8 +31,8 @@ module Ui =
 
     let chrome : ChromeSpec = {
         WindowWidth = 1100.0
-        MenuWidth = 220.0
-        MenuGutterWidth = 28.0
+        MenuWidth = 280.0
+        MenuGutterWidth = 24.0
         DocumentTrackWidth = 816.0
         // Flat, white-first palette. Top == Bottom on each band so the chrome
         // looks like a single sheet of paper rather than gradient banding.
@@ -267,6 +267,7 @@ module Ui =
     ]
 
     let private item = menuItem
+    let private itemKey = menuItemShortcut
     let private button = toolbarButton
 
     let menus state actions = [
@@ -275,8 +276,8 @@ module Ui =
             PanelTestId = "word-file-menu-panel"
             Label = "File"
             Items = [
-                item "word-menu-open" "Open..." None actions.OpenFile
-                item "word-menu-save" "Save" None actions.SaveFile
+                itemKey "word-menu-open" "Open..." "Ctrl+O" None actions.OpenFile
+                itemKey "word-menu-save" "Save" "Ctrl+S" None actions.SaveFile
                 item "word-menu-page-setup" "Page setup..." None actions.OpenPageSetup
                 item "word-menu-header-footer" "Headers and footers..." None actions.OpenHeaderFooter
                 item "word-menu-print-pdf" "Print PDF" None actions.PrintPdf
@@ -286,7 +287,7 @@ module Ui =
             TestId = "word-edit-menu"
             PanelTestId = "word-edit-menu-panel"
             Label = "Edit"
-            Items = [ item "word-menu-find-replace" "Find and replace..." None actions.OpenFindReplace ]
+            Items = [ itemKey "word-menu-find-replace" "Find and replace..." "Ctrl+F" None actions.OpenFindReplace ]
         }
         {
             TestId = "word-insert-menu"
@@ -294,30 +295,18 @@ module Ui =
             Label = "Insert"
             Items = [
                 item "word-menu-insert-image" "Image..." None actions.OpenImagePicker
-                item "word-menu-image-size" "Image size..." None actions.OpenImageSize
+                item "word-menu-insert-table" "Table..." None actions.OpenInsertTable
+                itemKey "word-menu-insert-link" "Hyperlink..." "Ctrl+K" None (fun () -> actions.OpenAnnotation "hyperlink")
+                item "word-menu-insert-comment" "Comment..." None (fun () -> actions.OpenAnnotation "comment")
+                item "word-menu-insert-note" "Footnote / endnote..." None (fun () -> actions.OpenAnnotation "note")
                 item "word-menu-insert-date-time" "Date and time" None actions.InsertDateTime
                 item "word-menu-insert-page-number" "Page number" None actions.InsertPageNumber
                 item "word-menu-insert-textbox" "Text box" None actions.InsertTextBox
-                item "word-menu-textbox-style" "Text box style..." None actions.OpenTextBoxStyle
                 item "word-menu-insert-caption" "Caption..." None actions.OpenCaption
-                item "word-menu-insert-cross-reference" "Cross-reference..." None actions.OpenCrossReference
                 item "word-menu-bookmark" "Bookmark..." None actions.OpenBookmark
-                item "word-menu-content-control" "Content control..." None actions.OpenContentControl
                 item "word-menu-insert-field" "Field..." None actions.OpenField
                 item "word-menu-insert-equation" "Equation..." None actions.OpenEquation
-                item "word-menu-revision" "Revision..." None actions.OpenRevision
-                item "word-menu-track-changes" "Track changes" (Some state.IsTrackChangesActive) actions.ToggleTrackChanges
-                item "word-menu-next-revision" "Next revision" None actions.SelectNextRevision
-                item "word-menu-previous-revision" "Previous revision" None actions.SelectPreviousRevision
-                item "word-menu-accept-revision" "Accept selected revision" None actions.AcceptSelectedRevision
-                item "word-menu-reject-revision" "Reject selected revision" None actions.RejectSelectedRevision
-                item "word-menu-accept-all-revisions" "Accept all revisions" None actions.AcceptAllRevisions
-                item "word-menu-reject-all-revisions" "Reject all revisions" None actions.RejectAllRevisions
-                item "word-menu-section-break-next" "Section break: next page" None (fun () -> actions.InsertSectionBreak "nextPage")
-                item "word-menu-section-break-continuous" "Section break: continuous" None (fun () -> actions.InsertSectionBreak "continuous")
-                item "word-menu-insert-link" "Hyperlink..." None (fun () -> actions.OpenAnnotation "hyperlink")
-                item "word-menu-insert-comment" "Comment..." None (fun () -> actions.OpenAnnotation "comment")
-                item "word-menu-insert-note" "Footnote / endnote..." None (fun () -> actions.OpenAnnotation "note")
+                item "word-menu-section-break-next" "Section break" None (fun () -> actions.InsertSectionBreak "nextPage")
             ]
         }
         {
@@ -331,21 +320,14 @@ module Ui =
                 item "word-menu-normal-paragraph" "Normal paragraph" (Some (fun () -> state.BlockStyle() = "normal")) actions.ApplyNormalParagraph
                 item "word-menu-bullet-list" "Bullet list" (Some (fun () -> state.ListStyle() = "bullet")) actions.ToggleBullet
                 item "word-menu-numbered-list" "Numbered list" (Some (fun () -> state.ListStyle() = "numbered")) actions.ToggleNumbered
-                item "word-menu-number-format-decimal" "Numbering: 1, 2, 3" (Some (fun () -> state.NumberFormat() = "decimal")) (fun () -> actions.ApplyNumberFormat "decimal")
-                item "word-menu-number-format-lower-letter" "Numbering: a, b, c" (Some (fun () -> state.NumberFormat() = "lowerLetter")) (fun () -> actions.ApplyNumberFormat "lowerLetter")
-                item "word-menu-number-format-upper-roman" "Numbering: I, II, III" (Some (fun () -> state.NumberFormat() = "upperRoman")) (fun () -> actions.ApplyNumberFormat "upperRoman")
                 item "word-menu-increase-indent" "Increase indent" None actions.IncreaseListIndent
                 item "word-menu-decrease-indent" "Decrease indent" None actions.DecreaseListIndent
-                item "word-menu-font-georgia" "Georgia font" (Some (fun () -> state.FontFamily() = "Georgia")) (fun () -> actions.ApplyFontFamily "Georgia")
-                item "word-menu-font-size-16" "16 pt" (Some (fun () -> state.FontSize() = "16")) (fun () -> actions.ApplyFontSize "16")
                 item "word-menu-all-caps" "All caps" (Some state.IsAllCapsActive) actions.ToggleAllCaps
                 item "word-menu-small-caps" "Small caps" (Some state.IsSmallCapsActive) actions.ToggleSmallCaps
                 item "word-menu-strike" "Strikethrough" (Some state.IsStrikeActive) actions.ToggleStrike
-                item "word-menu-clear-formatting" "Clear formatting" None actions.ClearFormatting
                 item "word-menu-superscript" "Superscript" (Some (fun () -> state.VertAlign() = "superscript")) (fun () -> actions.ApplyVertAlign "superscript")
                 item "word-menu-subscript" "Subscript" (Some (fun () -> state.VertAlign() = "subscript")) (fun () -> actions.ApplyVertAlign "subscript")
-                item "word-menu-text-color-red" "Red text" (Some (fun () -> state.TextColor() = "#C00000")) (fun () -> actions.ApplyTextColor "#C00000")
-                item "word-menu-highlight-yellow" "Yellow highlight" (Some (fun () -> state.HighlightColor() = "#FFF2CC")) (fun () -> actions.ApplyHighlight "#FFF2CC")
+                item "word-menu-clear-formatting" "Clear formatting" None actions.ClearFormatting
                 item "word-menu-paragraph-style" "Paragraph style..." None actions.OpenParagraphStyle
             ]
         }

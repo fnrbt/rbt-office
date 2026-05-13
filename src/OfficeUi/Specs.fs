@@ -55,6 +55,10 @@ module Ui =
     type MenuItemSpec = {
         TestId: string
         Label: string
+        /// Optional keyboard shortcut hint (e.g. "Ctrl+S") rendered right-
+        /// aligned in muted text. The shortcut isn't bound by this spec —
+        /// the app's key handler still has to do the dispatching.
+        Shortcut: string option
         IsChecked: (unit -> bool) option
         Action: unit -> unit
     }
@@ -98,6 +102,15 @@ module Ui =
     let menuItem testId label isChecked action = {
         TestId = testId
         Label = label
+        Shortcut = None
+        IsChecked = isChecked
+        Action = action
+    }
+
+    let menuItemShortcut testId label shortcut isChecked action = {
+        TestId = testId
+        Label = label
+        Shortcut = Some shortcut
         IsChecked = isChecked
         Action = action
     }
