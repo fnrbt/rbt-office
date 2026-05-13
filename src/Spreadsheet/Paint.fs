@@ -578,10 +578,6 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 let textRect = { cell.Rect with X = cell.Rect.X + 4.0; Width = max 0.0 (cell.Rect.Width - 8.0) }
                 let color = format.TextColor |> Option.defaultValue "#000000"
                 let align = alignFromFormat format value
-                // Wrap text into lines if the format opts in (or the source
-                // string contains a hard line break). We don't have the live
-                // renderer here, so approximate char width with mdwPx — same
-                // budget cellDisplayText uses for the ##### overflow check.
                 let hasHardBreak = displayText.Contains("\n")
                 let measure =
                     viewport.Measurer
@@ -591,28 +587,71 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     if format.WrapText || hasHardBreak then
                         wrapLines measure textRect.Width fontPt displayText
                     else [ displayText ]
-                // Map Excel's vertical-alignment string to our DU. Excel's
-                // "General" (no explicit setting) is VAlignBottom.
                 let vAlign =
                     match format.VerticalAlign |> Option.map (fun s -> s.ToLowerInvariant()) with
                     | Some "top" -> VAlignTop
                     | Some "center" | Some "middle" -> VAlignMiddle
                     | _ -> VAlignBottom
                 let lineCount = lines.Length
-                for i, line in List.indexed lines do
-                    yield DrawText {
-                        Text = line
-                        Rect = textRect
-                        Color = color
-                        FontSize = fontPt
-                        FontName = format.FontName
-                        Bold = format.Bold
-                        Italic = format.Italic
-                        Align = align
-                        VerticalAlign = vAlign
-                        LineIndex = i
-                        LineCount = lineCount
-                    }
+                // Rich-text path: only when the cell has SST-derived runs AND
+                // we're not wrapping (multi-line rich text would need run
+                // chunking per line, not yet implemented). Emit one DrawText
+                // per run, positioned along x using the measurer.
+                let richRuns =
+                    if lineCount = 1 && not hasHardBreak then
+                        Map.tryFind cell.Address model.RichRuns
+                    else None
+                match richRuns, viewport.Measurer with
+                | Some runs, Some m when not (List.isEmpty runs) ->
+                    // Per-run width using each run's effective font.
+                    let runMetrics =
+                        runs
+                        |> List.map (fun (text, ovr) ->
+                            let bold = ovr.Bold |> Option.defaultValue format.Bold
+                            let italic = ovr.Italic |> Option.defaultValue format.Italic
+                            let fName = ovr.FontName |> Option.orElse format.FontName
+                            let fSize = ovr.FontSize |> Option.defaultValue fontPt
+                            let width = m text fSize fName bold italic
+                            text, ovr, bold, italic, fName, fSize, width)
+                    let totalWidth = runMetrics |> List.sumBy (fun (_, _, _, _, _, _, w) -> w)
+                    let baseLineX =
+                        match align with
+                        | AlignLeft -> textRect.X
+                        | AlignCenter -> textRect.X + (textRect.Width - totalWidth) / 2.0
+                        | AlignRight -> textRect.X + textRect.Width - totalWidth
+                    let mutable cursor = baseLineX
+                    for (text, ovr, bold, italic, fName, fSize, width) in runMetrics do
+                        let runColor = ovr.Color |> Option.defaultValue color
+                        yield DrawText {
+                            Text = text
+                            Rect = { textRect with X = cursor; Width = width }
+                            Color = runColor
+                            FontSize = fSize
+                            FontName = fName
+                            Bold = bold
+                            Italic = italic
+                            Align = AlignLeft
+                            VerticalAlign = vAlign
+                            LineIndex = 0
+                            LineCount = 1
+                        }
+                        cursor <- cursor + width
+                | _ ->
+                    // Plain (or wrapped) cell text — one DrawText per line.
+                    for i, line in List.indexed lines do
+                        yield DrawText {
+                            Text = line
+                            Rect = textRect
+                            Color = color
+                            FontSize = fontPt
+                            FontName = format.FontName
+                            Bold = format.Bold
+                            Italic = format.Italic
+                            Align = align
+                            VerticalAlign = vAlign
+                            LineIndex = i
+                            LineCount = lineCount
+                        }
 
         // Pass 4: auto-filter dropdown triangles on table header cells. Excel
         // renders these as a small downward triangle on the right edge of each

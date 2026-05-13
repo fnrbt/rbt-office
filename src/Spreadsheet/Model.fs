@@ -71,6 +71,25 @@ type CellComment = {
     Author: string option
 }
 
+/// Per-run formatting override for rich-text cells. Each field is optional;
+/// when None the run inherits from the cell's base CellFormat. Originates
+/// from `<rPr>` children of `<r>` elements inside `<si>` shared strings.
+type RunOverride = {
+    Bold: bool option
+    Italic: bool option
+    Color: string option       // hex with leading '#'
+    FontName: string option
+    FontSize: float option     // points
+}
+
+let emptyRunOverride = {
+    Bold = None
+    Italic = None
+    Color = None
+    FontName = None
+    FontSize = None
+}
+
 /// Cell data
 type CellData = {
     Value: CellValue
@@ -175,6 +194,12 @@ type SpreadsheetModel = {
 
     /// Merged cell ranges
     MergedCells: MergedCell list
+
+    /// Rich-text runs keyed by cell address. Set for cells whose value comes
+    /// from a shared-string entry with multiple `<r>` runs (per-run color,
+    /// bold, font). Each entry is the list of (text, override) pairs in
+    /// source order; the runs concatenate to the plain cell value.
+    RichRuns: Map<CellAddress, (string * RunOverride) list>
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -217,6 +242,7 @@ let createEmpty rowCount colCount = {
     SearchIndex = 0
     ConditionalFormats = Map.empty
     MergedCells = []
+    RichRuns = Map.empty
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")

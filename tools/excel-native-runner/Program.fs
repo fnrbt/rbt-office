@@ -61,6 +61,34 @@ let private resolveValue (workbook: Xlsx.Workbook) (value: Xlsx.CellValue) : Cel
     | Xlsx.Formula expr -> Formula (expr, Empty)
     | Xlsx.Empty -> Empty
 
+/// Translate an Xlsx.RunProps into a RunOverride. Drops empty fields so the
+/// renderer can fall back to the cell's base CellFormat.
+let private runOverrideOf (props: Xlsx.RunProps) : RunOverride =
+    let boolOpt v = if v then Some true else None
+    let hexColor (rgb: string) =
+        let trimmed = rgb.TrimStart('#')
+        if trimmed.Length = 6 then Some ("#" + trimmed) else None
+    {
+        Bold = boolOpt props.Bold
+        Italic = boolOpt props.Italic
+        Color = props.Color |> Option.bind hexColor
+        FontName = props.FontName
+        FontSize = props.FontSize
+    }
+
+/// Look up rich-text runs for a cell whose value is a shared-string ref.
+/// Returns Some runs only when the SI has more than one run (single-run
+/// shared strings are fully described by the cell's base format).
+let private cellRichRuns (workbook: Xlsx.Workbook) (value: Xlsx.CellValue) : (string * RunOverride) list option =
+    match value with
+    | Xlsx.SharedString idx when
+        idx >= 0 && idx < workbook.SharedStringRuns.Length
+        && not (List.isEmpty workbook.SharedStringRuns.[idx]) ->
+        let runs = workbook.SharedStringRuns.[idx]
+        if List.length runs <= 1 then None
+        else Some (runs |> List.map (fun (text, props) -> text, runOverrideOf props))
+    | _ -> None
+
 let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
     let hexColor (rgb: string) =
         let trimmed = rgb.TrimStart('#')
@@ -191,6 +219,7 @@ let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: 
 let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel =
     let mutable maxRow = 0
     let mutable maxCol = 0
+    let mutable richRunsMap : Map<CellAddress, (string * RunOverride) list> = Map.empty
     let cells =
         sheet.Rows
         |> List.collect (fun row ->
@@ -215,6 +244,9 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                 Bold = baseFormat.Bold || overlay.Bold
                                 FilterButton = baseFormat.FilterButton || overlay.FilterButton }
                     let cellData = { Value = value; Format = format; Comment = None }
+                    match cellRichRuns workbook cell.Value with
+                    | Some runs -> richRunsMap <- Map.add { Row = r; Col = c } runs richRunsMap
+                    | None -> ()
                     if r > maxRow then maxRow <- r
                     if c > maxCol then maxCol <- c
                     Some ({ Row = r; Col = c }, cellData)))
@@ -310,7 +342,8 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         Selection = SingleCell(-1, -1)
         RowHeights = rowHeights
         ColumnWidths = columnWidths
-        MergedCells = mergedCells }
+        MergedCells = mergedCells
+        RichRuns = richRunsMap }
 
 let private escapeJson (value: string) =
     let sb = System.Text.StringBuilder(value.Length + 2)

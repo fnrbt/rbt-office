@@ -20,6 +20,33 @@ type CellValue =
     | Formula of string
     | Empty
 
+/// Optional per-run formatting from an `<rPr>` inside an `<si><r>` element.
+/// Any field set on the run overrides the cell's base style for that text;
+/// fields left None inherit from the surrounding cell format.
+type RunProps = {
+    Bold: bool
+    Italic: bool
+    Color: string option       // ARGB hex without '#' prefix
+    FontName: string option
+    FontSize: float option     // points
+}
+
+let emptyRunProps = {
+    Bold = false
+    Italic = false
+    Color = None
+    FontName = None
+    FontSize = None
+}
+
+/// A parsed shared-string entry. Plain SI entries have one Run with empty
+/// props and the entire text. Rich entries have one Run per `<r>` element
+/// each carrying its own `<rPr>`-derived RunProps.
+type SharedStringEntry = {
+    Text: string                       // concatenated for indexing / search
+    Runs: (string * RunProps) list     // empty list ≡ no rich runs (use Text)
+}
+
 /// One side of a cell border. `Style` is the OOXML border style name
 /// (thin/medium/thick/dashed/dotted/double/...), `Color` is an ARGB hex
 /// string when explicit (or None when Excel's "automatic" black).
@@ -193,7 +220,12 @@ type Worksheet = {
 
 type Workbook = {
     Sheets: Worksheet list
+    /// Concatenated text of each shared-string entry, indexed by SI position.
+    /// For cells, this is what the value displays as.
     SharedStrings: string array
+    /// Parsed runs for shared-string entries that have rich text. Same length
+    /// as `SharedStrings`; entries with no rich runs have an empty list.
+    SharedStringRuns: (string * RunProps) list array
     Styles: CellStyle array
     Relationships: Relationship list
     NamedRanges: NamedRange list
@@ -626,25 +658,76 @@ module Xlsx =
         |> List.map (fun xf -> parseCellXf xf fonts fills borders numFmts)
         |> List.toArray
 
-    // Shared strings extraction. An <si> entry can hold either a single
-    // <t>text</t> child (plain string) OR a sequence of <r><rPr>…</rPr>
-    // <t>part</t></r> runs (rich text, each run carrying its own font/color).
-    // Pandas/openpyxl-written workbooks happily mix both forms in the same
-    // sharedStrings.xml: phpsp-26template's header cell is rich-text, every
-    // other string is plain. We must produce one parsed string per <si> in
-    // order, otherwise indices shift and every cell reference past the first
-    // rich-text entry loads the wrong text (e.g. A1=5 reads SI 6's content).
-    // Collect every descendant <t>'s text and concatenate. Rich-text
-    // formatting is dropped — the renderer doesn't support mixed-run text
-    // inside a cell yet, but the data round-trips correctly.
-    let sharedStrings (sstXml: string) : string array =
-        let sst = XmlDsl.parse sstXml
+    // Shared strings extraction. An <si> entry holds either a single <t>
+    // child (plain) or a sequence of <r><rPr>…<t>…</t></r> elements (rich).
+    // We produce one entry per <si>; rich entries also expose their per-run
+    // formatting so the renderer can paint each run with its own color/font.
+    let private parseRunProps (rPr: XmlNode) : RunProps =
+        let boolChild key =
+            // <b/> means bold; <b val="0"/> means explicitly not bold.
+            match sElem key rPr with
+            | Some node ->
+                Xml.attr "val" node
+                |> Option.map (fun v -> v <> "0" && v <> "false")
+                |> Option.defaultValue true
+            | None -> false
+        let colorHex =
+            match sElem "color" rPr with
+            | Some node ->
+                Xml.attr "rgb" node
+                |> Option.map (fun raw ->
+                    let t = raw.TrimStart('#')
+                    if t.Length = 8 then t.Substring(2) else t)
+            | None -> None
+        let fontName =
+            sElem "rFont" rPr |> Option.bind (Xml.attr "val")
+        let fontSize =
+            sElem "sz" rPr
+            |> Option.bind (Xml.attr "val")
+            |> Option.bind (fun v -> try Some (float v) with _ -> None)
+        {
+            Bold = boolChild "b"
+            Italic = boolChild "i"
+            Color = colorHex
+            FontName = fontName
+            FontSize = fontSize
+        }
 
+    let private siRuns (si: XmlNode) : (string * RunProps) list =
+        // Each <r> = run; the <t> inside it is the run's text. <rPr> is the
+        // run's formatting (may be absent → defaults). Iterate in source
+        // order so the spans stay contiguous.
+        Xml.children si
+        |> List.choose (fun child ->
+            match Xml.name child with
+            | Some "r" ->
+                let text =
+                    Xml.descendants "t" child
+                    |> List.choose Xml.text
+                    |> String.concat ""
+                let props =
+                    sElem "rPr" child
+                    |> Option.map parseRunProps
+                    |> Option.defaultValue emptyRunProps
+                Some (text, props)
+            | _ -> None)
+
+    let sharedStrings (sstXml: string) : SharedStringEntry array =
+        let sst = XmlDsl.parse sstXml
         sElems "si" sst
         |> List.map (fun si ->
-            Xml.descendants "t" si
-            |> List.choose Xml.text
-            |> String.concat "")
+            let runs = siRuns si
+            if List.isEmpty runs then
+                // Plain SI — all text in direct <t> descendants (single or
+                // none); preserve original concat-all-<t> behavior.
+                let text =
+                    Xml.descendants "t" si
+                    |> List.choose Xml.text
+                    |> String.concat ""
+                { Text = text; Runs = [] }
+            else
+                let text = runs |> List.map fst |> String.concat ""
+                { Text = text; Runs = runs })
         |> List.toArray
 
     // Workbook sheets metadata
@@ -923,10 +1006,12 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                 |> Option.map parseRelationships
                 |> Option.defaultValue []
 
-            let sharedStrings =
+            let sharedStringEntries =
                 sstXml
                 |> Option.map Xlsx.sharedStrings
                 |> Option.defaultValue [||]
+            let sharedStrings = sharedStringEntries |> Array.map (fun e -> e.Text)
+            let sharedStringRuns = sharedStringEntries |> Array.map (fun e -> e.Runs)
 
             let styles =
                 stylesXml
@@ -1000,6 +1085,7 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
             return Some {
                 Sheets = sheets
                 SharedStrings = sharedStrings
+                SharedStringRuns = sharedStringRuns
                 Styles = styles
                 Relationships = rels
                 NamedRanges = namedRanges
@@ -1120,10 +1206,12 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
             |> Option.map (XmlDsl.parse >> parseRelationships)
             |> Option.defaultValue []
 
-        let sharedStrings =
+        let sharedStringEntries =
             ZipInterop.getFileTextNative archive "xl/sharedStrings.xml"
             |> Option.map Xlsx.sharedStrings
             |> Option.defaultValue [||]
+        let sharedStrings = sharedStringEntries |> Array.map (fun e -> e.Text)
+        let sharedStringRuns = sharedStringEntries |> Array.map (fun e -> e.Runs)
 
         let styles =
             ZipInterop.getFileTextNative archive "xl/styles.xml"
@@ -1177,6 +1265,7 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
         Some {
             Sheets = styledSheets
             SharedStrings = sharedStrings
+            SharedStringRuns = sharedStringRuns
             Styles = styles
             Relationships = rels
             NamedRanges = namedRanges

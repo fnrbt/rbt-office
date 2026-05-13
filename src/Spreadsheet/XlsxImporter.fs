@@ -293,6 +293,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 SearchResults = []
                 SearchIndex = 0
                 ConditionalFormats = Map.empty
+                RichRuns = Map.empty
                 MergedCells = mergedCellList
             }
             recalculateAllFormulas None importedModel
@@ -317,6 +318,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 SearchResults = []
                 SearchIndex = 0
                 ConditionalFormats = Map.empty
+                RichRuns = Map.empty
                 MergedCells = []
             }
 
@@ -357,6 +359,7 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
                     SearchResults = []
                     SearchIndex = 0
                     ConditionalFormats = Map.empty
+                    RichRuns = Map.empty
                     MergedCells = []
                 }
         }
