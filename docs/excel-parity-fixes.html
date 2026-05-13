@@ -155,6 +155,53 @@
     <tbody>
       <tr>
         <td>
+          <strong>CJK font fallback via Windows font-link chain (Yu Gothic, YaHei, JhengHei, Malgun)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/phpsp-26template.xlsx</code> (row 1 contains 切手, row 6 contains 横浜 and 東京 — all Calibri-targeted runs).</span>
+          <span class="meta">Real fixture class: any XLSX with non-Latin glyphs in Calibri/Arial/Times cells. Excel uses GDI font-linking — when the primary font doesn't cover a codepoint, the OS falls back to a script-specific font (Yu Gothic for Japanese, Microsoft YaHei for Simplified Chinese, etc.). We were rendering <code>.notdef</code> boxes instead.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/phpsp-26template-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference with CJK glyphs">
+          </div>
+          <div class="caption">Excel reference: 切手 visible in the row 1 yellow header inside <em>"Stamps (切手)"</em>; 横浜 inside <em>"Yokohama (横浜)"</em> and 東京 inside <em>"Tokyo (東京)"</em> in row 6. Excel uses Yu Gothic UI for Japanese chars when the run's font is Calibri/Arial (per the HKLM SystemLink registry chain).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after CJK fallback">
+          </div>
+          <div class="caption">After: 切手 / 横浜 / 東京 now render as actual glyphs. <code>SpreadsheetGrid.toRendererCommands</code> walks the text codepoint-by-codepoint, asks the primary font (via <code>Renderer.Text.hasGlyph</code>) whether it covers each one, and switches to the first fallback that does. Baseline stays anchored to the primary font's <code>winAscent</code> so mixed-script lines don't jitter vertically.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/phpsp-26template-pre-cjkfallback.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours before CJK fallback">
+          </div>
+          <div class="caption">Before: every CJK codepoint resolved to glyph id 0 (<code>.notdef</code>) in Calibri's cmap, which the shaper rendered as a tofu box. Row 1's <em>"(□□)"</em> in place of <em>"(切手)"</em>; row 6's <em>"(□□)"</em> for both 横浜 and 東京.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> fetch the same fonts Excel/GDI uses for fallback, plus three small renderer changes so they load and split correctly.</p>
+          <ul>
+            <li><code>tools/word-parity/fetch-windows-fonts.sh</code>: pull <code>YuGothR.ttc</code>/<code>YuGothB.ttc</code> (Japanese), <code>msyh.ttc</code>/<code>msyhbd.ttc</code> (Simplified Chinese), <code>msjh.ttc</code>/<code>msjhbd.ttc</code> (Traditional), <code>malgun.ttf</code>/<code>malgunbd.ttf</code> (Korean), plus <code>msgothic.ttc</code> as the legacy Japanese fallback. Skip-with-warning when a font is missing on the VM image instead of aborting.</li>
+            <li><code>shaper/Shaper.fs</code>: <code>parseFont</code> now handles TTC (TrueType Collection) files by detecting the <code>"ttcf"</code> prefix and reading font 0's offset from byte 12. Previously it blindly read byte 4 as the table count, which crashed on every <code>.ttc</code> we wanted to load. Split <code>parseTableDirectory</code> into <code>parseTableDirectoryAt(data, sfntStart)</code> so the TTC branch can re-anchor.</li>
+            <li><code>renderer/Text.fs</code>: <code>hasGlyph font codepoint</code> — one-line wrapper around <code>CmapLookup.lookup ≠ 0</code>. Used by font-fallback logic to decide whether to keep the primary font or switch.</li>
+            <li><code>spreadsheet-native/SpreadsheetGrid.fs</code>:
+              <ul>
+                <li><code>cjkFallbackChain bold</code> returns the GDI-style chain (Yu Gothic → MS Gothic → YaHei → JhengHei → Malgun for regular; bold variants for bold cells).</li>
+                <li><code>fallbackFontFor codepoint bold</code> picks the first chain font whose cmap covers the codepoint, with a per-filename cache so a 13 MB Yu Gothic TTC loads at most once.</li>
+                <li><code>toRendererCommands</code> walks the text codepoint-by-codepoint (folding surrogate pairs), partitions into contiguous segments by which font wins, measures each segment with its own font, and emits one <code>Cmd.DrawGlyphs</code> per segment. Baseline stays anchored to the PRIMARY font's <code>winAscent</code> — mixing Yu Gothic's larger ascent in would shift the baseline ~3 px vs Excel.</li>
+              </ul>
+            </li>
+          </ul>
+          <ul>
+            <li>Focused guard: phpsp-26template's 切手, 横浜, 東京 all render as the correct glyphs.</li>
+            <li>Regression guard: cells whose text is fully Latin take the single-segment path with the primary font — same Cmd.DrawGlyphs output as before. Per-run rich text (previous row) still works because the segmentation runs inside each per-run DrawText.</li>
+            <li>Corpus guard: all 53 fixtures still render without error. Font load is cached, so repeated CJK cells don't re-pay the TTC parse.</li>
+            <li>Path guard: native PNG only. PDF emitter still drops to <code>.notdef</code> for missing glyphs (no fallback there yet); Fable web canvas relies on the browser's own font-linking and was never broken to begin with.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Render per-run rich text from shared-string <code>&lt;r&gt;</code> elements</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/phpsp-26template.xlsx</code> (row 1 yellow header with a blue segment; row 6 with a bold-red "200 mon dragon cover" span).</span>
           <span class="meta">Real fixture class: every cell whose shared-string SI has multiple <code>&lt;r&gt;</code> runs. Pandas does not write rich text, but spreadsheets edited in Excel/LibreOffice routinely do — a single cell with mixed bold/color/font is the canonical "look I styled it" case. We were concatenating all <code>&lt;t&gt;</code> descendants and applying the cell's base format uniformly, so every per-run color/bold was lost.</span>
