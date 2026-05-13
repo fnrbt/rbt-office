@@ -510,6 +510,8 @@ module Shell =
         }
 
         let shellActions: WordUi.ShellActions = {
+            OpenFile = fun () -> host.Status.Value <- "Open file: use the file input above"
+            SaveFile = fun () -> host.Status.Value <- "Save: not yet wired (use export buttons)"
             PrintPdf = fun () -> WordHost.printPdf host
             OpenFindReplace = fun () -> WordHost.openFindReplace host; host.Status.Value <- "Find and replace opened"
             OpenImagePicker = openImagePicker

@@ -29,6 +29,124 @@ let private wordFontPath () =
         else Path.Combine(dir, "calibri.ttf") |> existingFile)
     |> List.tryHead
 
+// ── Minimal native .docx writer ───────────────────────────────────
+//
+// Walks Document.Blocks, emits Word's wordprocessingml XML for each
+// paragraph (with bold / italic / underline / color / font / alignment
+// preserved on each run), and bundles the four required parts into a
+// zip. Tables, images, headers/footers, and section breaks are NOT
+// preserved — but a round-trip through Open → Save keeps the visible
+// formatted text intact for the common case.
+
+module DocxWrite =
+    let private escapeXml (s: string) =
+        let sb = System.Text.StringBuilder()
+        for c in s do
+            match c with
+            | '<' -> sb.Append "&lt;" |> ignore
+            | '>' -> sb.Append "&gt;" |> ignore
+            | '&' -> sb.Append "&amp;" |> ignore
+            | '"' -> sb.Append "&quot;" |> ignore
+            | _ -> sb.Append c |> ignore
+        sb.ToString()
+
+    let private runXml (text: string) (style: RedBat.Word.TextBuffer.TextStyle) =
+        let rPr = System.Text.StringBuilder()
+        rPr.Append "<w:rPr>" |> ignore
+        if style.Bold then rPr.Append "<w:b/><w:bCs/>" |> ignore
+        if style.Italic then rPr.Append "<w:i/><w:iCs/>" |> ignore
+        if style.Underline then rPr.Append "<w:u w:val=\"single\"/>" |> ignore
+        if style.Strike then rPr.Append "<w:strike/>" |> ignore
+        match style.FontFamily with
+        | Some f ->
+            let f = escapeXml f
+            rPr.Append (sprintf "<w:rFonts w:ascii=\"%s\" w:hAnsi=\"%s\" w:cs=\"%s\"/>" f f f) |> ignore
+        | None -> ()
+        // Font size in DOCX is in half-points.
+        let halfPt = int (style.FontSize * 2.0)
+        rPr.Append (sprintf "<w:sz w:val=\"%d\"/><w:szCs w:val=\"%d\"/>" halfPt halfPt) |> ignore
+        match style.Color with
+        | Some hex ->
+            let v = if hex.StartsWith "#" then hex.Substring(1) else hex
+            rPr.Append (sprintf "<w:color w:val=\"%s\"/>" v) |> ignore
+        | None -> ()
+        rPr.Append "</w:rPr>" |> ignore
+        sprintf "<w:r>%s<w:t xml:space=\"preserve\">%s</w:t></w:r>" (string rPr) (escapeXml text)
+
+    let private paragraphXml (para: Doc.ParagraphBlock) =
+        let pPr = System.Text.StringBuilder()
+        pPr.Append "<w:pPr>" |> ignore
+        match para.Metadata.Alignment with
+        | Doc.Center -> pPr.Append "<w:jc w:val=\"center\"/>" |> ignore
+        | Doc.Right -> pPr.Append "<w:jc w:val=\"right\"/>" |> ignore
+        | Doc.Justify -> pPr.Append "<w:jc w:val=\"both\"/>" |> ignore
+        | _ -> ()
+        pPr.Append "</w:pPr>" |> ignore
+
+        let text = RedBat.Word.TextBuffer.toString para.Buffer
+        let runs = System.Text.StringBuilder()
+        let mutable lastEnd = 0
+        for run in para.Buffer.Runs do
+            match run with
+            | RedBat.Word.TextBuffer.Text tr ->
+                let s = tr.Start
+                let e = tr.Start + tr.Length
+                if e > s && s < text.Length then
+                    let slice = text.Substring(s, min tr.Length (text.Length - s))
+                    runs.Append (runXml slice tr.Style) |> ignore
+                lastEnd <- max lastEnd e
+            | _ -> ()
+        // Fallback: if no runs covered the text, dump as a single default run.
+        if runs.Length = 0 && text <> "" then
+            runs.Append (runXml text RedBat.Word.TextBuffer.defaultStyle) |> ignore
+        sprintf "<w:p>%s%s</w:p>" (string pPr) (string runs)
+
+    let private headingXml (level: int) (para: Doc.ParagraphBlock) =
+        let inner = paragraphXml para
+        // Inject the heading style id after w:pPr opening — quick splice.
+        let styleId = sprintf "Heading%d" level
+        let injected = sprintf "<w:pStyle w:val=\"%s\"/>" styleId
+        let i = inner.IndexOf "<w:pPr>"
+        if i >= 0 then
+            inner.Substring(0, i + 7) + injected + inner.Substring(i + 7)
+        else
+            inner
+
+    let private blocksXml (blocks: Doc.Block list) =
+        blocks
+        |> List.choose (function
+            | Doc.Paragraph p -> Some (paragraphXml p)
+            | Doc.Heading (level, p) -> Some (headingXml level p)
+            | Doc.Table _ | Doc.TextBox _ -> None) // not preserved
+        |> String.concat ""
+
+    let private documentXml (doc: Doc.Document) =
+        sprintf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">\
+<w:body>%s</w:body></w:document>" (blocksXml doc.Blocks)
+
+    let private contentTypesXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
+<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+<Default Extension=\"xml\" ContentType=\"application/xml\"/>\
+<Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>\
+</Types>"
+
+    let private rootRelsXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
+<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>\
+</Relationships>"
+
+    /// Pack the document as a .docx and write to `path`.
+    let save (doc: Doc.Document) (path: string) =
+        let files = [
+            { ZipWriter.Path = "[Content_Types].xml"; ZipWriter.Content = contentTypesXml }
+            { ZipWriter.Path = "_rels/.rels"; ZipWriter.Content = rootRelsXml }
+            { ZipWriter.Path = "word/document.xml"; ZipWriter.Content = documentXml doc }
+        ]
+        let bytes = ZipWriter.createPackageBytes files
+        File.WriteAllBytes(path, bytes)
+
 let private loadDocx (path: string) : Doc.Document option =
     let bytes = File.ReadAllBytes path
     match DocxReader.loadBytesNative bytes with
@@ -142,6 +260,7 @@ let private shellState (state: Editor.WordEditorState) : WordUi.ShellState =
 let private shellActions
         (state: Editor.WordEditorState)
         (status: Signal<string>)
+        (currentPath: Signal<string option>)
         (renderState: Chrome.ShellRenderState) : WordUi.ShellActions =
     let apply transform () = applyChange state transform
     let applyArg transform arg = applyChange state (transform arg)
@@ -203,7 +322,34 @@ let private shellActions
     let openAnnotation = function
         | "hyperlink" -> openLinkDialog ()
         | other -> status.Value <- sprintf "%s annotation not wired" other
+
+    let openFileAction () =
+        WordUi.openFileDialog (fun path ->
+            match loadDocx path with
+            | Some doc ->
+                state.Document.Value <- doc
+                state.UndoStack.Value <- []
+                state.RedoStack.Value <- []
+                currentPath.Value <- Some path
+                status.Value <- sprintf "Opened %s" (Path.GetFileName path)
+            | None -> status.Value <- sprintf "Failed to open %s" path)
+        |> Composit.Ui.OfficeShell.openDialog renderState
+
+    let writeTo path =
+        try
+            DocxWrite.save state.Document.Value path
+            currentPath.Value <- Some path
+            status.Value <- sprintf "Saved %s" (Path.GetFileName path)
+        with ex ->
+            status.Value <- sprintf "Save failed: %s" ex.Message
+
+    let saveFileAction () =
+        let initial = currentPath.Value |> Option.defaultValue ""
+        WordUi.saveFileDialog initial writeTo
+        |> Composit.Ui.OfficeShell.openDialog renderState
     {
+        OpenFile = openFileAction
+        SaveFile = saveFileAction
         PrintPdf = say "Print PDF not wired in native shell"
         OpenFindReplace = openFindReplaceDialog
         OpenImagePicker = openImageDialog
@@ -284,6 +430,7 @@ type AppState = {
     Window: IWindow
     EditorState: Editor.WordEditorState
     RenderState: Chrome.ShellRenderState
+    Actions: WordUi.ShellActions
     ControlServer: ControlServer.ControlServer
 }
 
@@ -302,6 +449,14 @@ let private handleInput (state: AppState) (ev: InputEvent) =
                 // Escape closes an open menu first; otherwise falls through to editor.
                 if key = "Escape" && state.RenderState.OpenMenu.Value.IsSome then
                     state.RenderState.OpenMenu.Value <- None
+                    state.Window.RequestRedraw()
+                // Ctrl+S triggers save without going through the editor.
+                elif state.CtrlDown && (key = "s" || key = "S") then
+                    state.Actions.SaveFile ()
+                    state.Window.RequestRedraw()
+                // Ctrl+O triggers open.
+                elif state.CtrlDown && (key = "o" || key = "O") then
+                    state.Actions.OpenFile ()
                     state.Window.RequestRedraw()
                 else
                     let ke : KeyEvent = { Key = key; Shift = state.ShiftDown; Ctrl = state.CtrlDown; Alt = state.AltDown }
@@ -429,9 +584,10 @@ let main argv =
 
     let editor = Editor.createState doc
     let status = signal "Ready"
+    let currentPath = signal (argv |> Array.tryHead)
     let renderState = Chrome.closed
     let state = shellState editor
-    let actions = shellActions editor status renderState
+    let actions = shellActions editor status currentPath renderState
 
     /// Status string. Falls back to the editor's current cursor / selection
     /// summary if no transient message has been set (the `Ready` literal).
@@ -471,6 +627,7 @@ let main argv =
         Window = window
         EditorState = editor
         RenderState = renderState
+        Actions = actions
         ControlServer = controlServer
     }
 

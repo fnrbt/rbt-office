@@ -173,6 +173,8 @@ module Ui =
     }
 
     type ShellActions = {
+        OpenFile: unit -> unit
+        SaveFile: unit -> unit
         PrintPdf: unit -> unit
         OpenFindReplace: unit -> unit
         OpenImagePicker: unit -> unit
@@ -273,6 +275,8 @@ module Ui =
             PanelTestId = "word-file-menu-panel"
             Label = "File"
             Items = [
+                item "word-menu-open" "Open..." None actions.OpenFile
+                item "word-menu-save" "Save" None actions.SaveFile
                 item "word-menu-page-setup" "Page setup..." None actions.OpenPageSetup
                 item "word-menu-header-footer" "Headers and footers..." None actions.OpenHeaderFooter
                 item "word-menu-print-pdf" "Print PDF" None actions.PrintPdf
@@ -602,6 +606,46 @@ module Ui =
                 if src = "" then false
                 else
                     apply src
+                    true)
+        ]
+    }
+
+    /// Open a document from disk. Native shells pass the path to a loader;
+    /// web shells can override the action entirely with a file picker.
+    let openFileDialog (apply: string -> unit) : DialogSpec = {
+        TestId = "word-dlg-open-file"
+        Title = "Open document"
+        Subtitle = Some "Path to a .docx file."
+        Fields = [
+            dialogText "path" "File path" "/path/to/doc.docx" ""
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-open-file-ok" "Open" true (fun values ->
+                let path = (Map.find "path" values).Trim()
+                if path = "" then false
+                else
+                    apply path
+                    true)
+        ]
+    }
+
+    /// Save the current document to a path. Initial value is the current
+    /// document's path (or empty for a new doc).
+    let saveFileDialog (initialPath: string) (apply: string -> unit) : DialogSpec = {
+        TestId = "word-dlg-save-file"
+        Title = "Save document"
+        Subtitle = Some "Path to write a .docx file."
+        Fields = [
+            dialogText "path" "File path" "/path/to/doc.docx" initialPath
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-save-file-ok" "Save" true (fun values ->
+                let path = (Map.find "path" values).Trim()
+                if path = "" then false
+                else
+                    apply path
                     true)
         ]
     }

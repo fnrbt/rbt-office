@@ -65,6 +65,20 @@ let createPackageWithBinary (textFiles: PackageFile list) (binaryFiles: (string 
     }
 
 #if !FABLE_COMPILER
+/// Native version of `createPackage` that returns the zipped bytes
+/// directly (no JS Blob involved). Apps can then write to disk or send
+/// over the wire.
+let createPackageBytes (files: PackageFile list) : byte[] =
+    use stream = new MemoryStream()
+    do
+        use archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen = true)
+        for file in files do
+            let entry = archive.CreateEntry(file.Path, CompressionLevel.Optimal)
+            use entryStream = entry.Open()
+            let bytes = System.Text.Encoding.UTF8.GetBytes(file.Content)
+            entryStream.Write(bytes, 0, bytes.Length)
+    stream.ToArray()
+
 let createPackageFileFromDirectory (sourceDirectory: string) (outputPath: string) =
     let root = DirectoryInfo(sourceDirectory)
     if not root.Exists then
