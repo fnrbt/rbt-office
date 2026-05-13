@@ -229,7 +229,11 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         if workbook.Styles.Length > 0 then
             workbook.Styles.[0].FontSize |> Option.defaultValue 11.0
         else 11.0
-    let mdw = max 1.0 (System.Math.Round(defaultFontSize * 7.0 / 11.0))
+    // Mirror the floor in src/Spreadsheet/Paint.fs's mdwPx: Excel uses MDW 7
+    // for every Calibri / Arial size from 8 pt up through 11 pt, then 8 px
+    // at 12 pt and 9 px at 14 pt. Plain `round(size * 7/11)` rounds 10 pt
+    // down to 6 and shrinks column widths below what Excel renders.
+    let mdw = max 7.0 (System.Math.Round(defaultFontSize * 7.0 / 11.0))
     let charsToPixels (chars: float) = chars * mdw
 
     // sheetFormatPr defaults. Excel uses these for every column without an

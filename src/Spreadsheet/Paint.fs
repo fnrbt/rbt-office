@@ -264,11 +264,15 @@ let private formatExcelDate (code: string) (serial: float) : string =
         with _ -> dtRounded.ToString("MM/dd/yyyy", inv)
 
 /// Approximate rendered Maximum Digit Width (MDW) in CSS pixels for a given
-/// XLSX font size (in points). Anchored at Calibri 11 pt → 7 px MDW; scales
-/// linearly so size 12 pt → 8 px and size 14 pt → ~9 px. Matches the same
-/// scaling the native runner uses for chars→pixels column-width math.
+/// XLSX font size (in points). Excel's MDW table is flat around the common
+/// 10/11/12 pt sizes (all 7 px), then jumps to 8 px at 12-13 pt. Use the
+/// `round(fontPt × 7/11)` formula but floor it at 7 — the value Excel uses
+/// for every Calibri / Arial size from 8 pt up through 11 pt. Without the
+/// floor, size-10 cells (Arial 10pt, the Excel 2003 legacy default in many
+/// pandas-test_datetime_mi-style POI fixtures) under-count chars and trip
+/// ##### overflow on values that Excel renders inside the cell.
 let private mdwPx (fontPt: float) : float =
-    max 1.0 (System.Math.Round(fontPt * 7.0 / 11.0))
+    max 7.0 (System.Math.Round(fontPt * 7.0 / 11.0))
 
 /// Width-aware Excel "General" number formatting. Picks the longest .NET
 /// "G<n>" representation that fits the cell width. If even the shortest
