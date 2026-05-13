@@ -83,6 +83,7 @@ type Spreadsheet(container: Element) =
         Height = containerHeight
         HeaderHeight = headerHeight
         RowHeaderWidth = rowHeaderWidth
+        Measurer = None
     }
 
     let renderPortablePaintToCanvas (canvas: Element) =

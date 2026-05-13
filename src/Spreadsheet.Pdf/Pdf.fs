@@ -155,6 +155,7 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
         Height = options.PageHeight
         HeaderHeight = 22.0
         RowHeaderWidth = 48.0
+        Measurer = None
     }
 
     let faceTtfMap = faceTtf |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq

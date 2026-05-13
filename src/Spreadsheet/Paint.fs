@@ -347,47 +347,64 @@ let private formatExcelNumber (code: string) (n: float) : string =
         with _ -> string n
 
 /// Greedy word-wrap inside a cell. Splits on hard line breaks (\n) first,
-/// then on whitespace within each segment, packing as many words into a line
-/// as the cell's usable width allows. Falls back to character-level breaks
-/// when a single word exceeds the width. char-per-pixel uses mdwPx to track
-/// the same font-size scaling cellDisplayText uses, so wrap decisions match
-/// the ##### overflow trigger.
-let private wrapLines (cellWidthPx: float) (fontPt: float) (text: string) : string list =
+/// then on whitespace within each segment, packing as many words onto a line
+/// as the cell's usable width allows. Falls back to char-level breaks when
+/// a single word exceeds the width.
+///
+/// When `measure` is Some, line-width budget is computed via the real loaded
+/// font (matches Excel's glyph-aware wrapping). When None — Fable web canvas
+/// or other contexts without a measurer — fall back to `mdwPx × charCount`,
+/// which over-estimates width and wraps earlier than Excel.
+let private wrapLines
+    (measure: (string -> float) option)
+    (cellWidthPx: float) (fontPt: float)
+    (text: string) : string list =
     if System.String.IsNullOrEmpty text then [ text ]
     else
         let usable = max 0.0 (cellWidthPx - 8.0)
+        // Approximation budget for the measurer-less path.
         let mdw = mdwPx fontPt
-        let maxChars = max 1 (int (usable / mdw))
+        let approxMaxChars = max 1 (int (usable / mdw))
+        let fits (s: string) =
+            match measure with
+            | Some m -> m s <= usable
+            | None -> s.Length <= approxMaxChars
         let wrapSegment (segment: string) : string list =
-            // Split on runs of whitespace, keeping the original spaces in.
-            // For now we just split on space — Excel wraps at any whitespace
-            // boundary; this is the common case.
             let words = segment.Split(' ')
             let result = System.Collections.Generic.List<string>()
             let current = System.Text.StringBuilder()
+            let breakOversizedWord (word: string) =
+                // Char-by-char until we'd overflow; emit each chunk as its
+                // own line. Used when a single word is wider than the cell.
+                let mutable buf = System.Text.StringBuilder()
+                for ch in word do
+                    buf.Append(ch) |> ignore
+                    if not (fits (buf.ToString())) && buf.Length > 1 then
+                        // Last char overflowed; emit buffer minus last char,
+                        // then start a new buffer with just that char.
+                        let s = buf.ToString()
+                        result.Add(s.Substring(0, s.Length - 1))
+                        buf <- System.Text.StringBuilder()
+                        buf.Append(ch) |> ignore
+                buf
             for word in words do
                 if current.Length = 0 then
-                    if word.Length > maxChars then
-                        // word longer than cell — break at char boundaries.
-                        let mutable s = word
-                        while s.Length > maxChars do
-                            result.Add(s.Substring(0, maxChars))
-                            s <- s.Substring(maxChars)
-                        if s.Length > 0 then current.Append(s) |> ignore
+                    if not (fits word) then
+                        // word longer than cell — char-break, leaving the
+                        // last chunk in `current` to continue with next word.
+                        let leftover = breakOversizedWord word
+                        if leftover.Length > 0 then current.Append(leftover) |> ignore
                     else current.Append(word) |> ignore
                 else
-                    let nextLen = current.Length + 1 + word.Length
-                    if nextLen <= maxChars then
+                    let candidate = current.ToString() + " " + word
+                    if fits candidate then
                         current.Append(' ').Append(word) |> ignore
                     else
                         result.Add(current.ToString())
                         current.Clear() |> ignore
-                        if word.Length > maxChars then
-                            let mutable s = word
-                            while s.Length > maxChars do
-                                result.Add(s.Substring(0, maxChars))
-                                s <- s.Substring(maxChars)
-                            if s.Length > 0 then current.Append(s) |> ignore
+                        if not (fits word) then
+                            let leftover = breakOversizedWord word
+                            if leftover.Length > 0 then current.Append(leftover) |> ignore
                         else current.Append(word) |> ignore
             if current.Length > 0 then result.Add(current.ToString())
             List.ofSeq result
@@ -566,9 +583,13 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 // renderer here, so approximate char width with mdwPx — same
                 // budget cellDisplayText uses for the ##### overflow check.
                 let hasHardBreak = displayText.Contains("\n")
+                let measure =
+                    viewport.Measurer
+                    |> Option.map (fun m ->
+                        fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
                 let lines =
                     if format.WrapText || hasHardBreak then
-                        wrapLines textRect.Width fontPt displayText
+                        wrapLines measure textRect.Width fontPt displayText
                     else [ displayText ]
                 // Map Excel's vertical-alignment string to our DU. Excel's
                 // "General" (no explicit setting) is VAlignBottom.

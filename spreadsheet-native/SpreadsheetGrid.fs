@@ -171,6 +171,18 @@ let private renderPaintItem = function
         }
         [ Cmd.StrokePath([MoveTo (vec2 x1 y1); LineTo (vec2 x2 y2)], style) ]
 
+/// Measure a text run in pixels using the real loaded font. Plugged into
+/// Viewport.Measurer so Paint.wrapLines can break lines on actual glyph
+/// width instead of mdwPx × charCount. Critical for non-Calibri-narrow
+/// fonts where the approximation drifts (e.g. Times Roman fits more
+/// characters per line than mdwPx assumes).
+let private measureText
+    (text: string) (fontPt: float)
+    (fontName: string option) (bold: bool) (italic: bool) : float =
+    let font = rendererFont fontName bold italic
+    let pxSize = fontPt * 96.0 / 72.0
+    Renderer.Text.measureWidth font pxSize text
+
 let private viewportOf (model: SpreadsheetModel) width height : Viewport =
     // Match Excel's column/row header pixel sizes at 96 DPI / 100% zoom so
     // parity screenshots align cell-for-cell with our PNG renders. Measured
@@ -185,7 +197,8 @@ let private viewportOf (model: SpreadsheetModel) width height : Viewport =
       Width = width
       Height = height
       HeaderHeight = headerHeight
-      RowHeaderWidth = rowHeaderWidth }
+      RowHeaderWidth = rowHeaderWidth
+      Measurer = Some measureText }
 
 let private cellCommands (model: SpreadsheetModel) width height =
     let viewport = viewportOf model width height

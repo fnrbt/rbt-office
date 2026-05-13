@@ -9,6 +9,13 @@ type Rect = {
     Height: float
 }
 
+/// Measure a piece of text in pixels at a given font size/face. Optional;
+/// when None, the cell painter approximates width as charCount × mdwPx.
+/// Set by the native runner (real Renderer.Text.measureWidth) and by the
+/// PDF emitter; left None by the Fable web canvas which doesn't have a
+/// portable measurement API at this layer.
+type TextMeasurer = string -> float -> string option -> bool -> bool -> float
+
 type Viewport = {
     ScrollX: float
     ScrollY: float
@@ -16,6 +23,9 @@ type Viewport = {
     Height: float
     HeaderHeight: float
     RowHeaderWidth: float
+    /// Optional real-font measurer used by buildCellPaintItems to decide
+    /// wrap-text break points. When None, falls back to mdwPx × charCount.
+    Measurer: TextMeasurer option
 }
 
 type VisibleRange = {
@@ -57,6 +67,7 @@ let defaultViewport width height = {
     Height = height
     HeaderHeight = 30.0
     RowHeaderWidth = 50.0
+    Measurer = None
 }
 
 let columnX (model: SpreadsheetModel) (viewport: Viewport) (col: int): float =
