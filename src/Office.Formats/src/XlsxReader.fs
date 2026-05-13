@@ -615,14 +615,25 @@ module Xlsx =
         |> List.map (fun xf -> parseCellXf xf fonts fills borders numFmts)
         |> List.toArray
 
-    // Shared strings extraction
+    // Shared strings extraction. An <si> entry can hold either a single
+    // <t>text</t> child (plain string) OR a sequence of <r><rPr>…</rPr>
+    // <t>part</t></r> runs (rich text, each run carrying its own font/color).
+    // Pandas/openpyxl-written workbooks happily mix both forms in the same
+    // sharedStrings.xml: phpsp-26template's header cell is rich-text, every
+    // other string is plain. We must produce one parsed string per <si> in
+    // order, otherwise indices shift and every cell reference past the first
+    // rich-text entry loads the wrong text (e.g. A1=5 reads SI 6's content).
+    // Collect every descendant <t>'s text and concatenate. Rich-text
+    // formatting is dropped — the renderer doesn't support mixed-run text
+    // inside a cell yet, but the data round-trips correctly.
     let sharedStrings (sstXml: string) : string array =
         let sst = XmlDsl.parse sstXml
 
         sElems "si" sst
-        |> List.choose (fun si ->
-            sElem "t" si
-            |> Option.bind Xml.text)
+        |> List.map (fun si ->
+            Xml.descendants "t" si
+            |> List.choose Xml.text
+            |> String.concat "")
         |> List.toArray
 
     // Workbook sheets metadata
