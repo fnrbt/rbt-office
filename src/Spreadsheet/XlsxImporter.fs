@@ -51,7 +51,10 @@ open RedBat.Spreadsheet.Formula
     ///   api().excel.mergedCells(sheet) -> string[] (e.g., ["A1:B2", "C3:D5"])
     ///   api().excel.commentAt(ref, sheet) -> {text: string, author?: string} | null
     /// </summary>
-    [<ImportAll("../../mega/frontend/src/lib/office-formats/src/Main.js")>]
+    // Path expressed relative to the F# source dir, but chosen so Fable's
+    // source→output rewrite produces "../office-formats/src/Main.js" in the
+    // emitted JS — i.e., a sibling lookup inside dist/. No redbat reference.
+    [<ImportAll("../../dist/office-formats/src/Main.js")>]
 let private officeFormatApi: obj = jsNative
 
 [<Emit("Array.from($0)")>]

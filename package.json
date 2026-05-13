@@ -1,0 +1,14 @@
+{
+  "name": "@redbat/office",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Fable-compiled office libraries (Word, Spreadsheet, Grid, etc.) for consumption by RedBat frontends.",
+  "type": "module",
+  "scripts": {
+    "_restore": "dotnet tool restore && for proj in src/Word src/Word.Pdf src/Office.Formats src/Grid src/Spreadsheet src/FableUI; do (cd $proj && dotnet restore >/dev/null); done",
+    "build:fable": "dotnet tool restore && rm -rf dist && dotnet fable src/Word --outDir dist/word --lang JavaScript --noCache && dotnet fable src/Word.Pdf --outDir dist/word-pdf --lang JavaScript --noCache && dotnet fable src/ShaperText --outDir dist/shaper-text --lang JavaScript --noCache && dotnet fable src/Office.Formats --outDir dist/office-formats --lang JavaScript --noCache && dotnet fable src/Grid --outDir dist/grid --lang JavaScript --noCache && dotnet fable src/Spreadsheet --outDir dist/spreadsheet --lang JavaScript --noCache && dotnet fable src/FableUI --outDir dist/fable-ui --lang JavaScript --noCache"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
+  }
+}

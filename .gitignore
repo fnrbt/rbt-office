@@ -3,3 +3,9 @@ bin/
 *.suo
 *.user
 artifacts/
+
+# Top-level Fable bundle target consumed by sibling repos. Generated
+# by `pnpm build:fable`; rebuild on each consumer build (e.g.
+# redbatnet/deploy/build.sh runs it before mega's frontend build).
+dist/
+node_modules/
