@@ -247,7 +247,7 @@
           <div class="zoom">
             <img src="../artifacts/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after CJK fallback">
           </div>
-          <div class="caption">After: 切手 / 横浜 / 東京 now render as actual glyphs. <code>SpreadsheetGrid.toRendererCommands</code> walks the text codepoint-by-codepoint, asks the primary font (via <code>Renderer.Text.hasGlyph</code>) whether it covers each one, and switches to the first fallback that does. Baseline stays anchored to the primary font's <code>winAscent</code> so mixed-script lines don't jitter vertically.</div>
+          <div class="caption">After: 切手 / 横浜 / 東京 now render as actual glyphs, and the run boundaries around them stay aligned with Excel. <code>SpreadsheetGrid.toRendererCommands</code> walks the text codepoint-by-codepoint, asks the primary font (via <code>Renderer.Text.hasGlyph</code>) whether it covers each one, and switches to the first fallback that does. The native measurer goes through the same primary-then-fallback walk via <code>segmentByFontCoverage</code> so a Times run containing kanji doesn't return a too-small width and let the next rich-text run overlap the trailing space. Baseline stays anchored to the primary font's <code>winAscent</code> so mixed-script lines don't jitter vertically.</div>
         </td>
         <td>
           <div class="zoom">
@@ -266,14 +266,15 @@
                 <li><code>cjkFallbackChain bold</code> returns the GDI-style chain (Yu Gothic → MS Gothic → YaHei → JhengHei → Malgun for regular; bold variants for bold cells).</li>
                 <li><code>fallbackFontFor codepoint bold</code> picks the first chain font whose cmap covers the codepoint, with a per-filename cache so a 13 MB Yu Gothic TTC loads at most once.</li>
                 <li><code>toRendererCommands</code> walks the text codepoint-by-codepoint (folding surrogate pairs), partitions into contiguous segments by which font wins, measures each segment with its own font, and emits one <code>Cmd.DrawGlyphs</code> per segment. Baseline stays anchored to the PRIMARY font's <code>winAscent</code> — mixing Yu Gothic's larger ascent in would shift the baseline ~3 px vs Excel.</li>
+                <li><code>segmentByFontCoverage</code> lifts the same primary→fallback walk so <code>measureText</code> (used by Paint.fs's rich-text cursor) sums per-segment widths instead of probing just the primary font. Without this, a Times rich-text run containing kanji measures as ~Latin-chars-only width, and the next run's start gets parked on top of the trailing space — visible in row 1 as <code>(切手)&amp; Letters</code> instead of <code>(切手) &amp; Letters</code>.</li>
               </ul>
             </li>
           </ul>
           <ul>
-            <li>Focused guard: phpsp-26template's 切手, 横浜, 東京 all render as the correct glyphs.</li>
-            <li>Regression guard: cells whose text is fully Latin take the single-segment path with the primary font — same Cmd.DrawGlyphs output as before. Per-run rich text (previous row) still works because the segmentation runs inside each per-run DrawText.</li>
+            <li>Focused guard: phpsp-26template's 切手, 横浜, 東京 all render as the correct glyphs, and the space between run 3 (<code>" (切手) "</code> in black) and run 4 (<code>"&amp; Letters"</code> in blue) survives.</li>
+            <li>Regression guard: cells whose text is fully Latin take the single-segment path with the primary font — same Cmd.DrawGlyphs output and same measurer width as before. Per-run rich text (previous row) still works because the segmentation runs inside each per-run DrawText.</li>
             <li>Corpus guard: all 53 fixtures still render without error. Font load is cached, so repeated CJK cells don't re-pay the TTC parse.</li>
-            <li>Path guard: native PNG only. PDF emitter still drops to <code>.notdef</code> for missing glyphs (no fallback there yet); Fable web canvas relies on the browser's own font-linking and was never broken to begin with.</li>
+            <li>Path guard: native PNG and PDF emitter. The PDF path picked up the same fallback chain (with subset-embed to keep file size sane) in a later commit; Fable web canvas relies on the browser's own font-linking and was never broken to begin with.</li>
           </ul>
         </td>
       </tr>
