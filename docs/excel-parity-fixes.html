@@ -155,6 +155,47 @@
     <tbody>
       <tr>
         <td>
+          <strong>Position cell text from real font metrics (OS/2 winAscent / winDescent) instead of a heuristic</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code> (data rows of Calibri 12 numbers) — visible everywhere text lands in a default-height bottom-aligned cell.</span>
+          <span class="meta">Real fixture class: every XLSX cell. The renderer (and the PDF emitter) computed <code>baseline = rect.Y + (rect.Height + pxSize)/2 − 2.0</code> — a constants-tuned heuristic that happened to land 1–2 px from Excel's baseline for Calibri 11 in 21-px rows. Anything else (Calibri 12, taller rows, multi-line wrap) drifted. The wrap rewrite (<code>fbbecf9</code>) made the drift severe by feeding the same formula a tight per-line rect, dropping descender room to ~0.</span>
+          <span class="meta">Paths checked: native PNG, PDF emitter, Fable web canvas. PIL pixel scan against Excel pane capture. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test1.xlsx Sheet1 — Calibri 12 data rows">
+          </div>
+          <div class="caption">Excel reference: cell B2 digit "0" extends <code>y = 48..57</code> with cell bottom at <code>y = 62</code> — 5 px of descender room. Excel anchors the baseline using <code>winAscent</code> below the em-top of the line block, so <code>baseline = cellBottom − winDescent_px = 62 − 4.30 = 57.7</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after metric-based baseline">
+          </div>
+          <div class="caption">After: cell B2 digit "0" extends <code>y = 49..58</code> (1 px floor diff vs Excel). <code>toRendererCommands</code> computes <code>baseline = blockTopY + i × winLineHeight + winAscent</code> with <code>blockTopY</code> anchored per <code>VerticalAlign</code> (top = cell.top, bottom = cell.bottom − blockHeight). For Calibri 12 (<code>winAscent = 1950</code>, <code>winDescent = 550</code>, em = 2048) and a 20-px row, this puts the descender flush with the cell floor.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test1-pre-winmetrics.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before metric-based baseline — digits jammed at cell bottom">
+          </div>
+          <div class="caption">Before: cell B2 digit "0" extends <code>y = 52..60</code> — only 2 px of descender room. The old formula was <code>baseline = rect.Y + (rect.Height + pxSize)/2 − 2.0</code>, equivalent to "center a pxSize-tall block in the rect, then nudge up 2 px." It under-counted descender room by ~3 px for Calibri 12 because the magic 2 wasn't actually <code>winDescent_px</code>.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> three-repo refactor that replaces the heuristic with real font metrics end-to-end.</p>
+          <ul>
+            <li><code>renderer/Text.fs</code>: add <code>winAscent</code> / <code>winDescent</code> / <code>winLineHeight</code> helpers next to the existing hhea-based <code>ascender</code> / <code>descender</code> / <code>lineHeight</code>. They read OS/2 <code>usWinAscent</code> / <code>usWinDescent</code> (the Windows GDI box-layout metrics — larger than hhea because they include diacritical headroom). If <code>OS/2.fsSelection</code> bit 7 (<code>USE_TYPO_METRICS</code>) is set, honor the font's preference for typo metrics instead. Falls back to hhea when OS/2 is absent.</li>
+            <li><code>pdf/FsPdf.fs</code>: parse <code>OS/2 usWinAscent</code> (offset +74) and <code>usWinDescent</code> (offset +76) into <code>TrueTypeFont</code> next to the existing hhea fields. PDF can now do the same baseline math the PNG renderer does.</li>
+            <li><code>src/Spreadsheet/Paint.fs</code>: <code>PaintText</code> now carries <code>VerticalAlign</code> (DU: top / middle / bottom), <code>LineIndex</code>, <code>LineCount</code>. <code>buildCellPaintItems</code> emits one DrawText per wrapped line with the full cell rect, no synthetic per-line Y packing. Excel "General" (no explicit alignment) → <code>VAlignBottom</code>.</li>
+            <li><code>spreadsheet-native/SpreadsheetGrid.fs</code> + <code>src/Spreadsheet.Pdf/Pdf.fs</code>: <code>baseline = blockTopY + lineIndex × winLineHeight + winAscent</code>, with <code>blockTopY</code> set per vAlign so bottom = "em-bottom of last line at cell.bottom", top = "em-top of first line at cell.top", middle = block centered.</li>
+            <li><code>src/Spreadsheet/Spreadsheet.fs</code> (Fable web canvas): switch <code>textBaseline</code> from <code>'middle'</code> to <code>'alphabetic'</code>; pass the explicit baseline. Use Calibri's approximate em-relative ratios (winAscent 0.952, winLineHeight 1.221) since browser canvas doesn't expose font metrics portably.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: pandas-test1 B2 baseline within 1 px floor diff vs Excel (was ~3 px too low pre-fix). pandas-testmultiindex B2 "1" digit at <code>y = 46..55</code> vs Excel <code>y = 46..54</code> (1 px). phpsp-26template multi-line cells stride correctly with <code>winLineHeight</code>.</li>
+            <li>Regression guard: all 53 corpus fixtures still render without error. Headers (column/row strip) now explicitly request <code>VAlignMiddle</code> and render unchanged.</li>
+            <li>Policy: default to <code>winAscent</code> / <code>winDescent</code> for Office parity. If the font sets <code>fsSelection.USE_TYPO_METRICS</code> (e.g. Inter, Roboto — fonts that want cross-platform consistency), honor that instead. Falls back to hhea only when OS/2 is missing entirely.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Convert Excel font sizes from points to pixels at the render boundary</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code> (Calibri 12pt default font; data rows + column/row headers).</span>
           <span class="meta">Real fixture class: every XLSX in the corpus. XLSX <code>&lt;sz val="11"/&gt;</code> means 11 <em>points</em>, but our renderer's <code>Renderer.Text.layout font fontSize text</code> takes a <em>pixel</em> em size. Without conversion every glyph rendered at 0.75× of Excel's size and every text run came out visibly narrower than the cell width Excel sized for.</span>
