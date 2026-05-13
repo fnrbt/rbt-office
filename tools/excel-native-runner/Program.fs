@@ -71,6 +71,7 @@ let private runOverrideOf (props: Xlsx.RunProps) : RunOverride =
     {
         Bold = boolOpt props.Bold
         Italic = boolOpt props.Italic
+        Underline = boolOpt props.Underline
         Color = props.Color |> Option.bind hexColor
         FontName = props.FontName
         FontSize = props.FontSize

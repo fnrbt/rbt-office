@@ -28,6 +28,8 @@ type PaintText = {
     FontName: string option
     Bold: bool
     Italic: bool
+    /// Render a horizontal stroke under the text (XLSX `<u/>` font flag).
+    Underline: bool
     Align: TextAlign
     /// Vertical alignment within Rect. Excel "General" = VAlignBottom.
     VerticalAlign: VerticalAlign
@@ -471,6 +473,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     FontName = None
                     Bold = false
                     Italic = false
+                    Underline = false
                     Align = AlignCenter
                     VerticalAlign = VAlignMiddle
                     LineIndex = 0
@@ -487,6 +490,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     FontName = None
                     Bold = false
                     Italic = false
+                    Underline = false
                     Align = AlignCenter
                     VerticalAlign = VAlignMiddle
                     LineIndex = 0
@@ -622,6 +626,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     let mutable cursor = baseLineX
                     for (text, ovr, bold, italic, fName, fSize, width) in runMetrics do
                         let runColor = ovr.Color |> Option.defaultValue color
+                        let runUnderline = ovr.Underline |> Option.defaultValue format.Underline
                         yield DrawText {
                             Text = text
                             Rect = { textRect with X = cursor; Width = width }
@@ -630,6 +635,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             FontName = fName
                             Bold = bold
                             Italic = italic
+                            Underline = runUnderline
                             Align = AlignLeft
                             VerticalAlign = vAlign
                             LineIndex = 0
@@ -647,6 +653,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             FontName = format.FontName
                             Bold = format.Bold
                             Italic = format.Italic
+                            Underline = format.Underline
                             Align = align
                             VerticalAlign = vAlign
                             LineIndex = i
@@ -717,6 +724,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             FontName = None
                             Bold = false
                             Italic = false
+                            Underline = false
                             Align = AlignCenter
                             VerticalAlign = VAlignMiddle
                             LineIndex = 0
@@ -738,6 +746,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             FontName = None
                             Bold = false
                             Italic = false
+                            Underline = false
                             Align = AlignCenter
                             VerticalAlign = VAlignMiddle
                             LineIndex = 0

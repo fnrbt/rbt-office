@@ -26,6 +26,7 @@ type CellValue =
 type RunProps = {
     Bold: bool
     Italic: bool
+    Underline: bool
     Color: string option       // ARGB hex without '#' prefix
     FontName: string option
     FontSize: float option     // points
@@ -34,6 +35,7 @@ type RunProps = {
 let emptyRunProps = {
     Bold = false
     Italic = false
+    Underline = false
     Color = None
     FontName = None
     FontSize = None
@@ -688,6 +690,7 @@ module Xlsx =
         {
             Bold = boolChild "b"
             Italic = boolChild "i"
+            Underline = boolChild "u"
             Color = colorHex
             FontName = fontName
             FontSize = fontSize

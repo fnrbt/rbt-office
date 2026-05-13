@@ -77,6 +77,7 @@ type CellComment = {
 type RunOverride = {
     Bold: bool option
     Italic: bool option
+    Underline: bool option
     Color: string option       // hex with leading '#'
     FontName: string option
     FontSize: float option     // points
@@ -85,6 +86,7 @@ type RunOverride = {
 let emptyRunOverride = {
     Bold = None
     Italic = None
+    Underline = None
     Color = None
     FontName = None
     FontSize = None
