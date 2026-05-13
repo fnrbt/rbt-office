@@ -552,30 +552,46 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // around every cell — not the near-black grid that print mode emits
         // with PrintGridlines on. Our reference PNGs come from print, but the
         // renderer's target is the on-screen view.
+        // Emit a styled border side as one (single solid) or two (double)
+        // GridLine items. "double" in Excel is two ~0.75 px parallel rules
+        // straddling the cell edge with a small gap; emit two 1 px strokes
+        // offset by ±1 px from the edge so the gap is visible at 96 dpi.
+        // Other styles flow through the existing single-stroke path with
+        // the borderStrokeWidth weight.
+        let emitBorderSide (isHorizontal: bool) (side: BorderStyle) (x1: float, y1: float) (x2: float, y2: float) =
+            let color = borderColor side
+            let w = borderStrokeWidth side.Style
+            if side.Style.Equals("double", System.StringComparison.OrdinalIgnoreCase) then
+                let off = 1.0
+                if isHorizontal then
+                    [ GridLine (x1, y1 - off, x2, y2 - off, color, 1.0)
+                      GridLine (x1, y1 + off, x2, y2 + off, color, 1.0) ]
+                else
+                    [ GridLine (x1 - off, y1, x2 - off, y2, color, 1.0)
+                      GridLine (x1 + off, y1, x2 + off, y2, color, 1.0) ]
+            else
+                [ GridLine (x1, y1, x2, y2, color, w) ]
+
         for (cell, format, _value, selected, _background) in states do
             yield StrokeRect (cell.Rect, (if selected then "#217346" else "#a6a6a6"), (if selected then 2.0 else 1.0))
             let rect = cell.Rect
             match format.BorderTop with
             | Some side ->
-                let w = borderStrokeWidth side.Style
-                yield GridLine (rect.X, rect.Y, rect.X + rect.Width, rect.Y, borderColor side, w)
+                yield! emitBorderSide true side (rect.X, rect.Y) (rect.X + rect.Width, rect.Y)
             | None -> ()
             match format.BorderBottom with
             | Some side ->
-                let w = borderStrokeWidth side.Style
                 let y = rect.Y + rect.Height
-                yield GridLine (rect.X, y, rect.X + rect.Width, y, borderColor side, w)
+                yield! emitBorderSide true side (rect.X, y) (rect.X + rect.Width, y)
             | None -> ()
             match format.BorderLeft with
             | Some side ->
-                let w = borderStrokeWidth side.Style
-                yield GridLine (rect.X, rect.Y, rect.X, rect.Y + rect.Height, borderColor side, w)
+                yield! emitBorderSide false side (rect.X, rect.Y) (rect.X, rect.Y + rect.Height)
             | None -> ()
             match format.BorderRight with
             | Some side ->
-                let w = borderStrokeWidth side.Style
                 let x = rect.X + rect.Width
-                yield GridLine (x, rect.Y, x, rect.Y + rect.Height, borderColor side, w)
+                yield! emitBorderSide false side (x, rect.Y) (x, rect.Y + rect.Height)
             | None -> ()
 
         // Pass 3: text on top of all strokes/borders.

@@ -480,31 +480,196 @@ module Xlsx =
                 pickAccent n |> Option.defaultValue defaults.[i])
         with _ -> defaults
 
+    /// Parse the full 12-slot theme color scheme indexed in the order that
+    /// XLSX `<color theme="N"/>` integers use:
+    ///   0=lt1 1=dk1 2=lt2 3=dk2 4..9=accent1..6 10=hlink 11=folHlink
+    /// OOXML swaps dk1/lt1 (and dk2/lt2) between the theme XML element order
+    /// (`dk1` first) and the theme-N integer space — that swap is folded into
+    /// the names array below so callers can index by raw theme="N".
+    /// Defaults are Office 2013's scheme.
+    let parseThemeColors (themeXml: string) : string array =
+        // Slot defaults in XLSX theme-N order.
+        let defaults = [|
+            "FFFFFF"  // 0 lt1 (background 1)
+            "000000"  // 1 dk1 (text 1)
+            "E7E6E6"  // 2 lt2 (background 2)
+            "44546A"  // 3 dk2 (text 2)
+            "4472C4"  // 4 accent1
+            "ED7D31"  // 5 accent2
+            "A5A5A5"  // 6 accent3
+            "FFC000"  // 7 accent4
+            "5B9BD5"  // 8 accent5
+            "70AD47"  // 9 accent6
+            "0563C1"  // 10 hlink
+            "954F72"  // 11 folHlink
+        |]
+        try
+            let doc = XmlDsl.parse themeXml
+            let pickScheme name =
+                // <a:clrScheme> children carry either <a:srgbClr val="..."/>
+                // or <a:sysClr val="windowText" lastClr="..."/>. For sysClr we
+                // prefer lastClr (the persisted RGB) over val (which is just a
+                // system-color label).
+                Xml.descendants name doc
+                |> List.tryHead
+                |> Option.bind (fun node ->
+                    let srgb = Xml.descendants "srgbClr" node |> List.tryHead |> Option.bind (Xml.attr "val")
+                    match srgb with
+                    | Some s -> Some s
+                    | None ->
+                        Xml.descendants "sysClr" node
+                        |> List.tryHead
+                        |> Option.bind (fun sn ->
+                            Xml.attr "lastClr" sn
+                            |> Option.orElseWith (fun () -> Xml.attr "val" sn)))
+            // Names in XLSX theme-N order (note dk1/lt1 swap vs the theme XML
+            // element order).
+            let names = [|
+                "lt1"; "dk1"; "lt2"; "dk2"
+                "accent1"; "accent2"; "accent3"; "accent4"; "accent5"; "accent6"
+                "hlink"; "folHlink"
+            |]
+            names
+            |> Array.mapi (fun i n -> pickScheme n |> Option.defaultValue defaults.[i])
+        with _ -> defaults
+
+    /// Excel 8 / BIFF8 legacy indexed palette. 64 indexed slots plus indices
+    /// 64/65 reserved for the OS default foreground/background. Values match
+    /// Microsoft's documented palette (see `IndexedColors` in the OOXML
+    /// transitional spec). Returns None when the index is out of range.
+    let indexedPaletteColor (i: int) : string option =
+        let palette = [|
+            "000000"; "FFFFFF"; "FF0000"; "00FF00"; "0000FF"; "FFFF00"; "FF00FF"; "00FFFF"
+            "000000"; "FFFFFF"; "FF0000"; "00FF00"; "0000FF"; "FFFF00"; "FF00FF"; "00FFFF"
+            "800000"; "008000"; "000080"; "808000"; "800080"; "008080"; "C0C0C0"; "808080"
+            "9999FF"; "993366"; "FFFFCC"; "CCFFFF"; "660066"; "FF8080"; "0066CC"; "CCCCFF"
+            "000080"; "FF00FF"; "FFFF00"; "00FFFF"; "800080"; "800000"; "008080"; "0000FF"
+            "00CCFF"; "CCFFFF"; "CCFFCC"; "FFFF99"; "99CCFF"; "FF99CC"; "CC99FF"; "FFCC99"
+            "3366FF"; "33CCCC"; "99CC00"; "FFCC00"; "FF9900"; "FF6600"; "666699"; "969696"
+            "003366"; "339966"; "003300"; "333300"; "993300"; "993366"; "333399"; "333333"
+        |]
+        match i with
+        | n when n >= 0 && n < palette.Length -> Some palette.[n]
+        | 64 -> Some "000000"  // system foreground
+        | 65 -> Some "FFFFFF"  // system background
+        | _ -> None
+
+    /// Apply an OOXML `tint` modifier to an RRGGBB color. Per the spec, tint
+    /// is in [-1, 1]: negative darkens, positive lightens, against the HLS
+    /// luminance channel. Cells in poi-51585 / poi-51710 lean on this for
+    /// banded "lighter accent" fills — without it, every banded row painted
+    /// the same accent color.
+    let applyColorTint (rgb: string) (tint: float) : string =
+        if System.Double.IsNaN tint || tint = 0.0 then rgb
+        else
+            let clean = if rgb.StartsWith "#" then rgb.Substring 1 else rgb
+            let hex = if clean.Length = 8 then clean.Substring 2 else clean
+            if hex.Length <> 6 then rgb
+            else
+                let r = System.Convert.ToInt32(hex.Substring(0, 2), 16) |> float
+                let g = System.Convert.ToInt32(hex.Substring(2, 2), 16) |> float
+                let b = System.Convert.ToInt32(hex.Substring(4, 2), 16) |> float
+                let r1, g1, b1 = r / 255.0, g / 255.0, b / 255.0
+                let mx = max r1 (max g1 b1)
+                let mn = min r1 (min g1 b1)
+                let l = (mx + mn) / 2.0
+                let d = mx - mn
+                let s = if d = 0.0 then 0.0 elif l < 0.5 then d / (mx + mn) else d / (2.0 - mx - mn)
+                let h =
+                    if d = 0.0 then 0.0
+                    elif mx = r1 then ((g1 - b1) / d + (if g1 < b1 then 6.0 else 0.0)) / 6.0
+                    elif mx = g1 then ((b1 - r1) / d + 2.0) / 6.0
+                    else ((r1 - g1) / d + 4.0) / 6.0
+                let t = max -1.0 (min 1.0 tint)
+                let l' =
+                    if t < 0.0 then l * (1.0 + t)
+                    else l * (1.0 - t) + t
+                let hueToRgb p q t =
+                    let t = if t < 0.0 then t + 1.0 elif t > 1.0 then t - 1.0 else t
+                    if t < 1.0 / 6.0 then p + (q - p) * 6.0 * t
+                    elif t < 0.5 then q
+                    elif t < 2.0 / 3.0 then p + (q - p) * (2.0 / 3.0 - t) * 6.0
+                    else p
+                let r2, g2, b2 =
+                    if s = 0.0 then l', l', l'
+                    else
+                        let q = if l' < 0.5 then l' * (1.0 + s) else l' + s - l' * s
+                        let p = 2.0 * l' - q
+                        hueToRgb p q (h + 1.0 / 3.0),
+                        hueToRgb p q h,
+                        hueToRgb p q (h - 1.0 / 3.0)
+                let toByte v = int (max 0.0 (min 255.0 (v * 255.0 + 0.5)))
+                sprintf "%02X%02X%02X" (toByte r2) (toByte g2) (toByte b2)
+
+    /// Resolve a color element (`<fgColor .../>`, `<color .../>` etc.) into an
+    /// RRGGBB string. Tries `rgb` → `theme` (+ optional `tint`) → `indexed`.
+    /// Returns None when the element has no recognized color attribute.
+    let resolveColorElement (themeColors: string array) (node: XmlNode) : string option =
+        let rgb = Xml.attr "rgb" node
+        let themed =
+            Xml.attr "theme" node
+            |> Option.bind (fun s ->
+                match System.Int32.TryParse s with
+                | true, n when n >= 0 && n < themeColors.Length -> Some themeColors.[n]
+                | _ -> None)
+        let indexed =
+            Xml.attr "indexed" node
+            |> Option.bind (fun s ->
+                match System.Int32.TryParse s with
+                | true, n -> indexedPaletteColor n
+                | _ -> None)
+        let baseColor =
+            rgb
+            |> Option.orElseWith (fun () -> themed)
+            |> Option.orElseWith (fun () -> indexed)
+        match baseColor with
+        | None -> None
+        | Some c ->
+            let tint =
+                Xml.attr "tint" node
+                |> Option.bind (fun s ->
+                    match System.Double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+                    | true, v -> Some v
+                    | _ -> None)
+                |> Option.defaultValue 0.0
+            if tint = 0.0 then Some c
+            else Some (applyColorTint c tint)
+
     // Style parsing
-    let parseFont (fontNode: XmlNode) : (bool * bool * bool * bool * string option * float option * string option) =
+    let parseFont (themeColors: string array) (fontNode: XmlNode) : (bool * bool * bool * bool * string option * float option * string option) =
         let bold = sElem "b" fontNode |> Option.isSome
         let italic = sElem "i" fontNode |> Option.isSome
         let underline = sElem "u" fontNode |> Option.isSome
         let strike = sElem "strike" fontNode |> Option.isSome
-        let color = sElem "color" fontNode |> Option.bind (Xml.attr "rgb")
+        let color = sElem "color" fontNode |> Option.bind (resolveColorElement themeColors)
         let size = sElem "sz" fontNode |> Option.bind (Xml.attr "val") |> Option.map float
         let name = sElem "name" fontNode |> Option.bind (Xml.attr "val")
         (bold, italic, underline, strike, color, size, name)
 
-    let parseFill (fillNode: XmlNode) : string option =
-        sElem "patternFill" fillNode
-        |> Option.bind (sElem "fgColor")
-        |> Option.bind (Xml.attr "rgb")
+    let parseFill (themeColors: string array) (fillNode: XmlNode) : string option =
+        // Excel-as-written XLSXs sometimes use bgColor instead of fgColor for
+        // solid fills (POI does this; phpsp-27template has indexed bgColor on
+        // table-row template entries). Prefer fgColor when present, fall back
+        // to bgColor for solid/non-empty patterns.
+        let pattern = sElem "patternFill" fillNode
+        let patternType = pattern |> Option.bind (Xml.attr "patternType")
+        match patternType with
+        | Some "none" -> None
+        | Some "gray125" -> None  // openpyxl's "no fill" sentinel — render as default background.
+        | _ ->
+            let fg = pattern |> Option.bind (sElem "fgColor") |> Option.bind (resolveColorElement themeColors)
+            let bg = pattern |> Option.bind (sElem "bgColor") |> Option.bind (resolveColorElement themeColors)
+            fg |> Option.orElseWith (fun () -> bg)
 
     /// Parse a single <left>/<right>/<top>/<bottom> child of a <border>.
     /// Returns Some when the side has a `style` attribute; None for empty
     /// (unstyled) sides.
-    let parseBorderSide (sideNode: XmlNode) : CellBorderSide option =
+    let parseBorderSide (themeColors: string array) (sideNode: XmlNode) : CellBorderSide option =
         Xml.attr "style" sideNode
         |> Option.map (fun style ->
             let color =
                 sElem "color" sideNode
-                |> Option.bind (Xml.attr "rgb")
+                |> Option.bind (resolveColorElement themeColors)
             { Style = style; Color = color })
 
     type BorderRecord = {
@@ -521,12 +686,12 @@ module Xlsx =
         Right = None
     }
 
-    let parseBorder (borderNode: XmlNode) : BorderRecord =
+    let parseBorder (themeColors: string array) (borderNode: XmlNode) : BorderRecord =
         {
-            Top = sElem "top" borderNode |> Option.bind parseBorderSide
-            Bottom = sElem "bottom" borderNode |> Option.bind parseBorderSide
-            Left = sElem "left" borderNode |> Option.bind parseBorderSide
-            Right = sElem "right" borderNode |> Option.bind parseBorderSide
+            Top = sElem "top" borderNode |> Option.bind (parseBorderSide themeColors)
+            Bottom = sElem "bottom" borderNode |> Option.bind (parseBorderSide themeColors)
+            Left = sElem "left" borderNode |> Option.bind (parseBorderSide themeColors)
+            Right = sElem "right" borderNode |> Option.bind (parseBorderSide themeColors)
         }
 
     let parseNumberFormat (numFmtNode: XmlNode) : string option =
@@ -621,7 +786,7 @@ module Xlsx =
             BorderRight = border.Right
         }
 
-    let parseStyles (stylesXml: string) : CellStyle array =
+    let parseStyles (themeColors: string array) (stylesXml: string) : CellStyle array =
         let doc = XmlDsl.parse stylesXml
 
         // Parse fonts
@@ -629,7 +794,7 @@ module Xlsx =
             sElem "fonts" doc
             |> Option.map (sElems "font")
             |> Option.defaultValue []
-            |> List.map parseFont
+            |> List.map (parseFont themeColors)
             |> List.toArray
 
         // Parse fills
@@ -637,7 +802,7 @@ module Xlsx =
             sElem "fills" doc
             |> Option.map (sElems "fill")
             |> Option.defaultValue []
-            |> List.map parseFill
+            |> List.map (parseFill themeColors)
             |> List.toArray
 
         // Parse borders
@@ -645,7 +810,7 @@ module Xlsx =
             sElem "borders" doc
             |> Option.map (sElems "border")
             |> Option.defaultValue []
-            |> List.map parseBorder
+            |> List.map (parseBorder themeColors)
             |> List.toArray
 
         // Parse number formats
@@ -1004,6 +1169,10 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
         // Load styles
         let! stylesXml = getFileText archive "xl/styles.xml"
 
+        // Load theme (needed before styles so font/fill/border colors can
+        // resolve theme="N" + tint references).
+        let! themeXml = getFileText archive "xl/theme/theme1.xml"
+
         // Load relationships
         let! relsXml = getFileText archive "xl/_rels/workbook.xml.rels"
 
@@ -1025,9 +1194,18 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
             let sharedStrings = sharedStringEntries |> Array.map (fun e -> e.Text)
             let sharedStringRuns = sharedStringEntries |> Array.map (fun e -> e.Runs)
 
+            let themeColors =
+                themeXml
+                |> Option.map Xlsx.parseThemeColors
+                |> Option.defaultValue [|
+                    "FFFFFF"; "000000"; "E7E6E6"; "44546A"
+                    "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47"
+                    "0563C1"; "954F72"
+                |]
+
             let styles =
                 stylesXml
-                |> Option.map Xlsx.parseStyles
+                |> Option.map (Xlsx.parseStyles themeColors)
                 |> Option.defaultValue [||]
 
             let namedRanges = NamedRanges.parseNamedRanges wb
@@ -1225,13 +1403,24 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
         let sharedStrings = sharedStringEntries |> Array.map (fun e -> e.Text)
         let sharedStringRuns = sharedStringEntries |> Array.map (fun e -> e.Runs)
 
+        let themeXml = ZipInterop.getFileTextNative archive "xl/theme/theme1.xml"
+
+        let themeColors =
+            themeXml
+            |> Option.map Xlsx.parseThemeColors
+            |> Option.defaultValue [|
+                "FFFFFF"; "000000"; "E7E6E6"; "44546A"
+                "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47"
+                "0563C1"; "954F72"
+            |]
+
         let styles =
             ZipInterop.getFileTextNative archive "xl/styles.xml"
-            |> Option.map Xlsx.parseStyles
+            |> Option.map (Xlsx.parseStyles themeColors)
             |> Option.defaultValue [||]
 
         let themeAccents =
-            ZipInterop.getFileTextNative archive "xl/theme/theme1.xml"
+            themeXml
             |> Option.map Xlsx.parseThemeAccents
             |> Option.defaultValue [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
 
