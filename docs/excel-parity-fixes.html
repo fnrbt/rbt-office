@@ -155,6 +155,46 @@
     <tbody>
       <tr>
         <td>
+          <strong>Wrap cell text using the real font, not <code>charCount × mdwPx</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/phpsp-26template.xlsx</code> (Calibri 11 Danish prose with long unbroken descriptions).</span>
+          <span class="meta">Real fixture class: every wrap-text cell whose contents include letters narrower than the workbook's max digit width (i.e. ~all prose). The wrap budget was <code>int (usable / mdwPx fontPt)</code> — Calibri 11 ⇒ 7 px/char — but a typical lowercase glyph is closer to 4–5 px. We wrapped earlier than Excel, producing extra lines on every multi-line cell.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/phpsp-26template-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference render with correct wrap points">
+          </div>
+          <div class="caption">Excel reference: row 4 (Item description for 10002) wraps at <em>"Rigsbankskilling type 5,"</em> → <em>"plate I pos. 19. Nicely tied by numeral 1. Meget sjælden."</em> — 2 lines. Row 5 (Item description for 10003) wraps at <em>"…plate I type 10 & 2, pos."</em> → <em>"48-58 with black numeral 1 cancellation. Clearly visible disjoined foot in pair with huge margins."</em> — 2 lines.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after real-font wrap measurement">
+          </div>
+          <div class="caption">After: <code>Viewport</code> gains <code>Measurer: TextMeasurer option</code>. Native runner sets it to a closure that runs <code>Renderer.Text.measureWidth</code> against the real loaded font for the cell's <code>(fontName, bold, italic)</code> triple. <code>Paint.wrapLines</code> consults the measurer for both word-fit and char-fit decisions when present. Rows 4 and 5 now wrap at the same word boundaries Excel does.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/phpsp-26template-pre-realwrap.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours before real-font wrap measurement">
+          </div>
+          <div class="caption">Before: row 4 wrapped after <em>"single Thiele 2"</em> — 7 words earlier than Excel. Row 5 wrapped into <em>3</em> lines instead of 2: <em>"…plate I type"</em> / <em>"10 & 2, pos. 48-58 with…disjoined"</em> / <em>"foot in pair with huge margins."</em>. The over-estimation made every wrap-text cell visually inflate.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add an optional real-font measurer to the layout context and consult it in <code>wrapLines</code>.</p>
+          <ul>
+            <li><code>src/Spreadsheet/Layout.fs</code>: new <code>TextMeasurer = string → float → string option → bool → bool → float</code> alias plus <code>Measurer: TextMeasurer option</code> on <code>Viewport</code>. <code>defaultViewport</code> sets it None.</li>
+            <li><code>spreadsheet-native/SpreadsheetGrid.fs</code>: define <code>measureText</code> as <code>rendererFont fontName bold italic |> Renderer.Text.measureWidth pxSize</code> and pass <code>Some measureText</code> in <code>viewportOf</code>. Same renderer the PNG path uses, so wrap and draw stay in sync.</li>
+            <li><code>src/Spreadsheet/Paint.fs</code>: <code>wrapLines</code> takes <code>measure: (string → float) option</code>. <code>fits</code> uses the measurer when present, falls back to <code>charCount ≤ mdwPx-budget</code> otherwise. Char-by-char break for oversized words also routes through <code>fits</code> so the worst case (a single long word) still respects real metrics.</li>
+            <li>Other call sites (<code>src/Spreadsheet/Spreadsheet.fs</code> Fable canvas; <code>src/Spreadsheet.Pdf/Pdf.fs</code> PDF emitter): set <code>Measurer = None</code>. They'll wrap with mdwPx until a measurer is wired there; not a regression since they used the same heuristic before.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: phpsp-26template row 4/5 wrap points now match the Excel reference at word level.</li>
+            <li>Regression guard: cells without WrapText (the vast majority) are unaffected. Cells with WrapText in fonts where mdwPx and real-width happen to align (e.g. monospaced) still wrap identically.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Render auto-filter dropdown triangles on table header cells</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test_decimal.xlsx</code> (TableStyleMedium7 with default <code>&lt;autoFilter ref="A1:F5"/&gt;</code>).</span>
           <span class="meta">Real fixture class: every XLSX whose <code>xl/tables/tableN.xml</code> declares an <code>&lt;autoFilter&gt;</code> child — that's the default for pandas, openpyxl, and POI table outputs. Excel paints a small downward triangle on the right edge of each header cell in the filter range. We were ignoring the element entirely.</span>
