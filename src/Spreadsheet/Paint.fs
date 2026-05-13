@@ -326,6 +326,55 @@ let private formatExcelNumber (code: string) (n: float) : string =
         try n.ToString("G", inv)
         with _ -> string n
 
+/// Greedy word-wrap inside a cell. Splits on hard line breaks (\n) first,
+/// then on whitespace within each segment, packing as many words into a line
+/// as the cell's usable width allows. Falls back to character-level breaks
+/// when a single word exceeds the width. char-per-pixel uses mdwPx to track
+/// the same font-size scaling cellDisplayText uses, so wrap decisions match
+/// the ##### overflow trigger.
+let private wrapLines (cellWidthPx: float) (fontPt: float) (text: string) : string list =
+    if System.String.IsNullOrEmpty text then [ text ]
+    else
+        let usable = max 0.0 (cellWidthPx - 8.0)
+        let mdw = mdwPx fontPt
+        let maxChars = max 1 (int (usable / mdw))
+        let wrapSegment (segment: string) : string list =
+            // Split on runs of whitespace, keeping the original spaces in.
+            // For now we just split on space — Excel wraps at any whitespace
+            // boundary; this is the common case.
+            let words = segment.Split(' ')
+            let result = System.Collections.Generic.List<string>()
+            let current = System.Text.StringBuilder()
+            for word in words do
+                if current.Length = 0 then
+                    if word.Length > maxChars then
+                        // word longer than cell — break at char boundaries.
+                        let mutable s = word
+                        while s.Length > maxChars do
+                            result.Add(s.Substring(0, maxChars))
+                            s <- s.Substring(maxChars)
+                        if s.Length > 0 then current.Append(s) |> ignore
+                    else current.Append(word) |> ignore
+                else
+                    let nextLen = current.Length + 1 + word.Length
+                    if nextLen <= maxChars then
+                        current.Append(' ').Append(word) |> ignore
+                    else
+                        result.Add(current.ToString())
+                        current.Clear() |> ignore
+                        if word.Length > maxChars then
+                            let mutable s = word
+                            while s.Length > maxChars do
+                                result.Add(s.Substring(0, maxChars))
+                                s <- s.Substring(maxChars)
+                            if s.Length > 0 then current.Append(s) |> ignore
+                        else current.Append(word) |> ignore
+            if current.Length > 0 then result.Add(current.ToString())
+            List.ofSeq result
+        text.Split('\n')
+        |> Array.toList
+        |> List.collect wrapSegment
+
 /// Excel shows ##### when a number's display string is wider than the cell.
 let private fitOrOverflow (cellWidth: float) (fontPt: float) (text: string) : string =
     let usableWidth = max 0.0 (cellWidth - 8.0)
@@ -482,16 +531,44 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         for (cell, format, value, _selected, _background) in states do
             let displayText = cellDisplayText cell.Rect.Width format value
             if displayText <> "" then
-                yield DrawText {
-                    Text = displayText
-                    Rect = { cell.Rect with X = cell.Rect.X + 4.0; Width = max 0.0 (cell.Rect.Width - 8.0) }
-                    Color = format.TextColor |> Option.defaultValue "#000000"
-                    FontSize = format.FontSize |> Option.map float |> Option.defaultValue 11.0
-                    FontName = format.FontName
-                    Bold = format.Bold
-                    Italic = format.Italic
-                    Align = alignFromFormat format value
-                }
+                let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+                let textRect = { cell.Rect with X = cell.Rect.X + 4.0; Width = max 0.0 (cell.Rect.Width - 8.0) }
+                let color = format.TextColor |> Option.defaultValue "#000000"
+                let align = alignFromFormat format value
+                // Wrap text into lines if the format opts in (or the source
+                // string contains a hard line break). We don't have the live
+                // renderer here, so approximate char width with mdwPx — same
+                // budget cellDisplayText uses for the ##### overflow check.
+                let hasHardBreak = displayText.Contains("\n")
+                let lines =
+                    if format.WrapText || hasHardBreak then
+                        wrapLines textRect.Width fontPt displayText
+                    else [ displayText ]
+                // Vertical alignment: positions the block of lines inside
+                // the cell. Top/middle/bottom map to MS Office strings;
+                // "center" is also accepted as middle. Default (no explicit
+                // setting) is bottom-aligned, matching Excel's General.
+                let lineHeightPt = fontPt * 1.2
+                let blockHeight = lineHeightPt * float lines.Length
+                let topY =
+                    let vAlign = format.VerticalAlign |> Option.map (fun s -> s.ToLowerInvariant())
+                    match vAlign with
+                    | Some "top" -> textRect.Y
+                    | Some "center" | Some "middle" ->
+                        textRect.Y + (textRect.Height - blockHeight) / 2.0
+                    | _ -> textRect.Y + textRect.Height - blockHeight
+                for i, line in List.indexed lines do
+                    let lineY = topY + float i * lineHeightPt
+                    yield DrawText {
+                        Text = line
+                        Rect = { textRect with Y = lineY; Height = lineHeightPt }
+                        Color = color
+                        FontSize = fontPt
+                        FontName = format.FontName
+                        Bold = format.Bold
+                        Italic = format.Italic
+                        Align = align
+                    }
     ]
 
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
