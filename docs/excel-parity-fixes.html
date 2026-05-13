@@ -155,6 +155,44 @@
     <tbody>
       <tr>
         <td>
+          <strong>Collapse <code>vertical="top"</code> → bottom on default-height rows (Excel quirk)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-testmultiindex.xlsx</code> (row 1 header cells declare <code>vertical="top"</code>; Excel ignores the hint and renders them bottom-aligned).</span>
+          <span class="meta">Real fixture class: every pandas-written XLSX. Pandas / openpyxl emit <code>&lt;alignment vertical="top"/&gt;</code> on every styled header cell. Excel honors the hint only when the row is taller than ~one line height — for default-height rows it falls back to its General/bottom rendering. Our code honored the hint literally, parking the cap right against the cell top border.</span>
+          <span class="meta">Paths checked: native PNG, PIL pixel scan. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference with bottom-aligned default-height row">
+          </div>
+          <div class="caption">Excel reference: row 1 "c1" glyph cap at <code>y = 25</code> in a cell spanning <code>y = 20..39</code> — 5 px below cell top, 4 px above bottom. Excel ignores the <code>vertical="top"</code> hint because the 19-px row is barely taller than the Calibri 11 line height (winLineHeight ≈ 17.9 px).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-testmultiindex.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after vAlign collapse">
+          </div>
+          <div class="caption">After: <code>toRendererCommands</code> computes the cell's vertical slack (<code>cell.Height − winLineHeight × lineCount</code>); when vAlign is top AND slack is less than half a line height, collapse to bottom. Row 1 cap now lands at <code>y = 26</code> (Excel's <code>y = 25</code> within 1 px floor diff). Tall wrap-text cells (phpsp-26template row 4/5) still respect the top hint because they have plenty of slack.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-testmultiindex-pre-valign-collapse.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before vAlign collapse">
+          </div>
+          <div class="caption">Before: row 1 cap at <code>y = 21</code> — 1 px below cell top because <code>vAlign=top</code> placed the em-top at cell.top. Visually obvious as header text glued against the top border, ~4 px higher than Excel.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> mirror Excel's "default-height rows ignore the top hint" behavior at the renderer.</p>
+          <ul>
+            <li><code>spreadsheet-native/SpreadsheetGrid.fs</code> in <code>toRendererCommands</code>: compute <code>slack = text.Rect.Height − blockHeight</code> where <code>blockHeight = winLineHeight × LineCount</code>. If <code>VerticalAlign = VAlignTop && slack &lt; winLineHeight × 0.5</code>, fall back to <code>VAlignBottom</code> for the block positioning. Everything else (top-anchored multi-line wrap, explicit center/middle, default General) flows through the same vAlign DU as before.</li>
+            <li>Threshold tuning: 0.5 × line height is the visual "alignment matters" cutoff. Below that, top/bottom converge to within 1 px of each other anyway; above it, Excel respects the hint and so do we (verified with phpsp-26template's tall wrap-text cells).</li>
+          </ul>
+          <ul>
+            <li>Focused guard: pandas-testmultiindex row 1 "c1"/"a"/"b"/"c"/"d" cap now lands at the same y-position as Excel (1 px floor diff). pandas-test_index_name_pre17, multiindex_no_index_names, and every other pandas fixture see the same correction on their header rows.</li>
+            <li>Regression guard: cells with <code>vAlign = bottom</code> or no explicit alignment go through the existing path unchanged. Tall rows (e.g. phpsp-26template row 4 height = 36 px) keep top-anchored placement when the hint is set.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>CJK font fallback via Windows font-link chain (Yu Gothic, YaHei, JhengHei, Malgun)</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/phpsp-26template.xlsx</code> (row 1 contains 切手, row 6 contains 横浜 and 東京 — all Calibri-targeted runs).</span>
           <span class="meta">Real fixture class: any XLSX with non-Latin glyphs in Calibri/Arial/Times cells. Excel uses GDI font-linking — when the primary font doesn't cover a codepoint, the OS falls back to a script-specific font (Yu Gothic for Japanese, Microsoft YaHei for Simplified Chinese, etc.). We were rendering <code>.notdef</code> boxes instead.</span>
