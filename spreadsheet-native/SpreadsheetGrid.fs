@@ -312,12 +312,59 @@ let private renderPaintItem = function
 /// width instead of mdwPx × charCount. Critical for non-Calibri-narrow
 /// fonts where the approximation drifts (e.g. Times Roman fits more
 /// characters per line than mdwPx assumes).
+/// Split `text` into (font, substring) segments by primary-vs-fallback
+/// coverage. Same logic the draw path uses in `toRendererCommands`, lifted
+/// so the measurer can produce widths that match what we actually paint.
+/// Without this, a run containing kanji measured against Times-only would
+/// come back too narrow, and Paint.fs's rich-text cursor would step the
+/// next run on top of the trailing characters.
+let private segmentByFontCoverage
+    (primary: Renderer.Text.FontData) (bold: bool) (text: string)
+    : (Renderer.Text.FontData * string) list =
+    let fontFor (cp: int) : Renderer.Text.FontData =
+        if Renderer.Text.hasGlyph primary cp then primary
+        else
+            match fallbackFontFor cp bold with
+            | Some fb -> fb
+            | None -> primary
+    let result = System.Collections.Generic.List<Renderer.Text.FontData * string>()
+    let buf = System.Text.StringBuilder()
+    let mutable currentFont : Renderer.Text.FontData voption = ValueNone
+    let mutable i = 0
+    while i < text.Length do
+        let ch = text.[i]
+        let cp, width =
+            if System.Char.IsHighSurrogate ch && i + 1 < text.Length && System.Char.IsLowSurrogate text.[i + 1] then
+                System.Char.ConvertToUtf32(ch, text.[i + 1]), 2
+            else int ch, 1
+        let f = fontFor cp
+        match currentFont with
+        | ValueNone -> currentFont <- ValueSome f
+        | ValueSome cf when obj.ReferenceEquals(cf, f) -> ()
+        | ValueSome cf ->
+            result.Add(cf, buf.ToString())
+            buf.Clear() |> ignore
+            currentFont <- ValueSome f
+        for k in 0 .. width - 1 do buf.Append(text.[i + k]) |> ignore
+        i <- i + width
+    match currentFont with
+    | ValueSome f when buf.Length > 0 -> result.Add(f, buf.ToString())
+    | _ -> ()
+    List.ofSeq result
+
 let private measureText
     (text: string) (fontPt: float)
     (fontName: string option) (bold: bool) (italic: bool) : float =
     let font = rendererFont fontName bold italic
     let pxSize = fontPt * 96.0 / 72.0
-    Renderer.Text.measureWidth font pxSize text
+    // Walk codepoints with the same primary-then-fallback policy the draw
+    // path uses. Otherwise a run like " (切手) " measured under Times comes
+    // back as ~2 px of Latin chars (kanji counted as zero/.notdef width),
+    // and Paint.fs's rich-text cursor positions the next run on top of the
+    // trailing space — visible in phpsp-26template row 1 as "(切手)& "
+    // instead of "(切手) &".
+    segmentByFontCoverage font bold text
+    |> List.sumBy (fun (f, s) -> Renderer.Text.measureWidth f pxSize s)
 
 let private viewportOf (model: SpreadsheetModel) width height : Viewport =
     // Match Excel's column/row header pixel sizes at 96 DPI / 100% zoom so
