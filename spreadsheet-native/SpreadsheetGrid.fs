@@ -223,8 +223,19 @@ let private toRendererCommands (text: PaintText) =
     let ascent = Renderer.Text.winAscent primary pxSize
     let lineHeight = Renderer.Text.winLineHeight primary pxSize
     let blockHeight = lineHeight * float text.LineCount
-    let blockTopY =
+    // Excel quirk: vertical="top" is ignored on rows that aren't taller than
+    // about one line-height. pandas/openpyxl emit `<alignment vertical="top"/>`
+    // on every header cell, but Excel renders default-height rows as bottom
+    // (Excel "General") regardless. Mirror that — when the cell has at most
+    // ~half a line of vertical slack, collapse top → bottom. Tall wrap-text
+    // rows still respect the hint and place text near the cell top.
+    let slack = text.Rect.Height - blockHeight
+    let effectiveVAlign =
         match text.VerticalAlign with
+        | VAlignTop when slack < lineHeight * 0.5 -> VAlignBottom
+        | va -> va
+    let blockTopY =
+        match effectiveVAlign with
         | VAlignTop -> text.Rect.Y
         | VAlignMiddle -> text.Rect.Y + (text.Rect.Height - blockHeight) / 2.0
         | VAlignBottom -> text.Rect.Y + text.Rect.Height - blockHeight
