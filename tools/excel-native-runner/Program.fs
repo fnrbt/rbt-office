@@ -317,15 +317,21 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
     let defaultRowHeightPx =
         sheet.Format.DefaultRowHeight |> Option.map (fun h -> h * (96.0 / 72.0))
 
-    // <col min=M max=N width=W/> applies W to every column in M..N (inclusive).
+    // <col min=M max=N width=W hidden=1/> applies W to every column in M..N
+    // (inclusive). Hidden columns collapse to width=0 regardless of the
+    // declared width — Excel hides them by zero-width, not by skipping the
+    // entry, so a hidden col with width=11 still renders as 0 px. poi-51585
+    // has 748 hidden cols in its template; without this they'd push the
+    // real data way off-screen.
     let explicitColumns =
         sheet.Columns
         |> List.collect (fun col ->
-            match col.Width with
+            let widthPx =
+                if col.Hidden then Some 0.0
+                else col.Width |> Option.map charsToPixels
+            match widthPx with
             | None -> []
-            | Some w ->
-                let px = charsToPixels w
-                [ for idx in col.Index .. col.MaxIndex -> idx - 1, px ])
+            | Some px -> [ for idx in col.Index .. col.MaxIndex -> idx - 1, px ])
         |> Map.ofList
 
     let explicitRows =
