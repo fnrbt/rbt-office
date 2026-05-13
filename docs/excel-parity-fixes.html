@@ -155,6 +155,47 @@
     <tbody>
       <tr>
         <td>
+          <strong>Render auto-filter dropdown triangles on table header cells</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test_decimal.xlsx</code> (TableStyleMedium7 with default <code>&lt;autoFilter ref="A1:F5"/&gt;</code>).</span>
+          <span class="meta">Real fixture class: every XLSX whose <code>xl/tables/tableN.xml</code> declares an <code>&lt;autoFilter&gt;</code> child — that's the default for pandas, openpyxl, and POI table outputs. Excel paints a small downward triangle on the right edge of each header cell in the filter range. We were ignoring the element entirely.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-test_decimal-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.65" alt="Excel reference render with auto-filter triangles">
+          </div>
+          <div class="caption">Excel reference: each header cell of the green table strip (Column1..Column6) shows a small ▼ triangle on the right side, ~7 px wide × 4 px tall. Triangle uses the header text fill color (white on accent6 green) on top of the existing accent fill — no separate button background.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-test_decimal.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after auto-filter triangle support">
+          </div>
+          <div class="caption">After: <code>TableDefinition.AutoFilter</code> stores the parsed range. <code>tableOverrideFor</code> flags header cells in the range with <code>FilterButton = true</code>. <code>buildCellPaintItems</code> pass 4 emits five horizontal <code>GridLine</code> commands forming a centered 7×4 triangle, color = <code>format.TextColor</code> (white on green). Visible on Column1..Column6 — same shape, position, and color as Excel.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-test_decimal-pre-filterdropdown.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before auto-filter triangle support">
+          </div>
+          <div class="caption">Before: header cells rendered with just the accent fill and white bold text. No visual cue that filtering was enabled on the table — diverged from Excel everywhere a pandas/openpyxl Table appeared.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add <code>&lt;autoFilter&gt;</code> parsing + a filter-button flag on cell format, then draw the triangle.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: add <code>AutoFilter: (int * int) option</code> to <code>TableDefinition</code>. <code>parseTable</code> reads <code>sElem "autoFilter" doc</code>, parses the <code>ref</code> attribute through the existing <code>parseRange</code>, and stores just the column span (rows are implicit — the header is always at <code>StartRow</code>).</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: <code>CellFormat</code> gains <code>FilterButton: bool</code>. Default false on <code>defaultFormat</code>; all other CellFormat constructors (<code>XlsxImporter.convertCellFormat</code>, native runner's <code>cellFormatFromStyle</code>) initialize it to false.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: <code>TableOverlay</code> gains <code>FilterButton: bool</code>. <code>tableOverrideFor</code> sets it true for header cells whose column falls in <code>t.AutoFilter</code>. The format-merge step ORs the overlay flag into <code>baseFormat.FilterButton</code>.</li>
+            <li><code>src/Spreadsheet/Paint.fs</code>: new pass 4 in <code>buildCellPaintItems</code>. For each cell with <code>format.FilterButton</code>: compute a 16-px-wide right-edge button area; emit 4 horizontal <code>GridLine</code> strokes forming a centered downward triangle. Stroke color is <code>format.TextColor</code> so the white-on-green triangle matches the header text. No new <code>PaintItem</code> case needed.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: pandas-test_decimal now shows six ▼ triangles, one per header cell in A1:F1.</li>
+            <li>Regression guard: tables without <code>&lt;autoFilter&gt;</code> (e.g. <code>HeaderRowCount = 0</code> tables, or non-pandas writers) get <code>FilterButton = false</code> on every cell — render unchanged.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+            <li>Path guard: native PNG only. PDF emitter ignores <code>FilterButton</code> (no draw command emitted for it there yet); Fable web canvas does the same. PDF/web parity is a follow-up.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Position cell text from real font metrics (OS/2 winAscent / winDescent) instead of a heuristic</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code> (data rows of Calibri 12 numbers) — visible everywhere text lands in a default-height bottom-aligned cell.</span>
           <span class="meta">Real fixture class: every XLSX cell. The renderer (and the PDF emitter) computed <code>baseline = rect.Y + (rect.Height + pxSize)/2 − 2.0</code> — a constants-tuned heuristic that happened to land 1–2 px from Excel's baseline for Calibri 11 in 21-px rows. Anything else (Calibri 12, taller rows, multi-line wrap) drifted. The wrap rewrite (<code>fbbecf9</code>) made the drift severe by feeding the same formula a tight per-line rect, dropping descender room to ~0.</span>
