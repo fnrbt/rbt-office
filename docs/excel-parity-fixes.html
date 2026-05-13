@@ -155,6 +155,48 @@
     <tbody>
       <tr>
         <td>
+          <strong>Frozen panes — render the divider line and pin frozen rows/cols in the interactive view</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-df_header_oob.xlsx</code> (<code>xSplit="1" ySplit="3"</code>). Also: pandas-df_empty / df_equals / df_mangle_dup_col_dtypes (ySplit=1) and poi-47813 (ySplit=1).</span>
+          <span class="meta">Real fixture class: every pandas-written multi-row export, every workbook with sticky header rows. Excel encodes this as <code>&lt;sheetView&gt;&lt;pane xSplit ySplit state="frozen"/&gt;</code> and draws a single ~1 px darker-gray line where the split sits; we were ignoring the element entirely.</span>
+          <span class="meta">Paths checked: native PNG. Interactive DOM view scroll-pins frozen cells via top/left scroll compensation; hit-testing routes clicks to the visible cell.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-df_header_oob-after.png" style="--w:1100px; --x:0px; --y:0px; --s:1.4" alt="Excel reference equivalent — no rendered Excel PDF for this fixture in the corpus">
+          </div>
+          <div class="caption">No Excel-rendered reference PNG ships in <code>artifacts/excel/</code> for this fixture (pandas test asset). Verification is structural: <code>&lt;pane xSplit="1" ySplit="3"/&gt;</code> in the sheetView puts the split between cols A/B and rows 3/4, and the darker divider line in the "After" panel lands at exactly those edges.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-df_header_oob-after.png" style="--w:1100px; --x:0px; --y:0px; --s:1.4" alt="Ours after frozen-pane divider">
+          </div>
+          <div class="caption">After: darker gray (#595959) stroke runs along the bottom of row 3 and the right edge of column A. <code>buildFreezeDividerItems</code> emits one horizontal + one vertical GridLine at the freeze split (HeaderHeight/RowHeaderWidth offsets baked in so the line lands flush with cellRect coordinates).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-df_header_oob-pre-freeze.png" style="--w:1100px; --x:0px; --y:0px; --s:1.4" alt="Ours before frozen-pane support">
+          </div>
+          <div class="caption">Before: no divider visible. The cell rendering itself was correct, but Excel's freeze cue was missing — and the DOM-based interactive view would have scrolled the frozen rows/cols along with the body instead of pinning them.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> end-to-end frozen-pane wiring covering parsing, static render, and interactive scroll/hit-test.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: new <code>FrozenPane</code> record on Worksheet, populated by <code>frozenPane sheet</code> reading <code>sheetView/pane</code>. Only triggers on <code>state="frozen"</code> or <code>state="frozenSplit"</code> — plain "split" puts a draggable bar in instead and we'd render it wrong.</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: <code>SpreadsheetModel</code> gains <code>FrozenRows</code> / <code>FrozenCols</code> (zero = no freeze).</li>
+            <li><code>src/Spreadsheet/Layout.fs</code>: <code>ViewportZone</code> gains <code>FrozenRowsZone</code>, <code>FrozenColsZone</code>, <code>FrozenCornerZone</code>; <code>toViewportRect</code> drops the pinned axis for each. <code>zoneForCell</code> maps (row, col) to a zone. <code>viewportClipFor model viewport zone</code> derives band-specific clip rects (BodyZone clips past the split; the frozen zones clip the bands themselves).</li>
+            <li><code>src/Spreadsheet/Paint.fs</code>: <code>buildCellPaintItems</code> now returns <code>(ViewportZone * PaintItem) list</code> so each cell's items carry its zone. <code>buildPaintItems</code> (PNG/PDF path) ignores the tag — at ScrollX/Y=0 every zone paints at absolute position. <code>buildFreezeDividerItems</code> emits the divider strokes. <code>buildViewportPaintItems</code> threads the zone into each <code>ViewportPaintItem</code>.</li>
+            <li><code>src/Spreadsheet/Spreadsheet.fs</code> <code>renderCell</code>: for cells in a frozen band, add <code>scrollTop</code> / <code>scrollLeft</code> to absolute <code>top</code>/<code>left</code> so the browser's native scroll cancels out and the cell stays visually pinned. Frozen cells get a higher <code>z-index</code> so body cells slide under them.</li>
+            <li><code>hitTest</code> tests each cell against its zone's own translation — without this, clicks on a frozen band would hit the body cell underneath at the current scroll position.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: pandas-df_header_oob shows the divider at (col A | col B) and (row 3 | row 4) split. poi-47813 / pandas-df_empty / df_equals / df_mangle show the ySplit=1 horizontal-only divider below row 1.</li>
+            <li>Regression guard: fixtures with no frozen pane render byte-identical to before — <code>buildFreezeDividerItems</code> early-returns when FrozenRows = FrozenCols = 0. <code>buildCellPaintItems</code>'s static path strips zones, so non-zoned callers see the same item sequence as before.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Resolve <code>indexed=</code>, <code>theme=</code> + <code>tint=</code> color attributes (cells, fonts, borders)</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/poi-49156.xlsx</code> (banded form template using <code>&lt;fgColor indexed="22"|"41"|"43"|"45"/&gt;</code> across rows 10-21) and <code>poi-51710.xlsx</code> (column-A / row-2 use <code>&lt;fgColor theme="0" tint="-0.249977…"/&gt;</code> for a darker-gray header band).</span>
           <span class="meta">Real fixture class: every XLSX that doesn't write rgb fills directly — POI-written sheets lean on the legacy indexed palette, Excel's own theme-emitted sheets lean on theme+tint. The parser was reading only <code>rgb=</code>, so all of these resolved to <code>None</code> and rendered as cells with no fill / fallback-black text. Affected: poi-49156, poi-51585, poi-51710, phpsp-27template, phpsp-31docproperties, phpsp-32chartreadwrite.</span>
