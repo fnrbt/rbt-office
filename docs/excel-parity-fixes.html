@@ -155,6 +155,47 @@
     <tbody>
       <tr>
         <td>
+          <strong>Render per-run rich text from shared-string <code>&lt;r&gt;</code> elements</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/phpsp-26template.xlsx</code> (row 1 yellow header with a blue segment; row 6 with a bold-red "200 mon dragon cover" span).</span>
+          <span class="meta">Real fixture class: every cell whose shared-string SI has multiple <code>&lt;r&gt;</code> runs. Pandas does not write rich text, but spreadsheets edited in Excel/LibreOffice routinely do — a single cell with mixed bold/color/font is the canonical "look I styled it" case. We were concatenating all <code>&lt;t&gt;</code> descendants and applying the cell's base format uniformly, so every per-run color/bold was lost.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/phpsp-26template-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference with per-run colors">
+          </div>
+          <div class="caption">Excel reference: row 1 yellow header — <em>"Rare (sjældne) "</em> black + <em>"Stamps (切手) &amp; Letters"</em> in <span style="color:#0070C0">blue</span> + <em>" for sale"</em> black. Row 6 — <em>"1871 Japan. "</em> black + <em>"200 mon dragon cover"</em> <strong style="color:#FF0000">bold red</strong> + <em>". Sent from Yokohama …"</em> black. Each <code>&lt;r&gt;</code> carries its own <code>&lt;rPr&gt;</code> (rFont, sz, b, color rgb).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after per-run rendering">
+          </div>
+          <div class="caption">After: <code>Workbook.SharedStringRuns</code> carries parsed run lists parallel to the existing <code>SharedStrings</code> text array. <code>SpreadsheetModel.RichRuns</code> indexes the runs by cell address (sparse — only cells with &gt;1 run). <code>Paint.fs</code> pass 3, on a one-line cell with rich runs, emits one DrawText per run positioned along x using the same <code>Viewport.Measurer</code> the wrap path uses. The blue Stamps span and the bold-red "200 mon dragon cover" now match Excel. (CJK glyphs render as boxes — separate font-fallback gap.)</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/phpsp-26template-pre-richruns.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours before per-run rendering">
+          </div>
+          <div class="caption">Before: every <code>&lt;si&gt;</code> went through <code>List.choose Xml.text</code> on all descendant <code>&lt;t&gt;</code> elements, returning a single plain-text string. The cell's base format (font, color, bold) applied uniformly — so the yellow row 1 looked monochrome black, and row 6's "200 mon dragon cover" lost both its bold and red.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> parse runs at the SST layer, propagate them through to the renderer.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: add <code>RunProps { Bold; Italic; Color; FontName; FontSize }</code> and <code>SharedStringEntry { Text; Runs }</code>. <code>sharedStrings</code> walks <code>&lt;si&gt;</code> children: when an <code>&lt;r&gt;</code> is present, parse its <code>&lt;rPr&gt;</code> (<code>b</code>, <code>i</code>, <code>color rgb</code>, <code>rFont</code>, <code>sz</code>) into <code>RunProps</code> and yield <code>(text, props)</code>. <code>Workbook</code> gains <code>SharedStringRuns: (string * RunProps) list array</code> parallel to <code>SharedStrings: string array</code> (same length, empty list for plain entries).</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: <code>RunOverride</code> record (all-optional mirror of <code>RunProps</code>). <code>SpreadsheetModel</code> gains <code>RichRuns: Map&lt;CellAddress, (string * RunOverride) list&gt;</code> — sparse, only populated for cells whose SST entry has more than one run.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: <code>cellRichRuns</code> maps <code>RunProps</code> → <code>RunOverride</code> (color: ARGB → <code>#RRGGBB</code>, bool fields drop to None when false so the cell's base format wins). <code>toModel</code> accumulates a per-address map and stashes it in <code>model.RichRuns</code>.</li>
+            <li><code>src/Spreadsheet/Paint.fs</code> pass 3: on a one-line cell with rich runs and a measurer available, measure each run with its effective <code>(fontName, bold, italic, size)</code>, compute total width for alignment, and emit one <code>DrawText</code> per run at the running x cursor. Each run carries its own per-run font/color overrides, with <code>Align = AlignLeft</code> (positions are pre-computed).</li>
+          </ul>
+          <ul>
+            <li>Focused guard: phpsp-26template row 1 yellow header now has the blue "Stamps (…) &amp; Letters" segment. Row 6 "200 mon dragon cover" renders bold red on a black-text run.</li>
+            <li>Regression guard: cells with single-run SST entries (the vast majority) go through the plain-text path — same DrawText output as before.</li>
+            <li>Known limitation: multi-line wrap with per-run formatting still falls back to plain rendering. Adding it requires chunking each wrapped line back to its source runs.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Wrap cell text using the real font, not <code>charCount × mdwPx</code></strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/phpsp-26template.xlsx</code> (Calibri 11 Danish prose with long unbroken descriptions).</span>
           <span class="meta">Real fixture class: every wrap-text cell whose contents include letters narrower than the workbook's max digit width (i.e. ~all prose). The wrap budget was <code>int (usable / mdwPx fontPt)</code> — Calibri 11 ⇒ 7 px/char — but a typical lowercase glyph is closer to 4–5 px. We wrapped earlier than Excel, producing extra lines on every multi-line cell.</span>
