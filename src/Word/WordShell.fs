@@ -507,6 +507,8 @@ module Shell =
             IsTrackChangesActive = fun () -> host.TrackChanges.Value
             ParagraphStyles = paragraphStyleOptions
             CharacterStyles = characterStyleOptions
+            RecentFiles = fun () -> []
+            OpenRecentFile = fun _ -> ()
         }
 
         let shellActions: WordUi.ShellActions = {

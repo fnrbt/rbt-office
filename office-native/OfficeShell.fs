@@ -15,9 +15,13 @@ open RedBat.Office.Ui
 /// can read and write field values reactively. Defined as a class so it
 /// uses reference equality (the underlying Dictionary and function-valued
 /// DialogButton fields don't admit structural equality).
-type OpenDialogState(spec: DialogSpec, values: System.Collections.Generic.Dictionary<string, Signal<string>>) =
+type OpenDialogState(
+    spec: DialogSpec,
+    values: System.Collections.Generic.Dictionary<string, Signal<string>>,
+    focusIds: System.Collections.Generic.Dictionary<string, int>) =
     member _.Spec = spec
     member _.Values = values
+    member _.FocusIds = focusIds
 
 /// Captures an open context (right-click) menu plus its anchor coordinates
 /// in screen space. Reference equality (the MenuItemSpec list contains
@@ -72,10 +76,14 @@ let closeContextMenu (state: ShellRenderState) =
 
 let openDialog (state: ShellRenderState) (spec: DialogSpec) =
     let values = System.Collections.Generic.Dictionary<string, Signal<string>>()
+    let focusIds = System.Collections.Generic.Dictionary<string, int>()
     for field in spec.Fields do
         values.[field.Id] <- signal field.Initial
+        match field.Kind with
+        | DialogTextField _ | DialogNumberField _ -> focusIds.[field.Id] <- Focus.allocId()
+        | _ -> ()
     state.OpenMenu.Value <- None
-    state.OpenDialog.Value <- Some (OpenDialogState(spec, values))
+    state.OpenDialog.Value <- Some (OpenDialogState(spec, values, focusIds))
 
 let closeDialog (state: ShellRenderState) =
     state.OpenDialog.Value <- None
@@ -534,41 +542,40 @@ let private renderMenuPanel (p: ChromePalette) (renderState: ShellRenderState) (
 
 let private dialogFieldWidth = 360.0
 
-let private renderDialogField (p: ChromePalette) (values: System.Collections.Generic.Dictionary<string, Signal<string>>) (field: DialogField) : Widget =
-    let valueSignal = values.[field.Id]
-    let labelLine = textStyled Font.sm (parseHexColor "#5F6368") field.Label
+let private renderDialogField (p: ChromePalette) (state: OpenDialogState) (field: DialogField) : Widget =
+    let valueSignal = state.Values.[field.Id]
+    let labelColor = parseHexColor "#5F6368"
+    let inputHeight = 36.0
+    let textInputWithId (placeholder: string) =
+        // Allocate-once FocusId stored in the OpenDialogState — keeps the
+        // input focused across renders. TextInput renders its own border,
+        // padding, and focus state so we just size it.
+        let fid = state.FocusIds.[field.Id]
+        sized dialogFieldWidth inputHeight (
+            Composit.Ui.Widget.TextInput(createTextInputState valueSignal fid placeholder 12.5))
+    let labelLine = textStyled Font.sm labelColor field.Label
     let inputBox =
         match field.Kind with
-        | DialogTextField placeholder ->
-            sized dialogFieldWidth 30.0 (
-                stack [
-                    rounded 4.0 p.Input empty
-                    border p.Border 1.0 4.0 (
-                        padXY 8.0 6.0 (textInput valueSignal placeholder))
-                ])
-        | DialogNumberField(_, _) ->
-            sized dialogFieldWidth 30.0 (
-                stack [
-                    rounded 4.0 p.Input empty
-                    border p.Border 1.0 4.0 (
-                        padXY 8.0 6.0 (textInput valueSignal ""))
-                ])
+        | DialogTextField placeholder -> textInputWithId placeholder
+        | DialogNumberField(_, _) -> textInputWithId ""
         | DialogCheckboxField ->
             let toggle () =
                 valueSignal.Value <- if valueSignal.Value = "true" then "false" else "true"
             clickable toggle (
-                rowAlign MStart CCenter 8.0 [
-                    dynamic (fun () ->
-                        let isChecked = valueSignal.Value = "true"
-                        sized 16.0 16.0 (
-                            stack [
-                                rounded 3.0 (if isChecked then parseHexColor "#1A73E8" else p.Input) empty
-                                border (if isChecked then parseHexColor "#1A73E8" else p.Border) 1.0 3.0 (
-                                    if isChecked then center (Icon.check 10.0 Palette.white)
-                                    else empty)
-                            ]))
-                    textStyled Font.sm p.Text field.Label
-                ])
+                sizedH inputHeight (
+                    rowAlign MStart CCenter 10.0 [
+                        dynamic (fun () ->
+                            let isChecked = valueSignal.Value = "true"
+                            let accent = parseHexColor "#1A73E8"
+                            sized 18.0 18.0 (
+                                stack [
+                                    rounded 3.0 (if isChecked then accent else p.Input) empty
+                                    border (if isChecked then accent else p.Border) 1.5 3.0 (
+                                        if isChecked then center (Icon.check 12.0 Palette.white)
+                                        else empty)
+                                ]))
+                        textStyled Font.sm p.Text field.Label
+                    ]))
         | DialogSelectField options ->
             let cycle () =
                 let current = valueSignal.Value
@@ -576,11 +583,11 @@ let private renderDialogField (p: ChromePalette) (values: System.Collections.Gen
                 let next = (idx + 1) % options.Length
                 valueSignal.Value <- options.[next].Value
             clickable cycle (
-                sized dialogFieldWidth 30.0 (
+                sized dialogFieldWidth inputHeight (
                     stack [
                         rounded 4.0 p.Input empty
                         border p.Border 1.0 4.0 (
-                            padXY 8.0 6.0 (
+                            padXY 12.0 0.0 (
                                 dynamic (fun () ->
                                     let label =
                                         options
@@ -589,19 +596,18 @@ let private renderDialogField (p: ChromePalette) (values: System.Collections.Gen
                                         |> Option.defaultValue valueSignal.Value
                                     rowAlign MSpaceBetween CCenter 0.0 [
                                         textStyled Font.sm p.Text label
-                                        textStyled Font.sm (parseHexColor "#5F6368") "▾"
+                                        textStyled Font.sm labelColor "▾"
                                     ])))
                     ]))
         | DialogStatusField ->
             dynamic (fun () ->
-                textStyled Font.sm (parseHexColor "#5F6368") valueSignal.Value)
+                let v = valueSignal.Value
+                if v = "" then empty
+                else textStyled Font.sm labelColor v)
 
     match field.Kind with
-    | DialogCheckboxField ->
-        // Checkbox has its label inline; skip the separate label line.
-        inputBox
-    | _ ->
-        columnSpaced 4.0 [ labelLine; inputBox ]
+    | DialogCheckboxField | DialogStatusField -> inputBox
+    | _ -> columnSpaced 6.0 [ labelLine; inputBox ]
 
 let private renderDialogButton (p: ChromePalette) (renderState: ShellRenderState) (values: System.Collections.Generic.Dictionary<string, Signal<string>>) (btn: DialogButton) : Widget =
     let activate () =
@@ -609,46 +615,56 @@ let private renderDialogButton (p: ChromePalette) (renderState: ShellRenderState
         let shouldClose = btn.Action snapshot
         if shouldClose then renderState.OpenDialog.Value <- None
     let textColor = if btn.IsPrimary then Palette.white else p.Text
-    let bgColor = if btn.IsPrimary then parseHexColor "#1A73E8" else p.Input
+    let bgColor = if btn.IsPrimary then parseHexColor "#1A73E8" else Palette.transparent
     let borderColor = if btn.IsPrimary then parseHexColor "#1A73E8" else p.Border
+    // Buttons are ~natural-width — `padXY 18 0` gives the text its breathing
+    // room while the sizedH pins the row height.
     clickable activate (
-        sizedH 32.0 (
+        sizedH 36.0 (
             stack [
                 rounded 4.0 bgColor empty
                 border borderColor 1.0 4.0 (
-                    padXY 16.0 6.0 (textStyled Font.sm textColor btn.Label))
+                    padXY 18.0 0.0 (
+                        center (textBoldStyled Font.sm textColor btn.Label)))
             ]))
 
 let private renderDialog (p: ChromePalette) (renderState: ShellRenderState) (state: OpenDialogState) : Widget =
     let spec = state.Spec
-    let title = textBoldStyled Font.lg p.Text spec.Title
+    let title = textBoldStyled Font.xl p.Text spec.Title
     let subtitle =
         match spec.Subtitle with
         | Some s -> textStyled Font.sm (parseHexColor "#5F6368") s
         | None -> empty
-    let header = columnSpaced 4.0 [ title; subtitle ]
+    let header =
+        match spec.Subtitle with
+        | Some _ -> columnSpaced 6.0 [ title; subtitle ]
+        | None -> title
 
     let fields =
         spec.Fields
-        |> List.map (renderDialogField p state.Values)
-        |> columnSpaced 14.0
+        |> List.map (renderDialogField p state)
+        |> columnSpaced 18.0
 
     let buttons =
         spec.Buttons
         |> List.map (renderDialogButton p renderState state.Values)
         |> rowAlign MEnd CCenter 8.0
 
+    // Body of the dialog. Wrap header / fields / buttons in their own
+    // groups with generous vertical breathing room.
+    let body =
+        columnSpaced 24.0 [
+            header
+            fields
+            buttons
+        ]
+
     let panel =
-        sizedW (dialogFieldWidth + 56.0) (
-            filtered [DropShadow(0.0, 8.0, 24, Color.rgba 0uy 0uy 0uy 96uy)] (
-                rounded 8.0 p.MenuPanel (
-                    border p.Border 1.0 8.0 (
-                        pad 24.0 (
-                            columnSpaced 18.0 [
-                                header
-                                fields
-                                buttons
-                            ])))))
+        sizedW (dialogFieldWidth + 72.0) (
+            filtered [DropShadow(0.0, 10.0, 30, Color.rgba 0uy 0uy 0uy 70uy)] (
+                rounded 10.0 p.MenuPanel (
+                    border p.Border 1.0 10.0 (
+                        pad 28.0 body))))
     center panel
 
 let private dialogScrim () =

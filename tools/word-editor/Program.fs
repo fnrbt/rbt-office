@@ -17,6 +17,35 @@ module Chrome = Composit.Ui.WordUiNative
 let private existingFile path =
     if File.Exists path then Some path else None
 
+// ── Recent files ──────────────────────────────────────────────────
+
+let private recentFilesPath =
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config/redbat-word/recent.txt")
+
+let private loadRecentFiles () : string list =
+    if File.Exists recentFilesPath then
+        try File.ReadAllLines(recentFilesPath) |> Array.toList |> List.filter (fun s -> s.Trim() <> "")
+        with _ -> []
+    else []
+
+let private saveRecentFiles (list: string list) =
+    try
+        Directory.CreateDirectory(Path.GetDirectoryName recentFilesPath) |> ignore
+        File.WriteAllLines(recentFilesPath, list |> List.toArray)
+    with _ -> ()
+
+let private recentFiles : Signal<string list> = signal (loadRecentFiles ())
+
+/// Push a path to the top of the recent-files list (dedupe, cap at 12,
+/// persist).
+let private rememberRecent (path: string) =
+    let abs = Path.GetFullPath path
+    let next =
+        abs :: (recentFiles.Value |> List.filter (fun p -> p <> abs))
+        |> List.truncate 12
+    recentFiles.Value <- next
+    saveRecentFiles next
+
 let private wordFontPath () =
     [
         Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
@@ -215,7 +244,7 @@ let private styleAtCursor (state: Editor.WordEditorState) =
         | Some (Doc.Heading (level, para)) -> probe para sel, para.Metadata, Some level
         | _ -> RedBat.Word.TextBuffer.defaultStyle, Doc.defaultMetadata, None
 
-let private shellState (state: Editor.WordEditorState) : WordUi.ShellState =
+let private shellState (state: Editor.WordEditorState) (openPath: string -> unit) : WordUi.ShellState =
     let style () = let s, _, _ = styleAtCursor state in s
     let meta  () = let _, m, _ = styleAtCursor state in m
     let heading () = let _, _, h = styleAtCursor state in h
@@ -261,13 +290,16 @@ let private shellState (state: Editor.WordEditorState) : WordUi.ShellState =
         IsTrackChangesActive = fun () -> false
         ParagraphStyles = fun () -> WordUi.paragraphStyles
         CharacterStyles = fun () -> []
+        RecentFiles = fun () -> recentFiles.Value
+        OpenRecentFile = openPath
     }
 
 let private shellActions
         (state: Editor.WordEditorState)
         (status: Signal<string>)
         (currentPath: Signal<string option>)
-        (renderState: Chrome.ShellRenderState) : WordUi.ShellActions =
+        (renderState: Chrome.ShellRenderState)
+        (loadFromPath: string -> unit) : WordUi.ShellActions =
     let apply transform () = applyChange state transform
     let applyArg transform arg = applyChange state (transform arg)
     let say message () = status.Value <- message
@@ -299,12 +331,56 @@ let private shellActions
         |> Composit.Ui.OfficeShell.openDialog renderState
     let openFindReplaceDialog () =
         WordUi.findReplaceDialog
-            (fun q _ ->
-                let matches = Doc.findText q false state.Document.Value
-                status.Value <- sprintf "%d matches for %s" matches.Length q
-                "")
-            (fun q r _ ->
-                let nextDoc, count = Doc.replaceAllText q r false state.Document.Value
+            (fun q matchCase ->
+                if q = "" then
+                    status.Value <- "Enter a search term"
+                    ""
+                else
+                    let doc = state.Document.Value
+                    let all = Doc.findText q matchCase doc
+                    if all.IsEmpty then
+                        status.Value <- sprintf "No matches for \"%s\"" q
+                        ""
+                    else
+                        // Pick the first match after the current cursor (wrap).
+                        let cursor =
+                            match doc.Selection with
+                            | Some sel -> sel.Focus
+                            | None ->
+                                match doc.Blocks |> List.tryHead with
+                                | Some (Doc.Paragraph p) -> { Doc.BlockId = p.Id; Offset = 0 }
+                                | Some (Doc.Heading (_, p)) -> { Doc.BlockId = p.Id; Offset = 0 }
+                                | _ -> { Doc.BlockId = ""; Offset = 0 }
+                        let after =
+                            all
+                            |> List.tryFind (fun m ->
+                                m.BlockId = cursor.BlockId && m.Start >= cursor.Offset)
+                            |> Option.orElseWith (fun () ->
+                                // No more in current block; pick first match in
+                                // any later block, otherwise wrap to first overall.
+                                let blockOrder =
+                                    doc.Blocks
+                                    |> List.choose (function
+                                        | Doc.Paragraph p -> Some p.Id
+                                        | Doc.Heading (_, p) -> Some p.Id
+                                        | _ -> None)
+                                let curIdx =
+                                    blockOrder |> List.tryFindIndex (fun id -> id = cursor.BlockId)
+                                    |> Option.defaultValue -1
+                                all |> List.tryFind (fun m ->
+                                    let mIdx = blockOrder |> List.tryFindIndex (fun id -> id = m.BlockId) |> Option.defaultValue -1
+                                    mIdx > curIdx))
+                            |> Option.defaultValue (List.head all)
+                        applyChange state (fun d ->
+                            Doc.setSelection
+                                { BlockId = after.BlockId; Offset = after.Start }
+                                { BlockId = after.BlockId; Offset = after.End }
+                                d)
+                        let pos = all |> List.findIndex (fun m -> m.BlockId = after.BlockId && m.Start = after.Start)
+                        status.Value <- sprintf "Match %d of %d for \"%s\"" (pos + 1) all.Length q
+                        "")
+            (fun q r matchCase ->
+                let nextDoc, count = Doc.replaceAllText q r matchCase state.Document.Value
                 if count > 0 then applyChange state (fun _ -> nextDoc)
                 status.Value <- sprintf "Replaced %d occurrence(s)" count
                 "")
@@ -330,16 +406,7 @@ let private shellActions
         | other -> status.Value <- sprintf "%s annotation not wired" other
 
     let openFileAction () =
-        WordUi.openFileDialog (fun path ->
-            match loadDocx path with
-            | Some doc ->
-                state.Document.Value <- doc
-                state.UndoStack.Value <- []
-                state.RedoStack.Value <- []
-                currentPath.Value <- Some path
-                editsSinceSave.Value <- 0
-                status.Value <- sprintf "Opened %s" (Path.GetFileName path)
-            | None -> status.Value <- sprintf "Failed to open %s" path)
+        WordUi.openFileDialog loadFromPath
         |> Composit.Ui.OfficeShell.openDialog renderState
 
     let writeTo path =
@@ -347,6 +414,7 @@ let private shellActions
             DocxWrite.save state.Document.Value path
             currentPath.Value <- Some path
             editsSinceSave.Value <- 0
+            rememberRecent path
             status.Value <- sprintf "Saved %s" (Path.GetFileName path)
         with ex ->
             status.Value <- sprintf "Save failed: %s" ex.Message
@@ -587,7 +655,9 @@ let main argv =
         match argv |> Array.tryHead with
         | Some path ->
             match loadDocx path with
-            | Some parsed -> parsed
+            | Some parsed ->
+                rememberRecent path
+                parsed
             | None ->
                 eprintfn "Failed to parse %s; opening blank document" path
                 emptyDoc ()
@@ -598,24 +668,54 @@ let main argv =
     let status = signal "Ready"
     let currentPath = signal (argv |> Array.tryHead)
     let renderState = Chrome.closed
-    let state = shellState editor
-    let actions = shellActions editor status currentPath renderState
+    let loadFromPath path =
+        match loadDocx path with
+        | Some doc ->
+            editor.Document.Value <- doc
+            editor.UndoStack.Value <- []
+            editor.RedoStack.Value <- []
+            currentPath.Value <- Some path
+            editsSinceSave.Value <- 0
+            rememberRecent path
+            status.Value <- sprintf "Opened %s" (Path.GetFileName path)
+        | None -> status.Value <- sprintf "Failed to open %s" path
+
+    let state = shellState editor loadFromPath
+    let actions = shellActions editor status currentPath renderState loadFromPath
 
     // Any change to the document — typing, toolbar mutation, undo — bumps
     // the unsaved-edits counter. openFileAction / writeTo reset it to 0
     // after they finish mutating Document so the load itself doesn't count.
     editor.Document.Subscribe(fun () -> editsSinceSave.Value <- editsSinceSave.Value + 1)
 
-    /// Status string. Falls back to the editor's current cursor / selection
-    /// summary if no transient message has been set (the `Ready` literal).
+    let countWords (s: string) =
+        let mutable c = 0
+        let mutable inWord = false
+        for ch in s do
+            if System.Char.IsWhiteSpace ch then inWord <- false
+            elif not inWord then
+                inWord <- true
+                c <- c + 1
+        c
+
+    /// Status string. Falls back to live word/character counts when no
+    /// transient message has been set (or the message is the default
+    /// "Ready" sentinel).
     let statusText () =
         let doc = editor.Document.Value
-        match status.Value, doc.Selection with
-        | message, _ when message <> "Ready" && message <> "" -> message
-        | _, Some sel when not sel.IsCollapsed ->
-            let text = Doc.getSelectionText doc
-            sprintf "%d characters selected" text.Length
-        | _, _ -> "Ready"
+        let counts () =
+            match doc.Selection with
+            | Some sel when not sel.IsCollapsed ->
+                let text = Doc.getSelectionText doc
+                sprintf "%d of %d words selected   %d of %d characters"
+                    (countWords text) (countWords (Doc.getText doc))
+                    text.Length (Doc.getText doc).Length
+            | _ ->
+                let text = Doc.getText doc
+                sprintf "%d words   %d characters" (countWords text) text.Length
+        match status.Value with
+        | message when message <> "Ready" && message <> "" -> message + "   |   " + counts ()
+        | _ -> counts ()
 
     let titleText () =
         let prefix = if editsSinceSave.Value > 0 then "• " else ""

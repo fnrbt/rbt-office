@@ -170,6 +170,11 @@ module Ui =
         IsTrackChangesActive: unit -> bool
         ParagraphStyles: unit -> ChoiceSpec list
         CharacterStyles: unit -> ChoiceSpec list
+        /// Recently-opened file paths, newest first. The File menu displays
+        /// these inline below Save. Empty list = no Recent section.
+        RecentFiles: unit -> string list
+        /// Open a path from the Recent list. Receives the absolute path.
+        OpenRecentFile: string -> unit
     }
 
     type ShellActions = {
@@ -270,6 +275,15 @@ module Ui =
     let private itemKey = menuItemShortcut
     let private button = toolbarButton
 
+    let private recentItems (state: ShellState) (actions: ShellActions) : MenuItemSpec list =
+        let basename (path: string) =
+            let i = max (path.LastIndexOf '/') (path.LastIndexOf '\\')
+            if i < 0 then path else path.Substring(i + 1)
+        state.RecentFiles ()
+        |> List.truncate 6
+        |> List.mapi (fun i path ->
+            item (sprintf "word-menu-recent-%d" i) (basename path) None (fun () -> state.OpenRecentFile path))
+
     let menus state actions = [
         {
             TestId = "word-file-menu"
@@ -278,6 +292,7 @@ module Ui =
             Items = [
                 itemKey "word-menu-open" "Open..." "Ctrl+O" None actions.OpenFile
                 itemKey "word-menu-save" "Save" "Ctrl+S" None actions.SaveFile
+                yield! recentItems state actions
                 item "word-menu-page-setup" "Page setup..." None actions.OpenPageSetup
                 item "word-menu-header-footer" "Headers and footers..." None actions.OpenHeaderFooter
                 item "word-menu-print-pdf" "Print PDF" None actions.PrintPdf
