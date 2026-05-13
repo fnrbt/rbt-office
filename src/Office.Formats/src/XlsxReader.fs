@@ -170,6 +170,11 @@ type TableDefinition = {
     EndCol: int
     HeaderRowCount: int
     Style: TableStyleInfo option
+    /// (startCol, endCol) span of `<autoFilter ref="…">`, 1-indexed. None when
+    /// the table has no autoFilter child. Excel renders a dropdown button on
+    /// each header cell whose column falls in this range; row coords are
+    /// implicit (header is always row StartRow).
+    AutoFilter: (int * int) option
 }
 
 type Worksheet = {
@@ -403,6 +408,11 @@ module Xlsx =
                                     ShowRowStripes = boolAttr "showRowStripes"
                                     ShowColumnStripes = boolAttr "showColumnStripes"
                                 }))
+                    let autoFilter =
+                        sElem "autoFilter" doc
+                        |> Option.bind (fun node -> Xml.attr "ref" node)
+                        |> Option.bind parseRange
+                        |> Option.map (fun (_, fc1, _, fc2) -> (fc1, fc2))
                     Some {
                         StartRow = r1
                         StartCol = c1
@@ -410,6 +420,7 @@ module Xlsx =
                         EndCol = c2
                         HeaderRowCount = headerCount
                         Style = style
+                        AutoFilter = autoFilter
                     }
         with _ -> None
 

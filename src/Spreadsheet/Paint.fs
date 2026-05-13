@@ -592,6 +592,26 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                         LineIndex = i
                         LineCount = lineCount
                     }
+
+        // Pass 4: auto-filter dropdown triangles on table header cells. Excel
+        // renders these as a small downward triangle on the right edge of each
+        // header cell whose column falls within the table's <autoFilter>
+        // range. The triangle is drawn over the header's accent fill — same
+        // color as the header text (white on a Medium-style accent).
+        for (cell, format, _value, _selected, _background) in states do
+            if format.FilterButton then
+                let color = format.TextColor |> Option.defaultValue "#FFFFFF"
+                // 7-px-wide, 4-px-tall triangle centered in a 16-px right-edge
+                // button area. Drawn as five horizontal stroked lines (no
+                // primitive for filled polygons; this is cheap enough).
+                let buttonWidth = 16.0
+                let centerX = cell.Rect.X + cell.Rect.Width - buttonWidth / 2.0
+                let triHalfWidth = 3.5
+                let triTopY = cell.Rect.Y + cell.Rect.Height / 2.0 - 2.0
+                for i in 0 .. 3 do
+                    let shrink = float i * (triHalfWidth / 4.0)
+                    let y = triTopY + float i
+                    yield GridLine (centerX - triHalfWidth + shrink, y, centerX + triHalfWidth - shrink, y, color, 1.0)
     ]
 
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =

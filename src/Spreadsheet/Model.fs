@@ -40,6 +40,9 @@ type CellFormat = {
     BorderBottom: BorderStyle option
     BorderLeft: BorderStyle option
     BorderRight: BorderStyle option
+    /// Excel auto-filter dropdown button on the right edge of the cell.
+    /// Set for cells in the header row of a table with an <autoFilter> child.
+    FilterButton: bool
 }
 
 /// Default format
@@ -59,6 +62,7 @@ let defaultFormat = {
     BorderBottom = None
     BorderLeft = None
     BorderRight = None
+    FilterButton = false
 }
 
 /// Cell comment/note

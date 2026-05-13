@@ -114,6 +114,7 @@ let private convertCellFormat (excelCell: ExcelCell): CellFormat =
             BorderBottom = convertBorder excelCell.borderBottom
             BorderLeft = convertBorder excelCell.borderLeft
             BorderRight = convertBorder excelCell.borderRight
+            FilterButton = false
         }
 
     /// <summary>

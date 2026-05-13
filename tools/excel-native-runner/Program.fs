@@ -90,6 +90,7 @@ let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
         BorderBottom = borderSide style.BorderBottom
         BorderLeft = borderSide style.BorderLeft
         BorderRight = borderSide style.BorderRight
+        FilterButton = false
     }
 
     // Layer the workbook's table style (e.g. `TableStyleMedium7`) on top of
@@ -133,6 +134,9 @@ type private TableOverlay = {
     BgColor: string option
     TextColor: string option
     Bold: bool
+    /// Set on header cells when the table declares an <autoFilter> covering
+    /// this column. Renderer paints a dropdown triangle on the right side.
+    FilterButton: bool
 }
 
 /// For each cell coordinate inside a table range, return the table-derived
@@ -159,10 +163,15 @@ let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: 
                     | Some accentHex ->
                         let isHeader = row < t.StartRow + t.HeaderRowCount
                         if isHeader then
+                            let hasFilter =
+                                match t.AutoFilter with
+                                | Some (fc1, fc2) -> col >= fc1 && col <= fc2
+                                | None -> false
                             Some {
                                 BgColor = Some accentHex
                                 TextColor = Some "#FFFFFF"
-                                Bold = true }
+                                Bold = true
+                                FilterButton = hasFilter }
                         elif style.ShowRowStripes then
                             // Excel bands every other data row. Pixel-sampled
                             // against artifacts/excel/pandas-test_decimal-
@@ -174,7 +183,8 @@ let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: 
                                 Some {
                                     BgColor = Some (tintHex (accentHex.TrimStart('#')) 0.80)
                                     TextColor = None
-                                    Bold = false }
+                                    Bold = false
+                                    FilterButton = false }
                             else None
                         else None)
 
@@ -202,7 +212,8 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                             { baseFormat with
                                 BgColor = baseFormat.BgColor |> Option.orElse overlay.BgColor
                                 TextColor = baseFormat.TextColor |> Option.orElse overlay.TextColor
-                                Bold = baseFormat.Bold || overlay.Bold }
+                                Bold = baseFormat.Bold || overlay.Bold
+                                FilterButton = baseFormat.FilterButton || overlay.FilterButton }
                     let cellData = { Value = value; Format = format; Comment = None }
                     if r > maxRow then maxRow <- r
                     if c > maxCol then maxCol <- c
