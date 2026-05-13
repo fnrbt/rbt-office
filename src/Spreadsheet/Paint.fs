@@ -299,13 +299,21 @@ let private mdwPx (fontPt: float) : float =
 /// representation overflows, returns `#####` like Excel does.
 let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float): string =
     // Leave 4 px padding on each side (matches the cell-text inset in
-    // buildCellPaintItems). maxChars scales with font size so size-12 cells
-    // get fewer chars per column than size-11 cells.
-    let usableWidth = max 0.0 (cellWidthPx - 8.0)
+    // buildCellPaintItems) plus one MDW char of additional right buffer
+    // that Excel's General format reserves. Without the extra char, a
+    // column sized against the workbook's default-font MDW (e.g. Calibri
+    // 12 at 8 px) ends up "fitting" 11 chars of Calibri-11 text (mdw=7),
+    // since column-width math and General-format math use different
+    // fonts. The extra char keeps the trim aligned with what Excel shows
+    // in pandas-test1's Calibri-12-default sheet (B2 = 0.98026851, not
+    // 0.9802685138). Try the requested precision *and* the standard set
+    // so we surface G9 mid-trim instead of jumping from G10 straight to
+    // G8 — Excel uses 9 sig digits in some columns.
+    let usableWidth = max 0.0 (cellWidthPx - 8.0 - mdwPx fontPt)
     let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
 
     let inv = System.Globalization.CultureInfo.InvariantCulture
-    let candidates = [ "G10"; "G8"; "G6"; "G5"; "G4"; "G3"; "G2"; "G1" ]
+    let candidates = [ "G11"; "G10"; "G9"; "G8"; "G7"; "G6"; "G5"; "G4"; "G3"; "G2"; "G1" ]
     let fits =
         candidates
         |> List.tryPick (fun fmt ->

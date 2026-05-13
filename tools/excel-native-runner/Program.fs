@@ -285,13 +285,20 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         try
             let font = Composit.Ui.SpreadsheetGrid.rendererFontFor defaultFontName false false
             let pxSize = defaultFontSize * 96.0 / 72.0
-            // Excel's MDW is max-of-digits rounded up to the next integer.
-            // We approximate by measuring the literal '0' (typically the
-            // widest digit in monospaced-figure fonts like Calibri/Verdana)
-            // and ceiling. Floor at 7 px so the Calibri-anchored fallback
-            // chain doesn't drift sub-pixel.
+            // Excel's MDW table is the integer pixel advance Excel uses for
+            // chars-to-pixels column-width math at 96 DPI. Empirically:
+            //   Calibri 11 = 7  (measured 7.43)
+            //   Calibri 12 = 8  (measured 8.11)
+            //   Arial   10 = 7  (measured 7.42)
+            //   Verdana 10 = 8  (measured 8.48)
+            // Floor matches every case in the table — ceil over-allocates
+            // Calibri 11 to 8 px/char, which inflates default-width columns
+            // by ~22 px per column and lets General-format numbers show
+            // more sig digits than Excel does in the same workbook
+            // (pandas-test1 B2 was 0.9802685138 vs Excel's 0.98026851).
+            // The 7-px floor stays as a safety net for very small fonts.
             let zero = Renderer.Text.measureWidth font pxSize "0"
-            max 7.0 (System.Math.Ceiling zero)
+            max 7.0 (System.Math.Floor zero)
         with _ ->
             // Renderer unavailable (font cache miss, etc.) — fall back to
             // the original Calibri-anchored linear estimate.
