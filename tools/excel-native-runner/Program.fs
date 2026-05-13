@@ -9,7 +9,8 @@ module Xlsx = XlsxReader
 open RedBat.Spreadsheet.Model
 
 let private usage () =
-    eprintfn "Usage: dotnet run --project tools/excel-native-runner -- <input.xlsx> <output.png> [width] [height] [sheetIndex]"
+    eprintfn "Usage: dotnet run --project tools/excel-native-runner -- <input.xlsx> <output.png> [width] [height] [sheetIndex|all] [jsonOut]"
+    eprintfn "       Pass 'all' as the sheet selector to render every sheet to <output>-sheet<N>.png."
     eprintfn "Defaults: width=1100 height=720 sheetIndex=0"
 
 let private fullPath (path: string) =
@@ -419,19 +420,10 @@ let private cellInfoJson (sheetName: string) (model: SpreadsheetModel) =
     "[\n  " + String.concat ",\n  " records + "\n]\n"
 
 #if EXCEL_NATIVE_RUNNER_MAIN
-let private renderXlsx (inputPath: string) (outputPath: string) (width: int) (height: int) (sheetIndex: int) (jsonPath: string option) =
-    initFont ()
-    let bytes = File.ReadAllBytes inputPath
-    let workbook =
-        match Xlsx.loadBytesNative bytes with
-        | Some parsed -> parsed
-        | None -> failwithf "Could not parse XLSX: %s" inputPath
-
-    if workbook.Sheets.IsEmpty then
-        failwithf "No sheets in workbook: %s" inputPath
-
-    let chosenIndex = min (max 0 sheetIndex) (workbook.Sheets.Length - 1)
-    let sheet = workbook.Sheets.[chosenIndex]
+let private renderSheetToPath
+    (inputPath: string) (outputPath: string) (jsonPath: string option)
+    (width: int) (height: int)
+    (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) =
     let model = toModel sheet workbook
 
     let widget = Composit.Ui.SpreadsheetGrid.widget (float width) (float height) model
@@ -451,6 +443,56 @@ let private renderXlsx (inputPath: string) (outputPath: string) (width: int) (he
     let cellCount = Map.count model.Cells
     printfn "excel native runner ok: %s [sheet=%s cells=%d] -> %s (%dx%d)" inputPath sheet.Name cellCount outputPath width height
 
+/// Insert `suffix` before the file extension so `out/foo.png` → `out/foo-sheet2.png`.
+let private withSheetSuffix (path: string) (suffix: string) =
+    let dir = Path.GetDirectoryName path
+    let stem = Path.GetFileNameWithoutExtension path
+    let ext = Path.GetExtension path
+    let leaf = stem + "-" + suffix + ext
+    if String.IsNullOrEmpty dir then leaf else Path.Combine(dir, leaf)
+
+let private renderXlsx (inputPath: string) (outputPath: string) (width: int) (height: int) (sheetSel: Choice<int, unit>) (jsonPath: string option) =
+    initFont ()
+    let bytes = File.ReadAllBytes inputPath
+    let workbook =
+        match Xlsx.loadBytesNative bytes with
+        | Some parsed -> parsed
+        | None -> failwithf "Could not parse XLSX: %s" inputPath
+
+    if workbook.Sheets.IsEmpty then
+        failwithf "No sheets in workbook: %s" inputPath
+
+    match sheetSel with
+    | Choice1Of2 sheetIndex ->
+        let chosenIndex = min (max 0 sheetIndex) (workbook.Sheets.Length - 1)
+        let sheet = workbook.Sheets.[chosenIndex]
+        renderSheetToPath inputPath outputPath jsonPath width height sheet workbook
+    | Choice2Of2 () ->
+        // --all: render every sheet to `<base>-sheet<N>.png` (1-indexed,
+        // matching how Excel labels them in the tab strip and how pandas
+        // writes sheet names like "Sheet1"). When there's only one sheet,
+        // skip the suffix so the output path stays predictable.
+        let sheets = workbook.Sheets
+        sheets
+        |> List.iteri (fun i sheet ->
+            let path =
+                if sheets.Length = 1 then outputPath
+                else withSheetSuffix outputPath (sprintf "sheet%d" (i + 1))
+            let json =
+                jsonPath |> Option.map (fun p ->
+                    if sheets.Length = 1 then p
+                    else withSheetSuffix p (sprintf "sheet%d" (i + 1)))
+            renderSheetToPath inputPath path json width height sheet workbook)
+
+/// Parse the sheet argument: `all` / `-a` selects every sheet; an integer
+/// selects that 0-based sheet index. Anything else falls back to sheet 0.
+let private parseSheetArg (value: string) : Choice<int, unit> =
+    if value = "all" || value = "-a" || value = "--all" then Choice2Of2 ()
+    else
+        match Int32.TryParse value with
+        | true, parsed -> Choice1Of2 parsed
+        | false, _ -> Choice1Of2 0
+
 [<EntryPoint>]
 let main argv =
     try
@@ -462,19 +504,19 @@ let main argv =
         let jsonOpt = if String.IsNullOrWhiteSpace jsonEnv then None else Some (fullPath jsonEnv)
         match argv with
         | [| input; output |] ->
-            renderXlsx (fullPath input) (fullPath output) 1100 720 0 jsonOpt
+            renderXlsx (fullPath input) (fullPath output) 1100 720 (Choice1Of2 0) jsonOpt
             0
         | [| input; output; width |] ->
-            renderXlsx (fullPath input) (fullPath output) (parseInt 1100 width) 720 0 jsonOpt
+            renderXlsx (fullPath input) (fullPath output) (parseInt 1100 width) 720 (Choice1Of2 0) jsonOpt
             0
         | [| input; output; width; height |] ->
-            renderXlsx (fullPath input) (fullPath output) (parseInt 1100 width) (parseInt 720 height) 0 jsonOpt
+            renderXlsx (fullPath input) (fullPath output) (parseInt 1100 width) (parseInt 720 height) (Choice1Of2 0) jsonOpt
             0
         | [| input; output; width; height; sheet |] ->
-            renderXlsx (fullPath input) (fullPath output) (parseInt 1100 width) (parseInt 720 height) (parseInt 0 sheet) jsonOpt
+            renderXlsx (fullPath input) (fullPath output) (parseInt 1100 width) (parseInt 720 height) (parseSheetArg sheet) jsonOpt
             0
         | [| input; output; width; height; sheet; jsonOut |] ->
-            renderXlsx (fullPath input) (fullPath output) (parseInt 1100 width) (parseInt 720 height) (parseInt 0 sheet) (Some (fullPath jsonOut))
+            renderXlsx (fullPath input) (fullPath output) (parseInt 1100 width) (parseInt 720 height) (parseSheetArg sheet) (Some (fullPath jsonOut))
             0
         | _ ->
             usage()
