@@ -37,12 +37,17 @@ type ShellRenderState = {
     /// Currently-open right-click menu (anchor + items). Apps set this
     /// with `openContextMenu`.
     OpenContextMenu: Signal<OpenContextMenuState option>
+    /// Screen-space coordinates of the most recent primary click. Apps
+    /// should update this from their handleInput so that combobox / color
+    /// dropdowns know where to anchor.
+    LastClickPos: Signal<float * float>
 }
 
 let createState () : ShellRenderState =
     { OpenMenu = signal None
       OpenDialog = signal None
-      OpenContextMenu = signal None }
+      OpenContextMenu = signal None
+      LastClickPos = signal (0.0, 0.0) }
 
 let openContextMenu (state: ShellRenderState) (x: float) (y: float) (items: MenuItemSpec list) =
     state.OpenMenu.Value <- None
@@ -348,8 +353,32 @@ let private comboControl (p: ChromePalette) label action =
         stack [
             box p.Input empty
             border p.Border 1.0 4.0 (
-                padXY 8.0 5.0 (textStyled Font.sm p.Text label))
+                rowAlign MStart CCenter 0.0 [
+                    padXY 8.0 5.0 (textStyled Font.sm p.Text label)
+                    padXY 4.0 0.0 (textStyled Font.sm (parseHexColor "#5F6368") "▾")
+                ])
         ])
+
+/// Standard 8x5 Word-style color palette. Apps may swap this for a richer
+/// picker later.
+let standardColors : (string * string) list = [
+    "Auto",        "#000000"
+    "Black",       "#000000"
+    "White",       "#FFFFFF"
+    "Light Grey",  "#D9D9D9"
+    "Grey",        "#808080"
+    "Dark Grey",   "#404040"
+    "Red",         "#C00000"
+    "Orange",      "#ED7D31"
+    "Yellow",      "#FFC000"
+    "Light Yellow","#FFF2CC"
+    "Green",       "#00B050"
+    "Teal",        "#00B0F0"
+    "Blue",        "#0070C0"
+    "Dark Blue",   "#002060"
+    "Purple",      "#7030A0"
+    "Pink",        "#FFB6C1"
+]
 
 let private colorControl (p: ChromePalette) value action =
     clickable action (
@@ -381,7 +410,7 @@ type ShellConfig = {
 let private toolbarSeparator (p: ChromePalette) =
     sized 1.0 18.0 (box p.ChromeMid empty)
 
-let private renderToolbarControl (p: ChromePalette) (config: ShellConfig) = function
+let private renderToolbarControl (p: ChromePalette) (renderState: ShellRenderState) (config: ShellConfig) = function
     | ToolbarButton spec ->
         let isActive = spec.IsActive |> Option.map (fun active -> active()) |> Option.defaultValue false
         let pressed = config.ShowToolbarPressed spec.TestId isActive
@@ -393,18 +422,44 @@ let private renderToolbarControl (p: ChromePalette) (config: ShellConfig) = func
             |> List.tryFind (fun option -> option.Value = spec.Value())
             |> Option.map _.Label
             |> Option.defaultValue (spec.Value())
-        comboControl p label (fun () -> spec.Action(spec.Value()))
+        // Click opens a dropdown menu of the available choices anchored at
+        // the most recent click position.
+        let openDropdown () =
+            let x, y = renderState.LastClickPos.Value
+            let items =
+                spec.Options()
+                |> List.map (fun choice ->
+                    menuItem
+                        (sprintf "%s-%s" spec.TestId choice.Value)
+                        choice.Label
+                        (Some (fun () -> choice.Value = spec.Value()))
+                        (fun () -> spec.Action(choice.Value)))
+            openContextMenu renderState x y items
+        comboControl p label openDropdown
     | ToolbarInput spec ->
         match spec.Kind with
         | NumberInput -> comboControl p (spec.Value()) (fun () -> spec.Action(spec.Value()))
-        | ColorInput -> colorControl p (spec.Value()) (fun () -> spec.Action(spec.Value()))
+        | ColorInput ->
+            // Click opens the standard-color picker.
+            let openSwatches () =
+                let x, y = renderState.LastClickPos.Value
+                let items =
+                    standardColors
+                    |> List.map (fun (name, hex) ->
+                        menuItem
+                            (sprintf "%s-%s" spec.TestId hex)
+                            (sprintf "● %s" name)
+                            (Some (fun () -> spec.Value() = hex))
+                            (fun () -> spec.Action(hex)))
+                openContextMenu renderState x y items
+            colorControl p (spec.Value()) openSwatches
         | TextInput -> comboControl p (spec.Value()) (fun () -> spec.Action(spec.Value()))
     | ToolbarSeparator -> padXY 4.0 0.0 (toolbarSeparator p)
 
-let private renderToolbarRow (p: ChromePalette) (config: ShellConfig) (row: ToolbarRowSpec) =
+let private renderToolbarRow (p: ChromePalette) (renderState: ShellRenderState) (config: ShellConfig) (row: ToolbarRowSpec) =
     sizedH 32.0 (
         padXY 4.0 2.0 (
-            rowAlign MStart CCenter 2.0 (row.Controls |> List.map (renderToolbarControl p config))))
+            rowAlign MStart CCenter 2.0 (row.Controls |> List.map (renderToolbarControl p renderState config))))
 
 let private renderMenuButton (p: ChromePalette) (renderState: ShellRenderState) (spec: MenuSpec) =
     let isOpen = renderState.OpenMenu.Value = Some spec.TestId
@@ -670,7 +725,7 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
     let toolbarHeight = float toolbarRowCount * toolbarRowHeight
     let toolbarBand =
         chromeBandWithBorder p p.ChromeTop toolbarHeight (
-            column (config.ToolbarRows |> List.map (renderToolbarRow p config)))
+            column (config.ToolbarRows |> List.map (renderToolbarRow p renderState config)))
     let statusBar =
         chromeBandWithBorder p p.ChromeTop statusHeight (
             sizedH statusHeight (

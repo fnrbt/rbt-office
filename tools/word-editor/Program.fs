@@ -67,25 +67,74 @@ let private applyChange (state: Editor.WordEditorState) (transform: Doc.Document
 
 // ── ShellState / ShellActions wiring ───────────────────────────────
 
-let private shellState (_state: Editor.WordEditorState) : WordUi.ShellState =
-    let constFalse () = false
+/// Lookup the style and metadata under the caret. Falls back to defaults
+/// when the cursor is in an empty document or between blocks. For a
+/// non-collapsed selection we sample the run just inside the selection
+/// start, so "did I bold the selection" lights up the B button.
+let private styleAtCursor (state: Editor.WordEditorState) =
+    let doc = state.Document.Value
+    let probe (para: Doc.ParagraphBlock) (sel: Doc.Selection) =
+        let lo = min sel.Anchor.Offset sel.Focus.Offset
+        let hi = max sel.Anchor.Offset sel.Focus.Offset
+        let bufLen = RedBat.Word.TextBuffer.length para.Buffer
+        // Prefer the char just before the upper end of the range (or before
+        // the cursor when collapsed); fall back to the first char.
+        let p1 = if hi > 0 then hi - 1 else 0
+        let p2 = if bufLen > 0 then min p1 (bufLen - 1) else 0
+        let chosen = if sel.IsCollapsed then p2 else max lo (min p1 (bufLen - 1))
+        RedBat.Word.TextBuffer.getStyleAt chosen para.Buffer
+    match doc.Selection with
+    | None -> RedBat.Word.TextBuffer.defaultStyle, Doc.defaultMetadata, None
+    | Some sel ->
+        match Doc.findBlock doc sel.Focus.BlockId with
+        | Some (Doc.Paragraph para)        -> probe para sel, para.Metadata, None
+        | Some (Doc.Heading (level, para)) -> probe para sel, para.Metadata, Some level
+        | _ -> RedBat.Word.TextBuffer.defaultStyle, Doc.defaultMetadata, None
+
+let private shellState (state: Editor.WordEditorState) : WordUi.ShellState =
+    let style () = let s, _, _ = styleAtCursor state in s
+    let meta  () = let _, m, _ = styleAtCursor state in m
+    let heading () = let _, _, h = styleAtCursor state in h
+    let alignmentName () =
+        match (meta ()).Alignment with
+        | Doc.Center -> "center"
+        | Doc.Right -> "right"
+        | Doc.Justify -> "justify"
+        | _ -> "left"
+    let blockStyleName () =
+        match heading () with
+        | Some 1 -> "heading-1"
+        | Some 2 -> "heading-2"
+        | Some 3 -> "heading-3"
+        | Some _ -> "heading-1"
+        | None -> "normal"
+    let listStyleName () =
+        match (meta ()).ListStyle with
+        | Doc.Bullet -> "bullet"
+        | Doc.Numbered -> "numbered"
+        | _ -> "none"
+    let vertAlignName () =
+        match (style ()).VertAlign with
+        | Some "superscript" -> "superscript"
+        | Some "subscript" -> "subscript"
+        | _ -> "baseline"
     {
-        IsBoldActive = constFalse
-        IsItalicActive = constFalse
-        IsUnderlineActive = constFalse
-        IsAllCapsActive = constFalse
-        IsSmallCapsActive = constFalse
-        IsStrikeActive = constFalse
-        Alignment = fun () -> "left"
-        BlockStyle = fun () -> "normal"
-        ListStyle = fun () -> "none"
-        NumberFormat = fun () -> "decimal"
-        VertAlign = fun () -> "baseline"
-        TextColor = fun () -> "#000000"
-        HighlightColor = fun () -> "#FFFFFF"
-        FontFamily = fun () -> "Calibri"
-        FontSize = fun () -> "11"
-        IsTrackChangesActive = constFalse
+        IsBoldActive = fun () -> (style ()).Bold
+        IsItalicActive = fun () -> (style ()).Italic
+        IsUnderlineActive = fun () -> (style ()).Underline
+        IsAllCapsActive = fun () -> (style ()).AllCaps
+        IsSmallCapsActive = fun () -> (style ()).SmallCaps
+        IsStrikeActive = fun () -> (style ()).Strike
+        Alignment = alignmentName
+        BlockStyle = blockStyleName
+        ListStyle = listStyleName
+        NumberFormat = fun () -> (meta ()).ListNumberFormat |> Option.defaultValue "decimal"
+        VertAlign = vertAlignName
+        TextColor = fun () -> (style ()).Color |> Option.defaultValue "#000000"
+        HighlightColor = fun () -> (style ()).Highlight |> Option.defaultValue "#FFFFFF"
+        FontFamily = fun () -> (style ()).FontFamily |> Option.defaultValue "Calibri"
+        FontSize = fun () -> sprintf "%g" (style ()).FontSize
+        IsTrackChangesActive = fun () -> false
         ParagraphStyles = fun () -> WordUi.paragraphStyles
         CharacterStyles = fun () -> []
     }
@@ -276,6 +325,9 @@ let private handleInput (state: AppState) (ev: InputEvent) =
         match state.LayoutRoot with
         | Some root when button = 0 ->
             if pressed then
+                // Surface the click position so chrome popups (combo
+                // dropdowns, color pickers) can anchor next to the cursor.
+                state.RenderState.LastClickPos.Value <- (x, y)
                 let (onClick, _) = hitTestAll root x y
                 onClick |> Option.iter (fun f -> f())
                 match pointerHitTestAll root x y with
