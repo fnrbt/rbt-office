@@ -155,6 +155,45 @@
     <tbody>
       <tr>
         <td>
+          <strong>Measure MDW from the workbook's real default font (and ship Verdana to the font cache)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/poi-47813.xlsx</code> Sheet "Numbers" (Verdana 10, columns sized for "###.000" values).</span>
+          <span class="meta">Real fixture class: every XLSX whose default font isn't Calibri/Arial. Excel sizes columns in "Maximum Digit Width" units — the rendered pixel width of '0' in the workbook's default font at default size. We used a Calibri-anchored linear fit (<code>round(fontSize × 7/11)</code>) that gives 7 px for any 10-11 pt font, but Verdana 10's '0' is ~8 px. Column A in poi-47813 came out 7 px short → "10.000" through "47.000" rendered as <code>#####</code>.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus runs clean.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/poi-47813-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference with Verdana columns">
+          </div>
+          <div class="caption">Excel reference: col A (Angle) and col B (Sine) wide enough for "##.000" values. Verdana 10 renders heavier than Calibri 10 at the same point size; Excel sizes columns to match that wider rendering.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/poi-47813.png" style="--w:1100px; --x:0px; --y:0px; --s:0.6" alt="Ours after real-font MDW + Verdana">
+          </div>
+          <div class="caption">After: <code>tools/excel-native-runner</code> loads the workbook's default font via <code>SpreadsheetGrid.rendererFontFor</code> and measures <code>Renderer.Text.measureWidth font pxSize "0"</code>, then ceils. For Verdana 10 (winAscent-anchored) that lands at 8 px. Combined with the new Verdana faces in the font cache, col A now fits "47.000" cleanly.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/poi-47813-pre-verdana.png" style="--w:1100px; --x:0px; --y:0px; --s:0.6" alt="Ours before real-font MDW">
+          </div>
+          <div class="caption">Before: MDW computed as <code>round(10 × 7/11) = 6</code> clamped to floor 7 — close to Calibri's '0' but not Verdana's. Col A clamped to 50 px instead of 57 px; numbers ≥ 10 overflow → <code>#####</code>. Verdana itself also wasn't recognized, so text fell back to Calibri (giving the cells a thinner look than Excel).</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> three coordinated changes so the renderer/runner can measure with the actual font.</p>
+          <ul>
+            <li><code>tools/word-parity/fetch-windows-fonts.sh</code>: add <code>verdana.ttf</code>, <code>verdanab.ttf</code>, <code>verdanai.ttf</code>, <code>verdanaz.ttf</code> to the fetch set. Pull the same files Excel renders with.</li>
+            <li><code>spreadsheet-native/SpreadsheetGrid.fs</code>: <code>familyKey</code> recognizes names starting with "verdana"; <code>fontFiles</code> returns the matching variant chain. Expose <code>rendererFontFor</code> as a public wrapper so the runner can resolve fonts through the same family map + cache as the renderer.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: in <code>toModel</code>, load the workbook's default font (<code>Styles.[0].FontName</code>) via <code>rendererFontFor</code>, then derive MDW from <code>ceil (measureWidth font pxSize "0")</code> floored at 7. Falls back to the prior linear estimate when the font load throws.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: poi-47813 col A width 50 → 57 px (Excel: 57). All 47 angle values render cleanly. Col B similar (Sine column now fits 0.NNN values).</li>
+            <li>Regression guard: every Calibri/Arial fixture still resolves MDW = 7 (or 8 at size 12+) via the same measurement, matching Excel's per-font MDW table. pandas-test1, pandas-testmultiindex etc. produce pixel-identical PNGs.</li>
+            <li>Corpus guard: all 53 fixtures still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Collapse <code>vertical="top"</code> → bottom on default-height rows (Excel quirk)</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-testmultiindex.xlsx</code> (row 1 header cells declare <code>vertical="top"</code>; Excel ignores the hint and renders them bottom-aligned).</span>
           <span class="meta">Real fixture class: every pandas-written XLSX. Pandas / openpyxl emit <code>&lt;alignment vertical="top"/&gt;</code> on every styled header cell. Excel honors the hint only when the row is taller than ~one line height — for default-height rows it falls back to its General/bottom rendering. Our code honored the hint literally, parking the cap right against the cell top border.</span>
