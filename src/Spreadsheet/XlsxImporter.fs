@@ -122,6 +122,8 @@ let private convertCellFormat (excelCell: ExcelCell): CellFormat =
             Strikethrough = false
             HasComment = false
             HasListDropdown = false
+            DataBar = None
+            IconSet = None
         }
 
     /// <summary>

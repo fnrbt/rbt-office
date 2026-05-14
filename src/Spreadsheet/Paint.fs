@@ -705,6 +705,25 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         for (cell, _format, _value, _selected, background, zone) in states do
             yield zone, FillRect (cell.Rect, background)
 
+        // Pass 1b: conditional-formatting data bars. Drawn on top of the
+        // cell background but under borders / text — a horizontal bar
+        // from the cell's left edge spanning fraction × width. Excel
+        // insets the bar ~2 px vertically; mirror that so the gridline
+        // stays visible above and below.
+        for (cell, format, _value, _selected, _background, zone) in states do
+            match format.DataBar with
+            | Some (frac, color) when frac > 0.0 ->
+                let inset = 2.0
+                let barW = (cell.Rect.Width - 1.0) * frac
+                if barW > 0.5 then
+                    yield zone, FillRect (
+                        { X = cell.Rect.X
+                          Y = cell.Rect.Y + inset
+                          Width = barW
+                          Height = max 1.0 (cell.Rect.Height - inset * 2.0) },
+                        color)
+            | _ -> ()
+
         // Pass 2: per-cell strokes + cellXf borders, drawn on top of every
         // fill. Match Excel's *interactive* view: a light gray gridline
         // around every cell — not the near-black grid that print mode emits
@@ -782,7 +801,11 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
             let displayText = cellDisplayText measure cell.Rect.Width format value
             if displayText <> "" then
-                let textRect = { cell.Rect with X = cell.Rect.X + 4.0; Width = max 0.0 (cell.Rect.Width - 8.0) }
+                // Indent past the conditional-formatting icon when present
+                // so the icon and the cell text don't overlap (Excel does
+                // the same — the icon occupies a ~16 px gutter).
+                let iconGutter = if format.IconSet.IsSome then 16.0 else 0.0
+                let textRect = { cell.Rect with X = cell.Rect.X + 4.0 + iconGutter; Width = max 0.0 (cell.Rect.Width - 8.0 - iconGutter) }
                 let color = format.TextColor |> Option.defaultValue "#000000"
                 let align = alignFromFormat format value
                 let hasHardBreak = displayText.Contains("\n")
@@ -970,6 +993,35 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     let shrink = float i * (triHalfWidth / 4.0)
                     let y = triTopY + float i
                     yield zone, GridLine (centerX - triHalfWidth + shrink, y, centerX + triHalfWidth - shrink, y, color, 1.0)
+
+        // Pass 7: conditional-formatting icon-set indicator. The renderer
+        // has no icon artwork or circle primitive, so approximate with a
+        // small filled square in a low→high color (red → amber → green
+        // for a 3-set; interpolated for 4/5-sets). It conveys the same
+        // low/mid/high signal the real icons do. Drawn in the 16 px
+        // gutter the text was already indented past.
+        for (cell, format, _value, _selected, _background, zone) in states do
+            match format.IconSet with
+            | Some (idx, count) when count > 1 ->
+                // 0 = worst (red), count-1 = best (green), midpoints amber.
+                let t = float idx / float (count - 1)
+                let color =
+                    if t <= 0.5 then
+                        // red → amber over the first half
+                        let u = t * 2.0
+                        sprintf "#FF%02X00" (int (0.0 * (1.0 - u) + 192.0 * u))
+                    else
+                        // amber → green over the second half
+                        let u = (t - 0.5) * 2.0
+                        sprintf "#%02X%02X%02X"
+                            (int (255.0 * (1.0 - u)))
+                            (int (192.0 * (1.0 - u) + 176.0 * u))
+                            (int (80.0 * u))
+                let sz = 9.0
+                let iconX = cell.Rect.X + 3.0
+                let iconY = cell.Rect.Y + cell.Rect.Height / 2.0 - sz / 2.0
+                yield zone, FillRect ({ X = iconX; Y = iconY; Width = sz; Height = sz }, color)
+            | _ -> ()
     ]
 
 /// Freeze-divider strokes drawn on top of the cell layer. Excel renders

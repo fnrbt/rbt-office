@@ -64,6 +64,13 @@ type CellFormat = {
     /// the cell is selected; for static snapshot rendering we always show
     /// it so the visual cue carries through to PDF / PNG exports.
     HasListDropdown: bool
+    /// Conditional-formatting data bar: (fillFraction 0..1, RRGGBB
+    /// color). Renderers draw a horizontal bar from the cell's left
+    /// edge spanning fraction × width, behind the text.
+    DataBar: (float * string) option
+    /// Conditional-formatting icon set: (iconIndex, iconCount). The
+    /// renderer draws a small low/mid/high indicator at the cell's left.
+    IconSet: (int * int) option
 }
 
 /// Default format
@@ -91,6 +98,8 @@ let defaultFormat = {
     FilterButton = false
     HasComment = false
     HasListDropdown = false
+    DataBar = None
+    IconSet = None
 }
 
 /// Cell comment/note

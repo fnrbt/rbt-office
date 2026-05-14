@@ -177,6 +177,18 @@ type ConditionalFormatRule = {
     /// Ordered stops for a `colorScale` rule (2 or 3 entries). Empty
     /// for other rule types.
     ColorScale: CfColorStop list
+    /// `dataBar` bar fill color (RRGGBB). None for non-dataBar rules.
+    DataBarColor: string option
+    /// `dataBar` min/max cfvo bounds — (type, optional value) pairs.
+    /// Two entries when present; empty otherwise.
+    DataBarCfvo: (string * string option) list
+    /// `iconSet` family name (e.g. "3TrafficLights1", "5Arrows").
+    /// None for non-iconSet rules.
+    IconSet: string option
+    /// `iconSet` threshold cfvos — N entries for an N-icon set, each
+    /// (type, optional value). The first is always the implicit 0%
+    /// floor; icon i shows when the value is ≥ threshold i.
+    IconSetCfvo: (string * string option) list
     Priority: int option
     StopIfTrue: bool
 }
@@ -1354,12 +1366,44 @@ module ConditionalFormats =
                             |> Option.defaultValue "FFFFFF"
                     }))
             |> Option.defaultValue []
+        let stripAlpha (raw: string) =
+            let t = raw.TrimStart('#')
+            if t.Length = 8 then t.Substring 2 else t
+        let cfvoPairs (parent: XmlNode) =
+            Ns.descendantsNs "cfvo" parent
+            |> List.map (fun cfvo ->
+                Xml.attr "type" cfvo |> Option.defaultValue "min",
+                Xml.attr "val" cfvo)
+        // <dataBar><cfvo type="min"/><cfvo type="max"/><color rgb=…/></dataBar>
+        let dataBarColor, dataBarCfvo =
+            match Ns.childNs "dataBar" ruleNode with
+            | Some db ->
+                let color =
+                    Ns.descendantsNs "color" db
+                    |> List.tryHead
+                    |> Option.bind (Xml.attr "rgb")
+                    |> Option.map stripAlpha
+                color, cfvoPairs db
+            | None -> None, []
+        // <iconSet iconSet="3TrafficLights1"><cfvo .../>...</iconSet>
+        let iconSet, iconSetCfvo =
+            match Ns.childNs "iconSet" ruleNode with
+            | Some ic ->
+                // Excel defaults the family to 3TrafficLights1 when the
+                // attribute is omitted.
+                Some (Xml.attr "iconSet" ic |> Option.defaultValue "3TrafficLights1"),
+                cfvoPairs ic
+            | None -> None, []
         {
             Type = ruleType
             Operator = operator
             Formulas = formulas
             DxfId = dxfId
             ColorScale = colorScale
+            DataBarColor = dataBarColor
+            DataBarCfvo = dataBarCfvo
+            IconSet = iconSet
+            IconSetCfvo = iconSetCfvo
             Priority = priority
             StopIfTrue = stopIfTrue
         }

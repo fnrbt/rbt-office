@@ -170,6 +170,8 @@ let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
         FilterButton = false
         HasComment = false
         HasListDropdown = false
+        DataBar = None
+        IconSet = None
     }
 
     // Layer the workbook's table style (e.g. `TableStyleMedium7`) on top of
@@ -472,6 +474,58 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                         | Some m -> blend m.Color hi.Color ((t - 0.5) * 2.0)
                                         | None -> blend lo.Color hi.Color t
                                     acc <- Map.add addr { cd with Format = { cd.Format with BgColor = Some color } } acc
+                                | None -> ()
+                            | None -> ()
+                    | "dataBar" ->
+                        // Bar length is the cell value's position in the
+                        // range min..max, clamped to [0,1]. Excel's default
+                        // dataBar leaves a small gap at min; we keep it
+                        // simple and let 0 → empty, max → full-width.
+                        let barColor = rule.DataBarColor |> Option.defaultValue "638EC6"
+                        let span = rangeMax - rangeMin
+                        for (r, c) in coords do
+                            let addr = { Row = r; Col = c }
+                            match Map.tryFind addr acc with
+                            | Some cd ->
+                                match numericOf cd.Value with
+                                | Some n ->
+                                    let frac = if span = 0.0 then 1.0 else (n - rangeMin) / span
+                                    let frac = max 0.0 (min 1.0 frac)
+                                    acc <- Map.add addr { cd with Format = { cd.Format with DataBar = Some (frac, "#" + barColor) } } acc
+                                | None -> ()
+                            | None -> ()
+                    | "iconSet" ->
+                        // Choose the icon by the value's percentile within
+                        // the range. The iconSet's cfvo list gives N
+                        // thresholds (first is the implicit 0% floor); icon
+                        // i is shown when value ≥ threshold i. We resolve
+                        // each cfvo to an absolute value: percent / percentile
+                        // map onto the range, num is literal.
+                        let iconCount = max 3 (List.length rule.IconSetCfvo)
+                        let span = rangeMax - rangeMin
+                        let thresholdAbs (cfvoType: string) (cfvoVal: string option) =
+                            let v = cfvoVal |> Option.bind parseNum |> Option.defaultValue 0.0
+                            match cfvoType with
+                            | "percent" | "percentile" -> rangeMin + span * (v / 100.0)
+                            | "num" -> v
+                            | "min" -> rangeMin
+                            | "max" -> rangeMax
+                            | _ -> rangeMin + span * (v / 100.0)
+                        let thresholds =
+                            rule.IconSetCfvo
+                            |> List.map (fun (t, v) -> thresholdAbs t v)
+                            |> List.toArray
+                        for (r, c) in coords do
+                            let addr = { Row = r; Col = c }
+                            match Map.tryFind addr acc with
+                            | Some cd ->
+                                match numericOf cd.Value with
+                                | Some n ->
+                                    // Highest threshold the value clears.
+                                    let mutable idx = 0
+                                    for i in 0 .. thresholds.Length - 1 do
+                                        if n >= thresholds.[i] then idx <- i
+                                    acc <- Map.add addr { cd with Format = { cd.Format with IconSet = Some (idx, iconCount) } } acc
                                 | None -> ()
                             | None -> ()
                     | _ -> ()
