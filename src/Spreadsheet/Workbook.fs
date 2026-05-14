@@ -6,6 +6,13 @@ open RedBat.Spreadsheet.Model
 /// Sheet ID (unique identifier)
 type SheetId = string
 
+/// A cell addressed absolutely within a workbook — sheet + cell. The unit
+/// the cross-sheet dependency graph is keyed on.
+type SheetCell = {
+    Sheet: SheetId
+    Cell: CellAddress
+}
+
 /// Sheet in a workbook
 type Sheet = {
     Id: SheetId

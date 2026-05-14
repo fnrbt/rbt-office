@@ -234,7 +234,7 @@
           <ul>
             <li>Focused guard: synthetic-namedrange.xlsx committed under <code>tests/test-documents-excel/</code>; the formula test harness gains 11 defined-name assertions (name→cell, case-insensitivity, name in expression, name→range in an aggregate, name→name chain, cycle, unknown name, plus sheet-local shadowing vs. global fallback).</li>
             <li>Regression guard: 59-fixture corpus byte-identical — every corpus file ships cached values, so <code>recalculateAllFormulas</code> only touches genuinely uncalculated cells and is otherwise a no-op.</li>
-            <li>Scope: workbook-global and sheet-scoped defined names that refer to ranges, cells, or constants. The incremental <code>Calc.fs</code> dependency graph still keys on <code>CellAddress</code> alone, so a cross-sheet named-range dep can't be tracked incrementally — the full <code>recalculateAllFormulas</code> pass covers it; only a future interactive editor needing live cross-sheet recalc would need the graph re-keyed to <code>(SheetId, CellAddress)</code>.</li>
+            <li>Scope: workbook-global and sheet-scoped defined names that refer to ranges, cells, or constants. The incremental <code>Calc.fs</code> engine was subsequently re-keyed to <code>SheetCell</code> (sheet + cell) and now operates on a whole <code>Workbook</code>, so dependency edges — and dirty propagation — cross sheet boundaries: editing <code>Sheet1!A1</code> dirties and recomputes a <code>Sheet2!B1 = Sheet1!A1 + 1</code>. <code>referencesQualified</code> qualifies every ref (and every <code>NameRef</code> target) to an absolute <code>(sheet, cell)</code> pair for that graph.</li>
           </ul>
         </td>
       </tr>

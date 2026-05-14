@@ -538,6 +538,52 @@ let referencesInExpr (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
         | Function (_, args) -> args |> List.fold (fun acc a -> Set.union acc (go seen a)) Set.empty
     go Set.empty expr
 
+/// Cross-sheet-aware reference extraction. Every reference is qualified to
+/// an absolute (sheet, cell) pair: a ref's own sheet name when it has one,
+/// otherwise `homeSheet` (the sheet the formula lives on). `NameRef`s
+/// resolve through the workbook with a cycle guard. A ref whose sheet name
+/// can't be resolved is dropped. This is what the incremental calc engine
+/// keys its dependency graph on, so dependencies — and dirty propagation —
+/// span sheet boundaries.
+let referencesQualified (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                        (homeSheet: RedBat.Spreadsheet.Workbook.SheetId)
+                        (expr: Expr) : Set<RedBat.Spreadsheet.Workbook.SheetCell> =
+    let sheetIdOf (name: string option) =
+        match name with
+        | None -> Some homeSheet
+        | Some n -> workbook |> Option.bind (RedBat.Spreadsheet.Workbook.resolveSheetName n)
+    let rec go (seen: Set<string>) (e: Expr) : Set<RedBat.Spreadsheet.Workbook.SheetCell> =
+        match e with
+        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ -> Set.empty
+        | NameRef name ->
+            let key = name.ToUpperInvariant()
+            if Set.contains key seen then Set.empty
+            else
+                match workbook |> Option.bind (resolveNameExpr name (Some homeSheet)) with
+                | Some resolved -> go (Set.add key seen) resolved
+                | None -> Set.empty
+        | CellRef r ->
+            match sheetIdOf r.Sheet with
+            | Some sid ->
+                Set.singleton
+                    ({ Sheet = sid; Cell = { Row = r.Row; Col = r.Col } }
+                     : RedBat.Spreadsheet.Workbook.SheetCell)
+            | None -> Set.empty
+        | RangeRef (a, b) ->
+            match sheetIdOf a.Sheet with
+            | Some sid ->
+                let sr, sc, er, ec = normalizeRange a b
+                seq { for row in sr .. er do
+                        for col in sc .. ec ->
+                            ({ Sheet = sid; Cell = { Row = row; Col = col } }
+                             : RedBat.Spreadsheet.Workbook.SheetCell) }
+                |> Set.ofSeq
+            | None -> Set.empty
+        | UnaryOp (_, inner) -> go seen inner
+        | BinOp (l, _, r) -> Set.union (go seen l) (go seen r)
+        | Function (_, args) -> args |> List.fold (fun acc a -> Set.union acc (go seen a)) Set.empty
+    go Set.empty expr
+
 /// Shift every *relative* reference in an expression by (dr, dc). Absolute
 /// components (`$`-locked row/col) are left untouched. This is how a
 /// formula written for one anchor cell is re-pointed for another — used by

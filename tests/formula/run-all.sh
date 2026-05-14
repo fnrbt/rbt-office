@@ -16,6 +16,7 @@ stages=(
     tests/formula/stage2-functions.fsx
     tests/formula/stage3-context.fsx
     tests/formula/stage4-perf.fsx
+    tests/formula/stage5-calc.fsx
 )
 
 failed=0

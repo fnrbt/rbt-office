@@ -1,37 +1,37 @@
 module RedBat.Spreadsheet.Calc
 
-open System.Collections.Generic
 open RedBat.Spreadsheet.Model
+open RedBat.Spreadsheet.Workbook
 open RedBat.Spreadsheet.Formula
 
-/// Calculation engine with dependency tracking and smart recalculation
+/// Incremental calculation engine with cross-sheet dependency tracking.
+///
+/// The dependency graph is keyed on `SheetCell` (sheet + cell), so an edge
+/// can cross a sheet boundary: `Sheet2!B1 = Sheet1!A1 + 1` makes
+/// `Sheet1!A1` a dependency of `Sheet2!B1`, and editing `Sheet1!A1`
+/// dirties — and recalculates — `Sheet2!B1`. The engine therefore operates
+/// on a whole `Workbook` rather than a single sheet model.
 
-/// Dependency graph edge: cell A depends on cell B
-type Dependency = {
-    From: CellAddress  // The cell that has the formula
-    To: CellAddress    // The cell it references
-}
-
-/// Calculation metadata for a cell
+/// Calculation metadata for one formula cell.
 type CalcMetadata = {
-    /// Cells this cell directly references
-    Dependencies: Set<CellAddress>
-    /// Cells that reference this cell
-    Dependents: Set<CellAddress>
+    /// Cells this cell directly references (may live on other sheets).
+    Dependencies: Set<SheetCell>
+    /// Cells that reference this cell (may live on other sheets).
+    Dependents: Set<SheetCell>
     /// Is this cell marked for recalculation?
     IsDirty: bool
-    /// Formula AST (parsed once, cached)
+    /// Formula AST (parsed once, cached).
     ParsedFormula: Expr option
 }
 
-/// Calculation engine state
+/// Calculation engine state.
 type CalcEngine = {
-    /// Metadata for each cell
-    Metadata: Map<CellAddress, CalcMetadata>
-    /// Pre-computed calculation order (topological sort)
-    CalcChain: CellAddress list
-    /// Cells marked dirty (need recalculation)
-    DirtySet: Set<CellAddress>
+    /// Metadata for each formula cell, across every sheet.
+    Metadata: Map<SheetCell, CalcMetadata>
+    /// Pre-computed calculation order (topological sort).
+    CalcChain: SheetCell list
+    /// Cells marked dirty (need recalculation).
+    DirtySet: Set<SheetCell>
 }
 
 let emptyMetadata = {
@@ -47,31 +47,37 @@ let emptyEngine = {
     DirtySet = Set.empty
 }
 
-/// Extract cell references from a formula AST. Delegates to the shared
-/// implementation in Formula.fs so the two stay in lock-step as the AST
-/// grows. The workbook lets a `NameRef` resolve to its target cells.
-let extractReferences (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                      (expr: Expr): Set<CellAddress> =
-    referencesInExpr workbook expr
+/// Look up a sheet's model within the workbook.
+let private sheetModel (sheetId: SheetId) (workbook: Workbook) : SpreadsheetModel option =
+    Map.tryFind sheetId workbook.Sheets |> Option.map (fun s -> s.Model)
 
-/// Build dependency graph for a cell with a formula
-let buildDependencies (addr: CellAddress) (formula: string)
-                      (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                      (engine: CalcEngine): CalcEngine =
+/// Extract the cross-sheet references of a formula AST. Delegates to the
+/// shared implementation in Formula.fs so the two stay in lock-step as the
+/// AST grows. `homeSheet` qualifies unqualified refs; the workbook resolves
+/// sheet names and `NameRef`s.
+let extractReferences (workbook: Workbook option) (homeSheet: SheetId)
+                      (expr: Expr): Set<SheetCell> =
+    referencesQualified workbook homeSheet expr
+
+/// Build (or rebuild) the dependency edges for one formula cell.
+let buildDependencies (cell: SheetCell) (formula: string)
+                      (workbook: Workbook) (engine: CalcEngine): CalcEngine =
     match parseFormula formula with
     | Ok expr ->
-        let deps = extractReferences workbook expr
+        let deps = extractReferences (Some workbook) cell.Sheet expr
         let metadata =
             engine.Metadata
-            |> Map.tryFind addr
+            |> Map.tryFind cell
             |> Option.defaultValue emptyMetadata
 
+        // Drop this cell from the dependents list of every cell it used to
+        // reference, before wiring up the new edges.
         let mutable updatedMetadata = engine.Metadata
         for oldDep in metadata.Dependencies do
             match Map.tryFind oldDep updatedMetadata with
             | Some oldDepMeta ->
                 updatedMetadata <-
-                    Map.add oldDep { oldDepMeta with Dependents = Set.remove addr oldDepMeta.Dependents } updatedMetadata
+                    Map.add oldDep { oldDepMeta with Dependents = Set.remove cell oldDepMeta.Dependents } updatedMetadata
             | None -> ()
 
         let newMetadata = {
@@ -79,222 +85,182 @@ let buildDependencies (addr: CellAddress) (formula: string)
                 Dependencies = deps
                 ParsedFormula = Some expr
         }
+        updatedMetadata <- Map.add cell newMetadata updatedMetadata
 
-        // Update dependents for referenced cells
-        updatedMetadata <- Map.add addr newMetadata updatedMetadata
-
+        // Register this cell as a dependent of everything it now references.
         for dep in deps do
             let depMeta =
                 updatedMetadata
                 |> Map.tryFind dep
                 |> Option.defaultValue emptyMetadata
-
-            let newDepMeta = {
-                depMeta with
-                    Dependents = Set.add addr depMeta.Dependents
-            }
-            updatedMetadata <- Map.add dep newDepMeta updatedMetadata
+            updatedMetadata <-
+                Map.add dep { depMeta with Dependents = Set.add cell depMeta.Dependents } updatedMetadata
 
         { engine with Metadata = updatedMetadata }
     | Result.Error _ ->
         engine
 
-/// Topological sort using DFS
-/// Returns calculation order (dependencies first) or None if there's a cycle
-let topologicalSort (addresses: CellAddress list) (metadata: Map<CellAddress, CalcMetadata>): CellAddress list option =
+/// Topological sort (DFS). Returns calculation order — dependencies first
+/// — or None when the graph has a cycle.
+let topologicalSort (nodes: SheetCell list) (metadata: Map<SheetCell, CalcMetadata>): SheetCell list option =
     let mutable visited = Set.empty
     let mutable recStack = Set.empty
     let mutable result = []
     let mutable hasCycle = false
 
-    let rec visit (addr: CellAddress) =
-        if recStack.Contains(addr) then
+    let rec visit (node: SheetCell) =
+        if recStack.Contains node then
             hasCycle <- true
-        elif not (visited.Contains(addr)) then
-            visited <- Set.add addr visited
-            recStack <- Set.add addr recStack
-
-            match Map.tryFind addr metadata with
-            | Some meta ->
-                for dep in meta.Dependencies do
-                    visit dep
+        elif not (visited.Contains node) then
+            visited <- Set.add node visited
+            recStack <- Set.add node recStack
+            match Map.tryFind node metadata with
+            | Some meta -> for dep in meta.Dependencies do visit dep
             | None -> ()
+            recStack <- Set.remove node recStack
+            result <- node :: result
 
-            recStack <- Set.remove addr recStack
-            result <- addr :: result
+    for node in nodes do
+        if not hasCycle then visit node
 
-    for addr in addresses do
-        if not hasCycle then
-            visit addr
-
-    // Reverse to get dependencies-first order
     if hasCycle then None else Some (List.rev result)
 
-/// Rebuild calculation chain (topological sort of all formula cells)
-let rebuildCalcChain (model: SpreadsheetModel) (engine: CalcEngine): CalcEngine =
-    // Get all cells with formulas
+/// Rebuild the calculation chain — a topological sort over every formula
+/// cell in the workbook.
+let rebuildCalcChain (workbook: Workbook) (engine: CalcEngine): CalcEngine =
     let formulaCells =
-        model.Cells
-        |> Map.toList
-        |> List.choose (fun (addr, cell) ->
-            match cell.Value with
-            | CellValue.Formula _ -> Some addr
-            | _ -> None
-        )
-
+        [ for KeyValue(sheetId, sheet) in workbook.Sheets do
+            for KeyValue(addr, cell) in sheet.Model.Cells do
+                match cell.Value with
+                | CellValue.Formula _ -> yield { Sheet = sheetId; Cell = addr }
+                | _ -> () ]
     match topologicalSort formulaCells engine.Metadata with
     | Some chain -> { engine with CalcChain = chain }
     | None ->
-        // Circular reference detected - clear calc chain to indicate error
+        // Circular reference — clear the chain to signal the error state.
         { engine with CalcChain = [] }
 
-/// Mark a cell and all its dependents as dirty
-let rec markDirty (addr: CellAddress) (engine: CalcEngine): CalcEngine =
+/// Mark a cell and everything transitively downstream of it dirty.
+let rec markDirty (cell: SheetCell) (engine: CalcEngine): CalcEngine =
     let metadata =
         engine.Metadata
-        |> Map.tryFind addr
+        |> Map.tryFind cell
         |> Option.defaultValue emptyMetadata
 
     if metadata.IsDirty then
-        // Already dirty, no need to propagate
-        engine
+        engine  // already dirty — its dependents were marked too
     else
-        // Mark this cell dirty
-        let newMetadata = { metadata with IsDirty = true }
-        let updatedMetadata = Map.add addr newMetadata engine.Metadata
-        let updatedDirtySet = Set.add addr engine.DirtySet
-
-        // Recursively mark all dependents
-        let mutable result = {
-            engine with
-                Metadata = updatedMetadata
-                DirtySet = updatedDirtySet
-        }
-
+        let mutable result =
+            { engine with
+                Metadata = Map.add cell { metadata with IsDirty = true } engine.Metadata
+                DirtySet = Set.add cell engine.DirtySet }
         for dependent in metadata.Dependents do
             result <- markDirty dependent result
-
         result
 
-/// Clear dirty flag for a cell
-let clearDirty (addr: CellAddress) (engine: CalcEngine): CalcEngine =
-    match Map.tryFind addr engine.Metadata with
+/// Clear the dirty flag for a cell.
+let clearDirty (cell: SheetCell) (engine: CalcEngine): CalcEngine =
+    match Map.tryFind cell engine.Metadata with
     | Some metadata ->
-        let newMetadata = { metadata with IsDirty = false }
         { engine with
-            Metadata = Map.add addr newMetadata engine.Metadata
-            DirtySet = Set.remove addr engine.DirtySet
-        }
+            Metadata = Map.add cell { metadata with IsDirty = false } engine.Metadata
+            DirtySet = Set.remove cell engine.DirtySet }
     | None -> engine
 
-/// Recalculate a single cell using cached formula. The workbook context
-/// lets cross-sheet references resolve.
-let recalculateCell (addr: CellAddress) (model: SpreadsheetModel) (engine: CalcEngine)
-                    (workbook: RedBat.Spreadsheet.Workbook.Workbook option): CellValue option =
-    match Map.tryFind addr engine.Metadata with
+/// Recalculate a single cell from its cached formula AST, evaluating
+/// against its own sheet's model with the full workbook in context.
+let recalculateCell (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine): CellValue option =
+    match Map.tryFind cell engine.Metadata with
     | Some metadata ->
-        match metadata.ParsedFormula with
-        | Some expr ->
+        match metadata.ParsedFormula, sheetModel cell.Sheet workbook with
+        | Some expr, Some model ->
             let ctx : EvalContext =
-                { Model = model
-                  Workbook = workbook
-                  Sheet = workbook |> Option.map (fun w -> w.ActiveSheet) }
+                { Model = model; Workbook = Some workbook; Sheet = Some cell.Sheet }
             Some (eval expr ctx)
-        | None -> None
+        | _ -> None
     | None -> None
 
-/// Smart recalculation: only recalculate dirty cells in correct order.
-/// Volatile cells (RAND/NOW/OFFSET/…) are forced dirty every pass so their
-/// values — and anything downstream — stay live.
-let smartRecalculate (model: SpreadsheetModel) (engine: CalcEngine)
-                     (workbook: RedBat.Spreadsheet.Workbook.Workbook option): SpreadsheetModel * CalcEngine =
+/// Smart recalculation: recompute only dirty cells, in dependency order,
+/// across every sheet. Volatile cells (RAND/NOW/OFFSET/…) are forced dirty
+/// every pass so their values — and anything downstream — stay live.
+let smartRecalculate (workbook: Workbook) (engine: CalcEngine): Workbook * CalcEngine =
     let engine =
         engine.Metadata
-        |> Map.fold (fun eng addr meta ->
+        |> Map.fold (fun eng cell meta ->
             match meta.ParsedFormula with
-            | Some expr when containsVolatile expr -> markDirty addr eng
+            | Some expr when containsVolatile expr -> markDirty cell eng
             | _ -> eng) engine
     if Set.isEmpty engine.DirtySet then
-        // Nothing to recalculate
-        (model, engine)
+        (workbook, engine)
     else
-        // Recalculate dirty cells in chain order
-        let mutable updatedModel = model
-        let mutable updatedEngine = engine
-
-        for addr in engine.CalcChain do
-            match Map.tryFind addr engine.Metadata with
+        let mutable wb = workbook
+        let mutable eng = engine
+        for cell in engine.CalcChain do
+            match Map.tryFind cell eng.Metadata with
             | Some metadata when metadata.IsDirty ->
-                // Recalculate this cell
-                match recalculateCell addr updatedModel updatedEngine workbook with
+                match recalculateCell cell wb eng with
                 | Some newValue ->
-                    // Update cell with new calculated value
-                    match getCell addr updatedModel with
-                    | Some cellData ->
-                        match cellData.Value with
-                        | CellValue.Formula (formula, _) ->
-                            let newCellData = {
-                                cellData with
-                                    Value = CellValue.Formula (formula, newValue)
-                            }
-                            updatedModel <- setCell addr newCellData updatedModel
-                        | _ -> ()
+                    match sheetModel cell.Sheet wb with
+                    | Some model ->
+                        match getCell cell.Cell model with
+                        | Some cellData ->
+                            match cellData.Value with
+                            | CellValue.Formula (formula, _) ->
+                                let model' =
+                                    setCell cell.Cell
+                                        { cellData with Value = CellValue.Formula (formula, newValue) }
+                                        model
+                                wb <- updateSheetModel cell.Sheet model' wb
+                            | _ -> ()
+                        | None -> ()
                     | None -> ()
-
-                    // Clear dirty flag
-                    updatedEngine <- clearDirty addr updatedEngine
+                    eng <- clearDirty cell eng
                 | None -> ()
             | _ -> ()
+        // Anything still dirty after the chain pass is a non-formula source
+        // cell (the *edited* cell itself, which has nothing to recompute) or
+        // — when the graph has a cycle — an unresolvable formula. Either way
+        // clear it: leaving a stale dirty flag would make the next edit's
+        // markDirty short-circuit and skip propagating to dependents.
+        let eng = eng.DirtySet |> Set.fold (fun e c -> clearDirty c e) eng
+        (wb, eng)
 
-        (updatedModel, updatedEngine)
+/// Update a cell's value, rewire its dependency edges, mark dependents
+/// dirty, and rebuild the calc chain. Returns the updated workbook + engine.
+let updateCell (cell: SheetCell) (value: CellValue) (cellData: CellData)
+               (workbook: Workbook) (engine: CalcEngine): Workbook * CalcEngine =
+    let newWorkbook =
+        match sheetModel cell.Sheet workbook with
+        | Some model ->
+            let model' = setCell cell.Cell { cellData with Value = value } model
+            updateSheetModel cell.Sheet model' workbook
+        | None -> workbook
 
-/// Update cell value and mark dependents dirty
-let updateCell (addr: CellAddress) (value: CellValue) (cellData: CellData)
-               (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-               (model: SpreadsheetModel) (engine: CalcEngine): SpreadsheetModel * CalcEngine =
-    // Update the cell
-    let newCellData = { cellData with Value = value }
-    let newModel = setCell addr newCellData model
-
-    // If it's a formula, rebuild dependencies
     let newEngine =
         match value with
         | CellValue.Formula (formula, _) ->
-            buildDependencies addr formula workbook engine
+            buildDependencies cell formula newWorkbook engine
         | _ ->
-            // Clear dependencies but keep dependents (other cells may reference this)
-            match Map.tryFind addr engine.Metadata with
+            // Not a formula anymore: drop its outgoing edges but keep the
+            // incoming ones — other cells may still reference this cell.
+            match Map.tryFind cell engine.Metadata with
             | Some metadata ->
-                // Remove this cell from dependents of cells it referenced
                 let mutable updatedMetadata = engine.Metadata
                 for dep in metadata.Dependencies do
                     match Map.tryFind dep updatedMetadata with
                     | Some depMeta ->
-                        let newDepMeta = {
-                            depMeta with
-                                Dependents = Set.remove addr depMeta.Dependents
-                        }
-                        updatedMetadata <- Map.add dep newDepMeta updatedMetadata
+                        updatedMetadata <-
+                            Map.add dep { depMeta with Dependents = Set.remove cell depMeta.Dependents } updatedMetadata
                     | None -> ()
-
-                // Keep dependents, clear dependencies and formula
-                let newMetadata = {
-                    metadata with
-                        Dependencies = Set.empty
-                        ParsedFormula = None
-                }
-                { engine with Metadata = Map.add addr newMetadata updatedMetadata }
+                let newMetadata = { metadata with Dependencies = Set.empty; ParsedFormula = None }
+                { engine with Metadata = Map.add cell newMetadata updatedMetadata }
             | None -> engine
 
-    // Mark dependents dirty
-    let dirtyEngine = markDirty addr newEngine
+    let dirtyEngine = markDirty cell newEngine
+    let finalEngine = rebuildCalcChain newWorkbook dirtyEngine
+    (newWorkbook, finalEngine)
 
-    // Rebuild calc chain
-    let finalEngine = rebuildCalcChain newModel dirtyEngine
-
-    (newModel, finalEngine)
-
-/// Statistics about calculation engine
+/// Statistics about the calculation engine.
 type CalcStats = {
     TotalCells: int
     FormulaCells: int
@@ -304,16 +270,15 @@ type CalcStats = {
     HasCircularRef: bool
 }
 
-let getStats (model: SpreadsheetModel) (engine: CalcEngine): CalcStats =
-    let formulaCells =
-        model.Cells
-        |> Map.toList
-        |> List.filter (fun (_, cell) ->
+let getStats (workbook: Workbook) (engine: CalcEngine): CalcStats =
+    let mutable totalCells = 0
+    let mutable formulaCells = 0
+    for KeyValue(_, sheet) in workbook.Sheets do
+        for KeyValue(_, cell) in sheet.Model.Cells do
+            totalCells <- totalCells + 1
             match cell.Value with
-            | CellValue.Formula _ -> true
-            | _ -> false
-        )
-        |> List.length
+            | CellValue.Formula _ -> formulaCells <- formulaCells + 1
+            | _ -> ()
 
     let totalDeps =
         engine.Metadata
@@ -321,7 +286,7 @@ let getStats (model: SpreadsheetModel) (engine: CalcEngine): CalcStats =
         |> List.sumBy (fun (_, meta) -> Set.count meta.Dependencies)
 
     {
-        TotalCells = Map.count model.Cells
+        TotalCells = totalCells
         FormulaCells = formulaCells
         DirtyCells = Set.count engine.DirtySet
         Dependencies = totalDeps
