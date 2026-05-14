@@ -323,6 +323,91 @@ let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float)
     | Some s -> s
     | None -> System.String('#', maxChars)
 
+/// Render an Excel fraction format like `# ?/?` (one-digit denominator),
+/// `# ??/??` (two), `# ???/???` (three). Splits the number into its
+/// integer part and the closest reduced fraction with denominator ≤
+/// 10^digits, mirroring Excel's display. Returns None if the code isn't
+/// a recognized fraction pattern.
+let private tryFormatFraction (code: string) (n: float) : string option =
+    // Match `<intPart>?<spaces>?/?` style: any number of ?'s on both
+    // sides of the slash. The integer part can be empty (no whole
+    // number shown) or "#"/"0" patterns we strip into "show int if
+    // non-zero".
+    let pattern = System.Text.RegularExpressions.Regex(@"^(?<int>[#0]*)\s*(?<num>\?+)/(?<den>\?+)$")
+    let m = pattern.Match code
+    if not m.Success then None else
+        let denDigits = m.Groups.["den"].Length
+        let maxDen = pown 10 denDigits - 1
+        let sign = if n < 0.0 then "-" else ""
+        let abs = System.Math.Abs n
+        let whole = int (System.Math.Floor abs)
+        let frac = abs - float whole
+        // Stern-Brocot search for the best rational with denominator
+        // ≤ maxDen. Exact enough for Excel's display.
+        let mutable bestNum, bestDen = 0, 1
+        let mutable bestErr = frac
+        for d in 1 .. maxDen do
+            let nn = int (System.Math.Round (frac * float d))
+            let err = System.Math.Abs (frac - float nn / float d)
+            if err < bestErr then
+                bestErr <- err
+                bestNum <- nn
+                bestDen <- d
+        // Reduce.
+        let rec gcd a b = if b = 0 then a else gcd b (a % b)
+        let g = gcd bestNum bestDen |> max 1
+        let nn, dd = bestNum / g, bestDen / g
+        let result =
+            if nn = 0 && whole = 0 then "0"
+            elif nn = 0 then sprintf "%s%d" sign whole
+            elif whole = 0 then sprintf "%s%d/%d" sign nn dd
+            else sprintf "%s%d %d/%d" sign whole nn dd
+        Some result
+
+/// Strip Excel's column-width placeholders that have no .NET equivalent.
+/// Excel uses `_X` to mean "skip a column's worth of width = width(X)"
+/// (typically used as `_(` / `_)` to align with paren-bracketed negatives)
+/// and `*X` to mean "fill with character X" (typically `* ` to right-
+/// justify a "-" placeholder for zero). Neither has a placement in
+/// monospaced PNG/PDF output, so collapse `_X` to a single space and
+/// drop the `*` filler entirely (rendering the next char once).
+///
+/// Also normalize Excel's `?` digit-or-space placeholder. .NET has no
+/// direct equivalent — `?` looks like a literal in custom-format-string
+/// land, which would print as `??` rather than space-padding. The
+/// pragmatic mapping is `?` → `#` (digit or nothing): produces the
+/// same visual for non-zero values and renders an empty string for
+/// zero, which is what Excel's accounting "-" section needs anyway.
+/// Skip `?` inside quoted literal segments.
+let private stripExcelWidthPlaceholders (code: string) : string =
+    let sb = System.Text.StringBuilder(code.Length)
+    let mutable i = 0
+    let mutable inQuote = false
+    while i < code.Length do
+        let c = code.[i]
+        if c = '"' then
+            sb.Append(c) |> ignore
+            inQuote <- not inQuote
+            i <- i + 1
+        elif inQuote then
+            sb.Append(c) |> ignore
+            i <- i + 1
+        elif (c = '_' || c = '*') && i + 1 < code.Length then
+            // Render `_X` as " " (single-space alignment) and `*X` as
+            // X alone. Excel proper uses these to fill column width;
+            // we don't have that concept so the minimal substitute is
+            // a single occurrence of the target char.
+            if c = '_' then sb.Append(' ') |> ignore
+            else sb.Append(code.[i + 1]) |> ignore
+            i <- i + 2
+        elif c = '?' then
+            sb.Append('#') |> ignore
+            i <- i + 1
+        else
+            sb.Append(c) |> ignore
+            i <- i + 1
+    sb.ToString()
+
 /// Apply an Excel non-date number-format code (`0.000`, `#,##0.00`, `0%`,
 /// `0.00E+00`, etc.) using .NET's custom-format-string support. Excel's
 /// number-format grammar is largely compatible with .NET's; we strip the
@@ -330,20 +415,36 @@ let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float)
 /// falling back to `G` if .NET rejects it.
 let private formatExcelNumber (code: string) (n: float) : string =
     let inv = System.Globalization.CultureInfo.InvariantCulture
+    let sections = splitSections code
     let pos = sectionForValue code n
+    // Excel's section grammar already encodes the sign visually (e.g.
+    // `(#,##0.00)` for negatives), so the picked section should format
+    // against the *absolute* value — otherwise .NET prepends an extra
+    // `-` to a value that's already wrapped in parens. The same goes
+    // for the zero section, which usually has a literal "-" placeholder.
+    let valueForSection =
+        if (n < 0.0 && sections.Length >= 2) || (n = 0.0 && sections.Length >= 3) then
+            System.Math.Abs n
+        else n
+    // Fractions (`# ?/?`, `# ??/??`, `?/??`) have no .NET equivalent and
+    // need explicit numerator-denominator search. Try that first.
+    match tryFormatFraction pos n with
+    | Some s -> s
+    | None ->
     // Translate Excel's escape grammar to .NET's. Excel uses `"..."` and
     // `\x` for literal segments; .NET wants `'...'` and `\x` (\x already
     // works). We rewrite double-quoted runs to single-quoted runs so that
     // a format like `"TRUE"` (literal text, no digit placeholders) renders
     // as the literal `TRUE` instead of throwing.
+    let withoutPlaceholders = stripExcelWidthPlaceholders pos
     let cleaned =
-        let sb = System.Text.StringBuilder(pos.Length)
+        let sb = System.Text.StringBuilder(withoutPlaceholders.Length)
         let mutable i = 0
         let mutable inDquote = false
-        while i < pos.Length do
-            let c = pos.[i]
-            if c = '\\' && i + 1 < pos.Length then
-                sb.Append('\'').Append(pos.[i + 1]).Append('\'') |> ignore
+        while i < withoutPlaceholders.Length do
+            let c = withoutPlaceholders.[i]
+            if c = '\\' && i + 1 < withoutPlaceholders.Length then
+                sb.Append('\'').Append(withoutPlaceholders.[i + 1]).Append('\'') |> ignore
                 i <- i + 2
             elif c = '"' then
                 sb.Append('\'') |> ignore
@@ -353,7 +454,15 @@ let private formatExcelNumber (code: string) (n: float) : string =
                 sb.Append(c) |> ignore
                 i <- i + 1
         sb.ToString()
-    try n.ToString(cleaned, inv)
+    // Strip any `[$-XXX]` locale tag — these tell Excel which locale's
+    // date/month names to use; we keep the format string as-is and let
+    // the OS culture default decide. Also drop `[Red]` / color tags;
+    // section-based color routing isn't wired and the literal `[Red]`
+    // would otherwise become part of the output.
+    let cleaned =
+        System.Text.RegularExpressions.Regex.Replace(
+            cleaned, @"\[(?:\$[^\]]*|Red|Black|Green|White|Blue|Magenta|Yellow|Cyan)\]", "")
+    try valueForSection.ToString(cleaned, inv)
     with _ ->
         try n.ToString("G", inv)
         with _ -> string n
