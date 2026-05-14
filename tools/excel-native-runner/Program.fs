@@ -612,6 +612,51 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                     | None -> ()
                                 | None -> ()
                         | _ -> ()
+                    | "expression" ->
+                        // Per-cell formula rule. The single <formula> is
+                        // written relative to the range's top-left; shift
+                        // its relative refs onto each target cell, evaluate
+                        // against the sheet, and overlay the dxf where the
+                        // result is truthy.
+                        let dxf =
+                            rule.DxfId
+                            |> Option.bind (fun i ->
+                                if i >= 0 && i < workbook.Dxfs.Length then Some workbook.Dxfs.[i] else None)
+                        match rule.Formulas, dxf with
+                        | formulaText :: _, Some d ->
+                            let anchorR, anchorC =
+                                cf.Range.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries)
+                                |> Array.tryHead
+                                |> Option.bind parseCellRange
+                                |> Option.map (fun (r1, c1, _, _) -> r1, c1)
+                                |> Option.defaultValue (0, 0)
+                            match RedBat.Spreadsheet.Formula.parseFormula ("=" + formulaText) with
+                            | Ok baseExpr ->
+                                let evalModel = { createEmpty 1048576 16384 with Cells = acc }
+                                let truthy (v: CellValue) =
+                                    match v with
+                                    | Boolean b -> b
+                                    | Number n -> n <> 0.0
+                                    | Formula (_, Boolean b) -> b
+                                    | Formula (_, Number n) -> n <> 0.0
+                                    | _ -> false
+                                for (r, c) in coords do
+                                    let addr = { Row = r; Col = c }
+                                    match Map.tryFind addr acc with
+                                    | Some cd ->
+                                        let shifted =
+                                            RedBat.Spreadsheet.Formula.shiftExpr (r - anchorR) (c - anchorC) baseExpr
+                                        if truthy (RedBat.Spreadsheet.Formula.eval shifted evalModel None) then
+                                            let fmt =
+                                                { cd.Format with
+                                                    BgColor = d.FillColor |> Option.orElse cd.Format.BgColor
+                                                    TextColor = d.FontColor |> Option.orElse cd.Format.TextColor
+                                                    Bold = (d.Bold |> Option.defaultValue cd.Format.Bold)
+                                                    Italic = (d.Italic |> Option.defaultValue cd.Format.Italic) }
+                                            acc <- Map.add addr { cd with Format = fmt } acc
+                                    | None -> ()
+                            | Result.Error _ -> ()
+                        | _ -> ()
                     | _ -> ()
             acc
 

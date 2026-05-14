@@ -484,13 +484,16 @@ let coerceBool (value: CellValue) : Result<bool, string> =
 let private normalizeRange (a: RefAst) (b: RefAst) =
     (min a.Row b.Row, min a.Col b.Col, max a.Row b.Row, max a.Col b.Col)
 
-/// Static set of cell addresses an expression references (same-sheet only;
-/// cross-sheet deps handled by the calc engine in S3). Used by the
-/// dependency tracker.
+/// Static set of cell addresses an expression references *within the
+/// current model*. Cross-sheet refs (`r.Sheet = Some _`) are deliberately
+/// excluded — single-model recalc ordering can't span sheets, so they're
+/// treated as external constants. Used by the dependency tracker.
 let rec referencesInExpr (expr: Expr) : Set<CellAddress> =
     match expr with
     | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ -> Set.empty
+    | CellRef r when r.Sheet.IsSome -> Set.empty
     | CellRef r -> Set.singleton { Row = r.Row; Col = r.Col }
+    | RangeRef (a, _) when a.Sheet.IsSome -> Set.empty
     | RangeRef (a, b) ->
         let sr, sc, er, ec = normalizeRange a b
         seq { for row in sr .. er do for col in sc .. ec -> { Row = row; Col = col } }
@@ -499,16 +502,72 @@ let rec referencesInExpr (expr: Expr) : Set<CellAddress> =
     | BinOp (l, _, r) -> Set.union (referencesInExpr l) (referencesInExpr r)
     | Function (_, args) -> args |> List.fold (fun acc a -> Set.union acc (referencesInExpr a)) Set.empty
 
-/// Read a single cell's value (same-sheet; cross-sheet resolution is S3).
-let private readCell (r: RefAst) (model: SpreadsheetModel) : CellValue =
-    getCellValue { Row = r.Row; Col = r.Col } model |> unwrapValue
+/// Shift every *relative* reference in an expression by (dr, dc). Absolute
+/// components (`$`-locked row/col) are left untouched. This is how a
+/// formula written for one anchor cell is re-pointed for another — used by
+/// fill/copy and by conditional-format `expression` rules, which store one
+/// formula anchored at the range's top-left.
+let rec shiftExpr (dr: int) (dc: int) (expr: Expr) : Expr =
+    let shiftRef (r: RefAst) =
+        { r with
+            Row = if r.RowAbs then r.Row else r.Row + dr
+            Col = if r.ColAbs then r.Col else r.Col + dc }
+    match expr with
+    | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ -> expr
+    | CellRef r -> CellRef (shiftRef r)
+    | RangeRef (a, b) -> RangeRef (shiftRef a, shiftRef b)
+    | UnaryOp (op, e) -> UnaryOp (op, shiftExpr dr dc e)
+    | BinOp (l, op, r) -> BinOp (shiftExpr dr dc l, op, shiftExpr dr dc r)
+    | Function (name, args) -> Function (name, args |> List.map (shiftExpr dr dc))
+
+/// True if the expression contains a volatile function (RAND/RANDBETWEEN/
+/// NOW/TODAY/OFFSET/INDIRECT) anywhere in its tree. Such cells must be
+/// recalculated on every pass regardless of dependency state.
+let rec containsVolatile (expr: Expr) : bool =
+    match expr with
+    | Function (name, args) ->
+        let n = name.ToUpperInvariant()
+        n = "RAND" || n = "RANDBETWEEN" || n = "NOW" || n = "TODAY"
+        || n = "OFFSET" || n = "INDIRECT"
+        || List.exists containsVolatile args
+    | UnaryOp (_, e) -> containsVolatile e
+    | BinOp (l, _, r) -> containsVolatile l || containsVolatile r
+    | _ -> false
+
+/// Resolve the model a reference targets. Unqualified refs use the current
+/// model; sheet-qualified refs resolve through the workbook. Returns None
+/// when a sheet name can't be resolved (caller surfaces #REF!).
+let private resolveModel (sheet: string option) (model: SpreadsheetModel)
+                         (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                         : SpreadsheetModel option =
+    match sheet with
+    | None -> Some model
+    | Some name ->
+        match workbook with
+        | None -> None
+        | Some wb ->
+            RedBat.Spreadsheet.Workbook.resolveSheetName name wb
+            |> Option.bind (fun sid -> Map.tryFind sid wb.Sheets)
+            |> Option.map (fun s -> s.Model)
+
+/// Read a single cell's value, resolving cross-sheet references.
+let private readCell (r: RefAst) (model: SpreadsheetModel)
+                     (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue =
+    match resolveModel r.Sheet model workbook with
+    | Some m -> getCellValue { Row = r.Row; Col = r.Col } m |> unwrapValue
+    | None -> err Err.ref
 
 /// Expand a RangeRef to the flat list of unwrapped cell values, row-major.
-let expandRangeRef (a: RefAst) (b: RefAst) (model: SpreadsheetModel) : CellValue list =
-    let sr, sc, er, ec = normalizeRange a b
-    [ for row in sr .. er do
-        for col in sc .. ec ->
-            getCellValue { Row = row; Col = col } model |> unwrapValue ]
+/// The sheet qualifier on the start ref selects the target sheet.
+let expandRangeRef (a: RefAst) (b: RefAst) (model: SpreadsheetModel)
+                   (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue list =
+    match resolveModel a.Sheet model workbook with
+    | Some m ->
+        let sr, sc, er, ec = normalizeRange a b
+        [ for row in sr .. er do
+            for col in sc .. ec ->
+                getCellValue { Row = row; Col = col } m |> unwrapValue ]
+    | None -> [ err Err.ref ]
 
 /// Expand a structured table reference to its column's values.
 let expandTableRef (tableName: string) (columnName: string)
@@ -530,6 +589,9 @@ let expandTableRef (tableName: string) (columnName: string)
 let private excelEpoch = DateTime(1899, 12, 30)
 let private serialToDate (s: float) : DateTime = excelEpoch.AddDays(s)
 let private dateToSerial (d: DateTime) : float = (d - excelEpoch).TotalDays
+
+/// Shared RNG for the volatile RAND / RANDBETWEEN functions.
+let private rng = Random()
 
 // --- Criteria parsing (SUMIF / COUNTIF / …) ---------------------------------
 /// Translate Excel's `*` / `?` wildcards into a case-insensitive regex.
@@ -638,12 +700,12 @@ let rec eval (expr: Expr) (model: SpreadsheetModel)
     | Str s -> CellValue.String s
     | Bool b -> CellValue.Boolean b
     | ErrorLit e -> CellValue.Error e
-    | NameRef _ -> err Err.name        // resolved against workbook names in S3
-    | CellRef r -> readCell r model
+    | NameRef _ -> err Err.name        // workbook defined-names: no storage yet
+    | CellRef r -> readCell r model workbook
     | RangeRef (a, b) ->
         // A bare range in scalar context yields its first cell (Excel's
         // implicit-intersection collapse is close enough for our use).
-        match expandRangeRef a b model with
+        match expandRangeRef a b model workbook with
         | v :: _ -> v
         | [] -> err Err.ref
     | TableRef (t, c) ->
@@ -715,7 +777,7 @@ and flattenArgs (args: Expr list) (model: SpreadsheetModel)
                 (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue list =
     args |> List.collect (fun arg ->
         match arg with
-        | RangeRef (a, b) -> expandRangeRef a b model
+        | RangeRef (a, b) -> expandRangeRef a b model workbook
         | TableRef (t, c) -> expandTableRef t c workbook model
         | _ -> [ eval arg model workbook ])
 
@@ -1292,6 +1354,47 @@ and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
             let d = (serialToDate s).AddMonths(int months)
             let eom = DateTime(d.Year, d.Month, DateTime.DaysInMonth(d.Year, d.Month))
             CellValue.Number (dateToSerial eom)
+    // ----- volatile --------------------------------------------------------
+    | "RAND" -> CellValue.Number (rng.NextDouble())
+    | "RANDBETWEEN" ->
+        if nargs <> 2 then err Err.value else
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok lo, Ok hi ->
+            let l, h = int (ceil lo), int (floor hi)
+            if l > h then err Err.num
+            else CellValue.Number (float (rng.Next(l, h + 1)))
+    | "OFFSET" ->
+        // OFFSET(reference, rows, cols, [height], [width]) — scalar context
+        // collapses to the top-left cell of the resulting block.
+        if nargs < 3 then err Err.value else
+        let anchor =
+            match List.item 0 args with
+            | CellRef r -> Some (r.Sheet, r.Row, r.Col)
+            | RangeRef (a, _) -> Some (a.Sheet, a.Row, a.Col)
+            | _ -> None
+        match anchor with
+        | None -> err Err.ref
+        | Some (sheet, br, bc) ->
+            match argNum 1, argNum 2 with
+            | Result.Error e, _ | _, Result.Error e -> err e
+            | Ok dr, Ok dc ->
+                let r = br + int dr
+                let c = bc + int dc
+                if r < 0 || c < 0 then err Err.ref
+                else
+                    match resolveModel sheet model workbook with
+                    | Some m -> getCellValue { Row = r; Col = c } m |> unwrapValue
+                    | None -> err Err.ref
+    | "INDIRECT" ->
+        // INDIRECT(ref_text) — parse the text as an A1 reference and read it.
+        if nargs < 1 then err Err.value else
+        match argText 0 with
+        | Result.Error e -> err e
+        | Ok refText ->
+            match parseFormula ("=" + refText) with
+            | Ok (CellRef _ as e) | Ok (RangeRef _ as e) -> eval e model workbook
+            | _ -> err Err.ref
     | _ ->
         // Unknown / unsupported function.
         err Err.name

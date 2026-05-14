@@ -184,19 +184,30 @@ let clearDirty (addr: CellAddress) (engine: CalcEngine): CalcEngine =
         }
     | None -> engine
 
-/// Recalculate a single cell using cached formula
-let recalculateCell (addr: CellAddress) (model: SpreadsheetModel) (engine: CalcEngine): CellValue option =
+/// Recalculate a single cell using cached formula. The workbook context
+/// lets cross-sheet references resolve.
+let recalculateCell (addr: CellAddress) (model: SpreadsheetModel) (engine: CalcEngine)
+                    (workbook: RedBat.Spreadsheet.Workbook.Workbook option): CellValue option =
     match Map.tryFind addr engine.Metadata with
     | Some metadata ->
         match metadata.ParsedFormula with
         | Some expr ->
-            let result = eval expr model None
+            let result = eval expr model workbook
             Some result
         | None -> None
     | None -> None
 
-/// Smart recalculation: only recalculate dirty cells in correct order
-let smartRecalculate (model: SpreadsheetModel) (engine: CalcEngine): SpreadsheetModel * CalcEngine =
+/// Smart recalculation: only recalculate dirty cells in correct order.
+/// Volatile cells (RAND/NOW/OFFSET/…) are forced dirty every pass so their
+/// values — and anything downstream — stay live.
+let smartRecalculate (model: SpreadsheetModel) (engine: CalcEngine)
+                     (workbook: RedBat.Spreadsheet.Workbook.Workbook option): SpreadsheetModel * CalcEngine =
+    let engine =
+        engine.Metadata
+        |> Map.fold (fun eng addr meta ->
+            match meta.ParsedFormula with
+            | Some expr when containsVolatile expr -> markDirty addr eng
+            | _ -> eng) engine
     if Set.isEmpty engine.DirtySet then
         // Nothing to recalculate
         (model, engine)
@@ -209,7 +220,7 @@ let smartRecalculate (model: SpreadsheetModel) (engine: CalcEngine): Spreadsheet
             match Map.tryFind addr engine.Metadata with
             | Some metadata when metadata.IsDirty ->
                 // Recalculate this cell
-                match recalculateCell addr updatedModel updatedEngine with
+                match recalculateCell addr updatedModel updatedEngine workbook with
                 | Some newValue ->
                     // Update cell with new calculated value
                     match getCell addr updatedModel with

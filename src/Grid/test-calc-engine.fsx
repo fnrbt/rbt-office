@@ -44,7 +44,7 @@ setTestCell 3 0 (CellValue.Formula ("=A3-3", CellValue.Empty))
 setTestCell 4 0 (CellValue.Formula ("=A4/2", CellValue.Empty))
 
 // Recalculate
-let (model', engine') = smartRecalculate model engine
+let (model', engine') = smartRecalculate model engine None
 model <- model'
 engine <- engine'
 
@@ -88,7 +88,7 @@ setTestCell 1 1 (CellValue.Formula ("=B1*2", CellValue.Empty))
 setTestCell 2 1 (CellValue.Formula ("=B1+50", CellValue.Empty))
 setTestCell 3 1 (CellValue.Formula ("=B2+B3", CellValue.Empty))
 
-let (model'', engine'') = smartRecalculate model engine
+let (model'', engine'') = smartRecalculate model engine None
 model <- model''
 engine <- engine''
 
@@ -127,7 +127,7 @@ printfn ""
 // Smart recalculate - only dirty cells
 printfn "6. Smart Recalculation (only dirty cells)"
 let sw = Stopwatch.StartNew()
-let (model'''', engine'''') = smartRecalculate model engine
+let (model'''', engine'''') = smartRecalculate model engine None
 model <- model''''
 engine <- engine''''
 sw.Stop()
@@ -154,7 +154,7 @@ for i in 1 .. 99 do
     let formula = sprintf "=C%d+1" i
     setTestCell i 2 (CellValue.Formula (formula, CellValue.Empty))
 
-let (modelBig, engineBig) = smartRecalculate model engine
+let (modelBig, engineBig) = smartRecalculate model engine None
 model <- modelBig
 engine <- engineBig
 
@@ -174,7 +174,7 @@ printfn ""
 
 // Time smart recalculation
 let sw2 = Stopwatch.StartNew()
-let (modelRecalc, engineRecalc) = smartRecalculate modelDirty engineDirty
+let (modelRecalc, engineRecalc) = smartRecalculate modelDirty engineDirty None
 sw2.Stop()
 
 printfn "   Smart recalculation time: %d μs" (sw2.ElapsedTicks * 1000L / Stopwatch.Frequency)
