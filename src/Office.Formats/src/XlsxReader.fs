@@ -29,6 +29,17 @@ type VertAlign =
     | VertAlignSuperscript
     | VertAlignSubscript
 
+/// `<u val="..."/>` style on an rPr or font element. None = no underline,
+/// Single = standard one-line, Double = two parallel lines (used for
+/// accounting totals etc.). Excel also defines singleAccounting /
+/// doubleAccounting which render at the full cell width rather than just
+/// the text width; we collapse those onto Single/Double respectively since
+/// our underline stroke already spans the run's measured width.
+type UnderlineStyle =
+    | UnderlineNone
+    | UnderlineSingle
+    | UnderlineDouble
+
 /// Optional per-run formatting from an `<rPr>` inside an `<si><r>` element.
 /// Any field set on the run overrides the cell's base style for that text;
 /// fields left None inherit from the surrounding cell format.
@@ -36,10 +47,18 @@ type RunProps = {
     Bold: bool
     Italic: bool
     Underline: bool
+    /// When Underline is true, this flag distinguishes the `double`
+    /// (and `doubleAccounting`) styles from the default single line.
+    /// Renderers emit two parallel strokes when true.
+    UnderlineDouble: bool
     Strikethrough: bool
     Color: string option       // ARGB hex without '#' prefix
     FontName: string option
     FontSize: float option     // points
+    /// `<scheme val="major|minor"/>` — when present (and no explicit
+    /// `<name>` overrides), the renderer resolves this against the
+    /// workbook theme's `majorFont`/`minorFont` slot. "" = absent.
+    Scheme: string
     VertAlign: VertAlign
 }
 
@@ -47,10 +66,12 @@ let emptyRunProps = {
     Bold = false
     Italic = false
     Underline = false
+    UnderlineDouble = false
     Strikethrough = false
     Color = None
     FontName = None
     FontSize = None
+    Scheme = ""
     VertAlign = VertAlignBaseline
 }
 
@@ -77,6 +98,7 @@ type CellStyle = {
     Bold: bool
     Italic: bool
     Underline: bool
+    UnderlineDouble: bool
     Strikethrough: bool
     FontSize: float option
     NumberFormat: string option
@@ -87,6 +109,9 @@ type CellStyle = {
     BorderBottom: CellBorderSide option
     BorderLeft: CellBorderSide option
     BorderRight: CellBorderSide option
+    BorderDiagonal: CellBorderSide option
+    DiagonalUp: bool
+    DiagonalDown: bool
 }
 
 type MergeCell = {
@@ -330,14 +355,26 @@ module Xlsx =
                 | "subscript" -> VertAlignSubscript
                 | _ -> VertAlignBaseline)
             |> Option.defaultValue VertAlignBaseline
+        let underline = boolChild "u"
+        let underlineDouble =
+            sElem "u" rPr
+            |> Option.bind (Xml.attr "val")
+            |> Option.map (fun v -> v = "double" || v = "doubleAccounting")
+            |> Option.defaultValue false
+        let scheme =
+            sElem "scheme" rPr
+            |> Option.bind (Xml.attr "val")
+            |> Option.defaultValue ""
         {
             Bold = boolChild "b"
             Italic = boolChild "i"
-            Underline = boolChild "u"
+            Underline = underline
+            UnderlineDouble = underlineDouble
             Strikethrough = boolChild "strike"
             Color = colorHex
             FontName = fontName
             FontSize = fontSize
+            Scheme = scheme
             VertAlign = vertAlign
         }
 
@@ -734,6 +771,24 @@ module Xlsx =
             |> Array.mapi (fun i n -> pickScheme n |> Option.defaultValue defaults.[i])
         with _ -> defaults
 
+    /// Parse the theme's majorFont / minorFont latin typeface names —
+    /// used when a font in styles.xml has `<scheme val="major|minor"/>`
+    /// without an explicit `<name>`. Returns (major, minor); each is
+    /// None when the slot is missing, defaulting to Calibri-Light /
+    /// Calibri in the caller's resolution if absent.
+    let parseThemeFonts (themeXml: string) : string option * string option =
+        try
+            let doc = XmlDsl.parse themeXml
+            let latinOf slotName =
+                Xml.descendants slotName doc
+                |> List.tryHead
+                |> Option.bind (fun slot ->
+                    Xml.descendants "latin" slot
+                    |> List.tryHead
+                    |> Option.bind (Xml.attr "typeface"))
+            latinOf "majorFont", latinOf "minorFont"
+        with _ -> None, None
+
     /// Excel 8 / BIFF8 legacy indexed palette. 64 indexed slots plus indices
     /// 64/65 reserved for the OS default foreground/background. Values match
     /// Microsoft's documented palette (see `IndexedColors` in the OOXML
@@ -836,16 +891,47 @@ module Xlsx =
             if tint = 0.0 then Some c
             else Some (applyColorTint c tint)
 
-    // Style parsing
-    let parseFont (themeColors: string array) (fontNode: XmlNode) : (bool * bool * bool * bool * string option * float option * string option) =
+    // Style parsing. parseFont returns an 9-tuple covering every <font>
+    // child plus the scheme hint — callers pick the slots they care
+    // about. The scheme is "" when absent, "major"/"minor" otherwise;
+    // theme-font resolution happens later, after the workbook theme
+    // majorFont/minorFont arrays have been parsed.
+    let parseFont (themeColors: string array) (fontNode: XmlNode) : (bool * bool * bool * bool * bool * string option * float option * string option * string) =
         let bold = sElem "b" fontNode |> Option.isSome
         let italic = sElem "i" fontNode |> Option.isSome
         let underline = sElem "u" fontNode |> Option.isSome
+        let underlineDouble =
+            sElem "u" fontNode
+            |> Option.bind (Xml.attr "val")
+            |> Option.map (fun v -> v = "double" || v = "doubleAccounting")
+            |> Option.defaultValue false
         let strike = sElem "strike" fontNode |> Option.isSome
         let color = sElem "color" fontNode |> Option.bind (resolveColorElement themeColors)
         let size = sElem "sz" fontNode |> Option.bind (Xml.attr "val") |> Option.map float
         let name = sElem "name" fontNode |> Option.bind (Xml.attr "val")
-        (bold, italic, underline, strike, color, size, name)
+        let scheme =
+            sElem "scheme" fontNode
+            |> Option.bind (Xml.attr "val")
+            |> Option.defaultValue ""
+        (bold, italic, underline, underlineDouble, strike, color, size, name, scheme)
+
+    /// Blend two RRGGBB hex colors by `t ∈ [0,1]` — 0.0 returns `a`, 1.0
+    /// returns `b`. Used for gradient-stop approximation and named-gray
+    /// pattern types (we don't have a tile primitive, so a tinted blend
+    /// of the fg toward the bg conveys the same visual cue).
+    let private blendHex (a: string) (b: string) (t: float) : string =
+        let stripA = a.TrimStart('#')
+        let stripB = b.TrimStart('#')
+        let aHex = if stripA.Length = 8 then stripA.Substring 2 else stripA
+        let bHex = if stripB.Length = 8 then stripB.Substring 2 else stripB
+        if aHex.Length <> 6 || bHex.Length <> 6 then a
+        else
+            let chan i =
+                let av = System.Convert.ToInt32(aHex.Substring(i, 2), 16)
+                let bv = System.Convert.ToInt32(bHex.Substring(i, 2), 16)
+                let v = float av * (1.0 - t) + float bv * t
+                int (System.Math.Round v) |> max 0 |> min 255
+            sprintf "%02X%02X%02X" (chan 0) (chan 2) (chan 4)
 
     let parseFill (themeColors: string array) (fillNode: XmlNode) : string option =
         // Excel-as-written XLSXs sometimes use bgColor instead of fgColor for
@@ -854,10 +940,71 @@ module Xlsx =
         // to bgColor for solid/non-empty patterns.
         let pattern = sElem "patternFill" fillNode
         let patternType = pattern |> Option.bind (Xml.attr "patternType")
-        match patternType with
-        | Some "none" -> None
-        | Some "gray125" -> None  // openpyxl's "no fill" sentinel — render as default background.
-        | _ ->
+        // <gradientFill> is the other top-level fill kind; carries
+        // ordered <stop position="..."><color/></stop> children. The
+        // renderer has no gradient primitive, so collapse the stops into
+        // a single representative color by blending equally between
+        // adjacent stops weighted by position. For the typical 2-stop
+        // case (most authors use start + end), this lands midway between
+        // the two endpoints — a recognizable "purple" for yellow→red,
+        // "tan" for white→orange, etc. — without a separate render path.
+        let gradientStops =
+            sElem "gradientFill" fillNode
+            |> Option.map (fun gf ->
+                Ns.descendantsNs "stop" gf
+                |> List.choose (fun stop ->
+                    let pos =
+                        Xml.attr "position" stop
+                        |> Option.bind (fun s ->
+                            match System.Double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+                            | true, v -> Some v
+                            | _ -> None)
+                        |> Option.defaultValue 0.0
+                    sElem "color" stop
+                    |> Option.bind (resolveColorElement themeColors)
+                    |> Option.map (fun hex -> pos, hex))
+                |> List.sortBy fst)
+            |> Option.defaultValue []
+        match patternType, gradientStops with
+        | _, (s :: rest) when not (List.isEmpty rest) ->
+            // Multi-stop gradient: blend pairwise to the midpoint, then
+            // average. Simpler approximation: take the midpoint of the
+            // first and last stops.
+            let _, firstHex = s
+            let _, lastHex = List.last gradientStops
+            Some (blendHex firstHex lastHex 0.5)
+        | _, [ (_, hex) ] -> Some hex
+        | Some "none", _ -> None
+        | Some "gray125", _ -> None
+        // Named gray patterns have no fgColor in OOXML — the pattern *is*
+        // the color. Approximate via a tint between the cell's bg and a
+        // "named-gray" tone:
+        //   lightGray  ≈ #E0E0E0 (25% tone)
+        //   mediumGray ≈ #A0A0A0 (50% tone)
+        //   darkGray   ≈ #606060 (75% tone)
+        | Some "lightGray", _ -> Some "E0E0E0"
+        | Some "mediumGray", _ -> Some "A0A0A0"
+        | Some "darkGray", _ -> Some "606060"
+        | Some patternName, _ ->
+            // Directional patterns (darkHorizontal/Vertical/Down/Up/Grid/
+            // Trellis, lightHorizontal/Vertical/Down/Up/Grid/Trellis) carry
+            // an explicit fgColor (the stripe color) and optionally bgColor
+            // (the field color). Without a tile primitive we blend fg→bg by
+            // an empirical density factor that matches the pattern's
+            // density: dark-* ≈ 70% fg, light-* ≈ 30% fg.
+            let fg = pattern |> Option.bind (sElem "fgColor") |> Option.bind (resolveColorElement themeColors)
+            let bg = pattern |> Option.bind (sElem "bgColor") |> Option.bind (resolveColorElement themeColors)
+            let density =
+                if patternName.StartsWith "dark" then 0.7
+                elif patternName.StartsWith "light" then 0.3
+                else 1.0
+            match fg, bg with
+            | Some fgHex, Some bgHex when density < 1.0 -> Some (blendHex bgHex fgHex density)
+            | Some fgHex, None when density < 1.0 -> Some (blendHex "FFFFFF" fgHex density)
+            | Some fgHex, _ -> Some fgHex
+            | None, Some bgHex -> Some bgHex
+            | None, None -> None
+        | None, _ ->
             let fg = pattern |> Option.bind (sElem "fgColor") |> Option.bind (resolveColorElement themeColors)
             let bg = pattern |> Option.bind (sElem "bgColor") |> Option.bind (resolveColorElement themeColors)
             fg |> Option.orElseWith (fun () -> bg)
@@ -878,6 +1025,12 @@ module Xlsx =
         Bottom: CellBorderSide option
         Left: CellBorderSide option
         Right: CellBorderSide option
+        /// `<diagonal>` style + color, paired with the parent border's
+        /// `diagonalUp`/`diagonalDown` attributes. Excel renders one
+        /// stroke per direction flag; both true gives the X pattern.
+        Diagonal: CellBorderSide option
+        DiagonalUp: bool
+        DiagonalDown: bool
     }
 
     let emptyBorder : BorderRecord = {
@@ -885,14 +1038,24 @@ module Xlsx =
         Bottom = None
         Left = None
         Right = None
+        Diagonal = None
+        DiagonalUp = false
+        DiagonalDown = false
     }
 
     let parseBorder (themeColors: string array) (borderNode: XmlNode) : BorderRecord =
+        let flag attr =
+            Xml.attr attr borderNode
+            |> Option.map (fun v -> v = "1" || v = "true")
+            |> Option.defaultValue false
         {
             Top = sElem "top" borderNode |> Option.bind (parseBorderSide themeColors)
             Bottom = sElem "bottom" borderNode |> Option.bind (parseBorderSide themeColors)
             Left = sElem "left" borderNode |> Option.bind (parseBorderSide themeColors)
             Right = sElem "right" borderNode |> Option.bind (parseBorderSide themeColors)
+            Diagonal = sElem "diagonal" borderNode |> Option.bind (parseBorderSide themeColors)
+            DiagonalUp = flag "diagonalUp"
+            DiagonalDown = flag "diagonalDown"
         }
 
     let parseNumberFormat (numFmtNode: XmlNode) : string option =
@@ -933,15 +1096,27 @@ module Xlsx =
         | 49 -> Some "@"
         | _ -> None
 
-    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * bool * bool * string option * float option * string option) array) (fills: string option array) (borders: BorderRecord array) (numFmts: Map<int, string>) : CellStyle =
+    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * bool * bool * bool * string option * float option * string option * string) array) (fills: string option array) (borders: BorderRecord array) (numFmts: Map<int, string>) (themeMajorFont: string option) (themeMinorFont: string option) : CellStyle =
         let fontId = Xml.attr "fontId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let fillId = Xml.attr "fillId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let borderId = Xml.attr "borderId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
         let numFmtId = Xml.attr "numFmtId" xfNode |> Option.bind (fun id -> Some (int id))
 
-        let (bold, italic, underline, strikethrough, fontColor, fontSize, fontName) =
+        let (bold, italic, underline, underlineDouble, strikethrough, fontColor, fontSize, fontNameRaw, scheme) =
             if fontId < fonts.Length then fonts.[fontId]
-            else (false, false, false, false, None, None, None)
+            else (false, false, false, false, false, None, None, None, "")
+        // Resolve scheme="major|minor" to the theme font when no explicit
+        // <name> overrides it. Falls through to None when neither side
+        // names a font; downstream renderers default to the workbook
+        // default font in that case.
+        let fontName =
+            match fontNameRaw with
+            | Some _ -> fontNameRaw
+            | None ->
+                match scheme with
+                | "major" -> themeMajorFont
+                | "minor" -> themeMinorFont
+                | _ -> None
 
         let fillColor =
             if fillId < fills.Length then fills.[fillId]
@@ -975,6 +1150,7 @@ module Xlsx =
             Bold = bold
             Italic = italic
             Underline = underline
+            UnderlineDouble = underlineDouble
             Strikethrough = strikethrough
             FontSize = fontSize
             NumberFormat = numFmt
@@ -985,9 +1161,12 @@ module Xlsx =
             BorderBottom = border.Bottom
             BorderLeft = border.Left
             BorderRight = border.Right
+            BorderDiagonal = border.Diagonal
+            DiagonalUp = border.DiagonalUp
+            DiagonalDown = border.DiagonalDown
         }
 
-    let parseStyles (themeColors: string array) (stylesXml: string) : CellStyle array =
+    let parseStyles (themeColors: string array) (themeMajorFont: string option) (themeMinorFont: string option) (stylesXml: string) : CellStyle array =
         let doc = XmlDsl.parse stylesXml
 
         // Parse fonts
@@ -1031,7 +1210,7 @@ module Xlsx =
         sElem "cellXfs" doc
         |> Option.map (sElems "xf")
         |> Option.defaultValue []
-        |> List.map (fun xf -> parseCellXf xf fonts fills borders numFmts)
+        |> List.map (fun xf -> parseCellXf xf fonts fills borders numFmts themeMajorFont themeMinorFont)
         |> List.toArray
 
     let sharedStrings (sstXml: string) : SharedStringEntry array =
@@ -1348,9 +1527,14 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                     "0563C1"; "954F72"
                 |]
 
+            let themeMajorFont, themeMinorFont =
+                themeXml
+                |> Option.map Xlsx.parseThemeFonts
+                |> Option.defaultValue (None, None)
+
             let styles =
                 stylesXml
-                |> Option.map (Xlsx.parseStyles themeColors)
+                |> Option.map (Xlsx.parseStyles themeColors themeMajorFont themeMinorFont)
                 |> Option.defaultValue [||]
 
             let namedRanges = NamedRanges.parseNamedRanges wb
@@ -1559,9 +1743,14 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
                 "0563C1"; "954F72"
             |]
 
+        let themeMajorFont, themeMinorFont =
+            themeXml
+            |> Option.map Xlsx.parseThemeFonts
+            |> Option.defaultValue (None, None)
+
         let styles =
             ZipInterop.getFileTextNative archive "xl/styles.xml"
-            |> Option.map (Xlsx.parseStyles themeColors)
+            |> Option.map (Xlsx.parseStyles themeColors themeMajorFont themeMinorFont)
             |> Option.defaultValue [||]
 
         let themeAccents =

@@ -281,6 +281,13 @@ let private toRendererCommands (text: PaintText) =
                 [ MoveTo (vec2 alignedX underlineY)
                   LineTo (vec2 (alignedX + totalWidth) underlineY) ],
                 lineStyle)
+            if text.UnderlineDouble then
+                // Double underline: a second stroke ~2 px below the first.
+                let underlineY2 = underlineY + max 2.0 (pxSize * 0.12)
+                yield Cmd.StrokePath(
+                    [ MoveTo (vec2 alignedX underlineY2)
+                      LineTo (vec2 (alignedX + totalWidth) underlineY2) ],
+                    lineStyle)
         if text.Strikethrough && totalWidth > 0.0 then
             // Strikethrough at ~30% above baseline — visually centers on
             // the lowercase x-height. (OpenType yStrikeoutPosition would

@@ -30,6 +30,8 @@ type PaintText = {
     Italic: bool
     /// Render a horizontal stroke under the text (XLSX `<u/>` font flag).
     Underline: bool
+    /// Render two parallel strokes for `<u val="double"/>` instead of one.
+    UnderlineDouble: bool
     /// Render a horizontal stroke through the text (XLSX `<strike/>` flag).
     Strikethrough: bool
     Align: TextAlign
@@ -597,6 +599,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Bold = false
                     Italic = false
                     Underline = false
+                    UnderlineDouble = false
                     Strikethrough = false
                     Align = AlignCenter
                     VerticalAlign = VAlignMiddle
@@ -616,6 +619,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Bold = false
                     Italic = false
                     Underline = false
+                    UnderlineDouble = false
                     Strikethrough = false
                     Align = AlignCenter
                     VerticalAlign = VAlignMiddle
@@ -728,6 +732,20 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 for item in emitBorderSide false side (x, rect.Y) (x, rect.Y + rect.Height) do
                     yield zone, item
             | None -> ()
+            // Diagonal strokes: down = top-left → bottom-right, up =
+            // bottom-left → top-right. Cells set one or both via the
+            // `diagonalUp` / `diagonalDown` border attributes. Style +
+            // color come from the shared `<diagonal>` child, so both
+            // strokes share the same look when both flags are set.
+            match format.BorderDiagonal with
+            | Some side ->
+                let color = borderColor side
+                let w = borderStrokeWidth side.Style
+                if format.DiagonalDown then
+                    yield zone, GridLine (rect.X, rect.Y, rect.X + rect.Width, rect.Y + rect.Height, color, w)
+                if format.DiagonalUp then
+                    yield zone, GridLine (rect.X, rect.Y + rect.Height, rect.X + rect.Width, rect.Y, color, w)
+            | None -> ()
 
         // Pass 3: text on top of all strokes/borders.
         for (cell, format, value, _selected, _background, zone) in states do
@@ -767,6 +785,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                         let bold = ovr.Bold |> Option.defaultValue format.Bold
                         let italic = ovr.Italic |> Option.defaultValue format.Italic
                         let underline = ovr.Underline |> Option.defaultValue format.Underline
+                        let underlineDouble = ovr.UnderlineDouble |> Option.defaultValue format.UnderlineDouble
                         let strike = ovr.Strikethrough |> Option.defaultValue format.Strikethrough
                         let fName = ovr.FontName |> Option.orElse format.FontName
                         let baseSize = ovr.FontSize |> Option.defaultValue fontPt
@@ -781,7 +800,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             | Some VertAlignSuperscript -> baseSize * 0.6, -fontPt * 0.35
                             | Some VertAlignSubscript -> baseSize * 0.6, fontPt * 0.15
                             | _ -> baseSize, 0.0
-                        bold, italic, underline, strike, fName, fSize, runColor, baselineShift
+                        bold, italic, underline, underlineDouble, strike, fName, fSize, runColor, baselineShift
                     // Mutable list of remaining runs. We consume from the
                     // head; if a wrap break splits a run, the head is
                     // replaced with the unconsumed suffix.
@@ -820,18 +839,18 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                         let metrics =
                             slices
                             |> Seq.map (fun (t, ovr) ->
-                                let bold, italic, underline, strike, fName, fSize, runColor, baselineShift = resolveRun ovr
+                                let bold, italic, underline, underlineDouble, strike, fName, fSize, runColor, baselineShift = resolveRun ovr
                                 let width = m t fSize fName bold italic
-                                t, ovr, bold, italic, underline, strike, fName, fSize, runColor, width, baselineShift)
+                                t, ovr, bold, italic, underline, underlineDouble, strike, fName, fSize, runColor, width, baselineShift)
                             |> Seq.toList
-                        let totalWidth = metrics |> List.sumBy (fun (_, _, _, _, _, _, _, _, _, w, _) -> w)
+                        let totalWidth = metrics |> List.sumBy (fun (_, _, _, _, _, _, _, _, _, _, w, _) -> w)
                         let baseLineX =
                             match align with
                             | AlignLeft -> textRect.X
                             | AlignCenter -> textRect.X + (textRect.Width - totalWidth) / 2.0
                             | AlignRight -> textRect.X + textRect.Width - totalWidth
                         let mutable cursor = baseLineX
-                        for (t, _ovr, bold, italic, underline, strike, fName, fSize, runColor, width, baselineShift) in metrics do
+                        for (t, _ovr, bold, italic, underline, underlineDouble, strike, fName, fSize, runColor, width, baselineShift) in metrics do
                             yield zone, DrawText {
                                 Text = t
                                 Rect = { textRect with X = cursor; Width = width }
@@ -841,6 +860,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                                 Bold = bold
                                 Italic = italic
                                 Underline = underline
+                                UnderlineDouble = underlineDouble
                                 Strikethrough = strike
                                 Align = AlignLeft
                                 VerticalAlign = vAlign
@@ -861,6 +881,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             Bold = format.Bold
                             Italic = format.Italic
                             Underline = format.Underline
+                            UnderlineDouble = format.UnderlineDouble
                             Strikethrough = format.Strikethrough
                             Align = align
                             VerticalAlign = vAlign
@@ -1008,6 +1029,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             Bold = false
                             Italic = false
                             Underline = false
+                            UnderlineDouble = false
                             Strikethrough = false
                             Align = AlignCenter
                             VerticalAlign = VAlignMiddle
@@ -1032,6 +1054,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             Bold = false
                             Italic = false
                             Underline = false
+                            UnderlineDouble = false
                             Strikethrough = false
                             Align = AlignCenter
                             VerticalAlign = VAlignMiddle

@@ -28,6 +28,9 @@ type CellFormat = {
     Bold: bool
     Italic: bool
     Underline: bool
+    /// Distinguishes `<u val="double"/>` (two parallel strokes) from the
+    /// default single underline. Renderers draw two strokes when true.
+    UnderlineDouble: bool
     Strikethrough: bool
     FontName: string option
     TextColor: string option
@@ -41,6 +44,14 @@ type CellFormat = {
     BorderBottom: BorderStyle option
     BorderLeft: BorderStyle option
     BorderRight: BorderStyle option
+    /// Optional `<diagonal>` border style + color. Combined with
+    /// DiagonalUp / DiagonalDown to choose which one or two diagonal
+    /// strokes Excel paints across the cell rect.
+    BorderDiagonal: BorderStyle option
+    /// Stroke from bottom-left to top-right of the cell rectangle.
+    DiagonalUp: bool
+    /// Stroke from top-left to bottom-right of the cell rectangle.
+    DiagonalDown: bool
     /// Excel auto-filter dropdown button on the right edge of the cell.
     /// Set for cells in the header row of a table with an <autoFilter> child.
     FilterButton: bool
@@ -60,6 +71,7 @@ let defaultFormat = {
     Bold = false
     Italic = false
     Underline = false
+    UnderlineDouble = false
     Strikethrough = false
     FontName = None
     TextColor = None
@@ -73,6 +85,9 @@ let defaultFormat = {
     BorderBottom = None
     BorderLeft = None
     BorderRight = None
+    BorderDiagonal = None
+    DiagonalUp = false
+    DiagonalDown = false
     FilterButton = false
     HasComment = false
     HasListDropdown = false
@@ -99,6 +114,7 @@ type RunOverride = {
     Bold: bool option
     Italic: bool option
     Underline: bool option
+    UnderlineDouble: bool option
     Strikethrough: bool option
     Color: string option       // hex with leading '#'
     FontName: string option
@@ -110,6 +126,7 @@ let emptyRunOverride = {
     Bold = None
     Italic = None
     Underline = None
+    UnderlineDouble = None
     Strikethrough = None
     Color = None
     FontName = None

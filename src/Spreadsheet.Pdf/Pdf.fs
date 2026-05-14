@@ -221,12 +221,21 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
                 let underlineCmds =
                     if t.Underline && totalWidthPt > 0.0 then
                         let underlineY = baselineY + max 1.0 (t.FontSize * 0.08)
-                        [ PdfDraw.SetStrokeColor textColor
-                          PdfDraw.SetLineWidth (px 1.0)
-                          PdfDraw.SetDash ([], 0.0)
-                          PdfDraw.MoveTo (alignedXPt, yPdf underlineY)
-                          PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf underlineY)
-                          PdfDraw.Stroke ]
+                        let single =
+                            [ PdfDraw.SetStrokeColor textColor
+                              PdfDraw.SetLineWidth (px 1.0)
+                              PdfDraw.SetDash ([], 0.0)
+                              PdfDraw.MoveTo (alignedXPt, yPdf underlineY)
+                              PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf underlineY)
+                              PdfDraw.Stroke ]
+                        if t.UnderlineDouble then
+                            // Second parallel stroke ~2 pt below the first.
+                            let underlineY2 = underlineY + max 2.0 (t.FontSize * 0.12)
+                            single @
+                            [ PdfDraw.MoveTo (alignedXPt, yPdf underlineY2)
+                              PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf underlineY2)
+                              PdfDraw.Stroke ]
+                        else single
                     else []
                 let strikeCmds =
                     if t.Strikethrough && totalWidthPt > 0.0 then
