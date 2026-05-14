@@ -50,6 +50,29 @@ let private columnIndex (letters: string) : int =
             acc <- acc * 26 + (int (Char.ToUpper ch) - int 'A' + 1)
     acc - 1
 
+/// Split a `<hyperlink ref="A1:C3"/>` style range string into the
+/// inclusive zero-indexed (row, col) corners. Single-cell refs like
+/// "B2" collapse to (row, col, row, col). Returns None when the input
+/// isn't a recognizable cell-range form.
+let private parseCellRange (ref: string) : (int * int * int * int) option =
+    let parseCorner (s: string) =
+        let letters = s |> Seq.takeWhile Char.IsLetter |> Seq.toArray |> System.String
+        let digits = s |> Seq.skipWhile Char.IsLetter |> Seq.toArray |> System.String
+        if letters.Length = 0 || digits.Length = 0 then None
+        else
+            match Int32.TryParse digits with
+            | true, r -> Some (r - 1, columnIndex letters)
+            | _ -> None
+    let parts = ref.Split(':')
+    match parts.Length with
+    | 1 ->
+        parseCorner parts.[0] |> Option.map (fun (r, c) -> r, c, r, c)
+    | 2 ->
+        match parseCorner parts.[0], parseCorner parts.[1] with
+        | Some (r1, c1), Some (r2, c2) -> Some (min r1 r2, min c1 c2, max r1 r2, max c1 c2)
+        | _ -> None
+    | _ -> None
+
 let private resolveValue (workbook: Xlsx.Workbook) (value: Xlsx.CellValue) : CellValue =
     match value with
     | Xlsx.Number n -> Number n
@@ -224,6 +247,21 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
     let mutable maxRow = 0
     let mutable maxCol = 0
     let mutable richRunsMap : Map<CellAddress, (string * RunOverride) list> = Map.empty
+
+    // Resolve hyperlink ranges once: a HashSet of (row, col) cells that
+    // get the Excel "this is a link" formatting override. Excel's
+    // built-in Hyperlink cell style is `<color theme="10"/>` (the theme
+    // 10 slot = hlink, default #0563C1) plus an underline. We fold both
+    // into the cell's format below.
+    let hyperlinkCells = System.Collections.Generic.HashSet<int * int>()
+    for hl in sheet.Hyperlinks do
+        match parseCellRange hl.Range with
+        | None -> ()
+        | Some (r1, c1, r2, c2) ->
+            for r in r1 .. r2 do
+                for c in c1 .. c2 do
+                    hyperlinkCells.Add(r, c) |> ignore
+
     let cells =
         sheet.Rows
         |> List.collect (fun row ->
@@ -238,7 +276,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                         cell.Style
                         |> Option.map cellFormatFromStyle
                         |> Option.defaultValue defaultFormat
-                    let format =
+                    let withTable =
                         match tableOverrideFor sheet.Tables workbook.ThemeAccents cell.Reference.Row (c + 1) with
                         | None -> baseFormat
                         | Some overlay ->
@@ -247,6 +285,16 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                 TextColor = baseFormat.TextColor |> Option.orElse overlay.TextColor
                                 Bold = baseFormat.Bold || overlay.Bold
                                 FilterButton = baseFormat.FilterButton || overlay.FilterButton }
+                    let format =
+                        if hyperlinkCells.Contains(r, c) then
+                            // Theme-10 hyperlink color #0563C1 + underline.
+                            // Don't override TextColor if the cellXf already
+                            // forced a specific color (lets authors style
+                            // visited links etc).
+                            { withTable with
+                                TextColor = withTable.TextColor |> Option.orElseWith (fun () -> Some "#0563C1")
+                                Underline = true }
+                        else withTable
                     let cellData = { Value = value; Format = format; Comment = None }
                     match cellRichRuns workbook cell.Value with
                     | Some runs -> richRunsMap <- Map.add { Row = r; Col = c } runs richRunsMap

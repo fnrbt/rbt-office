@@ -219,6 +219,18 @@ type FrozenPane = {
     YSplit: int
 }
 
+/// `<hyperlink ref="A1" r:id="..." location="..." display="..."/>` on a
+/// sheet. External links use `r:id` to point at a Relationship target;
+/// internal links use `location` directly (e.g. `Sheet2!A1`). `Display`
+/// holds the text Excel shows when it differs from the cell value;
+/// usually None. Range is the same string Excel writes (single cell
+/// "A1" or block "A1:C3").
+type Hyperlink = {
+    Range: string
+    Target: string
+    IsInternal: bool
+}
+
 type Worksheet = {
     Name: string
     Rows: Row list
@@ -232,6 +244,7 @@ type Worksheet = {
     PivotTables: PivotTable list
     Tables: TableDefinition list
     FrozenPane: FrozenPane option
+    Hyperlinks: Hyperlink list
 }
 
 type Workbook = {
@@ -376,6 +389,33 @@ module Xlsx =
             }
 
     // Worksheet extraction (advanced features parsed separately)
+    /// Parse `<hyperlinks>` block: a list of `<hyperlink ref location
+    /// r:id display/>` entries. External links use `r:id` to point at a
+    /// Relationship in the sheet's rels file; internal links use the
+    /// `location` attribute directly (e.g. `Sheet2!A1`). When the caller
+    /// supplies a resolver function for r:id, external targets get
+    /// filled in; otherwise we store the r:id verbatim (good enough for
+    /// the "render as blue + underlined" use case which only cares that
+    /// the cell IS a hyperlink, not where it points).
+    let private hyperlinks (resolveRel: string -> string option) (sheet: XmlNode) : Hyperlink list =
+        sElem "hyperlinks" sheet
+        |> Option.map (sElems "hyperlink")
+        |> Option.defaultValue []
+        |> List.choose (fun node ->
+            match Xml.attr "ref" node with
+            | None -> None
+            | Some range ->
+                let location = Xml.attr "location" node
+                let rid = Xml.attr "r:id" node
+                let target, isInternal =
+                    match location with
+                    | Some loc -> loc, true
+                    | None ->
+                        match rid |> Option.bind resolveRel with
+                        | Some url -> url, false
+                        | None -> rid |> Option.defaultValue "", false
+                Some { Range = range; Target = target; IsInternal = isInternal })
+
     /// Read `<sheetView><pane xSplit ySplit state="frozen"/></sheetView>`.
     /// Excel only renders the freeze divider when state is "frozen" (or
     /// "frozenSplit"); plain "split" puts a draggable bar in instead and
@@ -401,7 +441,7 @@ module Xlsx =
                 if x <= 0 && y <= 0 then None
                 else Some { XSplit = x; YSplit = y })
 
-    let worksheet (name: string) (sheetXml: string) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) : Worksheet =
+    let worksheet (name: string) (sheetXml: string) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) : Worksheet =
         let sheet = XmlDsl.parse sheetXml
         let sheetData = sElem "sheetData" sheet
 
@@ -410,6 +450,15 @@ module Xlsx =
             |> Option.map (sElems "row")
             |> Option.defaultValue []
             |> List.choose row
+
+        // Resolve hyperlink r:id values against the sheet rels: external
+        // hyperlinks (Target on the Relationship is the actual URL) get
+        // routed straight in. Tables / drawings live in the same rels
+        // file but with a different Type — filter to hyperlink type.
+        let resolveRel rid =
+            sheetRels
+            |> List.tryFind (fun r -> r.Id = rid && r.Type.EndsWith("/hyperlink"))
+            |> Option.map (fun r -> r.Target)
 
         {
             Name = name
@@ -424,6 +473,7 @@ module Xlsx =
             PivotTables = pivotTables
             Tables = tables
             FrozenPane = frozenPane sheet
+            Hyperlinks = hyperlinks resolveRel sheet
         }
 
     /// Parse a column letter run (A, B, ..., AA) into a 1-based column index
@@ -1299,7 +1349,7 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                                 // Tables (header/banded styling) aren't wired
                                 // through the async loader — only the native
                                 // path consumes them today. Pass empty for now.
-                                return Some (Xlsx.worksheet info.Name xml comments condFormats dataVals charts pivots [] |> applyStyling styles)
+                                return Some (Xlsx.worksheet info.Name xml comments condFormats dataVals charts pivots [] [] |> applyStyling styles)
                             | None -> return None
                         | None -> return None
                     })
@@ -1462,8 +1512,7 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
 
         let namedRanges = NamedRanges.parseNamedRanges wb
 
-        let loadSheetTables (sheetPath: string) =
-            // xl/worksheets/sheet1.xml -> xl/worksheets/_rels/sheet1.xml.rels
+        let loadSheetRels (sheetPath: string) : Relationship list =
             let lastSlash = sheetPath.LastIndexOf('/')
             if lastSlash < 0 then []
             else
@@ -1472,14 +1521,15 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
                 let relsPath = sprintf "%s/_rels/%s.rels" dir file
                 match ZipInterop.getFileTextNative archive relsPath with
                 | None -> []
-                | Some relsXml ->
-                    let sheetRels = relsXml |> XmlDsl.parse |> parseRelationships
-                    sheetRels
-                    |> List.filter (fun r -> r.Type.EndsWith("/table"))
-                    |> List.choose (fun r ->
-                        let tablePath = resolveArchivePath sheetPath r.Target
-                        ZipInterop.getFileTextNative archive tablePath
-                        |> Option.bind Xlsx.parseTable)
+                | Some relsXml -> relsXml |> XmlDsl.parse |> parseRelationships
+
+        let loadSheetTables (sheetPath: string) (sheetRels: Relationship list) =
+            sheetRels
+            |> List.filter (fun r -> r.Type.EndsWith("/table"))
+            |> List.choose (fun r ->
+                let tablePath = resolveArchivePath sheetPath r.Target
+                ZipInterop.getFileTextNative archive tablePath
+                |> Option.bind Xlsx.parseTable)
 
         let worksheets =
             sheetInfos
@@ -1492,8 +1542,9 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
                         let sheet = XmlDsl.parse xml
                         let condFormats = ConditionalFormats.parseConditionalFormats sheet
                         let dataVals = DataValidations.parseDataValidations sheet
-                        let tables = loadSheetTables sheetPath
-                        Some (Xlsx.worksheet info.Name xml [] condFormats dataVals [] [] tables)
+                        let sheetRels = loadSheetRels sheetPath
+                        let tables = loadSheetTables sheetPath sheetRels
+                        Some (Xlsx.worksheet info.Name xml [] condFormats dataVals [] [] tables sheetRels)
                     | None -> None
                 | None -> None)
 
