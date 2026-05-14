@@ -155,6 +155,50 @@
     <tbody>
       <tr>
         <td>
+          <strong>Conditional formatting — cellIs rules + colorScale gradients</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-condformat.xlsx</code> — col A <code>cellIs greaterThan 50</code> → pink dxf, col B 3-stop <code>colorScale</code> (red→yellow→green), col C <code>cellIs between 20 40</code> → green-bold dxf. Corpus has no CF fixture.</span>
+          <span class="meta">Real fixture class: dashboards, KPI sheets, anything with "highlight cells greater than X" or a heat-map column. The CF pipeline was parsed-but-dead — the audit in an earlier round (task #31) found cfRule type/priority were read but no <code>&lt;dxf&gt;</code> table was parsed and the renderer never consulted CF, so every conditionally-formatted cell rendered plain.</span>
+          <span class="meta">Paths checked: native PNG. Full 59-fixture corpus still byte-identical.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-condformat-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Synthetic conditional-formatting fixture — structurally verified">
+          </div>
+          <div class="caption">No Excel reference — synthetic fixture authored to exercise the CF path. Verification is structural: each column's row-1 label names its rule; the after PNG fills exactly the cells whose values satisfy that rule (A: 55/70/90 &gt; 50; C: 25/35 in [20,40]) and interpolates the colorScale by each B-cell's position in the column's 10..90 range.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-condformat-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Ours after">
+          </div>
+          <div class="caption">After: col A — A4/A5/A6 (55/70/90) get the dxf-0 overlay: <code>#FFC7CE</code> fill + <code>#9C0006</code> text. Col B — colorScale interpolates each cell between the 3 stops by its position in min..max: 10→red, 30→orange, 50→yellow, 70→light-green, 90→green. Col C — C3/C4 (25/35) get the dxf-1 overlay: <code>#C6EFCE</code> fill + bold <code>#006100</code> text. Cells outside each rule's match stay plain.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/synthetic-condformat-pre.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Ours before">
+          </div>
+          <div class="caption">Before: every cell plain white. The <code>&lt;conditionalFormatting&gt;</code> blocks were parsed into <code>ConditionalFormat</code> records but the rule operator / formulas / dxfId / colorScale stops were all dropped, no <code>&lt;dxfs&gt;</code> table was read, and the runner never evaluated a rule against a cell.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> wire the parser → model → evaluate → overlay path that was missing end-to-end.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>:
+              <ul>
+                <li><code>ConditionalFormatRule</code> gains <code>Operator</code>, <code>Formulas</code> (1 or 2 — <code>between</code> needs two), <code>DxfId</code>, and <code>ColorScale</code> (ordered <code>&lt;cfvo&gt;</code>+<code>&lt;color&gt;</code> stops). <code>parseRule</code> reads them all.</li>
+                <li>New <code>Dxf</code> record + <code>parseDxfs</code> reads the <code>&lt;dxfs&gt;</code> differential-format table from styles.xml — font color, fill (dxf fills conventionally use <code>&lt;bgColor&gt;</code>), bold/italic. <code>Workbook</code> gains <code>Dxfs: Dxf array</code>; both loaders parse it.</li>
+              </ul>
+            </li>
+            <li><code>tools/excel-native-runner/Program.fs</code> <code>toModel</code>: after the cell map is built, a CF post-pass walks every <code>&lt;conditionalFormatting&gt;</code> block. <code>cellIs</code> rules evaluate the operator against the cell's numeric value and overlay the referenced dxf's fill / font color / bold / italic. <code>colorScale</code> rules scan the range min/max and interpolate the 2- or 3-stop gradient by the cell's position, applied as <code>BgColor</code>. <code>sqref</code> ranges are space-split; rules apply lowest-priority-first so the highest-precedence rule wins.</li>
+            <li>Latent fix surfaced by this work: <code>resolveColorElement</code> returned raw 8-char AARRGGBB, relying on each consumer to strip the alpha. The runner's <code>cellFormatFromStyle</code> did — but the new CF dxf path used the value directly, and the native <code>parseHexColor</code> reads an 8-char string as RRGGBB<em>A</em> (alpha last), mangling channels (pink <code>#FFC7CE</code> rendered as washed-out yellow). <code>resolveColorElement</code> now strips the leading alpha at the source so every consumer gets clean 6-char RRGGBB.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: synthetic-condformat.xlsx committed under <code>tests/test-documents-excel/</code>. All three rule kinds render the expected overlay.</li>
+            <li>Regression guard: 59-fixture corpus byte-identical. The <code>resolveColorElement</code> alpha-strip is a no-op for the runner's existing color paths (their <code>hexColor</code> helper already stripped 8-char input); poi-49156's indexed fills spot-checked unchanged.</li>
+            <li>Scope: cellIs + colorScale only. dataBar / iconSet / expression / top10 rules pass through untouched — no corpus fixture exercises them and they need range-relative bar/icon geometry that's a separate render path.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Gradient fills, non-solid pattern fills, theme scheme fonts, double underline, diagonal borders</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-fmt5.xlsx</code> — a hand-authored fixture with one row per feature variant (gradient, 6 pattern types, scheme major font, double underline, 3 diagonal-border configs). Corpus has no fixture exercising these.</span>
           <span class="meta">Real fixture class: dashboards and finance templates lean on gradient + pattern fills and accounting double-underline; pivot / form templates use diagonal "N/A" slashes; theme-driven workbooks reference the heading font via <code>&lt;scheme val="major"/&gt;</code> rather than naming it. Each was either dropped silently or rendered as a plain solid / single line.</span>
