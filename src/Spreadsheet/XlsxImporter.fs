@@ -373,6 +373,27 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
 
 
     /// <summary>
+    /// Import every sheet in the workbook in source order, paired with
+    /// its sheet name. Used by the multi-sheet load path so the chrome
+    /// can render a tab strip and the user can swap between sheets
+    /// without re-parsing the XLSX each time.
+    /// </summary>
+let importAllSheets (buffer: JS.ArrayBuffer): Async<(string * SpreadsheetModel) array> =
+        async {
+            try
+                let api = officeFormatApi?``default``()
+                let excel = api?excel
+                let! workbook = excel?load(buffer) |> Async.AwaitPromise
+                let names: string[] = excel?sheetNames(workbook)
+                return
+                    names
+                    |> Array.map (fun n -> n, importSheet workbook (Some n))
+            with ex ->
+                printfn "Error loading workbook: %s" ex.Message
+                return [||]
+        }
+
+    /// <summary>
     /// Get list of sheet names from workbook buffer.
     /// Useful for showing sheet selector before import.
     /// </summary>

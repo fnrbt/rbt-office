@@ -56,10 +56,25 @@ let private canvasLine (ctx: obj) (x1: float) (y1: float) (x2: float) (y2: float
 [<Emit("$0.fillStyle = $5; $0.font = ($6 ? 'bold ' : '') + ($7 ? 'italic ' : '') + $4 + 'px Arial, sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = $8; $0.fillText($1, $2, $3)")>]
 let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize: float) (color: string) (bold: bool) (italic: bool) (align: string): unit = jsNative
 
-/// Spreadsheet component
+/// Spreadsheet component — interactively edits a Workbook (a collection
+/// of sheets sharing strings, styles, theme, defined names). The class
+/// renders one sheet at a time; chrome layers a tab strip on top via
+/// SheetNames / ActiveSheetIndex / SwitchSheet + the OnSheetChanged event.
+///
+/// Internally `model` stays the mutable "active sheet" for minimal diff
+/// across the existing 240+ references; `sheets` is the parallel array
+/// holding every sheet's state. On switch we write `model` back to
+/// `sheets.[activeSheetIndex]`, advance the index, then read the new
+/// sheet into `model`. Selection/scroll/edit state lives in
+/// SpreadsheetModel so each sheet remembers where the user was, the way
+/// Excel does.
 [<AttachMembers>]
 type Spreadsheet(container: Element) =
-    let mutable model = createEmpty 1000 26  // 1000 rows × 26 cols (A-Z)
+    let mutable sheets: SpreadsheetModel array = [| createEmpty 1000 26 |]
+    let mutable sheetNames: string array = [| "Sheet1" |]
+    let mutable activeSheetIndex = 0
+    let mutable model = sheets.[0]
+    let sheetChangedListeners = System.Collections.Generic.List<int -> unit>()
     let mutable workbook: Workbook option = None  // Optional workbook for table references
     let mutable readOnly = false
     let mutable scrollTop = 0.0
@@ -2091,6 +2106,58 @@ type Spreadsheet(container: Element) =
 
     member _.Render() = render()
 
+    /// Names of every sheet in the workbook in source order.
+    member _.SheetNames() : string array =
+        Array.copy sheetNames
+
+    /// 0-based index of the currently displayed sheet.
+    member _.ActiveSheetIndex
+        with get () : int = activeSheetIndex
+
+    /// Switch the visible sheet. Per-sheet selection / scroll / edit /
+    /// filter state persists — when the user comes back to a sheet it's
+    /// exactly where they left it, the way Excel does.
+    member _.SwitchSheet(index: int) =
+        if index >= 0 && index < sheets.Length && index <> activeSheetIndex then
+            // Persist current sheet's mutable state into the array.
+            sheets.[activeSheetIndex] <- model
+            activeSheetIndex <- index
+            model <- sheets.[index]
+            // Scroll lives outside the SpreadsheetModel; reset to that
+            // sheet's saved scroll origin (we don't persist scroll yet —
+            // reset-to-zero matches Excel's behavior on workbook reload).
+            scrollTop <- 0.0
+            scrollLeft <- 0.0
+            render()
+            for listener in sheetChangedListeners do
+                try listener index with _ -> ()
+
+    /// Register a callback invoked after every successful sheet switch.
+    /// Chrome uses this to update its tab-strip selection highlight when
+    /// the switch is triggered from inside (e.g. via keyboard shortcut)
+    /// rather than from the chrome's own click handler.
+    member _.OnSheetChanged(listener: System.Action<int>) =
+        sheetChangedListeners.Add(listener.Invoke)
+
+    /// Replace the entire workbook content. Used after loading an XLSX
+    /// (or other multi-sheet source) to install all sheets in one shot.
+    /// `activeIndex` selects which sheet shows first; out-of-range values
+    /// clamp to 0.
+    member this.SetWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int) =
+        if newSheets.Length = 0 then () else
+        sheets <- newSheets
+        sheetNames <-
+            if names.Length = newSheets.Length then Array.copy names
+            else Array.init newSheets.Length (fun i -> sprintf "Sheet%d" (i + 1))
+        let safeIndex = max 0 (min (sheets.Length - 1) activeIndex)
+        activeSheetIndex <- safeIndex
+        model <- sheets.[safeIndex]
+        scrollTop <- 0.0
+        scrollLeft <- 0.0
+        render()
+        for listener in sheetChangedListeners do
+            try listener safeIndex with _ -> ()
+
     /// Render the current model through the shared portable paint command path.
     member _.RenderPortableCanvas(canvas: Element) = renderPortablePaintToCanvas canvas
 
@@ -2569,27 +2636,26 @@ type Spreadsheet(container: Element) =
     member _.ExportCSV(): string =
         exportCSV model
 
-    /// Import XLSX file from ArrayBuffer (returns Promise)
+    /// Import XLSX file from ArrayBuffer (returns Promise). Loads EVERY
+    /// sheet — pass `sheetName` to pick which one shows first; pass None
+    /// to land on sheet 0. After this resolves, SheetNames() returns the
+    /// full list and the chrome can drive SwitchSheet for the rest.
     /// Use: await spreadsheet.ImportXlsxFromBuffer(buffer, sheetName)
     /// To import from File: const buffer = await file.arrayBuffer(); await spreadsheet.ImportXlsxFromBuffer(buffer, null);
-    member _.ImportXlsxFromBuffer(buffer: JS.ArrayBuffer, sheetName: string option): JS.Promise<unit> =
+    member this.ImportXlsxFromBuffer(buffer: JS.ArrayBuffer, sheetName: string option): JS.Promise<unit> =
         async {
-            let! importedModel = importFromBuffer buffer sheetName
-
-            let oldCells = model.Cells
-            let oldRowHeights = model.RowHeights
-            let oldColumnWidths = model.ColumnWidths
-
-            model <- importedModel
-
-            // Create undo command
-            let command = {
-                Undo = fun m -> { m with Cells = oldCells; RowHeights = oldRowHeights; ColumnWidths = oldColumnWidths }
-                Redo = fun _ -> importedModel
-                Description = "Import XLSX"
-            }
-            model <- pushCommand command model
-            render()
+            let! loaded = importAllSheets buffer
+            if loaded.Length = 0 then () else
+                let names = loaded |> Array.map fst
+                let models = loaded |> Array.map snd
+                let active =
+                    match sheetName with
+                    | Some n ->
+                        names
+                        |> Array.tryFindIndex (fun s -> s = n)
+                        |> Option.defaultValue 0
+                    | None -> 0
+                this.SetWorkbook(models, names, active)
         } |> Async.StartAsPromise
 
     /// Get list of sheet names from XLSX buffer (returns Promise)
