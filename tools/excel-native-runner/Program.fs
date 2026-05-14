@@ -569,25 +569,38 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             row.Height |> Option.map (fun h -> row.Index - 1, h * (96.0 / 72.0)))
         |> Map.ofList
 
-    // Seed every used row/column with the sheet default so unspecified
-    // entries no longer fall back to the generic 100 px / 25 px model
-    // defaults.
+    // Excel's grid is a fixed 1,048,576 × 16,384 (2^20 × 2^14) — not the
+    // used range. The used range (maxRow/maxCol, the <dimension> element)
+    // is just metadata; the displayed grid is always the full size, which
+    // is why Excel paints gridlines across the whole viewport even past
+    // the data. Layout.visibleRange virtualizes to the viewport, so a
+    // full-size model costs nothing at paint time.
+    let excelRowCount = 1048576
+    let excelColCount = 16384
+
+    // Seed row heights / column widths with the sheet default. We only
+    // need entries out to roughly the viewport extent — past that no cell
+    // is ever visible (visibleRange clamps to the viewport). A fixed,
+    // generous margin (covers any 720-1100 px render at typical row/col
+    // sizes) keeps the maps tiny while ensuring empty cells past the data
+    // still get the sheet default rather than Model's 100 px / 25 px
+    // fallback.
+    let seedCols = max maxCol 50
+    let seedRows = max maxRow 200
     let columnWidths =
-        [ 0 .. maxCol ]
+        [ 0 .. seedCols ]
         |> List.fold (fun acc c ->
             if Map.containsKey c explicitColumns then acc
             else Map.add c defaultColWidthPx acc) explicitColumns
 
     let rowHeights =
-        match defaultRowHeightPx with
-        | None -> explicitRows
-        | Some defHeight ->
-            [ 0 .. maxRow ]
-            |> List.fold (fun acc r ->
-                if Map.containsKey r explicitRows then acc
-                else Map.add r defHeight acc) explicitRows
+        let defHeight = defaultRowHeightPx |> Option.defaultValue (15.0 * 96.0 / 72.0)
+        [ 0 .. seedRows ]
+        |> List.fold (fun acc r ->
+            if Map.containsKey r explicitRows then acc
+            else Map.add r defHeight acc) explicitRows
 
-    let baseModel = createEmpty (max 1 (maxRow + 1)) (max 1 (maxCol + 1))
+    let baseModel = createEmpty excelRowCount excelColCount
     // Excel's printed/screenshot output never shows the active-cell border, so
     // park the selection off-grid for snapshot renders.
     { baseModel with
