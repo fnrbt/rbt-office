@@ -523,6 +523,84 @@ let expandTableRef (tableName: string) (columnName: string)
         | None -> [ err Err.ref ]
     | None -> [ err Err.ref ]
 
+// --- Date helpers -----------------------------------------------------------
+// Excel serial dates: serial 1 = 1900-01-01. Excel's phantom 1900-02-29 (the
+// 1900-leap-year bug) makes the simple offset exact for every date from
+// 1900-03-01 (serial 61) onward, which covers every realistic spreadsheet.
+let private excelEpoch = DateTime(1899, 12, 30)
+let private serialToDate (s: float) : DateTime = excelEpoch.AddDays(s)
+let private dateToSerial (d: DateTime) : float = (d - excelEpoch).TotalDays
+
+// --- Criteria parsing (SUMIF / COUNTIF / …) ---------------------------------
+/// Translate Excel's `*` / `?` wildcards into a case-insensitive regex.
+let private wildcardRegex (pattern: string) =
+    let sb = System.Text.StringBuilder()
+    sb.Append('^') |> ignore
+    let mutable i = 0
+    while i < pattern.Length do
+        match pattern.[i] with
+        | '~' when i + 1 < pattern.Length ->
+            // ~* / ~? escape the wildcard.
+            sb.Append(System.Text.RegularExpressions.Regex.Escape(string pattern.[i + 1])) |> ignore
+            i <- i + 2
+        | '*' -> sb.Append(".*") |> ignore; i <- i + 1
+        | '?' -> sb.Append('.') |> ignore; i <- i + 1
+        | c -> sb.Append(System.Text.RegularExpressions.Regex.Escape(string c)) |> ignore; i <- i + 1
+    sb.Append('$') |> ignore
+    System.Text.RegularExpressions.Regex(
+        sb.ToString(), System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+
+/// Compile a criteria value (`">5"`, `"<>0"`, `"app*"`, `42`, …) into a
+/// predicate over candidate cell values. Used by the *IF / *IFS family.
+let private compileCriteria (criteria: CellValue) : CellValue -> bool =
+    match unwrapValue criteria with
+    | CellValue.Number cn ->
+        fun v -> match coerceNumber v with Ok x -> x = cn | _ -> false
+    | CellValue.Boolean cb ->
+        fun v -> match coerceBool v with Ok x -> x = cb | _ -> false
+    | CellValue.String raw ->
+        let ops = [ ">="; "<="; "<>"; ">"; "<"; "=" ]
+        let op, rest =
+            match ops |> List.tryFind (fun o -> raw.StartsWith o) with
+            | Some o -> o, raw.Substring(o.Length)
+            | None -> "=", raw
+        match Double.TryParse(rest, NumberStyles.Float, CultureInfo.InvariantCulture) with
+        | true, num ->
+            fun v ->
+                match coerceNumber v with
+                | Ok x ->
+                    match op with
+                    | ">=" -> x >= num | "<=" -> x <= num | ">" -> x > num
+                    | "<" -> x < num | "<>" -> x <> num | _ -> x = num
+                | _ -> false
+        | _ ->
+            match op with
+            | ">" | "<" | ">=" | "<=" ->
+                fun v ->
+                    match coerceText v with
+                    | Ok t ->
+                        let c = String.Compare(t, rest, StringComparison.OrdinalIgnoreCase)
+                        match op with
+                        | ">" -> c > 0 | "<" -> c < 0 | ">=" -> c >= 0 | _ -> c <= 0
+                    | _ -> false
+            | "<>" ->
+                let rx = wildcardRegex rest
+                fun v -> match coerceText v with Ok t -> not (rx.IsMatch t) | _ -> true
+            | _ ->
+                let rx = wildcardRegex rest
+                fun v -> match coerceText v with Ok t -> rx.IsMatch t | _ -> false
+    | CellValue.Empty ->
+        fun v -> match unwrapValue v with CellValue.Empty -> true | _ -> false
+    | _ -> fun _ -> false
+
+/// Static 0-indexed bounds of a range-shaped expression (RangeRef or a
+/// single CellRef). None for anything else.
+let private rangeBounds (e: Expr) : (int * int * int * int) option =
+    match e with
+    | RangeRef (a, b) -> Some (min a.Row b.Row, min a.Col b.Col, max a.Row b.Row, max a.Col b.Col)
+    | CellRef r -> Some (r.Row, r.Col, r.Row, r.Col)
+    | _ -> None
+
 /// Compare two scalar values for the comparison operators. Excel orders
 /// number < text < FALSE < TRUE; numbers compare numerically, text
 /// case-insensitively. Returns -1 / 0 / 1, or an Error value to propagate.
@@ -656,55 +734,566 @@ and numbersOf (values: CellValue list) : Result<float list, string> =
             | _ -> None)
         |> Ok
 
+/// Read a cell straight from the model (used by lookup functions that
+/// index into a range rectangle).
+and private gridCell (model: SpreadsheetModel) row col : CellValue =
+    getCellValue { Row = row; Col = col } model |> unwrapValue
+
 and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
                  (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue =
-    let evalArg i = eval (List.item i args) model workbook
+    let nargs = List.length args
+    let argRaw i = eval (List.item i args) model workbook
+    let argNum i = coerceNumber (argRaw i)
+    let argText i = coerceText (argRaw i)
+    let argBool i = coerceBool (argRaw i)
     let aggregateNumbers () = numbersOf (flattenArgs args model workbook)
+    // Run f over the aggregate numeric values; common shape for math
+    // reductions. Empty list → emptyResult.
+    let reduceNums emptyResult f =
+        match aggregateNumbers () with
+        | Result.Error e -> err e
+        | Ok [] -> emptyResult
+        | Ok ns -> f ns
+    // Apply a unary numeric function to arg 0 with error propagation.
+    let unaryNum f =
+        match argNum 0 with Ok x -> f x | Result.Error e -> err e
+    // (criteriaRangeExpr, criteriaValue) → the predicate-matched subset of
+    // a parallel range, as a flat row-major list. Used by *IF / *IFS.
+    let rangeValues (e: Expr) =
+        match rangeBounds e with
+        | Some (sr, sc, er, ec) ->
+            [ for r in sr .. er do for c in sc .. ec -> gridCell model r c ]
+        | None -> [ eval e model workbook ]
+    // Median of a sorted float list.
+    let median (ns: float list) =
+        let a = ns |> List.sort |> Array.ofList
+        let n = a.Length
+        if n = 0 then nan
+        elif n % 2 = 1 then a.[n / 2]
+        else (a.[n / 2 - 1] + a.[n / 2]) / 2.0
+    let isErr v = match unwrapValue v with CellValue.Error _ -> true | _ -> false
+
     match name.ToUpperInvariant() with
-    | "SUM" ->
-        match aggregateNumbers () with
-        | Ok ns -> CellValue.Number (List.sum ns)
-        | Result.Error e -> err e
-    | "AVERAGE" ->
-        match aggregateNumbers () with
-        | Ok [] -> err Err.div0
-        | Ok ns -> CellValue.Number (List.average ns)
-        | Result.Error e -> err e
+    // ----- aggregates -------------------------------------------------------
+    | "SUM" -> reduceNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.sum ns))
+    | "PRODUCT" -> reduceNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.fold (*) 1.0 ns))
+    | "AVERAGE" -> reduceNums (err Err.div0) (fun ns -> CellValue.Number (List.average ns))
+    | "MIN" -> reduceNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.min ns))
+    | "MAX" -> reduceNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.max ns))
+    | "MEDIAN" -> reduceNums (err Err.num) (fun ns -> CellValue.Number (median ns))
     | "COUNT" ->
-        // Counts numeric values only.
         let vals = flattenArgs args model workbook
         match firstError vals with
         | Some (CellValue.Error e) -> err e
-        | _ ->
-            let c =
-                vals |> List.sumBy (fun v ->
-                    match unwrapValue v with CellValue.Number _ -> 1 | _ -> 0)
-            CellValue.Number (float c)
-    | "MIN" ->
-        match aggregateNumbers () with
-        | Ok [] -> CellValue.Number 0.0
-        | Ok ns -> CellValue.Number (List.min ns)
+        | _ -> CellValue.Number (float (vals |> List.sumBy (fun v -> match unwrapValue v with CellValue.Number _ -> 1 | _ -> 0)))
+    | "COUNTA" ->
+        let vals = flattenArgs args model workbook
+        CellValue.Number (float (vals |> List.sumBy (fun v -> match unwrapValue v with CellValue.Empty -> 0 | _ -> 1)))
+    | "COUNTBLANK" ->
+        let vals = flattenArgs args model workbook
+        CellValue.Number (float (vals |> List.sumBy (fun v ->
+            match unwrapValue v with
+            | CellValue.Empty -> 1
+            | CellValue.String "" -> 1
+            | _ -> 0)))
+    | "STDEV" | "STDEVP" ->
+        reduceNums (err Err.div0) (fun ns ->
+            let n = List.length ns
+            if (name.ToUpperInvariant() = "STDEV" && n < 2) then err Err.div0
+            else
+                let mean = List.average ns
+                let ss = ns |> List.sumBy (fun x -> (x - mean) ** 2.0)
+                let denom = if name.ToUpperInvariant() = "STDEV" then float (n - 1) else float n
+                CellValue.Number (sqrt (ss / denom)))
+    | "VAR" ->
+        reduceNums (err Err.div0) (fun ns ->
+            let n = List.length ns
+            if n < 2 then err Err.div0
+            else
+                let mean = List.average ns
+                CellValue.Number ((ns |> List.sumBy (fun x -> (x - mean) ** 2.0)) / float (n - 1)))
+    | "LARGE" | "SMALL" ->
+        if nargs <> 2 then err Err.value else
+        match numbersOf (flattenArgs [ List.item 0 args ] model workbook), argNum 1 with
+        | Result.Error e, _ -> err e
+        | _, Result.Error e -> err e
+        | Ok ns, Ok k ->
+            let sorted =
+                if name.ToUpperInvariant() = "LARGE" then List.sortDescending ns
+                else List.sort ns
+            let ki = int k - 1
+            if ki < 0 || ki >= List.length sorted then err Err.num
+            else CellValue.Number sorted.[ki]
+    // ----- criteria aggregates ---------------------------------------------
+    | "COUNTIF" ->
+        if nargs <> 2 then err Err.value else
+        let pred = compileCriteria (argRaw 1)
+        CellValue.Number (float (rangeValues (List.item 0 args) |> List.filter pred |> List.length))
+    | "SUMIF" ->
+        // SUMIF(range, criteria, [sum_range])
+        if nargs < 2 then err Err.value else
+        let critRange = rangeValues (List.item 0 args)
+        let sumRange =
+            if nargs >= 3 then rangeValues (List.item 2 args) else critRange
+        let pred = compileCriteria (argRaw 1)
+        let total =
+            List.zip
+                (critRange |> List.truncate (List.length sumRange))
+                (sumRange |> List.truncate (List.length critRange))
+            |> List.sumBy (fun (c, s) ->
+                if pred c then (match coerceNumber s with Ok n -> n | _ -> 0.0) else 0.0)
+        CellValue.Number total
+    | "AVERAGEIF" ->
+        if nargs < 2 then err Err.value else
+        let critRange = rangeValues (List.item 0 args)
+        let avgRange = if nargs >= 3 then rangeValues (List.item 2 args) else critRange
+        let pred = compileCriteria (argRaw 1)
+        let matched =
+            List.zip
+                (critRange |> List.truncate (List.length avgRange))
+                (avgRange |> List.truncate (List.length critRange))
+            |> List.choose (fun (c, v) ->
+                if pred c then (match coerceNumber v with Ok n -> Some n | _ -> None) else None)
+        if List.isEmpty matched then err Err.div0
+        else CellValue.Number (List.average matched)
+    | "SUMIFS" | "COUNTIFS" ->
+        // SUMIFS(sum_range, crit_range1, crit1, crit_range2, crit2, …)
+        // COUNTIFS(crit_range1, crit1, …)  — no sum range.
+        let isSum = name.ToUpperInvariant() = "SUMIFS"
+        let pairsStart = if isSum then 1 else 0
+        let pairArgs = args |> List.skip pairsStart
+        if List.length pairArgs % 2 <> 0 || List.isEmpty pairArgs then err Err.value else
+        let pairs =
+            pairArgs
+            |> List.chunkBySize 2
+            |> List.map (fun chunk ->
+                match chunk with
+                | [ rangeExpr; critExpr ] ->
+                    rangeValues rangeExpr, compileCriteria (eval critExpr model workbook)
+                | _ -> [], (fun _ -> false))
+        let count = pairs |> List.map (fst >> List.length) |> List.min
+        let sumRange = if isSum then rangeValues (List.item 0 args) else []
+        let mutable total = 0.0
+        let mutable hits = 0
+        for i in 0 .. count - 1 do
+            let allMatch = pairs |> List.forall (fun (vals, pred) -> pred (List.item i vals))
+            if allMatch then
+                hits <- hits + 1
+                if isSum && i < List.length sumRange then
+                    match coerceNumber (List.item i sumRange) with
+                    | Ok n -> total <- total + n
+                    | _ -> ()
+        if isSum then CellValue.Number total else CellValue.Number (float hits)
+    | "SUMPRODUCT" ->
+        // Element-wise product of parallel ranges, then sum.
+        let cols = args |> List.map (fun a -> numbersOf (rangeValues a))
+        match cols |> List.tryPick (function Result.Error e -> Some e | _ -> None) with
+        | Some e -> err e
+        | None ->
+            let arrs = cols |> List.choose (function Ok ns -> Some ns | _ -> None)
+            match arrs with
+            | [] -> CellValue.Number 0.0
+            | first :: _ ->
+                let len = arrs |> List.map List.length |> List.min
+                let mutable total = 0.0
+                for i in 0 .. len - 1 do
+                    total <- total + (arrs |> List.fold (fun acc a -> acc * List.item i a) 1.0)
+                CellValue.Number total
+    // ----- math -------------------------------------------------------------
+    | "ABS" -> unaryNum (abs >> CellValue.Number)
+    | "SQRT" -> unaryNum (fun x -> if x < 0.0 then err Err.num else CellValue.Number (sqrt x))
+    | "SIGN" -> unaryNum (fun x -> CellValue.Number (float (sign x)))
+    | "INT" -> unaryNum (fun x -> CellValue.Number (floor x))
+    | "TRUNC" ->
+        match argNum 0 with
         | Result.Error e -> err e
-    | "MAX" ->
-        match aggregateNumbers () with
-        | Ok [] -> CellValue.Number 0.0
-        | Ok ns -> CellValue.Number (List.max ns)
-        | Result.Error e -> err e
+        | Ok x ->
+            let digits = if nargs >= 2 then (match argNum 1 with Ok d -> int d | _ -> 0) else 0
+            let factor = 10.0 ** float digits
+            CellValue.Number (Math.Truncate(x * factor) / factor)
+    | "ROUND" | "ROUNDUP" | "ROUNDDOWN" ->
+        if nargs < 1 then err Err.value else
+        match argNum 0, (if nargs >= 2 then argNum 1 else Ok 0.0) with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok x, Ok d ->
+            let factor = 10.0 ** d
+            let scaled = x * factor
+            let rounded =
+                match name.ToUpperInvariant() with
+                | "ROUNDUP" -> (if scaled < 0.0 then floor scaled else ceil scaled)
+                | "ROUNDDOWN" -> Math.Truncate scaled
+                | _ -> Math.Round(scaled, MidpointRounding.AwayFromZero)
+            CellValue.Number (rounded / factor)
+    | "MOD" ->
+        if nargs <> 2 then err Err.value else
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok _, Ok d when d = 0.0 -> err Err.div0
+        | Ok a, Ok d ->
+            // Excel MOD takes the sign of the divisor.
+            let r = a - d * floor (a / d)
+            CellValue.Number r
+    | "POWER" ->
+        if nargs <> 2 then err Err.value else
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok b, Ok p ->
+            let r = b ** p
+            if Double.IsNaN r || Double.IsInfinity r then err Err.num else CellValue.Number r
+    // ----- logical ----------------------------------------------------------
     | "IF" ->
         match args with
-        | [ condExpr; trueExpr ] ->
-            match coerceBool (eval condExpr model workbook) with
-            | Ok true -> eval trueExpr model workbook
+        | [ c; t ] ->
+            match coerceBool (eval c model workbook) with
+            | Ok true -> eval t model workbook
             | Ok false -> CellValue.Boolean false
             | Result.Error e -> err e
-        | [ condExpr; trueExpr; falseExpr ] ->
-            match coerceBool (eval condExpr model workbook) with
-            | Ok true -> eval trueExpr model workbook
-            | Ok false -> eval falseExpr model workbook
+        | [ c; t; f ] ->
+            match coerceBool (eval c model workbook) with
+            | Ok true -> eval t model workbook
+            | Ok false -> eval f model workbook
             | Result.Error e -> err e
         | _ -> err Err.value
+    | "AND" | "OR" | "XOR" ->
+        let bools =
+            flattenArgs args model workbook
+            |> List.choose (fun v ->
+                match unwrapValue v with
+                | CellValue.Empty -> None
+                | other -> Some (coerceBool other))
+        match bools |> List.tryPick (function Result.Error e -> Some e | _ -> None) with
+        | Some e -> err e
+        | None ->
+            let bs = bools |> List.choose (function Ok b -> Some b | _ -> None)
+            if List.isEmpty bs then err Err.value
+            else
+                match name.ToUpperInvariant() with
+                | "AND" -> CellValue.Boolean (List.forall id bs)
+                | "OR" -> CellValue.Boolean (List.exists id bs)
+                | _ -> CellValue.Boolean (bs |> List.filter id |> List.length |> fun n -> n % 2 = 1)
+    | "NOT" ->
+        if nargs <> 1 then err Err.value else
+        match argBool 0 with Ok b -> CellValue.Boolean (not b) | Result.Error e -> err e
+    | "IFERROR" ->
+        if nargs <> 2 then err Err.value else
+        let v = argRaw 0
+        if isErr v then argRaw 1 else v
+    | "IFNA" ->
+        if nargs <> 2 then err Err.value else
+        match unwrapValue (argRaw 0) with
+        | CellValue.Error e when e = Err.na -> argRaw 1
+        | v -> v
+    | "IFS" ->
+        // IFS(cond1, val1, cond2, val2, …)
+        if nargs < 2 || nargs % 2 <> 0 then err Err.value else
+        let rec loop i =
+            if i >= nargs then err Err.na
+            else
+                match coerceBool (argRaw i) with
+                | Result.Error e -> err e
+                | Ok true -> argRaw (i + 1)
+                | Ok false -> loop (i + 2)
+        loop 0
+    | "SWITCH" ->
+        // SWITCH(expr, case1, val1, …, [default])
+        if nargs < 3 then err Err.value else
+        let target = argRaw 0
+        let rec loop i =
+            if i + 1 >= nargs then
+                // odd trailing arg = default
+                if i < nargs then argRaw i else err Err.na
+            else
+                match compareValues target (argRaw i) with
+                | Ok 0 -> argRaw (i + 1)
+                | _ -> loop (i + 2)
+        loop 1
+    | "TRUE" -> CellValue.Boolean true
+    | "FALSE" -> CellValue.Boolean false
+    | "NA" -> err Err.na
+    // ----- info -------------------------------------------------------------
+    | "ISBLANK" ->
+        if nargs <> 1 then err Err.value
+        else CellValue.Boolean (match unwrapValue (argRaw 0) with CellValue.Empty -> true | _ -> false)
+    | "ISERROR" ->
+        if nargs <> 1 then err Err.value else CellValue.Boolean (isErr (argRaw 0))
+    | "ISNA" ->
+        if nargs <> 1 then err Err.value
+        else CellValue.Boolean (match unwrapValue (argRaw 0) with CellValue.Error e when e = Err.na -> true | _ -> false)
+    | "ISNUMBER" ->
+        if nargs <> 1 then err Err.value
+        else CellValue.Boolean (match unwrapValue (argRaw 0) with CellValue.Number _ -> true | _ -> false)
+    | "ISTEXT" ->
+        if nargs <> 1 then err Err.value
+        else CellValue.Boolean (match unwrapValue (argRaw 0) with CellValue.String _ -> true | _ -> false)
+    | "ISLOGICAL" ->
+        if nargs <> 1 then err Err.value
+        else CellValue.Boolean (match unwrapValue (argRaw 0) with CellValue.Boolean _ -> true | _ -> false)
+    // ----- text -------------------------------------------------------------
+    | "CONCAT" | "CONCATENATE" ->
+        let parts = flattenArgs args model workbook |> List.map coerceText
+        match parts |> List.tryPick (function Result.Error e -> Some e | _ -> None) with
+        | Some e -> err e
+        | None -> CellValue.String (parts |> List.choose (function Ok s -> Some s | _ -> None) |> String.concat "")
+    | "TEXTJOIN" ->
+        // TEXTJOIN(delimiter, ignore_empty, text…)
+        if nargs < 3 then err Err.value else
+        match argText 0, argBool 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok delim, Ok ignoreEmpty ->
+            let parts =
+                flattenArgs (args |> List.skip 2) model workbook
+                |> List.choose (fun v ->
+                    match unwrapValue v with
+                    | CellValue.Empty when ignoreEmpty -> None
+                    | other -> match coerceText other with Ok s -> Some s | _ -> Some "")
+            CellValue.String (String.Join(delim, parts))
+    | "LEN" ->
+        if nargs <> 1 then err Err.value
+        else match argText 0 with Ok s -> CellValue.Number (float s.Length) | Result.Error e -> err e
+    | "TRIM" ->
+        if nargs <> 1 then err Err.value
+        else match argText 0 with
+             | Ok s ->
+                // Excel TRIM collapses runs of interior spaces to one.
+                let collapsed = System.Text.RegularExpressions.Regex.Replace(s.Trim(), " +", " ")
+                CellValue.String collapsed
+             | Result.Error e -> err e
+    | "UPPER" ->
+        if nargs <> 1 then err Err.value
+        else match argText 0 with Ok s -> CellValue.String (s.ToUpperInvariant()) | Result.Error e -> err e
+    | "LOWER" ->
+        if nargs <> 1 then err Err.value
+        else match argText 0 with Ok s -> CellValue.String (s.ToLowerInvariant()) | Result.Error e -> err e
+    | "PROPER" ->
+        if nargs <> 1 then err Err.value
+        else match argText 0 with
+             | Ok s -> CellValue.String (CultureInfo.InvariantCulture.TextInfo.ToTitleCase(s.ToLowerInvariant()))
+             | Result.Error e -> err e
+    | "LEFT" ->
+        if nargs < 1 then err Err.value else
+        match argText 0 with
+        | Result.Error e -> err e
+        | Ok s ->
+            let cnt = if nargs >= 2 then (match argNum 1 with Ok n -> int n | _ -> 1) else 1
+            CellValue.String (s.Substring(0, max 0 (min s.Length cnt)))
+    | "RIGHT" ->
+        if nargs < 1 then err Err.value else
+        match argText 0 with
+        | Result.Error e -> err e
+        | Ok s ->
+            let cnt = if nargs >= 2 then (match argNum 1 with Ok n -> int n | _ -> 1) else 1
+            let c = max 0 (min s.Length cnt)
+            CellValue.String (s.Substring(s.Length - c, c))
+    | "MID" ->
+        if nargs <> 3 then err Err.value else
+        match argText 0, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok s, Ok startN, Ok lenN ->
+            let start0 = int startN - 1   // Excel MID is 1-indexed
+            if start0 < 0 then err Err.value
+            elif start0 >= s.Length then CellValue.String ""
+            else
+                let take = max 0 (min (s.Length - start0) (int lenN))
+                CellValue.String (s.Substring(start0, take))
+    | "REPT" ->
+        if nargs <> 2 then err Err.value else
+        match argText 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok s, Ok cnt -> CellValue.String (String.replicate (max 0 (int cnt)) s)
+    | "FIND" | "SEARCH" ->
+        // FIND is case-sensitive, SEARCH is not. Both 1-indexed.
+        if nargs < 2 then err Err.value else
+        match argText 0, argText 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok needle, Ok hay ->
+            let startAt = if nargs >= 3 then (match argNum 2 with Ok n -> int n - 1 | _ -> 0) else 0
+            if startAt < 0 || startAt > hay.Length then err Err.value
+            else
+                let cmp =
+                    if name.ToUpperInvariant() = "FIND" then StringComparison.Ordinal
+                    else StringComparison.OrdinalIgnoreCase
+                let idx = hay.IndexOf(needle, startAt, cmp)
+                if idx < 0 then err Err.value else CellValue.Number (float (idx + 1))
+    | "SUBSTITUTE" ->
+        // SUBSTITUTE(text, old, new, [instance])
+        if nargs < 3 then err Err.value else
+        match argText 0, argText 1, argText 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok s, Ok oldT, Ok newT ->
+            if oldT = "" then CellValue.String s
+            elif nargs >= 4 then
+                match argNum 3 with
+                | Result.Error e -> err e
+                | Ok inst ->
+                    // Replace only the inst-th occurrence.
+                    let target = int inst
+                    let mutable count = 0
+                    let mutable idx = 0
+                    let sb = System.Text.StringBuilder()
+                    while idx < s.Length do
+                        if idx + oldT.Length <= s.Length && s.Substring(idx, oldT.Length) = oldT then
+                            count <- count + 1
+                            if count = target then sb.Append(newT) |> ignore
+                            else sb.Append(oldT) |> ignore
+                            idx <- idx + oldT.Length
+                        else
+                            sb.Append(s.[idx]) |> ignore
+                            idx <- idx + 1
+                    CellValue.String (sb.ToString())
+            else
+                CellValue.String (s.Replace(oldT, newT))
+    | "REPLACE" ->
+        // REPLACE(text, start, num_chars, new_text) — 1-indexed start.
+        if nargs <> 4 then err Err.value else
+        match argText 0, argNum 1, argNum 2, argText 3 with
+        | Result.Error e, _, _, _ | _, Result.Error e, _, _
+        | _, _, Result.Error e, _ | _, _, _, Result.Error e -> err e
+        | Ok s, Ok startN, Ok lenN, Ok newT ->
+            let start0 = max 0 (int startN - 1)
+            let cnt = max 0 (int lenN)
+            if start0 > s.Length then CellValue.String (s + newT)
+            else
+                let before = s.Substring(0, start0)
+                let after = if start0 + cnt < s.Length then s.Substring(start0 + cnt) else ""
+                CellValue.String (before + newT + after)
+    | "TEXT" ->
+        // Minimal TEXT — passes the format through .NET. Common Excel codes
+        // (0, 0.00, #,##0, 0%) are .NET-compatible enough for the usual case.
+        if nargs <> 2 then err Err.value else
+        match argNum 0, argText 1 with
+        | Result.Error e, _ -> err e
+        | _, Result.Error e -> err e
+        | Ok n, Ok fmt ->
+            try CellValue.String (n.ToString(fmt, CultureInfo.InvariantCulture))
+            with _ -> CellValue.String (numberToText n)
+    // ----- lookup -----------------------------------------------------------
+    | "CHOOSE" ->
+        if nargs < 2 then err Err.value else
+        match argNum 0 with
+        | Result.Error e -> err e
+        | Ok idx ->
+            let i = int idx
+            if i < 1 || i >= nargs then err Err.value else argRaw i
+    | "INDEX" ->
+        // INDEX(range, row_num, [col_num]) — 1-indexed; 0 = whole row/col,
+        // collapsed here to the first cell of that line.
+        if nargs < 2 then err Err.value else
+        match rangeBounds (List.item 0 args) with
+        | None -> err Err.ref
+        | Some (sr, sc, er, ec) ->
+            match argNum 1 with
+            | Result.Error e -> err e
+            | Ok rowN ->
+                let colN = if nargs >= 3 then (match argNum 2 with Ok c -> int c | _ -> 1) else 1
+                let rows = er - sr + 1
+                let csz = ec - sc + 1
+                // Single-row or single-col range: the lone index walks it.
+                let r, c =
+                    if rows = 1 then sr, sc + (max 1 (int rowN)) - 1
+                    elif csz = 1 then sr + (max 1 (int rowN)) - 1, sc
+                    else sr + (max 1 (int rowN)) - 1, sc + (max 1 colN) - 1
+                if r < sr || r > er || c < sc || c > ec then err Err.ref
+                else gridCell model r c
+    | "MATCH" ->
+        // MATCH(lookup, range, [match_type]) — 1=≤(sorted asc), 0=exact,
+        // -1=≥(sorted desc). Defaults to 1.
+        if nargs < 2 then err Err.value else
+        match rangeBounds (List.item 1 args) with
+        | None -> err Err.ref
+        | Some (sr, sc, er, ec) ->
+            let target = argRaw 0
+            let matchType = if nargs >= 3 then (match argNum 2 with Ok m -> int m | _ -> 1) else 1
+            let cells =
+                [ for r in sr .. er do for c in sc .. ec -> gridCell model r c ]
+            let result =
+                if matchType = 0 then
+                    cells |> List.tryFindIndex (fun v -> match compareValues target v with Ok 0 -> true | _ -> false)
+                elif matchType = 1 then
+                    // largest value ≤ target, range assumed ascending
+                    cells
+                    |> List.mapi (fun i v -> i, v)
+                    |> List.filter (fun (_, v) -> match compareValues v target with Ok c -> c <= 0 | _ -> false)
+                    |> List.tryLast
+                    |> Option.map fst
+                else
+                    // smallest value ≥ target, range assumed descending
+                    cells
+                    |> List.mapi (fun i v -> i, v)
+                    |> List.filter (fun (_, v) -> match compareValues v target with Ok c -> c >= 0 | _ -> false)
+                    |> List.tryLast
+                    |> Option.map fst
+            match result with
+            | Some i -> CellValue.Number (float (i + 1))
+            | None -> err Err.na
+    | "VLOOKUP" | "HLOOKUP" ->
+        // VLOOKUP(lookup, table, col_index, [range_lookup])
+        // HLOOKUP(lookup, table, row_index, [range_lookup])
+        if nargs < 3 then err Err.value else
+        match rangeBounds (List.item 1 args) with
+        | None -> err Err.ref
+        | Some (sr, sc, er, ec) ->
+            let isV = name.ToUpperInvariant() = "VLOOKUP"
+            let target = argRaw 0
+            match argNum 2 with
+            | Result.Error e -> err e
+            | Ok idxN ->
+                let idx = int idxN
+                let approx = if nargs >= 4 then (match argBool 3 with Ok b -> b | _ -> true) else true
+                // search line: first column (V) or first row (H)
+                let searchLine =
+                    if isV then [ for r in sr .. er -> r, gridCell model r sc ]
+                    else [ for c in sc .. ec -> c, gridCell model sr c ]
+                let hitLine =
+                    if approx then
+                        // largest value ≤ target (assumes sorted ascending)
+                        searchLine
+                        |> List.filter (fun (_, v) -> match compareValues v target with Ok c -> c <= 0 | _ -> false)
+                        |> List.tryLast
+                    else
+                        searchLine
+                        |> List.tryFind (fun (_, v) -> match compareValues target v with Ok 0 -> true | _ -> false)
+                match hitLine with
+                | None -> err Err.na
+                | Some (lineIdx, _) ->
+                    if isV then
+                        let col = sc + idx - 1
+                        if col < sc || col > ec then err Err.ref else gridCell model lineIdx col
+                    else
+                        let row = sr + idx - 1
+                        if row < sr || row > er then err Err.ref else gridCell model row lineIdx
+    // ----- date -------------------------------------------------------------
+    | "TODAY" -> CellValue.Number (dateToSerial DateTime.Today)
+    | "NOW" -> CellValue.Number (dateToSerial DateTime.Now)
+    | "DATE" ->
+        if nargs <> 3 then err Err.value else
+        match argNum 0, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok y, Ok m, Ok d ->
+            try
+                let baseDate = DateTime(int y, 1, 1)
+                let dt = baseDate.AddMonths(int m - 1).AddDays(d - 1.0)
+                CellValue.Number (dateToSerial dt)
+            with _ -> err Err.num
+    | "YEAR" -> unaryNum (fun s -> CellValue.Number (float (serialToDate s).Year))
+    | "MONTH" -> unaryNum (fun s -> CellValue.Number (float (serialToDate s).Month))
+    | "DAY" -> unaryNum (fun s -> CellValue.Number (float (serialToDate s).Day))
+    | "WEEKDAY" ->
+        match argNum 0 with
+        | Result.Error e -> err e
+        | Ok s ->
+            // Default type 1: Sunday = 1 … Saturday = 7.
+            let dow = int (serialToDate s).DayOfWeek  // Sunday = 0
+            CellValue.Number (float (dow + 1))
+    | "EOMONTH" ->
+        if nargs <> 2 then err Err.value else
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok s, Ok months ->
+            let d = (serialToDate s).AddMonths(int months)
+            let eom = DateTime(d.Year, d.Month, DateTime.DaysInMonth(d.Year, d.Month))
+            CellValue.Number (dateToSerial eom)
     | _ ->
-        // Unknown function — S2 expands this table.
+        // Unknown / unsupported function.
         err Err.name
 
 /// Parse + evaluate a formula string in one shot.
