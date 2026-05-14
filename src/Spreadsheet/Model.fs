@@ -44,6 +44,15 @@ type CellFormat = {
     /// Excel auto-filter dropdown button on the right edge of the cell.
     /// Set for cells in the header row of a table with an <autoFilter> child.
     FilterButton: bool
+    /// Small red triangle in the top-right corner of the cell. Excel
+    /// renders this whenever the cell has a comment / note attached.
+    /// Interactive viewers show the comment text as a tooltip on hover.
+    HasComment: bool
+    /// Small downward arrow on the right edge of the cell. Excel renders
+    /// this for cells inside a `<dataValidation type="list">` range when
+    /// the cell is selected; for static snapshot rendering we always show
+    /// it so the visual cue carries through to PDF / PNG exports.
+    HasListDropdown: bool
 }
 
 /// Default format
@@ -65,6 +74,8 @@ let defaultFormat = {
     BorderLeft = None
     BorderRight = None
     FilterButton = false
+    HasComment = false
+    HasListDropdown = false
 }
 
 /// Cell comment/note

@@ -146,6 +146,8 @@ let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
         BorderLeft = borderSide style.BorderLeft
         BorderRight = borderSide style.BorderRight
         FilterButton = false
+        HasComment = false
+        HasListDropdown = false
     }
 
     // Layer the workbook's table style (e.g. `TableStyleMedium7`) on top of
@@ -262,6 +264,29 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                 for c in c1 .. c2 do
                     hyperlinkCells.Add(r, c) |> ignore
 
+    // Cells that have a <comment> attached get a red corner triangle.
+    // sheet.Comments lives in a separate xl/comments<N>.xml file, keyed
+    // by cell ref in Excel's 1-indexed "B7" form.
+    let commentCells = System.Collections.Generic.HashSet<int * int>()
+    for c in sheet.Comments do
+        let r = c.CellRef.Row - 1
+        let col = columnIndex c.CellRef.Column
+        if r >= 0 && col >= 0 then commentCells.Add(r, col) |> ignore
+
+    // Cells inside a `<dataValidation type="list">` range get the small
+    // downward dropdown arrow. Other validation types (whole, decimal,
+    // date, custom formula) don't paint a visible marker — Excel only
+    // shows the dropdown for list-style validation.
+    let listDropdownCells = System.Collections.Generic.HashSet<int * int>()
+    for dv in sheet.DataValidations do
+        if dv.ValidationType = "list" then
+            match parseCellRange dv.Range with
+            | None -> ()
+            | Some (r1, c1, r2, c2) ->
+                for r in r1 .. r2 do
+                    for c in c1 .. c2 do
+                        listDropdownCells.Add(r, c) |> ignore
+
     let cells =
         sheet.Rows
         |> List.collect (fun row ->
@@ -285,7 +310,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                 TextColor = baseFormat.TextColor |> Option.orElse overlay.TextColor
                                 Bold = baseFormat.Bold || overlay.Bold
                                 FilterButton = baseFormat.FilterButton || overlay.FilterButton }
-                    let format =
+                    let withLink =
                         if hyperlinkCells.Contains(r, c) then
                             // Theme-10 hyperlink color #0563C1 + underline.
                             // Don't override TextColor if the cellXf already
@@ -295,6 +320,10 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                 TextColor = withTable.TextColor |> Option.orElseWith (fun () -> Some "#0563C1")
                                 Underline = true }
                         else withTable
+                    let format =
+                        { withLink with
+                            HasComment = withLink.HasComment || commentCells.Contains(r, c)
+                            HasListDropdown = withLink.HasListDropdown || listDropdownCells.Contains(r, c) }
                     let cellData = { Value = value; Format = format; Comment = None }
                     match cellRichRuns workbook cell.Value with
                     | Some runs -> richRunsMap <- Map.add { Row = r; Col = c } runs richRunsMap

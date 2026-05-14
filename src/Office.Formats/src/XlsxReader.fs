@@ -1544,7 +1544,23 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
                         let dataVals = DataValidations.parseDataValidations sheet
                         let sheetRels = loadSheetRels sheetPath
                         let tables = loadSheetTables sheetPath sheetRels
-                        Some (Xlsx.worksheet info.Name xml [] condFormats dataVals [] [] tables sheetRels)
+                        // Cell comments live in xl/comments<sheetNum>.xml. The
+                        // sheetN.xml.rels has a Relationship with Type ending
+                        // in /comments pointing at the comments XML. Use that
+                        // rel to locate the file (sheetNum-based pathing fails
+                        // for renamed-on-disk sheets); fall back to the
+                        // commonly-conventional comments<N>.xml path when no
+                        // rel exists.
+                        let comments =
+                            sheetRels
+                            |> List.tryFind (fun r -> r.Type.EndsWith("/comments"))
+                            |> Option.map (fun r ->
+                                let p = resolveArchivePath sheetPath r.Target
+                                ZipInterop.getFileTextNative archive p
+                                |> Option.map CellComments.parseComments
+                                |> Option.defaultValue [])
+                            |> Option.defaultValue []
+                        Some (Xlsx.worksheet info.Name xml comments condFormats dataVals [] [] tables sheetRels)
                     | None -> None
                 | None -> None)
 

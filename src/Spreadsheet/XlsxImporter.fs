@@ -116,6 +116,8 @@ let private convertCellFormat (excelCell: ExcelCell): CellFormat =
             BorderRight = convertBorder excelCell.borderRight
             FilterButton = false
             Strikethrough = false
+            HasComment = false
+            HasListDropdown = false
         }
 
     /// <summary>

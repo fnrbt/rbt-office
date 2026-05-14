@@ -761,6 +761,41 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     let shrink = float i * (triHalfWidth / 4.0)
                     let y = triTopY + float i
                     yield zone, GridLine (centerX - triHalfWidth + shrink, y, centerX + triHalfWidth - shrink, y, color, 1.0)
+
+        // Pass 5: comment-indicator red triangle in the top-right corner.
+        // Excel uses a 5-px right-triangle filled with #FF0000 — we
+        // approximate with horizontal strokes of decreasing width since
+        // the renderer has no fill-polygon primitive. The triangle's
+        // hypotenuse goes from (right-5, top) down to (right, top+5).
+        for (cell, format, _value, _selected, _background, zone) in states do
+            if format.HasComment then
+                let color = "#C00000"  // Excel's "note marker" red
+                let triSize = 5.0
+                let rightX = cell.Rect.X + cell.Rect.Width
+                let topY = cell.Rect.Y
+                // Row k from top: from x = rightX - (triSize - k) to x = rightX.
+                for k in 0 .. int triSize - 1 do
+                    let leftX = rightX - (triSize - float k)
+                    yield zone, GridLine (leftX, topY + float k + 0.5, rightX, topY + float k + 0.5, color, 1.0)
+
+        // Pass 6: data-validation list dropdown arrow. Excel only shows
+        // this when the cell is selected, but for static export we
+        // always paint it so the visual cue carries through to PNG /
+        // PDF snapshots. Drawn as a small 7-px-wide triangle just
+        // inside the cell's right edge, vertically centered, in gray.
+        // FilterButton already owns the dropdown styling for table
+        // header cells; skip those to avoid doubled triangles.
+        for (cell, format, _value, _selected, _background, zone) in states do
+            if format.HasListDropdown && not format.FilterButton then
+                let color = "#666666"
+                let buttonWidth = 16.0
+                let centerX = cell.Rect.X + cell.Rect.Width - buttonWidth / 2.0
+                let triHalfWidth = 3.5
+                let triTopY = cell.Rect.Y + cell.Rect.Height / 2.0 - 2.0
+                for i in 0 .. 3 do
+                    let shrink = float i * (triHalfWidth / 4.0)
+                    let y = triTopY + float i
+                    yield zone, GridLine (centerX - triHalfWidth + shrink, y, centerX + triHalfWidth - shrink, y, color, 1.0)
     ]
 
 /// Freeze-divider strokes drawn on top of the cell layer. Excel renders
