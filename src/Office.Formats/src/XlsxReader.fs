@@ -189,6 +189,23 @@ type ConditionalFormatRule = {
     /// (type, optional value). The first is always the implicit 0%
     /// floor; icon i shows when the value is ≥ threshold i.
     IconSetCfvo: (string * string option) list
+    /// `top10` rank — the N in "top/bottom N". When Percent is set, N
+    /// is a percentage of the range count. None for non-top10 rules.
+    Rank: int option
+    /// `top10` percent flag — Rank is a percentage, not a count.
+    Percent: bool
+    /// `top10` bottom flag — match the bottom N instead of the top N.
+    Bottom: bool
+    /// `aboveAverage` direction — true = above the range mean (the XML
+    /// default), false = below. Only meaningful for aboveAverage rules.
+    AboveAverage: bool
+    /// `aboveAverage` equalAverage flag — include cells exactly equal
+    /// to the mean in the match.
+    EqualAverage: bool
+    /// `aboveAverage` stdDev — when > 0, match cells beyond N standard
+    /// deviations from the mean (in the AboveAverage direction) rather
+    /// than simply above/below it.
+    StdDev: int option
     Priority: int option
     StopIfTrue: bool
 }
@@ -1394,6 +1411,23 @@ module ConditionalFormats =
                 Some (Xml.attr "iconSet" ic |> Option.defaultValue "3TrafficLights1"),
                 cfvoPairs ic
             | None -> None, []
+        // top10 / aboveAverage carry their config as attributes on the
+        // <cfRule> element itself rather than a child element.
+        let attrInt name =
+            Xml.attr name ruleNode
+            |> Option.bind (fun s -> match System.Int32.TryParse s with | true, n -> Some n | _ -> None)
+        let attrBool name fallback =
+            Xml.attr name ruleNode
+            |> Option.map (fun v -> v = "1" || v = "true")
+            |> Option.defaultValue fallback
+        let rank = attrInt "rank"
+        let percent = attrBool "percent" false
+        let bottom = attrBool "bottom" false
+        // aboveAverage attr defaults to true (the rule means "above" when
+        // the attribute is absent); below-average rules set it to 0.
+        let aboveAverage = attrBool "aboveAverage" true
+        let equalAverage = attrBool "equalAverage" false
+        let stdDev = attrInt "stdDev"
         {
             Type = ruleType
             Operator = operator
@@ -1404,6 +1438,12 @@ module ConditionalFormats =
             DataBarCfvo = dataBarCfvo
             IconSet = iconSet
             IconSetCfvo = iconSetCfvo
+            Rank = rank
+            Percent = percent
+            Bottom = bottom
+            AboveAverage = aboveAverage
+            EqualAverage = equalAverage
+            StdDev = stdDev
             Priority = priority
             StopIfTrue = stopIfTrue
         }

@@ -528,6 +528,90 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                     acc <- Map.add addr { cd with Format = { cd.Format with IconSet = Some (idx, iconCount) } } acc
                                 | None -> ()
                             | None -> ()
+                    | "top10" ->
+                        // Match the top (or bottom) N cells of the range.
+                        // rank is a count, or a percentage of the numeric
+                        // cell count when the percent flag is set.
+                        let dxf =
+                            rule.DxfId
+                            |> Option.bind (fun i ->
+                                if i >= 0 && i < workbook.Dxfs.Length then Some workbook.Dxfs.[i] else None)
+                        match dxf with
+                        | Some d when rangeNums.Length > 0 ->
+                            let rank = rule.Rank |> Option.defaultValue 10
+                            let n =
+                                if rule.Percent then
+                                    int (ceil (float rangeNums.Length * float rank / 100.0))
+                                else rank
+                            let n = max 1 (min rangeNums.Length n)
+                            // Cutoff value: the n-th largest (top) or n-th
+                            // smallest (bottom). Ties at the cutoff all match
+                            // — same as Excel.
+                            let sorted =
+                                if rule.Bottom then Array.sort rangeNums
+                                else Array.sortDescending rangeNums
+                            let cutoff = sorted.[n - 1]
+                            for (r, c) in coords do
+                                let addr = { Row = r; Col = c }
+                                match Map.tryFind addr acc with
+                                | Some cd ->
+                                    match numericOf cd.Value with
+                                    | Some v ->
+                                        let isMatch =
+                                            if rule.Bottom then v <= cutoff else v >= cutoff
+                                        if isMatch then
+                                            let fmt =
+                                                { cd.Format with
+                                                    BgColor = d.FillColor |> Option.orElse cd.Format.BgColor
+                                                    TextColor = d.FontColor |> Option.orElse cd.Format.TextColor
+                                                    Bold = (d.Bold |> Option.defaultValue cd.Format.Bold)
+                                                    Italic = (d.Italic |> Option.defaultValue cd.Format.Italic) }
+                                            acc <- Map.add addr { cd with Format = fmt } acc
+                                    | None -> ()
+                                | None -> ()
+                        | _ -> ()
+                    | "aboveAverage" ->
+                        // Match cells above (or below) the range mean,
+                        // optionally beyond N standard deviations.
+                        let dxf =
+                            rule.DxfId
+                            |> Option.bind (fun i ->
+                                if i >= 0 && i < workbook.Dxfs.Length then Some workbook.Dxfs.[i] else None)
+                        match dxf with
+                        | Some d when rangeNums.Length > 0 ->
+                            let mean = Array.average rangeNums
+                            let threshold =
+                                match rule.StdDev with
+                                | Some sd when sd > 0 ->
+                                    let variance =
+                                        rangeNums
+                                        |> Array.averageBy (fun v -> (v - mean) ** 2.0)
+                                    let sigma = sqrt variance
+                                    if rule.AboveAverage then mean + float sd * sigma
+                                    else mean - float sd * sigma
+                                | _ -> mean
+                            for (r, c) in coords do
+                                let addr = { Row = r; Col = c }
+                                match Map.tryFind addr acc with
+                                | Some cd ->
+                                    match numericOf cd.Value with
+                                    | Some v ->
+                                        let isMatch =
+                                            if rule.AboveAverage then
+                                                if rule.EqualAverage then v >= threshold else v > threshold
+                                            else
+                                                if rule.EqualAverage then v <= threshold else v < threshold
+                                        if isMatch then
+                                            let fmt =
+                                                { cd.Format with
+                                                    BgColor = d.FillColor |> Option.orElse cd.Format.BgColor
+                                                    TextColor = d.FontColor |> Option.orElse cd.Format.TextColor
+                                                    Bold = (d.Bold |> Option.defaultValue cd.Format.Bold)
+                                                    Italic = (d.Italic |> Option.defaultValue cd.Format.Italic) }
+                                            acc <- Map.add addr { cd with Format = fmt } acc
+                                    | None -> ()
+                                | None -> ()
+                        | _ -> ()
                     | _ -> ()
             acc
 
