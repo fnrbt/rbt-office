@@ -169,6 +169,33 @@ let private parseHexColor (value: string) =
         | _ -> Color.black
     | _ -> Color.black
 
+/// OS/2 winAscent scaled to pixels — the "WIN ascent" GDI uses as the
+/// line top. Excel anchors cell-text baselines to this metric, not the
+/// typographic ascender. Derived here from the (public) FontData.OtFont
+/// rather than in Renderer.Text so the general-purpose renderer doesn't
+/// carry a GDI-specific opinion. Falls back to hhea ascent when the font
+/// omits OS/2 (rare for modern Windows TTFs).
+let private winAscent (font: Renderer.Text.FontData) (fontSize: float) : float =
+    let unitsPerEm = float font.OtFont.Head.UnitsPerEm
+    let ascentUnits =
+        match font.OtFont.OS2 with
+        | Some os2 -> float os2.WinAscent
+        | None -> float font.OtFont.Hhea.Ascender
+    ascentUnits * fontSize / unitsPerEm
+
+/// winAscent + winDescent — the GDI line-box height. Falls back to
+/// (hhea ascender - descender + lineGap) when OS/2 is absent.
+let private winLineHeight (font: Renderer.Text.FontData) (fontSize: float) : float =
+    let unitsPerEm = float font.OtFont.Head.UnitsPerEm
+    let totalUnits =
+        match font.OtFont.OS2 with
+        | Some os2 -> float os2.WinAscent + float os2.WinDescent
+        | None ->
+            float font.OtFont.Hhea.Ascender
+            - float font.OtFont.Hhea.Descender
+            + float font.OtFont.Hhea.LineGap
+    totalUnits * fontSize / unitsPerEm
+
 let private toRendererCommands (text: PaintText) =
     // Excel font sizes (XLSX <sz val="11"/>) are in points; the Renderer takes
     // pixel units. Convert pt→px so a Calibri 11-pt cell renders at Excel's
@@ -232,8 +259,8 @@ let private toRendererCommands (text: PaintText) =
     // ascents across fallback fonts would jitter the baseline; sticking to
     // the primary's ascent matches Excel/GDI's font-linking behavior, which
     // keeps the baseline anchored to the primary font's metrics.
-    let ascent = Renderer.Text.winAscent primary pxSize
-    let lineHeight = Renderer.Text.winLineHeight primary pxSize
+    let ascent = winAscent primary pxSize
+    let lineHeight = winLineHeight primary pxSize
     let blockHeight = lineHeight * float text.LineCount
     // Excel quirk: vertical="top" is ignored on rows that aren't taller than
     // about one line-height. pandas/openpyxl emit `<alignment vertical="top"/>`
