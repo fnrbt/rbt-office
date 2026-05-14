@@ -153,9 +153,30 @@ type CellComment = {
     Text: string
 }
 
+/// One `<cfvo>` + `<color>` pair inside a `<colorScale>`. The cfvo
+/// describes where on the value axis the stop sits (min / max /
+/// percentile / num / percent); Color is the RRGGBB applied there.
+type CfColorStop = {
+    CfvoType: string
+    CfvoValue: string option
+    Color: string
+}
+
 type ConditionalFormatRule = {
     Type: string  // "cellIs", "expression", "colorScale", "dataBar", etc.
-    Formula: string option
+    /// cellIs operator: greaterThan / lessThan / between / equal /
+    /// notEqual / greaterThanOrEqual / lessThanOrEqual. None for
+    /// non-cellIs rule types.
+    Operator: string option
+    /// One formula for most cellIs operators; two for `between` /
+    /// `notBetween`. Empty for colorScale / dataBar / iconSet.
+    Formulas: string list
+    /// Index into the workbook's `<dxfs>` differential-format table —
+    /// the overlay applied when a cellIs / expression rule matches.
+    DxfId: int option
+    /// Ordered stops for a `colorScale` rule (2 or 3 entries). Empty
+    /// for other rule types.
+    ColorScale: CfColorStop list
     Priority: int option
     StopIfTrue: bool
 }
@@ -163,6 +184,17 @@ type ConditionalFormatRule = {
 type ConditionalFormat = {
     Range: string
     Rules: ConditionalFormatRule list
+}
+
+/// A `<dxf>` "differential format" from styles.xml — the partial style
+/// overlay a conditional-formatting rule applies on top of a cell's
+/// existing format. Only the fields a dxf can carry are modeled; all
+/// optional, since a dxf typically sets just a fill or just a color.
+type Dxf = {
+    FontColor: string option
+    FillColor: string option
+    Bold: bool option
+    Italic: bool option
 }
 
 type DataValidation = {
@@ -299,6 +331,9 @@ type Workbook = {
     /// as `SharedStrings`; entries with no rich runs have an empty list.
     SharedStringRuns: (string * RunProps) list array
     Styles: CellStyle array
+    /// Differential formats from styles.xml `<dxfs>`, indexed by dxfId.
+    /// Conditional-formatting cellIs / expression rules reference these.
+    Dxfs: Dxf array
     Relationships: Relationship list
     NamedRanges: NamedRange list
     ThemeAccents: string array
@@ -880,7 +915,13 @@ module Xlsx =
             |> Option.orElseWith (fun () -> indexed)
         match baseColor with
         | None -> None
-        | Some c ->
+        | Some raw ->
+            // OOXML rgb attributes are AARRGGBB (alpha first). Strip the
+            // leading alpha so every consumer sees a plain 6-char RRGGBB —
+            // some renderers' parseHexColor treat an 8-char string as
+            // RRGGBBAA (alpha last), which would mangle the channels.
+            let stripped = raw.TrimStart('#')
+            let c = if stripped.Length = 8 then stripped.Substring 2 else stripped
             let tint =
                 Xml.attr "tint" node
                 |> Option.bind (fun s ->
@@ -1284,10 +1325,41 @@ module ConditionalFormats =
         let ruleType = Xml.attr "type" ruleNode |> Option.defaultValue "cellIs"
         let priority = Xml.attr "priority" ruleNode |> Option.map int
         let stopIfTrue = Xml.attr "stopIfTrue" ruleNode |> Option.map (fun v -> v = "1") |> Option.defaultValue false
-        let formula = Ns.childNs "formula" ruleNode |> Option.bind Xml.text
+        let operator = Xml.attr "operator" ruleNode
+        let dxfId = Xml.attr "dxfId" ruleNode |> Option.bind (fun s -> match System.Int32.TryParse s with | true, n -> Some n | _ -> None)
+        // cellIs uses one or two <formula> children (two for between);
+        // collect them in document order.
+        let formulas =
+            Ns.descendantsNs "formula" ruleNode
+            |> List.choose Xml.text
+        // colorScale carries N <cfvo> stops then N matching <color>
+        // entries; zip them positionally.
+        let colorScale =
+            Ns.childNs "colorScale" ruleNode
+            |> Option.map (fun cs ->
+                let cfvos = Ns.descendantsNs "cfvo" cs
+                let colors = Ns.descendantsNs "color" cs
+                List.zip
+                    (cfvos |> List.truncate (List.length colors))
+                    (colors |> List.truncate (List.length cfvos))
+                |> List.map (fun (cfvo, colorNode) ->
+                    {
+                        CfvoType = Xml.attr "type" cfvo |> Option.defaultValue "min"
+                        CfvoValue = Xml.attr "val" cfvo
+                        Color =
+                            Xml.attr "rgb" colorNode
+                            |> Option.map (fun raw ->
+                                let t = raw.TrimStart('#')
+                                if t.Length = 8 then t.Substring 2 else t)
+                            |> Option.defaultValue "FFFFFF"
+                    }))
+            |> Option.defaultValue []
         {
             Type = ruleType
-            Formula = formula
+            Operator = operator
+            Formulas = formulas
+            DxfId = dxfId
+            ColorScale = colorScale
             Priority = priority
             StopIfTrue = stopIfTrue
         }
@@ -1306,6 +1378,41 @@ module ConditionalFormats =
     let parseConditionalFormats (sheet: XmlNode) : ConditionalFormat list =
         Ns.descendantsNs "conditionalFormatting" sheet
         |> List.choose parseConditionalFormat
+
+    /// Parse the `<dxfs>` table out of styles.xml. Each `<dxf>` carries a
+    /// partial font + fill; conditional-format rules reference them by
+    /// index. dxf fills conventionally use `<bgColor>` (not fgColor),
+    /// so check both.
+    let parseDxfs (themeColors: string array) (stylesDoc: XmlNode) : Dxf array =
+        Xlsx.sElem "dxfs" stylesDoc
+        |> Option.map (Xlsx.sElems "dxf")
+        |> Option.defaultValue []
+        |> List.map (fun dxf ->
+            let fontColor =
+                Xlsx.sElem "font" dxf
+                |> Option.bind (Xlsx.sElem "color")
+                |> Option.bind (Xlsx.resolveColorElement themeColors)
+            let fillColor =
+                Xlsx.sElem "fill" dxf
+                |> Option.bind (Xlsx.sElem "patternFill")
+                |> Option.bind (fun pf ->
+                    Xlsx.sElem "bgColor" pf |> Option.bind (Xlsx.resolveColorElement themeColors)
+                    |> Option.orElseWith (fun () ->
+                        Xlsx.sElem "fgColor" pf |> Option.bind (Xlsx.resolveColorElement themeColors)))
+            let boolChild key =
+                Xlsx.sElem "font" dxf
+                |> Option.bind (Xlsx.sElem key)
+                |> Option.map (fun node ->
+                    Xml.attr "val" node
+                    |> Option.map (fun v -> v <> "0" && v <> "false")
+                    |> Option.defaultValue true)
+            {
+                FontColor = fontColor
+                FillColor = fillColor
+                Bold = boolChild "b"
+                Italic = boolChild "i"
+            })
+        |> List.toArray
 
 // Data Validation parsing
 module DataValidations =
@@ -1537,6 +1644,11 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                 |> Option.map (Xlsx.parseStyles themeColors themeMajorFont themeMinorFont)
                 |> Option.defaultValue [||]
 
+            let dxfs =
+                stylesXml
+                |> Option.map (XmlDsl.parse >> ConditionalFormats.parseDxfs themeColors)
+                |> Option.defaultValue [||]
+
             let namedRanges = NamedRanges.parseNamedRanges wb
 
             // Load all worksheets with advanced features
@@ -1606,6 +1718,7 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                 SharedStrings = sharedStrings
                 SharedStringRuns = sharedStringRuns
                 Styles = styles
+                Dxfs = dxfs
                 Relationships = rels
                 NamedRanges = namedRanges
                 ThemeAccents = [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
@@ -1748,9 +1861,16 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
             |> Option.map Xlsx.parseThemeFonts
             |> Option.defaultValue (None, None)
 
+        let stylesXmlNative = ZipInterop.getFileTextNative archive "xl/styles.xml"
+
         let styles =
-            ZipInterop.getFileTextNative archive "xl/styles.xml"
+            stylesXmlNative
             |> Option.map (Xlsx.parseStyles themeColors themeMajorFont themeMinorFont)
+            |> Option.defaultValue [||]
+
+        let dxfs =
+            stylesXmlNative
+            |> Option.map (XmlDsl.parse >> ConditionalFormats.parseDxfs themeColors)
             |> Option.defaultValue [||]
 
         let themeAccents =
@@ -1819,6 +1939,7 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
             SharedStrings = sharedStrings
             SharedStringRuns = sharedStringRuns
             Styles = styles
+            Dxfs = dxfs
             Relationships = rels
             NamedRanges = namedRanges
             ThemeAccents = themeAccents

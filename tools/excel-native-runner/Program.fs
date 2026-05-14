@@ -359,6 +359,124 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                     Some ({ Row = r; Col = c }, cellData)))
         |> Map.ofList
 
+    // ---- Conditional formatting ----------------------------------------
+    // Walk every <conditionalFormatting> block, evaluate its rules against
+    // the cells already in the map, and overlay the resolved format. Two
+    // rule kinds are handled: cellIs (operator + formula → a <dxf> style
+    // overlay) and colorScale (2/3 stops → an interpolated background by
+    // the cell's position in the range's min..max). Other kinds (dataBar,
+    // iconSet, expression, top10) pass through untouched.
+    let cells =
+        if List.isEmpty sheet.ConditionalFormats then cells
+        else
+            let numericOf (v: CellValue) : float option =
+                match v with
+                | Number n -> Some n
+                | Boolean b -> Some (if b then 1.0 else 0.0)
+                | Formula (_, Number n) -> Some n
+                | _ -> None
+            // sqref can list several space-separated ranges.
+            let expandRanges (sqref: string) =
+                sqref.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries)
+                |> Array.choose parseCellRange
+                |> Array.collect (fun (r1, c1, r2, c2) ->
+                    [| for r in r1 .. r2 do for c in c1 .. c2 -> r, c |])
+            let parseNum (s: string) =
+                match Double.TryParse(s, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+                | true, n -> Some n
+                | _ -> None
+            let cellIsMatch (op: string) (formulas: string list) (n: float) =
+                let f1 = formulas |> List.tryItem 0 |> Option.bind parseNum
+                let f2 = formulas |> List.tryItem 1 |> Option.bind parseNum
+                match op, f1, f2 with
+                | "greaterThan", Some a, _ -> n > a
+                | "lessThan", Some a, _ -> n < a
+                | "greaterThanOrEqual", Some a, _ -> n >= a
+                | "lessThanOrEqual", Some a, _ -> n <= a
+                | "equal", Some a, _ -> n = a
+                | "notEqual", Some a, _ -> n <> a
+                | "between", Some a, Some b -> n >= min a b && n <= max a b
+                | "notBetween", Some a, Some b -> n < min a b || n > max a b
+                | _ -> false
+            // Blend two RRGGBB hex colors at t ∈ [0,1].
+            let blend (a: string) (b: string) (t: float) =
+                let hx (s: string) =
+                    let s = s.TrimStart('#')
+                    if s.Length = 8 then s.Substring 2 else s
+                let ah, bh = hx a, hx b
+                if ah.Length <> 6 || bh.Length <> 6 then a
+                else
+                    let chan i =
+                        let av = Convert.ToInt32(ah.Substring(i, 2), 16)
+                        let bv = Convert.ToInt32(bh.Substring(i, 2), 16)
+                        int (round (float av * (1.0 - t) + float bv * t)) |> max 0 |> min 255
+                    sprintf "#%02X%02X%02X" (chan 0) (chan 2) (chan 4)
+            let mutable acc = cells
+            for cf in sheet.ConditionalFormats do
+                let coords = expandRanges cf.Range
+                // Numeric values present in the range — needed for
+                // colorScale min/max anchoring.
+                let rangeNums =
+                    coords
+                    |> Array.choose (fun (r, c) ->
+                        Map.tryFind { Row = r; Col = c } acc
+                        |> Option.bind (fun cd -> numericOf cd.Value))
+                let rangeMin = if rangeNums.Length > 0 then Array.min rangeNums else 0.0
+                let rangeMax = if rangeNums.Length > 0 then Array.max rangeNums else 1.0
+                // Lower priority number = higher precedence; apply
+                // highest-precedence rule last so it wins.
+                let rules =
+                    cf.Rules
+                    |> List.sortByDescending (fun rule -> rule.Priority |> Option.defaultValue 0)
+                for rule in rules do
+                    match rule.Type with
+                    | "cellIs" ->
+                        let dxf =
+                            rule.DxfId
+                            |> Option.bind (fun i ->
+                                if i >= 0 && i < workbook.Dxfs.Length then Some workbook.Dxfs.[i] else None)
+                        match rule.Operator, dxf with
+                        | Some op, Some d ->
+                            for (r, c) in coords do
+                                let addr = { Row = r; Col = c }
+                                match Map.tryFind addr acc with
+                                | Some cd ->
+                                    match numericOf cd.Value with
+                                    | Some n when cellIsMatch op rule.Formulas n ->
+                                        let fmt =
+                                            { cd.Format with
+                                                BgColor = d.FillColor |> Option.orElse cd.Format.BgColor
+                                                TextColor = d.FontColor |> Option.orElse cd.Format.TextColor
+                                                Bold = (d.Bold |> Option.defaultValue cd.Format.Bold)
+                                                Italic = (d.Italic |> Option.defaultValue cd.Format.Italic) }
+                                        acc <- Map.add addr { cd with Format = fmt } acc
+                                    | _ -> ()
+                                | None -> ()
+                        | _ -> ()
+                    | "colorScale" when rule.ColorScale.Length >= 2 ->
+                        let stops = rule.ColorScale
+                        let lo = List.head stops
+                        let hi = List.last stops
+                        let mid = if stops.Length >= 3 then Some (stops.[1]) else None
+                        let span = rangeMax - rangeMin
+                        for (r, c) in coords do
+                            let addr = { Row = r; Col = c }
+                            match Map.tryFind addr acc with
+                            | Some cd ->
+                                match numericOf cd.Value with
+                                | Some n ->
+                                    let t = if span = 0.0 then 0.5 else (n - rangeMin) / span
+                                    let color =
+                                        match mid with
+                                        | Some m when t <= 0.5 -> blend lo.Color m.Color (t * 2.0)
+                                        | Some m -> blend m.Color hi.Color ((t - 0.5) * 2.0)
+                                        | None -> blend lo.Color hi.Color t
+                                    acc <- Map.add addr { cd with Format = { cd.Format with BgColor = Some color } } acc
+                                | None -> ()
+                            | None -> ()
+                    | _ -> ()
+            acc
+
     let mergedCells =
         sheet.MergedCells
         |> List.map (fun mc ->
