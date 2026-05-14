@@ -92,6 +92,11 @@ let private runOverrideOf (props: Xlsx.RunProps) : RunOverride =
     let hexColor (rgb: string) =
         let trimmed = rgb.TrimStart('#')
         if trimmed.Length = 6 then Some ("#" + trimmed) else None
+    let vertAlign =
+        match props.VertAlign with
+        | Xlsx.VertAlignSuperscript -> Some VertAlignSuperscript
+        | Xlsx.VertAlignSubscript -> Some VertAlignSubscript
+        | Xlsx.VertAlignBaseline -> None
     {
         Bold = boolOpt props.Bold
         Italic = boolOpt props.Italic
@@ -100,6 +105,7 @@ let private runOverrideOf (props: Xlsx.RunProps) : RunOverride =
         Color = props.Color |> Option.bind hexColor
         FontName = props.FontName
         FontSize = props.FontSize
+        VertAlign = vertAlign
     }
 
 /// Look up rich-text runs for a cell. Two sources feed the renderer's

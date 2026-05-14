@@ -251,7 +251,11 @@ let private toRendererCommands (text: PaintText) =
         | VAlignTop -> text.Rect.Y
         | VAlignMiddle -> text.Rect.Y + (text.Rect.Height - blockHeight) / 2.0
         | VAlignBottom -> text.Rect.Y + text.Rect.Height - blockHeight
-    let baseline = blockTopY + float text.LineIndex * lineHeight + ascent
+    // Super/subscript shifts the baseline relative to the line's normal
+    // baseline. PaintText.BaselineShift is in pt at the cell's base size;
+    // convert to px the same way pt → px conversion happens elsewhere.
+    let baselineShiftPx = text.BaselineShift * 96.0 / 72.0
+    let baseline = blockTopY + float text.LineIndex * lineHeight + ascent + baselineShiftPx
     let color = Solid (parseHexColor text.Color)
     let mutable cursor = alignedX
     [

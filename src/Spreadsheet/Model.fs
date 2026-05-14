@@ -84,6 +84,14 @@ type CellComment = {
     Author: string option
 }
 
+/// Vertical glyph alignment within a run / cell. Renderers shift the
+/// baseline and scale the glyph size for super/subscript. Maps from
+/// Excel's `<vertAlign val="superscript"/>` element.
+type VertAlign =
+    | VertAlignBaseline
+    | VertAlignSuperscript
+    | VertAlignSubscript
+
 /// Per-run formatting override for rich-text cells. Each field is optional;
 /// when None the run inherits from the cell's base CellFormat. Originates
 /// from `<rPr>` children of `<r>` elements inside `<si>` shared strings.
@@ -95,6 +103,7 @@ type RunOverride = {
     Color: string option       // hex with leading '#'
     FontName: string option
     FontSize: float option     // points
+    VertAlign: VertAlign option
 }
 
 let emptyRunOverride = {
@@ -105,6 +114,7 @@ let emptyRunOverride = {
     Color = None
     FontName = None
     FontSize = None
+    VertAlign = None
 }
 
 /// Cell data

@@ -39,6 +39,10 @@ type PaintText = {
     LineIndex: int
     /// Total lines in the wrapped block; 1 if not wrapped.
     LineCount: int
+    /// Signed pixel offset the renderer adds to the computed baseline.
+    /// Used for superscript (negative — shift up) and subscript (positive
+    /// — shift down). Zero for normal text.
+    BaselineShift: float
 }
 
 type PaintItem =
@@ -598,6 +602,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     VerticalAlign = VAlignMiddle
                     LineIndex = 0
                     LineCount = 1
+                    BaselineShift = 0.0
                 }
             | RowHeader (row, rect) ->
                 yield FillRect (rect, "#f2f2f2")
@@ -616,6 +621,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     VerticalAlign = VAlignMiddle
                     LineIndex = 0
                     LineCount = 1
+                    BaselineShift = 0.0
                 }
     ]
 
@@ -763,9 +769,19 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                         let underline = ovr.Underline |> Option.defaultValue format.Underline
                         let strike = ovr.Strikethrough |> Option.defaultValue format.Strikethrough
                         let fName = ovr.FontName |> Option.orElse format.FontName
-                        let fSize = ovr.FontSize |> Option.defaultValue fontPt
+                        let baseSize = ovr.FontSize |> Option.defaultValue fontPt
                         let runColor = ovr.Color |> Option.defaultValue color
-                        bold, italic, underline, strike, fName, fSize, runColor
+                        // vertAlign: shrink to ~60% of the cell font (Excel
+                        // uses ~58% empirically, close enough) and shift
+                        // the baseline. Negative shift = up (super); we
+                        // express shift in pt at the cell's base size so
+                        // the renderer's pt→px scaling stays consistent.
+                        let fSize, baselineShift =
+                            match ovr.VertAlign with
+                            | Some VertAlignSuperscript -> baseSize * 0.6, -fontPt * 0.35
+                            | Some VertAlignSubscript -> baseSize * 0.6, fontPt * 0.15
+                            | _ -> baseSize, 0.0
+                        bold, italic, underline, strike, fName, fSize, runColor, baselineShift
                     // Mutable list of remaining runs. We consume from the
                     // head; if a wrap break splits a run, the head is
                     // replaced with the unconsumed suffix.
@@ -804,18 +820,18 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                         let metrics =
                             slices
                             |> Seq.map (fun (t, ovr) ->
-                                let bold, italic, underline, strike, fName, fSize, runColor = resolveRun ovr
+                                let bold, italic, underline, strike, fName, fSize, runColor, baselineShift = resolveRun ovr
                                 let width = m t fSize fName bold italic
-                                t, ovr, bold, italic, underline, strike, fName, fSize, runColor, width)
+                                t, ovr, bold, italic, underline, strike, fName, fSize, runColor, width, baselineShift)
                             |> Seq.toList
-                        let totalWidth = metrics |> List.sumBy (fun (_, _, _, _, _, _, _, _, _, w) -> w)
+                        let totalWidth = metrics |> List.sumBy (fun (_, _, _, _, _, _, _, _, _, w, _) -> w)
                         let baseLineX =
                             match align with
                             | AlignLeft -> textRect.X
                             | AlignCenter -> textRect.X + (textRect.Width - totalWidth) / 2.0
                             | AlignRight -> textRect.X + textRect.Width - totalWidth
                         let mutable cursor = baseLineX
-                        for (t, _ovr, bold, italic, underline, strike, fName, fSize, runColor, width) in metrics do
+                        for (t, _ovr, bold, italic, underline, strike, fName, fSize, runColor, width, baselineShift) in metrics do
                             yield zone, DrawText {
                                 Text = t
                                 Rect = { textRect with X = cursor; Width = width }
@@ -830,6 +846,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                                 VerticalAlign = vAlign
                                 LineIndex = i
                                 LineCount = lineCount
+                                BaselineShift = baselineShift
                             }
                             cursor <- cursor + width
                 | _ ->
@@ -849,6 +866,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             VerticalAlign = vAlign
                             LineIndex = i
                             LineCount = lineCount
+                            BaselineShift = 0.0
                         }
 
         // Pass 4: auto-filter dropdown triangles on table header cells. Excel
@@ -995,6 +1013,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             VerticalAlign = VAlignMiddle
                             LineIndex = 0
                             LineCount = 1
+                            BaselineShift = 0.0
                         })
                 }
             | RowHeader (row, rect) ->
@@ -1018,6 +1037,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             VerticalAlign = VAlignMiddle
                             LineIndex = 0
                             LineCount = 1
+                            BaselineShift = 0.0
                         })
                 }
 

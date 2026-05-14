@@ -198,7 +198,11 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
                     | VAlignTop -> t.Rect.Y
                     | VAlignMiddle -> t.Rect.Y + (t.Rect.Height - blockHeight) / 2.0
                     | VAlignBottom -> t.Rect.Y + t.Rect.Height - blockHeight
-                let baselineY = blockTopY + float t.LineIndex * lineHeight + ascent
+                // Super/subscript shifts the baseline relative to the
+                // line's normal baseline. BaselineShift comes in pt; the
+                // PDF coordinate space is also in pt so it applies
+                // directly without unit conversion.
+                let baselineY = blockTopY + float t.LineIndex * lineHeight + ascent + t.BaselineShift
                 let textColor = parseHexColor t.Color
                 let glyphCmds =
                     [ yield PdfDraw.BeginText

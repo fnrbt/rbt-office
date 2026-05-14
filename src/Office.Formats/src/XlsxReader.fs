@@ -20,6 +20,15 @@ type CellValue =
     | Formula of string
     | Empty
 
+/// `<vertAlign val="..."/>` on an rPr or font element. Excel uses these
+/// for chemistry (H₂O), math (x²), and footnote markers. Renderers shift
+/// the baseline + scale the glyph size; we map both onto a small DU so
+/// downstream code doesn't have to string-match.
+type VertAlign =
+    | VertAlignBaseline
+    | VertAlignSuperscript
+    | VertAlignSubscript
+
 /// Optional per-run formatting from an `<rPr>` inside an `<si><r>` element.
 /// Any field set on the run overrides the cell's base style for that text;
 /// fields left None inherit from the surrounding cell format.
@@ -31,6 +40,7 @@ type RunProps = {
     Color: string option       // ARGB hex without '#' prefix
     FontName: string option
     FontSize: float option     // points
+    VertAlign: VertAlign
 }
 
 let emptyRunProps = {
@@ -41,6 +51,7 @@ let emptyRunProps = {
     Color = None
     FontName = None
     FontSize = None
+    VertAlign = VertAlignBaseline
 }
 
 /// A parsed shared-string entry. Plain SI entries have one Run with empty
@@ -310,6 +321,15 @@ module Xlsx =
             sElem "sz" rPr
             |> Option.bind (Xml.attr "val")
             |> Option.bind (fun v -> try Some (float v) with _ -> None)
+        let vertAlign =
+            sElem "vertAlign" rPr
+            |> Option.bind (Xml.attr "val")
+            |> Option.map (fun v ->
+                match v with
+                | "superscript" -> VertAlignSuperscript
+                | "subscript" -> VertAlignSubscript
+                | _ -> VertAlignBaseline)
+            |> Option.defaultValue VertAlignBaseline
         {
             Bold = boolChild "b"
             Italic = boolChild "i"
@@ -318,6 +338,7 @@ module Xlsx =
             Color = colorHex
             FontName = fontName
             FontSize = fontSize
+            VertAlign = vertAlign
         }
 
     let internal richRunsOf (parent: XmlNode) : (string * RunProps) list =
