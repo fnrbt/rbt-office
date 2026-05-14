@@ -155,6 +155,47 @@
     <tbody>
       <tr>
         <td>
+          <strong>Gradient fills, non-solid pattern fills, theme scheme fonts, double underline, diagonal borders</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-fmt5.xlsx</code> — a hand-authored fixture with one row per feature variant (gradient, 6 pattern types, scheme major font, double underline, 3 diagonal-border configs). Corpus has no fixture exercising these.</span>
+          <span class="meta">Real fixture class: dashboards and finance templates lean on gradient + pattern fills and accounting double-underline; pivot / form templates use diagonal "N/A" slashes; theme-driven workbooks reference the heading font via <code>&lt;scheme val="major"/&gt;</code> rather than naming it. Each was either dropped silently or rendered as a plain solid / single line.</span>
+          <span class="meta">Paths checked: native PNG. Double underline also wired into the PDF emitter. Full 58-fixture corpus still byte-identical.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-fmt5-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Synthetic five-feature fixture — structurally verified">
+          </div>
+          <div class="caption">No Excel reference — synthetic fixture authored to exercise these code paths. Verification is structural: each row's column-A label names the exact feature variant assigned to column B, and the after PNG renders the documented visual for each (midpoint-blend for the 2-stop gradient, fixed tones for named grays, density-blended directional patterns, two strokes for double underline, diagonal GridLines matching the up/down flags).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-fmt5-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours after">
+          </div>
+          <div class="caption">After: row 1 gradient → orange (yellow↔red midpoint). Rows 2-4 named grays → #E0E0E0 / #A0A0A0 / #606060. Rows 5-7 directional patterns → fgColor blended toward the field by density (dark ≈ 0.7, light ≈ 0.3): navy darkHorizontal, green darkGrid, pink lightUp. Row 8 "HEADING" in the theme major font. Row 9 "important" with two parallel underline strokes. Rows 10-12: diagonal-up stroke, diagonal-down (red), and both (blue X).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/synthetic-fmt5-pre.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours before">
+          </div>
+          <div class="caption">Before: rows 1-4 blank (gradientFill + named-gray patternTypes returned <code>None</code>). Rows 5-7 rendered as a flat solid of the raw fgColor — the pattern density was lost. Row 8 "HEADING" in default Calibri (scheme reference dropped). Row 9 single underline (the <code>val="double"</code> attribute was ignored). Rows 10-12 had no diagonal strokes at all — <code>&lt;diagonal&gt;</code> wasn't parsed.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> five independent additions to the style pipeline, batched behind one synthetic fixture.</p>
+          <ul>
+            <li><strong>Gradient fills</strong> — <code>parseFill</code> now reads <code>&lt;gradientFill&gt;</code>'s ordered <code>&lt;stop&gt;</code> children. The renderer has no gradient primitive, so <code>blendHex</code> collapses first + last stop to their 50% midpoint. A 2-stop yellow→red lands on orange — recognizable without a separate render path.</li>
+            <li><strong>Pattern fills</strong> — <code>patternType</code> beyond solid/none/gray125 no longer falls through as a plain fgColor solid. Named grays map to fixed tones; directional patterns (dark/light Horizontal/Vertical/Down/Up/Grid/Trellis) blend fgColor → field color by an empirical density (<code>dark*</code> ≈ 0.7, <code>light*</code> ≈ 0.3) so a sparse lightUp reads visibly lighter than a dense darkGrid.</li>
+            <li><strong>Scheme fonts</strong> — <code>parseThemeFonts</code> reads the theme <code>&lt;majorFont&gt;</code>/<code>&lt;minorFont&gt;</code> latin typeface. <code>parseCellXf</code> resolves a font with <code>&lt;scheme val="major|minor"/&gt;</code> and no explicit <code>&lt;name&gt;</code> to that typeface. Both workbook loaders thread the major/minor names down from theme1.xml.</li>
+            <li><strong>Double underline</strong> — <code>&lt;u val="double"/&gt;</code> (and <code>doubleAccounting</code>) parsed into a new <code>UnderlineDouble</code> bool carried through RunProps → CellStyle → CellFormat → RunOverride → PaintText. Native + PDF renderers emit a second parallel stroke ~2 px below the first.</li>
+            <li><strong>Diagonal borders</strong> — <code>&lt;border diagonalUp diagonalDown&gt;&lt;diagonal style color/&gt;</code> parsed into <code>BorderRecord.Diagonal/DiagonalUp/DiagonalDown</code> → <code>CellStyle</code> → <code>CellFormat</code>. Paint.fs emits a top-left→bottom-right GridLine for <code>diagonalDown</code> and bottom-left→top-right for <code>diagonalUp</code>; both flags gives the X.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: synthetic-fmt5.xlsx committed under <code>tests/test-documents-excel/</code> so the corpus runner picks it up. 13 rows, each rendering its labeled feature variant.</li>
+            <li>Regression guard: <code>parseFont</code>'s tuple widened from 7 to 9 elements (adds underlineDouble + scheme); all call sites updated. Fixtures with no gradient / pattern / scheme / double-underline / diagonal styling render byte-identical — each new path early-returns on the absent element.</li>
+            <li>Corpus guard: all 58 fixtures (53 + 5 synthetics) render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Hyperlinks, comment markers, list-validation dropdowns, inline strings, accounting/fraction/locale number formats</strong>
           <span class="meta">Repro: two synthetic fixtures, since the 53-fixture corpus doesn't exercise any of these — <code>tests/test-documents-excel/synthetic-formatting.xlsx</code> (font flags + link + comment + dropdown) and <code>tests/test-documents-excel/synthetic-numfmt.xlsx</code> (accounting/currency/scientific/fraction/percent/zero-pad with inline-string row labels).</span>
           <span class="meta">Real fixture class: any workbook with hyperlinked cells (rare in pandas, common in POI / hand-authored), notes / data-validation lists, inline-string cell writers (POI, OpenXmlSdk row-streamers), accounting-format finance sheets, fraction-formatted measurement data, locale-tagged dates. Each was either silently ignored or printed format placeholders as literal text.</span>
