@@ -155,8 +155,8 @@
     <tbody>
       <tr>
         <td>
-          <strong>Conditional formatting — cellIs, colorScale, dataBar, iconSet</strong>
-          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-condformat.xlsx</code> — col A <code>cellIs greaterThan 50</code> → pink dxf, col B 3-stop <code>colorScale</code> (red→yellow→green), col C <code>cellIs between 20 40</code> → green-bold dxf, col D <code>dataBar</code> (blue, min..max), col E 3-icon traffic-light <code>iconSet</code>. Corpus has no CF fixture.</span>
+          <strong>Conditional formatting — cellIs, colorScale, dataBar, iconSet, top10, aboveAverage</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-condformat.xlsx</code> — col A <code>cellIs greaterThan 50</code> → pink dxf, col B 3-stop <code>colorScale</code> (red→yellow→green), col C <code>cellIs between 20 40</code> → green-bold dxf, col D <code>dataBar</code> (blue, min..max), col E 3-icon traffic-light <code>iconSet</code>, col F <code>top10 rank="2"</code> → green dxf, col G <code>aboveAverage</code> → pink dxf. Corpus has no CF fixture.</span>
           <span class="meta">Real fixture class: dashboards, KPI sheets, anything with "highlight cells greater than X", a heat-map column, in-cell bars, or status icons. The CF pipeline was parsed-but-dead — an earlier audit (task #31) found cfRule type/priority were read but no <code>&lt;dxf&gt;</code> table was parsed and the renderer never consulted CF, so every conditionally-formatted cell rendered plain.</span>
           <span class="meta">Paths checked: native PNG. Full 59-fixture corpus still byte-identical.</span>
         </td>
@@ -170,7 +170,7 @@
           <div class="zoom">
             <img src="../artifacts/native/synthetic-condformat-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Ours after">
           </div>
-          <div class="caption">After: col A — A4/A5/A6 (55/70/90) get the dxf-0 overlay (<code>#FFC7CE</code> fill + <code>#9C0006</code> text). Col B — colorScale interpolates each cell across the 3 stops by position: 10→red … 50→yellow … 90→green. Col C — C3/C4 (25/35) get the dxf-1 overlay (<code>#C6EFCE</code> fill + bold <code>#006100</code> text). Col D — a blue data bar from the left edge spanning the value's fraction of min..max. Col E — a red/amber/green icon square chosen by the value's third of the range. Cells outside each rule's match stay plain.</div>
+          <div class="caption">After: col A — A4/A5/A6 (55/70/90) get the dxf-0 overlay (<code>#FFC7CE</code> fill + <code>#9C0006</code> text). Col B — colorScale interpolates each cell across the 3 stops by position: 10→red … 50→yellow … 90→green. Col C — C3/C4 (25/35) get the dxf-1 overlay (<code>#C6EFCE</code> fill + bold <code>#006100</code> text). Col D — a blue data bar from the left edge spanning the value's fraction of min..max. Col E — a red/amber/green icon square chosen by the value's third of the range. Col F — top-2 (70/90) get the green dxf. Col G — above the column mean of 50 (70/90) get the pink dxf. Cells outside each rule's match stay plain.</div>
         </td>
         <td>
           <div class="zoom">
@@ -188,14 +188,14 @@
               </ul>
             </li>
             <li><code>Model.CellFormat</code> gains <code>DataBar: (float * string) option</code> (fillFraction, color) and <code>IconSet: (int * int) option</code> (iconIndex, iconCount) so the CF result rides the existing format pipeline.</li>
-            <li><code>tools/excel-native-runner/Program.fs</code> <code>toModel</code>: after the cell map is built, a CF post-pass walks every <code>&lt;conditionalFormatting&gt;</code> block. <code>cellIs</code> evaluates the operator against the cell's numeric value and overlays the referenced dxf. <code>colorScale</code> interpolates the 2- or 3-stop gradient by the cell's position in min..max. <code>dataBar</code> stamps the value's clamped fraction. <code>iconSet</code> resolves each cfvo threshold (percent/percentile onto the range, num literal) and picks the highest threshold the value clears. <code>sqref</code> ranges are space-split; rules apply lowest-priority-first so the highest-precedence rule wins.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code> <code>toModel</code>: after the cell map is built, a CF post-pass walks every <code>&lt;conditionalFormatting&gt;</code> block. <code>cellIs</code> evaluates the operator against the cell's numeric value and overlays the referenced dxf. <code>colorScale</code> interpolates the 2- or 3-stop gradient by the cell's position in min..max. <code>dataBar</code> stamps the value's clamped fraction. <code>iconSet</code> resolves each cfvo threshold (percent/percentile onto the range, num literal) and picks the highest threshold the value clears. <code>top10</code> sorts the range and matches the n-th-largest cutoff (ties included; rank can be a count or a percentage). <code>aboveAverage</code> compares to the range mean, optionally shifted by N·sigma. <code>sqref</code> ranges are space-split; rules apply lowest-priority-first so the highest-precedence rule wins.</li>
             <li><code>src/Spreadsheet/Paint.fs</code>: Pass 1b draws the data bar — a horizontal <code>FillRect</code> from the cell's left edge, inset 2 px vertically, under text. Pass 7 draws the icon-set indicator — a 9 px filled square in a red→amber→green ramp (the renderer has no icon artwork or circle primitive; the square carries the low/mid/high signal). Cell text indents past a 16 px icon gutter when an icon is present, matching Excel.</li>
             <li>Latent fix surfaced by this work: <code>resolveColorElement</code> returned raw 8-char AARRGGBB, relying on each consumer to strip the alpha. The runner's <code>cellFormatFromStyle</code> did — but the new CF dxf path used the value directly, and the native <code>parseHexColor</code> reads an 8-char string as RRGGBB<em>A</em> (alpha last), mangling channels (pink <code>#FFC7CE</code> rendered as washed-out yellow). <code>resolveColorElement</code> now strips the leading alpha at the source so every consumer gets clean 6-char RRGGBB.</li>
           </ul>
           <ul>
-            <li>Focused guard: synthetic-condformat.xlsx (5 columns) committed under <code>tests/test-documents-excel/</code>. All four rule kinds render the expected overlay / bar / icon.</li>
+            <li>Focused guard: synthetic-condformat.xlsx (7 columns) committed under <code>tests/test-documents-excel/</code>. All six rule kinds render the expected overlay / bar / icon.</li>
             <li>Regression guard: 59-fixture corpus byte-identical. The <code>resolveColorElement</code> alpha-strip is a no-op for the runner's existing color paths (their <code>hexColor</code> helper already stripped 8-char input); poi-49156's indexed fills spot-checked unchanged.</li>
-            <li>Scope: cellIs / colorScale / dataBar / iconSet. <code>expression</code> / <code>top10</code> / <code>aboveAverage</code> rules pass through untouched — no corpus fixture exercises them. iconSet uses a colored-square approximation rather than Excel's icon artwork.</li>
+            <li>Scope: cellIs / colorScale / dataBar / iconSet / top10 / aboveAverage. Only <code>expression</code> (formula-predicate) rules remain unhandled — they need the formula engine. iconSet uses a colored-square approximation rather than Excel's icon artwork.</li>
           </ul>
         </td>
       </tr>
