@@ -155,6 +155,59 @@
     <tbody>
       <tr>
         <td>
+          <strong>Hyperlinks, comment markers, list-validation dropdowns, inline strings, accounting/fraction/locale number formats</strong>
+          <span class="meta">Repro: two synthetic fixtures, since the 53-fixture corpus doesn't exercise any of these — <code>tests/test-documents-excel/synthetic-formatting.xlsx</code> (font flags + link + comment + dropdown) and <code>tests/test-documents-excel/synthetic-numfmt.xlsx</code> (accounting/currency/scientific/fraction/percent/zero-pad with inline-string row labels).</span>
+          <span class="meta">Real fixture class: any workbook with hyperlinked cells (rare in pandas, common in POI / hand-authored), notes / data-validation lists, inline-string cell writers (POI, OpenXmlSdk row-streamers), accounting-format finance sheets, fraction-formatted measurement data, locale-tagged dates. Each was either silently ignored or printed format placeholders as literal text.</span>
+          <span class="meta">Paths checked: native PNG. Full 53-fixture corpus still byte-identical (none of them used these features before the synthetics).</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-formatting-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Synthetic formatting — no Excel reference, structurally verified">
+          </div>
+          <div class="caption">No Excel reference for these synthetic fixtures (we authored them to exercise the code paths). Verification is structural: the formatting-probe XLSX assigns one font flag per row + one hyperlink + one comment + one list-validation range, and the after PNG renders each at the expected cell. The numfmt-probe XLSX assigns one format code per row and the after PNG matches Excel's documented output for each code.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-formatting-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours after — formatting-probe">
+          </div>
+          <div class="caption">After (formatting-probe): row 1 B1 in blue + underlined (hyperlink), row 2-4 font flags individually, row 5 combined bold+italic+underline+strike in red, row 6 "has comment" with red corner triangle, row 7 "dropdown" with gray downward arrow on the right edge. After (numfmt-probe, below): col A row labels visible (inline strings), col B shows <code>1,234.56</code> / <code>(1,234.56)</code> / <code>-</code> for accounting +/-/zero, <code>$ 1,234.56</code> for currency, <code>1.23E+08</code> for scientific, <code>1/2</code> + <code>1/3</code> for the two fraction codes, <code>0042</code> for zero-pad, <code>12%</code> + <code>12.30%</code> for percent variants.</div>
+          <div class="zoom" style="margin-top:8px">
+            <img src="../artifacts/native/synthetic-numfmt-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours after — numfmt-probe">
+          </div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/synthetic-formatting-pre-batch.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours before — formatting-probe">
+          </div>
+          <div class="caption">Before (formatting-probe): B1 "plain" is plain black (hyperlink not detected), no triangle on row 6, no arrow on row 7. Bold/underline/strike rows already worked. Before (numfmt-probe, below): col A entirely blank (inline strings dropped), col B prints the format placeholders as literal text — <code>_(* 1,234.56_)</code>, <code>-_(* (1,234.56)</code>, <code>_(* -??_)</code>, <code>_($* 1,234.56_)</code>, <code>1 ?/?</code>, <code>??/??</code>. Scientific / zero-pad / percent already worked.</div>
+          <div class="zoom" style="margin-top:8px">
+            <img src="../artifacts/baseline/synthetic-numfmt-pre-batch.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours before — numfmt-probe">
+          </div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> six independent additions to the format pipeline, tied to one synthetic-fixture pair so each cue regression-guards against the others.</p>
+          <ul>
+            <li><strong>Hyperlinks</strong> (<code>0263f78</code>, color override in <code>2260837</code>): new <code>Hyperlink</code> record in XlsxReader, parsed from <code>&lt;hyperlinks&gt;</code> + sheet rels (external <code>r:id</code> → URL, internal <code>location</code> direct). Runner builds a HashSet of hyperlinked cells and forces <code>TextColor = #0563C1</code> + <code>Underline = true</code> on each — unconditional override, since Excel's built-in Hyperlink cellStyle takes precedence over the cellXf's resolved theme-1 color.</li>
+            <li><strong>Comment markers</strong> (<code>4804f0d</code>): <code>CellFormat.HasComment</code> flag, set by the runner when a cell is in <code>sheet.Comments</code>. The native loader now follows the <code>/comments</code>-typed sheet rel to <code>xl/comments<i>N</i>.xml</code> (the prior code passed <code>[]</code> for comments). Paint.fs Pass 5 emits a 5-px right-isoceles in #C00000 in the top-right corner — same horizontal-strokes trick as the filter-button triangle, since the renderer has no fill-polygon primitive.</li>
+            <li><strong>List-validation dropdowns</strong> (<code>4804f0d</code>): <code>CellFormat.HasListDropdown</code> flag, set for any cell inside a <code>&lt;dataValidation type="list"&gt;</code> range. Paint.fs Pass 6 emits the same 7×4 px triangle the filter button uses, in gray (#666666). Excel only shows the arrow on selection in the live UI; we always show it so the cue carries through to static PNG / PDF snapshots.</li>
+            <li><strong>Inline strings</strong> (<code>3e6ca61</code>): XlsxReader's <code>cellValue</code> gains an <code>inlineStr</code> case that pulls text out of <code>&lt;is&gt;/&lt;t&gt;</code>; falls back to <code>&lt;is&gt;</code> even when the cell omits the explicit <code>t="inlineStr"</code> attribute. POI, OpenXmlSdk's row-streaming writer, and most SQL-export-style writers emit inline-string cells.</li>
+            <li><strong>Number format placeholders</strong> (<code>747378e</code>): three coordinated tweaks in <code>formatExcelNumber</code>:
+              <ul>
+                <li><code>stripExcelWidthPlaceholders</code> collapses Excel's column-width grammar to a .NET-friendly subset: <code>_X</code> → space, <code>*X</code> → X, <code>?</code> → <code>#</code> (digit-or-nothing) — all outside quoted literal segments. Without this an accounting cell like <code>_(* #,##0.00_)</code> printed as <code>_(* 1,234.56_)</code> literally.</li>
+                <li><code>tryFormatFraction</code> handles <code>?/?</code> and <code>??/??</code> by searching Stern-Brocot-style for the closest reduced fraction with denominator ≤ <code>10^digits</code>. Without it Excel's fraction codes printed the raw <code>?</code>s.</li>
+                <li>When the selected section is non-positive (negatives, zero), format the *absolute* value — Excel's section grammar already encodes the sign visually (<code>(#,##0.00)</code> for negatives), and .NET was prepending an extra <code>-</code>. Strip <code>[$-XXX]</code> locale tags and bracketed color tags out of the cleaned code so they don't print as literals.</li>
+              </ul>
+            </li>
+          </ul>
+          <ul>
+            <li>Focused guard: synthetic-formatting and synthetic-numfmt are committed under <code>tests/test-documents-excel/</code> so the corpus runner picks them up. Each cell renders the intended cue.</li>
+            <li>Regression guard: 53-fixture corpus byte-identical for fixtures that didn't use any of these features (no <code>&lt;hyperlinks&gt;</code>, no comments, no list validation, no inline strings, no accounting / fraction / locale format codes). Number-format codes that already worked — General, simple <code>0.000</code>, dates — flow through their existing paths unchanged.</li>
+            <li>Corpus guard: all 55 fixtures (53 + 2 synthetics) still render without error.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Trim General-format numbers to Excel's column-derived digit budget</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code> Sheet1 (Calibri 12 default font, body cells use Calibri 11 General format; values are full-precision floats like <code>0.98026851377699997</code>).</span>
           <span class="meta">Real fixture class: every workbook whose default font and cell font differ AND whose values rely on General format. Column-width math uses the workbook default-font MDW, but General-format trim used to consult the cell font's MDW; the asymmetry let cells show more sig digits than Excel's display in the same column.</span>
