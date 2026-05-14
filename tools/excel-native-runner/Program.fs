@@ -313,11 +313,15 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                     let withLink =
                         if hyperlinkCells.Contains(r, c) then
                             // Theme-10 hyperlink color #0563C1 + underline.
-                            // Don't override TextColor if the cellXf already
-                            // forced a specific color (lets authors style
-                            // visited links etc).
+                            // Override TextColor unconditionally — Excel's
+                            // built-in Hyperlink style takes precedence over
+                            // the default theme-1 (=text) color that cellXfs
+                            // pick up automatically. Cells that explicitly
+                            // need a different link color have to use a
+                            // Followed Hyperlink cellStyle, which we'd hook
+                            // separately.
                             { withTable with
-                                TextColor = withTable.TextColor |> Option.orElseWith (fun () -> Some "#0563C1")
+                                TextColor = Some "#0563C1"
                                 Underline = true }
                         else withTable
                     let format =
