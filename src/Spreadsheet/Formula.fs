@@ -692,6 +692,26 @@ let private compareValues (l: CellValue) (r: CellValue) : Result<int, string> =
         // Cross-type: order by rank.
         | _ -> Ok (compare (rank a) (rank b))
 
+/// Resolve a defined name to its final parsed expression. A name's
+/// refers-to text is itself a formula (usually a range, sometimes a
+/// constant or another name); name→name hops are followed with a cycle
+/// guard. Returns None when the name is unknown, its text won't parse, or
+/// a chain cycles / runs too deep.
+let resolveNameExpr (name: string) (workbook: RedBat.Spreadsheet.Workbook.Workbook) : Expr option =
+    let rec resolve (n: string) (seen: Set<string>) (hops: int) =
+        let key = n.ToUpperInvariant()
+        if hops > 16 || Set.contains key seen then None
+        else
+            match RedBat.Spreadsheet.Workbook.getName n workbook with
+            | None -> None
+            | Some refersTo ->
+                let body = if refersTo.StartsWith "=" then refersTo else "=" + refersTo
+                match parseFormula body with
+                | Result.Error _ -> None
+                | Ok (NameRef inner) -> resolve inner (Set.add key seen) (hops + 1)
+                | Ok expr -> Some expr
+    resolve name Set.empty 0
+
 /// Evaluate an expression to a scalar CellValue.
 let rec eval (expr: Expr) (model: SpreadsheetModel)
              (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue =
@@ -700,7 +720,13 @@ let rec eval (expr: Expr) (model: SpreadsheetModel)
     | Str s -> CellValue.String s
     | Bool b -> CellValue.Boolean b
     | ErrorLit e -> CellValue.Error e
-    | NameRef _ -> err Err.name        // workbook defined-names: no storage yet
+    | NameRef name ->
+        match workbook with
+        | None -> err Err.name
+        | Some wb ->
+            match resolveNameExpr name wb with
+            | Some e -> eval e model workbook
+            | None -> err Err.name
     | CellRef r -> readCell r model workbook
     | RangeRef (a, b) ->
         // A bare range in scalar context yields its first cell (Excel's
@@ -779,6 +805,14 @@ and flattenArgs (args: Expr list) (model: SpreadsheetModel)
         match arg with
         | RangeRef (a, b) -> expandRangeRef a b model workbook
         | TableRef (t, c) -> expandTableRef t c workbook model
+        | NameRef name ->
+            // A name standing in for a range must flatten like the range
+            // would — otherwise SUM(MyRange) would see only its first cell.
+            match workbook |> Option.bind (resolveNameExpr name) with
+            | Some (RangeRef (a, b)) -> expandRangeRef a b model workbook
+            | Some (TableRef (t, c)) -> expandTableRef t c workbook model
+            | Some e -> [ eval e model workbook ]
+            | None -> [ err Err.name ]
         | _ -> [ eval arg model workbook ])
 
 /// Numeric values from a flattened argument list — text and blanks dropped,

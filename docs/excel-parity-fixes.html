@@ -201,6 +201,45 @@
       </tr>
       <tr>
         <td>
+          <strong>Uncalculated formulas + defined names — recalc on load</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-namedrange.xlsx</code> — a hand-authored fixture whose formula cells carry an <code>&lt;f&gt;</code> but no cached <code>&lt;v&gt;</code> (an uncalculated workbook), plus two <code>&lt;definedName&gt;</code>s: <code>Scores</code> → <code>Sheet1!$A$1:$A$5</code> and <code>TaxRate</code> → the constant <code>0.2</code>. Col C is <code>=SUM(Scores)</code>, <code>=AVERAGE(Scores)</code>, <code>=MAX(Scores)</code>, <code>=SUM(Scores)*TaxRate</code>, and a plain <code>=A1+A2</code>.</span>
+          <span class="meta">Real fixture class: workbooks saved by non-Excel writers (openpyxl with <code>data_only=False</code>, many server-side exporters) omit cached values; anything using named ranges in formulas. Excel itself recalculates on open — we never did, so these cells rendered blank.</span>
+          <span class="meta">Paths checked: native PNG. Full 59-fixture corpus still byte-identical (every corpus file ships cached values, so the recalc pass is a no-op for them).</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-namedrange-after.png" style="--w:700px; --x:0px; --y:0px; --s:3.0" alt="Synthetic named-range fixture — structurally verified">
+          </div>
+          <div class="caption">No Excel reference — synthetic fixture authored to exercise the recalc + defined-name path. Verification is structural: each row's column-B label is the literal formula text in column C, and the after PNG shows the value that formula must produce against the A1:A5 data (10/20/30/40/50).</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-namedrange-after.png" style="--w:700px; --x:0px; --y:0px; --s:3.0" alt="Ours after">
+          </div>
+          <div class="caption">After: C1 <code>=SUM(Scores)</code> → 150, C2 <code>=AVERAGE(Scores)</code> → 30, C3 <code>=MAX(Scores)</code> → 50, C4 <code>=SUM(Scores)*TaxRate</code> → 30 (150 × 0.2), C5 <code>=A1+A2</code> → 30. The named range resolves through the workbook, the constant name <code>TaxRate</code> resolves too, and the plain uncalculated formula recalculates alongside them.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/synthetic-namedrange-pre.png" style="--w:700px; --x:0px; --y:0px; --s:3.0" alt="Ours before">
+          </div>
+          <div class="caption">Before: column C entirely blank. <code>XlsxReader</code> returned these cells as <code>Formula(text, Empty)</code> — correct — but the native runner never ran a calculation pass, so the cached value stayed <code>Empty</code> and the renderer drew nothing. Defined names were parsed into <code>NamedRange</code> records and then dropped: the <code>Workbook</code> had no storage for them and the formula engine returned <code>#NAME?</code> for every name.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> give the formula engine the workbook context it needs, then actually invoke it on load.</p>
+          <ul>
+            <li><code>src/Spreadsheet/Workbook.fs</code>: <code>Workbook</code> gains <code>Names: Map&lt;string, string&gt;</code> (defined name → refers-to text, keys upper-cased), plus <code>getName</code> (case-insensitive lookup) and <code>namesOfPairs</code> (build the map from raw pairs).</li>
+            <li><code>src/Spreadsheet/Formula.fs</code>: new <code>resolveNameExpr</code> looks a name up, parses its refers-to text as a formula, and follows name→name hops with a cycle guard (16-hop cap + visited set). <code>eval</code>'s <code>NameRef</code> case resolves through it instead of returning <code>#NAME?</code>; <code>flattenArgs</code> resolves a name that stands in for a range so <code>SUM(Scores)</code> sees the whole range, not just its first cell.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: new <code>buildWorkbookContext</code> assembles a <code>RedBat.Spreadsheet.Workbook</code> — every sheet's model plus the <code>Names</code> map from <code>XlsxReader</code>'s parsed <code>NamedRanges</code>. <code>renderSheetToPath</code> pulls its sheet's model from that context and runs <code>recalculateAllFormulas</code> before painting, so uncalculated formulas — and their cross-sheet refs and named ranges — evaluate.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: synthetic-namedrange.xlsx committed under <code>tests/test-documents-excel/</code>; the formula test harness gains 9 defined-name assertions (name→cell, case-insensitivity, name in expression, name→range in an aggregate, name→name chain, cycle, unknown name).</li>
+            <li>Regression guard: 59-fixture corpus byte-identical — every corpus file ships cached values, so <code>recalculateAllFormulas</code> only touches genuinely uncalculated cells and is otherwise a no-op.</li>
+            <li>Scope: workbook-global defined names that refer to ranges, cells, or constants. Sheet-scoped name shadowing (<code>localSheetId</code>) collapses to last-wins; the incremental <code>Calc.fs</code> dependency tracker still doesn't expand named-range deps (full recalc covers it).</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Gradient fills, non-solid pattern fills, theme scheme fonts, double underline, diagonal borders</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-fmt5.xlsx</code> — a hand-authored fixture with one row per feature variant (gradient, 6 pattern types, scheme major font, double underline, 3 diagonal-border configs). Corpus has no fixture exercising these.</span>
           <span class="meta">Real fixture class: dashboards and finance templates lean on gradient + pattern fills and accounting double-underline; pivot / form templates use diagonal "N/A" slashes; theme-driven workbooks reference the heading font via <code>&lt;scheme val="major"/&gt;</code> rather than naming it. Each was either dropped silently or rendered as a plain solid / single line.</span>

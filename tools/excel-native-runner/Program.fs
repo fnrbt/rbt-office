@@ -796,6 +796,29 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
         FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0 }
 
+/// Build a RedBat.Spreadsheet workbook context from the parsed XLSX: every
+/// sheet's model plus the workbook's defined names. This is what the
+/// formula engine needs to resolve cross-sheet references and named ranges
+/// during recalculation. Sheet ids are positional (`sheet1`, `sheet2`, …)
+/// so a caller can map an Xlsx sheet index straight to its context entry.
+let private buildWorkbookContext (xlsxWb: Xlsx.Workbook) : RedBat.Spreadsheet.Workbook.Workbook =
+    let sheets =
+        xlsxWb.Sheets
+        |> List.mapi (fun i ws ->
+            let id = sprintf "sheet%d" (i + 1)
+            let s : RedBat.Spreadsheet.Workbook.Sheet =
+                { Id = id; Name = ws.Name; Model = toModel ws xlsxWb; Visible = true }
+            id, s)
+    let names =
+        xlsxWb.NamedRanges
+        |> List.map (fun nr -> nr.Name, nr.RefersTo)
+        |> RedBat.Spreadsheet.Workbook.namesOfPairs
+    { Sheets = Map.ofList sheets
+      SheetOrder = sheets |> List.map fst
+      ActiveSheet = (match sheets with (id, _) :: _ -> id | [] -> "sheet1")
+      Tables = Map.empty
+      Names = names }
+
 let private escapeJson (value: string) =
     let sb = System.Text.StringBuilder(value.Length + 2)
     sb.Append('"') |> ignore
@@ -847,8 +870,17 @@ let private cellInfoJson (sheetName: string) (model: SpreadsheetModel) =
 let private renderSheetToPath
     (inputPath: string) (outputPath: string) (jsonPath: string option)
     (width: int) (height: int)
-    (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) =
-    let model = toModel sheet workbook
+    (sheetIndex: int) (sheet: Xlsx.Worksheet) (wbContext: RedBat.Spreadsheet.Workbook.Workbook) =
+    // Pull this sheet's pre-built model out of the workbook context, then
+    // run a formula pass: cells with a cached <v> already arrived as plain
+    // values, so this only touches genuinely uncalculated formulas — and
+    // now resolves their cross-sheet refs and defined names.
+    let sheetId = sprintf "sheet%d" (sheetIndex + 1)
+    let baseModel =
+        match Map.tryFind sheetId wbContext.Sheets with
+        | Some s -> s.Model
+        | None -> createEmpty 1048576 16384
+    let model = RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) baseModel
 
     let widget = Composit.Ui.SpreadsheetGrid.widget (float width) (float height) model
     let backend = Raster.create()
@@ -886,11 +918,16 @@ let private renderXlsx (inputPath: string) (outputPath: string) (width: int) (he
     if workbook.Sheets.IsEmpty then
         failwithf "No sheets in workbook: %s" inputPath
 
+    // Build the formula-engine context once: every sheet's model + the
+    // workbook's defined names. Shared across all sheets so cross-sheet
+    // references and named ranges resolve during recalculation.
+    let wbContext = buildWorkbookContext workbook
+
     match sheetSel with
     | Choice1Of2 sheetIndex ->
         let chosenIndex = min (max 0 sheetIndex) (workbook.Sheets.Length - 1)
         let sheet = workbook.Sheets.[chosenIndex]
-        renderSheetToPath inputPath outputPath jsonPath width height sheet workbook
+        renderSheetToPath inputPath outputPath jsonPath width height chosenIndex sheet wbContext
     | Choice2Of2 () ->
         // --all: render every sheet to `<base>-sheet<N>.png` (1-indexed,
         // matching how Excel labels them in the tab strip and how pandas
@@ -906,7 +943,7 @@ let private renderXlsx (inputPath: string) (outputPath: string) (width: int) (he
                 jsonPath |> Option.map (fun p ->
                     if sheets.Length = 1 then p
                     else withSheetSuffix p (sprintf "sheet%d" (i + 1)))
-            renderSheetToPath inputPath path json width height sheet workbook)
+            renderSheetToPath inputPath path json width height i sheet wbContext)
 
 /// Parse the sheet argument: `all` / `-a` selects every sheet; an integer
 /// selects that 0-based sheet index. Anything else falls back to sheet 0.

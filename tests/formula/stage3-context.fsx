@@ -33,7 +33,15 @@ let workbook =
               "sheet2", { Id = "sheet2"; Name = "Sheet2"; Model = sheet2Model; Visible = true } ]
       SheetOrder = [ "sheet1"; "sheet2" ]
       ActiveSheet = "sheet1"
-      Tables = Map.empty }
+      Tables = Map.empty
+      Names =
+        namesOfPairs
+            [ "MyCell",   "Sheet2!$A$1"          // single cross-sheet cell
+              "MyRange",  "Sheet2!$A$2:$A$4"     // cross-sheet range
+              "LocalCell", "B2"                  // unqualified → active model
+              "Alias",    "MyCell"               // name → name chain
+              "CycA",     "CycB"                 // cyclic pair
+              "CycB",     "CycA" ] }
 
 let model = sheet1Model
 let wb = Some workbook
@@ -78,6 +86,17 @@ check "offset-oob"    "=OFFSET(B1,-1,0)"         (e "REF!")
 check "indirect"      "=INDIRECT(\"B2\")"        (n 20.0)
 check "indirect-xs"   "=INDIRECT(\"Sheet2!A1\")" (n 99.0)
 check "indirect-sum"  "=SUM(INDIRECT(\"B1\"),INDIRECT(\"B2\"))" (n 30.0)
+
+// ----- defined names -----
+check "name-cell"     "=MyCell"                  (n 99.0)
+check "name-ci"       "=mycell"                  (n 99.0)         // names are case-insensitive
+check "name-local"    "=LocalCell"               (n 20.0)         // unqualified ref → active model
+check "name-in-expr"  "=MyCell+LocalCell"        (n 119.0)
+check "name-range"    "=SUM(MyRange)"            (n 6.0)          // name standing in for a range
+check "name-range-avg" "=AVERAGE(MyRange)"       (n 2.0)
+check "name-chain"    "=Alias"                   (n 99.0)         // Alias → MyCell → Sheet2!A1
+check "name-cyclic"   "=CycA"                    (e "NAME?")      // cycle guard
+check "name-unknown"  "=NoSuchName"              (e "NAME?")
 
 // containsVolatile detection
 let volatileExpr =

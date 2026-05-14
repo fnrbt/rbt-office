@@ -32,6 +32,9 @@ type Workbook = {
     SheetOrder: SheetId list  // Tab order
     ActiveSheet: SheetId
     Tables: Map<string, Table>  // Named tables
+    /// Defined names → their refers-to formula text (e.g. "Sheet1!$A$1:$B$10").
+    /// Keys are stored upper-cased for case-insensitive lookup.
+    Names: Map<string, string>
 }
 
 /// Create empty workbook with one sheet
@@ -48,7 +51,19 @@ let createWorkbook (): Workbook =
         SheetOrder = [sheetId]
         ActiveSheet = sheetId
         Tables = Map.empty
+        Names = Map.empty
     }
+
+/// Look up a defined name's refers-to text (case-insensitive).
+let getName (name: string) (workbook: Workbook): string option =
+    Map.tryFind (name.ToUpperInvariant()) workbook.Names
+
+/// Build the case-insensitive Names map from raw (name, refersTo) pairs.
+/// Later entries win on collision — callers should pass workbook-global
+/// names before sheet-scoped ones if both exist.
+let namesOfPairs (pairs: (string * string) seq): Map<string, string> =
+    pairs
+    |> Seq.fold (fun acc (n, refersTo) -> Map.add (n.ToUpperInvariant()) refersTo acc) Map.empty
 
 /// Get active sheet
 let getActiveSheet (workbook: Workbook): Sheet option =
