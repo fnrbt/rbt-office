@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../../widgets/x11-viewer/PngEncode.fs" />
+    <Compile Include="../../../widgets/x11-viewer/ControlServer.fs" />
+    <Compile Include="../../../widgets/x11-viewer/KeyMap.fs" />
+    <Compile Include="../excel-native-runner/Program.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../renderer/Renderer.fsproj" />
+    <ProjectReference Include="../../../widgets/Widgets.fsproj" />
+    <ProjectReference Include="../../../widgets/platform/Platform.fsproj" />
+    <ProjectReference Include="../../src/Office.Formats/OfficeFormat.fsproj" />
+    <ProjectReference Include="../../src/Spreadsheet/RedBat.Spreadsheet.fsproj" />
+    <ProjectReference Include="../../spreadsheet-native/SpreadsheetWidgets.fsproj" />
+  </ItemGroup>
+</Project>

@@ -36,6 +36,9 @@
   <Folder Name="/word-native/">
     <Project Path="word-native/WordWidgets.fsproj" />
   </Folder>
+  <Folder Name="/tools/spreadsheet-editor/">
+    <Project Path="tools/spreadsheet-editor/SpreadsheetEditor.fsproj" />
+  </Folder>
   <Project Path="../pdf/FsPdf.fsproj" />
   <Project Path="../renderer/Renderer.fsproj" />
   <Project Path="../text/bidi/Bidi.Core.fsproj" />

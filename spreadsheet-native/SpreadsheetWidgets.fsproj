@@ -4,6 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="SpreadsheetGrid.fs" />
+    <Compile Include="SpreadsheetEditor.fs" />
     <Compile Include="SpreadsheetUiNative.fs" />
   </ItemGroup>
   <ItemGroup>

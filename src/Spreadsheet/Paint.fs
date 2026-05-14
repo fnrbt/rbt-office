@@ -540,20 +540,43 @@ let private wrapLines
         |> List.collect wrapSegment
 
 /// Excel shows ##### when a number's display string is wider than the cell.
-let private fitOrOverflow (cellWidth: float) (fontPt: float) (text: string) : string =
+///
+/// `measure` is the cell's real-font width function (Some on the native /
+/// PDF paths, None on the Fable web canvas). When present we both decide
+/// overflow AND size the `#` run against the *actual* glyph the renderer
+/// will draw. The older `mdwPx`-only path under-counted: a date string
+/// measured at ~7 px/char but rendered in Calibri (~9 px '#') produced a
+/// `#####` run wider than the cell, and since numbers right-align the
+/// excess spilled left into the row-header gutter. The None branch keeps
+/// the approximation for the web build.
+let private fitOrOverflow
+    (measure: (string -> float) option)
+    (cellWidth: float) (fontPt: float) (text: string) : string =
     let usableWidth = max 0.0 (cellWidth - 8.0)
-    let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
-    if text.Length <= maxChars then text
-    else System.String('#', maxChars)
+    match measure with
+    | Some m ->
+        if m text <= usableWidth then text
+        else
+            // Pack as many '#' as actually fit at the real glyph advance.
+            // Floor (via int) so the run is never wider than the cell.
+            let hashW = m "#"
+            let count = if hashW <= 0.0 then 1 else max 1 (int (usableWidth / hashW))
+            System.String('#', count)
+    | None ->
+        let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
+        if text.Length <= maxChars then text
+        else System.String('#', maxChars)
 
-let rec private cellDisplayText (cellWidth: float) (format: CellFormat) (value: CellValue): string =
+let rec private cellDisplayText
+    (measure: (string -> float) option)
+    (cellWidth: float) (format: CellFormat) (value: CellValue): string =
     let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
     match value with
     | CellValue.Empty -> ""
     | Number n ->
         match format.NumberFormat with
         | Some code when isDateFormat code || isTimeFormat code ->
-            fitOrOverflow cellWidth fontPt (formatExcelDate code n)
+            fitOrOverflow measure cellWidth fontPt (formatExcelDate code n)
         | Some "currency"
         | Some "percentage"
         | Some "date"
@@ -561,18 +584,18 @@ let rec private cellDisplayText (cellWidth: float) (format: CellFormat) (value: 
         | Some "number" ->
             // Legacy named format codes from the Fable web UI's formatting
             // commands. Keep these on the original Model.formatNumber path.
-            fitOrOverflow cellWidth fontPt (formatNumber format.NumberFormat n)
+            fitOrOverflow measure cellWidth fontPt (formatNumber format.NumberFormat n)
         | Some code when System.String.IsNullOrWhiteSpace code ||
                          code.Equals("general", System.StringComparison.OrdinalIgnoreCase) ->
             generalNumberDisplay cellWidth fontPt n
         | Some code ->
             // Real Excel format code (0.000, #,##0.00, 0%, 0.00E+00, etc.).
-            fitOrOverflow cellWidth fontPt (formatExcelNumber code n)
+            fitOrOverflow measure cellWidth fontPt (formatExcelNumber code n)
         | None -> generalNumberDisplay cellWidth fontPt n
     | String s -> s
     | Boolean b -> if b then "TRUE" else "FALSE"
     | Error e -> sprintf "#%s" e
-    | Formula (_, cached) -> cellDisplayText cellWidth format cached
+    | Formula (_, cached) -> cellDisplayText measure cellWidth format cached
 
 let private isSelected (selection: Selection) row col =
     match selection with
@@ -749,17 +772,20 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
 
         // Pass 3: text on top of all strokes/borders.
         for (cell, format, value, _selected, _background, zone) in states do
-            let displayText = cellDisplayText cell.Rect.Width format value
+            let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+            // Build the real-font measurer first so cellDisplayText can size
+            // its ##### overflow run against the glyph the renderer will
+            // actually draw, not the mdwPx approximation.
+            let measure =
+                viewport.Measurer
+                |> Option.map (fun m ->
+                    fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
+            let displayText = cellDisplayText measure cell.Rect.Width format value
             if displayText <> "" then
-                let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
                 let textRect = { cell.Rect with X = cell.Rect.X + 4.0; Width = max 0.0 (cell.Rect.Width - 8.0) }
                 let color = format.TextColor |> Option.defaultValue "#000000"
                 let align = alignFromFormat format value
                 let hasHardBreak = displayText.Contains("\n")
-                let measure =
-                    viewport.Measurer
-                    |> Option.map (fun m ->
-                        fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
                 let lines =
                     if format.WrapText || hasHardBreak then
                         wrapLines measure textRect.Width fontPt displayText

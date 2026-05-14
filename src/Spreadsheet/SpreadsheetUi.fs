@@ -22,31 +22,41 @@ module Ui =
 
     let choice = RedBat.Office.Ui.choice
 
-    /// Excel-style chrome palette. The DocumentTrackWidth field is reused for
-    /// the formula-bar width.
+    /// Flat, white-first chrome palette — same Google-Sheets / OnlyOffice
+    /// language the Word shell adopted in the chrome refresh. Top == Bottom
+    /// on every band so there's no gradient seam; the only separators are
+    /// 1px ChromeMid hairlines. The spreadsheet keeps a green identity, but
+    /// the green now lives in accents (active sheet tab, selection stroke)
+    /// rather than a heavy title gradient. DocumentTrackWidth == WindowWidth
+    /// so the formula bar and grid span the full window.
     let chrome : ChromeSpec = {
-        WindowWidth = 1080.0
-        MenuWidth = 210.0
-        MenuGutterWidth = 30.0
-        DocumentTrackWidth = 1000.0
-        TitleTop = "#1F5E2C"
-        TitleBottom = "#3A8C4E"
-        Chrome = "#F4F7FB"
+        WindowWidth = 1100.0
+        MenuWidth = 240.0
+        MenuGutterWidth = 24.0
+        DocumentTrackWidth = 1100.0
+        TitleTop = "#FFFFFF"
+        TitleBottom = "#FFFFFF"
+        Chrome = "#FFFFFF"
         ChromeTop = "#FFFFFF"
-        ChromeBottom = "#E8EFF8"
+        ChromeBottom = "#FFFFFF"
         ChromeLight = "#FFFFFF"
-        ChromeMid = "#BFCDE0"
-        ChromeDark = "#7487A0"
-        Pressed = "#D3E3F9"
-        HotTop = "#E5F1FF"
-        HotBottom = "#CDE0FB"
+        ChromeMid = "#E1E5EA"      // hairline separators
+        ChromeDark = "#B9C0C8"     // muted icon/tick grey
+        Pressed = "#E6F4EA"         // soft green tint (active)
+        HotTop = "#F1F3F4"          // Google-grey hover
+        HotBottom = "#F1F3F4"
         Input = "#FFFFFF"
         MenuPanel = "#FFFFFF"
-        MenuGutter = "#F6F8FC"
-        PaperDesk = "#E8EEF6"
-        Border = "#8FA2BC"
-        Text = "#111111"
+        MenuGutter = "#FFFFFF"      // no gutter color difference
+        PaperDesk = "#F8F9FA"       // very light desk
+        Border = "#DADCE0"          // Google border grey
+        Text = "#202124"
     }
+
+    /// Excel/Sheets green — used for the active sheet-tab accent and the
+    /// cell-selection stroke. Not part of the shared ChromeSpec because no
+    /// other Office app needs it.
+    let accentGreen = "#217346"
 
     let chromeCssVariables = [
         "--xl-title-top", chrome.TitleTop
@@ -445,4 +455,211 @@ module Ui =
         OnInsert = actions.InsertSheet
         OnDelete = actions.DeleteSheet
         OnRename = actions.RenameSheet
+    }
+
+    // ── Dialog specs ─────────────────────────────────────────
+    //
+    // Backend-agnostic dialog descriptors that mirror the Word side. Apps
+    // pass callbacks that perform the underlying workbook mutation; the
+    // spec describes the form and binds the buttons to those callbacks.
+
+    /// Find / Replace.
+    ///   `onFindNext q matchCase`        → status string ("Match 1 of 5").
+    ///   `onReplaceAll q r matchCase`    → status string ("Replaced 3").
+    let findReplaceDialog
+            (onFindNext: string -> bool -> string)
+            (onReplaceAll: string -> string -> bool -> string) : DialogSpec =
+        {
+            TestId = "xl-dlg-find-replace"
+            Title = "Find and replace"
+            Subtitle = None
+            Fields = [
+                dialogText "find" "Find" "Search text" ""
+                dialogText "replace" "Replace with" "Replacement text" ""
+                dialogCheckbox "case" "Match case" false
+                dialogStatus "result" "Result" ""
+            ]
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-find-next" "Find next" false (fun values ->
+                    let q = Map.find "find" values
+                    let mc = (Map.find "case" values) = "true"
+                    let _ = onFindNext q mc
+                    false)
+                dialogButton "dlg-replace-all" "Replace all" true (fun values ->
+                    let q = Map.find "find" values
+                    let r = Map.find "replace" values
+                    let mc = (Map.find "case" values) = "true"
+                    let _ = onReplaceAll q r mc
+                    true)
+            ]
+        }
+
+    /// Insert a new worksheet. `apply name` is called with the trimmed
+    /// name; the workbook decides what to do if the name collides.
+    let insertSheetDialog (apply: string -> unit) : DialogSpec = {
+        TestId = "xl-dlg-insert-sheet"
+        Title = "New worksheet"
+        Subtitle = None
+        Fields = [
+            dialogText "name" "Sheet name" "Sheet" ""
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-insert-sheet-ok" "Add" true (fun values ->
+                let name = (Map.find "name" values).Trim()
+                if name = "" then false
+                else
+                    apply name
+                    true)
+        ]
+    }
+
+    /// Rename the active worksheet.
+    let renameSheetDialog (initialName: string) (apply: string -> unit) : DialogSpec = {
+        TestId = "xl-dlg-rename-sheet"
+        Title = "Rename worksheet"
+        Subtitle = None
+        Fields = [
+            dialogText "name" "New name" "Sheet" initialName
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-rename-sheet-ok" "Rename" true (fun values ->
+                let name = (Map.find "name" values).Trim()
+                if name = "" then false
+                else
+                    apply name
+                    true)
+        ]
+    }
+
+    /// Insert a table (rows x cols) at the active cell.
+    let insertTableDialog (apply: int -> int -> unit) : DialogSpec = {
+        TestId = "xl-dlg-insert-table"
+        Title = "Insert table"
+        Subtitle = None
+        Fields = [
+            dialogNumber "rows" "Rows" (Some "1") (Some "1000") "3"
+            dialogNumber "cols" "Columns" (Some "1") (Some "100") "3"
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-insert-table-ok" "Insert" true (fun values ->
+                let rows = System.Int32.TryParse(Map.find "rows" values) |> snd
+                let cols = System.Int32.TryParse(Map.find "cols" values) |> snd
+                if rows > 0 && cols > 0 then
+                    apply rows cols
+                    true
+                else
+                    false)
+        ]
+    }
+
+    /// Format the selection's number / font / fills in one go. v1 only
+    /// covers number format + a foreground/background hex pair; richer
+    /// controls (borders, alignment) live on the toolbar already.
+    let formatCellsDialog
+            (initialFormat: string)
+            (initialTextColor: string)
+            (initialBgColor: string)
+            (apply: string * string * string -> unit) : DialogSpec = {
+        TestId = "xl-dlg-format-cells"
+        Title = "Format cells"
+        Subtitle = Some "Number format codes match Excel's custom-format syntax."
+        Fields = [
+            dialogSelect "format" "Number format" numberFormats initialFormat
+            dialogText "text" "Text color (#hex)" "#000000" initialTextColor
+            dialogText "bg" "Fill color (#hex)" "#FFFFFF" initialBgColor
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-format-cells-ok" "Apply" true (fun values ->
+                let fmt = Map.find "format" values
+                let text = (Map.find "text" values).Trim()
+                let bg = (Map.find "bg" values).Trim()
+                apply (fmt, text, bg)
+                true)
+        ]
+    }
+
+    /// Page setup for printing / PDF export. Orientation + margins.
+    let pageSetupDialog
+            (initialOrientation: string)
+            (initialMarginLeft: float)
+            (initialMarginRight: float)
+            (initialMarginTop: float)
+            (initialMarginBottom: float)
+            (apply: string * float * float * float * float -> unit) : DialogSpec =
+        let orientations = [
+            choice "portrait" "Portrait"
+            choice "landscape" "Landscape"
+        ]
+        {
+            TestId = "xl-dlg-page-setup"
+            Title = "Page setup"
+            Subtitle = Some "Margins are in points (72 pt = 1 inch)."
+            Fields = [
+                dialogSelect "orientation" "Orientation" orientations initialOrientation
+                dialogNumber "marginLeft" "Left margin" (Some "0") (Some "500") (sprintf "%g" initialMarginLeft)
+                dialogNumber "marginRight" "Right margin" (Some "0") (Some "500") (sprintf "%g" initialMarginRight)
+                dialogNumber "marginTop" "Top margin" (Some "0") (Some "500") (sprintf "%g" initialMarginTop)
+                dialogNumber "marginBottom" "Bottom margin" (Some "0") (Some "500") (sprintf "%g" initialMarginBottom)
+            ]
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-page-setup-ok" "Apply" true (fun values ->
+                    let parse k =
+                        match System.Double.TryParse(Map.find k values) with
+                        | true, v -> v
+                        | _ -> nan
+                    let orient = Map.find "orientation" values
+                    let ml = parse "marginLeft"
+                    let mr = parse "marginRight"
+                    let mt = parse "marginTop"
+                    let mb = parse "marginBottom"
+                    if System.Double.IsNaN ml || System.Double.IsNaN mr || System.Double.IsNaN mt || System.Double.IsNaN mb then
+                        false
+                    else
+                        apply (orient, ml, mr, mt, mb)
+                        true)
+            ]
+        }
+
+    /// Open a workbook from disk.
+    let openFileDialog (apply: string -> unit) : DialogSpec = {
+        TestId = "xl-dlg-open-file"
+        Title = "Open workbook"
+        Subtitle = Some "Path to an .xlsx file."
+        Fields = [
+            dialogText "path" "File path" "/path/to/book.xlsx" ""
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-open-file-ok" "Open" true (fun values ->
+                let path = (Map.find "path" values).Trim()
+                if path = "" then false
+                else
+                    apply path
+                    true)
+        ]
+    }
+
+    /// Save the current workbook to a path.
+    let saveFileDialog (initialPath: string) (apply: string -> unit) : DialogSpec = {
+        TestId = "xl-dlg-save-file"
+        Title = "Save workbook"
+        Subtitle = Some "Path to write an .xlsx file."
+        Fields = [
+            dialogText "path" "File path" "/path/to/book.xlsx" initialPath
+        ]
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-save-file-ok" "Save" true (fun values ->
+                let path = (Map.find "path" values).Trim()
+                if path = "" then false
+                else
+                    apply path
+                    true)
+        ]
     }
