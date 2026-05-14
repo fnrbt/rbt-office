@@ -88,6 +88,13 @@ type Cell = {
     Value: CellValue
     StyleIndex: int option
     Style: CellStyle option
+    /// Per-run rich-text formatting for inline-string cells whose
+    /// `<is>` element contains `<r>` children (instead of a single
+    /// `<t>`). Mirrors the sharedStrings <r> grammar, but the runs
+    /// live on the cell rather than in the workbook-level
+    /// SharedStringRuns table. Empty for non-inline cells and for
+    /// plain inline strings (single <t>).
+    InlineRuns: (string * RunProps) list
 }
 
 type Row = {
@@ -276,6 +283,62 @@ module Xlsx =
             Row = if digits.Length > 0 then int digits else 0
         }
 
+    // Rich-text run extraction. Used by both the sharedStrings parser (one
+    // <r>* block per <si>) and the inline-string cellValue path (one <r>*
+    // block per <is> on a t="inlineStr" cell). The two grammars are
+    // identical; only the parent element differs.
+    let internal parseRunProps (rPr: XmlNode) : RunProps =
+        let boolChild key =
+            // <b/> means bold; <b val="0"/> means explicitly not bold.
+            match sElem key rPr with
+            | Some node ->
+                Xml.attr "val" node
+                |> Option.map (fun v -> v <> "0" && v <> "false")
+                |> Option.defaultValue true
+            | None -> false
+        let colorHex =
+            match sElem "color" rPr with
+            | Some node ->
+                Xml.attr "rgb" node
+                |> Option.map (fun raw ->
+                    let t = raw.TrimStart('#')
+                    if t.Length = 8 then t.Substring(2) else t)
+            | None -> None
+        let fontName =
+            sElem "rFont" rPr |> Option.bind (Xml.attr "val")
+        let fontSize =
+            sElem "sz" rPr
+            |> Option.bind (Xml.attr "val")
+            |> Option.bind (fun v -> try Some (float v) with _ -> None)
+        {
+            Bold = boolChild "b"
+            Italic = boolChild "i"
+            Underline = boolChild "u"
+            Strikethrough = boolChild "strike"
+            Color = colorHex
+            FontName = fontName
+            FontSize = fontSize
+        }
+
+    let internal richRunsOf (parent: XmlNode) : (string * RunProps) list =
+        // Each <r> = run; the <t> inside it is the run's text. <rPr> is the
+        // run's formatting (may be absent → defaults). Iterate in source
+        // order so the spans stay contiguous.
+        Xml.children parent
+        |> List.choose (fun child ->
+            match Xml.name child with
+            | Some "r" ->
+                let text =
+                    Xml.descendants "t" child
+                    |> List.choose Xml.text
+                    |> String.concat ""
+                let props =
+                    sElem "rPr" child
+                    |> Option.map parseRunProps
+                    |> Option.defaultValue emptyRunProps
+                Some (text, props)
+            | _ -> None)
+
     // Cell value extraction with pattern matching. Excel formula cells
     // store both the expression and a cached result in <v>; we can't
     // evaluate the expression, so prefer the cached value (matching what
@@ -323,11 +386,23 @@ module Xlsx =
         Xml.attr "r" cNode
         |> Option.map (fun ref ->
             let styleIdx = Xml.attr "s" cNode |> Option.map int
+            // Inline-string cells with <r> children carry per-run formatting
+            // identical in shape to sharedStrings rich text. Lift those runs
+            // here so the consumer can route them through the same
+            // RichRuns map as SharedString-backed rich text.
+            let inlineRuns =
+                match Xml.attr "t" cNode with
+                | Some "inlineStr" ->
+                    sElem "is" cNode
+                    |> Option.map richRunsOf
+                    |> Option.defaultValue []
+                | _ -> []
             {
                 Reference = parseCellRef ref
                 Value = cellValue cNode
                 StyleIndex = styleIdx
                 Style = None  // Resolved later from styles array
+                InlineRuns = inlineRuns
             })
 
     // Row extraction
@@ -938,67 +1013,11 @@ module Xlsx =
         |> List.map (fun xf -> parseCellXf xf fonts fills borders numFmts)
         |> List.toArray
 
-    // Shared strings extraction. An <si> entry holds either a single <t>
-    // child (plain) or a sequence of <r><rPr>…<t>…</t></r> elements (rich).
-    // We produce one entry per <si>; rich entries also expose their per-run
-    // formatting so the renderer can paint each run with its own color/font.
-    let private parseRunProps (rPr: XmlNode) : RunProps =
-        let boolChild key =
-            // <b/> means bold; <b val="0"/> means explicitly not bold.
-            match sElem key rPr with
-            | Some node ->
-                Xml.attr "val" node
-                |> Option.map (fun v -> v <> "0" && v <> "false")
-                |> Option.defaultValue true
-            | None -> false
-        let colorHex =
-            match sElem "color" rPr with
-            | Some node ->
-                Xml.attr "rgb" node
-                |> Option.map (fun raw ->
-                    let t = raw.TrimStart('#')
-                    if t.Length = 8 then t.Substring(2) else t)
-            | None -> None
-        let fontName =
-            sElem "rFont" rPr |> Option.bind (Xml.attr "val")
-        let fontSize =
-            sElem "sz" rPr
-            |> Option.bind (Xml.attr "val")
-            |> Option.bind (fun v -> try Some (float v) with _ -> None)
-        {
-            Bold = boolChild "b"
-            Italic = boolChild "i"
-            Underline = boolChild "u"
-            Strikethrough = boolChild "strike"
-            Color = colorHex
-            FontName = fontName
-            FontSize = fontSize
-        }
-
-    let private siRuns (si: XmlNode) : (string * RunProps) list =
-        // Each <r> = run; the <t> inside it is the run's text. <rPr> is the
-        // run's formatting (may be absent → defaults). Iterate in source
-        // order so the spans stay contiguous.
-        Xml.children si
-        |> List.choose (fun child ->
-            match Xml.name child with
-            | Some "r" ->
-                let text =
-                    Xml.descendants "t" child
-                    |> List.choose Xml.text
-                    |> String.concat ""
-                let props =
-                    sElem "rPr" child
-                    |> Option.map parseRunProps
-                    |> Option.defaultValue emptyRunProps
-                Some (text, props)
-            | _ -> None)
-
     let sharedStrings (sstXml: string) : SharedStringEntry array =
         let sst = XmlDsl.parse sstXml
         sElems "si" sst
         |> List.map (fun si ->
-            let runs = siRuns si
+            let runs = richRunsOf si
             if List.isEmpty runs then
                 // Plain SI — all text in direct <t> descendants (single or
                 // none); preserve original concat-all-<t> behavior.

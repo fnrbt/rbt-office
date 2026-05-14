@@ -102,18 +102,29 @@ let private runOverrideOf (props: Xlsx.RunProps) : RunOverride =
         FontSize = props.FontSize
     }
 
-/// Look up rich-text runs for a cell whose value is a shared-string ref.
-/// Returns Some runs only when the SI has more than one run (single-run
-/// shared strings are fully described by the cell's base format).
-let private cellRichRuns (workbook: Xlsx.Workbook) (value: Xlsx.CellValue) : (string * RunOverride) list option =
-    match value with
-    | Xlsx.SharedString idx when
-        idx >= 0 && idx < workbook.SharedStringRuns.Length
-        && not (List.isEmpty workbook.SharedStringRuns.[idx]) ->
-        let runs = workbook.SharedStringRuns.[idx]
+/// Look up rich-text runs for a cell. Two sources feed the renderer's
+/// per-run formatting pipeline:
+///   * SharedString-backed cells with multi-run entries in the workbook
+///     sharedStrings table.
+///   * Inline-string cells (`t="inlineStr"`) whose `<is>` element
+///     contains `<r>` children with their own `<rPr>` blocks; the runs
+///     live on the cell itself rather than in the workbook table.
+/// Returns Some runs only when there's actual per-run formatting (>1
+/// run, since a single run with no override is fully described by the
+/// cell's base format).
+let private cellRichRuns (workbook: Xlsx.Workbook) (cell: Xlsx.Cell) : (string * RunOverride) list option =
+    let lift runs =
         if List.length runs <= 1 then None
         else Some (runs |> List.map (fun (text, props) -> text, runOverrideOf props))
-    | _ -> None
+    if not (List.isEmpty cell.InlineRuns) then
+        lift cell.InlineRuns
+    else
+        match cell.Value with
+        | Xlsx.SharedString idx when
+            idx >= 0 && idx < workbook.SharedStringRuns.Length
+            && not (List.isEmpty workbook.SharedStringRuns.[idx]) ->
+            lift workbook.SharedStringRuns.[idx]
+        | _ -> None
 
 let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
     let hexColor (rgb: string) =
@@ -329,7 +340,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                             HasComment = withLink.HasComment || commentCells.Contains(r, c)
                             HasListDropdown = withLink.HasListDropdown || listDropdownCells.Contains(r, c) }
                     let cellData = { Value = value; Format = format; Comment = None }
-                    match cellRichRuns workbook cell.Value with
+                    match cellRichRuns workbook cell with
                     | Some runs -> richRunsMap <- Map.add { Row = r; Col = c } runs richRunsMap
                     | None -> ()
                     if r > maxRow then maxRow <- r
