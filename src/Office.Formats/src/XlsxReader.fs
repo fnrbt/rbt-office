@@ -285,8 +285,22 @@ module Xlsx =
         let cellType = Xml.attr "t" cNode
         let formula = sElem "f" cNode |> Option.bind Xml.text
         let value = sElem "v" cNode |> Option.bind Xml.text
+        // `t="inlineStr"` cells carry their text directly inside <is><t>…</t></is>
+        // instead of pointing at a sharedStrings index. Rare in normal
+        // Excel exports but emitted by various code generators (POI, the
+        // .NET OpenXmlSdk's row-streaming writer, sql-server-style mass
+        // importers) where deduping into sharedStrings isn't worth the
+        // cost. Without this case those cells came back as Empty.
+        let inlineText =
+            sElem "is" cNode
+            |> Option.map (fun isNode ->
+                Xml.descendants "t" isNode
+                |> List.choose Xml.text
+                |> String.concat "")
 
         match cellType, value with
+        | Some "inlineStr", _ ->
+            inlineText |> Option.defaultValue "" |> String
         | Some "s", Some v -> SharedString (int v)
         | Some "b", Some v -> Boolean (v = "1")
         | Some "str", Some v -> String v
@@ -297,7 +311,12 @@ module Xlsx =
         | _ ->
             match formula with
             | Some f -> Formula f
-            | None -> Empty
+            | None ->
+                // No <v>, no <f> — but an <is>/<t> might still be present
+                // even if the cell omits an explicit t="inlineStr".
+                match inlineText with
+                | Some t when t <> "" -> String t
+                | _ -> Empty
 
     // Cell extraction with applicative style
     let cell (cNode: XmlNode) : Cell option =
