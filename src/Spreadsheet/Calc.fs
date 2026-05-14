@@ -47,31 +47,11 @@ let emptyEngine = {
     DirtySet = Set.empty
 }
 
-/// Extract cell references from formula AST
-let rec extractReferences (expr: Expr): Set<CellAddress> =
-    match expr with
-    | Expr.CellRef (row, col) ->
-        Set.singleton { Row = row; Col = col }
-    | Expr.RangeRef (startRow, startCol, endRow, endCol) ->
-        // Expand range to all cell addresses
-        let sr = min startRow endRow
-        let er = max startRow endRow
-        let sc = min startCol endCol
-        let ec = max startCol endCol
-        [sr .. er]
-        |> List.collect (fun row ->
-            [sc .. ec]
-            |> List.map (fun col -> { Row = row; Col = col })
-        )
-        |> Set.ofList
-    | Expr.BinOp (left, _, right) ->
-        Set.union (extractReferences left) (extractReferences right)
-    | Expr.Function (_, args) ->
-        args
-        |> List.map extractReferences
-        |> List.fold Set.union Set.empty
-    | Expr.Number _ -> Set.empty
-    | Expr.TableRef _ -> Set.empty  // Table refs need workbook context, skip for now
+/// Extract cell references from formula AST. Delegates to the shared
+/// implementation in Formula.fs so the two stay in lock-step as the AST
+/// grows.
+let extractReferences (expr: Expr): Set<CellAddress> =
+    referencesInExpr expr
 
 /// Build dependency graph for a cell with a formula
 let buildDependencies (addr: CellAddress) (formula: string) (engine: CalcEngine): CalcEngine =
