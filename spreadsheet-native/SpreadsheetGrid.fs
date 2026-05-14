@@ -169,32 +169,44 @@ let private parseHexColor (value: string) =
         | _ -> Color.black
     | _ -> Color.black
 
-/// OS/2 winAscent scaled to pixels — the "WIN ascent" GDI uses as the
-/// line top. Excel anchors cell-text baselines to this metric, not the
-/// typographic ascender. Derived here from the (public) FontData.OtFont
-/// rather than in Renderer.Text so the general-purpose renderer doesn't
-/// carry a GDI-specific opinion. Falls back to hhea ascent when the font
-/// omits OS/2 (rare for modern Windows TTFs).
+/// Some fonts set OS/2 fsSelection bit 7 (USE_TYPO_METRICS) to opt into
+/// typographic ascender/descender for line stacking. When that bit is
+/// set we honor it; otherwise we use the GDI win metrics Excel anchors
+/// its cell-text box layout to.
+let private useTypoMetrics (font: Renderer.Text.FontData) =
+    match font.OtFont.OS2 with
+    | Some os2 -> (os2.FsSelection &&& 128us) <> 0us
+    | None -> false
+
+/// OS/2 winAscent scaled to pixels — the "WIN ascent" GDI/Excel uses as
+/// the line top. Derived here from the (public) FontData.OtFont rather
+/// than in Renderer.Text so the general-purpose renderer doesn't carry a
+/// GDI-specific opinion. USE_TYPO_METRICS fonts get the typo ascender +
+/// half the typo line gap instead; with no OS/2 table at all we fall
+/// back to the hhea ascender.
 let private winAscent (font: Renderer.Text.FontData) (fontSize: float) : float =
     let unitsPerEm = float font.OtFont.Head.UnitsPerEm
-    let ascentUnits =
+    let units =
         match font.OtFont.OS2 with
-        | Some os2 -> float os2.WinAscent
+        | Some os2 when not (useTypoMetrics font) -> float os2.WinAscent
+        | Some os2 -> float os2.TypoAscender + float os2.TypoLineGap / 2.0
         | None -> float font.OtFont.Hhea.Ascender
-    ascentUnits * fontSize / unitsPerEm
+    units * fontSize / unitsPerEm
 
-/// winAscent + winDescent — the GDI line-box height. Falls back to
-/// (hhea ascender - descender + lineGap) when OS/2 is absent.
-let private winLineHeight (font: Renderer.Text.FontData) (fontSize: float) : float =
+/// OS/2 winDescent as a positive pixel distance (baseline → em bottom).
+/// Mirrors winAscent's USE_TYPO_METRICS / no-OS/2 fallbacks.
+let private winDescent (font: Renderer.Text.FontData) (fontSize: float) : float =
     let unitsPerEm = float font.OtFont.Head.UnitsPerEm
-    let totalUnits =
+    let units =
         match font.OtFont.OS2 with
-        | Some os2 -> float os2.WinAscent + float os2.WinDescent
-        | None ->
-            float font.OtFont.Hhea.Ascender
-            - float font.OtFont.Hhea.Descender
-            + float font.OtFont.Hhea.LineGap
-    totalUnits * fontSize / unitsPerEm
+        | Some os2 when not (useTypoMetrics font) -> float os2.WinDescent
+        | Some os2 -> float -os2.TypoDescender + float os2.TypoLineGap / 2.0
+        | None -> - (float font.OtFont.Hhea.Descender)
+    units * fontSize / unitsPerEm
+
+/// winAscent + winDescent — the GDI line-box height.
+let private winLineHeight (font: Renderer.Text.FontData) (fontSize: float) : float =
+    winAscent font fontSize + winDescent font fontSize
 
 let private toRendererCommands (text: PaintText) =
     // Excel font sizes (XLSX <sz val="11"/>) are in points; the Renderer takes
