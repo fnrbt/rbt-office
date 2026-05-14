@@ -47,17 +47,20 @@ let emptyEngine = {
     DirtySet = Set.empty
 }
 
-/// Extract cell references from formula AST. Delegates to the shared
+/// Extract cell references from a formula AST. Delegates to the shared
 /// implementation in Formula.fs so the two stay in lock-step as the AST
-/// grows.
-let extractReferences (expr: Expr): Set<CellAddress> =
-    referencesInExpr expr
+/// grows. The workbook lets a `NameRef` resolve to its target cells.
+let extractReferences (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                      (expr: Expr): Set<CellAddress> =
+    referencesInExpr workbook expr
 
 /// Build dependency graph for a cell with a formula
-let buildDependencies (addr: CellAddress) (formula: string) (engine: CalcEngine): CalcEngine =
+let buildDependencies (addr: CellAddress) (formula: string)
+                      (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                      (engine: CalcEngine): CalcEngine =
     match parseFormula formula with
     | Ok expr ->
-        let deps = extractReferences expr
+        let deps = extractReferences workbook expr
         let metadata =
             engine.Metadata
             |> Map.tryFind addr
@@ -192,8 +195,11 @@ let recalculateCell (addr: CellAddress) (model: SpreadsheetModel) (engine: CalcE
     | Some metadata ->
         match metadata.ParsedFormula with
         | Some expr ->
-            let result = eval expr model workbook
-            Some result
+            let ctx : EvalContext =
+                { Model = model
+                  Workbook = workbook
+                  Sheet = workbook |> Option.map (fun w -> w.ActiveSheet) }
+            Some (eval expr ctx)
         | None -> None
     | None -> None
 
@@ -243,7 +249,9 @@ let smartRecalculate (model: SpreadsheetModel) (engine: CalcEngine)
         (updatedModel, updatedEngine)
 
 /// Update cell value and mark dependents dirty
-let updateCell (addr: CellAddress) (value: CellValue) (cellData: CellData) (model: SpreadsheetModel) (engine: CalcEngine): SpreadsheetModel * CalcEngine =
+let updateCell (addr: CellAddress) (value: CellValue) (cellData: CellData)
+               (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+               (model: SpreadsheetModel) (engine: CalcEngine): SpreadsheetModel * CalcEngine =
     // Update the cell
     let newCellData = { cellData with Value = value }
     let newModel = setCell addr newCellData model
@@ -252,7 +260,7 @@ let updateCell (addr: CellAddress) (value: CellValue) (cellData: CellData) (mode
     let newEngine =
         match value with
         | CellValue.Formula (formula, _) ->
-            buildDependencies addr formula engine
+            buildDependencies addr formula workbook engine
         | _ ->
             // Clear dependencies but keep dependents (other cells may reference this)
             match Map.tryFind addr engine.Metadata with

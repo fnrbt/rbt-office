@@ -404,6 +404,27 @@ let parseFormula (input: string) : Result<Expr, string> =
         | t -> Result.Error (sprintf "Unexpected trailing token %A" t)
     with ex -> Result.Error ex.Message
 
+/// Resolve a defined name to its final parsed expression, scoped to the
+/// current sheet (a sheet-local name shadows a workbook-global one). A
+/// name's refers-to text is itself a formula — usually a range, sometimes
+/// a constant or another name; name→name hops are followed with a cycle
+/// guard. Returns None when the name is unknown, won't parse, or cycles.
+let resolveNameExpr (name: string) (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                    (workbook: RedBat.Spreadsheet.Workbook.Workbook) : Expr option =
+    let rec resolve (n: string) (seen: Set<string>) (hops: int) =
+        let key = n.ToUpperInvariant()
+        if hops > 16 || Set.contains key seen then None
+        else
+            match RedBat.Spreadsheet.Workbook.getName currentSheet n workbook with
+            | None -> None
+            | Some refersTo ->
+                let body = if refersTo.StartsWith "=" then refersTo else "=" + refersTo
+                match parseFormula body with
+                | Result.Error _ -> None
+                | Ok (NameRef inner) -> resolve inner (Set.add key seen) (hops + 1)
+                | Ok expr -> Some expr
+    resolve name Set.empty 0
+
 // ---------------------------------------------------------------------------
 // Value helpers + coercion
 // ---------------------------------------------------------------------------
@@ -484,23 +505,38 @@ let coerceBool (value: CellValue) : Result<bool, string> =
 let private normalizeRange (a: RefAst) (b: RefAst) =
     (min a.Row b.Row, min a.Col b.Col, max a.Row b.Row, max a.Col b.Col)
 
-/// Static set of cell addresses an expression references *within the
-/// current model*. Cross-sheet refs (`r.Sheet = Some _`) are deliberately
-/// excluded — single-model recalc ordering can't span sheets, so they're
-/// treated as external constants. Used by the dependency tracker.
-let rec referencesInExpr (expr: Expr) : Set<CellAddress> =
-    match expr with
-    | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ -> Set.empty
-    | CellRef r when r.Sheet.IsSome -> Set.empty
-    | CellRef r -> Set.singleton { Row = r.Row; Col = r.Col }
-    | RangeRef (a, _) when a.Sheet.IsSome -> Set.empty
-    | RangeRef (a, b) ->
-        let sr, sc, er, ec = normalizeRange a b
-        seq { for row in sr .. er do for col in sc .. ec -> { Row = row; Col = col } }
-        |> Set.ofSeq
-    | UnaryOp (_, e) -> referencesInExpr e
-    | BinOp (l, _, r) -> Set.union (referencesInExpr l) (referencesInExpr r)
-    | Function (_, args) -> args |> List.fold (fun acc a -> Set.union acc (referencesInExpr a)) Set.empty
+/// Set of cell addresses an expression references *within the current
+/// model*. Cross-sheet refs (`r.Sheet = Some _`) are deliberately excluded
+/// — single-model recalc ordering can't span sheets, so they're treated as
+/// external constants. A `NameRef` is resolved through the workbook (when
+/// one is supplied) and its target cells contribute to the set, so
+/// `=SUM(MyRange)` registers a dependency on the range's members. Defined
+/// names resolve at workbook-global scope here: a missed sheet-local name
+/// only affects recalc *ordering*, never the computed values, since `eval`
+/// resolves names with the correct scope. Used by the dependency tracker.
+let referencesInExpr (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                     (expr: Expr) : Set<CellAddress> =
+    let rec go (seen: Set<string>) (e: Expr) : Set<CellAddress> =
+        match e with
+        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ -> Set.empty
+        | NameRef name ->
+            let key = name.ToUpperInvariant()
+            if Set.contains key seen then Set.empty
+            else
+                match workbook |> Option.bind (resolveNameExpr name None) with
+                | Some resolved -> go (Set.add key seen) resolved
+                | None -> Set.empty
+        | CellRef r when r.Sheet.IsSome -> Set.empty
+        | CellRef r -> Set.singleton { Row = r.Row; Col = r.Col }
+        | RangeRef (a, _) when a.Sheet.IsSome -> Set.empty
+        | RangeRef (a, b) ->
+            let sr, sc, er, ec = normalizeRange a b
+            seq { for row in sr .. er do for col in sc .. ec -> { Row = row; Col = col } }
+            |> Set.ofSeq
+        | UnaryOp (_, inner) -> go seen inner
+        | BinOp (l, _, r) -> Set.union (go seen l) (go seen r)
+        | Function (_, args) -> args |> List.fold (fun acc a -> Set.union acc (go seen a)) Set.empty
+    go Set.empty expr
 
 /// Shift every *relative* reference in an expression by (dr, dc). Absolute
 /// components (`$`-locked row/col) are left untouched. This is how a
@@ -692,29 +728,24 @@ let private compareValues (l: CellValue) (r: CellValue) : Result<int, string> =
         // Cross-type: order by rank.
         | _ -> Ok (compare (rank a) (rank b))
 
-/// Resolve a defined name to its final parsed expression. A name's
-/// refers-to text is itself a formula (usually a range, sometimes a
-/// constant or another name); name→name hops are followed with a cycle
-/// guard. Returns None when the name is unknown, its text won't parse, or
-/// a chain cycles / runs too deep.
-let resolveNameExpr (name: string) (workbook: RedBat.Spreadsheet.Workbook.Workbook) : Expr option =
-    let rec resolve (n: string) (seen: Set<string>) (hops: int) =
-        let key = n.ToUpperInvariant()
-        if hops > 16 || Set.contains key seen then None
-        else
-            match RedBat.Spreadsheet.Workbook.getName n workbook with
-            | None -> None
-            | Some refersTo ->
-                let body = if refersTo.StartsWith "=" then refersTo else "=" + refersTo
-                match parseFormula body with
-                | Result.Error _ -> None
-                | Ok (NameRef inner) -> resolve inner (Set.add key seen) (hops + 1)
-                | Ok expr -> Some expr
-    resolve name Set.empty 0
+/// Everything an evaluation needs beyond the expression itself: the sheet
+/// model being evaluated, the workbook (for cross-sheet refs and defined
+/// names), and which sheet is "current" (for scoping sheet-local names).
+type EvalContext = {
+    Model: SpreadsheetModel
+    Workbook: RedBat.Spreadsheet.Workbook.Workbook option
+    Sheet: RedBat.Spreadsheet.Workbook.SheetId option
+}
+
+/// Build a context with no workbook — same-sheet formulas only, no defined
+/// names. Convenient for callers that just have a bare model.
+let contextOf (model: SpreadsheetModel) : EvalContext =
+    { Model = model; Workbook = None; Sheet = None }
 
 /// Evaluate an expression to a scalar CellValue.
-let rec eval (expr: Expr) (model: SpreadsheetModel)
-             (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue =
+let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
+    let model = ctx.Model
+    let workbook = ctx.Workbook
     match expr with
     | Number n -> CellValue.Number n
     | Str s -> CellValue.String s
@@ -724,8 +755,8 @@ let rec eval (expr: Expr) (model: SpreadsheetModel)
         match workbook with
         | None -> err Err.name
         | Some wb ->
-            match resolveNameExpr name wb with
-            | Some e -> eval e model workbook
+            match resolveNameExpr name ctx.Sheet wb with
+            | Some e -> eval e ctx
             | None -> err Err.name
     | CellRef r -> readCell r model workbook
     | RangeRef (a, b) ->
@@ -739,7 +770,7 @@ let rec eval (expr: Expr) (model: SpreadsheetModel)
         | v :: _ -> v
         | [] -> err Err.ref
     | UnaryOp (op, operand) ->
-        let v = eval operand model workbook
+        let v = eval operand ctx
         match op with
         | "-" ->
             match coerceNumber v with
@@ -755,8 +786,8 @@ let rec eval (expr: Expr) (model: SpreadsheetModel)
             | Result.Error e -> err e
         | _ -> err Err.value
     | BinOp (left, op, right) ->
-        let lv = eval left model workbook
-        let rv = eval right model workbook
+        let lv = eval left ctx
+        let rv = eval right ctx
         match firstError [ lv; rv ] with
         | Some e -> e
         | None ->
@@ -795,12 +826,13 @@ let rec eval (expr: Expr) (model: SpreadsheetModel)
                         if Double.IsNaN p || Double.IsInfinity p then err Err.num
                         else CellValue.Number p
                     | _ -> err Err.value
-    | Function (name, args) -> evalFunction name args model workbook
+    | Function (name, args) -> evalFunction name args ctx
 
 /// Evaluate every argument, flattening ranges/tables into their cell values
 /// (the form most aggregate functions want).
-and flattenArgs (args: Expr list) (model: SpreadsheetModel)
-                (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue list =
+and flattenArgs (args: Expr list) (ctx: EvalContext) : CellValue list =
+    let model = ctx.Model
+    let workbook = ctx.Workbook
     args |> List.collect (fun arg ->
         match arg with
         | RangeRef (a, b) -> expandRangeRef a b model workbook
@@ -808,12 +840,12 @@ and flattenArgs (args: Expr list) (model: SpreadsheetModel)
         | NameRef name ->
             // A name standing in for a range must flatten like the range
             // would — otherwise SUM(MyRange) would see only its first cell.
-            match workbook |> Option.bind (resolveNameExpr name) with
+            match workbook |> Option.bind (resolveNameExpr name ctx.Sheet) with
             | Some (RangeRef (a, b)) -> expandRangeRef a b model workbook
             | Some (TableRef (t, c)) -> expandTableRef t c workbook model
-            | Some e -> [ eval e model workbook ]
+            | Some e -> [ eval e ctx ]
             | None -> [ err Err.name ]
-        | _ -> [ eval arg model workbook ])
+        | _ -> [ eval arg ctx ])
 
 /// Numeric values from a flattened argument list — text and blanks dropped,
 /// matching how SUM/AVERAGE/etc. ignore non-numeric cells. The first error
@@ -835,14 +867,15 @@ and numbersOf (values: CellValue list) : Result<float list, string> =
 and private gridCell (model: SpreadsheetModel) row col : CellValue =
     getCellValue { Row = row; Col = col } model |> unwrapValue
 
-and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
-                 (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue =
+and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue =
+    let model = ctx.Model
+    let workbook = ctx.Workbook
     let nargs = List.length args
-    let argRaw i = eval (List.item i args) model workbook
+    let argRaw i = eval (List.item i args) ctx
     let argNum i = coerceNumber (argRaw i)
     let argText i = coerceText (argRaw i)
     let argBool i = coerceBool (argRaw i)
-    let aggregateNumbers () = numbersOf (flattenArgs args model workbook)
+    let aggregateNumbers () = numbersOf (flattenArgs args ctx)
     // Run f over the aggregate numeric values; common shape for math
     // reductions. Empty list → emptyResult.
     let reduceNums emptyResult f =
@@ -859,7 +892,7 @@ and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
         match rangeBounds e with
         | Some (sr, sc, er, ec) ->
             [ for r in sr .. er do for c in sc .. ec -> gridCell model r c ]
-        | None -> [ eval e model workbook ]
+        | None -> [ eval e ctx ]
     // Median of a sorted float list.
     let median (ns: float list) =
         let a = ns |> List.sort |> Array.ofList
@@ -878,15 +911,15 @@ and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
     | "MAX" -> reduceNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.max ns))
     | "MEDIAN" -> reduceNums (err Err.num) (fun ns -> CellValue.Number (median ns))
     | "COUNT" ->
-        let vals = flattenArgs args model workbook
+        let vals = flattenArgs args ctx
         match firstError vals with
         | Some (CellValue.Error e) -> err e
         | _ -> CellValue.Number (float (vals |> List.sumBy (fun v -> match unwrapValue v with CellValue.Number _ -> 1 | _ -> 0)))
     | "COUNTA" ->
-        let vals = flattenArgs args model workbook
+        let vals = flattenArgs args ctx
         CellValue.Number (float (vals |> List.sumBy (fun v -> match unwrapValue v with CellValue.Empty -> 0 | _ -> 1)))
     | "COUNTBLANK" ->
-        let vals = flattenArgs args model workbook
+        let vals = flattenArgs args ctx
         CellValue.Number (float (vals |> List.sumBy (fun v ->
             match unwrapValue v with
             | CellValue.Empty -> 1
@@ -910,7 +943,7 @@ and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
                 CellValue.Number ((ns |> List.sumBy (fun x -> (x - mean) ** 2.0)) / float (n - 1)))
     | "LARGE" | "SMALL" ->
         if nargs <> 2 then err Err.value else
-        match numbersOf (flattenArgs [ List.item 0 args ] model workbook), argNum 1 with
+        match numbersOf (flattenArgs [ List.item 0 args ] ctx), argNum 1 with
         | Result.Error e, _ -> err e
         | _, Result.Error e -> err e
         | Ok ns, Ok k ->
@@ -965,7 +998,7 @@ and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
             |> List.map (fun chunk ->
                 match chunk with
                 | [ rangeExpr; critExpr ] ->
-                    rangeValues rangeExpr, compileCriteria (eval critExpr model workbook)
+                    rangeValues rangeExpr, compileCriteria (eval critExpr ctx)
                 | _ -> [], (fun _ -> false))
         let count = pairs |> List.map (fst >> List.length) |> List.min
         let sumRange = if isSum then rangeValues (List.item 0 args) else []
@@ -1040,19 +1073,19 @@ and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
     | "IF" ->
         match args with
         | [ c; t ] ->
-            match coerceBool (eval c model workbook) with
-            | Ok true -> eval t model workbook
+            match coerceBool (eval c ctx) with
+            | Ok true -> eval t ctx
             | Ok false -> CellValue.Boolean false
             | Result.Error e -> err e
         | [ c; t; f ] ->
-            match coerceBool (eval c model workbook) with
-            | Ok true -> eval t model workbook
-            | Ok false -> eval f model workbook
+            match coerceBool (eval c ctx) with
+            | Ok true -> eval t ctx
+            | Ok false -> eval f ctx
             | Result.Error e -> err e
         | _ -> err Err.value
     | "AND" | "OR" | "XOR" ->
         let bools =
-            flattenArgs args model workbook
+            flattenArgs args ctx
             |> List.choose (fun v ->
                 match unwrapValue v with
                 | CellValue.Empty -> None
@@ -1126,7 +1159,7 @@ and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
         else CellValue.Boolean (match unwrapValue (argRaw 0) with CellValue.Boolean _ -> true | _ -> false)
     // ----- text -------------------------------------------------------------
     | "CONCAT" | "CONCATENATE" ->
-        let parts = flattenArgs args model workbook |> List.map coerceText
+        let parts = flattenArgs args ctx |> List.map coerceText
         match parts |> List.tryPick (function Result.Error e -> Some e | _ -> None) with
         | Some e -> err e
         | None -> CellValue.String (parts |> List.choose (function Ok s -> Some s | _ -> None) |> String.concat "")
@@ -1137,7 +1170,7 @@ and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
         | Result.Error e, _ | _, Result.Error e -> err e
         | Ok delim, Ok ignoreEmpty ->
             let parts =
-                flattenArgs (args |> List.skip 2) model workbook
+                flattenArgs (args |> List.skip 2) ctx
                 |> List.choose (fun v ->
                     match unwrapValue v with
                     | CellValue.Empty when ignoreEmpty -> None
@@ -1427,17 +1460,24 @@ and evalFunction (name: string) (args: Expr list) (model: SpreadsheetModel)
         | Result.Error e -> err e
         | Ok refText ->
             match parseFormula ("=" + refText) with
-            | Ok (CellRef _ as e) | Ok (RangeRef _ as e) -> eval e model workbook
+            | Ok (CellRef _ as e) | Ok (RangeRef _ as e) -> eval e ctx
             | _ -> err Err.ref
     | _ ->
         // Unknown / unsupported function.
         err Err.name
 
-/// Parse + evaluate a formula string in one shot.
+/// Parse + evaluate a formula string in one shot. Defined names resolve at
+/// the workbook's active sheet — the right scope for an interactive
+/// edit-buffer preview, which is what this entry point serves.
 let evaluateFormula (formula: string) (model: SpreadsheetModel)
                     (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue =
     match parseFormula formula with
-    | Ok expr -> eval expr model workbook
+    | Ok expr ->
+        let ctx =
+            { Model = model
+              Workbook = workbook
+              Sheet = workbook |> Option.map (fun w -> w.ActiveSheet) }
+        eval expr ctx
     | Result.Error msg -> CellValue.Error msg
 
 // ---------------------------------------------------------------------------
@@ -1445,7 +1485,11 @@ let evaluateFormula (formula: string) (model: SpreadsheetModel)
 // incremental engine; this is the simple full pass the shared model uses.
 // ---------------------------------------------------------------------------
 
+/// Recalculate every formula cell in a model, in dependency order.
+/// `currentSheet` scopes defined-name resolution to the sheet being
+/// recalculated (the caller knows which sheet `model` belongs to).
 let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                           (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
                            (model: SpreadsheetModel) : SpreadsheetModel =
     let formulaCells =
         model.Cells
@@ -1470,7 +1514,7 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
                 match parseError with
                 | Some _ -> Set.empty
                 | None ->
-                    referencesInExpr expr
+                    referencesInExpr workbook expr
                     |> Set.filter (fun refAddr -> Map.containsKey refAddr formulaByAddress)
             addr, refs)
         |> Map.ofList
@@ -1505,8 +1549,9 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
             updated <- setCell addr { cell with Value = CellValue.Formula (formula, CellValue.Error parseError) } updated
         | Some (cell, formula, _, None) when Set.contains addr cyclic ->
             updated <- setCell addr { cell with Value = CellValue.Formula (formula, CellValue.Error Err.cycle) } updated
-        | Some (cell, formula, _, None) ->
-            let result = evaluateFormula formula updated workbook
+        | Some (cell, formula, expr, None) ->
+            let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet }
+            let result = eval expr ctx
             updated <- setCell addr { cell with Value = CellValue.Formula (formula, result) } updated
         | None -> ()
     updated

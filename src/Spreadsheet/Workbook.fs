@@ -33,8 +33,10 @@ type Workbook = {
     ActiveSheet: SheetId
     Tables: Map<string, Table>  // Named tables
     /// Defined names → their refers-to formula text (e.g. "Sheet1!$A$1:$B$10").
-    /// Keys are stored upper-cased for case-insensitive lookup.
-    Names: Map<string, string>
+    /// Keyed by (scope, UPPER-cased name): scope is the owning SheetId for
+    /// sheet-local names, None for workbook-global names. A sheet-local name
+    /// shadows a global one of the same name when evaluating on that sheet.
+    Names: Map<SheetId option * string, string>
 }
 
 /// Create empty workbook with one sheet
@@ -54,16 +56,25 @@ let createWorkbook (): Workbook =
         Names = Map.empty
     }
 
-/// Look up a defined name's refers-to text (case-insensitive).
-let getName (name: string) (workbook: Workbook): string option =
-    Map.tryFind (name.ToUpperInvariant()) workbook.Names
+/// Look up a defined name's refers-to text, scoped to the current sheet: a
+/// sheet-local name shadows a workbook-global one of the same name.
+/// Case-insensitive.
+let getName (currentSheet: SheetId option) (name: string) (workbook: Workbook): string option =
+    let key = name.ToUpperInvariant()
+    let local = currentSheet |> Option.bind (fun s -> Map.tryFind (Some s, key) workbook.Names)
+    match local with
+    | Some _ -> local
+    | None -> Map.tryFind (None, key) workbook.Names
 
-/// Build the case-insensitive Names map from raw (name, refersTo) pairs.
-/// Later entries win on collision — callers should pass workbook-global
-/// names before sheet-scoped ones if both exist.
-let namesOfPairs (pairs: (string * string) seq): Map<string, string> =
-    pairs
-    |> Seq.fold (fun acc (n, refersTo) -> Map.add (n.ToUpperInvariant()) refersTo acc) Map.empty
+/// Build the Names map from raw (scope, name, refersTo) triples. Keys are
+/// upper-cased for case-insensitive lookup; later entries win on collision.
+let namesOfTriples (triples: (SheetId option * string * string) seq): Map<SheetId option * string, string> =
+    triples
+    |> Seq.fold (fun acc (scope, n, refersTo) -> Map.add (scope, n.ToUpperInvariant()) refersTo acc) Map.empty
+
+/// Convenience for workbook-global names only (scope = None).
+let namesOfPairs (pairs: (string * string) seq): Map<SheetId option * string, string> =
+    pairs |> Seq.map (fun (n, refersTo) -> None, n, refersTo) |> namesOfTriples
 
 /// Get active sheet
 let getActiveSheet (workbook: Workbook): Sheet option =

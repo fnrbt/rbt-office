@@ -646,7 +646,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                     | Some cd ->
                                         let shifted =
                                             RedBat.Spreadsheet.Formula.shiftExpr (r - anchorR) (c - anchorC) baseExpr
-                                        if truthy (RedBat.Spreadsheet.Formula.eval shifted evalModel None) then
+                                        if truthy (RedBat.Spreadsheet.Formula.eval shifted (RedBat.Spreadsheet.Formula.contextOf evalModel)) then
                                             let fmt =
                                                 { cd.Format with
                                                     BgColor = d.FillColor |> Option.orElse cd.Format.BgColor
@@ -809,10 +809,18 @@ let private buildWorkbookContext (xlsxWb: Xlsx.Workbook) : RedBat.Spreadsheet.Wo
             let s : RedBat.Spreadsheet.Workbook.Sheet =
                 { Id = id; Name = ws.Name; Model = toModel ws xlsxWb; Visible = true }
             id, s)
+    // A definedName's localSheetId (when present) is a 0-based sheet index
+    // — map it to the positional sheet id so the name resolves at the right
+    // scope; absent localSheetId means a workbook-global name.
     let names =
         xlsxWb.NamedRanges
-        |> List.map (fun nr -> nr.Name, nr.RefersTo)
-        |> RedBat.Spreadsheet.Workbook.namesOfPairs
+        |> List.map (fun nr ->
+            let scope =
+                nr.Scope
+                |> Option.bind (fun s -> match Int32.TryParse s with | true, i -> Some i | _ -> None)
+                |> Option.map (fun i -> sprintf "sheet%d" (i + 1))
+            scope, nr.Name, nr.RefersTo)
+        |> RedBat.Spreadsheet.Workbook.namesOfTriples
     { Sheets = Map.ofList sheets
       SheetOrder = sheets |> List.map fst
       ActiveSheet = (match sheets with (id, _) :: _ -> id | [] -> "sheet1")
@@ -880,7 +888,7 @@ let private renderSheetToPath
         match Map.tryFind sheetId wbContext.Sheets with
         | Some s -> s.Model
         | None -> createEmpty 1048576 16384
-    let model = RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) baseModel
+    let model = RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) (Some sheetId) baseModel
 
     let widget = Composit.Ui.SpreadsheetGrid.widget (float width) (float height) model
     let backend = Raster.create()

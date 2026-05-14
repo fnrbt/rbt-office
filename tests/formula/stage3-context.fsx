@@ -35,13 +35,15 @@ let workbook =
       ActiveSheet = "sheet1"
       Tables = Map.empty
       Names =
-        namesOfPairs
-            [ "MyCell",   "Sheet2!$A$1"          // single cross-sheet cell
-              "MyRange",  "Sheet2!$A$2:$A$4"     // cross-sheet range
-              "LocalCell", "B2"                  // unqualified → active model
-              "Alias",    "MyCell"               // name → name chain
-              "CycA",     "CycB"                 // cyclic pair
-              "CycB",     "CycA" ] }
+        namesOfTriples
+            [ None,            "MyCell",    "Sheet2!$A$1"        // single cross-sheet cell
+              None,            "MyRange",   "Sheet2!$A$2:$A$4"   // cross-sheet range
+              None,            "LocalCell", "B2"                 // unqualified → active model
+              None,            "Alias",     "MyCell"             // name → name chain
+              None,            "CycA",      "CycB"               // cyclic pair
+              None,            "CycB",      "CycA"
+              None,            "Shared",    "B1"                 // workbook-global Shared → 10
+              Some "sheet1",   "Shared",    "B3" ] }             // sheet1-local Shared → 30 (shadows)
 
 let model = sheet1Model
 let wb = Some workbook
@@ -97,6 +99,15 @@ check "name-range-avg" "=AVERAGE(MyRange)"       (n 2.0)
 check "name-chain"    "=Alias"                   (n 99.0)         // Alias → MyCell → Sheet2!A1
 check "name-cyclic"   "=CycA"                    (e "NAME?")      // cycle guard
 check "name-unknown"  "=NoSuchName"              (e "NAME?")
+
+// sheet-scoped names: evaluateFormula resolves at the active sheet
+// (sheet1), where the sheet-local "Shared" shadows the global one.
+check "name-scoped-local"  "=Shared"             (n 30.0)         // sheet1-local Shared → B3
+// resolving with a different (or no) sheet scope falls back to the global.
+let sharedExpr = match parseFormula "=Shared" with Ok x -> x | _ -> Number 0.0
+match eval sharedExpr { Model = model; Workbook = wb; Sheet = Some "sheet2" } with
+| CellValue.Number 10.0 -> pass <- pass + 1
+| got -> fail <- fail + 1; printfn "FAIL name-scoped-global  expected 10  got %A" got
 
 // containsVolatile detection
 let volatileExpr =

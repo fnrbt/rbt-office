@@ -307,7 +307,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 FrozenRows = 0
                 FrozenCols = 0
             }
-            recalculateAllFormulas None importedModel
+            recalculateAllFormulas None None importedModel
 
         with ex ->
             printfn "Error importing XLSX: %s" ex.Message

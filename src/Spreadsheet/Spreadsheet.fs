@@ -147,7 +147,8 @@ type Spreadsheet(container: Element) =
             canvasRestore ctx
 
     let recalculateFormulas () =
-        model <- recalculateAllFormulas workbook model
+        let currentSheet = workbook |> Option.map (fun w -> w.ActiveSheet)
+        model <- recalculateAllFormulas workbook currentSheet model
 
     let hitTestEvent (e: obj) =
         match gridContainer with
@@ -2626,7 +2627,9 @@ type Spreadsheet(container: Element) =
         // Create undo command
         let command = {
             Undo = fun m -> { m with Cells = oldCells }
-            Redo = fun m -> importCSV csvText startRow startCol m |> recalculateAllFormulas workbook
+            Redo = fun m ->
+                importCSV csvText startRow startCol m
+                |> recalculateAllFormulas workbook (workbook |> Option.map (fun w -> w.ActiveSheet))
             Description = "Import CSV"
         }
         model <- pushCommand command model

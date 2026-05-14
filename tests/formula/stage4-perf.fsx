@@ -26,7 +26,7 @@ let chainCells =
 let chainModel = { createEmpty (chainLen + 10) 10 with Cells = chainCells }
 
 let sw = Stopwatch.StartNew()
-let chainResult = recalculateAllFormulas None chainModel
+let chainResult = recalculateAllFormulas None None chainModel
 sw.Stop()
 let chainMs = sw.Elapsed.TotalMilliseconds
 let tailVal =
@@ -49,7 +49,7 @@ let wideCells =
 let wideModel = { createEmpty (wideN + 10) 10 with Cells = wideCells }
 
 let sw2 = Stopwatch.StartNew()
-let wideResult = recalculateAllFormulas None wideModel
+let wideResult = recalculateAllFormulas None None wideModel
 sw2.Stop()
 let wideMs = sw2.Elapsed.TotalMilliseconds
 let sumVal =
@@ -79,7 +79,7 @@ let cycleCells =
       { Row = 1; Col = 5 }, cell (CellValue.Formula ("=F1+1", CellValue.Empty)) ]
     |> Map.ofList
 let cycleModel = { createEmpty 100 100 with Cells = cycleCells }
-let cycleResult = recalculateAllFormulas None cycleModel
+let cycleResult = recalculateAllFormulas None None cycleModel
 let f1 =
     match getCellValue { Row = 0; Col = 5 } cycleResult with
     | CellValue.Formula (_, v) -> v | v -> v
