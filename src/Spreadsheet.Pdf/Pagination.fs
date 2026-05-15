@@ -156,10 +156,22 @@ let paginate (model: SpreadsheetModel) : Pagination =
     let manualRow = ps.ManualRowBreaks |> List.map (fun b -> b - 1) |> Set.ofList
     let manualCol = ps.ManualColBreaks |> List.map (fun b -> b - 1) |> Set.ofList
 
+    // Body range excludes the repeat rows / cols — they ride along on every
+    // page separately. Without this the first row / column would render
+    // twice on page 1 (once as the repeat band, once as the first body row).
+    let bodyRowStart =
+        match ps.RepeatRows with
+        | Some (_, rEnd) when rEnd >= printRange.From.Row -> max printRange.From.Row (rEnd + 1)
+        | _ -> printRange.From.Row
+    let bodyColStart =
+        match ps.RepeatCols with
+        | Some (_, cEnd) when cEnd >= printRange.From.Col -> max printRange.From.Col (cEnd + 1)
+        | _ -> printRange.From.Col
+
     let colRanges =
-        axisBreaks printRange.From.Col printRange.To.Col manualCol (colWidthPx model) effW
+        axisBreaks bodyColStart printRange.To.Col manualCol (colWidthPx model) effW
     let rowRanges =
-        axisBreaks printRange.From.Row printRange.To.Row manualRow (rowHeightPx model) effH
+        axisBreaks bodyRowStart printRange.To.Row manualRow (rowHeightPx model) effH
 
     // Down then over: walk row pages within each column page.
     let pages =

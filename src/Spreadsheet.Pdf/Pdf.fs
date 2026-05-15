@@ -319,8 +319,15 @@ let private sliceItems
     (colStart: int) (colEnd: int)
     (offsetX: float) (offsetY: float)
     : PaintItem list =
-    let scrollX = colSumPx model 0 (colStart - 1)
-    let scrollY = rowSumPx model 0 (rowStart - 1)
+    // Scroll position is bumped past the strict-less-than threshold that
+    // visibleRange's start-row loop uses, then height/width are inflated
+    // by 1 so the end loop's strict-less-than admits the slice's last
+    // row/col. Together they make the visible range land *exactly* on
+    // [rowStart..rowEnd] × [colStart..colEnd]; without these nudges
+    // visibleRange either pulls in the previous row (scroll-boundary
+    // overlap) or drops the last one (end-boundary exclusion).
+    let scrollX = colSumPx model 0 (colStart - 1) + 0.5
+    let scrollY = rowSumPx model 0 (rowStart - 1) + 0.5
     let width = colSumPx model colStart colEnd + 1.0
     let height = rowSumPx model rowStart rowEnd + 1.0
     let viewport =

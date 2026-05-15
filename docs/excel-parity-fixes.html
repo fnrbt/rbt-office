@@ -155,6 +155,48 @@
     <tbody>
       <tr>
         <td>
+          <strong>Print pipeline — page setup, 2D pagination, headers/footers, print area, repeat rows</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-print.xlsx</code> — a 6-column × 31-row sales report (header + 30 data rows). Print metadata: <code>orientation="landscape"</code>, US Letter, <code>_xlnm.Print_Area</code> = <code>Report!$A$1:$F$25</code> (drops the last 6 data rows), <code>_xlnm.Print_Titles</code> = <code>$1:$1</code> (repeat header row), manual <code>&lt;rowBreaks&gt;</code> after row 13, <code>oddHeader</code> = <code>&amp;L&amp;BReport&amp;R&amp;D</code>, <code>oddFooter</code> = <code>&amp;L&amp;A&amp;CPage &amp;P of &amp;N&amp;R&amp;F</code>. Exercises every print-related XLSX element in one fixture.</span>
+          <span class="meta">Real fixture class: any workbook actually meant to be printed. Excel's defaults (margins, headers/footers, orientation, page breaks, repeat header rows) were entirely ignored by our PDF backend, which dumped the whole used range onto one Letter portrait page with zero margins.</span>
+          <span class="meta">Paths checked: PDF (multi-page). Full 60-fixture corpus PNG render still clean. 177 formula tests + 14 print-helper tests + 12 calc-engine tests still pass.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-print-page1-after.png" style="--w:1320px; --x:0px; --y:0px; --s:1.6" alt="Synthetic print fixture — page 1, structurally verified">
+          </div>
+          <div class="caption">No Excel reference — synthetic fixture authored to exercise the whole print path. Verification is structural: the fixture's print metadata (landscape, print area A1:F25, repeat row 1, manual break after row 13, header / footer with field codes) should produce exactly two landscape pages, each with the column header re-printed at the top and the appropriate footer.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-print-page1-after.png" style="--w:1320px; --x:0px; --y:0px; --s:1.6" alt="Ours after — page 1">
+          </div>
+          <div class="caption">Page 1: landscape Letter, repeat header row at top (Date / Product / Region / Sales / Margin / Notes), body rows 2–13 of the source (dates 45292–45303, products Widget through Whatsit), header <em>"Report &nbsp;…&nbsp; 2026-05-15"</em> in the top margin (&amp;D resolves to today's date), footer <em>"Report &nbsp; Page 1 of 2 &nbsp; synthetic-print.xlsx"</em> with the sheet name from &amp;A and file name from &amp;F.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-print-page2-after.png" style="--w:1320px; --x:0px; --y:0px; --s:1.6" alt="Ours after — page 2">
+          </div>
+          <div class="caption">Page 2: same repeat header row (the manual <code>&lt;rowBreaks&gt;</code> entry after row 13 forced the split here), body rows 14–25 (the print area stops at row 25 — rows 26–31 of the source are dropped, as Excel does), footer reads "Page 2 of 2".</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> wire the XLSX → model → PDF pipeline that was missing end-to-end, in five phases.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: new <code>PageMargins</code> / <code>PageSetup</code> / <code>PrintOptions</code> / <code>HeaderFooter</code> types. <code>Worksheet</code> gains <code>PageSetup</code>, <code>PageMargins</code>, <code>PrintOptions</code>, <code>HeaderFooter</code>, <code>RowBreaks</code>, <code>ColBreaks</code>, <code>PrintArea</code>, <code>PrintTitleRows</code>, <code>PrintTitleCols</code>. New parsers for <code>&lt;pageSetup&gt;</code>, <code>&lt;pageMargins&gt;</code>, <code>&lt;printOptions&gt;</code>, <code>&lt;headerFooter&gt;</code>, <code>&lt;rowBreaks&gt;</code>, <code>&lt;colBreaks&gt;</code>, and the <code>fitToPage</code> flag on <code>&lt;sheetPr&gt;&lt;pageSetUpPr&gt;</code>. <code>NamedRanges.splitPrintNames</code> pulls <code>_xlnm.Print_Area</code> / <code>_xlnm.Print_Titles</code> out of the workbook's name list, groups them per sheet by <code>localSheetId</code>, and drops other <code>_xlnm.*</code> built-ins.</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: new <code>PageSetup</code> record (page width / height in points, orientation, margins, fit-to-page, manual breaks, print area, repeat rows / cols, print options, header / footer). <code>SpreadsheetModel</code> gains <code>PageSetup</code> (always present, defaulted to US Letter portrait with 0.75 inch margins). <code>paperSizePoints</code> maps the OOXML paper-size codes (1 = Letter, 9 = A4, …) to point dimensions.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: <code>toModel</code> translates the parsed Xlsx print fields into the model's <code>PageSetup</code> — paper-size + orientation pick width / height (and swap for landscape), margins copy through, print area / title rows / title cols parse into 0-indexed ranges.</li>
+            <li><code>src/Spreadsheet.Pdf/HeaderFooter.fs</code> (new): Excel's <code>&amp;L</code> / <code>&amp;C</code> / <code>&amp;R</code> section parser plus per-page field substitution (<code>&amp;P</code> page number, <code>&amp;N</code> total pages, <code>&amp;A</code> sheet name, <code>&amp;F</code> file, <code>&amp;Z</code> file path, <code>&amp;D</code> date, <code>&amp;T</code> time, <code>&amp;&amp;</code> escape). Style-only codes (<code>&amp;B</code> bold, <code>&amp;"Font,Style"</code>, <code>&amp;NN</code> size, <code>&amp;K{hex}</code>) are consumed silently. Pure string logic — no PDF deps — so it's liftable to a cross-document shared layer.</li>
+            <li><code>src/Spreadsheet.Pdf/Pagination.fs</code> (new): 2D page-break computation. Honors print area, margins, manual row / col breaks (which force closure regardless of accumulated size), fit-to-page scaling (measured against <code>FitToWidth</code> × <code>FitToHeight</code> pages of available area), repeat rows / cols (steal space from every page, and the body range skips them so they don't render twice on page 1). Emits pages in Excel's "down then over" order.</li>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs</code>: <code>translateItem</code> takes a <code>Placement</code> record so margin offset, page height (for Y-flip), and fit-to-page scale bake into every coordinate uniformly. <code>sliceItems</code> builds the paint items for one slice with chrome (column letters / row numbers) suppressed and degenerate zero-size chrome items filtered out. Each page composes body + repeat-rows band + repeat-cols band + repeat corner. <code>sectionOps</code> emits header / footer in PDF coords directly (no scale, no Y-flip), placed in the top / bottom margin bands; their glyphs are recorded in the GID set before subset embed so embedded fonts include them.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: synthetic-print.xlsx committed under <code>tests/test-documents-excel/</code>. The structural check is "2 landscape pages, repeat header on each, rows split at the manual break, footer reflects &amp;P / &amp;N / &amp;A / &amp;F field codes." A new <code>tests/print/helpers.fsx</code> exercises 14 standalone assertions for the field-code parser + 2D break math.</li>
+            <li>Regression guard: full 60-fixture corpus PNG render byte-clean (PageSetup defaults to portrait Letter, recalc unchanged); 177 formula + 14 print-helper + 12 calc-engine assertions still pass.</li>
+            <li>Scope: page margins, orientation, manual row / col breaks, fit-to-page scaling, print area, repeat rows / cols, headers / footers with all common field codes. <strong>Not yet:</strong> printing the column-letter / row-number chrome when <code>PrintOptions.Headings</code> is true, printing gridlines under cells when <code>PrintOptions.GridLines</code> is true, and even / first-page header / footer variants (only odd applies for now).</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Conditional formatting — cellIs, colorScale, dataBar, iconSet, top10, aboveAverage, expression</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-condformat.xlsx</code> — col A <code>cellIs greaterThan 50</code> → pink dxf, col B 3-stop <code>colorScale</code> (red→yellow→green), col C <code>cellIs between 20 40</code> → green-bold dxf, col D <code>dataBar</code> (blue, min..max), col E 3-icon traffic-light <code>iconSet</code>, col F <code>top10 rank="2"</code> → green dxf, col G <code>aboveAverage</code> → pink dxf, col H <code>expression</code> <code>=$A2&gt;50</code> → green-bold dxf (formula references a <em>different</em> column, relative). Corpus has no CF fixture.</span>
           <span class="meta">Real fixture class: dashboards, KPI sheets, anything with "highlight cells greater than X", a heat-map column, in-cell bars, or status icons. The CF pipeline was parsed-but-dead — an earlier audit (task #31) found cfRule type/priority were read but no <code>&lt;dxf&gt;</code> table was parsed and the renderer never consulted CF, so every conditionally-formatted cell rendered plain.</span>
