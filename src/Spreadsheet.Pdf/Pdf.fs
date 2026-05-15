@@ -32,9 +32,11 @@ type RenderOptions = {
     /// wins. The PDF emitter picks bold vs regular based on the run's Bold
     /// flag; italic is ignored (these families don't ship italic variants).
     CjkFallback: FontFace list
-    /// Page size in CSS pixels (we convert to points internally).
-    PageWidth: float
-    PageHeight: float
+    /// Sheet name surfaced as `&A` in headers / footers.
+    SheetName: string
+    /// File name surfaced as `&F` in headers / footers (bare leaf, no
+    /// directory). Empty when the source isn't a file.
+    FileName: string
 }
 
 /// Convert "#RRGGBB" / "RRGGBB" to a PDF RGB color in 0..1.
@@ -142,27 +144,45 @@ let private toRemappedHex (ttf: PdfFont.TrueTypeFont) (remap: Map<int, int>) (te
         sb.AppendFormat("{0:X4}", gid) |> ignore
     sb.ToString()
 
+/// Page placement: where this page's content sits on the paper, what the
+/// page is sized at, and how content is scaled. translateItem bakes all
+/// three into every coordinate it emits.
+type private Placement = {
+    /// PDF points from the paper's left edge to where page-local X=0 lands.
+    LeftPtOffset: float
+    /// PDF points from the paper's *top* edge to where page-local Y=0 lands
+    /// (the top of the printable area).
+    TopPtOffset: float
+    /// PDF points for the paper's full height — needed for the Y-flip.
+    PageHeightPt: float
+    /// Multiplier applied to every size + offset (fit-to-page / manual scale).
+    Scale: float
+}
+
 /// Convert one Paint item into a list of PDF draw ops. Coordinates flip from
-/// our top-left CSS-pixel space into PDF's bottom-left point space.
-let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfFont.TrueTypeFont>) (faceResource: Map<string, string>) (faceRemap: Map<string, Map<int, int>>) (pageHeightPt: float) (item: PaintItem) : PdfDraw.DrawOp list =
-    let yPdf y = pageHeightPt - px y
+/// our top-left CSS-pixel space into PDF's bottom-left point space, with the
+/// `Placement`'s margin offsets and scale baked in.
+let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfFont.TrueTypeFont>) (faceResource: Map<string, string>) (faceRemap: Map<string, Map<int, int>>) (placement: Placement) (item: PaintItem) : PdfDraw.DrawOp list =
+    let sz v = v * pxToPt * placement.Scale          // size in pt
+    let xPt x = placement.LeftPtOffset + sz x
+    let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
     match item with
     | FillRect (rect, color) ->
         [ PdfDraw.SetFillColor (parseHexColor color)
-          PdfDraw.Rect (px rect.X, yPdf (rect.Y + rect.Height), px rect.Width, px rect.Height)
+          PdfDraw.Rect (xPt rect.X, yPdf (rect.Y + rect.Height), sz rect.Width, sz rect.Height)
           PdfDraw.Fill ]
     | StrokeRect (rect, color, width) ->
         [ PdfDraw.SetStrokeColor (parseHexColor color)
-          PdfDraw.SetLineWidth (px width)
+          PdfDraw.SetLineWidth (sz width)
           PdfDraw.SetDash ([], 0.0)
-          PdfDraw.Rect (px rect.X, yPdf (rect.Y + rect.Height), px rect.Width, px rect.Height)
+          PdfDraw.Rect (xPt rect.X, yPdf (rect.Y + rect.Height), sz rect.Width, sz rect.Height)
           PdfDraw.Stroke ]
     | GridLine (x1, y1, x2, y2, color, width) ->
         [ PdfDraw.SetStrokeColor (parseHexColor color)
-          PdfDraw.SetLineWidth (px width)
+          PdfDraw.SetLineWidth (sz width)
           PdfDraw.SetDash ([], 0.0)
-          PdfDraw.MoveTo (px x1, yPdf y1)
-          PdfDraw.LineTo (px x2, yPdf y2)
+          PdfDraw.MoveTo (xPt x1, yPdf y1)
+          PdfDraw.LineTo (xPt x2, yPdf y2)
           PdfDraw.Stroke ]
     | DrawText t ->
         match pickFace options t.FontName t.Bold t.Italic with
@@ -170,7 +190,7 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
         | Some primaryFace ->
             match Map.tryFind primaryFace.FaceName faceByName with
             | Some primaryTtf ->
-                let fontSizePt = px t.FontSize
+                let fontSizePt = sz t.FontSize
                 let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback faceByName t.Bold t.Text
                 // Width in pt for each segment (uses its own font's UPM).
                 let segWidthPt (ttf: PdfFont.TrueTypeFont) (s: string) =
@@ -178,8 +198,8 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
                 let segmentsWithWidth =
                     segments |> List.map (fun (face, s) -> face, s, segWidthPt (snd face) s)
                 let totalWidthPt = segmentsWithWidth |> List.sumBy (fun (_, _, w) -> w)
-                let rectXPt = px t.Rect.X
-                let rectWidthPt = px t.Rect.Width
+                let rectXPt = xPt t.Rect.X
+                let rectWidthPt = sz t.Rect.Width
                 let alignedXPt =
                     match t.Align with
                     | AlignLeft -> rectXPt
@@ -223,7 +243,7 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
                         let underlineY = baselineY + max 1.0 (t.FontSize * 0.08)
                         let single =
                             [ PdfDraw.SetStrokeColor textColor
-                              PdfDraw.SetLineWidth (px 1.0)
+                              PdfDraw.SetLineWidth (sz 1.0)
                               PdfDraw.SetDash ([], 0.0)
                               PdfDraw.MoveTo (alignedXPt, yPdf underlineY)
                               PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf underlineY)
@@ -241,7 +261,7 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
                     if t.Strikethrough && totalWidthPt > 0.0 then
                         let strikeY = baselineY - t.FontSize * 0.28
                         [ PdfDraw.SetStrokeColor textColor
-                          PdfDraw.SetLineWidth (px 1.0)
+                          PdfDraw.SetLineWidth (sz 1.0)
                           PdfDraw.SetDash ([], 0.0)
                           PdfDraw.MoveTo (alignedXPt, yPdf strikeY)
                           PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf strikeY)
@@ -250,33 +270,137 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
                 glyphCmds @ underlineCmds @ strikeCmds
             | _ -> []
 
-/// Render a workbook page to PDF bytes. Currently emits a single page sized
-/// to `options.PageWidth/PageHeight` containing the whole used range; no
-/// pagination yet.
+/// Sum of column widths in an inclusive range.
+let private colSumPx (model: SpreadsheetModel) (startInc: int) (endInc: int) =
+    let mutable s = 0.0
+    for c in startInc .. endInc do
+        s <- s + (Map.tryFind c model.ColumnWidths |> Option.defaultValue 100.0)
+    s
+
+/// Sum of row heights in an inclusive range.
+let private rowSumPx (model: SpreadsheetModel) (startInc: int) (endInc: int) =
+    let mutable s = 0.0
+    for r in startInc .. endInc do
+        s <- s + (Map.tryFind r model.RowHeights |> Option.defaultValue 25.0)
+    s
+
+/// True when a paint item has degenerate (zero-size) geometry. With the
+/// print viewport's HeaderHeight / RowHeaderWidth both set to 0, the
+/// column-letter / row-number chrome items collapse to W=0 or H=0; they'd
+/// otherwise draw faint baseline marks at the top of every page.
+let private isDegenerate (item: PaintItem) : bool =
+    match item with
+    | FillRect (r, _) | StrokeRect (r, _, _) -> r.Width < 0.5 || r.Height < 0.5
+    | DrawText t -> t.Rect.Width < 0.5 || t.Rect.Height < 0.5
+    | GridLine (x1, y1, x2, y2, _, _) ->
+        // A real gridline has length in exactly one axis; only drop the
+        // genuinely zero-length point.
+        abs (x2 - x1) < 0.5 && abs (y2 - y1) < 0.5
+
+/// Shift every coordinate of a paint item by (dx, dy) CSS px. Used to map
+/// items from their absolute viewport position into page-local space.
+let private shiftItem (dx: float) (dy: float) (item: PaintItem) : PaintItem =
+    let shiftRect (r: Rect) = { r with X = r.X + dx; Y = r.Y + dy }
+    match item with
+    | FillRect (r, c) -> FillRect (shiftRect r, c)
+    | StrokeRect (r, c, w) -> StrokeRect (shiftRect r, c, w)
+    | DrawText t -> DrawText { t with Rect = shiftRect t.Rect }
+    | GridLine (x1, y1, x2, y2, c, w) -> GridLine (x1 + dx, y1 + dy, x2 + dx, y2 + dy, c, w)
+
+/// Build the paint items for a contiguous (rowStart..rowEnd × colStart..colEnd)
+/// slice of the model, shifted so the slice's top-left lands at page-local
+/// (offsetX, offsetY). Setting HeaderHeight / RowHeaderWidth to 0 in the
+/// viewport keeps the column-letter / row-number chrome out — we only want
+/// the body for print.
+let private sliceItems
+    (model: SpreadsheetModel)
+    (measurer: TextMeasurer)
+    (rowStart: int) (rowEnd: int)
+    (colStart: int) (colEnd: int)
+    (offsetX: float) (offsetY: float)
+    : PaintItem list =
+    let scrollX = colSumPx model 0 (colStart - 1)
+    let scrollY = rowSumPx model 0 (rowStart - 1)
+    let width = colSumPx model colStart colEnd + 1.0
+    let height = rowSumPx model rowStart rowEnd + 1.0
+    let viewport =
+        { ScrollX = scrollX
+          ScrollY = scrollY
+          Width = width
+          Height = height
+          HeaderHeight = 0.0
+          RowHeaderWidth = 0.0
+          Measurer = Some measurer }
+    buildPaintItems model viewport
+    |> List.filter (isDegenerate >> not)
+    |> List.map (shiftItem (offsetX - scrollX) (offsetY - scrollY))
+
+/// Emit ops for one of the (left, center, right) sections of a header or
+/// footer. Y is the PDF-space baseline (already accounting for the band).
+/// `xAlign` is one of `AlignLeft` / `AlignCenter` / `AlignRight`, applied
+/// against the printable-area span (leftPt → rightPt).
+let private sectionOps
+    (options: RenderOptions)
+    (faceByName: Map<string, PdfFont.TrueTypeFont>)
+    (faceResource: Map<string, string>)
+    (faceRemap: Map<string, Map<int, int>>)
+    (leftPt: float) (rightPt: float)
+    (text: string) (fontSizePt: float) (baselineYPt: float)
+    (xAlign: TextAlign) : PdfDraw.DrawOp list =
+    if String.IsNullOrEmpty text then [] else
+    match pickFace options None false false with
+    | None -> []
+    | Some primaryFace ->
+        match Map.tryFind primaryFace.FaceName faceByName with
+        | None -> []
+        | Some primaryTtf ->
+            let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback faceByName false text
+            let segWidthPt (ttf: PdfFont.TrueTypeFont) (s: string) =
+                float (PdfFont.getTextWidth ttf s) / float ttf.UnitsPerEm * fontSizePt
+            let segmentsWithWidth =
+                segments |> List.map (fun (face, s) -> face, s, segWidthPt (snd face) s)
+            let totalWidthPt = segmentsWithWidth |> List.sumBy (fun (_, _, w) -> w)
+            let startXPt =
+                match xAlign with
+                | AlignLeft -> leftPt
+                | AlignCenter -> leftPt + ((rightPt - leftPt) - totalWidthPt) / 2.0
+                | AlignRight -> rightPt - totalWidthPt
+            [ yield PdfDraw.BeginText
+              yield PdfDraw.SetFillColor PdfColor.black
+              let mutable cursorXPt = startXPt
+              for (face, s, w) in segmentsWithWidth do
+                  let faceName = (fst face).FaceName
+                  let _, ttf = face
+                  let remap = faceRemap.TryFind faceName |> Option.defaultValue Map.empty
+                  let hex = toRemappedHex ttf remap s
+                  yield PdfDraw.SetFont (faceName, fontSizePt)
+                  yield PdfDraw.TextMatrix (1.0, 0.0, 0.0, 1.0, cursorXPt, baselineYPt)
+                  yield PdfDraw.ShowTextHex hex
+                  cursorXPt <- cursorXPt + w
+              yield PdfDraw.EndText ]
+
+/// Render a workbook page to PDF bytes. Drives 2D pagination off the
+/// model's PageSetup: each page slice is built into a viewport, shifted
+/// onto the printable area (between the page margins) at the configured
+/// scale, with repeat rows / cols and headers / footers added per page.
 ///
-/// Embedding strategy: parse every face up-front to drive segmentation and
-/// width-measurement, then subset-embed each face using just the glyphs
-/// actually used by the page's text. Without subsetting a workbook that
-/// touches a few kanji would pull in ~14 MB of YuGothR / YuGothB / MS
-/// Gothic per CJK font — the resulting PDF balloons past 100 MB. The
-/// subset path produces ~30 KB embeds for the same content.
+/// Embedding strategy: parse every face up-front, walk every page's items
+/// to collect used glyph IDs, then subset-embed each face with just those
+/// glyphs. Without subsetting a workbook that touches a few kanji would
+/// pull in ~14 MB of YuGothR / YuGothB / MS Gothic per CJK font and the
+/// resulting PDF balloons past 100 MB. The subset path produces ~30 KB
+/// embeds for the same content.
 let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
     let builder = PdfDoc.create ()
 
-    // First pass: parse face data without embedding. We need TrueTypeFont
-    // values for segmentation (Cmap lookups), measurement (GlyphWidths),
-    // and to compute used-GID sets for subset embed.
     let parsed = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
     let parseFace (face: FontFace) =
         try parsed.[face.FaceName] <- PdfFont.parseTrueType face.Data
-        with _ -> ()  // unparseable face — skip silently rather than abort
+        with _ -> ()
     for face in options.Fonts do parseFace face
     for face in options.CjkFallback do parseFace face
-
     let parsedMap = parsed |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
 
-    // Measurer mirrors the renderer: walks the same segmentation so wrap
-    // widths agree with what we ultimately draw.
     let measurePdf (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool) : float =
         let approx () = float text.Length * 7.0
         match pickFace options fontName bold italic with
@@ -292,24 +416,69 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
                     float widthUnits / float ttf.UnitsPerEm * fontPt)
             | _ -> approx ()
 
-    let viewport = {
-        ScrollX = 0.0
-        ScrollY = 0.0
-        Width = options.PageWidth
-        Height = options.PageHeight
-        HeaderHeight = 22.0
-        RowHeaderWidth = 48.0
-        Measurer = Some measurePdf
-    }
+    // Compute pagination from PageSetup. Empty workbook → one blank page.
+    let pagination = Pagination.paginate model
+    let ps = model.PageSetup
+    let pageWidthPt = ps.PageWidth
+    let pageHeightPt = ps.PageHeight
+    let leftMarginPt = ps.Margins.Left * 72.0
+    let rightMarginPt = ps.Margins.Right * 72.0
+    let topMarginPt = ps.Margins.Top * 72.0
+    let bottomMarginPt = ps.Margins.Bottom * 72.0
+    let headerMarginPt = ps.Margins.Header * 72.0
+    let footerMarginPt = ps.Margins.Footer * 72.0
 
-    let pageWidthPt = px options.PageWidth
-    let pageHeightPt = px options.PageHeight
+    let totalPages = max 1 (List.length pagination.Pages)
+    let repeatColsWidthPx =
+        pagination.RepeatCols
+        |> Option.map (fun (a, b) -> colSumPx model a b)
+        |> Option.defaultValue 0.0
+    let repeatRowsHeightPx =
+        pagination.RepeatRows
+        |> Option.map (fun (a, b) -> rowSumPx model a b)
+        |> Option.defaultValue 0.0
 
-    let items = buildPaintItems model viewport
+    // Build every page's paint items up-front. We need them to drive font
+    // subsetting before we can emit ops.
+    let pageItems : PaintItem list array =
+        let pages = pagination.Pages
+        Array.init (max 1 (List.length pages)) (fun i ->
+            if i >= List.length pages then [] else
+            let slice = pages.[i]
+            // Body: rows × cols of the slice, offset by repeat band sizes.
+            let body =
+                sliceItems model measurePdf
+                    slice.RowStart slice.RowEnd
+                    slice.ColStart slice.ColEnd
+                    repeatColsWidthPx repeatRowsHeightPx
+            // Repeat-rows band (above body, full width): repeat rows × slice cols.
+            let repeatRows =
+                match pagination.RepeatRows with
+                | Some (rs, re) when re >= rs ->
+                    sliceItems model measurePdf
+                        rs re
+                        slice.ColStart slice.ColEnd
+                        repeatColsWidthPx 0.0
+                | _ -> []
+            // Repeat-cols band (left of body, full height): slice rows × repeat cols.
+            let repeatCols =
+                match pagination.RepeatCols with
+                | Some (cs, ce) when ce >= cs ->
+                    sliceItems model measurePdf
+                        slice.RowStart slice.RowEnd
+                        cs ce
+                        0.0 repeatRowsHeightPx
+                | _ -> []
+            // Repeat corner (top-left): repeat rows × repeat cols.
+            let repeatCorner =
+                match pagination.RepeatRows, pagination.RepeatCols with
+                | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs ->
+                    sliceItems model measurePdf rs re cs ce 0.0 0.0
+                | _ -> []
+            body @ repeatRows @ repeatCols @ repeatCorner)
 
-    // Collect used GIDs per face by replaying the same segmentation we'll
-    // use during op emission. The subset closes over composite-glyph refs
-    // itself; we only need the directly-referenced GIDs from cmap lookup.
+    // Collect used GIDs across every page's items, plus header / footer
+    // sections (so their glyphs land in the subset too).
     let usedGids = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<int>>()
     let recordGids (faceName: string) (ttf: PdfFont.TrueTypeFont) (text: string) =
         let set =
@@ -322,26 +491,55 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
         for ch in text do
             let gid = ttf.Cmap.TryFind (int ch) |> Option.defaultValue 0
             set.Add gid |> ignore
-    for item in items do
-        match item with
-        | DrawText t ->
-            match pickFace options t.FontName t.Bold t.Italic with
-            | Some primaryFace ->
-                match parsed.TryGetValue primaryFace.FaceName with
-                | true, primaryTtf ->
-                    let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback parsedMap t.Bold t.Text
-                    for (face, s) in segments do
-                        recordGids (fst face).FaceName (snd face) s
-                | _ -> ()
-            | None -> ()
-        | _ -> ()
+    let recordText (text: string) (bold: bool) =
+        match pickFace options None bold false with
+        | None -> ()
+        | Some primaryFace ->
+            match parsed.TryGetValue primaryFace.FaceName with
+            | true, primaryTtf ->
+                let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback parsedMap bold text
+                for (face, s) in segments do
+                    recordGids (fst face).FaceName (snd face) s
+            | _ -> ()
+    for items in pageItems do
+        for item in items do
+            match item with
+            | DrawText t ->
+                match pickFace options t.FontName t.Bold t.Italic with
+                | Some primaryFace ->
+                    match parsed.TryGetValue primaryFace.FaceName with
+                    | true, primaryTtf ->
+                        let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback parsedMap t.Bold t.Text
+                        for (face, s) in segments do
+                            recordGids (fst face).FaceName (snd face) s
+                    | _ -> ()
+                | None -> ()
+            | _ -> ()
 
-    // Subset-embed only the faces referenced by drawn text. Skipping
-    // unreferenced faces drops a non-CJK page from ~18 MB to ~250 KB by
-    // dropping the unused Cambria/Times/Verdana/CJK weights the runner
-    // optimistically loaded "just in case". Faces that the subsetter
-    // rejects (CFF, unusual layouts) fall back to a full embed so we
-    // still draw rather than show tofu.
+    // Build header/footer page contexts and pre-resolve all text so we
+    // can register its glyphs for subsetting before embedding fonts.
+    let resolvedHFs =
+        [ for pageIdx in 0 .. totalPages - 1 ->
+            let ctx : HeaderFooter.PageContext =
+                { PageNumber = pageIdx + 1
+                  TotalPages = totalPages
+                  SheetName = options.SheetName
+                  FileName = options.FileName
+                  FilePath = ""
+                  Now = DateTime.Now }
+            let header =
+                ps.HeaderFooter.OddHeader
+                |> Option.map (HeaderFooter.resolve ctx)
+            let footer =
+                ps.HeaderFooter.OddFooter
+                |> Option.map (HeaderFooter.resolve ctx)
+            header, footer ]
+    for (header, footer) in resolvedHFs do
+        for section in [ header; footer ] |> List.choose id do
+            recordText section.Left false
+            recordText section.Center false
+            recordText section.Right false
+
     let faceRemap = System.Collections.Generic.Dictionary<string, Map<int, int>>()
     let embedFace (face: FontFace) =
         match parsed.TryGetValue face.FaceName with
@@ -355,8 +553,6 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
             try
                 let remap = PdfDoc.loadFontBytesSubset builder face.FaceName face.Data used
                 if Map.isEmpty remap then
-                    // subsetCompact returned (data, empty) — likely CFF; fall
-                    // back to full embed so the face is at least usable.
                     PdfDoc.loadFontBytes builder face.FaceName face.Data |> ignore
                     faceRemap.[face.FaceName] <- Map.empty
                 else
@@ -369,11 +565,6 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
     for face in options.Fonts do embedFace face
     for face in options.CjkFallback do embedFace face
 
-    // Refresh TrueTypeFont references — subset embed swaps the embedded
-    // font's GlyphWidths/Cmap to the post-subset numbering. We keep the
-    // ORIGINAL parsed font for segmentation/measurement (subsetting doesn't
-    // alter glyph metrics for kept glyphs, just their indices) so the only
-    // place the remap matters is hex emission.
     let faceTtfMap = parsedMap
     let faceResourceMap =
         [ for face in options.Fonts @ options.CjkFallback do
@@ -383,15 +574,46 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
         |> Map.ofList
     let faceRemapMap = faceRemap |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
 
-    let ops = items |> List.collect (translateItem options faceTtfMap faceResourceMap faceRemapMap pageHeightPt)
-
-    // addPage's first font list controls which entries make it into the
-    // page's `/Font` resources dict — without it the SetFont (F#, …) ops we
-    // already emitted reference unknown resource names and the reader
-    // refuses to draw any text. Filter to faces that actually embedded.
     let loadedFaceNames =
         (options.Fonts @ options.CjkFallback)
         |> List.map (fun f -> f.FaceName)
         |> List.filter faceResourceMap.ContainsKey
-    PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames [] ops |> ignore
+
+    // Header/footer ops live in PDF coords directly (no scale), since the
+    // header band sits in the page margins outside the scaled content area.
+    let hfFontSizePt = 10.0
+    let printableLeftPt = leftMarginPt
+    let printableRightPt = pageWidthPt - rightMarginPt
+    let headerBaselineYPt = pageHeightPt - headerMarginPt - hfFontSizePt
+    let footerBaselineYPt = footerMarginPt
+    let renderSection (section: HeaderFooter.Section) (baselineYPt: float) =
+        sectionOps options faceTtfMap faceResourceMap faceRemapMap
+            printableLeftPt printableRightPt
+            section.Left hfFontSizePt baselineYPt AlignLeft
+        @ sectionOps options faceTtfMap faceResourceMap faceRemapMap
+            printableLeftPt printableRightPt
+            section.Center hfFontSizePt baselineYPt AlignCenter
+        @ sectionOps options faceTtfMap faceResourceMap faceRemapMap
+            printableLeftPt printableRightPt
+            section.Right hfFontSizePt baselineYPt AlignRight
+
+    // Emit one PDF page per page slice (or one blank page when the
+    // pagination is empty).
+    for pageIdx in 0 .. totalPages - 1 do
+        let items = pageItems.[pageIdx]
+        let placement =
+            { LeftPtOffset = leftMarginPt
+              TopPtOffset = topMarginPt
+              PageHeightPt = pageHeightPt
+              Scale = pagination.Scale }
+        let contentOps =
+            items |> List.collect (translateItem options faceTtfMap faceResourceMap faceRemapMap placement)
+        let header, footer = resolvedHFs.[pageIdx]
+        let headerOps =
+            header |> Option.map (fun s -> renderSection s headerBaselineYPt) |> Option.defaultValue []
+        let footerOps =
+            footer |> Option.map (fun s -> renderSection s footerBaselineYPt) |> Option.defaultValue []
+        let ops = contentOps @ headerOps @ footerOps
+        PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames [] ops |> ignore
+
     PdfDoc.toBytes builder

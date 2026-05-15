@@ -41,7 +41,7 @@ let private tryFace faceName family bold italic fileName : RedBat.Spreadsheet.Pd
             Data = File.ReadAllBytes path
         })
 
-let private pdfOptions (pageWidth: float) (pageHeight: float) : RedBat.Spreadsheet.Pdf.Render.RenderOptions =
+let private pdfOptions (sheetName: string) (fileName: string) : RedBat.Spreadsheet.Pdf.Render.RenderOptions =
     let faces =
         [
             tryFace "Calibri" "Calibri" false false "calibri.ttf"
@@ -93,8 +93,8 @@ let private pdfOptions (pageWidth: float) (pageHeight: float) : RedBat.Spreadshe
         DefaultFontFamily = "Calibri"
         Fonts = faces
         CjkFallback = cjkFallback
-        PageWidth = pageWidth
-        PageHeight = pageHeight
+        SheetName = sheetName
+        FileName = fileName
     }
 
 let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int) =
@@ -107,13 +107,10 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
         failwithf "Sheet index %d out of range (workbook has %d sheets)" sheetIndex workbook.Sheets.Length
     let sheet = workbook.Sheets.[sheetIndex]
     let model = ExcelNativeRunner.toModel sheet workbook
-
-    // Letter portrait at 96 DPI in CSS pixels (8.5 × 11 inch → 816 × 1056).
-    // Letter is the closest paper to what Excel print defaults look like.
-    let pageWidth = 816.0
-    let pageHeight = 1056.0
-
-    let pdfBytes = RedBat.Spreadsheet.Pdf.Render.toBytes (pdfOptions pageWidth pageHeight) model
+    // Page size + margins now live on model.PageSetup (defaulted to US
+    // Letter portrait when the source file didn't specify a pageSetup).
+    let opts = pdfOptions sheet.Name (Path.GetFileName inputPath)
+    let pdfBytes = RedBat.Spreadsheet.Pdf.Render.toBytes opts model
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, pdfBytes)
     printfn "spreadsheet pdf runner ok: %s [sheet=%s cells=%d] -> %s (%d bytes)"
