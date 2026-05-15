@@ -1,4 +1,4 @@
-module RedBat.Spreadsheet.Pdf
+module RedBat.Spreadsheet.Pdf.Render
 
 open System
 open RedBat.Spreadsheet.Model
