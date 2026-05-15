@@ -335,6 +335,83 @@ type Hyperlink = {
     IsInternal: bool
 }
 
+/// Print-related sheet metadata, parsed from <pageSetup>, <pageMargins>,
+/// <printOptions>, <headerFooter>, <rowBreaks>/<colBreaks>, and the
+/// workbook's _xlnm.Print_Area / _xlnm.Print_Titles defined names.
+
+type PrintOrientation =
+    | OrientationDefault
+    | OrientationPortrait
+    | OrientationLandscape
+
+/// `<pageMargins>` — all values in inches (matching OOXML's encoding).
+type PageMargins = {
+    Top: float
+    Bottom: float
+    Left: float
+    Right: float
+    Header: float
+    Footer: float
+}
+
+/// `<pageSetup>` plus `<sheetPr><pageSetUpPr fitToPage>`. PaperSize is
+/// OOXML's enum (1 = Letter, 9 = A4, …); None when unspecified.
+type PageSetup = {
+    PaperSize: int option
+    Orientation: PrintOrientation
+    /// `fitToWidth` / `fitToHeight` — only meaningful when FitToPage = true.
+    /// Default is 1/1 (fit to one page each way).
+    FitToWidth: int
+    FitToHeight: int
+    /// Manual percent scale (10..400); 100 = no scale. Ignored when
+    /// FitToPage = true.
+    Scale: int
+    /// `<pageSetUpPr fitToPage="1"/>`.
+    FitToPage: bool
+}
+
+/// `<printOptions>` — boolean flags that affect what gets printed.
+type PrintOptions = {
+    GridLines: bool
+    Headings: bool
+    HorizontalCentered: bool
+    VerticalCentered: bool
+}
+
+/// `<headerFooter>` — Excel's `&L`/`&C`/`&R` field-coded strings for each
+/// section. `differentOddEven` / `differentFirst` flag whether the even /
+/// first variants are honored.
+type HeaderFooter = {
+    OddHeader: string option
+    OddFooter: string option
+    EvenHeader: string option
+    EvenFooter: string option
+    FirstHeader: string option
+    FirstFooter: string option
+    DifferentOddEven: bool
+    DifferentFirst: bool
+}
+
+/// Per-sheet print metadata derived from the workbook's `_xlnm.*` defined
+/// names. `PrintArea` is a range like `$A$1:$F$20`; `PrintTitleRows` /
+/// `PrintTitleCols` come from a `_xlnm.Print_Titles` value such as
+/// `Sheet1!$1:$3,Sheet1!$A:$B` (either part may be missing).
+type WorksheetPrintNames = {
+    PrintArea: string option
+    PrintTitleRows: string option
+    PrintTitleCols: string option
+}
+
+let emptyPrintNames =
+    { PrintArea = None; PrintTitleRows = None; PrintTitleCols = None }
+
+let defaultPrintOptions =
+    { GridLines = false; Headings = false; HorizontalCentered = false; VerticalCentered = false }
+
+let defaultHeaderFooter =
+    { OddHeader = None; OddFooter = None; EvenHeader = None; EvenFooter = None
+      FirstHeader = None; FirstFooter = None; DifferentOddEven = false; DifferentFirst = false }
+
 type Worksheet = {
     Name: string
     Rows: Row list
@@ -349,6 +426,28 @@ type Worksheet = {
     Tables: TableDefinition list
     FrozenPane: FrozenPane option
     Hyperlinks: Hyperlink list
+    /// `<pageSetup>` + `<sheetPr><pageSetUpPr>`. None when neither is present.
+    PageSetup: PageSetup option
+    /// `<pageMargins>`. None when absent.
+    PageMargins: PageMargins option
+    /// `<printOptions>` (defaulted when absent).
+    PrintOptions: PrintOptions
+    /// `<headerFooter>` (defaulted when absent).
+    HeaderFooter: HeaderFooter
+    /// `<rowBreaks>` — 1-based row numbers where a page break sits AFTER
+    /// the given row.
+    RowBreaks: int list
+    /// `<colBreaks>` — 1-based column numbers where a break sits AFTER
+    /// the given column.
+    ColBreaks: int list
+    /// Print area, from `_xlnm.Print_Area` (sheet-qualifier stripped).
+    PrintArea: string option
+    /// Repeat-row rows, from the row part of `_xlnm.Print_Titles`
+    /// (e.g. `$1:$3`).
+    PrintTitleRows: string option
+    /// Repeat-col columns, from the col part of `_xlnm.Print_Titles`
+    /// (e.g. `$A:$B`).
+    PrintTitleCols: string option
 }
 
 type Workbook = {
@@ -657,7 +756,109 @@ module Xlsx =
                 if x <= 0 && y <= 0 then None
                 else Some { XSplit = x; YSplit = y })
 
-    let worksheet (name: string) (sheetXml: string) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) : Worksheet =
+    // ----- print-related parsers -----
+
+    let private parseFloatAttr (node: XmlNode) (name: string) : float option =
+        Xml.attr name node
+        |> Option.bind (fun s ->
+            match System.Double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+            | true, v -> Some v
+            | _ -> None)
+
+    let private parseIntAttr (node: XmlNode) (name: string) : int option =
+        Xml.attr name node
+        |> Option.bind (fun s ->
+            match System.Int32.TryParse s with
+            | true, v -> Some v
+            | _ -> None)
+
+    let private parseBoolAttr (node: XmlNode) (name: string) : bool =
+        match Xml.attr name node with
+        | Some "1" | Some "true" -> true
+        | _ -> false
+
+    /// `<pageMargins left right top bottom header footer/>` — all in inches.
+    let private pageMargins (sheet: XmlNode) : PageMargins option =
+        sElem "pageMargins" sheet
+        |> Option.map (fun m ->
+            let get a = parseFloatAttr m a |> Option.defaultValue 0.0
+            { Top = get "top"
+              Bottom = get "bottom"
+              Left = get "left"
+              Right = get "right"
+              Header = get "header"
+              Footer = get "footer" })
+
+    /// `<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>`.
+    let private fitToPageFlag (sheet: XmlNode) : bool =
+        sElem "sheetPr" sheet
+        |> Option.bind (sElem "pageSetUpPr")
+        |> Option.map (fun n -> parseBoolAttr n "fitToPage")
+        |> Option.defaultValue false
+
+    /// `<pageSetup paperSize orientation fitToWidth fitToHeight scale .../>`
+    /// plus the fitToPage flag from sheetPr.
+    let private pageSetup (sheet: XmlNode) : PageSetup option =
+        let elem = sElem "pageSetup" sheet
+        let fit = fitToPageFlag sheet
+        match elem, fit with
+        | None, false -> None
+        | _ ->
+            let n = elem
+            let orientation =
+                n |> Option.bind (Xml.attr "orientation") |> function
+                | Some "portrait" -> OrientationPortrait
+                | Some "landscape" -> OrientationLandscape
+                | _ -> OrientationDefault
+            let intOr fallback name = n |> Option.bind (fun e -> parseIntAttr e name) |> Option.defaultValue fallback
+            Some {
+                PaperSize = n |> Option.bind (fun e -> parseIntAttr e "paperSize")
+                Orientation = orientation
+                FitToWidth = intOr 1 "fitToWidth"
+                FitToHeight = intOr 1 "fitToHeight"
+                Scale = intOr 100 "scale"
+                FitToPage = fit
+            }
+
+    /// `<printOptions gridLines headings horizontalCentered verticalCentered/>`.
+    let private printOptions (sheet: XmlNode) : PrintOptions =
+        match sElem "printOptions" sheet with
+        | None -> defaultPrintOptions
+        | Some n ->
+            { GridLines = parseBoolAttr n "gridLines"
+              Headings = parseBoolAttr n "headings"
+              HorizontalCentered = parseBoolAttr n "horizontalCentered"
+              VerticalCentered = parseBoolAttr n "verticalCentered" }
+
+    /// `<headerFooter differentOddEven="1" differentFirst="1"><oddHeader>…</oddHeader>…</headerFooter>`.
+    let private headerFooter (sheet: XmlNode) : HeaderFooter =
+        match sElem "headerFooter" sheet with
+        | None -> defaultHeaderFooter
+        | Some hf ->
+            let part name = sElem name hf |> Option.bind Xml.text
+            { OddHeader = part "oddHeader"
+              OddFooter = part "oddFooter"
+              EvenHeader = part "evenHeader"
+              EvenFooter = part "evenFooter"
+              FirstHeader = part "firstHeader"
+              FirstFooter = part "firstFooter"
+              DifferentOddEven = parseBoolAttr hf "differentOddEven"
+              DifferentFirst = parseBoolAttr hf "differentFirst" }
+
+    /// `<rowBreaks count="N"><brk id="R" max="C" man="1"/>…</rowBreaks>`.
+    /// We only collect manual breaks (man="1"); automatic breaks that Excel
+    /// emitted are reconstructed by pagination on our side.
+    let private breaks (container: string) (sheet: XmlNode) : int list =
+        sElem container sheet
+        |> Option.map (fun node ->
+            Ns.descendantsNs "brk" node
+            |> List.choose (fun b ->
+                if parseBoolAttr b "man" then parseIntAttr b "id" else None)
+            |> List.filter (fun i -> i > 0)
+            |> List.sort)
+        |> Option.defaultValue []
+
+    let worksheet (name: string) (sheetXml: string) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
         let sheet = XmlDsl.parse sheetXml
         let sheetData = sElem "sheetData" sheet
 
@@ -690,6 +891,15 @@ module Xlsx =
             Tables = tables
             FrozenPane = frozenPane sheet
             Hyperlinks = hyperlinks resolveRel sheet
+            PageSetup = pageSetup sheet
+            PageMargins = pageMargins sheet
+            PrintOptions = printOptions sheet
+            HeaderFooter = headerFooter sheet
+            RowBreaks = breaks "rowBreaks" sheet
+            ColBreaks = breaks "colBreaks" sheet
+            PrintArea = printNames.PrintArea
+            PrintTitleRows = printNames.PrintTitleRows
+            PrintTitleCols = printNames.PrintTitleCols
         }
 
     /// Parse a column letter run (A, B, ..., AA) into a 1-based column index
@@ -1547,6 +1757,53 @@ module NamedRanges =
         |> Option.defaultValue []
         |> List.choose parseDefinedName
 
+    let private stripSheetQualifier (s: string) =
+        // 'Sheet One'!$A$1 / Sheet1!$A$1 — drop everything up to and
+        // including the '!'. (Sheet names can contain a comma; we don't
+        // handle that pathological case in print-titles splitting yet.)
+        match s.IndexOf '!' with
+        | -1 -> s
+        | i -> s.Substring(i + 1)
+
+    let private isRowsRef (s: string) =
+        // "$1:$3" — only digits, '$', ':'.
+        s.Length > 0
+        && s |> Seq.forall (fun c -> System.Char.IsDigit c || c = '$' || c = ':')
+
+    let private isColsRef (s: string) =
+        // "$A:$X" — only letters, '$', ':'.
+        s.Length > 0
+        && s |> Seq.forall (fun c -> System.Char.IsLetter c || c = '$' || c = ':')
+
+    /// Pull the print-related `_xlnm.*` defined names out of the workbook's
+    /// name list and group their values per sheet (by `localSheetId`, the
+    /// 0-based sheet index). Returns the rest of the names (regular user
+    /// names) and a per-sheet lookup. Other `_xlnm.*` built-ins
+    /// (`_FilterDatabase`, …) are dropped — they're Excel internals.
+    let splitPrintNames (names: NamedRange list) : NamedRange list * Map<int, WorksheetPrintNames> =
+        let mutable regular = []
+        let mutable perSheet : Map<int, WorksheetPrintNames> = Map.empty
+        let update idx upd =
+            let cur = Map.tryFind idx perSheet |> Option.defaultValue emptyPrintNames
+            perSheet <- Map.add idx (upd cur) perSheet
+        let parseScope (scope: string option) =
+            scope
+            |> Option.bind (fun s ->
+                match System.Int32.TryParse s with true, i -> Some i | _ -> None)
+        for nr in names do
+            match nr.Name, parseScope nr.Scope with
+            | "_xlnm.Print_Area", Some idx ->
+                update idx (fun w -> { w with PrintArea = Some (stripSheetQualifier nr.RefersTo) })
+            | "_xlnm.Print_Titles", Some idx ->
+                // Comma-separated rows part + cols part; either may be absent.
+                let parts = nr.RefersTo.Split(',') |> Array.map stripSheetQualifier
+                for p in parts do
+                    if isRowsRef p then update idx (fun w -> { w with PrintTitleRows = Some p })
+                    elif isColsRef p then update idx (fun w -> { w with PrintTitleCols = Some p })
+            | n, _ when n.StartsWith "_xlnm." -> ()  // other built-ins: drop
+            | _ -> regular <- nr :: regular
+        (List.rev regular, perSheet)
+
 // Charts parsing
 module Charts =
     let parseChartType (chartNode: XmlNode) : ChartType =
@@ -1733,13 +1990,17 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                 |> Option.map (XmlDsl.parse >> ConditionalFormats.parseDxfs themeColors)
                 |> Option.defaultValue [||]
 
-            let namedRanges = NamedRanges.parseNamedRanges wb
+            let allNamedRanges = NamedRanges.parseNamedRanges wb
+            let namedRanges, printNamesBySheet = NamedRanges.splitPrintNames allNamedRanges
 
             // Load all worksheets with advanced features
             let! worksheets =
                 sheetInfos
-                |> List.map (fun info ->
+                |> List.mapi (fun sheetIdx info ->
                     promise {
+                        let sheetPrintNames =
+                            Map.tryFind sheetIdx printNamesBySheet
+                            |> Option.defaultValue emptyPrintNames
                         let rel = Office.relById info.RelationshipId rels
                         match rel with
                         | Some r ->
@@ -1788,7 +2049,7 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                                 // Tables (header/banded styling) aren't wired
                                 // through the async loader — only the native
                                 // path consumes them today. Pass empty for now.
-                                return Some (Xlsx.worksheet info.Name xml comments condFormats dataVals charts pivots [] [] |> applyStyling styles)
+                                return Some (Xlsx.worksheet info.Name xml comments condFormats dataVals charts pivots [] [] sheetPrintNames |> applyStyling styles)
                             | None -> return None
                         | None -> return None
                     })
@@ -1962,7 +2223,8 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
             |> Option.map Xlsx.parseThemeAccents
             |> Option.defaultValue [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
 
-        let namedRanges = NamedRanges.parseNamedRanges wb
+        let allNamedRanges = NamedRanges.parseNamedRanges wb
+        let namedRanges, printNamesBySheet = NamedRanges.splitPrintNames allNamedRanges
 
         let loadSheetRels (sheetPath: string) : Relationship list =
             let lastSlash = sheetPath.LastIndexOf('/')
@@ -1985,7 +2247,10 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
 
         let worksheets =
             sheetInfos
-            |> List.choose (fun info ->
+            |> List.mapi (fun sheetIdx info ->
+                let sheetPrintNames =
+                    Map.tryFind sheetIdx printNamesBySheet
+                    |> Option.defaultValue emptyPrintNames
                 match Office.relById info.RelationshipId rels with
                 | Some r ->
                     let sheetPath = "xl/" + ZipInterop.normalizePath r.Target
@@ -2012,9 +2277,10 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
                                 |> Option.map CellComments.parseComments
                                 |> Option.defaultValue [])
                             |> Option.defaultValue []
-                        Some (Xlsx.worksheet info.Name xml comments condFormats dataVals [] [] tables sheetRels)
+                        Some (Xlsx.worksheet info.Name xml comments condFormats dataVals [] [] tables sheetRels sheetPrintNames)
                     | None -> None
                 | None -> None)
+            |> List.choose id
 
         let styledSheets = worksheets |> List.map (applyStyling styles)
 

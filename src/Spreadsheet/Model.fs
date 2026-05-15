@@ -197,6 +197,143 @@ type MergedCell = {
     EndCol: int
 }
 
+// ---------------------------------------------------------------------------
+// Print / page setup
+// ---------------------------------------------------------------------------
+
+type PrintOrientation =
+    | PortraitOrientation
+    | LandscapeOrientation
+
+/// Page margins, all in *inches* (matching how OOXML encodes them and how
+/// Excel exposes them to users; the PDF backend converts to points).
+type PageMargins = {
+    Top: float
+    Bottom: float
+    Left: float
+    Right: float
+    Header: float
+    Footer: float
+}
+
+/// Boolean print options from `<printOptions>`.
+type PrintOptions = {
+    /// Print gridlines under cell content.
+    GridLines: bool
+    /// Print row numbers and column letters as headings.
+    Headings: bool
+    /// Center the printed range horizontally on the page.
+    HorizontalCentered: bool
+    /// Center it vertically.
+    VerticalCentered: bool
+}
+
+/// Header / footer strings carry Excel's `&L &C &R` section markers plus
+/// field codes — `&P` = page number, `&N` = total pages, `&A` = sheet
+/// name, `&F` = file name, `&D` = date, `&T` = time, `&&` = literal `&`.
+/// The PDF backend substitutes these per page.
+type HeaderFooter = {
+    OddHeader: string option
+    OddFooter: string option
+    EvenHeader: string option
+    EvenFooter: string option
+    FirstHeader: string option
+    FirstFooter: string option
+    /// When true, EvenHeader/EvenFooter apply to even-numbered pages.
+    DifferentOddEven: bool
+    /// When true, FirstHeader/FirstFooter apply to the first page.
+    DifferentFirst: bool
+}
+
+/// Inclusive 0-indexed cell range. Used for print area and print titles.
+/// Distinct from `MergedCell` (same shape, different meaning) to keep the
+/// type system honest and avoid record-literal ambiguity.
+type CellRange = {
+    From: CellAddress
+    To: CellAddress
+}
+
+/// Per-sheet page setup. All fields have sensible defaults so a model
+/// without explicit setup still has a usable PageSetup record. Page
+/// dimensions are in points (1 pt = 1/72 inch).
+type PageSetup = {
+    PageWidth: float
+    PageHeight: float
+    Orientation: PrintOrientation
+    Margins: PageMargins
+    /// When `FitToPage` is true, the printed range is scaled to fit at
+    /// most `FitToWidth` × `FitToHeight` pages.
+    FitToPage: bool
+    FitToWidth: int
+    FitToHeight: int
+    /// Manual scale percent (10..400). Used when `FitToPage` is false.
+    Scale: int
+    Options: PrintOptions
+    HeaderFooter: HeaderFooter
+    /// Manual page breaks: 1-based row / column numbers; the break sits
+    /// *after* the given row / column. Empty when there are no manuals.
+    ManualRowBreaks: int list
+    ManualColBreaks: int list
+    /// 0-indexed inclusive range to print; None = print the whole used
+    /// range. From `_xlnm.Print_Area`.
+    PrintArea: CellRange option
+    /// Rows to repeat at the top of every page (inclusive, 0-indexed).
+    /// From the row part of `_xlnm.Print_Titles`. None = no repeat.
+    RepeatRows: (int * int) option
+    /// Columns to repeat on the left of every page (inclusive, 0-indexed).
+    /// From the col part of `_xlnm.Print_Titles`.
+    RepeatCols: (int * int) option
+}
+
+let defaultPageMargins = {
+    Top = 0.75; Bottom = 0.75; Left = 0.7; Right = 0.7
+    Header = 0.3; Footer = 0.3
+}
+
+let defaultPrintOptions = {
+    GridLines = false; Headings = false
+    HorizontalCentered = false; VerticalCentered = false
+}
+
+let defaultHeaderFooter = {
+    OddHeader = None; OddFooter = None
+    EvenHeader = None; EvenFooter = None
+    FirstHeader = None; FirstFooter = None
+    DifferentOddEven = false; DifferentFirst = false
+}
+
+let defaultPageSetup = {
+    // US Letter at 72 DPI = 612 × 792 pt.
+    PageWidth = 612.0
+    PageHeight = 792.0
+    Orientation = PortraitOrientation
+    Margins = defaultPageMargins
+    FitToPage = false
+    FitToWidth = 1
+    FitToHeight = 1
+    Scale = 100
+    Options = defaultPrintOptions
+    HeaderFooter = defaultHeaderFooter
+    ManualRowBreaks = []
+    ManualColBreaks = []
+    PrintArea = None
+    RepeatRows = None
+    RepeatCols = None
+}
+
+/// Standard OOXML paper-size codes → (width, height) in points (portrait).
+/// Defaults to Letter when the code is unknown.
+let paperSizePoints (code: int) : float * float =
+    match code with
+    | 1 -> 612.0, 792.0      // Letter   (8.5 × 11 in)
+    | 5 -> 612.0, 1008.0     // Legal    (8.5 × 14 in)
+    | 8 -> 841.68, 1190.55   // A3       (297 × 420 mm)
+    | 9 -> 595.27, 841.89    // A4       (210 × 297 mm)
+    | 11 -> 419.53, 595.27   // A5       (148 × 210 mm)
+    | 13 -> 728.5, 1031.81   // B5 ISO   (176 × 250 mm)
+    | 70 -> 595.27, 841.89   // A4 alt
+    | _ -> 612.0, 792.0      // unknown → Letter
+
 /// Spreadsheet model (forward declaration for Command type)
 type SpreadsheetModel = {
     /// Sparse cell storage - only non-empty cells
@@ -263,6 +400,10 @@ type SpreadsheetModel = {
     /// scrolls horizontally. Set from `<pane xSplit="N" state="frozen"/>`.
     /// Zero = no freeze.
     FrozenCols: int
+
+    /// Print / page setup for this sheet. Always present (defaults when
+    /// the source file has no explicit `<pageSetup>` etc.).
+    PageSetup: PageSetup
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -308,6 +449,7 @@ let createEmpty rowCount colCount = {
     RichRuns = Map.empty
     FrozenRows = 0
     FrozenCols = 0
+    PageSetup = defaultPageSetup
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")

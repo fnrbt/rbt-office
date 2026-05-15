@@ -783,6 +783,93 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             if Map.containsKey r explicitRows then acc
             else Map.add r defHeight acc) explicitRows
 
+    // Translate the sheet's Xlsx print metadata into the Model's PageSetup
+    // record. Where the source file leaves a field unspecified we fall back
+    // to the Model's defaults (US Letter, 0.75 inch margins, …).
+    let pageSetup : PageSetup =
+        let stripDollars (s: string) = s.Replace("$", "")
+        let parseRange (s: string) : CellRange option =
+            match (stripDollars s).Split(':') with
+            | [| a; b |] ->
+                match parseCellRef a, parseCellRef b with
+                | Some (r1, c1), Some (r2, c2) ->
+                    Some { From = { Row = min r1 r2; Col = min c1 c2 }
+                           To = { Row = max r1 r2; Col = max c1 c2 } }
+                | _ -> None
+            | [| a |] ->
+                parseCellRef (stripDollars a)
+                |> Option.map (fun (r, c) ->
+                    { From = { Row = r; Col = c }; To = { Row = r; Col = c } })
+            | _ -> None
+        // "$1:$3" → (0, 2). Row-only refs.
+        let parseRowRange (s: string) : (int * int) option =
+            match (stripDollars s).Split(':') with
+            | [| a; b |] ->
+                match Int32.TryParse a, Int32.TryParse b with
+                | (true, r1), (true, r2) -> Some (min r1 r2 - 1, max r1 r2 - 1)
+                | _ -> None
+            | _ -> None
+        // "$A:$B" → (0, 1). Col-only refs.
+        let parseColRange (s: string) : (int * int) option =
+            match (stripDollars s).Split(':') with
+            | [| a; b |] when a.Length > 0 && b.Length > 0
+                              && a |> Seq.forall Char.IsLetter
+                              && b |> Seq.forall Char.IsLetter ->
+                let c1 = columnIndex a
+                let c2 = columnIndex b
+                Some (min c1 c2, max c1 c2)
+            | _ -> None
+        let orientation =
+            match sheet.PageSetup with
+            | Some ps ->
+                match ps.Orientation with
+                | Xlsx.OrientationLandscape -> LandscapeOrientation
+                | _ -> PortraitOrientation
+            | None -> PortraitOrientation
+        let pageW, pageH =
+            // PaperSize gives a portrait-orientation pair; swap for landscape.
+            let baseW, baseH =
+                sheet.PageSetup
+                |> Option.bind (fun ps -> ps.PaperSize |> Option.map paperSizePoints)
+                |> Option.defaultValue (defaultPageSetup.PageWidth, defaultPageSetup.PageHeight)
+            if orientation = LandscapeOrientation then baseH, baseW else baseW, baseH
+        let margins =
+            sheet.PageMargins
+            |> Option.map (fun m ->
+                { Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right
+                  Header = m.Header; Footer = m.Footer } : PageMargins)
+            |> Option.defaultValue defaultPageMargins
+        let printOptions : PrintOptions =
+            { GridLines = sheet.PrintOptions.GridLines
+              Headings = sheet.PrintOptions.Headings
+              HorizontalCentered = sheet.PrintOptions.HorizontalCentered
+              VerticalCentered = sheet.PrintOptions.VerticalCentered }
+        let hf : HeaderFooter =
+            { OddHeader = sheet.HeaderFooter.OddHeader
+              OddFooter = sheet.HeaderFooter.OddFooter
+              EvenHeader = sheet.HeaderFooter.EvenHeader
+              EvenFooter = sheet.HeaderFooter.EvenFooter
+              FirstHeader = sheet.HeaderFooter.FirstHeader
+              FirstFooter = sheet.HeaderFooter.FirstFooter
+              DifferentOddEven = sheet.HeaderFooter.DifferentOddEven
+              DifferentFirst = sheet.HeaderFooter.DifferentFirst }
+        { defaultPageSetup with
+            PageWidth = pageW
+            PageHeight = pageH
+            Orientation = orientation
+            Margins = margins
+            FitToPage = sheet.PageSetup |> Option.map (fun ps -> ps.FitToPage) |> Option.defaultValue false
+            FitToWidth = sheet.PageSetup |> Option.map (fun ps -> ps.FitToWidth) |> Option.defaultValue 1
+            FitToHeight = sheet.PageSetup |> Option.map (fun ps -> ps.FitToHeight) |> Option.defaultValue 1
+            Scale = sheet.PageSetup |> Option.map (fun ps -> ps.Scale) |> Option.defaultValue 100
+            Options = printOptions
+            HeaderFooter = hf
+            ManualRowBreaks = sheet.RowBreaks
+            ManualColBreaks = sheet.ColBreaks
+            PrintArea = sheet.PrintArea |> Option.bind parseRange
+            RepeatRows = sheet.PrintTitleRows |> Option.bind parseRowRange
+            RepeatCols = sheet.PrintTitleCols |> Option.bind parseColRange }
+
     let baseModel = createEmpty excelRowCount excelColCount
     // Excel's printed/screenshot output never shows the active-cell border, so
     // park the selection off-grid for snapshot renders.
@@ -794,7 +881,8 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         MergedCells = mergedCells
         RichRuns = richRunsMap
         FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
-        FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0 }
+        FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
+        PageSetup = pageSetup }
 
 /// Build a RedBat.Spreadsheet workbook context from the parsed XLSX: every
 /// sheet's model plus the workbook's defined names. This is what the

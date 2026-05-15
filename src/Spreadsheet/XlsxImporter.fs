@@ -306,6 +306,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 MergedCells = mergedCellList
                 FrozenRows = 0
                 FrozenCols = 0
+                PageSetup = defaultPageSetup
             }
             recalculateAllFormulas None None importedModel
 
@@ -333,6 +334,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 MergedCells = []
                 FrozenRows = 0
                 FrozenCols = 0
+                PageSetup = defaultPageSetup
             }
 
     /// <summary>
@@ -376,6 +378,7 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
                     MergedCells = []
                     FrozenRows = 0
                     FrozenCols = 0
+                    PageSetup = defaultPageSetup
                 }
         }
 
