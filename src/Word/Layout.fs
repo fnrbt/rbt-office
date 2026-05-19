@@ -887,9 +887,18 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                                 else lineFitSafety
 
                             let overflows = currentX + fitWidth > currentLineEnd - fullFitSafety
+                            // For the strip-skip decision use the visible width (no trailing
+                            // whitespace), so a short word like "Float" that fits the strip
+                            // but whose trailing space pushes it over still gets placed.
+                            let visibleOverflows =
+                                let visibleLength = visibleTokenLength remaining
+                                if visibleLength > 0 && visibleLength < remaining.Length && not (remaining.Contains("\t")) then
+                                    let vw = measureRange displayRunText displayRunStyle consumed visibleLength
+                                    currentX + vw > currentLineEnd - fullFitSafety
+                                else overflows
                             if overflows && not currentSegments.IsEmpty then
                                 flushLine ()
-                            elif overflows && currentSegments.IsEmpty && not pendingIntervals.IsEmpty && not (remaining.Contains("\t")) then
+                            elif visibleOverflows && currentSegments.IsEmpty && not pendingIntervals.IsEmpty && not (remaining.Contains("\t")) then
                                 // Narrow strip at this y can't hold the next whole word, but
                                 // there's another strip at the same y — leave this one empty
                                 // and try the next, matching Word's wrap-around-float behavior
