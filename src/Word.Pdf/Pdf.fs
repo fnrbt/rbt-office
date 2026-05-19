@@ -220,19 +220,27 @@ let private createContextMeasurer (textContext: TextContext) : WordCanvasLayout.
             value
 
 let private createContextRangeMeasurer (textContext: TextContext) : WordCanvasLayout.TextRangeMeasurer =
-    let cache = System.Collections.Generic.Dictionary<string, float>()
+    // Match the browser renderer (Renderer.fs uses rangeMeasurerFromTextMeasurer)
+    // and our own PDF text painter: measure substrings by shaping them in
+    // isolation, not by indexing into the full text's shape.
+    //
+    // The PDF render path (embeddedTextOps) always shapes the segment text
+    // standalone and uses that TotalAdvance to size the text matrix. If
+    // measureRange instead returned in-string advances (via Engine.measureRange
+    // on a ShapedText of the full run text), Layout would size a segment with
+    // kerning context, the PDF renderer would shape the same substring without
+    // it, and the horizontalScale (= layoutWidth / standaloneShape.TotalAdvance)
+    // would squeeze or stretch the glyphs to fill the layout-assigned width.
+    // Visible drift is small for word-boundary breaks (no cross-character kern
+    // at spaces) but real for mid-word splits.  Aligning Layout's measurement
+    // to the standalone-substring shape keeps horizontalScale = 1.0 on every
+    // segment and removes the artifact.
+    let measureText = createContextMeasurer textContext
     fun text style start length ->
-        let key = textStyleKey style + "|" + string start + "|" + string length + "|" + text
-        match cache.TryGetValue key with
-        | true, value -> value
-        | false, _ ->
-            if cache.Count > textCacheLimit then cache.Clear()
-            let value =
-                match shapeTextCached textContext text style with
-                | Some (_, shapedText) -> Text.Engine.measureRange shapedText start length
-                | None -> 0.0
-            cache.[key] <- value
-            value
+        let startIndex = max 0 (min text.Length start)
+        let endIndex = max startIndex (min text.Length (start + length))
+        if endIndex = startIndex then 0.0
+        else measureText (text.Substring(startIndex, endIndex - startIndex)) style
 
 let private controlWhitespaceAt (text: string) index =
     if index < 0 || index >= text.Length then false
