@@ -90,8 +90,23 @@ let private resolveNamedStyle (styles: Map<(string * string), NamedStyle>) style
                 | _ -> Some style
     resolve Set.empty styleId
 
+let private defaultParagraphStyleId (styles: Map<(string * string), NamedStyle>) =
+    // Word treats the styles.xml paragraph style marked w:default="1" (usually
+    // "Normal") as the implicit style for any paragraph that doesn't set its
+    // own pStyle.  Without this fallback, body paragraphs miss the Normal
+    // style's line-spacing / indent / spacing-after values and accumulate
+    // pixel drift across the page.
+    styles
+    |> Map.toSeq
+    |> Seq.tryPick (fun ((styleType, styleId), named) ->
+        if styleType = "paragraph" && named.IsDefault then Some styleId else None)
+
 let private applyNamedParagraphStyle (styles: Map<(string * string), NamedStyle>) (metadata: BlockMetadata) (paragraphStyle: ParagraphStyle) =
-    match metadata.Style |> Option.bind (resolveNamedStyle styles "paragraph") with
+    let effectiveStyleId =
+        match metadata.Style with
+        | Some _ as explicit -> explicit
+        | None -> defaultParagraphStyleId styles
+    match effectiveStyleId |> Option.bind (resolveNamedStyle styles "paragraph") with
     | None -> paragraphStyle
     | Some named ->
         { paragraphStyle with

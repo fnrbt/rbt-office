@@ -616,6 +616,39 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                         let clippedEndCap = if abs (y2 - segment.Y2) < borderJoinEpsilon then endCap else 0.0
                         commands <- commands @ strokeTableBorderCommands segment.Stroke.Color segment.Stroke.Width segment.Stroke.Style segment.X1 y1 segment.X2 y2 clippedStartCap clippedEndCap)
 
+            // Row-level tblPrEx override (BordersOverride): paint the row's
+            // table-outer borders at the row's outer bounding box, OUTSIDE
+            // the cells.  Coexists with cell tcBorders inside, matching Word
+            // when a row's tblPrEx declares an outer frame distinct from
+            // per-cell borders.  Only triggers when cellSpacing > 0 so the
+            // outer position is geometrically distinct from cell edges.  The
+            // outer box wraps the *cells* of this row, not the full grid:
+            // gridBefore/gridAfter phantoms are outside this row's frame.
+            match row.Source.BordersOverride with
+            | None -> ()
+            | Some overrideBorders ->
+                if cellSpacing > 0.0 && not cells.IsEmpty then
+                    let firstCell = cells |> List.head
+                    let lastCell = cells |> List.last
+                    let outerLeft = firstCell.X - cellSpacing
+                    let outerRight = lastCell.X + lastCell.Width + cellSpacing
+                    let outerTop = currentY
+                    let outerBottom = currentY + rowHeight
+                    let paintOuterBorder (border: TableBorder option) x1 y1 x2 y2 =
+                        match border with
+                        | None -> ()
+                        | Some b ->
+                            match b.Style |> Option.map (fun s -> s.ToLowerInvariant()) with
+                            | Some "nil" | Some "none" -> ()
+                            | _ ->
+                                let width = b.Width |> Option.defaultValue 0.5
+                                let color = b.Color |> Option.defaultValue "#000000"
+                                commands <- commands @ strokeTableBorderCommands color width b.Style x1 y1 x2 y2 0.0 0.0
+                    paintOuterBorder overrideBorders.Top outerLeft outerTop outerRight outerTop
+                    paintOuterBorder overrideBorders.Bottom outerLeft outerBottom outerRight outerBottom
+                    paintOuterBorder overrideBorders.Left outerLeft outerTop outerLeft outerBottom
+                    paintOuterBorder overrideBorders.Right outerRight outerTop outerRight outerBottom
+
         let headerRows = resolvedTable.HeaderRows
         let rows = resolvedTable.BodyRows
 

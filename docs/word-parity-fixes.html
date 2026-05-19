@@ -153,6 +153,74 @@
     <tbody>
       <tr>
         <td>
+          <strong>Default paragraph style applied when <code>w:pStyle</code> is absent</strong>
+          <span class="meta">Repro: <code>docx4j-tables.docx</code> page 2 (and every body paragraph in any docx whose styles.xml declares a non-trivial Normal style)</span>
+          <span class="meta">Real fixture class: documents where styles.xml's default paragraph style (<code>&lt;w:style w:default="1" w:styleId="Normal"&gt;</code>) carries explicit <code>w:spacing</code> / <code>w:line</code> / <code>w:ind</code> values that should apply to <em>every</em> paragraph &mdash; including ones without their own <code>w:pStyle</code> element.</span>
+          <span class="meta">Paths checked: PDF backend (heading-cambria-font-wrap and docx4j-tables).</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/docx4j-tables-page2-default-style-word.png" style="--w:1191px; --x:40px; --y:200px; --s:0.55" alt="Word reference page 2">
+          </div>
+          <div class="caption">Word renders the Headers table and other page-2 tables with 14 rows of neat single-line text. The Normal style's <code>w:spacing w:lineRule="auto" w:line="276"</code> (1.15&times; multiplier) applies to all body paragraphs.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/docx4j-tables-page2-default-style-after.png" style="--w:1190px; --x:40px; --y:200px; --s:0.55" alt="After default-style fallback fix">
+          </div>
+          <div class="caption">After: <code>WordStyles.applyNamedParagraphStyle</code> looks up the styles map's <code>IsDefault=true</code> paragraph style when <code>metadata.Style</code> is None, instead of returning the base style unchanged. Body paragraphs now pick up Normal's <code>LineSpacing=1.15</code> and all its other defaults, giving Word's line pitch (31 px vs ours-pre-fix 29 px per body line at 144 DPI). Whole-page ink-XOR drops <code>60.94% &rarr; 16.24%</code> &mdash; the biggest single-fix improvement of the session. Page 1: <code>46.93% &rarr; 39.77%</code>. Page 3: <code>87.46% &rarr; 80.28%</code>. <code>heading-cambria-font-wrap</code> repro: <code>94.75% &rarr; 85.28%</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/docx4j-tables-page2-default-style-before.png" style="--w:1190px; --x:40px; --y:200px; --s:0.55" alt="Before default-style fallback fix">
+          </div>
+          <div class="caption">Before: <code>applyNamedParagraphStyle</code> only matched when <code>metadata.Style</code> was <code>Some</code>. Body paragraphs without an explicit <code>w:pStyle</code> got the in-code <code>normal</code> default (<code>LineSpacing=None</code>), then fell through to <code>wordLineHeight</code>'s single-line-spacing branch (<code>fontSize &times; 1.0 &times; 1.316</code> = 19.3 canvas px), instead of Word's 1.15-multiplied 20.7 canvas px. Each body line was ~2 px shorter than Word's, accumulating into the y-shift visible across the whole page.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>src/Word/WordStyles.fs</code>, before <code>applyNamedParagraphStyle</code> looks up <code>metadata.Style</code>, fall back to the styles map's <code>IsDefault=true</code> paragraph style (the one marked <code>w:default="1"</code> in styles.xml, almost always "Normal"). The Word spec treats this style as the implicit style for any paragraph without its own <code>pStyle</code>; the import path was silently skipping it.</p>
+          <ul>
+            <li>Single targeted addition: <code>defaultParagraphStyleId</code> picks the first <code>NamedStyle</code> with <code>IsDefault=true</code> in the paragraph style type; <code>applyNamedParagraphStyle</code> uses it when <code>metadata.Style</code> is <code>None</code>.</li>
+            <li>Regression guard: all float repros unchanged (they use heading or no body text); <code>two-tables-border-position</code> and <code>table-valign-row-height</code> unchanged; <code>table-grid-dense-row-pitch</code> moves <code>67.61% &rarr; 66.87%</code> (slight improvement).</li>
+            <li>The fix is per-paragraph, not per-document &mdash; if a docx's default paragraph style has no <code>spacing</code>, behavior is unchanged.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Compound table-outer borders coexist with cell tcBorders (tblPrEx row override)</strong>
+          <span class="meta">Repro: <code>docx4j-tables.docx</code> page 3 "Grid After/Grid Before" table bottom row</span>
+          <span class="meta">Real fixture class: rows whose <code>&lt;w:trPr&gt;&lt;w:tblPrEx&gt;</code> declares both <code>tblBorders</code> (outer frame style, e.g. <code>triple</code>) and <code>tblCellSpacing</code>, with cells inside that have their own <code>tcBorders</code> (e.g. <code>double</code>). Word paints both as parallel frames separated by the cellSpacing band.</span>
+          <span class="meta">Paths checked: PDF backend (<code>tableBorderCommandsCore</code> path).</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/docx4j-tables-grid-before-after-word.png" style="--w:1191px; --x:60px; --y:280px; --s:0.55" alt="Word reference: outer triple frame around inner double cells">
+          </div>
+          <div class="caption">Word renders the bottom row with each cell carrying its own double-line border AND an additional triple-line frame wrapping all the cells, separated by the row's <code>tblCellSpacing</code> band.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/docx4j-tables-grid-before-after-pdf-after.png" style="--w:1190px; --x:60px; --y:280px; --s:0.55" alt="After compound-border fix">
+          </div>
+          <div class="caption">After: <code>tableBorderCommandsCore</code> in <code>Paint.fs</code> emits four additional <code>strokeTableBorderCommands</code> for the row's <code>BordersOverride</code> at the cells' outer bounding box (first cell.X - cellSpacing on the left, last cell.X + Width + cellSpacing on the right). The cell tcBorders paint inside as before; the outer frame is a separate paint pass at the row's outer extent. Only fires when <code>cellSpacing &gt; 0</code> so cells are geometrically inside the outer frame.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/docx4j-tables-grid-before-after-pdf-before.png" style="--w:1190px; --x:60px; --y:280px; --s:0.55" alt="Before compound-border fix">
+          </div>
+          <div class="caption">Before: only the cells' tcBorders were painted &mdash; the row's <code>BordersOverride</code> (parsed earlier as infrastructure) had no rendering path. The cell tcBorders won via <code>cellPrintBordersWithTableFallback</code> at edge cells (cell border &gt; nothing), so the row's outer triple frame was silently dropped.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> for each row with <code>row.Source.BordersOverride = Some override</code> AND <code>cellSpacing &gt; 0</code>, paint the four outer-frame border lines (Top, Bottom, Left, Right of the override) at the row's outer bounding box &mdash; outside the cells. The cell tcBorders continue to paint at the cell edges inside the frame.</p>
+          <ul>
+            <li>Outer bounding box uses the row's <em>cells'</em> extent (first cell.X - cellSpacing to last cell.X + Width + cellSpacing), not the full <code>tblGrid</code> extent &mdash; matches Word for rows with <code>gridBefore</code>/<code>gridAfter</code> that intentionally start partway through the grid.</li>
+            <li>Only patches the <code>tableBorderCommandsCore</code> path (used for tables with empty cells like Grid Before/After); <code>tableFragmentPaintCommands</code> path doesn't reach this fixture because <code>canonicalTableYFromLayouts</code> returns <code>None</code> for tables with no content layouts.</li>
+            <li>Regression guard: float repros, other table repros, and docx4j pages 1-2 ink-XOR unchanged.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Anchor-extension skipped for paragraph/line-relative posV floats</strong>
           <span class="meta">Repro: <code>tests/repros/word/float-image-paragraph-posv.docx</code></span>
           <span class="meta">Generator: <code>tools/word-parity/create-float-repros.py</code> (<code>build_body_relative_posv_repro</code>)</span>
