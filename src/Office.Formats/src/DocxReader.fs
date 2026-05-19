@@ -258,6 +258,11 @@ and TableRow = {
     PaddingRight: string option
     PaddingBottom: string option
     PaddingLeft: string option
+    GridBefore: int option
+    GridAfter: int option
+    WidthBefore: string option
+    WidthAfter: string option
+    BordersOverride: CellBorders option
 }
 and TableCell = {
     Paragraphs: Paragraph list
@@ -1190,13 +1195,30 @@ module Docx =
             wElem "trPr" trNode
             |> Option.bind (onOff "cantSplit")
             |> Option.map not
+        let tblPrEx = wElem "tblPrEx" trNode
         let cellSpacing =
             wElem "trPr" trNode
             |> Option.bind (wElem "tblCellSpacing")
             |> Option.bind (attr "w")
+            |> Option.orElseWith (fun () ->
+                tblPrEx
+                |> Option.bind (wElem "tblCellSpacing")
+                |> Option.bind (attr "w"))
         let rowMargin name =
-            wElem "tblPrEx" trNode
+            tblPrEx
             |> Option.bind (wElem "tblCellMar")
+            |> Option.bind (wElem name)
+            |> Option.bind (attr "w")
+        let bordersOverride =
+            tblPrEx |> Option.bind (bordersChild "tblBorders")
+        let trPr = wElem "trPr" trNode
+        let intOpt name =
+            trPr
+            |> Option.bind (wElem name)
+            |> Option.bind (attr "val")
+            |> Option.bind (fun s -> match System.Int32.TryParse(s) with | true, v -> Some v | _ -> None)
+        let widthOpt name =
+            trPr
             |> Option.bind (wElem name)
             |> Option.bind (attr "w")
         {
@@ -1210,6 +1232,11 @@ module Docx =
             PaddingRight = rowMargin "right"
             PaddingBottom = rowMargin "bottom"
             PaddingLeft = rowMargin "left"
+            GridBefore = intOpt "gridBefore"
+            GridAfter = intOpt "gridAfter"
+            WidthBefore = widthOpt "wBefore"
+            WidthAfter = widthOpt "wAfter"
+            BordersOverride = bordersOverride
         }
 
     let table (tblNode: XmlNode) : Table =

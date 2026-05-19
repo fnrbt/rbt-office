@@ -816,7 +816,7 @@ module Table =
     let cellSpan (cell: TableCell) = max 1 cell.ColSpan
 
     let positionedCells (row: TableRow) =
-        let mutable currentColumn = 0
+        let mutable currentColumn = max 0 row.GridBefore
         row.Cells
         |> List.map (fun cell ->
             let span = cellSpan cell
@@ -839,10 +839,12 @@ module Table =
         |> Option.defaultValue (0.0, 0.0)
 
     let rowColumnCount (row: TableRow) =
-        positionedCells row
-        |> List.tryLast
-        |> Option.map (fun positioned -> positioned.StartColumn + positioned.Span)
-        |> Option.defaultValue 0
+        let endOfCells =
+            positionedCells row
+            |> List.tryLast
+            |> Option.map (fun positioned -> positioned.StartColumn + positioned.Span)
+            |> Option.defaultValue (max 0 row.GridBefore)
+        endOfCells + (max 0 row.GridAfter)
 
     let columnCount (table: TableBlock) =
         table.Rows
@@ -1163,10 +1165,21 @@ module Table =
                     for lowerIndex in 0 .. mutableRows.[lowerRowIndex].Cells.Length - 1 do
                         let lower = mutableRows.[lowerRowIndex].Cells.[lowerIndex]
                         if overlaps upper.StartColumn upper.ColSpan lower.StartColumn lower.ColSpan then
+                            // Only None-out a side when the two cells share the
+                            // exact same column range.  For partial overlap
+                            // (one cell extends beyond the other — common with
+                            // gridBefore/gridAfter offsets), keep both: the
+                            // protruding portion still needs a border, and
+                            // painting both at the shared y is visually
+                            // identical to painting just one.
+                            let lowerSpansSame = upper.StartColumn = lower.StartColumn && upper.ColSpan = lower.ColSpan
                             let currentUpper = mutableRows.[rowIndex].Cells.[upperIndex]
                             let currentLower = mutableRows.[lowerRowIndex].Cells.[lowerIndex]
                             let winner, lowerWins = resolveBorderConflictWithWinner currentUpper.Borders.Bottom currentLower.Borders.Top
-                            if lowerWins then
+                            if not lowerSpansSame then
+                                // Partial overlap: keep both borders intact.
+                                ()
+                            elif lowerWins then
                                 setCellBorders rowIndex upperIndex { currentUpper.Borders with Bottom = None; InsideH = None; InsideV = None } mutableRows
                                 setCellBorders lowerRowIndex lowerIndex { currentLower.Borders with Top = winner; InsideH = None; InsideV = None } mutableRows
                             else
@@ -1191,12 +1204,13 @@ module Table =
         rows
         |> List.iteri (fun rowIndex row ->
             let resolvedCells = ResizeArray<ResolvedCell>()
+            let effectiveTableBorders = row.BordersOverride |> Option.orElse table.Borders
 
             positionedCells row
             |> List.iteri (fun sourceCellIndex positioned ->
                 let cell = positioned.Cell
                 let borders =
-                    cellPrintBordersWithTableFallback table.Borders rowIndex rowCount columns positioned cell
+                    cellPrintBordersWithTableFallback effectiveTableBorders rowIndex rowCount columns positioned cell
                     |> suppressEmptyVerticalMergeRestartTopBorder rowIndex cell
                 match cell.VerticalMerge with
                 | Some ContinueMerge ->

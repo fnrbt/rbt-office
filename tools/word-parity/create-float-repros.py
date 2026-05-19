@@ -407,7 +407,7 @@ def build_body_relative_posv_repro() -> tuple[str, str, list]:
         pos_h_emu=pos_h_emu,
         pos_v_emu=pos_v_emu,
         wrap="wrapSquare",
-        relative_from_h="paragraph",
+        relative_from_h="column",  # "paragraph" is NOT a valid posH relativeFrom in OOXML
         relative_from_v="paragraph",
     )
 
@@ -443,9 +443,7 @@ def main():
         build_wrap_square_repro(),
         build_wrap_top_and_bottom_repro(),
         build_behind_doc_repro(),
-        # build_body_relative_posv_repro(),  # Word VBS chokes on this docx for
-        # reasons that aren't obvious — Word opens it but the print-to-PDF task
-        # exits without creating the file. Re-enable when a workaround exists.
+        build_body_relative_posv_repro(),
     ]
     for name, body, images in repros:
         path = out_dir / name

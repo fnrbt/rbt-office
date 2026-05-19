@@ -153,6 +153,79 @@
     <tbody>
       <tr>
         <td>
+          <strong>Anchor-extension skipped for paragraph/line-relative posV floats</strong>
+          <span class="meta">Repro: <code>tests/repros/word/float-image-paragraph-posv.docx</code></span>
+          <span class="meta">Generator: <code>tools/word-parity/create-float-repros.py</code> (<code>build_body_relative_posv_repro</code>)</span>
+          <span class="meta">Real fixture class: anchored <code>wp:anchor</code> floats with <code>&lt;wp:positionV relativeFrom="paragraph"&gt;&lt;wp:posOffset&gt;457200&lt;/wp:posOffset&gt;</code> (0.5") whose vertical position is computed relative to the containing paragraph's own y, not the page top.</span>
+          <span class="meta">Paths checked: PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/float-image-paragraph-posv-word.png" style="--w:1224px; --x:40px; --y:60px; --s:0.55" alt="Word reference paragraph-relative posV float">
+          </div>
+          <div class="caption">Word lays out the first two body lines at full width, places the image starting 0.5" below the paragraph top, and only wraps subsequent lines around the image. The image is treated as a strict obstacle at its literal posV offset.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/float-image-paragraph-posv-pdf-after.png" style="--w:1224px; --x:40px; --y:60px; --s:0.55" alt="After paragraph-relative posV fix">
+          </div>
+          <div class="caption">After: <code>computeAnchorExtendedObstacles</code> short-circuits the upward anchor extension when the float's <code>PositionVRelativeFrom</code> is body-relative (<code>paragraph</code>, <code>line</code>, etc.). The image's obstacle stays at its computed paragraph-relative y (=<code>contentY + positionY</code>), so the first two lines flow full-width above it and the body wraps starting at the line that physically overlaps the image &mdash; matching Word exactly. Whole-page ink-XOR drops <code>48.03% &rarr; 40.31%</code> (-7.7pp), residual is glyph-shaping drift shared with the other float repros.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/float-image-paragraph-posv-pdf-before.png" style="--w:1224px; --x:40px; --y:60px; --s:0.55" alt="Before paragraph-relative posV fix">
+          </div>
+          <div class="caption">Before: <code>computeAnchorExtendedObstacles</code> extended every wrap-square float's obstacle top up to the first body line that overlapped its full vertical span, regardless of how the float's posV was computed. For paragraph-relative posV that pulled the obstacle top up to the paragraph's first line, wrapping the body around the image starting at line 1 instead of leaving the leading lines full-width.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> exempt paragraph/line-relative posV floats from the upward anchor extension in <code>computeAnchorExtendedObstacles</code> (<code>src/Word/Layout.fs</code>). Their posV is already paragraph-anchored; the literal obstacle is the right wrap shape.</p>
+          <ul>
+            <li>The extension still fires for page-relative posV (the wrap-square fixture row above) and never fires for <code>wrapTopAndBottom</code> (separate branch).</li>
+            <li>Side fix: the repro generator (<code>tools/word-parity/create-float-repros.py</code>) previously used <code>relativeFrom="paragraph"</code> on <em>both</em> posH and posV, but <code>paragraph</code> is not a valid posH value in OOXML &mdash; Word silently failed to print the docx. Switched posH to <code>column</code> so Word VBS can render the reference PDF.</li>
+            <li>Regression guard: <code>wrap-square / wrap-top-bottom / behind-doc / docx4j-tables pages 1-3</code> ink-XOR unchanged after the fix.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Table row <code>w:gridBefore</code> / <code>w:gridAfter</code> indented and trailing-empty rows</strong>
+          <span class="meta">Repro: <code>docx4j-tables.docx</code> page 3 (<code>Indent</code> table, <code>Grid After/Grid Before</code> table)</span>
+          <span class="meta">Real fixture class: tables where rows declare row-level <code>&lt;w:trPr&gt;&lt;w:gridBefore w:val="N"/&gt;&lt;w:wBefore w:w="X"/&gt;&lt;/w:trPr&gt;</code> (and the symmetric <code>gridAfter</code>/<code>wAfter</code>) to leave the first or last N grid columns of the table empty for that row only &mdash; the brick/staircase patterns Word documents use to demonstrate variable row indents.</span>
+          <span class="meta">Paths checked: PDF backend (Fable browser path mirrors via <code>Docx.fs</code>).</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/docx4j-tables-grid-before-after-word.png" style="--w:1191px; --x:60px; --y:280px; --s:0.55" alt="Word reference: Indent and Grid Before/After tables with offset rows">
+          </div>
+          <div class="caption">Word renders the <code>Indent</code> table as a brick pattern: the first row starts at column 0, the next is shifted right by one grid column, the next by two, etc., with the trailing grid columns left empty. The <code>Grid After/Grid Before</code> table similarly stair-steps cell start/end columns.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/docx4j-tables-grid-before-after-pdf-after.png" style="--w:1190px; --x:60px; --y:280px; --s:0.55" alt="After gridBefore/gridAfter support">
+          </div>
+          <div class="caption">After: <code>DocxReader</code> parses <code>w:gridBefore</code>/<code>w:gridAfter</code> (with optional <code>w:wBefore</code>/<code>w:wAfter</code>) from each row's <code>w:trPr</code>; <code>TableRow</code> carries them; <code>WordLayout.positionedCells</code> starts column numbering at <code>row.GridBefore</code>, and <code>rowColumnCount</code> adds <code>row.GridAfter</code> so the table-wide column count includes the trailing phantom columns. The cells now occupy the correct slice of the <code>tblGrid</code>, reproducing Word's brick/staircase pattern. Whole-page-3 ink-XOR drops <code>87.92% &rarr; 87.25%</code> &mdash; only ~0.7pp on the metric because the ink mass moves rather than appears/disappears, but the structural diff is visible at a glance.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/docx4j-tables-grid-before-after-pdf-before.png" style="--w:1190px; --x:60px; --y:280px; --s:0.55" alt="Before gridBefore/gridAfter support">
+          </div>
+          <div class="caption">Before: row-level <code>gridBefore</code>/<code>gridAfter</code> elements were dropped on import (no codepath touched them). Every row in the <code>Indent</code> table laid out its cells starting at column 0 with equal widths derived from <code>tblGrid</code>, producing a uniform 6-column grid instead of the staircase. The <code>Grid After/Grid Before</code> table similarly lost its row offsets.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> end-to-end plumbing for two OOXML row attributes the import path was silently ignoring.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code>: read <code>w:gridBefore</code>/<code>w:gridAfter</code> (<code>w:val</code>) and <code>w:wBefore</code>/<code>w:wAfter</code> (<code>w:w</code> in twips) inside each row's <code>w:trPr</code>; add <code>GridBefore</code>/<code>GridAfter</code>/<code>WidthBefore</code>/<code>WidthAfter</code> fields on <code>TableRow</code>.</li>
+            <li><code>src/Word/Document.fs</code>: extend the layout-side <code>TableRow</code> record with <code>GridBefore: int</code>, <code>GridAfter: int</code>, <code>WidthBefore: float option</code>, <code>WidthAfter: float option</code>.</li>
+            <li><code>tools/native-runner/Program.fs</code> + <code>src/Word/Docx.fs</code> (Fable JS import): plumb the new values from the reader / browser bridge to the layout model, defaulting missing values to 0/None.</li>
+            <li><code>src/Word/WordLayout.fs</code>: <code>positionedCells</code> initializes <code>currentColumn</code> to <code>max 0 row.GridBefore</code> so cells start in the correct grid slot. <code>rowColumnCount</code> returns <code>endOfCells + max 0 row.GridAfter</code> so the table-wide <code>columnCount</code> (which seeds <code>tableColumnWidths</code>) covers rows whose trailing columns are phantom-only.</li>
+            <li>Cell <em>widths</em> come from <code>tblGrid</code> (start column + <code>startOffset</code> + <code>spannedWidth</code>); the row's <code>wBefore</code>/<code>wAfter</code> twips values are kept on the model but not used to override grid widths in this pass &mdash; in the docx4j fixture they match the corresponding grid column sums, so the geometry is correct. We can switch to using <code>wBefore</code> directly later if a fixture diverges.</li>
+            <li>Companion fix in <code>collapseResolvedBorders</code> (<code>WordLayout.fs</code>): only None-out the lower cell's TOP / upper cell's BOTTOM when both cells span the exact same column range. For partial overlap (where one row's cell extends beyond the other's, as happens with alternating <code>gridBefore=0/gridAfter=1</code> vs <code>gridBefore=1/gridAfter=0</code> in the Indent table), keep both border records intact &mdash; the protruding portion still needs its own border owner, and overlapping segments paint identically at the same y. Without this companion fix, the staircase rows had visible "missing top border" gaps wherever the lower row extended one grid column past the upper.</li>
+            <li>Regression guard: <code>docx4j-tables.docx</code> pages 1 (<code>46.93%</code>) and 2 (<code>60.94%</code>) ink-XOR unchanged after the fix. Float repros (<code>wrap-square / wrap-top-bottom / behind-doc</code>) unchanged. No row constructors elsewhere needed manual extension once the four new field defaults were added (<code>Word.fs twoCellTable</code>, <code>Document.fs insertTable</code>, <code>Document.fs insertRowAfter</code>).</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>wrapSquare float: rendering preconditions (image scale, heading face, anchor-line obstacle)</strong>
           <span class="meta">Repro: <code>tests/repros/word/float-image-wrap-square.docx</code></span>
           <span class="meta">Generator: <code>tools/word-parity/create-float-repros.py</code></span>

@@ -828,7 +828,12 @@ let private blockFromEditor (item: obj) =
                   PaddingTop = optionalDxaAsCanvasPixels (row?PaddingTop)
                   PaddingRight = optionalDxaAsCanvasPixels (row?PaddingRight)
                   PaddingBottom = optionalDxaAsCanvasPixels (row?PaddingBottom)
-                  PaddingLeft = optionalDxaAsCanvasPixels (row?PaddingLeft) })
+                  PaddingLeft = optionalDxaAsCanvasPixels (row?PaddingLeft)
+                  GridBefore = optionalInt (row?GridBefore) |> Option.defaultValue 0 |> max 0
+                  GridAfter = optionalInt (row?GridAfter) |> Option.defaultValue 0 |> max 0
+                  WidthBefore = optionalDxaAsCanvasPixels (row?WidthBefore)
+                  WidthAfter = optionalDxaAsCanvasPixels (row?WidthAfter)
+                  BordersOverride = None })
             |> Array.toList
 
         let gridColumns =

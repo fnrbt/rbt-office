@@ -502,6 +502,11 @@ let private tableBlock resolver images styleMap tableStyleMap comments notes (ta
                 PaddingRight = twipsToCanvasPixels row.PaddingRight
                 PaddingBottom = twipsToCanvasPixels row.PaddingBottom
                 PaddingLeft = twipsToCanvasPixels row.PaddingLeft
+                GridBefore = row.GridBefore |> Option.defaultValue 0 |> max 0
+                GridAfter = row.GridAfter |> Option.defaultValue 0 |> max 0
+                WidthBefore = twipsToCanvasPixels row.WidthBefore
+                WidthAfter = twipsToCanvasPixels row.WidthAfter
+                BordersOverride = tableBorders row.BordersOverride
             })
         PreferredWidth = tableWidth table.Width table.WidthType
         LayoutMode =

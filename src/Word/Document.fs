@@ -205,6 +205,11 @@ and TableRow = {
     PaddingRight: float option
     PaddingBottom: float option
     PaddingLeft: float option
+    GridBefore: int
+    GridAfter: int
+    WidthBefore: float option
+    WidthAfter: float option
+    BordersOverride: TableBorders option
 }
 
 and TableCell = {
@@ -1375,7 +1380,7 @@ let insertTableRowAfterSelection doc =
                 |> Option.map (fun row -> row.Cells.Length)
                 |> Option.defaultValue 1
                 |> max 1
-            let newRow = { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None }
+            let newRow = { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None }
             { table with
                 Rows =
                     table.Rows
@@ -1447,7 +1452,7 @@ let insertTable rows columns doc =
     let columnCount = max 1 columns
     let table = {
         Id = nextBlockId ()
-        Rows = [ for _ in 1 .. rowCount -> { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None } ]
+        Rows = [ for _ in 1 .. rowCount -> { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None } ]
         PreferredWidth = None
         LayoutMode = None
         GridColumns = []

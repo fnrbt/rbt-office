@@ -1897,6 +1897,22 @@ let private computeAnchorExtendedObstacles
                     // widen the in-place obstacle horizontally so the second
                     // pass treats it as full-width without re-adding.
                     Some (0.0, obstacleTop, availableWidth, obstacleHeight)
+                elif
+                    match box.Kind with
+                    | WordLayout.Floating.ImageBox img ->
+                        match img.PositionVRelativeFrom with
+                        | Some "page" | Some "margin" | Some "topMargin" | Some "bottomMargin" -> false
+                        | Some _ -> true  // paragraph, line, etc. — image position is already paragraph-anchored
+                        | None -> false
+                    | _ -> false
+                then
+                    // Paragraph/line-relative posV: the image's Y is already
+                    // computed off the containing paragraph's top, so the
+                    // first overlapping line is the right wrap anchor without
+                    // further upward extension. Keeping the obstacle at its
+                    // literal posV offset lets lines above the image flow
+                    // full width, matching Word.
+                    Some (obstacleX, obstacleTop, obstacleWidth, obstacleHeight)
                 else
                     let firstOverlap =
                         lineSpans

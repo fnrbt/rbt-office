@@ -1562,7 +1562,7 @@ module API =
 
     let private twoCellTable id left right : Doc.TableBlock =
         { Id = id
-          Rows = [{ Cells = [tableCell (id + "-left") left; tableCell (id + "-right") right]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None }]
+          Rows = [{ Cells = [tableCell (id + "-left") left; tableCell (id + "-right") right]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None }]
           PreferredWidth = Some { Kind = Doc.PercentWidth; Value = Some 100.0 }
           LayoutMode = Some Doc.FixedTableLayout
           GridColumns = [{ Kind = Doc.PercentWidth; Value = Some 50.0 }; { Kind = Doc.PercentWidth; Value = Some 50.0 }]
