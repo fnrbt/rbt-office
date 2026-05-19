@@ -1297,6 +1297,10 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let startAt = if nargs >= 3 then (match argNum 2 with Ok n -> int n - 1 | _ -> 0) else 0
             if startAt < 0 || startAt > hay.Length then err Err.value
             else
+                // Fable's IndexOf only accepts (needle, startIndex). For SEARCH's
+                // case-insensitive behaviour we lowercase both sides — invariant
+                // case folding preserves codepoint indices for BMP characters,
+                // which is all the spreadsheet ever sees in practice.
                 let idx =
                     if name.ToUpperInvariant() = "FIND" then
                         hay.IndexOf(needle, startAt)
