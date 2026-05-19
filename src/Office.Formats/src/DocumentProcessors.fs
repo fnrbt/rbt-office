@@ -457,14 +457,14 @@ module EditorProcessor =
             match img.Description with
             | Some desc -> sprintf "[Image: %s]" desc
             | None -> "[Image]"
-        | CommentReference id ->
-            comments
-            |> Map.tryFind id
-            |> Option.map (fun comment ->
-                match comment.InitialText with
-                | Some text when text <> "" -> text
-                | _ -> sprintf "[Comment %s]" id)
-            |> Option.defaultValue (sprintf "[Comment %s]" id)
+        | CommentReference _ ->
+            // Word treats a w:commentReference as a sidebar/margin annotation,
+            // not as inline text.  When the renderer's "show comments inline"
+            // mode (eg. the editor's comment-pop) wants to display the comment
+            // body it can look it up via the CommentId on the editor run; the
+            // base text extracted here is empty so a print/PDF render doesn't
+            // splatter the comment body into the document flow.
+            ""
         | NoteRef note -> sprintf "[%s %s]" note.NoteType note.Id
         | BookmarkStart _ -> ""
         | BookmarkEnd _ -> ""
