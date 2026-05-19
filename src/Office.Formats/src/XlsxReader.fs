@@ -147,7 +147,20 @@ type Cell = {
 type Row = {
     Index: int
     Cells: Cell list
+    /// Height to apply when rendering. Some when the row's `customHeight`
+    /// is `true` (or absent — defaults to true), in which case the stored
+    /// `ht` is the row's explicit height. None when `customHeight="false"`,
+    /// meaning Excel auto-derives the height from the row's font.
     Height: float option
+    /// Raw `ht` attribute value as written in the XML, regardless of
+    /// `customHeight`. Lets the runner detect the case where
+    /// `customHeight="false" ht="X"` and `X == sheetFormatPr.defaultRowHeight`,
+    /// which Excel treats as implicit (uses defaultRowHeight literally
+    /// rather than font-derived auto-height). openpyxl writes this pattern
+    /// for every row whose height matches the sheet default.
+    RawHeight: float option
+    /// Value of the row's `customHeight` attribute, or None when absent.
+    CustomHeight: bool option
     /// `<row hidden="1">` collapses the row in display + print (height = 0).
     Hidden: bool
 }
@@ -704,13 +717,14 @@ module Xlsx =
             // intentionally overriding). pandas-export workbooks emit
             // `<row ht="13.8" customHeight="false">` and Excel renders
             // those at the default ~15 pt, not 13.8 pt.
-            let customHeight =
+            let customHeightAttr =
                 Xml.attr "customHeight" rowNode
                 |> Option.map (fun v -> v = "1" || v = "true")
-                |> Option.defaultValue true
-            let height =
-                if customHeight then Xml.attr "ht" rowNode |> Option.map float
-                else None
+            // Default to true when absent — most files write `ht` only when
+            // intentionally overriding.
+            let customHeight = customHeightAttr |> Option.defaultValue true
+            let rawHeight = Xml.attr "ht" rowNode |> Option.map float
+            let height = if customHeight then rawHeight else None
             let hidden = Xml.attr "hidden" rowNode |> Option.map (fun h -> h = "1" || h = "true") |> Option.defaultValue false
             {
                 Index = int r
@@ -718,6 +732,8 @@ module Xlsx =
                     sElems "c" rowNode
                     |> List.choose cell
                 Height = height
+                RawHeight = rawHeight
+                CustomHeight = customHeightAttr
                 Hidden = hidden
             })
 
