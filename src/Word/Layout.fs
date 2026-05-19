@@ -677,7 +677,12 @@ let private wordWrapTokens (text: string) =
                 index <- index + 1
                 if isHyphenBreak then
                     keepGoing <- false
-            while index < text.Length && isWhitespaceChar text.[index] && text.[index] <> '\r' && text.[index] <> '\n' do
+            // Absorb trailing whitespace into the same token, but exclude tabs:
+            // tabs always advance to the next tab stop and need their own segment
+            // so the paint backend doesn't stretch a "word + tab" segment's
+            // glyphs (eg. TOC entry "1\t" being scaled by width/advance into a
+            // wide blob).
+            while index < text.Length && isWhitespaceChar text.[index] && text.[index] <> '\r' && text.[index] <> '\n' && text.[index] <> '\t' do
                 index <- index + 1
             tokens.Add(text.Substring(start, index - start))
     tokens

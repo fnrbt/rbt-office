@@ -455,10 +455,38 @@ let private paragraphCommandsWithBaselineOffset baselineOffset (settings: Layout
                 let displayText = WordLayout.Text.displayText style text
                 commands <- commands @ [DrawText (displayText, paintStyle, textX, textBaseline, width)]
 
-                if style.Underline then
-                    commands <- commands @ [DrawUnderline (paintStyle.Color, textX, textBaseline + WordLayout.Text.canvasUnderlineOffset, width)]
-                if style.Strike then
-                    commands <- commands @ [DrawUnderline (paintStyle.Color, textX, textBaseline - WordLayout.Text.canvasStrikethroughOffset style, width)]
+                // Skip underline/strike on segments that are entirely whitespace —
+                // tab segments (eg. the gap between a TOC entry and its page
+                // number) inherit the surrounding run's hyperlink style and would
+                // otherwise draw a long underline across the tab gap.  Word treats
+                // the tab leader (dots/lines/underscores in w:leader) as the
+                // ink for that gap and doesn't extend the run's underline through
+                // it.
+                // Compute the visible-ink width: for segments that contain a
+                // trailing tab (eg. "1\t" in a TOC entry), the segment's `width`
+                // is bloated by the tab-gap advance, but the underline should
+                // only span the visible-ink prefix.  Word draws tab leaders
+                // (dots/lines/underscores per w:leader) in the gap and does
+                // *not* extend the run's underline through it.
+                let inkWidth =
+                    let lastInkIndex =
+                        let mutable idx = -1
+                        for i in 0 .. displayText.Length - 1 do
+                            if not (System.Char.IsWhiteSpace displayText.[i]) then idx <- i
+                        idx
+                    if lastInkIndex < 0 then 0.0
+                    elif lastInkIndex = displayText.Length - 1 then width
+                    else
+                        // Measure the prefix up to and including the last non-
+                        // whitespace character; fall back to width if measurement
+                        // isn't sensible (eg. zero-width content).
+                        let prefix = displayText.Substring(0, lastInkIndex + 1)
+                        let measured = measureText prefix style
+                        if measured > 0.0 then measured else width
+                if style.Underline && inkWidth > 0.0 then
+                    commands <- commands @ [DrawUnderline (paintStyle.Color, textX, textBaseline + WordLayout.Text.canvasUnderlineOffset, inkWidth)]
+                if style.Strike && inkWidth > 0.0 then
+                    commands <- commands @ [DrawUnderline (paintStyle.Color, textX, textBaseline - WordLayout.Text.canvasStrikethroughOffset style, inkWidth)]
 
             | ImageSegment (src, x, yOffset, width, height, _, _, _, _, cropLeft, cropTop, cropRight, cropBottom) ->
                 let imageX = settings.PaddingLeft + x + lineAlignmentOffset
