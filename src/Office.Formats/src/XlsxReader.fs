@@ -1456,6 +1456,35 @@ module Xlsx =
             DiagonalDown = flag "diagonalDown"
         }
 
+    /// Strip OOXML `\X` literal-char escapes from a format string. The XML
+    /// stores `yyyy\-mm\-dd\ hh:mm:ss` to mean "yyyy-mm-dd hh:mm:ss" with
+    /// the dashes/space as literals (so the `-` doesn't trip the negative-
+    /// subformat parser). Excel COM's `cell.NumberFormat` strips the
+    /// backslashes when reporting the format. Mirrors that — also keeps
+    /// `\\` as a single literal backslash, leaves quoted "..." strings
+    /// intact (the contents are already literal).
+    let private stripBackslashEscapes (code: string) : string =
+        let sb = System.Text.StringBuilder(code.Length)
+        let mutable i = 0
+        let mutable inQuote = false
+        while i < code.Length do
+            let ch = code.[i]
+            if inQuote then
+                sb.Append ch |> ignore
+                if ch = '"' then inQuote <- false
+                i <- i + 1
+            elif ch = '"' then
+                sb.Append ch |> ignore
+                inQuote <- true
+                i <- i + 1
+            elif ch = '\\' && i + 1 < code.Length then
+                sb.Append code.[i + 1] |> ignore
+                i <- i + 2
+            else
+                sb.Append ch |> ignore
+                i <- i + 1
+        sb.ToString()
+
     let parseNumberFormat (numFmtNode: XmlNode) : string option =
         // Normalize the special "GENERAL" sentinel (case-insensitive) to
         // canonical "General". Excel COM's cell.NumberFormat always reports
@@ -1464,10 +1493,15 @@ module Xlsx =
         // ships <numFmt formatCode="GENERAL"/> and Excel reports it as
         // "General" through COM, so a literal pass-through diverged on
         // every cell.
+        //
+        // Also strip OOXML's `\X` literal-char escapes: Excel COM returns
+        // the format without them. Without this, pandas-testmultiindex's
+        // `yyyy\-mm\-dd\ hh:mm:ss` diverged from Excel's reported
+        // `yyyy-mm-dd hh:mm:ss` on every cell.
         Xml.attr "formatCode" numFmtNode
         |> Option.map (fun code ->
             if code.Equals("general", System.StringComparison.OrdinalIgnoreCase) then "General"
-            else code)
+            else stripBackslashEscapes code)
 
     /// Built-in numFmtId → format code table. Per the OOXML spec, ids 0–49
     /// are pre-defined and don't appear in the sheet's `<numFmts>` block, so

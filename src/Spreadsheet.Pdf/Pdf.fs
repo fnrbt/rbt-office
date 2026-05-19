@@ -409,10 +409,16 @@ let private withPrintColumnWidths (model: SpreadsheetModel) : SpreadsheetModel =
 /// "auto vs explicit" flags through the model and key the remap off that.
 let private withPrintRowHeights (model: SpreadsheetModel) : SpreadsheetModel =
     if Map.isEmpty model.RowHeights then model else
+    // Calibri 12 print pitch is similarly off — editor 21 px → print
+    // ~20.64 px (= 15.48 pt). pandas-test1 rows positioned 1 px per row
+    // below Excel because we used 21 px uniform while Excel's quantized
+    // 20/21/21/21/21/20 pattern averages to ~20.64 px.
     let heights =
         model.RowHeights
         |> Map.map (fun _ px ->
-            if abs (px - 20.0) < 0.01 then 19.36 else px)
+            if abs (px - 20.0) < 0.01 then 19.36      // Calibri 11 auto
+            elif abs (px - 21.0) < 0.01 then 20.64    // Calibri 12 auto
+            else px)
     { model with RowHeights = heights }
 
 /// True when a paint item has degenerate (zero-size) geometry. With the
@@ -988,7 +994,10 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
     // (its default). When false, the H/F text stays at its raw size even
     // though the body is scaled. `hfFontSizePt` is the raw fallback size;
     // `hfTextScale` is the multiplier we apply to every H/F glyph size.
-    let hfFontSizePt = 10.0
+    // Excel's print PDF uses Calibri 11 (workbook default) for unstyled
+    // H/F runs — verified by glyph cap-height pixel-counting against
+    // synthetic-print-chrome ("FIRST" renders 9 px tall in Excel = 11pt).
+    let hfFontSizePt = 11.0
     let hfTextScale =
         if ps.HeaderFooter.ScaleWithDoc then pagination.Scale else 1.0
     let hfScaledFontSizePt = hfFontSizePt * hfTextScale
@@ -1008,11 +1017,15 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
         // runs therefore push the baseline down; a fixed 10 pt baseline puts
         // 16 pt runs visibly too high. Excel leaves a little leading above
         // larger text, so don't subtract the full max size.
+        // The -0.75 pt nudge (= 1 px at 96 dpi) drops the baseline so our
+        // glyph tops align with Excel's print-PDF header position. Verified
+        // by pixel-counting "FIRST" in synthetic-print-chrome: Excel's
+        // glyph tops at y=35, ours used to sit at y=34 without this nudge.
         let fontSizePt = maxHeaderFooterFontSize section
         let anchoredSizePt =
             if fontSizePt > hfScaledFontSizePt then max hfScaledFontSizePt (fontSizePt - 1.5)
             else hfScaledFontSizePt
-        pageHeightPt - headerMarginPt - anchoredSizePt
+        pageHeightPt - headerMarginPt - anchoredSizePt - 0.75
     let footerBaselineYPt =
         // Excel places footer text a little higher than the raw footer
         // margin baseline. A fixed lift matches both normal 10 pt footers

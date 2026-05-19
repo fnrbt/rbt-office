@@ -75,6 +75,31 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
     let model = ExcelNativeRunner.toModel sheet workbook
     let sheetName = sheet.Name
 
+    // Cell-text measurer: feeds `Paint.cellDisplayText` real glyph widths
+    // so date / number overflow decisions match what the PDF renderer
+    // produces (and what Excel reports via COM cell.Text). Without a
+    // measure function, cellDisplayText falls back to char-count heuristics
+    // and hash-overflows dates that visually fit (e.g. pandas-testskiprows
+    // C4 "2015-01-01 00:00:00" hashes by char-count but renders by measure).
+    let fontCache = System.Collections.Generic.Dictionary<string option * bool * bool, _>()
+    let getFont (familyName: string option) (bold: bool) (italic: bool) =
+        let key = familyName, bold, italic
+        match fontCache.TryGetValue key with
+        | true, f -> f
+        | _ ->
+            let f = Composit.Ui.SpreadsheetGrid.rendererFontFor familyName bold italic
+            fontCache.[key] <- f
+            f
+    let measureFor (format: CellFormat) =
+        try
+            let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+            let fontPx = fontPt * 96.0 / 72.0
+            let font = getFont format.FontName format.Bold format.Italic
+            Some (fun (s: string) -> Renderer.Text.measureWidth font fontPx s)
+        with ex ->
+            eprintfn "measureFor failed: %s" ex.Message
+            None
+
     // Detect cells whose Bold flag was added by the table-style header
     // overlay rather than coming from the cell's actual font. Excel COM
     // reports `cell.Font.Bold = False` for these — the table-style bold is
@@ -147,7 +172,7 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
                 let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
                 let displayText =
                     let cached = cachedValue value
-                    cellDisplayText None rectWidth format cached
+                    cellDisplayText (measureFor format) rectWidth format cached
                 // Match `extract-excel-layout.vbs`'s IsEmptyCell filter:
                 // emit only cells with a non-empty value OR a formula. Cells
                 // that exist only for their col/cell formatting (e.g.

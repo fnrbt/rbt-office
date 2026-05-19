@@ -625,25 +625,29 @@ let private fitOrOverflow
     // matches Excel COM cell.Text for the m/d/yyyy h:mm date that
     // overflows).
     //
-    // Fit check uses the MAX of measured-width and char-count-width:
-    // Excel renders `#####` whenever EITHER metric says no-fit, even when
-    // HarfBuzz/our measurer reports a value that does fit (e.g.
-    // pandas-test1 A2 "1/3/2000 0:00" measures ~71 px but Excel still
-    // overflows because char-count = 13 × MDW > cell width). Without the
-    // char-count guard our PDF render shows the date when Excel shows #s.
-    let fitWidth = max 0.0 (cellWidth - 8.0)
+    // Fit check uses the measured glyph width. Excel's effective fit
+    // budget is `cellWidth - 3` (~2-px inset on the right with a tiny
+    // left inset) — verified empirically against pandas-testskiprows C4
+    // "2015-01-01 00:00:00" which Excel renders in a 128-px cell at our
+    // measured 124.2 px. The 3-px budget lets it fit; the older 8-px
+    // budget hashed it. pandas-test1 m/d/yyyy h:mm dates still hash
+    // because the date's glyph width sits 3-4 px above the threshold
+    // for the narrower Calibri-12 95-px cells.
+    let fitWidth = max 0.0 (cellWidth - 3.0)
     let hashBudget = max 0.0 (cellWidth - 5.0)
     let mdw = mdwPx fontPt
-    let charCountWidth = float text.Length * mdw
     match measure with
     | Some m ->
-        let textWidth = max (m text) charCountWidth
+        let textWidth = m text
         if textWidth <= fitWidth then text
         else
-            // Pack as many '#' as actually fit at the real glyph advance.
-            // Floor (via int) so the run is never wider than the cell.
-            let hashW = m "#"
-            let count = if hashW <= 0.0 then 1 else max 1 (int (hashBudget / hashW))
+            // Hash count uses the OOXML MDW estimate, not the measured `#`
+            // advance — Excel's hash budget rounds to chars-per-mdw and our
+            // measured glyph width is ~5% wider than mdw, which made our
+            // count 1 short of Excel's (e.g. pandas-testmultiindex E4 has
+            // cellWidth=62 px, Excel renders 8 #s = floor(57/7), we
+            // rendered 7 = floor(57/7.4)).
+            let count = max 1 (int (hashBudget / mdw))
             System.String('#', count)
     | None ->
         let fitChars = max 1 (int (fitWidth / mdw))
