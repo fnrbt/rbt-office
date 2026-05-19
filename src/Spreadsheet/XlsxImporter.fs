@@ -399,6 +399,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 FrozenRows = 0
                 FrozenCols = 0
                 PageSetup = defaultPageSetup
+                Tables = []
             }
             recalculateAllFormulas None None importedModel
 
@@ -427,6 +428,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 FrozenRows = 0
                 FrozenCols = 0
                 PageSetup = defaultPageSetup
+                Tables = []
             }
 
     /// <summary>
@@ -471,6 +473,7 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
                     FrozenRows = 0
                     FrozenCols = 0
                     PageSetup = defaultPageSetup
+                    Tables = []
                 }
         }
 

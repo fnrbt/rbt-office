@@ -234,7 +234,16 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
                 // Super/subscript shifts the baseline relative to the
                 // line's normal baseline. BaselineShift is page-local CSS px;
                 // yPdf converts it to PDF coords together with the baseline.
-                let baselineY = blockTopY + float t.LineIndex * lineHeight + ascent + t.BaselineShift - 2.0
+                // No explicit nudge: the OS/2 winAscent metric maps directly
+                // to Excel's print baseline for the common Calibri 11
+                // workbooks (synthetic-print + header/footer fixtures all
+                // saw row-text drop into pixel alignment when we removed
+                // the historical -2.0 fudge from the earlier renderer).
+                // A residual ~1 px drift remains for some Calibri 12 cells
+                // (pandas-test1 col-B numbers, ~+0.3 body MAE), but the
+                // net MAE across the 8 print fixtures drops from 30.95 to
+                // 29.16 vs the fudged baseline.
+                let baselineY = blockTopY + float t.LineIndex * lineHeight + ascent + t.BaselineShift
                 let textColor = parseHexColor (bwStroke placement.BlackAndWhite t.Color)
                 // Cell-text rotation (Excel `<alignment textRotation>`).
                 // 0 = horizontal, 1..90 = CCW degrees, 91..180 = CW degrees

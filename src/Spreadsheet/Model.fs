@@ -286,6 +286,33 @@ type CellRange = {
     To: CellAddress
 }
 
+/// Excel table style reference (e.g. `TableStyleMedium7` + show-stripes
+/// toggles). Mirrors `Xlsx.TableStyleInfo` so the model carries this
+/// without forcing a dependency on the Office.Formats reader.
+type TableStyle = {
+    Name: string
+    ShowFirstColumn: bool
+    ShowLastColumn: bool
+    ShowRowStripes: bool
+    ShowColumnStripes: bool
+}
+
+/// One table region on a sheet (i.e., `xl/tables/tableN.xml`). Coordinates
+/// are 1-indexed to match the XLSX schema and the table-overlay helpers
+/// that consume this. `HeaderRowCount` is 0 when the table has no header
+/// row (rare); otherwise 1 (effectively always 1 for the corpus we
+/// handle). `AutoFilter` is the 1-indexed (startCol, endCol) range that
+/// gets dropdown buttons on its header cells.
+type Table = {
+    StartRow: int
+    StartCol: int
+    EndRow: int
+    EndCol: int
+    HeaderRowCount: int
+    Style: TableStyle option
+    AutoFilter: (int * int) option
+}
+
 /// Per-sheet page setup. All fields have sensible defaults so a model
 /// without explicit setup still has a usable PageSetup record. Page
 /// dimensions are in points (1 pt = 1/72 inch).
@@ -459,6 +486,12 @@ type SpreadsheetModel = {
     /// Print / page setup for this sheet. Always present (defaults when
     /// the source file has no explicit `<pageSetup>` etc.).
     PageSetup: PageSetup
+
+    /// Table regions defined on the sheet (`xl/tables/tableN.xml`). The
+    /// runner translates `Xlsx.TableDefinition` here so renderers and the
+    /// layout harness can detect table-style overlays from the model
+    /// alone, without needing the original workbook handle.
+    Tables: Table list
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -505,6 +538,7 @@ let createEmpty rowCount colCount = {
     FrozenRows = 0
     FrozenCols = 0
     PageSetup = defaultPageSetup
+    Tables = []
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")

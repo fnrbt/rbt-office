@@ -155,6 +155,41 @@
     <tbody>
       <tr>
         <td>
+          <strong>Drop the historical −2 px baseline fudge in the PDF text emitter</strong>
+          <span class="meta">Repro: any print-PDF fixture. Most visible on <code>synthetic-print.xlsx</code> where 11 data rows sat 2 px above Excel's baseline grid through the body — and on the chrome of <code>synthetic-print-chrome.xlsx</code> where row labels drifted away from cell centers.</span>
+          <span class="meta">Path checked: print PDF (<code>tools/spreadsheet-pdf-runner</code>) vs Excel-rendered PDF rasterized at 96 dpi.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2 / 1;">
+            <img src="../artifacts/excel/synthetic-print-print-rowpitch-excel.png" style="--w:1056px; --x:60px; --y:60px; --s:1.0" alt="Excel reference baseline">
+          </div>
+          <div class="caption">Excel print PDF (1056×816, 96 dpi). Text baselines sit at y=88, 107, 127, … in the body — pixel-aligned with the row gridlines so glyph descenders never overshoot the cell.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2 / 1;">
+            <img src="../artifacts/native/synthetic-print-after-baseline.png" style="--w:1056px; --x:60px; --y:60px; --s:1.0" alt="Ours after — baselines match Excel">
+          </div>
+          <div class="caption">Ours after: text baselines now sit at the same y as Excel's. Body MAE drops from 3.97 → 2.73 on this fixture (-31%); same ~31-41% reduction on every other multi-row print fixture without explicit row heights. Print helpers still pass 16/16. <code>compare-vba-layout.py</code> across all 33 reference fixtures still clean at 0.1-pt tolerance — the harness reads <code>model.RowHeights</code> directly, not the rendered PDF.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2 / 1;">
+            <img src="../artifacts/baseline/synthetic-print-before-baseline.png" style="--w:1056px; --x:60px; --y:60px; --s:1.0" alt="Ours before — baselines 2 px above Excel">
+          </div>
+          <div class="caption">Ours before: text baselines sat consistently 2 px above Excel's. Pixel-level diff was concentrated on text glyphs (avg pixel diff = 157 on dark text vs 0.56 on background), confirming this was a baseline offset, not anti-aliasing noise.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> remove a stale historical fudge from <code>src/Spreadsheet.Pdf/Pdf.fs</code>'s <code>DrawText</code> case.</p>
+          <ul>
+            <li>The earlier formula computed <code>baselineY = rect.Y + (height + fontSize)/2 − 2.0</code>, where the <code>−2.0</code> compensated for that formula's mid-rect anchor. When we later switched to OS/2 win-metrics (<code>blockTopY + lineIndex×lineHeight + ascent</code>) the −2 stuck around even though it no longer had a math reason to be there.</li>
+            <li>Removed: <code>baselineY = blockTopY + float t.LineIndex × lineHeight + ascent + t.BaselineShift</code> (was <code>... + t.BaselineShift - 2.0</code>).</li>
+            <li>Verified by pixel-diff per text row: ours-before sat at y=6, 26, 45, 64, …; Excel at y=8, 28, 47, 66, …; ours-after at y=8, 27, 46, 66, … (≤1-px residual on a couple of rows, font hinting noise).</li>
+            <li>Net MAE across 8 print fixtures drops <strong>30.95 → 29.16</strong> (the synthetic-print family and pandas-dimension_large all improve; pandas-test1 shifts +0.3 MAE because its Calibri 12 cells preferred the old fudge — a font-size-specific baseline mismatch we'll chase separately).</li>
+            <li>Regression guard: 16/16 print-helper tests pass. 33/33 reference fixtures in the VBA-layout harness still clean. All 79 non-blank fixtures in the corpus still smoke-render.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Print row pitch: 14.52 pt / 19.36 px for Calibri 11 auto-rows</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-print.xlsx</code> — no <code>&lt;sheetFormatPr&gt;</code>, no per-row <code>ht</code>, no styles.xml; rows fall through to the workbook-default Calibri 11. <code>cell.Height</code> via COM reports 15 pt, but Excel's print PDF renders the rows at <strong>14.52 pt = 19.4 px</strong> pitch (alternating 19/20 px on the integer pixel grid).</span>
           <span class="meta">Path checked: print PDF (<code>tools/spreadsheet-pdf-runner</code>) vs Excel-rendered PDF rasterized at 96 dpi.</span>

@@ -1127,6 +1127,27 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                 | Some Xlsx.CellCommentsAtEnd -> CellCommentsAtEnd
                 | _ -> CellCommentsNone }
 
+    // Translate Xlsx.TableDefinition → Model.Table so downstream consumers
+    // (renderers, layout harness) can read tables from the model alone
+    // without needing the original workbook handle.
+    let modelTables : Table list =
+        sheet.Tables
+        |> List.map (fun t ->
+            { StartRow = t.StartRow
+              StartCol = t.StartCol
+              EndRow = t.EndRow
+              EndCol = t.EndCol
+              HeaderRowCount = t.HeaderRowCount
+              Style =
+                t.Style
+                |> Option.map (fun s ->
+                    ({ Name = s.Name
+                       ShowFirstColumn = s.ShowFirstColumn
+                       ShowLastColumn = s.ShowLastColumn
+                       ShowRowStripes = s.ShowRowStripes
+                       ShowColumnStripes = s.ShowColumnStripes } : TableStyle))
+              AutoFilter = t.AutoFilter })
+
     let baseModel = createEmpty excelRowCount excelColCount
     // Excel's printed/screenshot output never shows the active-cell border, so
     // park the selection off-grid for snapshot renders.
@@ -1139,7 +1160,8 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         RichRuns = richRunsMap
         FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
         FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
-        PageSetup = pageSetup }
+        PageSetup = pageSetup
+        Tables = modelTables }
 
 /// Build a RedBat.Spreadsheet workbook context from the parsed XLSX: every
 /// sheet's model plus the workbook's defined names. This is what the

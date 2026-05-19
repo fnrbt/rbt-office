@@ -78,16 +78,22 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
     // Detect cells whose Bold flag was added by the table-style header
     // overlay rather than coming from the cell's actual font. Excel COM
     // reports `cell.Font.Bold = False` for these — the table-style bold is
-    // a render-time overlay, not a baked font attribute. Re-use the same
-    // `tableOverrideFor` helper the runner uses to apply the overlay, so
-    // there's a single source of truth for "which cells get table-style
-    // bold". Without this adjustment our TSV reported `bold=true` on every
-    // TableStyleMedium header (e.g. pandas-test_decimal's row 1).
+    // a render-time overlay, not a baked font attribute. We read straight
+    // off `model.Tables` (no workbook handle needed) since the runner now
+    // translates Xlsx.TableDefinition onto the model. The bold overlay
+    // fires for any TableStyleMedium-named table's header row.
     //
-    // 1-indexed coordinates to match Xlsx.TableDefinition.
+    // 1-indexed coordinates to match Model.Table.
     let isTableStyleHeaderBoldOverlay (r0: int) (c0: int) =
-        ExcelNativeRunner.tableOverrideFor sheet.Tables workbook.ThemeAccents (r0 + 1) (c0 + 1)
-        |> Option.exists (fun o -> o.Bold)
+        let row1 = r0 + 1
+        let col1 = c0 + 1
+        model.Tables
+        |> List.exists (fun t ->
+            row1 >= t.StartRow && row1 < t.StartRow + t.HeaderRowCount
+            && col1 >= t.StartCol && col1 <= t.EndCol
+            && (match t.Style with
+                | Some s -> s.Name.StartsWith "TableStyleMedium"
+                | None -> false))
 
     // Determine the row/col range to dump. Excel's COM .UsedRange walks
     // every cell from A1 to the last non-empty row/col. We mirror that by
