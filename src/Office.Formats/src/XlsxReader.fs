@@ -1485,6 +1485,23 @@ module Xlsx =
                 i <- i + 1
         sb.ToString()
 
+    /// Strip quotes from currency-symbol literals — `"$"` → `$`, `"€"` → `€`,
+    /// etc. Excel COM unwraps these single-char currency literals when
+    /// reporting the format. Other quoted strings (like `"-"` inside an
+    /// accounting placeholder) keep their quotes since stripping them would
+    /// confuse the format parser. The synthetic-numfmt fixture's accounting
+    /// format `_("$"* #,##0.00_);…` is reported as `_($* #,##0.00_);…`.
+    let private stripCurrencyQuotes (code: string) : string =
+        let isCurrencySymbol (c: char) =
+            c = '$' || c = '€' || c = '£' || c = '¥' || c = '₩'
+            || c = '¢' || c = '₹' || c = '₽' || c = '₪' || c = '₱'
+        System.Text.RegularExpressions.Regex.Replace(
+            code,
+            "\"(.)\"",
+            fun m ->
+                let inner = m.Groups.[1].Value.[0]
+                if isCurrencySymbol inner then string inner else m.Value)
+
     let parseNumberFormat (numFmtNode: XmlNode) : string option =
         // Normalize the special "GENERAL" sentinel (case-insensitive) to
         // canonical "General". Excel COM's cell.NumberFormat always reports
@@ -1501,7 +1518,7 @@ module Xlsx =
         Xml.attr "formatCode" numFmtNode
         |> Option.map (fun code ->
             if code.Equals("general", System.StringComparison.OrdinalIgnoreCase) then "General"
-            else stripBackslashEscapes code)
+            else stripBackslashEscapes code |> stripCurrencyQuotes)
 
     /// Built-in numFmtId → format code table. Per the OOXML spec, ids 0–49
     /// are pre-defined and don't appear in the sheet's `<numFmts>` block, so

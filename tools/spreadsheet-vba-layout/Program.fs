@@ -210,7 +210,9 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
                           (format.VerticalAlign |> Option.defaultValue "bottom")
                           (format.FontName |> Option.defaultValue "Calibri") |> safe
                           (fontPt.ToString("F2", CultureInfo.InvariantCulture))
-                          (if format.Bold && not (isTableStyleHeaderBoldOverlay r c) then "true" else "false")
+                          (if format.Bold
+                              && not (isTableStyleHeaderBoldOverlay r c)
+                              && not (model.CfBoldCells.Contains addr) then "true" else "false")
                           (if format.Italic then "true" else "false")
                           (format.NumberFormat |> Option.defaultValue "General") |> safe
                           ""  // style — not surfaced

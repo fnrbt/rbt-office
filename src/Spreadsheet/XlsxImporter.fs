@@ -400,6 +400,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 FrozenCols = 0
                 PageSetup = defaultPageSetup
                 Tables = []
+                CfBoldCells = Set.empty
             }
             recalculateAllFormulas None None importedModel
 
@@ -429,6 +430,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 FrozenCols = 0
                 PageSetup = defaultPageSetup
                 Tables = []
+                CfBoldCells = Set.empty
             }
 
     /// <summary>
@@ -474,6 +476,7 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
                     FrozenCols = 0
                     PageSetup = defaultPageSetup
                     Tables = []
+                    CfBoldCells = Set.empty
                 }
         }
 

@@ -424,6 +424,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
     // overlay) and colorScale (2/3 stops → an interpolated background by
     // the cell's position in the range's min..max). Other kinds (dataBar,
     // iconSet, expression, top10) pass through untouched.
+    let preCfCells = cells
     let cells =
         if List.isEmpty sheet.ConditionalFormats then cells
         else
@@ -715,6 +716,25 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                         | _ -> ()
                     | _ -> ()
             acc
+
+    // Diff CF-modified cells against the pre-CF snapshot to identify
+    // which cells got their Bold flag from a CF dxf rather than the
+    // underlying cellXf. The layout harness uses this set to report
+    // `bold=false` for these cells — matches Excel COM's
+    // `cell.Font.Bold` (CF doesn't bake into the font).
+    let cfBoldCells =
+        if List.isEmpty sheet.ConditionalFormats then Set.empty
+        else
+            cells
+            |> Map.toSeq
+            |> Seq.choose (fun (addr, cd) ->
+                let preBold =
+                    preCfCells
+                    |> Map.tryFind addr
+                    |> Option.map (fun pre -> pre.Format.Bold)
+                    |> Option.defaultValue false
+                if cd.Format.Bold && not preBold then Some addr else None)
+            |> Set.ofSeq
 
     let mergedCells =
         sheet.MergedCells
@@ -1175,7 +1195,8 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
         FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
         PageSetup = pageSetup
-        Tables = modelTables }
+        Tables = modelTables
+        CfBoldCells = cfBoldCells }
 
 /// Build a RedBat.Spreadsheet workbook context from the parsed XLSX: every
 /// sheet's model plus the workbook's defined names. This is what the

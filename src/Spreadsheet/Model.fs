@@ -492,6 +492,14 @@ type SpreadsheetModel = {
     /// layout harness can detect table-style overlays from the model
     /// alone, without needing the original workbook handle.
     Tables: Table list
+
+    /// Cells where the Bold flag came from a conditional-formatting rule
+    /// (dxf) rather than the cell's own font. The runner sets these when
+    /// it bakes a CF rule's `<font><b/></font>` into the cell's format —
+    /// the layout harness reads them so it can report the underlying
+    /// font's bold (which is what Excel COM `cell.Font.Bold` returns,
+    /// regardless of any CF overlay).
+    CfBoldCells: Set<CellAddress>
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -539,6 +547,7 @@ let createEmpty rowCount colCount = {
     FrozenCols = 0
     PageSetup = defaultPageSetup
     Tables = []
+    CfBoldCells = Set.empty
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")
