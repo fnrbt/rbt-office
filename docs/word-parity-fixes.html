@@ -153,6 +153,41 @@
     <tbody>
       <tr>
         <td>
+          <strong>Load Cambria from <code>cambria.ttc</code> and resolve majorHAnsi/minorHAnsi theme fonts</strong>
+          <span class="meta">Repro: <code>docx4j-sample-docx.docx</code> Title + Heading1 paragraphs</span>
+          <span class="meta">Real fixture class: documents whose styles reference fonts only via the OOXML theme indirection (<code>w:asciiTheme="majorHAnsi"</code> with no explicit <code>w:ascii</code>) — the default Office Title and Heading 1-9 styles all rely on this. The theme's Latin major font is usually Cambria, shipped only inside <code>cambria.ttc</code>.</span>
+          <span class="meta">Paths checked: PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/cambria-load-word.png" style="--w:1190px; --x:60px; --y:80px; --s:0.55" alt="Word reference: Cambria title and serif headings">
+          </div>
+          <div class="caption">Word renders the Title in Cambria (serif) and the Heading1 paragraphs ("This is style Heading 1", "Tables", "Paragraph properties") also in Cambria via the <code>majorHAnsi</code> theme binding.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/cambria-load-after.png" style="--w:1190px; --x:60px; --y:80px; --s:0.55" alt="After: Cambria everywhere">
+          </div>
+          <div class="caption">After: every Title/Heading1 paragraph paints in serif Cambria, matching Word's structural appearance. Two independent fixes had to land together — registering Cambria from the .ttc <em>and</em> resolving the theme indirection so the Heading1 named style actually requests Cambria.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/cambria-load-before.png" style="--w:1190px; --x:60px; --y:80px; --s:0.55" alt="Before: sans-serif Calibri throughout">
+          </div>
+          <div class="caption">Before: the Title rendered in Helvetica (no Cambria face registered → embedded-font branch took the simple path and used the PDF standard font) and the headings rendered in Calibri Light (Heading1 style had no font, so the in-code <code>headingText</code> default kicked in). Both Title and headings look wrong vs Word.</div>
+        </td>
+        <td>
+          <p><strong>Fix</strong> (two changes that compose):</p>
+          <ul>
+            <li><code>tools/pdf-runner/Program.fs</code>: register <code>cambria.ttc</code> as the "Cambria" face. Both <code>parseTrueType</code> (in the shaper and in <code>PdfFont</code>) already auto-detect <code>ttcf</code> and extract font 0, so the standalone-TTF assumption downstream still holds.</li>
+            <li><code>tools/native-runner/Program.fs</code>: <code>namedStyle</code> resolves <code>r.ThemeFont</code> against <code>doc.Theme.MajorFont</code>/<code>MinorFont</code> when <code>r.FontFamily</code> is None — same logic <code>DocxReader.resolveThemeFont</code> uses for the editor JSON path. The Heading1 style in this docx has only <code>&lt;w:rFonts w:asciiTheme="majorHAnsi"/&gt;</code> with no explicit <code>w:ascii</code>; without resolution its NamedStyle.Text.FontFamily stayed None and the merge fell back to the hard-coded "Calibri" in <code>WordStyles.headingText</code>.</li>
+            <li>ink-XOR for this fixture stays at <code>98.10%</code> — the heavy ink mass is now in roughly the right positions but the Cambria glyph metrics we shape from the .ttc-extracted font don't pixel-match Word's print rasteriser. The visible structural diff (font family, weight, basic shape) is closed; the residual is sub-pixel rasterisation.</li>
+            <li>Regression: <code>docx4j-tables</code> page 1 moves <code>39.75% → 38.40%</code> (slight improvement — its headings/title can now resolve Cambria too); page 2 (16.24%) and page 3 (80.08%) unchanged; <code>docx4j-toc</code> moves <code>93.93% → 93.54%</code>; float / table / other repros unchanged.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>fldSimple <code>w:instr</code> read via prefixed attribute name</strong>
           <span class="meta">Repro: <code>docx4j-mergefield.docx</code> (every <code>«MERGEFIELD»</code> placeholder in this fixture)</span>
           <span class="meta">Real fixture class: documents that use the simple-field syntax <code>&lt;w:fldSimple w:instr="..."&gt;</code> (as opposed to the three-part <code>w:fldChar</code> form) for fields like MERGEFIELD, PAGE, DATE.</span>

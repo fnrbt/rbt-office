@@ -57,6 +57,11 @@ let private pdfOptions () : RedBat.Word.Pdf.RenderOptions =
             tryFace "Calibri-BoldItalic" "Calibri" true true "calibriz.ttf"
             tryFace "Calibri Light" "Calibri Light" false false "calibril.ttf"
             tryFace "Calibri Light-Italic" "Calibri Light" false true "calibrili.ttf"
+            // Regular Cambria ships only inside cambria.ttc (font index 0);
+            // parseTrueType in both the shaper and PdfFont auto-detects
+            // ttcf and extracts font 0, so we can register the collection
+            // directly under the bare "Cambria" face name.
+            tryFace "Cambria" "Cambria" false false "cambria.ttc"
             tryFace "Cambria-Bold" "Cambria" true false "cambriab.ttf"
             tryFace "Cambria-Italic" "Cambria" false true "cambriai.ttf"
             tryFace "Cambria-BoldItalic" "Cambria" true true "cambriaz.ttf"

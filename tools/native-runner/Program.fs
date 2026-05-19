@@ -527,7 +527,21 @@ let private tableBlock resolver images styleMap tableStyleMap comments notes (ta
         Floating = table.Floating
     }
 
-let private namedStyle (style: DocxReader.StyleDefinition) : NamedStyle =
+let private resolveThemeFontFamily (theme: DocxReader.Theme option) (themeFont: string option) =
+    // Mirror DocxReader.resolveThemeFont: <w:asciiTheme="majorHAnsi"> picks
+    // the document theme's major font (Cambria by default), "minorHAnsi"
+    // picks the minor font (Calibri).  Without this resolution, styles that
+    // express their face only via the asciiTheme attribute (e.g. the default
+    // Office Heading1 style which has no explicit w:ascii) lose their font
+    // and fall back to the hard-coded "Calibri" in WordStyles.headingText.
+    match theme, themeFont with
+    | Some t, Some value when value.StartsWith("major") -> t.MajorFont
+    | Some t, Some value when value.StartsWith("minor") -> t.MinorFont
+    | _, Some value when value.StartsWith("major") -> Some "Cambria"
+    | _, Some value when value.StartsWith("minor") -> Some "Calibri"
+    | _ -> None
+
+let private namedStyle (theme: DocxReader.Theme option) (style: DocxReader.StyleDefinition) : NamedStyle =
     let run = style.RunProperties
     let para = style.ParagraphProperties
     {
@@ -553,7 +567,9 @@ let private namedStyle (style: DocxReader.StyleDefinition) : NamedStyle =
                     SmallCaps = r.SmallCaps |> Option.defaultValue false
                     Strike = r.Strike |> Option.defaultValue false
                     FontSize = TC.fontSizeToPoints r.FontSize
-                    FontFamily = r.FontFamily
+                    FontFamily =
+                        r.FontFamily
+                        |> Option.orElseWith (fun () -> resolveThemeFontFamily theme r.ThemeFont)
                     Color = color r.Color
                     Highlight = r.Highlight
                     VertAlign = r.VertAlign
@@ -635,7 +651,7 @@ let importDoc (doc: DocxReader.WordDocument) =
         Blocks = blocks
         Selection = firstParagraph |> Option.map (fun para -> { Anchor = { BlockId = para.Id; Offset = 0 }; Focus = { BlockId = para.Id; Offset = 0 } })
         PageSetup = pageSetup doc
-        Styles = doc.Styles |> List.map namedStyle
+        Styles = doc.Styles |> List.map (namedStyle doc.Theme)
         Headers = headerParts |> List.tryHead |> Option.map (fun part -> part.Blocks |> List.choose (function | Paragraph p -> Some p | Heading (_, p) -> Some p | _ -> None)) |> Option.defaultValue []
         Footers = footerParts |> List.tryHead |> Option.map (fun part -> part.Blocks |> List.choose (function | Paragraph p -> Some p | Heading (_, p) -> Some p | _ -> None)) |> Option.defaultValue []
         HeaderParts = headerParts
