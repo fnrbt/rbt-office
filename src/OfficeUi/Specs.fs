@@ -15,6 +15,14 @@ module Ui =
         TestId: string
         Label: string
         IsActive: (unit -> bool) option
+        /// When Some, evaluated each frame; false renders the button greyed
+        /// and swallows the click. None = always enabled. Wire to undo-stack
+        /// presence, clipboard contents, selection state, etc.
+        IsEnabled: (unit -> bool) option
+        /// Optional hover-tooltip text. Toolbar buttons are icon-only, so
+        /// the chrome surfaces this in the status bar after a short hover
+        /// delay rather than inventing a floating tooltip layer.
+        Tooltip: string option
         Action: unit -> unit
     }
 
@@ -60,6 +68,9 @@ module Ui =
         /// the app's key handler still has to do the dispatching.
         Shortcut: string option
         IsChecked: (unit -> bool) option
+        /// Same semantics as ButtonSpec.IsEnabled — false greys the row and
+        /// swallows the click.
+        IsEnabled: (unit -> bool) option
         Action: unit -> unit
     }
 
@@ -104,6 +115,7 @@ module Ui =
         Label = label
         Shortcut = None
         IsChecked = isChecked
+        IsEnabled = None
         Action = action
     }
 
@@ -112,11 +124,32 @@ module Ui =
         Label = label
         Shortcut = Some shortcut
         IsChecked = isChecked
+        IsEnabled = None
         Action = action
     }
 
+    /// Pipe-friendly menu-item decorator: `menuItem ... |> menuItemEnabled state.CanX`.
+    let menuItemEnabled (predicate: unit -> bool) (item: MenuItemSpec) =
+        { item with IsEnabled = Some predicate }
+
     let toolbarButton testId label active action =
-        ToolbarButton { TestId = testId; Label = label; IsActive = active; Action = action }
+        ToolbarButton {
+            TestId = testId; Label = label
+            IsActive = active; IsEnabled = None; Tooltip = None
+            Action = action
+        }
+
+    /// Pipe-friendly button decorators. Use as
+    ///   toolbarButton "x" "B" None act
+    ///   |> withTooltip "Bold (Ctrl+B)"
+    ///   |> withEnabled state.HasSelection
+    let withTooltip (text: string) = function
+        | ToolbarButton b -> ToolbarButton { b with Tooltip = Some text }
+        | other -> other
+
+    let withEnabled (predicate: unit -> bool) = function
+        | ToolbarButton b -> ToolbarButton { b with IsEnabled = Some predicate }
+        | other -> other
 
     let toolbarSelect testId value options action =
         ToolbarSelect { TestId = testId; Value = value; Options = options; Action = action }

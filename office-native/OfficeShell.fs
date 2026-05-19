@@ -41,6 +41,11 @@ type ShellRenderState = {
     /// Currently-open right-click menu (anchor + items). Apps set this
     /// with `openContextMenu`.
     OpenContextMenu: Signal<OpenContextMenuState option>
+    /// The testId of the toolbar control whose dropdown (combo or color
+    /// swatches) is currently open. Mirrors `OpenMenu`'s role for menu
+    /// buttons: `comboControl`/`colorControl` render the trigger in its
+    /// "Pressed" highlight while their dropdown is up.
+    OpenDropdownTrigger: Signal<string option>
     /// Screen-space coordinates of the most recent primary click. Apps
     /// should update this from their handleInput so that combobox / color
     /// dropdowns know where to anchor.
@@ -49,22 +54,46 @@ type ShellRenderState = {
     /// menu item, etc). Cells stamp this when their hoverable fires; the
     /// chrome reads it to render a hover background.
     HoveredId: Signal<string option>
+    /// When a hover begins on a cell, the chrome stamps `(id, t)` here
+    /// with `t = Platform.now()`. The view's status-bar tooltip path
+    /// reads it to know when to surface the cell's tooltip text (after a
+    /// short delay, so brushing past doesn't flicker descriptions in and
+    /// out of the status bar).
+    HoverStart: Signal<(string * float) option>
 }
 
 let createState () : ShellRenderState =
     { OpenMenu = signal None
       OpenDialog = signal None
       OpenContextMenu = signal None
+      OpenDropdownTrigger = signal None
       LastClickPos = signal (0.0, 0.0)
-      HoveredId = signal None }
+      HoveredId = signal None
+      HoverStart = signal None }
+
+/// Delay (seconds) between hover-enter and the tooltip appearing in the
+/// status bar. Long enough that you can sweep past a toolbar without the
+/// status line flickering; short enough to feel responsive when you stop.
+let private tooltipDelaySec = 0.5
 
 /// Wrap a child so it stamps `HoveredId` with `id` while the cursor is
 /// inside and clears it on exit (only if it's still the current id, so
-/// that fast moves between cells don't clobber the new one).
+/// that fast moves between cells don't clobber the new one). Also records
+/// the hover-start time and schedules a redraw after `tooltipDelaySec`
+/// so the status-bar tooltip path has something to fire on.
 let private withHover (renderState: ShellRenderState) (id: string) (child: Widget) : Widget =
     hoverable (fun h ->
-        if h then renderState.HoveredId.Value <- Some id
-        elif renderState.HoveredId.Value = Some id then renderState.HoveredId.Value <- None)
+        if h then
+            renderState.HoveredId.Value <- Some id
+            renderState.HoverStart.Value <- Some (id, Platform.now())
+            // Trigger a redraw after the delay so the tooltip-elapsed
+            // check in the status bar re-evaluates even when no other
+            // signal has changed in the interim.
+            Platform.setTimeout (int (tooltipDelaySec * 1000.0)) (fun () ->
+                Platform.requestRedraw()) |> ignore
+        elif renderState.HoveredId.Value = Some id then
+            renderState.HoveredId.Value <- None
+            renderState.HoverStart.Value <- None)
         child
 
 let openContextMenu (state: ShellRenderState) (x: float) (y: float) (items: MenuItemSpec list) =
@@ -73,6 +102,14 @@ let openContextMenu (state: ShellRenderState) (x: float) (y: float) (items: Menu
 
 let closeContextMenu (state: ShellRenderState) =
     state.OpenContextMenu.Value <- None
+    state.OpenDropdownTrigger.Value <- None
+
+/// Open a context menu and remember which toolbar control triggered it, so
+/// `comboControl`/`colorControl` can render the trigger in its "open"
+/// highlight while the menu is up.
+let openTriggeredContextMenu (state: ShellRenderState) (triggerId: string) (x: float) (y: float) (items: MenuItemSpec list) =
+    state.OpenDropdownTrigger.Value <- Some triggerId
+    openContextMenu state x y items
 
 let openDialog (state: ShellRenderState) (spec: DialogSpec) =
     let values = System.Collections.Generic.Dictionary<string, Signal<string>>()
@@ -175,19 +212,28 @@ let private chromeBandWithBorder (p: ChromePalette) fill height child =
             child
         ])
 
-let private flatToolbarCell (p: ChromePalette) (renderState: ShellRenderState) (id: string) isActive content action =
+let private flatToolbarCell
+        (p: ChromePalette) (renderState: ShellRenderState) (id: string)
+        (isActive: bool) (isEnabled: bool) (content: Widget) (action: unit -> unit) =
     let bg =
         dynamic (fun () ->
-            if isActive then rounded 4.0 p.Pressed empty
+            if not isEnabled then empty
+            elif isActive then rounded 4.0 p.Pressed empty
             elif renderState.HoveredId.Value = Some id then rounded 4.0 p.HotTop empty
             else empty)
-    withHover renderState id (
-        clickable action (
-            sized 28.0 28.0 (
-                stack [
-                    bg
-                    center content
-                ])))
+    let body =
+        sized 28.0 28.0 (
+            stack [
+                bg
+                center content
+            ])
+    // Disabled cells skip both the hover stamp (no tooltip / highlight) and
+    // the click action; rendered at 40% opacity to match the Google-style
+    // greyed look. Enabled cells retain the full interactive surface.
+    if isEnabled then
+        withHover renderState id (clickable action body)
+    else
+        opacity 0.4 body
 
 let private menuButtonChrome (p: ChromePalette) (renderState: ShellRenderState) (id: string) isOpen =
     dynamic (fun () ->
@@ -379,20 +425,34 @@ let private menuButton (p: ChromePalette) (renderState: ShellRenderState) (id: s
                 padXY 12.0 6.0 (textStyled Font.sm p.Text label)
             ]))
 
-let private comboControl (p: ChromePalette) label action =
+let private comboControl
+        (p: ChromePalette) (renderState: ShellRenderState) (id: string)
+        (label: string) (action: unit -> unit) =
     // Matches widgets/Widgets.fs `select` styling: 28-30px tall, rounded
-    // hairline border, label + chevron on the right.
-    clickable action (
-        sizedH 28.0 (
-            stack [
-                rounded 4.0 p.Input empty
-                border p.Border 1.0 4.0 (
-                    padXY 10.0 0.0 (
-                        rowAlign MSpaceBetween CCenter 0.0 [
-                            textStyled Font.sm p.Text label
-                            padXY 6.0 0.0 (textStyled Font.sm (parseHexColor "#5F6368") "▾")
-                        ]))
-            ]))
+    // hairline border, label + chevron on the right. Reads its own hover
+    // and open state from `renderState` so the trigger tracks the same
+    // pressed/hot/idle states as `flatToolbarCell` and `menuButton`.
+    let surface =
+        dynamic (fun () ->
+            let isOpen = renderState.OpenDropdownTrigger.Value = Some id
+            let isHover = renderState.HoveredId.Value = Some id
+            let fill =
+                if isOpen then p.Pressed
+                elif isHover then p.HotTop
+                else p.Input
+            rounded 4.0 fill empty)
+    withHover renderState id (
+        clickable action (
+            sizedH 28.0 (
+                stack [
+                    surface
+                    border p.Border 1.0 4.0 (
+                        padXY 10.0 0.0 (
+                            rowAlign MSpaceBetween CCenter 0.0 [
+                                textStyled Font.sm p.Text label
+                                padXY 6.0 0.0 (textStyled Font.sm (parseHexColor "#5F6368") "▾")
+                            ]))
+                ])))
 
 /// Standard 8x5 Word-style color palette. Apps may swap this for a richer
 /// picker later.
@@ -415,14 +475,26 @@ let standardColors : (string * string) list = [
     "Pink",        "#FFB6C1"
 ]
 
-let private colorControl (p: ChromePalette) value action =
-    clickable action (
-        stack [
-            box p.Input empty
-            border p.Border 1.0 4.0 (
-                padXY 4.0 4.0 (
-                    sized 20.0 16.0 (box (parseHexColor value) empty)))
-        ])
+let private colorControl
+        (p: ChromePalette) (renderState: ShellRenderState) (id: string)
+        (value: string) (action: unit -> unit) =
+    let surface =
+        dynamic (fun () ->
+            let isOpen = renderState.OpenDropdownTrigger.Value = Some id
+            let isHover = renderState.HoveredId.Value = Some id
+            let fill =
+                if isOpen then p.Pressed
+                elif isHover then p.HotTop
+                else p.Input
+            box fill empty)
+    withHover renderState id (
+        clickable action (
+            stack [
+                surface
+                border p.Border 1.0 4.0 (
+                    padXY 4.0 4.0 (
+                        sized 20.0 16.0 (box (parseHexColor value) empty)))
+            ]))
 
 /// Per-app configuration handed to `view`. ToolbarGlyph maps a testId to one
 /// of the glyph names known to `renderGlyph` (or to a fallback string that
@@ -448,9 +520,10 @@ let private toolbarSeparator (p: ChromePalette) =
 let private renderToolbarControl (p: ChromePalette) (renderState: ShellRenderState) (config: ShellConfig) = function
     | ToolbarButton spec ->
         let isActive = spec.IsActive |> Option.map (fun active -> active()) |> Option.defaultValue false
+        let isEnabled = spec.IsEnabled |> Option.map (fun en -> en()) |> Option.defaultValue true
         let pressed = config.ShowToolbarPressed spec.TestId isActive
         let icon = renderGlyph p spec.Label (config.ToolbarGlyph spec.TestId)
-        flatToolbarCell p renderState spec.TestId pressed icon spec.Action
+        flatToolbarCell p renderState spec.TestId pressed isEnabled icon spec.Action
     | ToolbarSelect spec ->
         let label =
             spec.Options()
@@ -458,7 +531,9 @@ let private renderToolbarControl (p: ChromePalette) (renderState: ShellRenderSta
             |> Option.map _.Label
             |> Option.defaultValue (spec.Value())
         // Click opens a dropdown menu of the available choices anchored at
-        // the most recent click position.
+        // the most recent click position. Routed through
+        // `openTriggeredContextMenu` so the trigger combo gets its
+        // "Pressed" highlight while the dropdown is up.
         let openDropdown () =
             let x, y = renderState.LastClickPos.Value
             let items =
@@ -469,13 +544,13 @@ let private renderToolbarControl (p: ChromePalette) (renderState: ShellRenderSta
                         choice.Label
                         (Some (fun () -> choice.Value = spec.Value()))
                         (fun () -> spec.Action(choice.Value)))
-            openContextMenu renderState x y items
-        comboControl p label openDropdown
+            openTriggeredContextMenu renderState spec.TestId x y items
+        comboControl p renderState spec.TestId label openDropdown
     | ToolbarInput spec ->
         match spec.Kind with
-        | NumberInput -> comboControl p (spec.Value()) (fun () -> spec.Action(spec.Value()))
+        | NumberInput ->
+            comboControl p renderState spec.TestId (spec.Value()) (fun () -> spec.Action(spec.Value()))
         | ColorInput ->
-            // Click opens the standard-color picker.
             let openSwatches () =
                 let x, y = renderState.LastClickPos.Value
                 let items =
@@ -486,9 +561,10 @@ let private renderToolbarControl (p: ChromePalette) (renderState: ShellRenderSta
                             (sprintf "● %s" name)
                             (Some (fun () -> spec.Value() = hex))
                             (fun () -> spec.Action(hex)))
-                openContextMenu renderState x y items
-            colorControl p (spec.Value()) openSwatches
-        | TextInput -> comboControl p (spec.Value()) (fun () -> spec.Action(spec.Value()))
+                openTriggeredContextMenu renderState spec.TestId x y items
+            colorControl p renderState spec.TestId (spec.Value()) openSwatches
+        | TextInput ->
+            comboControl p renderState spec.TestId (spec.Value()) (fun () -> spec.Action(spec.Value()))
     | ToolbarSeparator -> padXY 4.0 0.0 (toolbarSeparator p)
 
 let private renderToolbarRow (p: ChromePalette) (renderState: ShellRenderState) (config: ShellConfig) (row: ToolbarRowSpec) =
@@ -509,30 +585,43 @@ let private renderMenuPanel (p: ChromePalette) (renderState: ShellRenderState) (
 
     let renderItem (item: MenuItemSpec) =
         let isChecked = item.IsChecked |> Option.map (fun check -> check()) |> Option.defaultValue false
+        let isEnabled = item.IsEnabled |> Option.map (fun en -> en()) |> Option.defaultValue true
         let activate () =
-            item.Action ()
-            renderState.OpenMenu.Value <- None
+            if isEnabled then
+                item.Action ()
+                renderState.OpenMenu.Value <- None
+        // Row backgrounds, by priority: hover > checked > idle. The checked
+        // tint makes the active option in radio-style groups (paragraph
+        // style, font family) visible at a glance instead of the gutter
+        // check being the only signal.
         let bg =
             dynamic (fun () ->
-                if renderState.HoveredId.Value = Some item.TestId then box p.HotTop empty
+                if not isEnabled then box p.MenuPanel empty
+                elif renderState.HoveredId.Value = Some item.TestId then box p.HotTop empty
+                elif isChecked then box p.Pressed empty
                 else box p.MenuPanel empty)
+        let labelColor = if isEnabled then p.Text else p.ChromeDark
+        let shortcutColor = if isEnabled then parseHexColor "#5F6368" else p.ChromeDark
         let shortcutWidget =
             match item.Shortcut with
-            | Some s -> padXY 12.0 0.0 (textStyled Font.sm (parseHexColor "#5F6368") s)
+            | Some s -> padXY 12.0 0.0 (textStyled Font.sm shortcutColor s)
             | None -> empty
-        withHover renderState item.TestId (
-            clickable activate (
-                sized p.MenuWidth itemHeight (
-                    stack [
-                        bg
-                        rowAlign MStart CCenter 0.0 [
-                            sizedW gutterWidth (
-                                center (if isChecked then Icon.check 12.0 p.Text else empty))
-                            padXY 4.0 0.0 (textStyled Font.sm p.Text item.Label)
-                            expanded empty
-                            shortcutWidget
-                        ]
-                    ])))
+        let checkIcon = if isChecked && isEnabled then Icon.check 12.0 p.Text else empty
+        let row =
+            sized p.MenuWidth itemHeight (
+                stack [
+                    bg
+                    rowAlign MStart CCenter 0.0 [
+                        sizedW gutterWidth (center checkIcon)
+                        padXY 4.0 0.0 (textStyled Font.sm labelColor item.Label)
+                        expanded empty
+                        shortcutWidget
+                    ]
+                ])
+        if isEnabled then
+            withHover renderState item.TestId (clickable activate row)
+        else
+            row
 
     let menuContents = spec.Items |> List.map renderItem
     let panelHeight = float spec.Items.Length * itemHeight + 8.0
@@ -746,28 +835,40 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
                 ]
             | None -> empty)
 
-    let closeCtxMenu () = renderState.OpenContextMenu.Value <- None
+    // Right-click menu close clears the toolbar-trigger highlight too, so
+    // closing a combo dropdown leaves the trigger's open-state.
+    let closeCtxMenu () =
+        renderState.OpenContextMenu.Value <- None
+        renderState.OpenDropdownTrigger.Value <- None
 
     let renderContextMenuItem (item: MenuItemSpec) =
         let isChecked = item.IsChecked |> Option.map (fun check -> check()) |> Option.defaultValue false
+        let isEnabled = item.IsEnabled |> Option.map (fun en -> en()) |> Option.defaultValue true
         let activate () =
-            item.Action ()
-            closeCtxMenu ()
+            if isEnabled then
+                item.Action ()
+                closeCtxMenu ()
         let bg =
             dynamic (fun () ->
-                if renderState.HoveredId.Value = Some item.TestId then box p.HotTop empty
+                if not isEnabled then box p.MenuPanel empty
+                elif renderState.HoveredId.Value = Some item.TestId then box p.HotTop empty
+                elif isChecked then box p.Pressed empty
                 else box p.MenuPanel empty)
-        withHover renderState item.TestId (
-            clickable activate (
-                sizedH 28.0 (
-                    stack [
-                        bg
-                        rowAlign MStart CCenter 0.0 [
-                            sizedW p.MenuGutterWidth (
-                                center (if isChecked then Icon.check 12.0 p.Text else empty))
-                            padXY 8.0 0.0 (textStyled Font.sm p.Text item.Label)
-                        ]
-                    ])))
+        let labelColor = if isEnabled then p.Text else p.ChromeDark
+        let checkIcon = if isChecked && isEnabled then Icon.check 12.0 p.Text else empty
+        let row =
+            sizedH 28.0 (
+                stack [
+                    bg
+                    rowAlign MStart CCenter 0.0 [
+                        sizedW p.MenuGutterWidth (center checkIcon)
+                        padXY 8.0 0.0 (textStyled Font.sm labelColor item.Label)
+                    ]
+                ])
+        if isEnabled then
+            withHover renderState item.TestId (clickable activate row)
+        else
+            row
 
     let renderContextMenuPanel (state: OpenContextMenuState) =
         filtered [DropShadow(0.0, 4.0, 12, p.Shadow)] (
@@ -805,11 +906,34 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
     let toolbarBand =
         chromeBandWithBorder p p.ChromeTop toolbarHeight (
             column (config.ToolbarRows |> List.map (renderToolbarRow p renderState config)))
+    // Precompute id → tooltip lookup so the per-frame status-bar path is
+    // O(1) instead of scanning every toolbar row on each tick.
+    let tooltipFor : string -> string option =
+        let table = System.Collections.Generic.Dictionary<string, string>()
+        for row in config.ToolbarRows do
+            for control in row.Controls do
+                match control with
+                | ToolbarButton spec ->
+                    match spec.Tooltip with
+                    | Some t -> table.[spec.TestId] <- t
+                    | None -> ()
+                | _ -> ()
+        fun id -> match table.TryGetValue id with true, t -> Some t | _ -> None
     let statusBar =
         chromeBandWithBorder p p.ChromeTop statusHeight (
             sizedH statusHeight (
                 dynamic (fun () ->
-                    padXY 12.0 4.0 (textStyled Font.sm p.Text (config.StatusText())))))
+                    // After a 500 ms hover settles on a toolbar button with
+                    // a Tooltip, the status bar surfaces it. Otherwise the
+                    // host's StatusText() wins. This avoids inventing a
+                    // floating tooltip layer and matches how classic Word
+                    // surfaces action descriptions in its status line.
+                    let label =
+                        match renderState.HoverStart.Value with
+                        | Some (id, t) when Platform.now() - t >= tooltipDelaySec ->
+                            tooltipFor id |> Option.defaultValue (config.StatusText())
+                        | _ -> config.StatusText()
+                    padXY 12.0 4.0 (textStyled Font.sm p.Text label))))
     let windowBody =
         column [
             titleBar

@@ -299,6 +299,8 @@ let private shellState (state: Editor.SpreadsheetEditorState) : XlUi.ShellState 
             |> Array.map (fun n -> XlUi.choice n n)
             |> Array.toList
         SelectionSummary = fun () -> Editor.selectionSummary state
+        CanUndo = fun () -> not (List.isEmpty state.UndoStack.Value)
+        CanRedo = fun () -> not (List.isEmpty state.RedoStack.Value)
     }
 
 let private updateFormat (state: Editor.SpreadsheetEditorState) (update: CellFormat -> CellFormat) =

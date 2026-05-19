@@ -364,34 +364,34 @@ module Ui =
     ]
 
     let toolbar state actions = [
-        button "word-bold" "B" (Some state.IsBoldActive) actions.ToggleBold
-        button "word-italic" "I" (Some state.IsItalicActive) actions.ToggleItalic
-        button "word-underline" "U" (Some state.IsUnderlineActive) actions.ToggleUnderline
-        button "word-all-caps" "AA" (Some state.IsAllCapsActive) actions.ToggleAllCaps
-        button "word-small-caps" "Aa" (Some state.IsSmallCapsActive) actions.ToggleSmallCaps
-        button "word-strike" "S" (Some state.IsStrikeActive) actions.ToggleStrike
-        button "word-clear-formatting" "Clear" None actions.ClearFormatting
-        button "word-superscript" "Sup" (Some (fun () -> state.VertAlign() = "superscript")) (fun () -> actions.ApplyVertAlign (if state.VertAlign() = "superscript" then "baseline" else "superscript"))
-        button "word-subscript" "Sub" (Some (fun () -> state.VertAlign() = "subscript")) (fun () -> actions.ApplyVertAlign (if state.VertAlign() = "subscript" then "baseline" else "subscript"))
-        button "word-align-left" "Left" (Some (fun () -> state.Alignment() = "left")) (fun () -> actions.ApplyAlignment "left")
-        button "word-align-center" "Center" (Some (fun () -> state.Alignment() = "center")) (fun () -> actions.ApplyAlignment "center")
-        button "word-align-right" "Right" (Some (fun () -> state.Alignment() = "right")) (fun () -> actions.ApplyAlignment "right")
-        button "word-align-justify" "Justify" (Some (fun () -> state.Alignment() = "justify")) (fun () -> actions.ApplyAlignment "justify")
-        button "word-heading-1" "H1" (Some (fun () -> state.BlockStyle() = "heading-1")) (fun () -> actions.ApplyHeading 1)
-        button "word-heading-2" "H2" (Some (fun () -> state.BlockStyle() = "heading-2")) (fun () -> actions.ApplyHeading 2)
-        button "word-heading-3" "H3" (Some (fun () -> state.BlockStyle() = "heading-3")) (fun () -> actions.ApplyHeading 3)
-        button "word-normal-paragraph" "Normal" (Some (fun () -> state.BlockStyle() = "normal")) actions.ApplyNormalParagraph
-        button "word-bullet-list" "Bullet" (Some (fun () -> state.ListStyle() = "bullet")) actions.ToggleBullet
-        button "word-numbered-list" "Numbered" (Some (fun () -> state.ListStyle() = "numbered")) actions.ToggleNumbered
-        button "word-decrease-indent" "Out" None actions.DecreaseListIndent
-        button "word-increase-indent" "In" None actions.IncreaseListIndent
+        button "word-bold" "B" (Some state.IsBoldActive) actions.ToggleBold |> withTooltip "Bold (Ctrl+B)"
+        button "word-italic" "I" (Some state.IsItalicActive) actions.ToggleItalic |> withTooltip "Italic (Ctrl+I)"
+        button "word-underline" "U" (Some state.IsUnderlineActive) actions.ToggleUnderline |> withTooltip "Underline (Ctrl+U)"
+        button "word-all-caps" "AA" (Some state.IsAllCapsActive) actions.ToggleAllCaps |> withTooltip "All caps"
+        button "word-small-caps" "Aa" (Some state.IsSmallCapsActive) actions.ToggleSmallCaps |> withTooltip "Small caps"
+        button "word-strike" "S" (Some state.IsStrikeActive) actions.ToggleStrike |> withTooltip "Strikethrough"
+        button "word-clear-formatting" "Clear" None actions.ClearFormatting |> withTooltip "Clear formatting"
+        button "word-superscript" "Sup" (Some (fun () -> state.VertAlign() = "superscript")) (fun () -> actions.ApplyVertAlign (if state.VertAlign() = "superscript" then "baseline" else "superscript")) |> withTooltip "Superscript"
+        button "word-subscript" "Sub" (Some (fun () -> state.VertAlign() = "subscript")) (fun () -> actions.ApplyVertAlign (if state.VertAlign() = "subscript" then "baseline" else "subscript")) |> withTooltip "Subscript"
+        button "word-align-left" "Left" (Some (fun () -> state.Alignment() = "left")) (fun () -> actions.ApplyAlignment "left") |> withTooltip "Align left (Ctrl+Shift+L)"
+        button "word-align-center" "Center" (Some (fun () -> state.Alignment() = "center")) (fun () -> actions.ApplyAlignment "center") |> withTooltip "Align center (Ctrl+Shift+E)"
+        button "word-align-right" "Right" (Some (fun () -> state.Alignment() = "right")) (fun () -> actions.ApplyAlignment "right") |> withTooltip "Align right (Ctrl+Shift+R)"
+        button "word-align-justify" "Justify" (Some (fun () -> state.Alignment() = "justify")) (fun () -> actions.ApplyAlignment "justify") |> withTooltip "Justify (Ctrl+Shift+J)"
+        button "word-heading-1" "H1" (Some (fun () -> state.BlockStyle() = "heading-1")) (fun () -> actions.ApplyHeading 1) |> withTooltip "Heading 1"
+        button "word-heading-2" "H2" (Some (fun () -> state.BlockStyle() = "heading-2")) (fun () -> actions.ApplyHeading 2) |> withTooltip "Heading 2"
+        button "word-heading-3" "H3" (Some (fun () -> state.BlockStyle() = "heading-3")) (fun () -> actions.ApplyHeading 3) |> withTooltip "Heading 3"
+        button "word-normal-paragraph" "Normal" (Some (fun () -> state.BlockStyle() = "normal")) actions.ApplyNormalParagraph |> withTooltip "Normal paragraph"
+        button "word-bullet-list" "Bullet" (Some (fun () -> state.ListStyle() = "bullet")) actions.ToggleBullet |> withTooltip "Bulleted list"
+        button "word-numbered-list" "Numbered" (Some (fun () -> state.ListStyle() = "numbered")) actions.ToggleNumbered |> withTooltip "Numbered list"
+        button "word-decrease-indent" "Out" None actions.DecreaseListIndent |> withTooltip "Decrease indent"
+        button "word-increase-indent" "In" None actions.IncreaseListIndent |> withTooltip "Increase indent"
         toolbarSelect "word-font-family" state.FontFamily (fun () -> fontFamilies) actions.ApplyFontFamily
         toolbarNumberInput "word-font-size" state.FontSize (Some "8") (Some "72") actions.ApplyFontSize
         toolbarColorInput "word-text-color" state.TextColor actions.ApplyTextColor
         toolbarColorInput "word-highlight-color" state.HighlightColor actions.ApplyHighlight
-        button "word-print-pdf" "PDF" None actions.PrintPdf
-        button "word-find-replace" "Find" None actions.OpenFindReplace
-        button "word-insert-image" "Image" None actions.OpenImagePicker
+        button "word-print-pdf" "PDF" None actions.PrintPdf |> withTooltip "Export to PDF"
+        button "word-find-replace" "Find" None actions.OpenFindReplace |> withTooltip "Find and replace (Ctrl+F)"
+        button "word-insert-image" "Image" None actions.OpenImagePicker |> withTooltip "Insert image"
         button "word-image-size" "Img size" None actions.OpenImageSize
         button "word-insert-date-time" "Date" None actions.InsertDateTime
         button "word-insert-page-number" "Page #" None actions.InsertPageNumber

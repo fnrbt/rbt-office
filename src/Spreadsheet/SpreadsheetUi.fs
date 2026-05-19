@@ -176,6 +176,13 @@ module Ui =
         ActiveSheet: unit -> string
         Sheets: unit -> ChoiceSpec list
         SelectionSummary: unit -> string
+        /// True iff the editor's undo stack is non-empty. The chrome wires
+        /// this to the Undo button's IsEnabled so the button greys out
+        /// when there's nothing to undo, instead of looking clickable but
+        /// being a no-op.
+        CanUndo: unit -> bool
+        /// True iff the editor's redo stack is non-empty.
+        CanRedo: unit -> bool
     }
 
     type ShellActions = {
@@ -290,8 +297,8 @@ module Ui =
             PanelTestId = "xl-edit-menu-panel"
             Label = "Edit"
             Items = [
-                item "xl-menu-undo" "Undo" None actions.Undo
-                item "xl-menu-redo" "Redo" None actions.Redo
+                item "xl-menu-undo" "Undo" None actions.Undo |> menuItemEnabled state.CanUndo
+                item "xl-menu-redo" "Redo" None actions.Redo |> menuItemEnabled state.CanRedo
                 item "xl-menu-cut" "Cut" None actions.Cut
                 item "xl-menu-copy" "Copy" None actions.Copy
                 item "xl-menu-paste" "Paste" None actions.Paste
@@ -371,45 +378,47 @@ module Ui =
     let toolbarRows (state: ShellState) (actions: ShellActions) = [
         { Label = "Standard"; Controls = [
             button "xl-undo" "Undo" None actions.Undo
+            |> withTooltip "Undo (Ctrl+Z)" |> withEnabled state.CanUndo
             button "xl-redo" "Redo" None actions.Redo
-            button "xl-cut" "Cut" None actions.Cut
-            button "xl-copy" "Copy" None actions.Copy
-            button "xl-paste" "Paste" None actions.Paste
-            button "xl-find-replace" "Find" None actions.OpenFindReplace
-            button "xl-print-pdf" "PDF" None actions.PrintPdf
-            button "xl-insert-row" "+Row" None actions.InsertRow
-            button "xl-insert-column" "+Col" None actions.InsertColumn
-            button "xl-delete-row" "-Row" None actions.DeleteRow
-            button "xl-delete-column" "-Col" None actions.DeleteColumn
-            button "xl-sort-asc" "A→Z" None actions.SortAscending
-            button "xl-sort-desc" "Z→A" None actions.SortDescending
-            button "xl-filter" "Filter" (Some state.IsFilterActive) actions.ToggleFilter
-            button "xl-clear-filter" "Clear" None actions.ClearFilter
-            button "xl-insert-chart" "Chart" None actions.InsertChart
-            button "xl-insert-pivot" "Pivot" None actions.InsertPivot
-            button "xl-insert-table" "Table" None actions.InsertTable
-            button "xl-freeze-panes" "Freeze" (Some state.IsFreezePanesActive) actions.ToggleFreezePanes
+            |> withTooltip "Redo (Ctrl+Y)" |> withEnabled state.CanRedo
+            button "xl-cut" "Cut" None actions.Cut |> withTooltip "Cut (Ctrl+X)"
+            button "xl-copy" "Copy" None actions.Copy |> withTooltip "Copy (Ctrl+C)"
+            button "xl-paste" "Paste" None actions.Paste |> withTooltip "Paste (Ctrl+V)"
+            button "xl-find-replace" "Find" None actions.OpenFindReplace |> withTooltip "Find and replace (Ctrl+F)"
+            button "xl-print-pdf" "PDF" None actions.PrintPdf |> withTooltip "Export to PDF"
+            button "xl-insert-row" "+Row" None actions.InsertRow |> withTooltip "Insert row above"
+            button "xl-insert-column" "+Col" None actions.InsertColumn |> withTooltip "Insert column left"
+            button "xl-delete-row" "-Row" None actions.DeleteRow |> withTooltip "Delete row"
+            button "xl-delete-column" "-Col" None actions.DeleteColumn |> withTooltip "Delete column"
+            button "xl-sort-asc" "A→Z" None actions.SortAscending |> withTooltip "Sort ascending"
+            button "xl-sort-desc" "Z→A" None actions.SortDescending |> withTooltip "Sort descending"
+            button "xl-filter" "Filter" (Some state.IsFilterActive) actions.ToggleFilter |> withTooltip "Toggle filter"
+            button "xl-clear-filter" "Clear" None actions.ClearFilter |> withTooltip "Clear filters"
+            button "xl-insert-chart" "Chart" None actions.InsertChart |> withTooltip "Insert chart"
+            button "xl-insert-pivot" "Pivot" None actions.InsertPivot |> withTooltip "Insert pivot table"
+            button "xl-insert-table" "Table" None actions.InsertTable |> withTooltip "Insert table"
+            button "xl-freeze-panes" "Freeze" (Some state.IsFreezePanesActive) actions.ToggleFreezePanes |> withTooltip "Freeze panes"
         ] }
         { Label = "Formatting"; Controls = [
             toolbarSelect "xl-font-family" state.FontFamily (fun () -> fontFamilies) actions.ApplyFontFamily
             toolbarSelect "xl-font-size" state.FontSize (fun () -> fontSizes) actions.ApplyFontSize
-            button "xl-bold" "B" (Some state.IsBoldActive) actions.ToggleBold
-            button "xl-italic" "I" (Some state.IsItalicActive) actions.ToggleItalic
-            button "xl-underline" "U" (Some state.IsUnderlineActive) actions.ToggleUnderline
-            button "xl-strike" "S" (Some state.IsStrikeActive) actions.ToggleStrike
-            button "xl-clear-formatting" "Clear" None actions.ClearFormatting
+            button "xl-bold" "B" (Some state.IsBoldActive) actions.ToggleBold |> withTooltip "Bold (Ctrl+B)"
+            button "xl-italic" "I" (Some state.IsItalicActive) actions.ToggleItalic |> withTooltip "Italic (Ctrl+I)"
+            button "xl-underline" "U" (Some state.IsUnderlineActive) actions.ToggleUnderline |> withTooltip "Underline (Ctrl+U)"
+            button "xl-strike" "S" (Some state.IsStrikeActive) actions.ToggleStrike |> withTooltip "Strikethrough"
+            button "xl-clear-formatting" "Clear" None actions.ClearFormatting |> withTooltip "Clear formatting"
             toolbarColorInput "xl-text-color" state.TextColor actions.ApplyTextColor
             toolbarColorInput "xl-bg-color" state.BgColor actions.ApplyBgColor
             toolbarSelect "xl-border-style" state.BorderStyle (fun () -> borderStyles) actions.ApplyBorderStyle
-            button "xl-align-left" "Left" (Some (fun () -> state.HorizontalAlign() = "left")) (fun () -> actions.ApplyHorizontalAlign "left")
-            button "xl-align-center" "Center" (Some (fun () -> state.HorizontalAlign() = "center")) (fun () -> actions.ApplyHorizontalAlign "center")
-            button "xl-align-right" "Right" (Some (fun () -> state.HorizontalAlign() = "right")) (fun () -> actions.ApplyHorizontalAlign "right")
-            button "xl-valign-top" "Top" (Some (fun () -> state.VerticalAlign() = "top")) (fun () -> actions.ApplyVerticalAlign "top")
-            button "xl-valign-middle" "Middle" (Some (fun () -> state.VerticalAlign() = "middle")) (fun () -> actions.ApplyVerticalAlign "middle")
-            button "xl-valign-bottom" "Bottom" (Some (fun () -> state.VerticalAlign() = "bottom")) (fun () -> actions.ApplyVerticalAlign "bottom")
-            button "xl-wrap-text" "Wrap" (Some state.IsWrapTextActive) actions.ToggleWrapText
-            button "xl-merge-cells" "Merge" (Some state.IsMergedActive) actions.MergeCells
-            button "xl-unmerge-cells" "Unmerge" None actions.UnmergeCells
+            button "xl-align-left" "Left" (Some (fun () -> state.HorizontalAlign() = "left")) (fun () -> actions.ApplyHorizontalAlign "left") |> withTooltip "Align left"
+            button "xl-align-center" "Center" (Some (fun () -> state.HorizontalAlign() = "center")) (fun () -> actions.ApplyHorizontalAlign "center") |> withTooltip "Align center"
+            button "xl-align-right" "Right" (Some (fun () -> state.HorizontalAlign() = "right")) (fun () -> actions.ApplyHorizontalAlign "right") |> withTooltip "Align right"
+            button "xl-valign-top" "Top" (Some (fun () -> state.VerticalAlign() = "top")) (fun () -> actions.ApplyVerticalAlign "top") |> withTooltip "Align top"
+            button "xl-valign-middle" "Middle" (Some (fun () -> state.VerticalAlign() = "middle")) (fun () -> actions.ApplyVerticalAlign "middle") |> withTooltip "Align middle"
+            button "xl-valign-bottom" "Bottom" (Some (fun () -> state.VerticalAlign() = "bottom")) (fun () -> actions.ApplyVerticalAlign "bottom") |> withTooltip "Align bottom"
+            button "xl-wrap-text" "Wrap" (Some state.IsWrapTextActive) actions.ToggleWrapText |> withTooltip "Wrap text"
+            button "xl-merge-cells" "Merge" (Some state.IsMergedActive) actions.MergeCells |> withTooltip "Merge cells"
+            button "xl-unmerge-cells" "Unmerge" None actions.UnmergeCells |> withTooltip "Unmerge cells"
         ] }
         { Label = "Number"; Controls = [
             toolbarSelect "xl-number-format" state.NumberFormat (fun () -> numberFormats) actions.ApplyNumberFormat
