@@ -813,49 +813,62 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
     let defaultRowHeightPx =
         sheet.Format.DefaultRowHeight |> Option.map (fun h -> h * (96.0 / 72.0))
 
-    // Excel's font-derived auto row height for Calibri / Arial / similar
-    // (the common Excel default fonts). When customHeight="false" (or
-    // unspecified) Excel ignores the stored row ht and computes the height
-    // from the row's tallest font instead. Without this our renderer used
-    // sheet.Format.DefaultRowHeight (e.g. 12.8 pt) and undershot Excel by
-    // 2-3 pt per row, which cumulatively threw off every cell's y-pos.
-    //
-    // Values verified via VBS oracle against pandas-dimension_large
-    // (Calibri 11 → 15 pt; Calibri 18 in title → 23.25 pt). The standard
-    // Excel auto-height table is roughly point*(1.36..1.29) rounded down
-    // to the nearest 0.75-pt (1-px) grid. For sizes outside the table we
-    // interpolate linearly off the nearest two table entries.
-    let autoRowHeightPt (fontPt: float) : float =
-        let table =
-            [| 8.0,  11.00
-               9.0,  12.00
-               10.0, 12.75
-               11.0, 15.00
-               12.0, 15.75
-               14.0, 18.00
-               16.0, 21.00
-               18.0, 23.25
-               20.0, 26.25
-               22.0, 28.50
-               24.0, 31.50
-               26.0, 33.00
-               28.0, 36.00
-               36.0, 45.75
-               48.0, 60.00
-               72.0, 90.00 |]
+    // Excel's font-derived auto row height. Different font families produce
+    // different heights even at the same pt size because Excel uses each
+    // font's own line-height metrics. Empirically verified Calibri and
+    // Arial tables (the two common workbook defaults); other fonts fall
+    // back to the Calibri table since most rendering libraries match
+    // Calibri's metrics closely enough.
+    let calibriAutoTable =
+        [| 8.0,  11.00
+           9.0,  12.00
+           10.0, 12.75
+           11.0, 15.00
+           12.0, 15.75
+           14.0, 18.00
+           16.0, 21.00
+           18.0, 23.25
+           20.0, 26.25
+           22.0, 28.50
+           24.0, 31.50
+           26.0, 33.00
+           28.0, 36.00
+           36.0, 45.75
+           48.0, 60.00
+           72.0, 90.00 |]
+    let arialAutoTable =
+        // Arial 11 → 14.25 pt verified against poi-49325. Other sizes
+        // estimated as Calibri-table × (Arial 11 / Calibri 11) ratio
+        // until we have direct measurements.
+        [| 8.0,  10.50
+           9.0,  11.25
+           10.0, 12.75
+           11.0, 14.25
+           12.0, 15.00
+           14.0, 18.00
+           16.0, 20.25
+           18.0, 22.50
+           20.0, 24.75
+           22.0, 27.00 |]
+    let interpolate (table: (float * float) array) (fontPt: float) : float =
         if fontPt <= fst table.[0] then snd table.[0]
         elif fontPt >= fst table.[table.Length - 1] then
-            // Linear extrapolation from the last two entries at the high end.
             let n = table.Length
             let (pa, ra), (pb, rb) = table.[n - 2], table.[n - 1]
             rb + (fontPt - pb) * (rb - ra) / (pb - pa)
         else
-            // Find the bracketing pair and linearly interpolate.
             let mutable i = 0
             while i < table.Length - 1 && fst table.[i + 1] < fontPt do
                 i <- i + 1
             let (pa, ra), (pb, rb) = table.[i], table.[i + 1]
             ra + (fontPt - pa) * (rb - ra) / (pb - pa)
+    let autoRowHeightPt (familyName: string option) (fontPt: float) : float =
+        let table =
+            match familyName with
+            | Some name when name.Equals("Arial", System.StringComparison.OrdinalIgnoreCase) ->
+                arialAutoTable
+            | _ -> calibriAutoTable
+        interpolate table fontPt
 
     // <col min=M max=N width=W hidden=1/> applies W to every column in M..N
     // (inclusive). Hidden columns collapse to width=0 regardless of the
@@ -926,7 +939,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             let lockedPx =
                 sheet.Format.DefaultRowHeight
                 |> Option.map (fun h -> h * (96.0 / 72.0))
-                |> Option.defaultValue (autoRowHeightPt defaultFontSize * 96.0 / 72.0)
+                |> Option.defaultValue (autoRowHeightPt defaultFontName defaultFontSize * 96.0 / 72.0)
             [ 0 .. seedRows ]
             |> List.fold (fun acc r ->
                 if Map.containsKey r explicitRows then acc
@@ -942,15 +955,16 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         //   - the row's own max cell font auto-height (so a Title row with
         //     Calibri 18 pushes the row up to 23.25 pt).
         let maxFontByRow =
-            let acc = System.Collections.Generic.Dictionary<int, float>()
+            let acc = System.Collections.Generic.Dictionary<int, string option * float>()
             for KeyValue(addr, cd) in cells do
                 let pt = cd.Format.FontSize |> Option.map float |> Option.defaultValue defaultFontSize
+                let name = cd.Format.FontName |> Option.orElse defaultFontName
                 match acc.TryGetValue addr.Row with
-                | true, cur when cur >= pt -> ()
-                | _ -> acc.[addr.Row] <- pt
+                | true, (_, cur) when cur >= pt -> ()
+                | _ -> acc.[addr.Row] <- (name, pt)
             acc
         // The workbook-default-font auto-height that floors every row.
-        let defAutoPt = autoRowHeightPt defaultFontSize
+        let defAutoPt = autoRowHeightPt defaultFontName defaultFontSize
         let defAutoPx = defAutoPt * 96.0 / 72.0
         [ 0 .. seedRows ]
         |> List.fold (fun acc r ->
@@ -958,7 +972,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             else
                 let px =
                     match maxFontByRow.TryGetValue r with
-                    | true, pt -> max defAutoPx (autoRowHeightPt pt * 96.0 / 72.0)
+                    | true, (name, pt) -> max defAutoPx (autoRowHeightPt name pt * 96.0 / 72.0)
                     | _ -> defAutoPx
                 Map.add r px acc) explicitRows
 
