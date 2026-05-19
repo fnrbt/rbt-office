@@ -53,8 +53,11 @@ let private canvasStrokeRect (ctx: obj) (x: float) (y: float) (width: float) (he
 [<Emit("$0.strokeStyle = $5; $0.lineWidth = $6; $0.beginPath(); $0.moveTo($1, $2); $0.lineTo($3, $4); $0.stroke()")>]
 let private canvasLine (ctx: obj) (x1: float) (y1: float) (x2: float) (y2: float) (color: string) (lineWidth: float): unit = jsNative
 
-[<Emit("$0.fillStyle = $5; $0.font = ($6 ? 'bold ' : '') + ($7 ? 'italic ' : '') + $4 + 'px Arial, sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = $8; $0.fillText($1, $2, $3)")>]
-let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize: float) (color: string) (bold: bool) (italic: bool) (align: string): unit = jsNative
+[<Emit("(function(text,fontSize,fontName,bold,italic){const c=globalThis.__rbSpreadsheetMeasureCanvas||(globalThis.__rbSpreadsheetMeasureCanvas=document.createElement('canvas'));const ctx=c.getContext('2d');const family=fontName||'Arial';ctx.font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px '+family+', sans-serif';return ctx.measureText(text).width;})($0,$1,$2,$3,$4)")>]
+let private browserTextWidth (text: string) (fontSize: float) (fontName: string) (bold: bool) (italic: bool): float = jsNative
+
+[<Emit("$0.fillStyle = $5; $0.font = ($6 ? 'bold ' : '') + ($7 ? 'italic ' : '') + $4 + 'px ' + $9 + ', sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = $8; $0.fillText($1, $2, $3)")>]
+let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize: float) (color: string) (bold: bool) (italic: bool) (align: string) (fontName: string): unit = jsNative
 
 /// Spreadsheet component — interactively edits a Workbook (a collection
 /// of sheets sharing strings, styles, theme, defined names). The class
@@ -98,7 +101,8 @@ type Spreadsheet(container: Element) =
         Height = containerHeight
         HeaderHeight = headerHeight
         RowHeaderWidth = rowHeaderWidth
-        Measurer = None
+        Measurer = Some (fun text fontSize fontName bold italic ->
+            browserTextWidth text fontSize (fontName |> Option.defaultValue "Arial") bold italic)
     }
 
     let renderPortablePaintToCanvas (canvas: Element) =
@@ -142,8 +146,25 @@ type Spreadsheet(container: Element) =
                     | SpreadsheetPaint.VAlignTop -> text.Rect.Y
                     | SpreadsheetPaint.VAlignMiddle -> text.Rect.Y + (text.Rect.Height - blockHeight) / 2.0
                     | SpreadsheetPaint.VAlignBottom -> text.Rect.Y + text.Rect.Height - blockHeight
-                let baseline = blockTopY + float text.LineIndex * lineHeight + ascent
-                canvasText ctx text.Text x baseline text.FontSize text.Color text.Bold text.Italic align
+                let baseline = blockTopY + float text.LineIndex * lineHeight + ascent + text.BaselineShift
+                let fontName = text.FontName |> Option.defaultValue "Arial"
+                canvasText ctx text.Text x baseline text.FontSize text.Color text.Bold text.Italic align fontName
+                if text.Underline || text.UnderlineDouble || text.Strikethrough then
+                    let textWidth = browserTextWidth text.Text text.FontSize fontName text.Bold text.Italic
+                    let startX =
+                        match text.Align with
+                        | SpreadsheetPaint.AlignCenter -> x - textWidth / 2.0
+                        | SpreadsheetPaint.AlignRight -> x - textWidth
+                        | SpreadsheetPaint.AlignLeft -> x
+                    let endX = startX + textWidth
+                    if text.Underline || text.UnderlineDouble then
+                        let y = baseline + max 1.0 (text.FontSize * 0.12)
+                        canvasLine ctx startX y endX y text.Color 1.0
+                        if text.UnderlineDouble then
+                            canvasLine ctx startX (y + 2.0) endX (y + 2.0) text.Color 1.0
+                    if text.Strikethrough then
+                        let y = baseline - text.FontSize * 0.30
+                        canvasLine ctx startX y endX y text.Color 1.0
             canvasRestore ctx
 
     let recalculateFormulas () =
@@ -2165,6 +2186,88 @@ type Spreadsheet(container: Element) =
     member _.PortablePaintItemCount() =
         SpreadsheetPaint.buildViewportPaintItems model (currentViewport()) |> List.length
 
+    /// VBA-style per-cell information snapshot for parity comparison
+    /// against Excel COM. Mirrors what `extract-excel-layout.vbs` dumps
+    /// (one row per cell with address / geometry / format / value / text).
+    /// Returned as a flat JS array of objects, keyed by the same column
+    /// names as the Excel TSV so the comparison harness can join by
+    /// `address` and diff field-for-field.
+    member _.GetVbaLayoutCells() =
+        // Build a measurer using the loaded text-measurer if any (matches
+        // what the Paint pass would use at render time).
+        let viewport = currentViewport()
+        let cellRows = SpreadsheetLayout.visibleCells model viewport
+        // Cell rect's X/Y are in viewport-local CSS px; convert to
+        // viewport coordinates and to PDF points (1 pt = 96/72 px) so
+        // the comparison can target Excel's pt-based geometry.
+        let pxToPt (v: float) = v * 72.0 / 96.0
+        cellRows
+        |> List.map (fun cell ->
+            let addr = cell.Address
+            let rect = cell.Rect
+            let cellData = getCell addr model
+            let value = getCellValue addr model
+            let format = cellData |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
+            let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+            let measure =
+                viewport.Measurer
+                |> Option.map (fun m -> fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
+            let displayText = SpreadsheetPaint.cellDisplayText measure rect.Width format value
+            let valueRepr =
+                match value with
+                | CellValue.Empty -> ""
+                | CellValue.Number n -> string n
+                | CellValue.String s -> s
+                | CellValue.Boolean b -> if b then "TRUE" else "FALSE"
+                | CellValue.Error e -> "#" + e
+                | CellValue.Formula (expr, _) -> "=" + expr
+            let formula =
+                match value with
+                | CellValue.Formula (expr, _) -> "=" + expr
+                | _ -> ""
+            let addrA1 =
+                let mutable n = addr.Col + 1
+                let sb = System.Text.StringBuilder()
+                while n > 0 do
+                    let r = (n - 1) % 26
+                    sb.Insert(0, char (int 'A' + r)) |> ignore
+                    n <- (n - 1) / 26
+                sb.ToString() + string (addr.Row + 1)
+            let mergeFor =
+                model.MergedCells
+                |> List.tryFind (fun m ->
+                    addr.Row >= m.StartRow && addr.Row <= m.EndRow &&
+                    addr.Col >= m.StartCol && addr.Col <= m.EndCol)
+            let mergedRows, mergedCols =
+                match mergeFor with
+                | Some m -> m.EndRow - m.StartRow + 1, m.EndCol - m.StartCol + 1
+                | None -> 1, 1
+            createObj [
+                "row" ==> (addr.Row + 1)
+                "column" ==> (addr.Col + 1)
+                "address" ==> addrA1
+                "x" ==> pxToPt rect.X
+                "y" ==> pxToPt rect.Y
+                "width" ==> pxToPt rect.Width
+                "height" ==> pxToPt rect.Height
+                "mergedRows" ==> mergedRows
+                "mergedCols" ==> mergedCols
+                "rowHeight" ==> pxToPt (Map.tryFind addr.Row model.RowHeights |> Option.defaultValue 20.0)
+                "columnWidth" ==> pxToPt (Map.tryFind addr.Col model.ColumnWidths |> Option.defaultValue 64.0)
+                "wrapText" ==> format.WrapText
+                "hAlign" ==> (format.HorizontalAlign |> Option.defaultValue "general")
+                "vAlign" ==> (format.VerticalAlign |> Option.defaultValue "bottom")
+                "fontName" ==> (format.FontName |> Option.defaultValue "Calibri")
+                "fontSize" ==> fontPt
+                "bold" ==> format.Bold
+                "italic" ==> format.Italic
+                "numberFormat" ==> (format.NumberFormat |> Option.defaultValue "General")
+                "formula" ==> formula
+                "value" ==> valueRepr
+                "text" ==> displayText
+            ])
+        |> List.toArray
+
     /// Snapshot portable visible cell geometry for browser parity checks.
     member _.PortableCellGeometry() =
         SpreadsheetLayout.visibleCells model (currentViewport())
@@ -2425,8 +2528,8 @@ type Spreadsheet(container: Element) =
             render()
         | None -> ()
 
-    /// Set workbook for table reference support
-    member _.SetWorkbook(wb: Workbook) =
+    /// Set workbook context for table reference support.
+    member _.SetWorkbookContext(wb: Workbook) =
         workbook <- Some wb
         render()  // Re-render to apply table styles
 

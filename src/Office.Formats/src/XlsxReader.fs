@@ -18,6 +18,7 @@ type CellValue =
     | Boolean of bool
     | Date of string
     | Formula of string
+    | Error of string
     | Empty
 
 /// `<vertAlign val="..."/>` on an rPr or font element. Excel uses these
@@ -105,6 +106,16 @@ type CellStyle = {
     HorizontalAlign: string option
     VerticalAlign: string option
     WrapText: bool
+    /// `<alignment indent="N"/>` — N units of left-padding when horizontal
+    /// align is left/right/distributed. Each unit is ~3 spaces wide.
+    Indent: int
+    /// `<alignment shrinkToFit="1"/>` — auto-shrink the cell's text size to
+    /// fit the cell width when it would otherwise overflow.
+    ShrinkToFit: bool
+    /// `<alignment textRotation="N"/>` — degrees CCW (0..90), or 91..180
+    /// for CW (Excel encodes CW as 90 + |angle|), or 255 for stacked
+    /// (each character on its own line). 0 = horizontal (default).
+    TextRotation: int
     BorderTop: CellBorderSide option
     BorderBottom: CellBorderSide option
     BorderLeft: CellBorderSide option
@@ -137,6 +148,8 @@ type Row = {
     Index: int
     Cells: Cell list
     Height: float option
+    /// `<row hidden="1">` collapses the row in display + print (height = 0).
+    Hidden: bool
 }
 
 type ColumnInfo = {
@@ -144,6 +157,9 @@ type ColumnInfo = {
     MaxIndex: int
     Width: float option
     Hidden: bool
+    /// `<col style="N"/>` — default cellXf index for every cell in this
+    /// column that doesn't carry its own `s="..."`. None when absent.
+    Style: int option
 }
 
 // Advanced features
@@ -285,6 +301,15 @@ type SheetFormat = {
     BaseColWidth: float option
     DefaultColWidth: float option
     DefaultRowHeight: float option
+    /// `<sheetFormatPr customHeight="1"/>` — when true, Excel treats
+    /// `defaultRowHeight` as an explicit row height for every row that
+    /// doesn't carry its own `ht`, rather than as a hint the font-derived
+    /// auto-height can override. Without honoring this flag, fixtures
+    /// like pandas-ints_spelled_with_decimals (which sets
+    /// `customHeight="1" defaultRowHeight="15.75"` to lock every row at
+    /// 15.75 pt regardless of the Arial 10 cells inside it) drift below
+    /// Excel's grid.
+    CustomDefaultHeight: bool
 }
 
 /// XLSX table style reference (e.g. `<tableStyleInfo name="TableStyleMedium7"
@@ -354,6 +379,22 @@ type PageMargins = {
     Footer: float
 }
 
+/// `<pageSetup pageOrder>` enum. "downThenOver" (Excel default) walks all
+/// row pages of the first column slice before advancing to the next column
+/// slice. "overThenDown" does the inverse.
+type PageOrder =
+    | DownThenOver
+    | OverThenDown
+
+/// `<pageSetup cellComments>` controls how cell comments appear in print
+/// output: "none" (default) suppresses them, "asDisplayed" paints the
+/// red corner marker as it appears on screen, "atEnd" lists comments
+/// after the last printed page.
+type CellCommentsPrint =
+    | CellCommentsNone
+    | CellCommentsAsDisplayed
+    | CellCommentsAtEnd
+
 /// `<pageSetup>` plus `<sheetPr><pageSetUpPr fitToPage>`. PaperSize is
 /// OOXML's enum (1 = Letter, 9 = A4, …); None when unspecified.
 type PageSetup = {
@@ -368,6 +409,20 @@ type PageSetup = {
     Scale: int
     /// `<pageSetUpPr fitToPage="1"/>`.
     FitToPage: bool
+    /// Page number to display for the first page; `&P` substitutes this
+    /// value on page 1 and increments from there. Only honored when
+    /// `UseFirstPageNumber` is true.
+    FirstPageNumber: int
+    /// `useFirstPageNumber="1"` opts in to FirstPageNumber; otherwise
+    /// Excel ignores it and numbers from 1.
+    UseFirstPageNumber: bool
+    /// Direction of multi-page walk; default DownThenOver.
+    PageOrder: PageOrder
+    /// `blackAndWhite="1"` — strip fills, force text + borders to black.
+    BlackAndWhite: bool
+    /// `cellComments` attribute. Default `CellCommentsNone` (Excel's
+    /// default is to suppress comments in printed output).
+    CellComments: CellCommentsPrint
 }
 
 /// `<printOptions>` — boolean flags that affect what gets printed.
@@ -380,7 +435,8 @@ type PrintOptions = {
 
 /// `<headerFooter>` — Excel's `&L`/`&C`/`&R` field-coded strings for each
 /// section. `differentOddEven` / `differentFirst` flag whether the even /
-/// first variants are honored.
+/// first variants are honored. `scaleWithDoc` (default true) controls
+/// whether H/F text scales together with the page's print scale.
 type HeaderFooter = {
     OddHeader: string option
     OddFooter: string option
@@ -390,6 +446,7 @@ type HeaderFooter = {
     FirstFooter: string option
     DifferentOddEven: bool
     DifferentFirst: bool
+    ScaleWithDoc: bool
 }
 
 /// Per-sheet print metadata derived from the workbook's `_xlnm.*` defined
@@ -410,7 +467,8 @@ let defaultPrintOptions =
 
 let defaultHeaderFooter =
     { OddHeader = None; OddFooter = None; EvenHeader = None; EvenFooter = None
-      FirstHeader = None; FirstFooter = None; DifferentOddEven = false; DifferentFirst = false }
+      FirstHeader = None; FirstFooter = None; DifferentOddEven = false; DifferentFirst = false
+      ScaleWithDoc = true }
 
 type Worksheet = {
     Name: string
@@ -425,6 +483,9 @@ type Worksheet = {
     PivotTables: PivotTable list
     Tables: TableDefinition list
     FrozenPane: FrozenPane option
+    /// `<sheetView showZeros="false"/>`. When false, cells with numeric
+    /// value 0 render as blank (Excel default = true).
+    ShowZeros: bool
     Hyperlinks: Hyperlink list
     /// `<pageSetup>` + `<sheetPr><pageSetUpPr>`. None when neither is present.
     PageSetup: PageSetup option
@@ -588,6 +649,12 @@ module Xlsx =
         | Some "s", Some v -> SharedString (int v)
         | Some "b", Some v -> Boolean (v = "1")
         | Some "str", Some v -> String v
+        | Some "e", Some v ->
+            // Error cell: <c t="e"><v>#DIV/0!</v></c>. Strip the leading
+            // `#` so downstream `Error` rendering doesn't double up the
+            // prefix (the Paint pass adds it via `sprintf "#%s" e`).
+            let stripped = if v.StartsWith "#" then v.Substring 1 else v
+            CellValue.Error stripped
         | _, Some v ->
             match System.Double.TryParse(v) with
             | true, n -> Number n
@@ -630,13 +697,28 @@ module Xlsx =
     let row (rowNode: XmlNode) : Row option =
         Xml.attr "r" rowNode
         |> Option.map (fun r ->
-            let height = Xml.attr "ht" rowNode |> Option.map float
+            // `customHeight="false"` means Excel ignores the stored `ht`
+            // attribute and uses its font-derived auto row height. We
+            // mirror that: only honor `ht` when `customHeight` is true
+            // (the default when absent — most files write `ht` only when
+            // intentionally overriding). pandas-export workbooks emit
+            // `<row ht="13.8" customHeight="false">` and Excel renders
+            // those at the default ~15 pt, not 13.8 pt.
+            let customHeight =
+                Xml.attr "customHeight" rowNode
+                |> Option.map (fun v -> v = "1" || v = "true")
+                |> Option.defaultValue true
+            let height =
+                if customHeight then Xml.attr "ht" rowNode |> Option.map float
+                else None
+            let hidden = Xml.attr "hidden" rowNode |> Option.map (fun h -> h = "1" || h = "true") |> Option.defaultValue false
             {
                 Index = int r
                 Cells =
                     sElems "c" rowNode
                     |> List.choose cell
                 Height = height
+                Hidden = hidden
             })
 
     // Merged cells extraction
@@ -670,11 +752,13 @@ module Xlsx =
                 |> Option.defaultValue minIdx
             let width = Xml.attr "width" colNode |> Option.map float
             let hidden = Xml.attr "hidden" colNode |> Option.map (fun h -> h = "1") |> Option.defaultValue false
+            let style = Xml.attr "style" colNode |> Option.bind (fun s -> try Some (int s) with _ -> None)
             {
                 Index = minIdx
                 MaxIndex = maxIdx
                 Width = width
                 Hidden = hidden
+                Style = style
             })
 
     let columns (sheet: XmlNode) : ColumnInfo list =
@@ -691,6 +775,7 @@ module Xlsx =
         BaseColWidth = None
         DefaultColWidth = None
         DefaultRowHeight = None
+        CustomDefaultHeight = false
     }
 
     let sheetFormatPr (sheet: XmlNode) : SheetFormat =
@@ -701,6 +786,10 @@ module Xlsx =
                 BaseColWidth = Xml.attr "baseColWidth" node |> Option.bind (fun v -> try Some (float v) with _ -> None)
                 DefaultColWidth = Xml.attr "defaultColWidth" node |> Option.bind (fun v -> try Some (float v) with _ -> None)
                 DefaultRowHeight = Xml.attr "defaultRowHeight" node |> Option.bind (fun v -> try Some (float v) with _ -> None)
+                CustomDefaultHeight =
+                    Xml.attr "customHeight" node
+                    |> Option.map (fun v -> v = "1" || v = "true")
+                    |> Option.defaultValue false
             }
 
     // Worksheet extraction (advanced features parsed separately)
@@ -730,6 +819,15 @@ module Xlsx =
                         | Some url -> url, false
                         | None -> rid |> Option.defaultValue "", false
                 Some { Range = range; Target = target; IsInternal = isInternal })
+
+    /// `<sheetView showZeros="false"/>`. Excel's default is true; opt-out
+    /// hides numeric-zero cells while keeping other content intact.
+    let private showZeros (sheet: XmlNode) : bool =
+        sElem "sheetViews" sheet
+        |> Option.bind (sElem "sheetView")
+        |> Option.bind (Xml.attr "showZeros")
+        |> Option.map (fun v -> not (v = "0" || v = "false"))
+        |> Option.defaultValue true
 
     /// Read `<sheetView><pane xSplit ySplit state="frozen"/></sheetView>`.
     /// Excel only renders the freeze divider when state is "frozen" (or
@@ -811,6 +909,11 @@ module Xlsx =
                 | Some "landscape" -> OrientationLandscape
                 | _ -> OrientationDefault
             let intOr fallback name = n |> Option.bind (fun e -> parseIntAttr e name) |> Option.defaultValue fallback
+            let useFirst = n |> Option.map (fun e -> parseBoolAttr e "useFirstPageNumber") |> Option.defaultValue false
+            let pageOrder =
+                n |> Option.bind (Xml.attr "pageOrder") |> function
+                | Some "overThenDown" -> OverThenDown
+                | _ -> DownThenOver
             Some {
                 PaperSize = n |> Option.bind (fun e -> parseIntAttr e "paperSize")
                 Orientation = orientation
@@ -818,6 +921,15 @@ module Xlsx =
                 FitToHeight = intOr 1 "fitToHeight"
                 Scale = intOr 100 "scale"
                 FitToPage = fit
+                FirstPageNumber = intOr 1 "firstPageNumber"
+                UseFirstPageNumber = useFirst
+                PageOrder = pageOrder
+                BlackAndWhite = n |> Option.map (fun e -> parseBoolAttr e "blackAndWhite") |> Option.defaultValue false
+                CellComments =
+                    n |> Option.bind (Xml.attr "cellComments") |> function
+                    | Some "asDisplayed" -> CellCommentsAsDisplayed
+                    | Some "atEnd" -> CellCommentsAtEnd
+                    | _ -> CellCommentsNone
             }
 
     /// `<printOptions gridLines headings horizontalCentered verticalCentered/>`.
@@ -843,7 +955,12 @@ module Xlsx =
               FirstHeader = part "firstHeader"
               FirstFooter = part "firstFooter"
               DifferentOddEven = parseBoolAttr hf "differentOddEven"
-              DifferentFirst = parseBoolAttr hf "differentFirst" }
+              DifferentFirst = parseBoolAttr hf "differentFirst"
+              // `scaleWithDoc` defaults to true when absent — matches Excel.
+              ScaleWithDoc =
+                  Xml.attr "scaleWithDoc" hf
+                  |> Option.map (fun v -> v = "1" || v = "true")
+                  |> Option.defaultValue true }
 
     /// `<rowBreaks count="N"><brk id="R" max="C" man="1"/>…</rowBreaks>`.
     /// We only collect manual breaks (man="1"); automatic breaks that Excel
@@ -890,6 +1007,7 @@ module Xlsx =
             PivotTables = pivotTables
             Tables = tables
             FrozenPane = frozenPane sheet
+            ShowZeros = showZeros sheet
             Hyperlinks = hyperlinks resolveRel sheet
             PageSetup = pageSetup sheet
             PageMargins = pageMargins sheet
@@ -1339,7 +1457,17 @@ module Xlsx =
         }
 
     let parseNumberFormat (numFmtNode: XmlNode) : string option =
+        // Normalize the special "GENERAL" sentinel (case-insensitive) to
+        // canonical "General". Excel COM's cell.NumberFormat always reports
+        // this form regardless of how the file stored it, and our renderer
+        // / harness expect the canonical spelling — pandas-test_converters
+        // ships <numFmt formatCode="GENERAL"/> and Excel reports it as
+        // "General" through COM, so a literal pass-through diverged on
+        // every cell.
         Xml.attr "formatCode" numFmtNode
+        |> Option.map (fun code ->
+            if code.Equals("general", System.StringComparison.OrdinalIgnoreCase) then "General"
+            else code)
 
     /// Built-in numFmtId → format code table. Per the OOXML spec, ids 0–49
     /// are pre-defined and don't appear in the sheet's `<numFmts>` block, so
@@ -1376,11 +1504,62 @@ module Xlsx =
         | 49 -> Some "@"
         | _ -> None
 
-    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * bool * bool * bool * string option * float option * string option * string) array) (fills: string option array) (borders: BorderRecord array) (numFmts: Map<int, string>) (themeMajorFont: string option) (themeMinorFont: string option) : CellStyle =
-        let fontId = Xml.attr "fontId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
-        let fillId = Xml.attr "fillId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
-        let borderId = Xml.attr "borderId" xfNode |> Option.bind (fun id -> Some (int id)) |> Option.defaultValue 0
-        let numFmtId = Xml.attr "numFmtId" xfNode |> Option.bind (fun id -> Some (int id))
+    let parseCellXf (xfNode: XmlNode) (fonts: (bool * bool * bool * bool * bool * string option * float option * string option * string) array) (fills: string option array) (borders: BorderRecord array) (numFmts: Map<int, string>) (themeMajorFont: string option) (themeMinorFont: string option) (cellStyleXfs: (int * int * int * int option) array) : CellStyle =
+        // OOXML cellXf inheritance: when the cellXf references a base
+        // style via `xfId`, fields not explicitly overridden via the
+        // matching `applyXxx="1"` flag fall through to the base style's
+        // id. Excel's actual behaviour: if `applyXxx` is absent OR `0`,
+        // the base wins; if `1`, the cellXf wins. We resolve the
+        // effective fontId/fillId/borderId/numFmtId by checking each
+        // applyXxx flag against the base's id from cellStyleXfs.
+        let xfId = Xml.attr "xfId" xfNode |> Option.bind (fun s -> try Some (int s) with _ -> None)
+        let baseFontId, baseFillId, baseBorderId, baseNumFmtId =
+            match xfId with
+            | Some id when id >= 0 && id < cellStyleXfs.Length ->
+                let (f, fi, b, n) = cellStyleXfs.[id]
+                f, fi, b, n
+            | _ -> 0, 0, 0, None
+        let applyFlag name =
+            Xml.attr name xfNode
+            |> Option.map (fun v -> v = "1" || v = "true")
+        let ownInt name = Xml.attr name xfNode |> Option.bind (fun s -> try Some (int s) with _ -> None)
+        let resolveId (flagName: string) (ownAttr: string) (baseId: int) (defaultId: int) =
+            let own = ownInt ownAttr
+            match applyFlag flagName, own with
+            // applyXxx="1" → own value wins (using defaultId if absent)
+            | Some true, Some v -> v
+            | Some true, None -> defaultId
+            // applyXxx absent: per Excel's de-facto behavior the default is
+            // "apply" (treat as true), so an own value overrides the base.
+            // pandas-test_none_type has <xf numFmtId="165"> with no
+            // applyNumberFormat → Excel uses 165 (@), not inherited 0.
+            | None, Some v -> v
+            // applyXxx="0" (or both flag and own absent) → inherit base when
+            // we have an xfId, otherwise fall through to own/default.
+            | Some false, _ ->
+                match xfId with
+                | Some _ -> baseId
+                | None -> own |> Option.defaultValue defaultId
+            | None, None ->
+                match xfId with
+                | Some _ -> baseId
+                | None -> defaultId
+        let fontId = resolveId "applyFont" "fontId" baseFontId 0
+        let fillId = resolveId "applyFill" "fillId" baseFillId 0
+        let borderId = resolveId "applyBorder" "borderId" baseBorderId 0
+        let numFmtId =
+            // Number format: nullable. If applyNumberFormat="1" or absent
+            // (Excel's default is "apply"), use own; if "0" inherit base.
+            // Matches resolveId's handling of the other apply flags — see
+            // pandas-test_none_type for the case this catches.
+            let own = ownInt "numFmtId"
+            match applyFlag "applyNumberFormat", own with
+            | Some true, _ -> own
+            | None, Some _ -> own
+            | _, _ ->
+                match xfId with
+                | Some _ -> baseNumFmtId
+                | None -> own
 
         let (bold, italic, underline, underlineDouble, strikethrough, fontColor, fontSize, fontNameRaw, scheme) =
             if fontId < fonts.Length then fonts.[fontId]
@@ -1422,6 +1601,21 @@ module Xlsx =
             |> Option.bind (Xml.attr "wrapText")
             |> Option.map (fun v -> v = "1" || v = "true")
             |> Option.defaultValue false
+        let indent =
+            alignmentNode
+            |> Option.bind (Xml.attr "indent")
+            |> Option.bind (fun v -> try Some (int v) with _ -> None)
+            |> Option.defaultValue 0
+        let shrinkToFit =
+            alignmentNode
+            |> Option.bind (Xml.attr "shrinkToFit")
+            |> Option.map (fun v -> v = "1" || v = "true")
+            |> Option.defaultValue false
+        let textRotation =
+            alignmentNode
+            |> Option.bind (Xml.attr "textRotation")
+            |> Option.bind (fun v -> try Some (int v) with _ -> None)
+            |> Option.defaultValue 0
 
         {
             FontName = fontName
@@ -1437,6 +1631,9 @@ module Xlsx =
             HorizontalAlign = horizontalAlign
             VerticalAlign = verticalAlign
             WrapText = wrapText
+            Indent = indent
+            ShrinkToFit = shrinkToFit
+            TextRotation = textRotation
             BorderTop = border.Top
             BorderBottom = border.Bottom
             BorderLeft = border.Left
@@ -1449,13 +1646,30 @@ module Xlsx =
     let parseStyles (themeColors: string array) (themeMajorFont: string option) (themeMinorFont: string option) (stylesXml: string) : CellStyle array =
         let doc = XmlDsl.parse stylesXml
 
-        // Parse fonts
-        let fonts =
+        // Parse fonts. When a font has no own <sz val=...> we inherit the
+        // workbook default font's size (the first <font> entry). Excel COM
+        // reports `Font.Size = 10` for pandas-ints_spelled_with_decimals'
+        // font[1] (an Arial without <sz/>) because that's what's painted
+        // on screen — the size comes from font[0]'s <sz val="10"/>. Without
+        // this fallback our renderer defaulted to 11 pt and underreported
+        // the inherited size.
+        let fontsRaw =
             sElem "fonts" doc
             |> Option.map (sElems "font")
             |> Option.defaultValue []
             |> List.map (parseFont themeColors)
             |> List.toArray
+        let defaultParsedSize =
+            if fontsRaw.Length > 0 then
+                let (_, _, _, _, _, _, size, _, _) = fontsRaw.[0]
+                size
+            else None
+        let inheritFontSize (font: (bool * bool * bool * bool * bool * string option * float option * string option * string)) =
+            let (b, i, u, ud, s, c, sz, n, sch) = font
+            match sz with
+            | None -> (b, i, u, ud, s, c, defaultParsedSize, n, sch)
+            | _ -> font
+        let fonts = fontsRaw |> Array.map inheritFontSize
 
         // Parse fills
         let fills =
@@ -1486,11 +1700,30 @@ module Xlsx =
                 })
             |> Map.ofList
 
-        // Parse cell formats (cellXfs)
+        // Parse cellStyleXfs first — these are the "named" style base
+        // records (Normal, Comma, Currency, etc.) that cellXfs can
+        // reference via `xfId`. We don't need the full CellStyle here,
+        // just the id pointers (fontId/fillId/borderId/numFmtId) used
+        // by inheritance resolution in parseCellXf.
+        let cellStyleXfs : (int * int * int * int option) array =
+            sElem "cellStyleXfs" doc
+            |> Option.map (sElems "xf")
+            |> Option.defaultValue []
+            |> List.map (fun xf ->
+                let intOf name = Xml.attr name xf |> Option.bind (fun s -> try Some (int s) with _ -> None)
+                let fontId = intOf "fontId" |> Option.defaultValue 0
+                let fillId = intOf "fillId" |> Option.defaultValue 0
+                let borderId = intOf "borderId" |> Option.defaultValue 0
+                let numFmtId = intOf "numFmtId"
+                (fontId, fillId, borderId, numFmtId))
+            |> List.toArray
+
+        // Parse cell formats (cellXfs) — these can inherit from
+        // cellStyleXfs via `xfId`. parseCellXf resolves the chain.
         sElem "cellXfs" doc
         |> Option.map (sElems "xf")
         |> Option.defaultValue []
-        |> List.map (fun xf -> parseCellXf xf fonts fills borders numFmts themeMajorFont themeMinorFont)
+        |> List.map (fun xf -> parseCellXf xf fonts fills borders numFmts themeMajorFont themeMinorFont cellStyleXfs)
         |> List.toArray
 
     let sharedStrings (sstXml: string) : SharedStringEntry array =
@@ -1918,10 +2151,26 @@ module PivotTables =
 
 // Apply styles to cells
 let applyStyling (styles: CellStyle array) (sheet: Worksheet) : Worksheet =
+    // Note: `<col style="N"/>` is intentionally NOT applied to cells that
+    // exist in sheetData. Per the OOXML spec (§18.3.1.13), the column's
+    // default style applies only to cells that are NOT present in
+    // sheetData — i.e. completely missing `<c>` elements. Cells with a
+    // `<c>` element use either their own `s=` or cellXf 0 (default).
+    // Excel matches that exactly; our earlier attempt to apply col-style
+    // as cell fallback over-painted col A / col C against Excel.
+    // Cells without `s=` on the `<c>` element still use cellXfs[0]
+    // (the default cell format) — this picks up the workbook's default
+    // font, fill, number format from cellXfs[0]. Without this, plain
+    // cells fell through to the renderer's hardcoded Calibri-11 default
+    // and missed the workbook's chosen default font/size.
+    let defaultStyle =
+        if styles.Length > 0 then Some styles.[0] else None
     let applyToCell (cell: Cell) : Cell =
         match cell.StyleIndex with
         | Some idx when idx < styles.Length ->
             { cell with Style = Some styles.[idx] }
+        | None when defaultStyle.IsSome ->
+            { cell with Style = defaultStyle }
         | _ -> cell
 
     let applyToRow (row: Row) : Row =

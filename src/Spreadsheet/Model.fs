@@ -39,6 +39,18 @@ type CellFormat = {
     HorizontalAlign: string option  // "left", "center", "right", "justify"
     VerticalAlign: string option    // "top", "middle", "bottom"
     WrapText: bool
+    /// Excel `<alignment indent="N"/>`. Each unit ≈ 3 character widths and
+    /// pads inward from the cell's leading edge: from the left for left /
+    /// distributed alignment, from the right for right alignment.
+    Indent: int
+    /// `<alignment shrinkToFit="1"/>` — when set, the cell's text is
+    /// rendered at a reduced font size if its natural size would overflow
+    /// the cell width. Excel never increases the size; only shrinks.
+    ShrinkToFit: bool
+    /// `<alignment textRotation="N"/>` degrees. 0 = horizontal (default),
+    /// 1..90 = CCW (text rises left-to-right), 91..180 = CW (encoded as
+    /// 90 + |angle|), 255 = stacked.
+    TextRotation: int
     NumberFormat: string option
     BorderTop: BorderStyle option
     BorderBottom: BorderStyle option
@@ -87,6 +99,9 @@ let defaultFormat = {
     HorizontalAlign = None
     VerticalAlign = None
     WrapText = false
+    Indent = 0
+    ShrinkToFit = false
+    TextRotation = 0
     NumberFormat = None
     BorderTop = None
     BorderBottom = None
@@ -205,6 +220,21 @@ type PrintOrientation =
     | PortraitOrientation
     | LandscapeOrientation
 
+/// Walk order for 2D pagination. `DownThenOver` (Excel default) iterates
+/// every row-slice within the first column-slice before moving on to the
+/// next column-slice. `OverThenDown` does the inverse.
+type PageOrder =
+    | DownThenOver
+    | OverThenDown
+
+/// Print behavior for cell comments. Excel default is `CellCommentsNone`
+/// (don't print). `CellCommentsAsDisplayed` shows the red corner marker,
+/// `CellCommentsAtEnd` would list comments after the printed pages.
+type CellCommentsPrint =
+    | CellCommentsNone
+    | CellCommentsAsDisplayed
+    | CellCommentsAtEnd
+
 /// Page margins, all in *inches* (matching how OOXML encodes them and how
 /// Excel exposes them to users; the PDF backend converts to points).
 type PageMargins = {
@@ -243,6 +273,9 @@ type HeaderFooter = {
     DifferentOddEven: bool
     /// When true, FirstHeader/FirstFooter apply to the first page.
     DifferentFirst: bool
+    /// When true (Excel default), H/F text scales with the page's print
+    /// scale. When false, H/F always renders at its raw point size.
+    ScaleWithDoc: bool
 }
 
 /// Inclusive 0-indexed cell range. Used for print area and print titles.
@@ -283,6 +316,22 @@ type PageSetup = {
     /// Columns to repeat on the left of every page (inclusive, 0-indexed).
     /// From the col part of `_xlnm.Print_Titles`.
     RepeatCols: (int * int) option
+    /// Page number to display for the first printed page; `&P` substitutes
+    /// this value on page 1 and increments from there. Excel-default is
+    /// 1; only honored when `UseFirstPageNumber` is true.
+    FirstPageNumber: int
+    /// `useFirstPageNumber="1"` opts in to FirstPageNumber; when false,
+    /// Excel ignores the value and numbers from 1.
+    UseFirstPageNumber: bool
+    /// Direction of 2D pagination walk. Default DownThenOver.
+    PageOrder: PageOrder
+    /// When true, every fill renders as white and every text / border /
+    /// stroke renders as black. Matches Excel's `blackAndWhite="1"` print
+    /// option.
+    BlackAndWhite: bool
+    /// How cell comments appear in print output. Default `CellCommentsNone`
+    /// matches Excel's default of suppressing comments in print.
+    CellComments: CellCommentsPrint
 }
 
 let defaultPageMargins = {
@@ -300,6 +349,7 @@ let defaultHeaderFooter = {
     EvenHeader = None; EvenFooter = None
     FirstHeader = None; FirstFooter = None
     DifferentOddEven = false; DifferentFirst = false
+    ScaleWithDoc = true
 }
 
 let defaultPageSetup = {
@@ -317,6 +367,11 @@ let defaultPageSetup = {
     ManualRowBreaks = []
     ManualColBreaks = []
     PrintArea = None
+    FirstPageNumber = 1
+    UseFirstPageNumber = false
+    PageOrder = DownThenOver
+    BlackAndWhite = false
+    CellComments = CellCommentsNone
     RepeatRows = None
     RepeatCols = None
 }

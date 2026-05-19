@@ -31,16 +31,11 @@ excel.AskToUpdateLinks = False
 
 Set workbook = excel.Workbooks.Open(inputPath, False, True)
 
-' Print Excel's row/column headers and gridlines so the PDF matches what a
-' user sees on screen. Without these, the PDF is just bare cell content
-' with no axis to align our renderer against.
-Dim sheet
-For Each sheet In workbook.Worksheets
-  On Error Resume Next
-  sheet.PageSetup.PrintHeadings = True
-  sheet.PageSetup.PrintGridlines = True
-  On Error GoTo 0
-Next
+' Print exactly what the fixture asks for — its <printOptions
+' gridLines/headings> drive the chrome. Earlier versions force-enabled both
+' as a workaround for our renderer not supporting chrome; now that the
+' chrome path lands the fixture's preferences, forcing them on hides real
+' parity bugs (e.g. a fixture with headings="0" should print no chrome).
 
 workbook.ExportAsFixedFormat xlTypePDF, outputPath, xlQualityStandard, True, False, , , False
 

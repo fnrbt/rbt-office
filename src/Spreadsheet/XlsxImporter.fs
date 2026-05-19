@@ -22,6 +22,9 @@ open RedBat.Spreadsheet.Formula
         bold: bool option
         italic: bool option
         underline: bool option
+        underlineDouble: bool option
+        strikethrough: bool option
+        fontName: string option
         fontColor: string option
         fillColor: string option
         fontSize: float option
@@ -33,6 +36,24 @@ open RedBat.Spreadsheet.Formula
         borderBottom: ExcelBorder option
         borderLeft: ExcelBorder option
         borderRight: ExcelBorder option
+        borderDiagonal: ExcelBorder option
+        diagonalUp: bool option
+        diagonalDown: bool option
+        hasComment: bool option
+        hasListDropdown: bool option
+    }
+
+    type ExcelRichRun = {
+        text: string
+        bold: bool option
+        italic: bool option
+        underline: bool option
+        underlineDouble: bool option
+        strikethrough: bool option
+        color: string option
+        fontName: string option
+        fontSize: float option
+        vertAlign: string option
     }
 
     type ExcelWorkbook = obj
@@ -63,6 +84,29 @@ let private arrayFrom (items: obj): obj[] = jsNative
 [<Emit("typeof $0 === 'function'")>]
 let private isFunction (value: obj): bool = jsNative
 
+[<Emit("$0 == null")>]
+let private isNullOrUndefined (value: obj): bool = jsNative
+
+[<Emit("$0 == null ? null : $0[$1]")>]
+let private getProp (value: obj) (name: string): obj = jsNative
+
+let private optStringProp source name =
+    let value = getProp source name
+    if isNullOrUndefined value then None else Some (string value)
+
+let private optBoolProp source name =
+    let value = getProp source name
+    if isNullOrUndefined value then None else Some (unbox<bool> value)
+
+let private optFloatProp source name =
+    let value = getProp source name
+    if isNullOrUndefined value then None else Some (unbox<float> value)
+
+let private hexColor (value: string) =
+    let trimmed = value.TrimStart('#')
+    let cleaned = if trimmed.Length = 8 then trimmed.Substring(2) else trimmed
+    if cleaned.Length = 6 then Some ("#" + cleaned) else None
+
     /// <summary>
     /// Convert office-format cell value to RedBat.Grid CellValue.
     /// </summary>
@@ -90,7 +134,7 @@ let private convertBorder (border: ExcelBorder option): BorderStyle option =
         border |> Option.bind (fun b ->
             match b.style with
             | Some style when not (System.String.IsNullOrWhiteSpace(style)) ->
-                Some { Style = style; Color = b.color }
+                Some { Style = style; Color = b.color |> Option.bind hexColor }
             | _ -> None
         )
 
@@ -102,28 +146,50 @@ let private convertCellFormat (excelCell: ExcelCell): CellFormat =
             Bold = excelCell.bold |> Option.defaultValue false
             Italic = excelCell.italic |> Option.defaultValue false
             Underline = excelCell.underline |> Option.defaultValue false
-            UnderlineDouble = false
-            FontName = None
-            TextColor = excelCell.fontColor
-            BgColor = excelCell.fillColor
+            UnderlineDouble = excelCell.underlineDouble |> Option.defaultValue false
+            FontName = excelCell.fontName
+            TextColor = excelCell.fontColor |> Option.bind hexColor
+            BgColor = excelCell.fillColor |> Option.bind hexColor
             FontSize = excelCell.fontSize |> Option.map int  // Convert float to int
             HorizontalAlign = excelCell.horizontalAlign
             VerticalAlign = excelCell.verticalAlign
             WrapText = excelCell.wrapText |> Option.defaultValue false
+            Indent = 0
+            ShrinkToFit = false
+            TextRotation = 0
             NumberFormat = excelCell.numberFormat
             BorderTop = convertBorder excelCell.borderTop
             BorderBottom = convertBorder excelCell.borderBottom
             BorderLeft = convertBorder excelCell.borderLeft
             BorderRight = convertBorder excelCell.borderRight
-            BorderDiagonal = None
-            DiagonalUp = false
-            DiagonalDown = false
+            BorderDiagonal = convertBorder excelCell.borderDiagonal
+            DiagonalUp = excelCell.diagonalUp |> Option.defaultValue false
+            DiagonalDown = excelCell.diagonalDown |> Option.defaultValue false
             FilterButton = false
-            Strikethrough = false
-            HasComment = false
-            HasListDropdown = false
+            Strikethrough = excelCell.strikethrough |> Option.defaultValue false
+            HasComment = excelCell.hasComment |> Option.defaultValue false
+            HasListDropdown = excelCell.hasListDropdown |> Option.defaultValue false
             DataBar = None
             IconSet = None
+        }
+
+let private convertRichRun (runObj: obj): string * RunOverride =
+        let vertAlign =
+            match optStringProp runObj "vertAlign" |> Option.map (fun s -> s.ToLowerInvariant()) with
+            | Some "superscript" -> Some VertAlignSuperscript
+            | Some "subscript" -> Some VertAlignSubscript
+            | _ -> None
+        let text = optStringProp runObj "text" |> Option.defaultValue ""
+        text, {
+            Bold = optBoolProp runObj "bold"
+            Italic = optBoolProp runObj "italic"
+            Underline = optBoolProp runObj "underline"
+            UnderlineDouble = optBoolProp runObj "underlineDouble"
+            Strikethrough = optBoolProp runObj "strikethrough"
+            Color = optStringProp runObj "color" |> Option.bind hexColor
+            FontName = optStringProp runObj "fontName"
+            FontSize = optFloatProp runObj "fontSize"
+            VertAlign = vertAlign
         }
 
     /// <summary>
@@ -172,6 +238,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
 
             // Build cell map with styles
             let mutable cellMap = Map.empty<CellAddress, CellData>
+            let mutable richRunsMap = Map.empty<CellAddress, (string * RunOverride) list>
             let mutable columnWidths = Map.empty<int, float>
             let mutable rowHeights = Map.empty<int, float>
 
@@ -188,34 +255,42 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
 
                     // Get cell with style
                     let cellObj = excel?cellWithStyleAt(excelRef, sheet)
-                    if not (isNull cellObj) || not (isNull rawValue) then
+                    if not (isNullOrUndefined cellObj) || not (isNullOrUndefined rawValue) then
                         // Helper to extract border from cell object
                         let extractBorder (borderObj: obj) =
-                            if isNull borderObj then None
+                            if isNullOrUndefined borderObj then None
                             else
                                 Some {
-                                    style = if borderObj?style = null then None else Some (string borderObj?style)
-                                    color = if borderObj?color = null then None else Some (string borderObj?color)
+                                    style = optStringProp borderObj "style"
+                                    color = optStringProp borderObj "color"
                                 }
 
                         let excelCell: ExcelCell =
                             {
-                                value = if isNull rawValue || string rawValue = "" then None else Some rawValue
-                                formula = if isNull cellObj || cellObj?formula = null then None else Some (string cellObj?formula)
-                                bold = if isNull cellObj || cellObj?bold = null then None else Some (unbox cellObj?bold)
-                                italic = if isNull cellObj || cellObj?italic = null then None else Some (unbox cellObj?italic)
-                                underline = if isNull cellObj || cellObj?underline = null then None else Some (unbox cellObj?underline)
-                                fontColor = if isNull cellObj || cellObj?fontColor = null then None else Some (string cellObj?fontColor)
-                                fillColor = if isNull cellObj || cellObj?fillColor = null then None else Some (string cellObj?fillColor)
-                                fontSize = if isNull cellObj || cellObj?fontSize = null then None else Some (unbox cellObj?fontSize)
-                                numberFormat = if isNull cellObj || cellObj?numberFormat = null then None else Some (string cellObj?numberFormat)
-                                horizontalAlign = if isNull cellObj || cellObj?horizontalAlign = null then None else Some (string cellObj?horizontalAlign)
-                                verticalAlign = if isNull cellObj || cellObj?verticalAlign = null then None else Some (string cellObj?verticalAlign)
-                                wrapText = if isNull cellObj || cellObj?wrapText = null then None else Some (unbox cellObj?wrapText)
-                                borderTop = if isNull cellObj then None else extractBorder cellObj?borderTop
-                                borderBottom = if isNull cellObj then None else extractBorder cellObj?borderBottom
-                                borderLeft = if isNull cellObj then None else extractBorder cellObj?borderLeft
-                                borderRight = if isNull cellObj then None else extractBorder cellObj?borderRight
+                                value = if isNullOrUndefined rawValue || string rawValue = "" then None else Some rawValue
+                                formula = optStringProp cellObj "formula"
+                                bold = optBoolProp cellObj "bold"
+                                italic = optBoolProp cellObj "italic"
+                                underline = optBoolProp cellObj "underline"
+                                underlineDouble = optBoolProp cellObj "underlineDouble"
+                                strikethrough = optBoolProp cellObj "strikethrough"
+                                fontName = optStringProp cellObj "fontName"
+                                fontColor = optStringProp cellObj "fontColor"
+                                fillColor = optStringProp cellObj "fillColor"
+                                fontSize = optFloatProp cellObj "fontSize"
+                                numberFormat = optStringProp cellObj "numberFormat"
+                                horizontalAlign = optStringProp cellObj "horizontalAlign"
+                                verticalAlign = optStringProp cellObj "verticalAlign"
+                                wrapText = optBoolProp cellObj "wrapText"
+                                borderTop = extractBorder (getProp cellObj "borderTop")
+                                borderBottom = extractBorder (getProp cellObj "borderBottom")
+                                borderLeft = extractBorder (getProp cellObj "borderLeft")
+                                borderRight = extractBorder (getProp cellObj "borderRight")
+                                borderDiagonal = extractBorder (getProp cellObj "borderDiagonal")
+                                diagonalUp = optBoolProp cellObj "diagonalUp"
+                                diagonalDown = optBoolProp cellObj "diagonalDown"
+                                hasComment = optBoolProp cellObj "hasComment"
+                                hasListDropdown = optBoolProp cellObj "hasListDropdown"
                             }
 
                         let cellValue = convertCellValue excelCell
@@ -226,17 +301,34 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                             if isFunction excel?commentAt then excel?commentAt(excelRef, sheet)
                             else null
                         let comment =
-                            if isNull commentObj then None
+                            if isNullOrUndefined commentObj then None
                             else
-                                let text = if commentObj?text = null then "" else string commentObj?text
-                                let author = if commentObj?author = null then None else Some (string commentObj?author)
+                                let text = optStringProp commentObj "text" |> Option.defaultValue ""
+                                let author = optStringProp commentObj "author"
                                 if System.String.IsNullOrWhiteSpace(text) then None
                                 else Some { Text = text; Author = author }
 
-                        // Only store non-empty cells
-                        if cellValue <> CellValue.Empty then
+                        let cellFormat =
+                            if comment.IsSome then { cellFormat with HasComment = true }
+                            else cellFormat
+
+                        // Keep style-only cells. Excel renders fills,
+                        // borders, comment markers, and validation dropdowns
+                        // even when the cell has no value.
+                        if cellValue <> CellValue.Empty || cellFormat <> defaultFormat || comment.IsSome then
                             let addr = { Row = row; Col = col }
                             cellMap <- Map.add addr { Value = cellValue; Format = cellFormat; Comment = comment } cellMap
+
+                            if isFunction excel?richRunsAt then
+                                let richRunObjs = excel?richRunsAt(excelRef, workbook, sheet)
+                                if not (isNullOrUndefined richRunObjs) then
+                                    let runs =
+                                        richRunObjs
+                                        |> arrayFrom
+                                        |> Array.map convertRichRun
+                                        |> Array.toList
+                                    if not (List.isEmpty runs) then
+                                        richRunsMap <- Map.add addr runs richRunsMap
 
             // Import column widths (office-format provides in Excel units)
             for col in 0 .. colCount - 1 do
@@ -302,7 +394,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 SearchResults = []
                 SearchIndex = 0
                 ConditionalFormats = Map.empty
-                RichRuns = Map.empty
+                RichRuns = richRunsMap
                 MergedCells = mergedCellList
                 FrozenRows = 0
                 FrozenCols = 0

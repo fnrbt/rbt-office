@@ -435,12 +435,122 @@ module ExcelWriter =
 
 // Public API for XLSX reading
 module Excel =
+    let private columnIndex (letters: string) =
+        let mutable acc = 0
+        for ch in letters do
+            if System.Char.IsLetter ch then
+                acc <- acc * 26 + (int (System.Char.ToUpperInvariant ch) - int 'A' + 1)
+        acc - 1
+
+    let private refToCoord (ref: string) =
+        let clean = ref.Replace("$", "")
+        let letters = clean |> Seq.takeWhile System.Char.IsLetter |> Seq.toArray |> System.String
+        let digits = clean |> Seq.skipWhile System.Char.IsLetter |> Seq.toArray |> System.String
+        match System.Int32.TryParse digits with
+        | true, row when letters.Length > 0 -> Some (row - 1, columnIndex letters)
+        | _ -> None
+
+    let private rangeContains (row: int) (col: int) (range: string) =
+        let parts = range.Split(':')
+        match parts.Length with
+        | 1 ->
+            refToCoord parts.[0]
+            |> Option.exists (fun (r, c) -> r = row && c = col)
+        | 2 ->
+            match refToCoord parts.[0], refToCoord parts.[1] with
+            | Some (r1, c1), Some (r2, c2) ->
+                row >= min r1 r2 && row <= max r1 r2
+                && col >= min c1 c2 && col <= max c1 c2
+            | _ -> false
+        | _ -> false
+
+    let private rangeListContains row col (ranges: string) =
+        ranges.Split([| ' ' |], System.StringSplitOptions.RemoveEmptyEntries)
+        |> Array.exists (rangeContains row col)
+
+    let private optString (value: string option) =
+        value |> Option.defaultValue null
+
+    let private cellRefText (cellRef: XlsxReader.CellReference) =
+        sprintf "%s%d" cellRef.Column cellRef.Row
+
+    let private optFloat (value: float option) : obj =
+        match value with
+        | Some v -> box v
+        | None -> null
+
+    let private borderObj (side: XlsxReader.CellBorderSide option) : obj =
+        match side with
+        | Some s ->
+            createObj [
+                "style" ==> s.Style
+                "color" ==> optString s.Color
+            ]
+        | None -> null
+
+    let private cssColor (value: string option) : obj =
+        match value with
+        | Some raw ->
+            let trimmed = raw.TrimStart('#')
+            let cleaned = if trimmed.Length = 8 then trimmed.Substring(2) else trimmed
+            if cleaned.Length = 6 then box ("#" + cleaned) else null
+        | None -> null
+
+    let private richRunObj (text: string, props: XlsxReader.RunProps) =
+        createObj [
+            "text" ==> text
+            if props.Bold then "bold" ==> true
+            if props.Italic then "italic" ==> true
+            if props.Underline then "underline" ==> true
+            if props.UnderlineDouble then "underlineDouble" ==> true
+            if props.Strikethrough then "strikethrough" ==> true
+            "color" ==> cssColor props.Color
+            "fontName" ==> optString props.FontName
+            "fontSize" ==> optFloat props.FontSize
+            match props.VertAlign with
+            | XlsxReader.VertAlignSuperscript -> "vertAlign" ==> "superscript"
+            | XlsxReader.VertAlignSubscript -> "vertAlign" ==> "subscript"
+            | XlsxReader.VertAlignBaseline -> ()
+        ]
+
+    let private richRunsForCell (workbook: XlsxReader.Workbook) (cell: XlsxReader.Cell) =
+        let lift runs =
+            if List.length runs <= 1 then [||]
+            else runs |> List.map richRunObj |> List.toArray
+        if not (List.isEmpty cell.InlineRuns) then
+            lift cell.InlineRuns
+        else
+            match cell.Value with
+            | XlsxReader.SharedString idx
+                when idx >= 0
+                     && idx < workbook.SharedStringRuns.Length
+                     && not (List.isEmpty workbook.SharedStringRuns.[idx]) ->
+                lift workbook.SharedStringRuns.[idx]
+            | _ -> [||]
+
+    let private cellFormula (cell: XlsxReader.Cell) =
+        match cell.Value with
+        | XlsxReader.Formula f -> f
+        | _ -> null
+
+    let private listDropdownAt row col (sheet: XlsxReader.Worksheet) =
+        sheet.DataValidations
+        |> List.exists (fun dv ->
+            dv.ValidationType = "list"
+            && rangeListContains row col dv.Range)
+
+    let private commentAtCoord row col (sheet: XlsxReader.Worksheet) =
+        sheet.Comments
+        |> List.tryFind (fun c ->
+            c.CellRef.Row - 1 = row
+            && columnIndex c.CellRef.Column = col)
+
     /// Load an XLSX file from array buffer or blob
     let load = XlsxReader.load
 
     /// Get all worksheet names
     let sheetNames (wb: XlsxReader.Workbook) =
-        wb.Sheets |> List.map (fun s -> s.Name)
+        wb.Sheets |> List.map (fun s -> s.Name) |> List.toArray
 
     /// Get a worksheet by name
     let sheet name (wb: XlsxReader.Workbook) =
@@ -458,17 +568,93 @@ module Excel =
         |> Option.map (fun c -> c.Value)
 
     /// Get cell with style at reference
-    let cellWithStyleAt (ref: string) (sheet: XlsxReader.Worksheet) =
+    let cellWithStyleAt (ref: string) (sheet: XlsxReader.Worksheet) : obj =
         let cellRef = XlsxReader.Xlsx.parseCellRef ref
         sheet.Rows
         |> List.collect (fun r -> r.Cells)
         |> List.tryFind (fun c -> c.Reference = cellRef)
+        |> Option.map (fun c ->
+            let row = c.Reference.Row - 1
+            let col = columnIndex c.Reference.Column
+            let style = c.Style
+            createObj [
+                "formula" ==> cellFormula c
+                "bold" ==> (style |> Option.map (fun s -> s.Bold) |> Option.defaultValue false)
+                "italic" ==> (style |> Option.map (fun s -> s.Italic) |> Option.defaultValue false)
+                "underline" ==> (style |> Option.map (fun s -> s.Underline) |> Option.defaultValue false)
+                "underlineDouble" ==> (style |> Option.map (fun s -> s.UnderlineDouble) |> Option.defaultValue false)
+                "strikethrough" ==> (style |> Option.map (fun s -> s.Strikethrough) |> Option.defaultValue false)
+                "fontName" ==> (style |> Option.bind (fun s -> s.FontName) |> optString)
+                "fontColor" ==> (style |> Option.bind (fun s -> s.FontColor) |> optString)
+                "fillColor" ==> (style |> Option.bind (fun s -> s.FillColor) |> optString)
+                "fontSize" ==> (style |> Option.bind (fun s -> s.FontSize) |> optFloat)
+                "numberFormat" ==> (style |> Option.bind (fun s -> s.NumberFormat) |> optString)
+                "horizontalAlign" ==> (style |> Option.bind (fun s -> s.HorizontalAlign) |> optString)
+                "verticalAlign" ==> (style |> Option.bind (fun s -> s.VerticalAlign) |> optString)
+                "wrapText" ==> (style |> Option.map (fun s -> s.WrapText) |> Option.defaultValue false)
+                "borderTop" ==> (style |> Option.bind (fun s -> s.BorderTop) |> borderObj)
+                "borderBottom" ==> (style |> Option.bind (fun s -> s.BorderBottom) |> borderObj)
+                "borderLeft" ==> (style |> Option.bind (fun s -> s.BorderLeft) |> borderObj)
+                "borderRight" ==> (style |> Option.bind (fun s -> s.BorderRight) |> borderObj)
+                "borderDiagonal" ==> (style |> Option.bind (fun s -> s.BorderDiagonal) |> borderObj)
+                "diagonalUp" ==> (style |> Option.map (fun s -> s.DiagonalUp) |> Option.defaultValue false)
+                "diagonalDown" ==> (style |> Option.map (fun s -> s.DiagonalDown) |> Option.defaultValue false)
+                "hasComment" ==> (commentAtCoord row col sheet |> Option.isSome)
+                "hasListDropdown" ==> listDropdownAt row col sheet
+            ])
+        |> Option.defaultValue null
+
+    /// Get per-run rich text for a cell. Returns an empty JS array for plain cells.
+    let richRunsAt (ref: string) (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
+        let cellRef = XlsxReader.Xlsx.parseCellRef ref
+        sheet.Rows
+        |> List.collect (fun r -> r.Cells)
+        |> List.tryFind (fun c -> c.Reference = cellRef)
+        |> Option.map (richRunsForCell workbook)
+        |> Option.defaultValue [||]
+
+    /// Get a cell comment/note at reference.
+    let commentAt (ref: string) (sheet: XlsxReader.Worksheet) : obj =
+        match refToCoord ref with
+        | Some (row, col) ->
+            match commentAtCoord row col sheet with
+            | Some c ->
+                createObj [
+                    "text" ==> c.Text
+                    "author" ==> optString c.Author
+                ]
+            | None -> null
+        | None -> null
+
+    /// Effective column width in Excel character units.
+    let columnWidth (col: int) (sheet: XlsxReader.Worksheet) =
+        let col1 = col + 1
+        match sheet.Columns |> List.tryFind (fun c -> col1 >= c.Index && col1 <= c.MaxIndex) with
+        | Some c when c.Hidden -> 0.0
+        | Some c -> c.Width |> Option.defaultValue 0.0
+        | None ->
+            match sheet.Format.DefaultColWidth with
+            | Some width -> width
+            | None ->
+                match sheet.Format.BaseColWidth with
+                | Some width -> width + 1.0
+                | None -> 8.43
+
+    /// Effective row height in points.
+    let rowHeight (row: int) (sheet: XlsxReader.Worksheet) =
+        let row1 = row + 1
+        match sheet.Rows |> List.tryFind (fun r -> r.Index = row1) with
+        | Some r -> r.Height |> Option.orElse sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
+        | None -> sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
 
     /// Get merged cells from worksheet
-    let mergedCells (sheet: XlsxReader.Worksheet) = sheet.MergedCells
+    let mergedCells (sheet: XlsxReader.Worksheet) =
+        sheet.MergedCells
+        |> List.map (fun mc -> sprintf "%s:%s" (cellRefText mc.StartRef) (cellRefText mc.EndRef))
+        |> List.toArray
 
     /// Get column information
-    let columns (sheet: XlsxReader.Worksheet) = sheet.Columns
+    let columns (sheet: XlsxReader.Worksheet) = sheet.Columns |> List.toArray
 
     /// Get workbook styles
     let styles (wb: XlsxReader.Workbook) = wb.Styles
@@ -543,6 +729,10 @@ let api () = {|
         toArray = Excel.toArray
         cellAt = Excel.cellAt
         cellWithStyleAt = Excel.cellWithStyleAt
+        richRunsAt = Excel.richRunsAt
+        commentAt = Excel.commentAt
+        columnWidth = Excel.columnWidth
+        rowHeight = Excel.rowHeight
         mergedCells = Excel.mergedCells
         columns = Excel.columns
         styles = Excel.styles

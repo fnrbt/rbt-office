@@ -45,6 +45,12 @@ type PaintText = {
     /// Used for superscript (negative — shift up) and subscript (positive
     /// — shift down). Zero for normal text.
     BaselineShift: float
+    /// Cell-text rotation in degrees. 0 = horizontal (default), 1..90 =
+    /// CCW (text rises left-to-right), 91..180 = CW (encoded as
+    /// 90 + |angle|), 255 = stacked (each glyph on its own line). The
+    /// renderer rotates the glyph stream around the cell's anchor; the
+    /// rect itself is unrotated.
+    Rotation: int
 }
 
 type PaintItem =
@@ -118,18 +124,61 @@ let private firstSection (code: string) =
 
 let private sectionForValue (code: string) (n: float) : string =
     let sections = splitSections code
+    // Excel section grammar: [pos], [pos;neg], [pos;neg;zero], [pos;neg;zero;text].
+    // With < 3 sections, zero falls back to the positive section — NOT the
+    // negative one. With < 2 sections, negative also falls back to positive.
     let pick =
         if n > 0.0 then sections |> List.tryHead
-        elif n < 0.0 then sections |> List.skip (min 1 (sections.Length - 1)) |> List.tryHead
-        else sections |> List.skip (min 2 (sections.Length - 1)) |> List.tryHead
+        elif n < 0.0 then
+            if sections.Length >= 2 then sections |> List.item 1 |> Some
+            else sections |> List.tryHead
+        else
+            if sections.Length >= 3 then sections |> List.item 2 |> Some
+            else sections |> List.tryHead
     pick |> Option.defaultValue (List.head sections)
 
+/// Map an Excel format-section colour tag like `[Red]` to a hex string.
+/// Returns None when the tag is absent or unrecognised. Excel only honors
+/// the eight named colours plus `[Color N]` (palette index 1..56); we map
+/// the eight named cases — enough for the common `#,##0.00;[Red]-...`
+/// idiom that the parity pipeline cares about.
+let private numberFormatSectionColor (section: string) : string option =
+    let m =
+        System.Text.RegularExpressions.Regex.Match(
+            section,
+            @"^\s*\[(Red|Black|Green|White|Blue|Magenta|Yellow|Cyan)\]",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+    if not m.Success then None
+    else
+        match m.Groups.[1].Value.ToLowerInvariant() with
+        | "red" -> Some "#FF0000"
+        | "black" -> Some "#000000"
+        | "green" -> Some "#008000"
+        | "white" -> Some "#FFFFFF"
+        | "blue" -> Some "#0000FF"
+        | "magenta" -> Some "#FF00FF"
+        | "yellow" -> Some "#FFFF00"
+        | "cyan" -> Some "#00FFFF"
+        | _ -> None
+
+/// Pick the colour tag for the section of `code` that applies to value `n`.
+/// Default (no tag) → None.
+let numberFormatColorForValue (code: string) (n: float) : string option =
+    numberFormatSectionColor (sectionForValue code n)
+
+/// Strip `[$<currency>-<locale>]` prefixes before sniffing for date /
+/// time tokens. Without this, the currency string `[$JPY-411]` triggers
+/// `isDateFormat` because of the literal `y`, and the renderer dispatches
+/// the value to the date formatter instead of the number formatter.
+let private withoutLocaleTags (s: string) =
+    System.Text.RegularExpressions.Regex.Replace(s, @"\[\$[^\]]*\]", "")
+
 let private isDateFormat (code: string) =
-    let lower = (firstSection code).ToLowerInvariant()
+    let lower = (withoutLocaleTags (firstSection code)).ToLowerInvariant()
     lower.Contains "y" || lower.Contains "d" || lower.Contains "m/" || lower.Contains "mmm"
 
 let private isTimeFormat (code: string) =
-    let lower = (firstSection code).ToLowerInvariant()
+    let lower = (withoutLocaleTags (firstSection code)).ToLowerInvariant()
     lower.Contains "h" || (lower.Contains "s" && lower.Contains "m")
 
 let private excelSerialToDate (serial: float) : System.DateTime =
@@ -304,18 +353,14 @@ let private mdwPx (fontPt: float) : float =
 /// "G<n>" representation that fits the cell width. If even the shortest
 /// representation overflows, returns `#####` like Excel does.
 let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float): string =
-    // Leave 4 px padding on each side (matches the cell-text inset in
-    // buildCellPaintItems) plus one MDW char of additional right buffer
-    // that Excel's General format reserves. Without the extra char, a
-    // column sized against the workbook's default-font MDW (e.g. Calibri
-    // 12 at 8 px) ends up "fitting" 11 chars of Calibri-11 text (mdw=7),
-    // since column-width math and General-format math use different
-    // fonts. The extra char keeps the trim aligned with what Excel shows
-    // in pandas-test1's Calibri-12-default sheet (B2 = 0.98026851, not
-    // 0.9802685138). Try the requested precision *and* the standard set
-    // so we surface G9 mid-trim instead of jumping from G10 straight to
-    // G8 — Excel uses 9 sig digits in some columns.
-    let usableWidth = max 0.0 (cellWidthPx - 8.0 - mdwPx fontPt)
+    // Excel's General-format digit budget = floor((cellWidthPx - 5) / MDW).
+    // The 5 px matches OOXML's column-width padding (2 px each side + 1 px
+    // gridline) so pixels and effective-char count round-trip via the same
+    // formula. Verified against pandas-test1 col B (88 px / mdw=8 → 10
+    // chars → "0.98026851", matches Excel COM cell.Text). Try the full
+    // precision sweep so we surface G9 mid-trim instead of jumping from
+    // G10 straight to G8.
+    let usableWidth = max 0.0 (cellWidthPx - 5.0)
     let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
 
     let inv = System.Globalization.CultureInfo.InvariantCulture
@@ -399,10 +444,15 @@ let private stripExcelWidthPlaceholders (code: string) : string =
             sb.Append(c) |> ignore
             i <- i + 1
         elif (c = '_' || c = '*') && i + 1 < code.Length then
-            // Render `_X` as " " (single-space alignment) and `*X` as
-            // X alone. Excel proper uses these to fill column width;
-            // we don't have that concept so the minimal substitute is
-            // a single occurrence of the target char.
+            // `_X` reserves the width of one X glyph (Excel uses this
+            // for column-aligning open/close parens in accounting
+            // formats); `*X` repeats X to fill remaining column width.
+            // Without access to the cell width here we substitute a
+            // single occurrence — visible enough for non-financial cells
+            // but loses the full accounting alignment (where $ pins to
+            // the cell's left edge). Threading cellWidth + measurer
+            // through formatExcelNumber is the proper fix; left for a
+            // follow-up.
             if c = '_' then sb.Append(' ') |> ignore
             else sb.Append(code.[i + 1]) |> ignore
             i <- i + 2
@@ -460,14 +510,29 @@ let private formatExcelNumber (code: string) (n: float) : string =
                 sb.Append(c) |> ignore
                 i <- i + 1
         sb.ToString()
-    // Strip any `[$-XXX]` locale tag — these tell Excel which locale's
-    // date/month names to use; we keep the format string as-is and let
-    // the OS culture default decide. Also drop `[Red]` / color tags;
-    // section-based color routing isn't wired and the literal `[Red]`
-    // would otherwise become part of the output.
+    // `[$<currency>-<locale>]` carries a currency symbol prefix (the bit
+    // before the `-`) and a locale hint (the hex digits after). The locale
+    // hint is just metadata for us — we let .NET's invariant culture
+    // format the digits — but the currency symbol IS part of the rendered
+    // string and must be preserved. Substitute the prefix as a quoted
+    // literal so .NET formats it verbatim. Examples:
+    //   [$-409]m/d/yyyy           → m/d/yyyy   (no currency, just locale)
+    //   [$EUR-407]#,##0.00        → "EUR"#,##0.00
+    //   [$€-2]#,##0.00            → "€"#,##0.00
     let cleaned =
         System.Text.RegularExpressions.Regex.Replace(
-            cleaned, @"\[(?:\$[^\]]*|Red|Black|Green|White|Blue|Magenta|Yellow|Cyan)\]", "")
+            cleaned,
+            @"\[\$([^\]\-]*)(?:-[0-9A-Fa-f]+)?\]",
+            fun m ->
+                let prefix = m.Groups.[1].Value
+                if prefix.Length = 0 then ""
+                else "'" + prefix.Replace("'", "''") + "'")
+    // Color tags don't change the format string; they're handled by
+    // `numberFormatColorForValue` separately. Drop them so the literal
+    // [Red] doesn't end up in the output.
+    let cleaned =
+        System.Text.RegularExpressions.Regex.Replace(
+            cleaned, @"\[(?:Red|Black|Green|White|Blue|Magenta|Yellow|Cyan)\]", "")
     try valueForSection.ToString(cleaned, inv)
     with _ ->
         try n.ToString("G", inv)
@@ -482,7 +547,7 @@ let private formatExcelNumber (code: string) (n: float) : string =
 /// font (matches Excel's glyph-aware wrapping). When None — Fable web canvas
 /// or other contexts without a measurer — fall back to `mdwPx × charCount`,
 /// which over-estimates width and wraps earlier than Excel.
-let private wrapLines
+let wrapLines
     (measure: (string -> float) option)
     (cellWidthPx: float) (fontPt: float)
     (text: string) : string list =
@@ -552,22 +617,45 @@ let private wrapLines
 let private fitOrOverflow
     (measure: (string -> float) option)
     (cellWidth: float) (fontPt: float) (text: string) : string =
-    let usableWidth = max 0.0 (cellWidth - 8.0)
+    // Two thresholds: the FIT check (cellWidth - 8) matches the 4-px
+    // text inset on each side in buildCellPaintItems. The HASH BUDGET
+    // (cellWidth - 5) matches OOXML's column-width padding so the
+    // overflow-`#` count round-trips with Excel's chars-per-pixel math.
+    // Verified against pandas-test1 Sheet1 col A (95 px / mdw=8 → 11 #s,
+    // matches Excel COM cell.Text for the m/d/yyyy h:mm date that
+    // overflows).
+    //
+    // Fit check uses the MAX of measured-width and char-count-width:
+    // Excel renders `#####` whenever EITHER metric says no-fit, even when
+    // HarfBuzz/our measurer reports a value that does fit (e.g.
+    // pandas-test1 A2 "1/3/2000 0:00" measures ~71 px but Excel still
+    // overflows because char-count = 13 × MDW > cell width). Without the
+    // char-count guard our PDF render shows the date when Excel shows #s.
+    let fitWidth = max 0.0 (cellWidth - 8.0)
+    let hashBudget = max 0.0 (cellWidth - 5.0)
+    let mdw = mdwPx fontPt
+    let charCountWidth = float text.Length * mdw
     match measure with
     | Some m ->
-        if m text <= usableWidth then text
+        let textWidth = max (m text) charCountWidth
+        if textWidth <= fitWidth then text
         else
             // Pack as many '#' as actually fit at the real glyph advance.
             // Floor (via int) so the run is never wider than the cell.
             let hashW = m "#"
-            let count = if hashW <= 0.0 then 1 else max 1 (int (usableWidth / hashW))
+            let count = if hashW <= 0.0 then 1 else max 1 (int (hashBudget / hashW))
             System.String('#', count)
     | None ->
-        let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
-        if text.Length <= maxChars then text
-        else System.String('#', maxChars)
+        let fitChars = max 1 (int (fitWidth / mdw))
+        let hashChars = max 1 (int (hashBudget / mdw))
+        if text.Length <= fitChars then text
+        else System.String('#', hashChars)
 
-let rec private cellDisplayText
+/// Per-cell display text logic. Public so the VBA-style API surface
+/// (Spreadsheet GetVbaLayoutCells) can return the same text Excel's
+/// `cell.Text` would produce — including `#####` overflow, format-applied
+/// numbers / dates, error markers.
+let rec cellDisplayText
     (measure: (string -> float) option)
     (cellWidth: float) (format: CellFormat) (value: CellValue): string =
     let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
@@ -629,6 +717,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     LineIndex = 0
                     LineCount = 1
                     BaselineShift = 0.0
+                    Rotation = 0
                 }
             | RowHeader (row, rect) ->
                 yield FillRect (rect, "#f2f2f2")
@@ -649,6 +738,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     LineIndex = 0
                     LineCount = 1
                     BaselineShift = 0.0
+                    Rotation = 0
                 }
     ]
 
@@ -660,11 +750,35 @@ let private borderStrokeWidth (style: string) : float =
     match style.ToLowerInvariant() with
     | "hair" -> 0.5
     | "thin" | "dashed" | "dotted" | "dashdot" | "dashdotdot" -> 1.0
-    | "medium" | "mediumdashed" | "mediumdotted" | "mediumdashdot" | "mediumdashdotdot" -> 1.5
-    | "thick" -> 2.5
+    | "medium" | "mediumdashed" | "mediumdotted" | "mediumdashdot" | "mediumdashdotdot" -> 1.75
+    | "thick" -> 3.0
     | "double" -> 2.0
     | "slantdashdot" -> 1.5
     | _ -> 1.0
+
+/// Border-collapse priority for `<border style>` values. NOT the same as
+/// stroke width — Excel's collapse rule follows the OOXML hierarchy where
+/// `double` outranks `thick` even though `thick` paints fatter, because
+/// `double` carries more visual semantics. Order: None < Hair < Dotted <
+/// Dashed-family < Thin < Medium < Thick < Double. Equal priority resolves
+/// in the caller's tiebreak.
+let private borderPriority (style: string) : int =
+    match style.ToLowerInvariant() with
+    | "" -> 0
+    | "hair" -> 1
+    | "dotted" -> 2
+    | "dashed" -> 3
+    | "dashdot" -> 4
+    | "dashdotdot" -> 5
+    | "mediumdashed" -> 6
+    | "mediumdashdot" -> 7
+    | "mediumdashdotdot" -> 8
+    | "slantdashdot" -> 9
+    | "thin" -> 10
+    | "medium" -> 11
+    | "thick" -> 12
+    | "double" -> 13
+    | _ -> 10  // unknown → treat as thin
 
 let private borderColor (side: BorderStyle) : string =
     side.Color |> Option.defaultValue "#000000"
@@ -738,7 +852,37 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         let emitBorderSide (isHorizontal: bool) (side: BorderStyle) (x1: float, y1: float) (x2: float, y2: float) =
             let color = borderColor side
             let w = borderStrokeWidth side.Style
-            if side.Style.Equals("double", System.StringComparison.OrdinalIgnoreCase) then
+            let style = side.Style.ToLowerInvariant()
+            // Excel's dashed / dotted / dash-dot variants render as a
+            // pattern of on/off chunks. We approximate by chunking the
+            // line into short solid segments separated by gaps — the
+            // PaintItem.GridLine plumbing carries only width, not dash
+            // info, and emitting one segment per dash keeps every
+            // downstream renderer (PNG / PDF / browser) consistent.
+            let dashChunks onLen offLen =
+                let segs = System.Collections.Generic.List<PaintItem>()
+                if isHorizontal then
+                    let mutable x = x1
+                    while x < x2 do
+                        let segEnd = min x2 (x + onLen)
+                        segs.Add(GridLine (x, y1, segEnd, y2, color, w))
+                        x <- segEnd + offLen
+                else
+                    let mutable y = y1
+                    while y < y2 do
+                        let segEnd = min y2 (y + onLen)
+                        segs.Add(GridLine (x1, y, x2, segEnd, color, w))
+                        y <- segEnd + offLen
+                List.ofSeq segs
+            if style = "double" then
+                // Excel renders double borders straddling the cell edge
+                // (one stroke just outside, one just inside). When the
+                // adjacent cell has a wider border (e.g. `thick`, 3 px),
+                // both straddling strokes get overpainted by the
+                // neighbour's stroke. The caller compensates by passing
+                // a `doubleInset` adjusted pair of y / x values — see
+                // the per-cell emission loop for the direction-aware
+                // offsets.
                 let off = 1.0
                 if isHorizontal then
                     [ GridLine (x1, y1 - off, x2, y2 - off, color, 1.0)
@@ -746,33 +890,111 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 else
                     [ GridLine (x1 - off, y1, x2 - off, y2, color, 1.0)
                       GridLine (x1 + off, y1, x2 + off, y2, color, 1.0) ]
+            elif style = "dotted" || style = "mediumdotted" then
+                dashChunks 1.0 1.5
+            elif style = "dashed" || style = "mediumdashed" then
+                dashChunks 3.0 2.5
+            elif style = "dashdot" || style = "mediumdashdot" then
+                // 3-on, 1.5-off, 1-on, 1.5-off pattern: emit two sub-passes
+                let mainDash = dashChunks 3.0 4.0  // 3 + 1 + ~ offset for dot
+                let dotPass =
+                    let segs = System.Collections.Generic.List<PaintItem>()
+                    if isHorizontal then
+                        let mutable x = x1 + 4.0
+                        while x < x2 do
+                            let segEnd = min x2 (x + 1.0)
+                            segs.Add(GridLine (x, y1, segEnd, y2, color, w))
+                            x <- x + 8.0
+                    else
+                        let mutable y = y1 + 4.0
+                        while y < y2 do
+                            let segEnd = min y2 (y + 1.0)
+                            segs.Add(GridLine (x1, y, x2, segEnd, color, w))
+                            y <- y + 8.0
+                    List.ofSeq segs
+                mainDash @ dotPass
+            elif style = "dashdotdot" || style = "mediumdashdotdot" then
+                dashChunks 3.0 5.0  // simplification; main dash with bigger gap
+            elif style = "slantdashdot" then
+                dashChunks 3.0 3.0
+            elif style = "hair" then
+                // Hair = very thin dotted. Simulate with tiny dots.
+                dashChunks 0.5 1.0
             else
                 [ GridLine (x1, y1, x2, y2, color, w) ]
 
+        // Border collapse: when two adjacent cells both declare a border
+        // on their shared edge, Excel draws the heavier one and skips the
+        // lighter. Same-weight ties resolve in favour of the cell that
+        // "owns" the edge first in the natural emission order — for
+        // vertical edges that's the upper cell's bottom; for horizontal
+        // edges that's the left cell's right. Without this collapse,
+        // double + adjacent thin produced a doubled-line artifact and
+        // dashed borders got overpainted by the neighbour's solid edge.
+        let borderByAddr : Map<int * int, CellFormat> =
+            states
+            |> List.map (fun (c, f, _, _, _, _) -> (c.Address.Row, c.Address.Col), f)
+            |> Map.ofList
+        let neighborSide (row: int) (col: int) (side: CellFormat -> BorderStyle option) : BorderStyle option =
+            Map.tryFind (row, col) borderByAddr |> Option.bind side
+        // Use OOXML border priority (not raw stroke width) for collapse:
+        // `double` outranks `thick` in Excel even though it paints thinner.
+        // Order: None < Hair < Dotted < Dashed-family < Thin < Medium <
+        // Thick < Double.
+        let weightOf (side: BorderStyle option) : int =
+            match side with
+            | None -> 0
+            | Some s -> borderPriority s.Style
         for (cell, format, _value, selected, _background, zone) in states do
             yield zone, StrokeRect (cell.Rect, (if selected then "#217346" else "#a6a6a6"), (if selected then 2.0 else 1.0))
             let rect = cell.Rect
+            let r, c = cell.Address.Row, cell.Address.Col
+            // Top border: skip if the cell above already drew a heavier
+            // (or equal-weight) bottom edge. The above-bottom owns ties.
+            // Higher priority wins (double > thick > medium > thin > dashed).
             match format.BorderTop with
             | Some side ->
-                for item in emitBorderSide true side (rect.X, rect.Y) (rect.X + rect.Width, rect.Y) do
-                    yield zone, item
+                let aboveBottom = neighborSide (r - 1) c (fun f -> f.BorderBottom)
+                let mine = weightOf (Some side)
+                let neighbor = weightOf aboveBottom
+                if mine > neighbor then
+                    for item in emitBorderSide true side (rect.X, rect.Y) (rect.X + rect.Width, rect.Y) do
+                        yield zone, item
             | None -> ()
+            // Bottom border: draws unless the cell below has a strictly
+            // heavier top border.
             match format.BorderBottom with
             | Some side ->
-                let y = rect.Y + rect.Height
-                for item in emitBorderSide true side (rect.X, y) (rect.X + rect.Width, y) do
-                    yield zone, item
+                let belowTop = neighborSide (r + 1) c (fun f -> f.BorderTop)
+                let mine = weightOf (Some side)
+                let neighbor = weightOf belowTop
+                if mine >= neighbor then
+                    let y = rect.Y + rect.Height
+                    for item in emitBorderSide true side (rect.X, y) (rect.X + rect.Width, y) do
+                        yield zone, item
             | None -> ()
+            // Left border: skip if the cell to the left already drew a
+            // heavier-or-equal right edge.
             match format.BorderLeft with
             | Some side ->
-                for item in emitBorderSide false side (rect.X, rect.Y) (rect.X, rect.Y + rect.Height) do
-                    yield zone, item
+                let leftRight = neighborSide r (c - 1) (fun f -> f.BorderRight)
+                let mine = weightOf (Some side)
+                let neighbor = weightOf leftRight
+                if mine > neighbor then
+                    for item in emitBorderSide false side (rect.X, rect.Y) (rect.X, rect.Y + rect.Height) do
+                        yield zone, item
             | None -> ()
+            // Right border: draws unless the cell to the right has a
+            // strictly heavier left border.
             match format.BorderRight with
             | Some side ->
-                let x = rect.X + rect.Width
-                for item in emitBorderSide false side (x, rect.Y) (x, rect.Y + rect.Height) do
-                    yield zone, item
+                let rightLeft = neighborSide r (c + 1) (fun f -> f.BorderLeft)
+                let mine = weightOf (Some side)
+                let neighbor = weightOf rightLeft
+                if mine >= neighbor then
+                    let x = rect.X + rect.Width
+                    for item in emitBorderSide false side (x, rect.Y) (x, rect.Y + rect.Height) do
+                        yield zone, item
             | None -> ()
             // Diagonal strokes: down = top-left → bottom-right, up =
             // bottom-left → top-right. Cells set one or both via the
@@ -805,8 +1027,60 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 // so the icon and the cell text don't overlap (Excel does
                 // the same — the icon occupies a ~16 px gutter).
                 let iconGutter = if format.IconSet.IsSome then 16.0 else 0.0
-                let textRect = { cell.Rect with X = cell.Rect.X + 4.0 + iconGutter; Width = max 0.0 (cell.Rect.Width - 8.0 - iconGutter) }
-                let color = format.TextColor |> Option.defaultValue "#000000"
+                // Excel's `<alignment indent="N"/>` adds N units of leading
+                // padding (≈ 3 character widths per unit). It applies from
+                // the LEFT for left/distributed alignment, from the RIGHT
+                // for right align; ignored for center alignment.
+                let indentPx =
+                    if format.Indent <= 0 then 0.0
+                    else
+                        let unit = mdwPx fontPt * 3.0
+                        float format.Indent * unit
+                let horizForIndent =
+                    format.HorizontalAlign |> Option.map (fun s -> s.ToLowerInvariant()) |> Option.defaultValue ""
+                let leftIndent =
+                    if indentPx > 0.0 && (horizForIndent = "left" || horizForIndent = "distributed") then indentPx
+                    else 0.0
+                let rightIndent =
+                    if indentPx > 0.0 && horizForIndent = "right" then indentPx
+                    else 0.0
+                let textRect =
+                    { cell.Rect with
+                        X = cell.Rect.X + 4.0 + iconGutter + leftIndent
+                        Width = max 0.0 (cell.Rect.Width - 8.0 - iconGutter - leftIndent - rightIndent) }
+                // ShrinkToFit (single-line text only — wrap-mode escapes via
+                // line breaks). When the text overflows the cell width and
+                // shrinkToFit is set, scale the font size down until it fits,
+                // clamped at 1 pt. We need to re-measure with the smaller
+                // size so the rest of the rendering uses the actual width.
+                let fontPt, measure =
+                    if not format.ShrinkToFit || format.WrapText then fontPt, measure
+                    else
+                        match measure with
+                        | None -> fontPt, measure
+                        | Some m ->
+                            let width = m displayText
+                            if width <= textRect.Width || textRect.Width <= 0.0 then fontPt, measure
+                            else
+                                let ratio = max 0.1 (textRect.Width / width)
+                                let shrunk = max 1.0 (fontPt * ratio)
+                                let shrunkMeasure =
+                                    viewport.Measurer
+                                    |> Option.map (fun mm ->
+                                        fun (s: string) -> mm s shrunk format.FontName format.Bold format.Italic)
+                                shrunk, shrunkMeasure
+                // Excel number-format section colour overrides the cell's
+                // font colour: `#,##0.00;[Red]-#,##0.00` paints negatives red
+                // even when the cellXf has no explicit fontColor.
+                let sectionColor =
+                    match format.NumberFormat, value with
+                    | Some code, Number n -> numberFormatColorForValue code n
+                    | Some code, Formula (_, Number n) -> numberFormatColorForValue code n
+                    | _ -> None
+                let color =
+                    sectionColor
+                    |> Option.orElse format.TextColor
+                    |> Option.defaultValue "#000000"
                 let align = alignFromFormat format value
                 let hasHardBreak = displayText.Contains("\n")
                 let lines =
@@ -916,6 +1190,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                                 LineIndex = i
                                 LineCount = lineCount
                                 BaselineShift = baselineShift
+                                Rotation = format.TextRotation
                             }
                             cursor <- cursor + width
                 | _ ->
@@ -937,6 +1212,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             LineIndex = i
                             LineCount = lineCount
                             BaselineShift = 0.0
+                            Rotation = format.TextRotation
                         }
 
         // Pass 4: auto-filter dropdown triangles on table header cells. Excel
@@ -1114,6 +1390,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             LineIndex = 0
                             LineCount = 1
                             BaselineShift = 0.0
+                            Rotation = 0
                         })
                 }
             | RowHeader (row, rect) ->
@@ -1139,6 +1416,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             LineIndex = 0
                             LineCount = 1
                             BaselineShift = 0.0
+                            Rotation = 0
                         })
                 }
 

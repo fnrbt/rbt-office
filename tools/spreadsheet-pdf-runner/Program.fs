@@ -109,7 +109,10 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
     let model = ExcelNativeRunner.toModel sheet workbook
     // Page size + margins now live on model.PageSetup (defaulted to US
     // Letter portrait when the source file didn't specify a pageSetup).
-    let opts = pdfOptions sheet.Name (Path.GetFileName inputPath)
+    // Excel's `&F` substitutes the workbook's display name (no extension)
+    // on Windows; match that so our footer reads "synthetic-print" rather
+    // than "synthetic-print.xlsx".
+    let opts = pdfOptions sheet.Name (Path.GetFileNameWithoutExtension inputPath)
     let pdfBytes = RedBat.Spreadsheet.Pdf.Render.toBytes opts model
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, pdfBytes)

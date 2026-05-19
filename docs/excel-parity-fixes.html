@@ -138,8 +138,8 @@
     our saved pre-fix rendering, and the current post-fix rendering. The frames are cropped into the problem
     area rather than full-sheet screenshots. Baseline images live under <code>artifacts/baseline/</code> and
     are intentionally not committed. This page mirrors <code>docs/word-parity-fixes.html</code>; expect rows to land as Excel
-    fixes do. Current corpus health: <strong>53 / 53</strong> XLSX fixtures under <code>tests/test-documents-excel/</code> render through
-    <code>tools/excel-native-runner</code> without error.
+    fixes do. Current fixture inventory: <strong>65</strong> XLSX files under <code>tests/test-documents-excel/</code>; focused checks are
+    tracked in <code>docs/excel-parity-tracker.md</code>.
   </p>
 
   <table>
@@ -153,6 +153,1036 @@
       </tr>
     </thead>
     <tbody>
+      <tr>
+        <td>
+          <strong>Print row pitch: 14.52 pt / 19.36 px for Calibri 11 auto-rows</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-print.xlsx</code> — no <code>&lt;sheetFormatPr&gt;</code>, no per-row <code>ht</code>, no styles.xml; rows fall through to the workbook-default Calibri 11. <code>cell.Height</code> via COM reports 15 pt, but Excel's print PDF renders the rows at <strong>14.52 pt = 19.4 px</strong> pitch (alternating 19/20 px on the integer pixel grid).</span>
+          <span class="meta">Path checked: print PDF (<code>tools/spreadsheet-pdf-runner</code>) vs Excel-rendered PDF rasterized at 96 dpi.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2 / 1;">
+            <img src="../artifacts/excel/synthetic-print-print-rowpitch-excel.png" style="--w:1056px; --x:50px; --y:60px; --s:1.0" alt="Excel reference — 12 rows at 19.4 px pitch">
+          </div>
+          <div class="caption">Excel print PDF (1056×816, 96 dpi). 12 data rows stack from y≈82 to y≈315 — pitch ≈ 19.4 px/row = 14.55 pt. The integer pixel grid quantizes that fractional pitch into an alternating 19/20-px pattern, so consecutive rows aren't all the same height.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2 / 1;">
+            <img src="../artifacts/native/synthetic-print-after-print-rowpitch.png" style="--w:1056px; --x:50px; --y:60px; --s:1.0" alt="Ours after — pitch matches Excel">
+          </div>
+          <div class="caption">Ours after, same crop: 12 rows now stack to ~y=312, pitch ≈ 19.3 px/row. Body MAE on this fixture drops <strong>4.58 → 3.97 (-13%)</strong>. Five other synthetic-print fixtures see the same 13-15% reduction in the same pass. <code>compare-vba-layout.py</code> still reports 15 pt for <code>cell.Height</code> — the print adjustment lives in <code>Spreadsheet.Pdf</code> only, the model (and harness) keep the Excel-COM-reported value.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2 / 1;">
+            <img src="../artifacts/baseline/synthetic-print-before-print-rowpitch.png" style="--w:1056px; --x:50px; --y:60px; --s:1.0" alt="Ours before — rows 1 px too tall each">
+          </div>
+          <div class="caption">Ours before, same crop: 12 rows stretch to ~y=321 — every row is 1 px (0.75 pt) taller than Excel's pitch, accumulating an 8-px gap below Excel's grid by row 12. Body MAE 4.58. Without this fix our PDF output drifted further from Excel's baseline the further down the page you scrolled.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add a print-only row-height transform in <code>src/Spreadsheet.Pdf/Pdf.fs</code> that runs alongside <code>withPrintColumnWidths</code> and <code>withCommentMarkersForPrint</code>.</p>
+          <ul>
+            <li><code>withPrintRowHeights</code>: maps any row whose <code>model.RowHeights[r] == 20 px</code> (the Calibri 11 auto-derived value at 96 dpi) → <code>19.36 px</code> (= 14.52 pt). All other heights pass through unchanged — Title rows (Calibri 18 → 31 px), Calibri 12 default rows (21 px), <code>customHeight="1"</code> locks, and explicit <code>ht</code> attributes all keep their stored value.</li>
+            <li>Why <strong>fractional 19.36</strong> rather than 19: Excel's actual print pitch is 14.55 pt, which on the integer pixel grid alternates 19/20 px as cumulative y crosses pixel boundaries. A uniform 19 px renders TOO tight (drift the wrong way); the fractional value lets the PDF rasterizer reproduce Excel's quantization pattern.</li>
+            <li>Why <strong>only Calibri 11</strong>: empirical measurement against <code>synthetic-print-chrome</code>, <code>pandas-test1</code>, <code>pandas-dimension_large</code>, <code>pandas-ints_spelled_with_decimals</code>. Calibri 12 prints at 21 px = 15.75 pt (matches editor), Calibri 18 prints at 31 px = 23.25 pt (matches editor), Arial 10 with <code>customHeight="1"</code> prints at 21 px = 15.75 pt (the locked stored value). Only Calibri 11 auto exhibits the editor-vs-print discrepancy.</li>
+            <li>Why <strong>model untouched</strong>: <code>cell.Height</code> via Excel COM still reports 15 pt for these rows, so the VBA-layout harness must keep reading 15 pt. The transform lives in <code>Pdf.fs</code> only, applied after <code>toModel</code> but before pagination / paint, so the layout TSV emitter (which uses the unscaled model) is unaffected.</li>
+            <li>Regression guard: <code>compare-print-pdfs.py</code> body MAE on the 7 multi-row print fixtures drops 13-15% (synthetic-print 4.58→3.97, synthetic-print-centered 5.81→5.00, synthetic-header-footer-runs 4.66→3.97, synthetic-header-footer-runs-footer 4.65→3.97, synthetic-first-page-number 4.66→3.97, pandas-test1 1.54→1.51, pandas-dimension_large 0.13 unchanged). synthetic-print-chrome stays within noise (its body residual is dominated by the print-chrome bands, not row pitch).</li>
+            <li>Risk: if a workbook explicitly sets <code>ht="15.0" customHeight="true"</code> we'd shift it to 14.52 pt incorrectly. No fixture in the test corpus trips that; if one does, the model needs a per-row "auto vs explicit" flag.</li>
+            <li>Print helper tests: 16/16 still pass. <code>compare-vba-layout.py</code> across all 33 reference fixtures still clean at 0.1-pt tolerance.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Honor <code>&lt;sheetFormatPr customHeight="1"/&gt;</code> + inherit font size from workbook default</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-ints_spelled_with_decimals.xlsx</code> — <code>&lt;sheetFormatPr customHeight="1" defaultRowHeight="15.75"/&gt;</code> locks every row at 15.75 pt. Cells use <code>s="1"</code> (cellXf 1 → fontId 1), and font 1 is <code>&lt;font&gt;&lt;name val="Arial"/&gt;&lt;/font&gt;</code> with no <code>&lt;sz/&gt;</code>; Excel resolves it to the workbook-default font 0's <code>&lt;sz val="10.0"/&gt;</code>.</span>
+          <span class="meta">Path checked: print PDF (<code>tools/spreadsheet-pdf-runner</code>) vs Excel-rendered PDF rasterized at 96 dpi.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:1 / 1.4;">
+            <img src="../artifacts/excel/pandas-ints_spelled_with_decimals-print-page-1.png" style="--w:816px; --x:120px; --y:65px; --s:1.5" alt="Excel reference — 11 rows at 15.75 pt each">
+          </div>
+          <div class="caption">Excel print PDF: rows 1-11 stack at 15.75 pt pitch (= 21 px at 96 dpi). The <code>customHeight="1"</code> flag forces Excel to honor <code>defaultRowHeight</code> as a literal lock — even though every cell is Arial 10 (which would otherwise auto-height to 12.75 pt).</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:1 / 1.4;">
+            <img src="../artifacts/native/pandas-ints_spelled_with_decimals-after-print.png" style="--w:816px; --x:120px; --y:65px; --s:1.5" alt="Ours after — 11 rows at 15.75 pt each">
+          </div>
+          <div class="caption">Ours after, same crop: rows 1-11 also stack at 15.75 pt pitch. The runner now branches on <code>SheetFormat.CustomDefaultHeight</code> — when set, every row without its own <code>ht</code> uses <code>defaultRowHeight</code> directly instead of the font-derived auto-height table. <code>compare-vba-layout.py</code> goes from 11 y-mismatches + 11 height-mismatches + 11 fontSize-mismatches to clean across every field.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:1 / 1.4;">
+            <img src="../artifacts/baseline/pandas-ints_spelled_with_decimals-before-print.png" style="--w:816px; --x:120px; --y:65px; --s:1.5" alt="Ours before — 11 rows compressed at 12.75 pt each">
+          </div>
+          <div class="caption">Ours before, same crop: rows 1-11 stacked at 12.75 pt pitch (= 17 px), accumulating a ~30 pt gap below Excel's grid by row 11. Two issues compounded: (a) <code>customHeight="1"</code> wasn't parsed so <code>defaultRowHeight=15.75</code> was discarded, and (b) font 1's missing <code>&lt;sz/&gt;</code> fell through to the renderer's 11 pt fallback instead of inheriting font 0's 10 pt, so the auto-height landed on the wrong table row (12.75 pt for size 10, off-by-one for size 11 → 15 pt).</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> two parser additions + one runner branch.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs SheetFormat</code>: add <code>CustomDefaultHeight: bool</code>; parse <code>&lt;sheetFormatPr customHeight="1"/&gt;</code> into it. The attribute lives on the sheet element, distinct from the per-row <code>customHeight</code> attribute (which we already parse for individual rows).</li>
+            <li><code>src/Office.Formats/src/XlsxReader.fs parseStyles</code>: when a parsed <code>&lt;font&gt;</code> entry has no <code>&lt;sz/&gt;</code>, inherit the size from font 0 (the workbook default). Excel COM <code>Font.Size</code> returns the resolved size regardless of where it's stored — we now match.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: branch on <code>sheet.Format.CustomDefaultHeight</code>. When true, every non-explicit row gets <code>defaultRowHeight * 96/72</code> directly (no font lookup); when false, fall through to the existing font-derived auto-height with workbook-default-font floor.</li>
+            <li>Bonus fix in the same area: <code>storedWidthToPixels</code> now floors row height conversions to integer pixels (Excel rounds <code>ht="19.4"</code> → 25 px floor → 18.75 pt reported), fixing <code>pandas-df_empty</code> / <code>pandas-df_equals</code> / <code>pandas-df_header_oob</code> in the same pass.</li>
+            <li>Regression guard: print-helper tests pass 16/16. <code>compare-print-pdfs.py</code> body MAE on <code>synthetic-print</code> unchanged; <code>synthetic-print.pdf</code> byte-identical at 86984 bytes. All 19 reference fixtures in the VBA-layout harness now clean at 0.5 pt tolerance.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Font-derived row auto-height when <code>customHeight="false"</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-dimension_large.xlsx</code> — every row carries <code>customHeight="false"</code>; <code>&lt;sheetFormatPr defaultRowHeight="12.8"&gt;</code> sets a default Excel actually ignores. Row 1's content is a Calibri 18 "Title" style; rows 3-6 are Calibri 11 column headers and body.</span>
+          <span class="meta">Path checked: native PNG (<code>tools/excel-native-runner</code>) + print PDF (<code>tools/spreadsheet-pdf-runner</code>) vs Excel-rendered PDF rasterized at 96 dpi.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/pdf-compare-excel/tests_test-documents-excel_pandas-dimension_large/excel-1.png" style="--w:816px; --x:50px; --y:75px; --s:1.0" alt="Excel reference — Title row tall, body rows uniform">
+          </div>
+          <div class="caption">Excel print PDF (816×1056, 96 dpi): row 1 measures <strong>23.25 pt</strong> high to accommodate the Calibri 18 Title, every body row sits at <strong>15 pt</strong>. Body rows 1/4/7 to 3/6/9 stack with ~15 pt pitch. The stored <code>defaultRowHeight="12.8"</code> is silently overridden — Excel computes each row's height from the font's metrics whenever the row's <code>customHeight</code> is <code>false</code>.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/native/pandas-dimension_large-after-print.png" style="--w:816px; --x:50px; --y:75px; --s:1.0" alt="Ours after — Title row matches Excel">
+          </div>
+          <div class="caption">Ours after, same 816×1056 print PDF crop. Title row is now 23.25 pt and body rows 1/4/7 → 3/6/9 sit at 15 pt pitch — pixel-aligned with Excel's grid (verified via <code>compare-vba-layout.py</code>: 0 y/height mismatches at 0.1-pt tolerance).</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/baseline/pandas-dimension_large-before-print.png" style="--w:816px; --x:50px; --y:75px; --s:1.0" alt="Ours before — Title cramped, body rows compressed">
+          </div>
+          <div class="caption">Ours before, same crop. Body rows 1/4/7 → 3/6/9 hug the column headers because each row only got <code>defaultRowHeight=12.8</code> pt — 2 pt shorter than Excel's 15 pt. The Title row is also slightly compressed because we ignored the font's metrics and used the stored attribute even though <code>customHeight="false"</code>.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> teach the native runner to ignore <code>defaultRowHeight</code> for <code>customHeight="false"</code> rows and compute auto-height from per-row max font instead — falling back to the workbook-default font's auto-height for rows that have no cells of their own.</p>
+          <ul>
+            <li><code>tools/excel-native-runner/Program.fs</code>: new <code>autoRowHeightPt</code> table (Calibri 8→11pt up through 72→90pt) with linear interpolation between entries, plus extrapolation past the table at the high end.</li>
+            <li>Per-row computation: walk <code>cells</code> once to record max font size per row, then for every row not in <code>explicitRows</code> set <code>height = max(autoRowHeightPt(workbookDefaultFontSize), autoRowHeightPt(rowMaxFont))</code> converted to pixels.</li>
+            <li>Verified end-to-end against the Excel COM oracle: <code>compare-vba-layout.py</code> goes from 13 height-mismatches + 12 y-mismatches on <code>pandas-dimension_large</code> to <strong>clean across every field at 0.1-pt tolerance</strong>. <code>pandas-test1</code> Sheet4 (Calibri 12 workbook default, mixed Calibri 11/12 cells) likewise resolves its 6 y-mismatches in the same pass.</li>
+            <li>Regression guard: <code>compare-print-pdfs.py</code> body MAE on <code>synthetic-print</code> unchanged (its workbook default is Calibri 11 → 15 pt, same as our prior 15.0 fallback). All 79 non-blank fixtures in <code>tests/test-documents-excel/</code> still render through <code>spreadsheet-pdf-runner</code> without error.</li>
+            <li>Print-helper tests: 16/16 still pass.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>General-format precision matches column width (no extra MDW buffer)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-test1.xlsx</code> Sheet1 col B — Calibri 12 default, col B width 66 pt = 88 px (default chars × MDW + 5). Stored values like <code>0.980268513827481</code> need to trim to whatever fits the cell.</span>
+          <span class="meta">Path checked: native editor render plus Excel-COM-reported <code>cell.Text</code> via <code>tools/excel-parity/extract-excel-layout.vbs</code>.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/pdf-compare-excel/tests_test-documents-excel_pandas-test1/excel-1.png" style="--w:816px; --x:60px; --y:70px; --s:1.0" alt="Excel reference — every col A date hashes, col B shows 0.98026851">
+          </div>
+          <div class="caption">Excel print PDF (816×1056, 96 dpi). Col A: every <code>m/d/yyyy h:mm</code> date renders as <code>###########</code> — the format's template doesn't fit the column, so Excel hashes regardless of the underlying date's specific length. Col B: General-format value is trimmed to <code>0.98026851</code> — eight precision digits, exactly fitting <code>floor((88 − 5) / 8) = 10</code> chars (the leading <code>0.</code> consumes two).</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/native/pandas-test1-after-print.png" style="--w:816px; --x:60px; --y:70px; --s:1.0" alt="Ours after — every date hashes, col B 0.98026851">
+          </div>
+          <div class="caption">Ours after, same 816×1056 print PDF crop. Col A: <code>###########</code> on every row, matching Excel — the fit check now takes <code>max(measuredWidth, charCount × MDW)</code> so dates can't sneak through HarfBuzz's narrower glyph measurement. Col B: <code>0.98026851</code>, matching Excel's General-format trim exactly.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/baseline/pandas-test1-before-print.png" style="--w:816px; --x:60px; --y:70px; --s:1.0" alt="Ours before — dates fit in rows 2-6, col B 0.9802685">
+          </div>
+          <div class="caption">Ours before, same crop. Col A: rows 2-6 render the literal date (<code>1/3/2000 0:00</code>, …) because our measured glyph widths squeezed it into the cell; only rows 7-8 hash. Col B: <code>0.9802685</code> — seven precision digits because the General-format usable-width formula subtracted an extra full <code>MDW</code> char on top of the 8-px inset, stealing one digit from every value.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> drop the extra MDW buffer from <code>generalNumberDisplay</code> now that <code>storedWidthToPixels</code> and <code>charsToPixelsDefault</code> use the correct OOXML §18.3.1.13 formula (stored widths skip the +5; default chars include it).</p>
+          <ul>
+            <li><code>src/Spreadsheet/Paint.fs generalNumberDisplay</code>: <code>usableWidth = max 0 (cellWidthPx − 5)</code> (was <code>cellWidthPx − 8 − mdwPx fontPt</code>). The −5 matches OOXML's 4-px cell padding + 1-px gridline; subtracting the extra MDW char was a workaround for the earlier column-width bug and now over-trims.</li>
+            <li><code>src/Spreadsheet/Paint.fs fitOrOverflow</code>: split the fit-check from the hash-budget. Fit uses <code>cellWidth − 8</code> (the renderer's 4-px inset on each side); hash count uses <code>cellWidth − 5</code> (OOXML padding). And the fit-check now takes <code>max(measure text, text.Length × MDW)</code> so date formats that Excel hashes never sneak through HarfBuzz's narrower-than-GDI measurement — pandas-test1 Sheet1 col A now hashes <em>every</em> row (matches Excel) instead of fitting the date in rows 2-6.</li>
+            <li><code>tools/excel-native-runner/Program.fs storedWidthToPixels</code>: round to integer pixels (Excel's reported <code>cell.Width</code> is integer-px; without rounding our column x-positions drift ~0.1 px per column and accumulate).</li>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: missing <code>applyXxx</code> attribute now defaults to "apply" — matches Excel's de-facto behavior. Fixes <code>pandas-test_none_type</code>'s <code>@</code> text-format cells inheriting <code>General</code> instead of the format the <code>xf</code> actually points at.</li>
+            <li>Oracle pass: <code>compare-vba-layout.py</code> at 0.1-pt tolerance is now clean across all 8 reference fixtures except <code>pandas-test_decimal</code>'s 6 bold-fields (the table-style overlay being baked into cell format — tracked separately, no visual impact).</li>
+            <li>Regression guard: <code>compare-print-pdfs.py</code> MAE on <code>synthetic-print</code> unchanged. 16/16 print-helper tests still pass. 79/79 non-blank fixtures still smoke-render.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Column-style fill for cells missing from <code>&lt;sheetData&gt;</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-col-style-missing.xlsx</code> — three columns, col A and col C carry <code>&lt;col style="N"/&gt;</code> (yellow / green fills). Only A1, B1-B5, C1 exist in <code>&lt;sheetData&gt;</code>; rows 2-5 in cols A and C are absent entirely.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 500×190 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/excel/synthetic-col-style-missing-expected.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — col A yellow, col C green, col B white">
+          </div>
+          <div class="caption">Excel reference: col A renders yellow for all 5 rows even though rows 2-5 are missing from <code>&lt;sheetData&gt;</code>; col C is green for all 5 rows. The col-style applies to missing-cell positions only — col B's cells (which exist in <code>&lt;sheetData&gt;</code> with no <code>s=</code>) use the default no-fill style.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/native/synthetic-col-style-missing-after.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours after — col A yellow, col C green">
+          </div>
+          <div class="caption">After: same fills. The native runner now materialises empty-but-styled cells at every (row, col) inside the used range where the column has a non-trivial style and no cell already exists. Bounded by maxRow/maxCol so sparse sheets don't blow up.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/baseline/synthetic-col-style-missing-before.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours before — missing cells unstyled">
+          </div>
+          <div class="caption">Before: <code>&lt;col style&gt;</code> wasn't consulted for missing cells, so col A and col C rendered with only the cells that actually existed in <code>&lt;sheetData&gt;</code> (the A1 and C1 headers) — rows 2-5 in those columns rendered blank-white, diverging from Excel's col-fill behaviour.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> after building the cell map, walk the used range and materialise empty-but-styled cells where the column has a style and no cell already covers the position.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: <code>ColumnInfo.Style</code> was already parsed (earlier turn) but unused; this turn finally consumes it.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: post-pass over <code>cells</code>. For each column with a <code>Style</code> resolving to a "non-trivial" cellXf (carries a fill / border — pure font / number-format-only styles skip because they have no visual effect on an empty cell), iterate <code>r0 ∈ [0, maxRow]</code>, skip positions already in the map, and add <code>{ Value = Empty; Format = style; Comment = None }</code>.</li>
+            <li>Bounded by <code>maxRow</code> / <code>maxCol</code> — without that we'd materialise ~1M cells per styled column for any workbook (Excel's grid is 1,048,576 × 16,384). The used range is the natural boundary: anything past the last data row / column is invisible at typical viewport sizes.</li>
+            <li>Cells that exist with explicit <code>s=</code> still win; cells that exist without <code>s=</code> still use cellXf 0 (default). Only genuinely missing positions get the col fallback — matches Excel's actual semantics per OOXML §18.3.1.13.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. <code>compare-print-pdfs.py</code> MAE on <code>synthetic-print</code> unchanged (none of the print fixtures use col-style). Real-world impact: every pandas-export workbook that puts a per-column number format via <code>&lt;col style&gt;</code> now renders correctly for empty cells past the data extent.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>VBA-style layout parity harness — <code>cell.Text</code> + geometry vs Excel COM</strong>
+          <span class="meta">Pipeline: <code>tools/excel-parity/excel-layout-tsv.sh</code> dumps Excel's per-cell COM properties (<code>Address</code>, <code>Width</code>, <code>Height</code>, <code>Value</code>, <code>Text</code>, <code>NumberFormat</code>, font, fill, alignment) via the existing <code>extract-excel-layout.vbs</code>. New <code>tools/spreadsheet-vba-layout/</code> .NET runner dumps the same schema from our engine. <code>tools/excel-parity/compare-vba-layout.py</code> joins by <code>(sheet, address)</code> and reports field-level mismatches.</span>
+          <span class="meta">Mirrors Word's <code>getLayoutLines</code> / <code>getRangeInformation</code> / <code>computeRangeStatistics</code> pattern from <code>office-word/src/Word/Word.fs</code> — same shape, different surface (.NET CLI for now, Spreadsheet-class method also added for an eventual Playwright path).</span>
+        </td>
+        <td>
+          <div class="zoom placeholder" style="min-height:140px; aspect-ratio:3 / 1;">
+            <span>Excel COM oracle:<br><code>A2: width=71.25pt height=15.75pt fontSize=12 text=###########</code></span>
+          </div>
+          <div class="caption">Excel's TSV (excerpt) for <code>pandas-test1!A2</code>. <code>cell.Text</code> is the displayed string with format + Excel's <code>#####</code> overflow rule applied — authoritative.</div>
+        </td>
+        <td>
+          <div class="zoom placeholder" style="min-height:140px; aspect-ratio:3 / 1;">
+            <span>Our engine TSV (post-fixes):<br><code>A2: width=70.99pt height=16pt fontSize=12 text=##########</code></span>
+          </div>
+          <div class="caption">Same fixture through <code>spreadsheet-vba-layout-tsv.sh</code>. Geometry within 0.3 pt; fontSize matches; text off by one <code>#</code> (overflow-count rule slightly different).</div>
+        </td>
+        <td>
+          <div class="zoom placeholder" style="min-height:140px; aspect-ratio:3 / 1;">
+            <span>Pre-harness state:<br><code>fontSize: 32 mismatches (11 vs 12)<br>y: 15 mismatches (~0.25pt/row drift)</code></span>
+          </div>
+          <div class="caption">Pre-harness, these diffs were invisible at the pixel-MAE level. The TSV diff pinpointed exactly which fields and rows — fontSize bug fixed this turn; y-drift quantified for future row-pitch work.</div>
+        </td>
+        <td>
+          <p><strong>Built:</strong> an oracle-vs-ours comparison harness that exposes per-cell diffs without pixel rasterization.</p>
+          <ul>
+            <li><code>tools/spreadsheet-vba-layout/Program.fs</code>: .NET CLI loads an XLSX via <code>ExcelNativeRunner.toModel</code>, walks the used range, and emits a TSV matching <code>extract-excel-layout.vbs</code>'s schema column-for-column. Uses the now-public <code>Paint.cellDisplayText</code> so the <code>text</code> field matches what the renderer would draw.</li>
+            <li><code>tools/excel-parity/spreadsheet-vba-layout-tsv.sh</code>: bash wrapper mirroring <code>excel-layout-tsv.sh</code>'s call signature.</li>
+            <li><code>tools/excel-parity/compare-vba-layout.py</code>: TSV diff joining by <code>(sheet, address)</code>; configurable geometry tolerance (default 1 pt). Reports per-field mismatches with sample rows; <code>--verbose</code> for all.</li>
+            <li><code>src/Spreadsheet/Spreadsheet.fs</code>: new <code>GetVbaLayoutCells()</code> method on the Spreadsheet class returns the same per-cell JS objects, ready for a future Playwright-driven browser-side capture analogous to Word's <code>compare-vba-layout-results.mjs</code>.</li>
+            <li><code>src/Spreadsheet/Paint.fs</code>: <code>cellDisplayText</code> promoted from private to module-level so both the CLI and the Spreadsheet method can reuse it.</li>
+            <li><strong>Bug caught + fixed via the harness — fontSize default propagation:</strong> cells without <code>s=</code> on <code>&lt;c&gt;</code> now resolve to <code>cellXfs[0]</code> (the default cell format) so they inherit the workbook's default font + size. Previously they fell through to the renderer's hardcoded Calibri-11 fallback. Fixed in <code>XlsxReader.fs applyStyling</code>: when <code>StyleIndex = None</code> AND <code>styles.[0]</code> exists, attach it. <code>compare-print-pdfs.py</code> MAE on every existing print fixture stays byte-identical (their cells already carried explicit <code>s=</code>).</li>
+            <li><strong>Quantified remaining gaps:</strong> y-position drift ~0.25 pt/row (the row-pitch issue); text-overflow count off by 1 <code>#</code> char on date cells. Both visible in the harness output but not yet in the pixel MAE on existing fixtures — gives us a clear target list for follow-up work.</li>
+          </ul>
+          <p>Guard: <code>tests/print/helpers.fsx</code> passes 16/16. <code>compare-print-pdfs.py</code> on all four print fixtures + <code>pandas-test1</code> + <code>pandas-dimension_large</code> MAE byte-identical to prior runs. New CLI builds cleanly; comparison runs in ~3s per fixture.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Multi-line rich text wrap — per-run formatting survives line breaks</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-rich-wrap.xlsx</code> — one cell with four runs (plain + bold red + plain + italic blue) where the last italic-blue run is long enough to wrap onto multiple lines. <code>wrapText="1"</code> + row height 60 px so the wrapped block has room.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 500×190 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:190px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/excel/synthetic-rich-wrap-expected.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — rich text wraps with formatting">
+          </div>
+          <div class="caption">Excel reference: the bold-red and italic-blue runs keep their colour / weight / slant across line breaks. <em>"bold red middle"</em> breaks mid-run between line 1 and line 2 and stays bold-red on both lines.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:190px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/native/synthetic-rich-wrap-after.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours after — rich text wrap matches">
+          </div>
+          <div class="caption">After: matches. <code>Paint.fs</code>'s rich-text branch walks the concatenated source text through <code>wrapLines</code>, chunks each run by line boundary, and emits a per-run <code>DrawText</code> per (line, run) pair at the line's y + the run's x-offset within the line. Breaking whitespace between lines is absorbed by the cursor.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:190px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/baseline/synthetic-rich-wrap-before.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours before — rich text wrap rendered plain">
+          </div>
+          <div class="caption">Before: with the rich-run map empty (fixture rebuilt with <code>&lt;rPr&gt;</code> blocks stripped), the wrap path falls through to plain rendering — every line in the cell renders in the default black-on-white style, losing the bold / red / italic / blue distinctions.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> none needed — the implementation already routed wrap+rich correctly through the per-line, per-run emission loop. This row documents the working state (the tracker note saying "wrap with per-run formatting still falls back to plain rendering" was stale).</p>
+          <ul>
+            <li>The path lives in <code>src/Spreadsheet/Paint.fs</code> Pass 3, the <code>Some runs, Some m when not (List.isEmpty runs)</code> branch: builds a cursor through the concatenated run text, walks <code>wrapLines</code>'s line breaks, and per line emits one <code>DrawText</code> per run-slice that falls inside that line — each carrying the run's bold / italic / color / size / underline / strike state.</li>
+            <li>The render uses each line's <code>LineIndex</code> + <code>LineCount</code> for vertical placement and per-run width measurements for horizontal cursor advancement.</li>
+            <li>Browser/Fable rich text already works (see the earlier <em>Browser XLSX import — inline rich-text runs</em> row); this row confirms the print/PDF path also handles wrap correctly.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. <code>compare-print-pdfs.py</code> MAE on <code>synthetic-print</code> unchanged. Tracker P1 entry updated to mark this as resolved.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>SheetView — honor <code>showZeros="false"</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-show-zeros.xlsx</code> — five rows with values: positive, zero, negative, zero. <code>&lt;sheetView showZeros="0"/&gt;</code> on the worksheet asks Excel to hide numeric-zero cells.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 500×190 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/excel/synthetic-show-zeros-expected.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — zero cells blank">
+          </div>
+          <div class="caption">Excel reference: <em>positive</em> = 1234, <em>zero</em> = (blank), <em>negative</em> = -987, <em>zero again</em> = (blank). Excel suppresses display of numeric-zero cells when <code>showZeros</code> is opt-out; other content (text, non-zero numbers) renders normally.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/native/synthetic-show-zeros-after.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours after — zero cells blank">
+          </div>
+          <div class="caption">After: same suppression. The native runner intercepts each cell value at model-build time; <code>Number 0.0</code> (and a wrapping <code>Formula (_, Number 0.0)</code>) become <code>Empty</code> when the sheet's <code>ShowZeros</code> flag is false. Cell fills / borders / row-context stay intact — only the text emission disappears.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/baseline/synthetic-show-zeros-before.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours before — zeros rendered">
+          </div>
+          <div class="caption">Before: <code>showZeros</code> wasn't parsed off <code>&lt;sheetView&gt;</code>, so every zero cell rendered the literal <em>"0"</em> — visible in row 3 and row 5. (Fixture rebuilt with the attribute stripped to recreate.)</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> parse <code>showZeros</code> on <code>&lt;sheetView&gt;</code>, surface it on <code>Worksheet</code>, then null-out <code>Number 0.0</code> cell values when off.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>ShowZeros: bool</code> to <code>Worksheet</code> (default true — Excel's default). A small <code>showZeros</code> helper reads <code>sheetViews/sheetView/@showZeros</code> and only flips false when the attribute is <code>"0"</code> or <code>"false"</code>.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: per-cell value resolve maps <code>Number 0.0 → Empty</code> (and the formula-wrapped variant) when <code>sheet.ShowZeros</code> is false. Format intact — only the value drops out, so the Paint pass renders no text but still emits any cell fill / border the cell carries.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. Fixtures without <code>showZeros</code> default to true and render identically (compare-print-pdfs.py MAE on <code>synthetic-print</code> stays byte-identical).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Border weights — thin / medium / thick / double / dashed</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-border-weights.xlsx</code> — five sample cells, each with all four sides at the named border style: <code>thin</code>, <code>medium</code>, <code>thick</code>, <code>double</code>, <code>dashed</code>.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 500×270 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:270px; aspect-ratio:1.8 / 1;">
+            <img src="../artifacts/excel/synthetic-border-weights-expected.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — distinct border weights">
+          </div>
+          <div class="caption">Excel reference: <code>thin</code> ≈ 1 px, <code>medium</code> ≈ 1.75 px, <code>thick</code> ≈ 3 px, <code>double</code> = two parallel 1 px strokes, <code>dashed</code> = ~3 px on / 3 px off pattern.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:270px; aspect-ratio:1.8 / 1;">
+            <img src="../artifacts/native/synthetic-border-weights-after.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours after — all border weights distinguishable">
+          </div>
+          <div class="caption">After: every weight matches Excel's visual class. <code>thick</code> bumped from <code>2.5</code> to <code>3.0</code> px; <code>medium</code> from <code>1.5</code> to <code>1.75</code> px so the visual gap with <code>thin</code> reads cleanly. Dashed / dotted / dashdot variants now emit as a chunked sequence of short solid <code>GridLine</code> segments rather than one continuous line.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:270px; aspect-ratio:1.8 / 1;">
+            <img src="../artifacts/baseline/synthetic-border-weights-before.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours before — thick too thin and dashed rendered solid">
+          </div>
+          <div class="caption">Before: <code>thick</code> rendered at <code>2.5</code> px (only marginally thicker than <code>medium</code>'s <code>1.5</code>), and the <code>dashed</code> cell drew as a solid box — the PDF emitter always called <code>SetDash([], 0.0)</code> and the dash pattern wasn't encoded anywhere in the <code>GridLine</code> item.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> three changes — weight scale, dash chunking, and border collapse for shared edges.</p>
+          <ul>
+            <li><code>src/Spreadsheet/Paint.fs</code>: <code>borderStrokeWidth</code> — <code>thick</code> goes <code>2.5 → 3.0</code>, <code>medium</code> goes <code>1.5 → 1.75</code>. Visual classes now read as distinct.</li>
+            <li><code>emitBorderSide</code>: when the style is <code>dashed</code> / <code>mediumdashed</code> / <code>dotted</code> / <code>dashdot</code> / <code>dashdotdot</code> / <code>slantdashdot</code> / <code>hair</code>, the helper walks the edge in <em>on/off</em> chunks and emits a separate <code>GridLine</code> per <em>on</em> chunk. Pattern lengths picked to read as the named style at 96 dpi: dashed = 3/2.5, dotted = 1/1.5, dashdot = 3/4 with a second 1-px pass offset by 4 px. <code>double</code> path unchanged (already correct).</li>
+            <li><strong>Border collapse:</strong> when two adjacent cells both declare a border on their shared edge, Excel draws only the heavier one. We now build a <code>(row, col) → CellFormat</code> map for the slice and, before emitting each side, compare against the neighbour's opposite side using OOXML border priority (<em>not</em> raw stroke width — Excel ranks <code>double</code> > <code>thick</code> > <code>medium</code> > <code>thin</code> > dashed-family). Same-weight ties resolve to "top wins" for vertical edges and "left wins" for horizontal edges.</li>
+            <li><strong>OOXML border priority:</strong> using stroke width for collapse comparison was wrong — Excel's collapse follows the OOXML "style hierarchy" where <code>double</code> outranks <code>thick</code> even though it paints thinner. With the priority lookup (<code>None < Hair < Dotted < Dashed-family < Thin < Medium < Thick < Double</code>), the thick/double boundary now correctly drops the thick stroke and renders the double pattern at the shared edge — matching what Excel does. (An earlier "exempt double from collapse + inset both strokes inward" attempt over-engineered this and produced the wrong layered look; the simpler "double wins via priority" rule is what Excel actually implements.)</li>
+            <li>No <code>GridLine</code> schema change — the chunking + collapse logic lives entirely in <code>Paint.fs</code>, so PDF + PNG + browser renderers stay in sync.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. The four pre-existing print fixtures don't use medium / thick / dashed borders (they're plain print grids), so <code>compare-print-pdfs.py</code> MAE stays byte-identical to the prior run. Cells with no border at a shared edge are unaffected by the collapse pass (weightOf None = 0).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Locale-aware number format prefixes — <code>[$EUR-407]</code>, <code>[$£-809]</code>, …</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-locale-currency.xlsx</code> — four custom number formats from real-world international workbooks: <code>[$EUR-407]#,##0.00</code>, <code>[$£-809]#,##0.00</code>, <code>[$-409]m/d/yyyy</code>, <code>[$JPY-411] #,##0</code>.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 600×200 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:3 / 1;">
+            <img src="../artifacts/excel/synthetic-locale-currency-expected.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — currency prefixes preserved">
+          </div>
+          <div class="caption">Excel reference: <em>"EUR1,234.50 / £987.65 / 1/1/2024 / JPY 50,000"</em>. The currency string in <code>[$CCY-NNN]</code> is emitted as a literal prefix; the locale code itself is metadata Excel uses for month names / decimal separators but renders nothing.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:3 / 1;">
+            <img src="../artifacts/native/synthetic-locale-currency-after.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours after — currency prefixes preserved">
+          </div>
+          <div class="caption">After: identical output. <code>Paint.fs</code> now substitutes <code>[$CCY-NNN]</code> with <code>'CCY'</code> (a .NET-format literal) before handing to <code>Double.ToString</code>; an empty CCY (<code>[$-409]</code>) collapses to nothing.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:3 / 1;">
+            <img src="../artifacts/baseline/synthetic-locale-currency-before.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours before — currency dropped">
+          </div>
+          <div class="caption">Before: a blanket regex stripped the entire <code>[$...]</code> block, so the currency string was silently discarded — every value rendered as a bare number. (Fixture rebuilt with prefixes stripped to recreate the look.)</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> route the <code>[$<em>currency</em>-<em>locale</em>]</code> capture group into the .NET format string instead of dropping it.</p>
+          <ul>
+            <li><code>src/Spreadsheet/Paint.fs</code>: new regex <code>\[\$([^\]\-]*)(?:-[0-9A-Fa-f]+)?\]</code> captures the optional currency string and the optional <code>-LOCALE</code> tail; replaces with <code>'CCY'</code> (or empty when CCY is empty). Color-tag stripping is now a separate pass on the leftover code, since color tags are handled by <code>numberFormatColorForValue</code>.</li>
+            <li>Fixed a related dispatch bug: <code>isDateFormat</code> / <code>isTimeFormat</code> previously matched on the raw section, so the literal <code>y</code> inside <code>[$JPY-411]</code> tripped the date formatter and rendered the literal pattern <code>#,##0</code>. Both predicates now run <code>withoutLocaleTags</code> before the substring sniff.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. The four pre-existing print fixtures don't use locale prefixes, so <code>compare-print-pdfs.py</code> MAE stays byte-identical to the prior run.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Cell text rotation — <code>textRotation</code> 0/45/90/-45/-90</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-text-rotation.xlsx</code>. Six columns with the same width; row 1 holds labels at <code>textRotation</code> values 0, 45, 90, 135 (= -45° CW), 180 (= -90° CW), 0. Row 1 is 80 px tall so rotated text has room to fit.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 950×200 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:160px; aspect-ratio:5 / 1;">
+            <img src="../artifacts/excel/synthetic-text-rotation-expected.png" style="--w:950px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — rotated text in each cell">
+          </div>
+          <div class="caption">Excel reference: each cell's label rotates by the specified angle. CCW values (45°, 90°) lift the text from the cell's bottom; CW values (-45°, -90°) drop it from the top. Row 2 (numeric body) stays on a flat baseline.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:160px; aspect-ratio:5 / 1;">
+            <img src="../artifacts/native/synthetic-text-rotation-after.png" style="--w:950px; --x:0px; --y:0px; --s:1.0" alt="Ours after — rotated text emitted via PDF text matrix">
+          </div>
+          <div class="caption">After: each cell's text rotates via PDF <code>TextMatrix(cos θ, sin θ, -sin θ, cos θ, x, y)</code>. CCW anchors at cell bottom-left, CW anchors at cell top-left + ascent — without that split, CW text leaked into row 2. Per-segment cursor advances along the rotated baseline. Row 2 still flat.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:160px; aspect-ratio:5 / 1;">
+            <img src="../artifacts/baseline/synthetic-text-rotation-before.png" style="--w:950px; --x:0px; --y:0px; --s:1.0" alt="Ours before — all labels horizontal">
+          </div>
+          <div class="caption">Before: <code>textRotation</code> wasn't parsed, so every label rendered horizontally regardless of the cell's alignment. (Fixture rebuilt with the attribute stripped to recreate.)</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> parse <code>textRotation</code> and apply via PDF text matrix.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>TextRotation: int</code> to the parsed cell style; reads the attribute (0 default).</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: mirrored on <code>CellFormat</code>.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code> + <code>src/Spreadsheet/XlsxImporter.fs</code>: propagate / default.</li>
+            <li><code>src/Spreadsheet/Paint.fs</code>: added <code>Rotation</code> to <code>PaintText</code> (6 emission sites updated; headers / heading-strip stay at 0).</li>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs</code>: when rotation ≠ 0, compute <code>(cos θ, sin θ)</code> from the Excel encoding (1..90 = CCW, 91..180 = CW with angle <code>-(N - 90)</code>, 255 = stacked → treated as 0). Anchor at cell bottom-left for CCW or top-left + ascent for CW; per-segment cursor walks <code>(cosθ × cum, sinθ × cum)</code> in PDF coords. Each segment's <code>TextMatrix</code> carries the rotation so font / colour switches mid-run still rotate consistently.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. Pre-existing print fixtures are byte-identical (none use <code>textRotation</code>; the new field defaults to 0 and the rotation branch is gated on that). Stacked (<code>textRotation="255"</code>) and horizontal-alignment-aware anchoring for rotated cells remain follow-ups.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Auto-grow row height for <code>wrapText</code> cells</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-wrap-autoheight.xlsx</code>. Column A holds a long sentence with <code>wrapText="1"</code> and no explicit row height; column B holds a multi-line literal (<code>line one\nline two\nline three</code>). Excel auto-sizes the row to fit the wrapped block.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 600×250 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:220px; aspect-ratio:2.4 / 1;">
+            <img src="../artifacts/excel/synthetic-wrap-autoheight-expected.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — row auto-grown">
+          </div>
+          <div class="caption">Excel reference: row 2 grows enough to fit the wrapped description (6 visible lines) and the 3-line literal in column B side-by-side. Row 3 (<em>"short row"</em>) sits below with a generous gap because Excel pads the auto-fit height.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:220px; aspect-ratio:2.4 / 1;">
+            <img src="../artifacts/native/synthetic-wrap-autoheight-after.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours after — row auto-grown">
+          </div>
+          <div class="caption">After: the wrapped block fits the cell — our wrap breaks at a slightly different point (7 lines vs Excel's 6) because <code>Renderer.Text.measureWidth</code> over-counts a hair, but no text is clipped and the next row appears below the wrapped block. Excel's extra pad-bottom isn't replicated yet.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:220px; aspect-ratio:2.4 / 1;">
+            <img src="../artifacts/baseline/synthetic-wrap-autoheight-before.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours before — wrap text overflows row">
+          </div>
+          <div class="caption">Before: row 2 stayed at the 20 px default height. The long description overflowed into column B (overlapping <em>"line one / line two"</em>) and the multi-line cell in column B overran into row 3's <em>"short row"</em>. Wrap fundamentally didn't work for any real workbook.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> after building <code>rowHeights</code> in the native runner, scan every wrapText cell and bump the row height to fit the wrapped block.</p>
+          <ul>
+            <li><code>src/Spreadsheet/Paint.fs</code>: <code>wrapLines</code> was private; promoted to public so the runner can re-use the same word-break logic the renderer uses (literal <code>\n</code> first, then word-wrap on whitespace with char-break fallback for super-long tokens).</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: post-pass over <code>cells</code>: for each cell where <code>WrapText = true</code> OR the value contains literal <code>\n</code> (Alt+Enter authored), and there's no explicit row <code>ht</code>, measure the block against the column width using <code>Renderer.Text.measureWidth</code> (with a font cache keyed by family/bold/italic to avoid hitting the font resolver per cell). For wrap cells we re-use <code>Paint.wrapLines</code> to count word-wrapped lines; for hard-break-only cells we just split on <code>\n</code>. Then <code>rowHeights[r] := max current (lineCount × fontPx × 1.2)</code>.</li>
+            <li>Explicit row heights are preserved — Excel honors a user-set <code>&lt;row ht="..."&gt;</code> even when the text doesn't fit; our pass skips rows that already have an entry in <code>explicitRows</code>.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. None of the four pre-existing print fixtures rely on auto-growth (their rows carry explicit heights or non-wrap text), so <code>compare-print-pdfs.py</code> MAE stays byte-identical to the prior run. The browser/Fable import path doesn't yet auto-grow — would need a JS-side measurer (out of scope).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Cell alignment — honor <code>shrinkToFit</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-shrink-to-fit.xlsx</code> — narrow column (10 char-units), one cell with a long overflowing string + <code>shrinkToFit="1"</code>, and a centered variant.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 400×170 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:170px; aspect-ratio:2.4 / 1;">
+            <img src="../artifacts/excel/synthetic-shrink-to-fit-expected.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — long text shrunk into cell">
+          </div>
+          <div class="caption">Excel reference: the long string in row 2 (<em>"this text is much wider than the cell"</em>) renders at a reduced font size so it fits within the 10-char-wide column. The "short" / "fits" cells below keep their base size.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:170px; aspect-ratio:2.4 / 1;">
+            <img src="../artifacts/native/synthetic-shrink-to-fit-after.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Ours after — long text shrunk into cell">
+          </div>
+          <div class="caption">After: same shrink behaviour. <code>Paint.fs</code> measures the natural-size text against the cell's usable width; on overflow it scales the font down by <code>cellWidth / textWidth</code> and re-binds the per-cell measurer to the new size so wrapping / overflow logic downstream stays consistent.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:170px; aspect-ratio:2.4 / 1;">
+            <img src="../artifacts/baseline/synthetic-shrink-to-fit-before.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Ours before — long text overflows">
+          </div>
+          <div class="caption">Before: <code>shrinkToFit</code> wasn't parsed, so the long string spilled across column B and overlapped its <em>"centered too-wide text"</em> neighbour. (Fixture rebuilt with the attribute stripped to recreate the look.)</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> parse the attribute and shrink the font when the natural text would overflow.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>ShrinkToFit: bool</code> to the parsed cell style (default false).</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: mirrored on <code>CellFormat</code>, default false.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code> + <code>src/Spreadsheet/XlsxImporter.fs</code>: propagate / default the field.</li>
+            <li><code>src/Spreadsheet/Paint.fs</code>: after computing the text rect, if <code>ShrinkToFit</code> is on (and the cell isn't in wrap mode — Excel ignores shrink for wrap cells), measure the displayed text at the cell's font size and, on overflow, scale the font by <code>cellWidth / measuredWidth</code> (clamped at 1 pt). Shadow the local <code>fontPt</code> + <code>measure</code> bindings with the shrunk values so the rich-text and plain-text branches below use the smaller size.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. None of the four pre-existing print fixtures use <code>shrinkToFit</code>, so <code>compare-print-pdfs.py</code> MAE stays byte-identical to the prior run.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Cell alignment — honor <code>&lt;alignment indent="N"/&gt;</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-cell-indent.xlsx</code> — four left-aligned cells in column A with <code>indent</code> values 0, 1, 2, 4. Excel pads inward from the cell's leading edge by ~3 characters per unit.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 500×190 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:190px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/excel/synthetic-cell-indent-expected.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — progressively indented">
+          </div>
+          <div class="caption">Excel reference: the four rows step further right as <code>indent</code> climbs, with each unit adding roughly three character widths of leading padding.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:190px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/native/synthetic-cell-indent-after.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours after — same stepping">
+          </div>
+          <div class="caption">After: same indentation steps. <code>Paint.fs</code> shifts the cell's text rect by <code>format.Indent * 3 * mdwPx fontPt</code> for left / distributed alignment (matches Excel's "<em>N units of ~3 chars</em>" rule).</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:190px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/baseline/synthetic-cell-indent-before.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours before — all rows flush left">
+          </div>
+          <div class="caption">Before: <code>XlsxReader</code> didn't parse the <code>indent</code> attribute, so every row rendered with the cell's normal 4 px left padding — every row started at the same x.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> parse <code>indent</code> off <code>&lt;alignment&gt;</code>, carry it on <code>CellFormat</code>, and shift the text rect during render.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>Indent: int</code> to the parsed cell style (default 0).</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: mirrored on <code>CellFormat</code>, default 0.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: propagates.</li>
+            <li><code>src/Spreadsheet/XlsxImporter.fs</code>: defaults to 0 on the browser import path (the JS-bridge cell style doesn't surface indent yet).</li>
+            <li><code>src/Spreadsheet/Paint.fs</code>: Pass 3 widens the text-rect padding by <code>format.Indent × 3 × mdwPx fontPt</code>. Applied from the left for left/distributed alignment and from the right for right alignment; center is unaffected (matches Excel).</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. None of the four pre-existing print fixtures carry an <code>indent</code> attribute, so <code>compare-print-pdfs.py</code> MAE stays byte-identical to the prior run.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Number-format section colors — <code>[Red]</code>, <code>[Green]</code>, …</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-numfmt-color.xlsx</code> — two custom number formats: <code>#,##0.00;[Red]-#,##0.00</code> and <code>[Green]#,##0;[Red](#,##0);0</code>. Three values per format: positive, negative, zero.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 700×200 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:3.5 / 1;">
+            <img src="../artifacts/excel/synthetic-numfmt-color-expected.png" style="--w:700px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — red negatives, green positives">
+          </div>
+          <div class="caption">Excel reference: column A's <code>-987.65</code> renders in red; column B's <code>1,234</code> in green, <code>(987)</code> in red, <code>0</code> in default black. Excel routes section-tag colors to the cell's font colour.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:3.5 / 1;">
+            <img src="../artifacts/native/synthetic-numfmt-color-after.png" style="--w:700px; --x:0px; --y:0px; --s:1.0" alt="Ours after — section colors honored">
+          </div>
+          <div class="caption">After: same colour routing. Section selection also fixed: with only two sections (pos;neg) and a zero value, the positive section is now picked (Excel behavior) — previously we'd pick the negative section and emit <em>"-0.00"</em>.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:3.5 / 1;">
+            <img src="../artifacts/baseline/synthetic-numfmt-color-before.png" style="--w:700px; --x:0px; --y:0px; --s:1.0" alt="Ours before — all in black">
+          </div>
+          <div class="caption">Before: the format-cleaning regex in <code>formatExcelNumber</code> stripped <code>[Red]</code> / <code>[Green]</code> / etc. from the format code and dropped the colour on the floor; every value rendered in the cell's nominal font colour (black). (Fixture rebuilt with the bracket-colours stripped to recreate the same look.)</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> route section colour tags into the cell's text colour during render.</p>
+          <ul>
+            <li><code>src/Spreadsheet/Paint.fs</code>: new <code>numberFormatSectionColor</code> recognises the eight Excel-named colours (<code>Red</code>, <code>Black</code>, <code>Green</code>, <code>White</code>, <code>Blue</code>, <code>Magenta</code>, <code>Yellow</code>, <code>Cyan</code>) at the start of a section. <code>numberFormatColorForValue</code> picks the section that applies to the cell's value and returns its colour.</li>
+            <li>Pass 3 of <code>buildCellPaintItems</code> now resolves <code>sectionColor</code> for numeric values + numeric formula results and uses it as the cell's text colour ahead of <code>format.TextColor</code>; explicit cellXf colours win when no section colour is set.</li>
+            <li><code>sectionForValue</code>: fixed off-by-one — a 2-section format (<code>pos;neg</code>) now uses the positive section for both positive and zero values, matching Excel. Previously zero fell through to the negative section and rendered with a leading minus.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. <code>compare-print-pdfs.py</code> on the four pre-existing print fixtures keeps every crop's MAE byte-identical (none use coloured number formats and none rely on the old zero-section quirk).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Print options — suppress comment markers by default (<code>cellComments="none"</code>)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-cell-comments-print.xlsx</code> — three rows, two cells (B2 and B3) carry comments via <code>xl/comments1.xml</code>. <code>&lt;pageSetup&gt;</code> has no <code>cellComments</code> attribute, so it defaults to <code>"none"</code>. Excel prints these without the red corner triangle.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:180px; aspect-ratio:3 / 1;">
+            <img src="../artifacts/excel/synthetic-cell-comments-print-expected.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — no triangle markers">
+          </div>
+          <div class="caption">Excel reference: three rows of <em>plain / cell with note / plain</em> with no corner triangle on B2 or B3 — Excel's default <code>cellComments="none"</code> strips the marker from print output even though the comment data is in the workbook.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:180px; aspect-ratio:3 / 1;">
+            <img src="../artifacts/native/synthetic-cell-comments-print-after.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours after — no triangle markers">
+          </div>
+          <div class="caption">After: same suppression. The PDF emitter clears <code>Format.HasComment</code> on every cell when <code>PageSetup.CellComments = None</code> (or <code>AtEnd</code>), so the Paint pass that draws the red triangle simply has no cells to act on.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:180px; aspect-ratio:3 / 1;">
+            <img src="../artifacts/baseline/synthetic-cell-comments-print-before.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours before — red triangles always drawn">
+          </div>
+          <div class="caption">Before: the print pipeline always drew the on-screen comment-corner triangle (from <code>Paint.fs</code>'s Pass 5) — diverging from Excel on every workbook with comments. (Fixture rebuilt with <code>cellComments="asDisplayed"</code> to recreate the pre-fix look; that mode now bypasses our suppression on purpose.)</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> parse <code>cellComments</code> off <code>&lt;pageSetup&gt;</code> and apply a model-level strip-pass before the print emitter walks the cells.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>CellCommentsPrint</code> DU (<code>None</code> / <code>AsDisplayed</code> / <code>AtEnd</code>) and parsing off <code>cellComments</code>; default <code>None</code> (matches Excel).</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: mirrored the DU + field; <code>defaultPageSetup</code> defaults to <code>CellCommentsNone</code>.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: propagates.</li>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs</code>: new <code>withCommentMarkersForPrint</code> pass clears <code>HasComment</code> on every cell when <code>CellComments</code> is <code>None</code> or <code>AtEnd</code>. <code>AsDisplayed</code> keeps the existing on-screen marker rendering — the full balloon-style Excel printout for that mode is out of scope here.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. The four pre-existing print fixtures have no commented cells, so <code>compare-print-pdfs.py</code> MAE stays byte-identical to the prior run. <code>synthetic-formatting.xlsx</code> (the other fixture with comments in the corpus) now also matches Excel's default suppression.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Header/footer scaling — honor <code>scaleWithDoc</code> + <code>scale</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-print-scale.xlsx</code> — landscape copy of <code>synthetic-print.xlsx</code> with <code>scale="200"</code> on <code>&lt;pageSetup&gt;</code> and the default <code>scaleWithDoc</code> (true). Excel renders both the body and the H/F text at 2× the normal size.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:220px; aspect-ratio:1.3 / 1;">
+            <img src="../artifacts/excel/synthetic-print-scale-expected.png" style="--w:1056px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — H/F text scaled with body">
+          </div>
+          <div class="caption">Excel reference: header <em>"Report"</em> + date and footer <em>"Report / Page 1 of 4 / synthetic-print-scale"</em> all render at the same 2× pitch as the body. <code>scaleWithDoc</code>'s default-true is what drives that.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:220px; aspect-ratio:1.3 / 1;">
+            <img src="../artifacts/native/synthetic-print-scale-after.png" style="--w:1056px; --x:0px; --y:0px; --s:1.0" alt="Ours after — H/F text scaled with body">
+          </div>
+          <div class="caption">After: same proportions — both body text (already scaled by <code>pagination.Scale</code>) and H/F text (newly scaled via <code>hfTextScale</code>) at 2×. The <code>&amp;NN</code> size codes are unscaled at parse time and multiplied at render time so the existing mixed-run header tests still pass.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:220px; aspect-ratio:1.3 / 1;">
+            <img src="../artifacts/baseline/synthetic-print-scale-before.png" style="--w:1056px; --x:0px; --y:0px; --s:1.0" alt="Ours before — H/F text stuck at 10pt">
+          </div>
+          <div class="caption">Before: <code>hfFontSizePt</code> was hardcoded to <code>10.0</code>, so headers and footers ignored the page-scale and rendered tiny next to the magnified body — the opposite of Excel's <code>scaleWithDoc</code>-default behavior. (Fixture rebuilt with <code>scaleWithDoc="0"</code> to recreate the pre-fix look.)</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> read <code>scaleWithDoc</code> off <code>&lt;headerFooter&gt;</code> and multiply H/F font sizes by <code>pagination.Scale</code> when the flag is on (its default).</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>ScaleWithDoc: bool</code> to <code>HeaderFooter</code>; parses <code>scaleWithDoc</code> off the element with a <em>true</em> default (matches Excel — the attribute is only ever written when the user explicitly opts out).</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: mirrored the field, default true.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: propagates.</li>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs</code>: introduces <code>hfTextScale</code> (= <code>pagination.Scale</code> when <code>ScaleWithDoc</code> else 1.0), exposes it to <code>sectionOps</code>, and applies it inside the per-run loop so both the default 10 pt fallback and any explicit <code>&amp;NN</code> size scale together. <code>maxHeaderFooterFontSize</code> + the header-baseline anchor also use the scaled fallback so vertical placement still works for large runs at high scales.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. <code>compare-print-pdfs.py</code> against the four pre-existing print fixtures keeps every crop's MAE byte-identical to the prior run (they all run at scale=100, so <code>hfTextScale=1</code> and the path is unchanged).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Print options — honor <code>blackAndWhite="1"</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-blackandwhite.xlsx</code> — yellow + green fills, red text, blue bold text on yellow fill. <code>&lt;pageSetup blackAndWhite="1"/&gt;</code> set. In Excel, B&amp;W print mode strips every fill and forces every glyph / border / stroke to black.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 500×200 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:160px; aspect-ratio:2.5 / 1;">
+            <img src="../artifacts/excel/synthetic-blackandwhite-expected.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — fills stripped, text black">
+          </div>
+          <div class="caption">Excel reference: no yellow or green fill, <em>"red text"</em> rendered in black, <em>"blue bold + yellow"</em> bold-black on white. Only the bold weight survives — colour gets discarded.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:160px; aspect-ratio:2.5 / 1;">
+            <img src="../artifacts/native/synthetic-blackandwhite-after.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours after — fills stripped, text black">
+          </div>
+          <div class="caption">After: identical handling — every <code>FillRect</code> becomes white, every <code>StrokeRect</code> / <code>GridLine</code> / text glyph becomes black. Bold / italic / underline still survive (the flag is per-page color remap, not a style strip).</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:160px; aspect-ratio:2.5 / 1;">
+            <img src="../artifacts/baseline/synthetic-blackandwhite-before.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours before — fills and colored text preserved">
+          </div>
+          <div class="caption">Before: <code>blackAndWhite</code> wasn't parsed off <code>&lt;pageSetup&gt;</code>, so the renderer kept the source fills (yellow + green) and font colours (red + blue) — diverging from Excel's B&amp;W output.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> read <code>blackAndWhite</code> off <code>&lt;pageSetup&gt;</code> and apply a per-op color remap in the PDF emitter.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>BlackAndWhite: bool</code> to <code>PageSetup</code>; reads the attribute (false default).</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: mirrored the field.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: propagates the value into the model.</li>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs</code>: added <code>BlackAndWhite</code> to <code>Placement</code>; <code>translateItem</code> now routes <code>FillRect</code> colours through a <code>bwFill</code> remap (→ white) and <code>StrokeRect</code> / <code>GridLine</code> / text colours through <code>bwStroke</code> (→ black). Header / footer text stays untouched (it lives outside the per-page slice ops, matching Excel which doesn't black-and-white the H/F band).</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. The flag defaults to false, so all four pre-existing print fixtures render byte-identically (<code>compare-print-pdfs.py</code> MAE matches the prior run).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Row hidden — collapse rows with <code>hidden="1"</code> in print</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-row-hidden.xlsx</code> — 12 rows of <em>row N A / row N B</em> text; rows 4, 5, and 9 carry <code>&lt;row r="N" hidden="1"&gt;</code>. Visible rows should be 1, 2, 3, 6, 7, 8, 10, 11, 12.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 350×350 crop.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:280px; aspect-ratio:1 / 1;">
+            <img src="../artifacts/excel/synthetic-row-hidden-expected.png" style="--w:350px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — rows 4/5/9 collapsed">
+          </div>
+          <div class="caption">Excel reference: only the nine visible rows (1, 2, 3, 6, 7, 8, 10, 11, 12) are drawn — rows 4, 5, and 9 collapse to 0 height.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:280px; aspect-ratio:1 / 1;">
+            <img src="../artifacts/native/synthetic-row-hidden-after.png" style="--w:350px; --x:0px; --y:0px; --s:1.0" alt="Ours after — rows 4/5/9 collapsed">
+          </div>
+          <div class="caption">After: same nine rows present, same vertical stack. The hidden rows take zero vertical space, matching Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:280px; aspect-ratio:1 / 1;">
+            <img src="../artifacts/baseline/synthetic-row-hidden-before.png" style="--w:350px; --x:0px; --y:0px; --s:1.0" alt="Ours before — all rows rendered">
+          </div>
+          <div class="caption">Before: <code>Xlsx.Row</code> didn't carry a <code>Hidden</code> field, so rows 4, 5, and 9 rendered at default height like every other row — twelve rows visible instead of nine.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> parse <code>hidden</code> on <code>&lt;row&gt;</code> and force collapsed rows to 0 px in the native-runner row-height map.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>Hidden: bool</code> to <code>Row</code> (default false); reads <code>hidden="1"</code> off each <code>&lt;row&gt;</code>.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: when <code>row.Hidden</code> is set, the row's <code>rowHeights</code> entry is forced to <code>0.0</code> — wins over an explicit <code>ht</code> and over the sheet default, just like Excel's behavior.</li>
+            <li>Hidden columns were already covered (<code>ColumnInfo.Hidden</code> → width 0).</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. <code>compare-print-pdfs.py</code> on the four pre-existing print fixtures keeps every crop's MAE byte-identical (none have hidden rows). New fixture renders 9 visible rows; with the fix off it would have rendered 12.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Page setup — honor <code>pageOrder="overThenDown"</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-page-order.xlsx</code> — 12 columns × 60 rows, landscape Letter so the print range splits into a 2×2 page grid. <code>&lt;pageSetup pageOrder="overThenDown"/&gt;</code> on the worksheet asks for column-first walk; the body cells are labelled <em>RrCc</em> so the page-to-block mapping is unambiguous.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; pages 1–4 thumbnailed into one row at 220 px each.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:5 / 1;">
+            <img src="../artifacts/excel/synthetic-page-order-expected.png" style="--w:880px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — 4 page thumbnails left-to-right">
+          </div>
+          <div class="caption">Excel reference (4 pages, left-to-right): <code>p1=R1..C1-3</code>, <code>p2=R1..C9-11</code> (column-wise advance first), <code>p3=R34..C1-3</code>, <code>p4=R34..C9-11</code>. That's <em>over-then-down</em>: page 2 is to the right of page 1, then page 3 wraps below page 1.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:5 / 1;">
+            <img src="../artifacts/native/synthetic-page-order-after.png" style="--w:880px; --x:0px; --y:0px; --s:1.0" alt="Ours after — page order matches Excel">
+          </div>
+          <div class="caption">After: same page-to-block mapping. Row counts on pages 1 and 2 are one less than Excel's (33 vs 34) because of the unrelated body-pitch residual we still carry, but the ordering — page 2 right-of, page 3 below — matches.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:5 / 1;">
+            <img src="../artifacts/baseline/synthetic-page-order-before.png" style="--w:880px; --x:0px; --y:0px; --s:1.0" alt="Ours before — wrong page order">
+          </div>
+          <div class="caption">Before: <code>Pagination.fs</code> hardcoded the row loop inside the column loop, so <code>pageOrder="overThenDown"</code> was ignored. The 2×2 grid emitted page 2 = <em>R34..C1-3</em> (down-first), page 3 = <em>R1..C9-11</em>, swapping the middle two pages relative to Excel.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> read <code>pageOrder</code> off <code>&lt;pageSetup&gt;</code> and pick the loop nesting in <code>Pagination.paginate</code>.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>PageOrder</code> discriminated union (<code>DownThenOver</code> / <code>OverThenDown</code>) and parsing off the <code>pageOrder</code> attribute.</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: mirrored the type and added <code>PageOrder</code> to <code>PageSetup</code> with <code>DownThenOver</code> default.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: maps the parsed enum across.</li>
+            <li><code>src/Spreadsheet.Pdf/Pagination.fs</code>: <code>OverThenDown</code> inverts the outer / inner loop — same slices, different emission order. Down-then-over fixtures stay byte-identical (default branch unchanged).</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. <code>compare-print-pdfs.py</code> on the four pre-existing print fixtures keeps every crop's MAE byte-identical (they all default to <code>downThenOver</code>).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Header/footer style codes — <code>&amp;U</code>/<code>&amp;E</code>/<code>&amp;S</code>/<code>&amp;X</code>/<code>&amp;Y</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-hf-style-codes.xlsx</code>. <code>oddHeader</code> = <code>&amp;LPlain &amp;Uunderlined&amp;U &amp;Edouble&amp;E&amp;C&amp;Sstrike&amp;S H&amp;X2&amp;XO &amp;Rbase&amp;Yidx&amp;Y</code>; <code>oddFooter</code> = <code>&amp;CFooter &amp;Uon&amp;U off &amp;Sthrough&amp;S</code>. Exercises single underline, double underline, strikethrough, superscript, and subscript in one fixture.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>, both rasterized at 96 dpi.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:60px; aspect-ratio:14 / 1;">
+            <img src="../artifacts/excel/synthetic-hf-style-codes-expected-header.png" style="--w:1056px; --x:0px; --y:0px; --s:1.0" alt="Excel header crop">
+          </div>
+          <div class="caption">Excel reference (header crop): <em>"Plain <u>underlined</u> <u><u>double</u></u>"</em> on the left, <em>"<s>strike</s> H²O"</em> centered, <em>"base<sub>idx</sub>"</em> on the right. Footer (not shown): <em>"Footer <u>on</u> off <s>through</s>"</em>.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:60px; aspect-ratio:14 / 1;">
+            <img src="../artifacts/native/synthetic-hf-style-codes-after-header.png" style="--w:1056px; --x:0px; --y:0px; --s:1.0" alt="Ours after header crop">
+          </div>
+          <div class="caption">After: all five style codes resolve to per-run decorations — single underline, double-underline (two strokes), strikethrough, super/sub (font scaled to 58% + baseline shift), each toggleable mid-section. Same layout as Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:60px; aspect-ratio:14 / 1;">
+            <img src="../artifacts/baseline/synthetic-hf-style-codes-before-header.png" style="--w:1056px; --x:0px; --y:0px; --s:1.0" alt="Ours before header crop">
+          </div>
+          <div class="caption">Before: <code>HeaderFooter.fs</code>'s field parser silently consumed <code>&amp;U</code>/<code>&amp;E</code>/<code>&amp;S</code>/<code>&amp;X</code>/<code>&amp;Y</code>, so the text passed through with no underline / strikethrough / super- or sub-script.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> wire each style code into a per-run state in <code>HeaderFooter.fs</code>, then render decorations in <code>Pdf.fs sectionOps</code>.</p>
+          <ul>
+            <li><code>src/Spreadsheet.Pdf/HeaderFooter.fs</code>: added <code>Underline</code>, <code>DoubleUnderline</code>, <code>Strikethrough</code>, <code>Superscript</code>, <code>Subscript</code> to <code>StyledRun</code>. <code>&amp;U</code> toggles single, <code>&amp;E</code> toggles double, <code>&amp;S</code> toggles strike, <code>&amp;X</code> toggles super, <code>&amp;Y</code> toggles sub. Single/double underline and super/sub are mutually exclusive (toggling one clears the other) — matches Excel's parser.</li>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs sectionOps</code>: super/sub shrink the run's font to ~58% of base with a +33% / −20% baseline shift; underline / strikethrough emit a stroke pass after the text pass (PDF requires path ops outside any text object). Stroke colour inherits the run's color; line width scales with font size.</li>
+            <li><code>&amp;O</code> (outline) and <code>&amp;H</code> (shadow) remain consumed-but-unrendered — they have no broadly-applicable representation in our flat text pipeline.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. <code>compare-print-pdfs.py</code> against the four pre-existing print fixtures keeps every crop's MAE byte-identical to the prior run (the new state defaults to all-false, so a workbook without the codes is unchanged). Verified visually against Excel on the new fixture: single underline under <em>"underlined"</em>, two parallel underlines under <em>"double"</em>, mid-text strike on <em>"strike"</em>, <em>"2"</em> sits above the H baseline, <em>"idx"</em> sits below the base baseline.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Page setup — honor <code>firstPageNumber</code> / <code>useFirstPageNumber</code> for <code>&amp;P</code></strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-first-page-number.xlsx</code> — landscape Letter copy of <code>synthetic-print.xlsx</code> with <code>&lt;pageSetup firstPageNumber="42" useFirstPageNumber="1"/&gt;</code> and the existing <code>&amp;CPage &amp;P of &amp;N</code> center footer. Two physical pages so the increment from 42 → 43 is visible while <code>&amp;N</code> stays at 2.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>, both rasterized at 96 dpi by <code>tools/excel-parity/compare-print-pdfs.py</code>.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:90px; aspect-ratio:4 / 1;">
+            <img src="../artifacts/excel/synthetic-first-page-number-expected-crop.png" style="--w:350px; --x:0px; --y:0px; --s:2.4" alt="Excel reference — center footer reads &quot;Page 42 of 2&quot;">
+          </div>
+          <div class="caption">Excel reference (page 1 center footer crop): <em>"Page 42 of 2"</em> — <code>&amp;P</code> is offset by <code>firstPageNumber=42</code>, while <code>&amp;N</code> stays at the physical page count (2). Page 2's footer reads <em>"Page 43 of 2"</em>.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:90px; aspect-ratio:4 / 1;">
+            <img src="../artifacts/native/synthetic-first-page-number-after-crop.png" style="--w:350px; --x:0px; --y:0px; --s:2.4" alt="Ours after — center footer reads &quot;Page 42 of 2&quot;">
+          </div>
+          <div class="caption">After: same <em>"Page 42 of 2"</em>; our <code>HeaderFooter.PageContext.PageNumber</code> is now offset by <code>FirstPageNumber - 1</code> when <code>UseFirstPageNumber</code> is set, matching Excel's substitution. Page 2 reads <em>"Page 43 of 2"</em>.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:90px; aspect-ratio:4 / 1;">
+            <img src="../artifacts/baseline/synthetic-first-page-number-before-crop.png" style="--w:350px; --x:0px; --y:0px; --s:2.4" alt="Ours before — center footer reads &quot;Page 1 of 2&quot;">
+          </div>
+          <div class="caption">Before: <em>"Page 1 of 2"</em> — the XLSX reader didn't parse the two attributes, so <code>PageSetup</code> always defaulted to numbering from 1 and <code>&amp;P</code> substituted <code>1</code>.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> parse <code>firstPageNumber</code> / <code>useFirstPageNumber</code> off <code>&lt;pageSetup&gt;</code>, carry them on the model, and offset the PDF's <code>PageContext.PageNumber</code>.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/XlsxReader.fs</code>: added <code>FirstPageNumber: int</code> and <code>UseFirstPageNumber: bool</code> to <code>PageSetup</code>; reads both from the <code>&lt;pageSetup&gt;</code> attributes (defaulting to 1 / false).</li>
+            <li><code>src/Spreadsheet/Model.fs</code>: mirrored the two fields on <code>PageSetup</code> with the same defaults; <code>defaultPageSetup</code> updated.</li>
+            <li><code>tools/excel-native-runner/Program.fs</code>: propagates the parsed values into the model's <code>PageSetup</code>.</li>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs</code>: when <code>UseFirstPageNumber</code> is set, <code>PageContext.PageNumber</code> = <code>pageIdx + 1 + (FirstPageNumber - 1)</code>. <code>TotalPages</code> stays at the physical page count to match Excel's <code>&amp;N</code> behavior.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. Re-running <code>compare-print-pdfs.py</code> against <code>synthetic-print.xlsx</code> after the change leaves every crop's MAE byte-identical to the prior run (the fix is gated on <code>UseFirstPageNumber</code>; the existing fixture has it off). New fixture: page 1 full-page MAE vs Excel = <code>4.21</code>, page 2 = <code>4.27</code> — within sub-pixel noise of the baseline <code>synthetic-print</code> numbers (<code>4.12</code> / <code>4.19</code>), the small uplift coming from the two-digit-wider <em>"42"</em> / <em>"43"</em> in the center footer.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Print options — honor <code>horizontalCentered</code> / <code>verticalCentered</code> in PDF</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-print-centered.xlsx</code> — landscape Letter copy of <code>synthetic-print.xlsx</code> with <code>&lt;printOptions horizontalCentered="1" verticalCentered="1"/&gt;</code> set. Same 6×31 sales table; Page 1 carries 12 data rows so the content fills only the top-left of the printable rectangle, making the centering offset obvious.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>, both rasterized at 96 dpi by <code>tools/excel-parity/compare-print-pdfs.py</code>.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:210px; aspect-ratio:1.3 / 1;">
+            <img src="../artifacts/excel/synthetic-print-centered-expected.png" style="--w:1056px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — centered table inside printable area">
+          </div>
+          <div class="caption">Excel reference: the table is shifted right (horizontal centering) and down (vertical centering) inside the printable area. The header line (<em>"Report"</em> / date) and footer line (<em>"Report"</em> / <em>"Page 1 of 2"</em> / <em>"synthetic-print-centered"</em>) stay anchored to the page margins — Excel doesn't move header/footer text with the body centering.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:210px; aspect-ratio:1.3 / 1;">
+            <img src="../artifacts/native/synthetic-print-centered-after.png" style="--w:1056px; --x:0px; --y:0px; --s:1.0" alt="Ours after — centered table">
+          </div>
+          <div class="caption">After: our PDF emitter shifts each page's <code>LeftPtOffset</code> / <code>TopPtOffset</code> by half the unfilled printable area when the flags are set. Table position now matches Excel's centered placement within ~10 px (residual is content-extent measurement difference, not a centering bug); header/footer chrome remains at the page corners as Excel renders.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:210px; aspect-ratio:1.3 / 1;">
+            <img src="../artifacts/baseline/synthetic-print-centered-before.png" style="--w:1056px; --x:0px; --y:0px; --s:1.0" alt="Ours before — table flush to top-left">
+          </div>
+          <div class="caption">Before: the PDF emitter parsed the flags into <code>PageSetup.Options</code> but the placement code only ever used <code>leftMarginPt</code> / <code>topMarginPt</code>, so the table printed flush against the top-left margin regardless of <code>horizontalCentered="1"</code>.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> consume <code>PageSetup.Options.HorizontalCentered</code> / <code>VerticalCentered</code> per page when building the <code>Placement</code> in <code>src/Spreadsheet.Pdf/Pdf.fs</code>.</p>
+          <ul>
+            <li>For each page, sum the slice's column widths plus repeat-col band plus print-headings strip into <code>bodyWidthPx</code> (analogous for rows / height). Convert to points via <code>pxToPt * pagination.Scale</code>.</li>
+            <li>When the flag is on and <code>bodyWidthPt &lt; printableWidthPt</code>, add <code>(printableWidthPt - bodyWidthPt) / 2</code> to <code>LeftPtOffset</code>; same for vertical. Centering is computed per page so a partly-filled last page still centers on what's actually drawn (matches Excel).</li>
+            <li>Header / footer ops still anchor to <code>printableLeftPt</code> / <code>printableRightPt</code> — they live in the page margins outside the centered content, which matches Excel's H/F placement.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. Re-running <code>compare-print-pdfs.py</code> on the four pre-existing fixtures (<code>synthetic-print</code>, <code>synthetic-print-chrome</code>, <code>synthetic-header-footer-runs</code>, <code>synthetic-header-footer-runs-footer</code>) leaves every crop's MAE within sub-pixel noise of the prior run — the fix is gated on the flag, so the no-center fixtures render unchanged. New fixture's page 1 body MAE = <code>5.81</code> vs Excel (vs. <code>~200 px</code> structural misalignment before).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Browser XLSX import — inline rich-text runs</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-inline-rich.xlsx</code>. The first sheet has plain inline text, a mixed bold/plain/italic-red inline string, and a mixed larger-blue/plain/strike-underlined inline string.</span>
+          <span class="meta">Path checked: Excel live screenshot via <code>tools/excel-parity/excel-screenshot.sh</code>; browser/Fable import and portable canvas capture via <code>tools/excel-parity/capture-browser-xlsx.mjs</code>.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:210px; aspect-ratio:1.9 / 1;">
+            <img src="../artifacts/excel/synthetic-inline-rich-browser-expected.png" style="--w:1920px; --x:0px; --y:0px; --s:1.5" alt="Excel reference for browser inline rich text import">
+          </div>
+          <div class="caption">Excel reference: cells <code>A2:A3</code> preserve per-run bold, italic red, larger blue text, underline, and strikethrough inside a single cell.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:210px; aspect-ratio:1.9 / 1;">
+            <img src="../artifacts/native/synthetic-inline-rich-browser-after.png" style="--w:900px; --x:0px; --y:0px; --s:1.8" alt="Browser after inline rich text import fix">
+          </div>
+          <div class="caption">After: the browser importer carries two rich-run entries into <code>SpreadsheetModel.RichRuns</code>, and the portable canvas renderer paints run-level color, size, bold, italic, underline, and strikethrough.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:210px; aspect-ratio:1.9 / 1;">
+            <img src="../artifacts/baseline/synthetic-inline-rich-browser-before.png" style="--w:900px; --x:0px; --y:0px; --s:1.8" alt="Browser before inline rich text import fix">
+          </div>
+          <div class="caption">Before: the browser import collapsed inline rich strings to plain text, so all runs shared one black, regular font style.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> expose and consume per-cell rich runs in the browser XLSX import path, then make the browser portable-canvas renderer measure and paint those split text runs.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/Main.fs</code>: added <code>richRunsAt</code> for inline strings and shared strings, flattening run text plus bold, italic, underline, double-underline, strikethrough, color, font, size, and vertical-align fields.</li>
+            <li><code>src/Spreadsheet/XlsxImporter.fs</code>: converts rich-run objects into <code>RunOverride</code> values and populates <code>SpreadsheetModel.RichRuns</code> during browser import.</li>
+            <li><code>src/Spreadsheet/Spreadsheet.fs</code>: installs a browser text measurer for the shared paint path and draws underline / strikethrough strokes for canvas text runs.</li>
+          </ul>
+          <p>Guard: browser capture reports <code>cells=3 richRuns=2</code>; before the fix, the same capture reported <code>cells=3</code> with no imported rich-run formatting.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Browser XLSX import — flattened styles, dimensions, and empty styled cells</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-browser-styles.xlsx</code>. Excel-authored workbook with text labels in column A, style-only filled cells in <code>B1:B7</code>, a larger-font cell, double underline, and diagonal borders in <code>B10:B12</code>.</span>
+          <span class="meta">Path checked: Excel live screenshot via <code>tools/excel-parity/excel-screenshot.sh</code>; browser/Fable import and portable canvas capture via <code>tools/excel-parity/capture-browser-xlsx.mjs</code>.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:430px; aspect-ratio:1 / 1;">
+            <img src="../artifacts/excel/synthetic-fmt5-browser-import-expected.png" style="--w:1920px; --x:0px; --y:0px; --s:1.0" alt="Excel reference for browser XLSX style import">
+          </div>
+          <div class="caption">Excel reference: column B contains seven empty-but-styled fill cells, then text styling and diagonal borders. Those cells have no values but still render visibly in Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:430px; aspect-ratio:1 / 1;">
+            <img src="../artifacts/native/synthetic-fmt5-browser-import-after.png" style="--w:900px; --x:0px; --y:0px; --s:1.0" alt="Browser after XLSX style import fix">
+          </div>
+          <div class="caption">After: the browser import installs 26 cells from the workbook, including style-only cells, custom row/column dimensions, fills, double underline, and diagonal borders.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:430px; aspect-ratio:1 / 1;">
+            <img src="../artifacts/baseline/synthetic-fmt5-browser-import-before.png" style="--w:900px; --x:0px; --y:0px; --s:1.0" alt="Browser before XLSX style import fix">
+          </div>
+          <div class="caption">Before: the Fable path stayed on the initial blank sheet. The API returned raw F# list/record shapes while the importer expected JS arrays and a flattened cell-with-style object; the overloaded <code>SetWorkbook</code> member also compiled to the wrong JS method.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> make the browser-facing Office.Format Excel API match the importer contract, and preserve visible formatting even when a cell has no value.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/Main.fs</code>: <code>sheetNames</code> and <code>mergedCells</code> now return JS arrays; <code>cellWithStyleAt</code> returns flattened style fields; <code>commentAt</code>, effective <code>columnWidth</code>, and effective <code>rowHeight</code> are exported.</li>
+            <li><code>src/Spreadsheet/XlsxImporter.fs</code>: imports font, fill, border, diagonal, double-underline, strikethrough, comment, list-dropdown, row-height, and column-width fields, normalizes colors to CSS hex, and stores style-only cells.</li>
+            <li><code>src/Spreadsheet/Spreadsheet.fs</code>: renamed the table-context setter to <code>SetWorkbookContext</code> so the Fable output keeps the 3-argument workbook-sheet loader used by <code>ImportXlsxFromBuffer</code>.</li>
+            <li><code>src/Spreadsheet/Formula.fs</code>: replaced two .NET-only string helpers with Fable-compatible equivalents so the spreadsheet bundle builds for browser capture.</li>
+          </ul>
+          <p>Guard: <code>dotnet fable src/Office.Formats ...</code> and <code>dotnet fable src/Spreadsheet ...</code> both compile. Browser capture reports <code>cells=26</code> for this fixture; before the fix it reported <code>cells=0</code>.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>PDF print text metrics — point sizing, baseline, and date fields</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-print.xlsx</code>. Page 1 carries a bold left header, an <code>&amp;D</code> right header, repeated table header text, numeric body cells, and an <code>&amp;F</code>/<code>&amp;P</code> footer. Companion chrome guard: <code>tests/test-documents-excel/synthetic-print-chrome.xlsx</code> checks row/column print-heading text.</span>
+          <span class="meta">Path checked: Excel PDF export reused from <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>, both rasterized at 96 dpi by <code>tools/excel-parity/compare-print-pdfs.py</code>.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/excel/synthetic-print-pdf-text-date-expected.png" style="--w:1056px; --x:710px; --y:18px; --s:1.25" alt="Excel reference for PDF print text and date fields">
+          </div>
+          <div class="caption">Excel reference: the header date field prints as <code>5/18/2026</code>; table text uses Excel's 11 pt print sizing and sits just above the row baselines.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/native/synthetic-print-pdf-text-date-after.png" style="--w:1056px; --x:710px; --y:18px; --s:1.25" alt="Ours after PDF print text and date field fix">
+          </div>
+          <div class="caption">After: the same PDF crop now prints <code>5/18/2026</code>, keeps Calibri body text at point-size width, and lifts the text baseline into Excel's vertical band.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:2.6 / 1;">
+            <img src="../artifacts/baseline/synthetic-print-pdf-text-date-before.png" style="--w:1056px; --x:710px; --y:18px; --s:1.25" alt="Ours before PDF print text and date field fix">
+          </div>
+          <div class="caption">Before: <code>&amp;D</code> emitted ISO text (<code>2026-05-18</code>) and the PDF text path sized point fonts as if they were CSS pixels, leaving body and heading text visibly smaller / lower than Excel.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> keep PDF text in point units for drawing, but use the 96/72 px conversion for glyph metrics, line height, and baseline placement.</p>
+          <ul>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs</code>: <code>DrawText</code> now measures text with point-size × 96/72, draws it at actual PDF points, and applies a small PDF-only baseline lift.</li>
+            <li>Print-heading chrome now uses 10 pt text, centers row numbers like Excel, and applies a heading-specific baseline shift so the labels remain centered in the shorter strip.</li>
+            <li><code>src/Spreadsheet.Pdf/HeaderFooter.fs</code>: <code>&amp;D</code> now formats as <code>M/d/yyyy</code>; <code>&amp;T</code> formats as <code>h:mm AM/PM</code>, matching Excel's default Windows header/footer fields for these fixtures.</li>
+          </ul>
+          <p>Guard: <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. Top-crop MAE improved on the captured before/after run: <code>synthetic-print.xlsx</code> page 1 <code>7.0589 → 6.3969</code>; <code>synthetic-print-chrome.xlsx</code> page 1 <code>12.4314 → 11.6033</code>. Remaining chrome diff is still mostly grid/text rasterization weight and small body geometry offsets.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Header/footer mid-section runs — bold, color, italic face, and size changes</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-header-footer-runs.xlsx</code>. Center header string: <code>&amp;CPlain &amp;Bbold&amp;B plain &amp;KFF0000red &amp;K000000&amp;"Arial,Italic"italic &amp;16big&amp;"Calibri,Regular"&amp;10 normal</code>. The same section switches style state seven times before the sheet body begins. Companion footer guard: <code>tests/test-documents-excel/synthetic-header-footer-runs-footer.xlsx</code>.</span>
+          <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, plus our PDF export. <code>tools/excel-parity/compare-print-pdfs.py</code> compares both PDFs at 96 dpi; gallery crop uses page 1 of the two-page print output.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/synthetic-header-footer-runs-expected-crop.png" style="--w:1560px; --x:120px; --y:0px; --s:0.55" alt="Expected Excel header/footer run behavior">
+          </div>
+          <div class="caption">Excel reference: Excel applies the active H/F formatting state to each contiguous run. Only <em>bold</em> is bold, only <em>red</em> is red, <em>italic</em> uses the italic face, <em>big</em> uses the larger size, and <em>normal</em> returns to regular Calibri 10.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-header-footer-runs-after-crop.png" style="--w:1560px; --x:120px; --y:0px; --s:0.55" alt="Ours after header/footer run styling fix">
+          </div>
+          <div class="caption">After: the PDF path renders separate styled runs inside the same center header. The crop shows bold, red fill color, Arial italic, 16 pt size, and the final regular segment all surviving into the generated PDF. The large-run header baseline now lands on the same dark-pixel top as Excel in the 96 dpi crop.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/synthetic-header-footer-runs-before-crop.png" style="--w:1560px; --x:120px; --y:0px; --s:0.55" alt="Ours before-equivalent header/footer rendering">
+          </div>
+          <div class="caption">Before-equivalent: the old <code>HeaderFooter.resolve</code> shape collapsed a section to plain text and consumed style codes. This crop uses the same visible text with the codes stripped, matching the previous all-black, regular, single-size output.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>src/Spreadsheet.Pdf/HeaderFooter.fs</code> now emits a <code>StyledRun list</code> per left/center/right section instead of losing mid-section style changes.</p>
+          <ul>
+            <li><code>&amp;B</code> / <code>&amp;I</code> flush the current run and toggle bold / italic.</li>
+            <li><code>&amp;"Font,Style"</code>, <code>&amp;NN</code>, and <code>&amp;Kxxxxxx</code> flush and update face, size, and color state for following text.</li>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs</code> measures the total section width across all runs for alignment, then renders each segment with its own face, size, and fill color. Font-subset glyph collection walks the same styled runs.</li>
+            <li>The header and footer baselines now use the largest resolved run size, with Excel-like leading/lift for large text, instead of always using the fixed 10 pt default. That keeps 16 pt header runs from sitting too high and 16 pt footer runs from sitting too low.</li>
+          </ul>
+          <p>Guard: <code>tests/print/helpers.fsx</code> now asserts the seven-run shape for this exact mixed header; <code>dotnet fsi tests/print/helpers.fsx</code> passes 16/16. Comparator summaries are under <code>artifacts/pdf-compare-excel/tests_test-documents-excel_synthetic-header-footer-runs/summary.tsv</code> and <code>artifacts/pdf-compare-excel/tests_test-documents-excel_synthetic-header-footer-runs-footer/summary.tsv</code>.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Real-world print fidelity — drop trailing row, cell-grid noise, &amp;"Font,Style"+&amp;NN H/F sizing</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/pandas-dimension_large.xlsx</code> — a tiny pandas-export workbook (A1=<em>Title</em> bold 18 pt; A3/B3/C3=<em>A/B/C</em> bold; rows 4–6 contain 1..9 in a 3×3 numeric block). No <code>&lt;border&gt;</code> on any cell, <code>printOptions gridLines="false" headings="false"</code>, custom A4 portrait margins, and a Times-New-Roman 12 pt center header / footer expressed as <code>&amp;C&amp;"Times New Roman,Regular"&amp;12&amp;A</code> / <code>&amp;C&amp;"Times New Roman,Regular"&amp;12Page &amp;P</code>. Hits three independent print-parity bugs in one fixture.</span>
+          <span class="meta">Real fixture class: anything actually printed from a non-Excel writer (pandas / openpyxl / xlsxwriter / docx-styled exports). They tend to: (1) leave cells unbordered and rely on Excel's screen gridlines for legibility, which Excel then *omits* from print output; (2) skip rows in the XML <code>&lt;sheetData&gt;</code> so the model carries non-uniform row heights; (3) embed font / size codes in the H/F string.</span>
+          <span class="meta">Paths checked: PDF (single page). 16/16 print-helper assertions (including <code>hf-times-12-style</code> and <code>hf-mid-run-styles</code>) pass; Phase 5 + chrome regress-renders still keep their page counts and row splits after the gridline / print-width updates. <code>tools/excel-parity/print-excel-pdf.vbs</code> no longer force-enables <code>PrintHeadings</code> / <code>PrintGridlines</code> on the Excel side — the reference PDF now reflects whatever the fixture asks for.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/pandas-dimension_large-1.png" style="--w:816px; --x:0px; --y:0px; --s:1.6" alt="Excel reference render">
+          </div>
+          <div class="caption">Excel page 1: <em>Title</em> bold 18 pt at A1, one blank row, then <em>A / B / C</em> bold headers (row 3) and three numeric data rows (1..9 across cols A..C). No cell borders anywhere — Excel honors <code>gridLines="false"</code>. Header band has a single line "Sheet1" centered in Times New Roman ~12 pt; footer band has "Page 1" same face / size.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/pandas-dimension_large-after.png" style="--w:816px; --x:0px; --y:0px; --s:1.6" alt="Ours after the three print fixes">
+          </div>
+          <div class="caption">After: matches Excel on all three counts — full 6-row body (Title / blank / A B C / 1 4 7 / 2 5 8 / 3 6 9), no cell-grid noise, and "Sheet1" / "Page 1" rendered in Times New Roman 12 pt. The two H/F bands sit at the same vertical positions as Excel within ~1 pt.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/pandas-dimension_large-before.png" style="--w:816px; --x:0px; --y:0px; --s:1.6" alt="Ours before — three visible parity gaps">
+          </div>
+          <div class="caption">Before: the trailing row <em>(3 6 9)</em> never rendered; <code>visibleRange</code>'s end-row loop double-counted the start row's height, so the loop overshot by one row and the final <code>endRowExclusive</code> landed one short. Every cell carried a thin gray <code>StrokeRect</code> (the interactive view's always-on cell gridline) even though <code>gridLines="false"</code>. Headers / footers rendered in Calibri 10 pt because <code>HeaderFooter.fs</code> consumed <code>&amp;"…"</code> and <code>&amp;NN</code> codes silently.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> three independent bugs surfacing on the same real fixture.</p>
+          <ul>
+            <li><strong>Trailing row dropped on non-uniform heights</strong>: <code>src/Spreadsheet/Layout.fs</code> <code>visibleRange</code>. The start-row loop used to advance <code>startRow</code> and stash <code>y = bottom-of-startRow</code> in one pass; then the end-row loop reused that same <code>y</code> as <code>yEnd</code> and immediately added <code>getRowHeight startRow</code> on its first iteration — double-counting the start row's height. With uniform 25 px rows (Phase 5's fixture) the overshoot was absorbed by the +1 px height-inflation hack in <code>sliceItems</code>; with row 0 at 29.4 px and rows 2..5 at 18.4 px (this fixture) the overshoot landed mid-row and <code>endRowExclusive</code> came back one short. Rewrote the start-row loop to walk with one-row lookahead so <code>y</code> tracks the *top* of <code>startRow</code> (not the bottom), then the end-row loop's <code>yEnd</code> seed is correct and the inflation hack in <code>sliceItems</code> goes away (scroll / width / height now exact). Same fix on the column axis. Latent bug for the interactive viewport too: a screen scroll that landed mid-row dropped the last visible row from the rendered range.</li>
+            <li><strong>Per-cell <code>StrokeRect</code> bleeding into print</strong>: <code>src/Spreadsheet/Paint.fs</code> <code>buildCellPaintItems</code> emits a 1 px <code>#a6a6a6</code> <code>StrokeRect</code> around every cell so the on-screen grid is visible without <code>gridLines="true"</code>. In print mode that rule is wrong — Excel only paints cell gridlines when <code>PrintOptions.GridLines</code> is on (and uses a darker color anyway, which the Phase 5 row already wired). Added <code>isInteractiveCellStroke</code> in <code>Spreadsheet.Pdf/Pdf.fs</code>; <code>sliceItems</code> filters all <code>StrokeRect</code> items out. Explicit cell borders flow through <code>emitBorderSide</code> as <code>GridLine</code> items, not <code>StrokeRect</code>, so they survive the filter.</li>
+            <li><strong>H/F font / size / weight codes</strong>: <code>src/Spreadsheet.Pdf/HeaderFooter.fs</code>. The old <code>Section</code> was a triple of plain strings; <code>substituteFields</code> stripped <code>&amp;"Font,Style"</code> / <code>&amp;NN</code> / <code>&amp;B</code> / <code>&amp;I</code> silently. Replaced it with <code>StyledSection</code> / <code>StyledRun</code>: <code>resolveSection</code> walks each section's raw string, flushes contiguous runs around font, size, bold, italic, and color changes, and mirrors the first text run onto the section-level compatibility fields. <code>Pdf.fs</code> <code>sectionOps</code> takes a <code>StyledSection</code>, measures all runs as one aligned section, then renders each segment with its own face, size, and fill color. Glyph-recording for font subsetting reads the same styled-run shape via <code>recordStyled</code>.</li>
+          </ul>
+          <p>Tooling: <code>tools/excel-parity/print-excel-pdf.vbs</code> stopped force-enabling <code>PrintHeadings</code> / <code>PrintGridlines</code>. That override was a Phase-5-era workaround for our renderer not supporting chrome; with the chrome path now wired (the chrome row below), it actively hides bugs — a fixture with <code>headings="0"</code> + <code>gridLines="0"</code> should print no chrome at all, and pandas-dimension_large is the smallest fixture exposing the divergence.</p>
+          <ul>
+            <li>Focused guard: <code>pandas-dimension_large.xlsx</code> now matches Excel on the visible body content, cell appearance (no printed borders), H/F font face / size, and footer field-code substitution.</li>
+            <li>Regression guard: <code>synthetic-print.xlsx</code> (Phase 5) and <code>synthetic-print-chrome.xlsx</code> (chrome row below) re-render with the new <code>visibleRange</code> + cell-stroke filter — Phase 5's 12-row page-1 / 12-row page-2 row counts hold, chrome fixture's 8/7/7/9 body-row counts hold. Phase 5's <code>&amp;BReport</code> oddHeader now actually renders in bold (it was being silently stripped before); semantically that's a correctness improvement, but anyone diffing the byte-stream against the pre-fix render will notice. <code>hf-strip-style-codes</code> in <code>tests/print/helpers.fsx</code> upgraded to also assert <code>Bold=true</code> / <code>FontName=Some "Arial"</code> / <code>FontSize=Some 12.0</code> on the new fields; new <code>hf-times-12-style</code> covers the exact pattern from this fixture (<code>&amp;"Times New Roman,Regular"&amp;12&amp;A</code>).</li>
+            <li>Path guard: <code>visibleRange</code> fix is shared with the interactive viewport. With uniform-height workbooks (every corpus pandas fixture, the test scrollable in <code>/Spreadsheet.fs</code>) the new lookahead picks the same <code>startRow</code> as before; with non-uniform heights it picks the correct row instead of the one above when scrolling lands mid-row. The off-by-one in the end-row loop is fixed unconditionally — interactive viewports gain one row at the bottom of the visible range, which is also strictly more correct.</li>
+            <li>Scope for this row: trailing-row visibility, screen-grade cell-stroke suppression in print, and per-section font / size / bold / italic from the H/F string. The earlier H/F run-list / <code>&amp;K{hex}</code> gap is now closed by the header/footer run row above. Remaining H/F gap: vertical position of the H/F band within the page-margin area is still derived from the fixed <code>hfFontSizePt=10</code> rather than the resolved section size, so a 12 pt header sits a touch lower than Excel's equivalent.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Print chrome — headings, gridlines, even/first H/F variants, &amp;F display name</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-print-chrome.xlsx</code> — same 6×31 sales table as the Phase 5 fixture (sheet renamed "Chrome"), but with <code>&lt;printOptions gridLines="1" headings="1"/&gt;</code>, <code>_xlnm.Print_Area</code> extended to <code>$A$1:$F$31</code>, three manual row breaks (after rows 8/15/22) splitting into 4 pages, and a <code>&lt;headerFooter differentOddEven="1" differentFirst="1"&gt;</code> with all six oddHeader/evenHeader/firstHeader + matching footers. Each variant carries distinct text so the page → variant mapping is visible.</span>
+          <span class="meta">Real fixture class: workbooks meant for production printing — anyone who turns on Print → Show row &amp; column headings, Print → Show gridlines, or Page Setup → Headers/Footers → Different odd &amp; even pages / Different first page. The Phase 5 row pointed all three of these out as <em>"Not yet"</em>; this row closes them.</span>
+          <span class="meta">Paths checked: PDF (4-page). Print-helper assertions (16/16) still pass; Phase 5 <code>synthetic-print.xlsx</code> re-renders with the same page count and body rows (its <code>OddHeader</code>/<code>OddFooter</code>-only headerFooter falls through the variant picker exactly like before).</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/excel/synthetic-print-chrome-page1.png" style="--w:1056px; --x:0px; --y:0px; --s:1.7" alt="Excel reference — page 1, FIRST variant">
+          </div>
+          <div class="caption">Excel page 1 (DifferentFirst chooses FirstHeader/FirstFooter): top header <em>"FIRST &nbsp; First Page Header &nbsp; Page 1"</em>, footer <em>"First Footer &nbsp; Page 1 of 4 &nbsp; File: synthetic-print-chrome"</em> (Excel strips the .xlsx extension from &amp;F on Windows). Column-letter strip <code>A..F</code> at the top with vertical cell dividers between letters; row-number strip <code>1..8</code> on the left with horizontal cell dividers between rows. Body cells gridlined throughout because <code>gridLines="1"</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/native/synthetic-print-chrome-page1-after.png" style="--w:1056px; --x:0px; --y:0px; --s:1.7" alt="Ours after — page 1, FIRST variant">
+          </div>
+          <div class="caption">After: first-page header/footer routing, <code>&amp;F</code> display-name substitution, row/column print headings, and printed gridlines are all present. The top-left heading corner is now a complete outlined cell instead of a broken partial border. Remaining visual diff is mostly font rasterization/weight and small geometry offsets, not missing chrome.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="../artifacts/baseline/synthetic-print-chrome-page1-before.png" style="--w:1056px; --x:0px; --y:0px; --s:1.7" alt="Ours before — incomplete print-heading chrome">
+          </div>
+          <div class="caption">Before: the fixture did render a first-page header/footer and some grid/headings, but the heading chrome was incomplete: the blank top-left corner cell was not outlined, the row-number strip did not visually close against the column-letter strip, and the footer still used the workbook filename with the <code>.xlsx</code> extension in earlier renders.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> finish the three "Not yet" items from Phase 5's print-pipeline row.</p>
+          <ul>
+            <li><code>src/Spreadsheet.Pdf/Pagination.fs</code>: new <code>printHeadingsRowHeightPx</code> / <code>printHeadingsColWidthPx</code> constants and a <code>headingsOffsets ps</code> helper that returns <code>(28, 19)</code> px when <code>Options.Headings</code> is on, <code>(0, 0)</code> otherwise. <code>paginate</code> subtracts these from <code>availableW</code>/<code>availableH</code> before manual-break / fit-to-page math, so a sheet with <code>headings="1"</code> paginates against a slightly smaller body area — matching Excel.</li>
+            <li><code>src/Spreadsheet.Pdf/Pdf.fs</code>:
+              <ul>
+                <li><strong>Even/first H/F variants</strong>: <code>pickHeaderFooter pageNum1</code> selects <code>FirstHeader</code>/<code>FirstFooter</code> on page 1 when <code>DifferentFirst</code> is set, <code>EvenHeader</code>/<code>EvenFooter</code> on even pages when <code>DifferentOddEven</code> is set, falling through to <code>OddHeader</code>/<code>OddFooter</code> otherwise. A flag whose variant slot is <code>None</code> renders blank on that page — matches Excel's behavior when the user enables a variant but leaves it empty.</li>
+                <li><strong>Print gridlines</strong>: new <code>gridLineItems</code> helper emits one vertical at every column edge and one horizontal at every row edge of a slice, in near-black at <code>1.0</code> CSS px. <code>sliceItems</code> filters the screen path's default white cell fills before <code>withGridlines</code> splices the print gridlines into the band's paint stream, so gridlines stay visible in unfilled cells while explicit colored fills / borders cover them. Wired per-band in <code>assembleBand</code> so body, repeat-rows, repeat-cols, and repeat-corner all carry their own gridlines that tile across the page.</li>
+                <li><strong>Print headings</strong>: new <code>headingItems</code> helper emits a column-letter strip above the body+repeats and a row-number strip to its left when <code>Options.Headings</code> is on. Cells use <code>columnToLetter c</code> centered / <code>string (r + 1)</code> right-aligned, in 9 pt at <code>#444444</code>; per-cell dividers (verticals between letters, horizontals between numbers) plus a separator line below the column-letter strip and to the right of the row-number strip mirror Excel's print headings. Body, repeat-rows, repeat-cols, and repeat-corner offsets each shift by <code>(headingsColPx, headingsRowPx)</code> so the content rectangle lines up under the chrome.</li>
+                <li><strong>Print explicit column widths</strong>: <code>Spreadsheet.Pdf/Pdf.fs</code> now widens non-default column widths by <code>15/14</code> only inside the PDF path. Excel's live grid uses the floored screen MDW for explicit <code>&lt;col width&gt;</code> values, but its print/PDF path uses the non-floored Calibri-11 width; this keeps screenshot geometry stable while lining up printed explicit columns.</li>
+              </ul>
+            </li>
+            <li><code>tools/spreadsheet-pdf-runner/Program.fs</code>: <code>Path.GetFileName</code> → <code>Path.GetFileNameWithoutExtension</code> for the <code>FileName</code> field threaded into <code>RenderOptions</code>. Excel's <code>&amp;F</code> field code substitutes the workbook's display name (no extension) on Windows; we did the same and our footer now reads <em>"synthetic-print"</em> rather than <em>"synthetic-print.xlsx"</em>. Phase 5's parity-row caption updated to match.</li>
+          </ul>
+          <ul>
+            <li>Focused guard: <code>synthetic-print-chrome.xlsx</code> committed under <code>tests/test-documents-excel/</code>. All four pages now have the expected variant H/F text, column-letter / row-number chrome, per-cell gridlines, body data, and footer field codes; remaining visual diff is font rasterization/weight and small geometry offsets.</li>
+            <li>Regression guard: <code>synthetic-print.xlsx</code> (Phase 5) still renders 2 landscape pages with identical chrome (none — Headings/GridLines are off) and identical body content. The deliberate diffs vs Phase 5's earlier render are the &amp;F extension strip in the footer and the print-only explicit-column width alignment. 16/16 print-helper assertions still pass.</li>
+            <li>Path guard: variant H/F change is no-op when both <code>DifferentOddEven</code> and <code>DifferentFirst</code> are false (every page hits the same Odd fallback); print-headings and print-gridlines are no-op when both flags are false (no extra paint items, no pagination shrinkage). Default <code>PageSetup</code> leaves all three flags off, so the 60-fixture corpus is untouched.</li>
+            <li>Scope: column-letter / row-number chrome with per-cell dividers and the right outline; near-black print gridlines; first-page and even-page H/F variants honoring <code>differentFirst</code> / <code>differentOddEven</code>. The H/F font / size / color-code gap called out in this row is now covered by the header/footer run row above. Center-on-page / center-header / footer margins still stay as Phase 5 wired them.</li>
+          </ul>
+        </td>
+      </tr>
       <tr>
         <td>
           <strong>Print pipeline — page setup, 2D pagination, headers/footers, print area, repeat rows</strong>
@@ -191,7 +1221,7 @@
           <ul>
             <li>Focused guard: synthetic-print.xlsx committed under <code>tests/test-documents-excel/</code>. The structural check is "2 landscape pages, repeat header on each, rows split at the manual break, footer reflects &amp;P / &amp;N / &amp;A / &amp;F field codes." A new <code>tests/print/helpers.fsx</code> exercises 14 standalone assertions for the field-code parser + 2D break math.</li>
             <li>Regression guard: full 60-fixture corpus PNG render byte-clean (PageSetup defaults to portrait Letter, recalc unchanged); 177 formula + 14 print-helper + 12 calc-engine assertions still pass.</li>
-            <li>Scope: page margins, orientation, manual row / col breaks, fit-to-page scaling, print area, repeat rows / cols, headers / footers with all common field codes. <strong>Not yet:</strong> printing the column-letter / row-number chrome when <code>PrintOptions.Headings</code> is true, printing gridlines under cells when <code>PrintOptions.GridLines</code> is true, and even / first-page header / footer variants (only odd applies for now).</li>
+            <li>Scope: page margins, orientation, manual row / col breaks, fit-to-page scaling, print area, repeat rows / cols, headers / footers with all common field codes. Historical note: this Phase 5 row originally left print headings, print gridlines, and even / first-page header/footer variants open; the print-chrome row above closes those items.</li>
           </ul>
         </td>
       </tr>

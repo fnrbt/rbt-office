@@ -2,6 +2,9 @@
 
 Current goal: iteratively improve RedBat Spreadsheet render/layout parity against Microsoft Excel for real XLSX files and focused generated repros. Mirrors `docs/word-parity.md`.
 
+Active tracker: `docs/excel-parity-tracker.md`. Visual fix history:
+`docs/excel-parity-fixes.html`.
+
 ## Confirmed Repo Map
 
 - Browser/Fable Spreadsheet path: `src/Spreadsheet/`
@@ -63,6 +66,12 @@ For each identified bug, prefer the stricter loop used by the Word parity work:
 - `tools/excel-parity/excel-layout-tsv.sh` — wraps the layout extractor.
 - `tools/excel-parity/excel-print-pdf.sh` — wraps the PDF generator.
 - `tools/excel-parity/compare-vba-layout-results.mjs` — runs Excel TSV extraction plus browser layout-call result extraction for matched cell ranges; writes per-document layout diffs and a ranked summary.
+- `tools/excel-parity/capture-browser-xlsx.mjs` — builds/serves the Fable
+  Spreadsheet bundle and captures an imported XLSX through the browser
+  portable-canvas path.
+- `tools/excel-parity/validate-fixes-gallery.mjs` — checks
+  `docs/excel-parity-fixes.html` for missing image references and broken
+  row cells.
 
 Run on the Windows VM from an interactive session:
 

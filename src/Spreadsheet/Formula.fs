@@ -675,6 +675,19 @@ let private dateToSerial (d: DateTime) : float = (d - excelEpoch).TotalDays
 /// Shared RNG for the volatile RAND / RANDBETWEEN functions.
 let private rng = Random()
 
+let private properCase (text: string) : string =
+    let lower = text.ToLowerInvariant()
+    let sb = System.Text.StringBuilder(lower.Length)
+    let mutable startWord = true
+    for ch in lower do
+        if Char.IsLetter ch then
+            sb.Append(if startWord then Char.ToUpperInvariant ch else ch) |> ignore
+            startWord <- false
+        else
+            sb.Append ch |> ignore
+            startWord <- not (Char.IsDigit ch)
+    sb.ToString()
+
 // --- Criteria parsing (SUMIF / COUNTIF / …) ---------------------------------
 /// Translate Excel's `*` / `?` wildcards into a case-insensitive regex.
 let private wildcardRegex (pattern: string) =
@@ -1242,7 +1255,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
     | "PROPER" ->
         if nargs <> 1 then err Err.value
         else match argText 0 with
-             | Ok s -> CellValue.String (CultureInfo.InvariantCulture.TextInfo.ToTitleCase(s.ToLowerInvariant()))
+             | Ok s -> CellValue.String (properCase s)
              | Result.Error e -> err e
     | "LEFT" ->
         if nargs < 1 then err Err.value else
@@ -1284,10 +1297,11 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let startAt = if nargs >= 3 then (match argNum 2 with Ok n -> int n - 1 | _ -> 0) else 0
             if startAt < 0 || startAt > hay.Length then err Err.value
             else
-                let cmp =
-                    if name.ToUpperInvariant() = "FIND" then StringComparison.Ordinal
-                    else StringComparison.OrdinalIgnoreCase
-                let idx = hay.IndexOf(needle, startAt, cmp)
+                let idx =
+                    if name.ToUpperInvariant() = "FIND" then
+                        hay.IndexOf(needle, startAt)
+                    else
+                        hay.ToLowerInvariant().IndexOf(needle.ToLowerInvariant(), startAt)
                 if idx < 0 then err Err.value else CellValue.Number (float (idx + 1))
     | "SUBSTITUTE" ->
         // SUBSTITUTE(text, old, new, [instance])

@@ -22,25 +22,53 @@ let ctx : HeaderFooter.PageContext =
       Now = System.DateTime(2026, 3, 15, 14, 30, 0) }
 
 let sec1 = HeaderFooter.resolve ctx "&LLeft&CCenter&RRight"
-ok "hf-3-sections" (sec1.Left = "Left" && sec1.Center = "Center" && sec1.Right = "Right") (sprintf "%A" sec1)
+ok "hf-3-sections" (sec1.Left.Text = "Left" && sec1.Center.Text = "Center" && sec1.Right.Text = "Right") (sprintf "%A" sec1)
 
 let sec2 = HeaderFooter.resolve ctx "Page &P of &N"
-ok "hf-page-fields" (sec2.Center = "Page 2 of 5") sec2.Center
+ok "hf-page-fields" (sec2.Center.Text = "Page 2 of 5") sec2.Center.Text
 
 let sec3 = HeaderFooter.resolve ctx "&A — &F"
-ok "hf-sheet-file" (sec3.Center = "Sheet One — report.xlsx") sec3.Center
+ok "hf-sheet-file" (sec3.Center.Text = "Sheet One — report.xlsx") sec3.Center.Text
 
 let sec4 = HeaderFooter.resolve ctx "&D at &T"
-ok "hf-date-time" (sec4.Center = "2026-03-15 at 14:30") sec4.Center
+ok "hf-date-time" (sec4.Center.Text = "3/15/2026 at 2:30 PM") sec4.Center.Text
 
 let sec5 = HeaderFooter.resolve ctx "AT&&T"
-ok "hf-ampersand-escape" (sec5.Center = "AT&T") sec5.Center
+ok "hf-ampersand-escape" (sec5.Center.Text = "AT&T") sec5.Center.Text
 
 let sec6 = HeaderFooter.resolve ctx "&L&BBold left&R&\"Arial,Bold\"&12Right title"
-ok "hf-strip-style-codes" (sec6.Left = "Bold left" && sec6.Right = "Right title") (sprintf "%A" sec6)
+ok "hf-strip-style-codes" (sec6.Left.Text = "Bold left" && sec6.Left.Bold && sec6.Right.Text = "Right title" && sec6.Right.FontName = Some "Arial" && sec6.Right.Bold && sec6.Right.FontSize = Some 12.0) (sprintf "%A" sec6)
 
 let sec7 = HeaderFooter.resolve ctx "&L&A&CPage &P of &N"
-ok "hf-poi49156-footer" (sec7.Left = "Sheet One" && sec7.Center = "Page 2 of 5") (sprintf "%A" sec7)
+ok "hf-poi49156-footer" (sec7.Left.Text = "Sheet One" && sec7.Center.Text = "Page 2 of 5") (sprintf "%A" sec7)
+
+let sec8 = HeaderFooter.resolve ctx "&C&\"Times New Roman,Regular\"&12&A"
+ok "hf-times-12-style" (sec8.Center.Text = "Sheet One" && sec8.Center.FontName = Some "Times New Roman" && sec8.Center.FontSize = Some 12.0 && not sec8.Center.Bold) (sprintf "%A" sec8)
+
+let sec9 = HeaderFooter.resolve ctx "&CPlain &Bbold&B plain &KFF0000red &K000000&\"Arial,Italic\"italic &16big&\"Calibri,Regular\"&10 normal"
+let sec9Runs = sec9.Center.Runs
+ok "hf-mid-run-styles"
+   (sec9.Center.Text = "Plain bold plain red italic big normal"
+    && sec9Runs.Length = 7
+    && sec9Runs.[0].Text = "Plain "
+    && not sec9Runs.[0].Bold
+    && sec9Runs.[1].Text = "bold"
+    && sec9Runs.[1].Bold
+    && sec9Runs.[2].Text = " plain "
+    && not sec9Runs.[2].Bold
+    && sec9Runs.[3].Text = "red "
+    && sec9Runs.[3].Color = Some "#FF0000"
+    && sec9Runs.[4].Text = "italic "
+    && sec9Runs.[4].FontName = Some "Arial"
+    && sec9Runs.[4].Italic
+    && sec9Runs.[4].Color = Some "#000000"
+    && sec9Runs.[5].Text = "big"
+    && sec9Runs.[5].FontSize = Some 16.0
+    && sec9Runs.[6].Text = " normal"
+    && sec9Runs.[6].FontName = Some "Calibri"
+    && not sec9Runs.[6].Italic
+    && sec9Runs.[6].FontSize = Some 10.0)
+   (sprintf "%A" sec9)
 
 // ----- Pagination -----
 

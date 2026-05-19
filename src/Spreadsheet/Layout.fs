@@ -93,12 +93,18 @@ let rowY (model: SpreadsheetModel) (viewport: Viewport) (row: int): float =
     y
 
 let visibleRange (model: SpreadsheetModel) (viewport: Viewport): VisibleRange =
+    // startCol/startRow walks forward while the next cell would still sit
+    // entirely above the scroll boundary; y / x land on the *top* of the
+    // first visible cell. endCol/endRow then add successive cells without
+    // re-adding the start cell — earlier versions reused `y` (= bottom of
+    // start cell) and the end loop's first iteration double-counted the
+    // start row, dropping the last row when row heights weren't uniform.
     let mutable startCol = 0
     let mutable x = viewport.RowHeaderWidth
-    while startCol < model.ColCount && x < viewport.ScrollX do
+    while startCol < model.ColCount
+          && x + getColumnWidth startCol model <= viewport.ScrollX do
         x <- x + getColumnWidth startCol model
-        if x < viewport.ScrollX then
-            startCol <- startCol + 1
+        startCol <- startCol + 1
 
     let mutable endCol = startCol
     let mutable xEnd = x
@@ -108,10 +114,10 @@ let visibleRange (model: SpreadsheetModel) (viewport: Viewport): VisibleRange =
 
     let mutable startRow = 0
     let mutable y = viewport.HeaderHeight
-    while startRow < model.RowCount && y < viewport.ScrollY do
+    while startRow < model.RowCount
+          && y + getRowHeight startRow model <= viewport.ScrollY do
         y <- y + getRowHeight startRow model
-        if y < viewport.ScrollY then
-            startRow <- startRow + 1
+        startRow <- startRow + 1
 
     let mutable endRow = startRow
     let mutable yEnd = y

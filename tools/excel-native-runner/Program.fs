@@ -83,6 +83,7 @@ let private resolveValue (workbook: Xlsx.Workbook) (value: Xlsx.CellValue) : Cel
     | Xlsx.Boolean b -> Boolean b
     | Xlsx.Date s -> String s
     | Xlsx.Formula expr -> Formula (expr, Empty)
+    | Xlsx.Error e -> Error e
     | Xlsx.Empty -> Empty
 
 /// Translate an Xlsx.RunProps into a RunOverride. Drops empty fields so the
@@ -159,6 +160,9 @@ let private cellFormatFromStyle (style: Xlsx.CellStyle) : CellFormat =
         HorizontalAlign = style.HorizontalAlign
         VerticalAlign = style.VerticalAlign
         WrapText = style.WrapText
+        Indent = style.Indent
+        ShrinkToFit = style.ShrinkToFit
+        TextRotation = style.TextRotation
         NumberFormat = style.NumberFormat
         BorderTop = borderSide style.BorderTop
         BorderBottom = borderSide style.BorderBottom
@@ -211,7 +215,7 @@ let private tableAccentColor (themeAccents: string array) (styleName: string) : 
         if idx < themeAccents.Length then Some ("#" + themeAccents.[idx]) else None
     | _ -> None
 
-type private TableOverlay = {
+type TableOverlay = {
     BgColor: string option
     TextColor: string option
     Bold: bool
@@ -225,8 +229,10 @@ type private TableOverlay = {
 /// variants don't draw heavy inner borders — the accent fill + banded
 /// stripes are the only visual separation, with the workbook's default
 /// gridlines showing through where they survive the fill. Returns None
-/// for cells outside any table.
-let private tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: string array) (row: int) (col: int) : TableOverlay option =
+/// for cells outside any table. Public so the `spreadsheet-vba-layout`
+/// harness can subtract the overlay's `Bold` from its TSV output (Excel
+/// COM reports the underlying cell font, not the table-style overlay).
+let tableOverrideFor (tables: Xlsx.TableDefinition list) (themeAccents: string array) (row: int) (col: int) : TableOverlay option =
     // row/col are 1-indexed to match Xlsx.TableDefinition.
     tables
     |> List.tryPick (fun t ->
@@ -320,7 +326,17 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                 let c = columnIndex cell.Reference.Column
                 if r < 0 || c < 0 then None
                 else
-                    let value = resolveValue workbook cell.Value
+                    let rawValue = resolveValue workbook cell.Value
+                    // `<sheetView showZeros="false"/>` hides numeric-zero
+                    // cells. Replace value with Empty so the renderer
+                    // skips text emission but keeps fills/borders intact.
+                    let value =
+                        if not sheet.ShowZeros then
+                            match rawValue with
+                            | Number 0.0 -> Empty
+                            | Formula (expr, Number 0.0) -> Formula (expr, Empty)
+                            | other -> other
+                        else rawValue
                     let baseFormat =
                         cell.Style
                         |> Option.map cellFormatFromStyle
@@ -360,6 +376,46 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                     if c > maxCol then maxCol <- c
                     Some ({ Row = r; Col = c }, cellData)))
         |> Map.ofList
+
+    // ---- Column-default fill for missing-cell positions ----------------
+    // Excel applies `<col style="N">` to cells NOT present in <sheetData>
+    // (per OOXML §18.3.1.13). Cells that exist with their own `s=`
+    // already win; cells that exist without `s=` use cellXf 0. We fill
+    // the gaps in the used range with empty-but-styled cells so the
+    // column's default fill / borders render. Bounded by maxRow / maxCol
+    // to avoid materialising the whole 1M-row grid for sparse sheets.
+    let cells =
+        let colStyles : Map<int, int> =
+            sheet.Columns
+            |> List.collect (fun col ->
+                match col.Style with
+                | None -> []
+                | Some sIdx -> [ for c1 in col.Index .. col.MaxIndex -> c1 - 1, sIdx ])
+            |> Map.ofList
+        if Map.isEmpty colStyles then cells
+        else
+            let mutable result = cells
+            for c0 in 0 .. maxCol do
+                match Map.tryFind c0 colStyles with
+                | None -> ()
+                | Some sIdx when sIdx < 0 || sIdx >= workbook.Styles.Length -> ()
+                | Some sIdx ->
+                    let style = workbook.Styles.[sIdx]
+                    let format = cellFormatFromStyle style
+                    // Skip when the style is just the no-op default
+                    // (no fill, no borders, no font override).
+                    let isInteresting =
+                        format.BgColor.IsSome
+                        || format.BorderTop.IsSome
+                        || format.BorderBottom.IsSome
+                        || format.BorderLeft.IsSome
+                        || format.BorderRight.IsSome
+                    if isInteresting then
+                        for r0 in 0 .. maxRow do
+                            let addr = { Row = r0; Col = c0 }
+                            if not (Map.containsKey addr result) then
+                                result <- Map.add addr { Value = Empty; Format = format; Comment = None } result
+            result
 
     // ---- Conditional formatting ----------------------------------------
     // Walk every <conditionalFormatting> block, evaluate its rules against
@@ -707,7 +763,25 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             // Renderer unavailable (font cache miss, etc.) — fall back to
             // the original Calibri-anchored linear estimate.
             max 7.0 (System.Math.Round(defaultFontSize * 7.0 / 11.0))
-    let charsToPixels (chars: float) = chars * mdw
+    // OOXML §18.3.1.13 width formula:
+    //   width_stored = TRUNC((chars * mdw + 5) / mdw * 256) / 256
+    // So when we have a STORED <col width="N"> attribute, N already
+    // encodes the 5-px padding adjustment: pixels = N * mdw with no
+    // additional padding. When the column has NO stored width (uses the
+    // sheet default chars value), the padding must be added explicitly:
+    // pixels = chars * mdw + 5. Verified against phpsp-26template's col B
+    // (stored 86.285 -> 604 px = 453 pt) and default 8.43 chars columns
+    // (-> 64 px = 48 pt).
+    let charsToPixelsDefault (chars: float) = chars * mdw + 5.0
+    // Excel reports `cell.Width` in integer pixels (it rounds away the
+    // 1/256 chars granularity from the stored width attr). Verified against
+    // pandas-multiindex_no_index_names: stored width 5.41 × MDW 7 = 37.87
+    // px which Excel rounds to 38 px (= 28.5 pt). Without rounding our
+    // column x-positions drift by ~0.1 px per column, accumulating over a
+    // wide sheet (the row 1 cells in col F sat 0.6 pt to the left of where
+    // Excel placed them, 5 narrow columns of error).
+    let storedWidthToPixels (storedWidth: float) =
+        System.Math.Round(storedWidth * mdw)
 
     // sheetFormatPr defaults. Excel uses these for every column without an
     // explicit <col width="..."> entry. Without seeding the defaults across
@@ -717,17 +791,71 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
     // explicitly request "AutoFit Column Width" on an unsized column).
     let defaultColWidthPx =
         match sheet.Format.DefaultColWidth with
-        | Some w -> charsToPixels w
+        // defaultColWidth attribute is stored using OOXML §18.3.1.13's
+        // encoded form (same as <col width>) — pixels = stored*MDW. Verified
+        // against pandas-dimension_large (defaultColWidth=11.55, MDW=7 → 81
+        // px = 60.75 pt, matches Excel COM cell.Width).
+        | Some w -> storedWidthToPixels w
         | None ->
             match sheet.Format.BaseColWidth with
-            // For baseColWidth Excel auto-adds about one character of margin
-            // padding to the effective rendered width. With baseColWidth=10
-            // pandas-test1 default columns render at 88 px ≈ 11 chars * 8.
-            | Some baseW -> charsToPixels (baseW + 1.0)
-            | None -> charsToPixels 8.43
+            // OOXML §18.3.1.13 spec: when only baseColWidth is given,
+            // defaultColWidth = baseColWidth + (cellPaddingPx + 1 grid) / MDW
+            // with cellPadding = 2 px (Excel) for a total of 3 px. So the
+            // effective char count is baseColWidth + 3/MDW. Combined with the
+            // chars→pixels formula (chars*MDW + 5) this collapses to
+            // baseColWidth*MDW + 8. Verified against pandas-test1
+            // (baseColWidth=10, MDW=8 → 88 px = 66 pt, matches Excel COM
+            // cell.Width = 66) and synthetic-print (implicit baseColWidth=8,
+            // MDW=7 → 8.43 chars → 64 px = 48 pt).
+            | Some baseW -> charsToPixelsDefault (baseW + 3.0 / mdw)
+            | None -> charsToPixelsDefault 8.43
 
     let defaultRowHeightPx =
         sheet.Format.DefaultRowHeight |> Option.map (fun h -> h * (96.0 / 72.0))
+
+    // Excel's font-derived auto row height for Calibri / Arial / similar
+    // (the common Excel default fonts). When customHeight="false" (or
+    // unspecified) Excel ignores the stored row ht and computes the height
+    // from the row's tallest font instead. Without this our renderer used
+    // sheet.Format.DefaultRowHeight (e.g. 12.8 pt) and undershot Excel by
+    // 2-3 pt per row, which cumulatively threw off every cell's y-pos.
+    //
+    // Values verified via VBS oracle against pandas-dimension_large
+    // (Calibri 11 → 15 pt; Calibri 18 in title → 23.25 pt). The standard
+    // Excel auto-height table is roughly point*(1.36..1.29) rounded down
+    // to the nearest 0.75-pt (1-px) grid. For sizes outside the table we
+    // interpolate linearly off the nearest two table entries.
+    let autoRowHeightPt (fontPt: float) : float =
+        let table =
+            [| 8.0,  11.00
+               9.0,  12.00
+               10.0, 12.75
+               11.0, 15.00
+               12.0, 15.75
+               14.0, 18.00
+               16.0, 21.00
+               18.0, 23.25
+               20.0, 26.25
+               22.0, 28.50
+               24.0, 31.50
+               26.0, 33.00
+               28.0, 36.00
+               36.0, 45.75
+               48.0, 60.00
+               72.0, 90.00 |]
+        if fontPt <= fst table.[0] then snd table.[0]
+        elif fontPt >= fst table.[table.Length - 1] then
+            // Linear extrapolation from the last two entries at the high end.
+            let n = table.Length
+            let (pa, ra), (pb, rb) = table.[n - 2], table.[n - 1]
+            rb + (fontPt - pb) * (rb - ra) / (pb - pa)
+        else
+            // Find the bracketing pair and linearly interpolate.
+            let mutable i = 0
+            while i < table.Length - 1 && fst table.[i + 1] < fontPt do
+                i <- i + 1
+            let (pa, ra), (pb, rb) = table.[i], table.[i + 1]
+            ra + (fontPt - pa) * (rb - ra) / (pb - pa)
 
     // <col min=M max=N width=W hidden=1/> applies W to every column in M..N
     // (inclusive). Hidden columns collapse to width=0 regardless of the
@@ -740,16 +868,27 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         |> List.collect (fun col ->
             let widthPx =
                 if col.Hidden then Some 0.0
-                else col.Width |> Option.map charsToPixels
+                else col.Width |> Option.map storedWidthToPixels
             match widthPx with
             | None -> []
             | Some px -> [ for idx in col.Index .. col.MaxIndex -> idx - 1, px ])
         |> Map.ofList
 
     let explicitRows =
+        // Hidden rows collapse to 0 px (matches Excel's screen + print
+        // behavior). Otherwise honor an explicit height attribute, snapped
+        // DOWN to the nearest pixel — Excel rounds stored `ht` values to
+        // the 1-px (0.75-pt at 96 DPI) grid for display, and reports the
+        // floored value as `cell.Height` / `cell.RowHeight`. Without the
+        // floor pandas-df_empty's ht=19.4 rendered at 19.4 pt while Excel
+        // showed 18.75 (= 25 px floor), pulling every subsequent row above
+        // Excel's grid.
         sheet.Rows
         |> List.choose (fun row ->
-            row.Height |> Option.map (fun h -> row.Index - 1, h * (96.0 / 72.0)))
+            if row.Hidden then Some (row.Index - 1, 0.0)
+            else row.Height |> Option.map (fun h ->
+                let px = System.Math.Floor(h * (96.0 / 72.0))
+                row.Index - 1, px))
         |> Map.ofList
 
     // Excel's grid is a fixed 1,048,576 × 16,384 (2^20 × 2^14) — not the
@@ -777,11 +916,116 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             else Map.add c defaultColWidthPx acc) explicitColumns
 
     let rowHeights =
-        let defHeight = defaultRowHeightPx |> Option.defaultValue (15.0 * 96.0 / 72.0)
+        // When `<sheetFormatPr customHeight="1"/>` is set, Excel treats
+        // `defaultRowHeight` as the explicit row height for every row
+        // without its own `ht` attribute — the font-derived auto-height
+        // does NOT override it. pandas-ints_spelled_with_decimals does
+        // this to lock every row at 15.75 pt even though the cells use
+        // Arial 10 (which would otherwise auto-height to 12.75).
+        if sheet.Format.CustomDefaultHeight then
+            let lockedPx =
+                sheet.Format.DefaultRowHeight
+                |> Option.map (fun h -> h * (96.0 / 72.0))
+                |> Option.defaultValue (autoRowHeightPt defaultFontSize * 96.0 / 72.0)
+            [ 0 .. seedRows ]
+            |> List.fold (fun acc r ->
+                if Map.containsKey r explicitRows then acc
+                else Map.add r lockedPx acc) explicitRows
+        else
+        // Build a per-row max-font map from cells we've collected. Any row
+        // present in `explicitRows` (customHeight="true") keeps its stored
+        // value; everything else gets Excel's font-derived auto-height,
+        // which is the MAX of:
+        //   - the workbook-default font's auto-height (acts as a floor —
+        //     pandas-test1 has a Calibri 12 workbook default that floors
+        //     every row at 15.75 pt even when individual cells are 11 pt)
+        //   - the row's own max cell font auto-height (so a Title row with
+        //     Calibri 18 pushes the row up to 23.25 pt).
+        let maxFontByRow =
+            let acc = System.Collections.Generic.Dictionary<int, float>()
+            for KeyValue(addr, cd) in cells do
+                let pt = cd.Format.FontSize |> Option.map float |> Option.defaultValue defaultFontSize
+                match acc.TryGetValue addr.Row with
+                | true, cur when cur >= pt -> ()
+                | _ -> acc.[addr.Row] <- pt
+            acc
+        // The workbook-default-font auto-height that floors every row.
+        let defAutoPt = autoRowHeightPt defaultFontSize
+        let defAutoPx = defAutoPt * 96.0 / 72.0
         [ 0 .. seedRows ]
         |> List.fold (fun acc r ->
             if Map.containsKey r explicitRows then acc
-            else Map.add r defHeight acc) explicitRows
+            else
+                let px =
+                    match maxFontByRow.TryGetValue r with
+                    | true, pt -> max defAutoPx (autoRowHeightPt pt * 96.0 / 72.0)
+                    | _ -> defAutoPx
+                Map.add r px acc) explicitRows
+
+    // Auto-grow rows for wrapText cells. Excel auto-sizes the row to
+    // accommodate wrapped text whenever a row has no explicit `ht`. We
+    // measure the cell's text against its column width (real font metrics
+    // via Renderer.Text.measureWidth, with `mdw × len` as the fallback),
+    // count wrap lines through Paint.wrapLines (which respects literal
+    // `\n` and breaks on word boundaries), and bump rowHeights[r] when
+    // the wrapped block exceeds the current height. Skipped when the
+    // row carries an explicit height — Excel honors the user-set value
+    // even if the text doesn't fit.
+    let rowHeights =
+        let defaultPxHeight = defaultRowHeightPx |> Option.defaultValue (15.0 * 96.0 / 72.0)
+        // Cache one renderer-font per (familyName, bold, italic) tuple.
+        // Without caching every wrap-cell would re-resolve the font, which
+        // hits the Composit font cache repeatedly.
+        let fontCache = System.Collections.Generic.Dictionary<string option * bool * bool, _>()
+        let getFont (familyName: string option) (bold: bool) (italic: bool) =
+            let key = familyName, bold, italic
+            match fontCache.TryGetValue key with
+            | true, f -> f
+            | _ ->
+                let f = Composit.Ui.SpreadsheetGrid.rendererFontFor familyName bold italic
+                fontCache.[key] <- f
+                f
+        let measureCell (familyName: string option) (bold: bool) (italic: bool) (fontPx: float) (text: string) : float =
+            try
+                Renderer.Text.measureWidth (getFont familyName bold italic) fontPx text
+            with _ -> float text.Length * mdw
+        let mutable result = rowHeights
+        for KeyValue(addr, cd) in cells do
+            let text =
+                match cd.Value with
+                | String s -> s
+                | _ -> ""
+            // Excel auto-grows the row when EITHER wrapText is set OR the
+            // cell text has literal `\n` line breaks (Alt+Enter authored).
+            // For the wrap case we count word-wrapped lines; for the
+            // hard-break case we just count `\n`+1 lines (no word wrap).
+            let hasHardBreak = text.Contains('\n')
+            let needsGrow = (cd.Format.WrapText || hasHardBreak) && text.Length > 0
+            let alreadyExplicit = Map.containsKey addr.Row explicitRows
+            if needsGrow && not alreadyExplicit then
+                let colWidth =
+                    Map.tryFind addr.Col columnWidths
+                    |> Option.defaultValue defaultColWidthPx
+                let fontPt = cd.Format.FontSize |> Option.map float |> Option.defaultValue 11.0
+                let fontPx = fontPt * 96.0 / 72.0
+                let lineCount =
+                    if cd.Format.WrapText then
+                        let measure = fun (s: string) -> measureCell cd.Format.FontName cd.Format.Bold cd.Format.Italic fontPx s
+                        let lines = RedBat.Spreadsheet.Paint.wrapLines (Some measure) colWidth fontPt text
+                        lines.Length
+                    else
+                        // Hard-break only: split on \n without word-wrap.
+                        text.Split('\n').Length
+                // 1.2x leading is Excel's default for wrapped text (close
+                // enough for our row-height budget).
+                let lineHeightPx = fontPx * 1.2
+                let needed = float lineCount * lineHeightPx
+                let current =
+                    Map.tryFind addr.Row result
+                    |> Option.defaultValue defaultPxHeight
+                if needed > current then
+                    result <- Map.add addr.Row needed result
+        result
 
     // Translate the sheet's Xlsx print metadata into the Model's PageSetup
     // record. Where the source file leaves a field unspecified we fall back
@@ -852,7 +1096,8 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
               FirstHeader = sheet.HeaderFooter.FirstHeader
               FirstFooter = sheet.HeaderFooter.FirstFooter
               DifferentOddEven = sheet.HeaderFooter.DifferentOddEven
-              DifferentFirst = sheet.HeaderFooter.DifferentFirst }
+              DifferentFirst = sheet.HeaderFooter.DifferentFirst
+              ScaleWithDoc = sheet.HeaderFooter.ScaleWithDoc }
         { defaultPageSetup with
             PageWidth = pageW
             PageHeight = pageH
@@ -868,7 +1113,19 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             ManualColBreaks = sheet.ColBreaks
             PrintArea = sheet.PrintArea |> Option.bind parseRange
             RepeatRows = sheet.PrintTitleRows |> Option.bind parseRowRange
-            RepeatCols = sheet.PrintTitleCols |> Option.bind parseColRange }
+            RepeatCols = sheet.PrintTitleCols |> Option.bind parseColRange
+            FirstPageNumber = sheet.PageSetup |> Option.map (fun ps -> ps.FirstPageNumber) |> Option.defaultValue 1
+            UseFirstPageNumber = sheet.PageSetup |> Option.map (fun ps -> ps.UseFirstPageNumber) |> Option.defaultValue false
+            PageOrder =
+                match sheet.PageSetup |> Option.map (fun ps -> ps.PageOrder) with
+                | Some Xlsx.OverThenDown -> OverThenDown
+                | _ -> DownThenOver
+            BlackAndWhite = sheet.PageSetup |> Option.map (fun ps -> ps.BlackAndWhite) |> Option.defaultValue false
+            CellComments =
+                match sheet.PageSetup |> Option.map (fun ps -> ps.CellComments) with
+                | Some Xlsx.CellCommentsAsDisplayed -> CellCommentsAsDisplayed
+                | Some Xlsx.CellCommentsAtEnd -> CellCommentsAtEnd
+                | _ -> CellCommentsNone }
 
     let baseModel = createEmpty excelRowCount excelColCount
     // Excel's printed/screenshot output never shows the active-cell border, so

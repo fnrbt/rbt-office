@@ -12,6 +12,19 @@ open RedBat.Spreadsheet.Model
 /// rows/cols, and fit-to-page scaling — leaving the actual rendering to
 /// the PDF backend.
 
+/// Print-headings chrome metrics, in CSS pixels. When PrintOptions.Headings
+/// is on, a strip of this height sits above the body (column letters) and
+/// a strip of this width sits to its left (row numbers); both shrink the
+/// per-page content area before manual breaks / fit-to-page kick in. Kept
+/// here so the PDF emitter and Pagination agree on the same metrics.
+let printHeadingsRowHeightPx = 19.0
+let printHeadingsColWidthPx = 28.0
+
+let headingsOffsets (ps: PageSetup) : float * float =
+    if ps.Options.Headings
+    then printHeadingsColWidthPx, printHeadingsRowHeightPx
+    else 0.0, 0.0
+
 /// One page in the print layout — an inclusive 0-indexed rectangle.
 type PageSlice = {
     RowStart: int
@@ -126,8 +139,9 @@ let paginate (model: SpreadsheetModel) : Pagination =
         |> Option.map (fun (a, b) -> rangeSum (colWidthPx model) a b)
         |> Option.defaultValue 0.0
 
-    let availableW = max 50.0 (printableWidthPx - repeatColsWidth)
-    let availableH = max 50.0 (printableHeightPx - repeatRowsHeight)
+    let headingsColPx, headingsRowPx = headingsOffsets ps
+    let availableW = max 50.0 (printableWidthPx - repeatColsWidth - headingsColPx)
+    let availableH = max 50.0 (printableHeightPx - repeatRowsHeight - headingsRowPx)
 
     // Resolve scale: explicit fit-to-page wins over the manual scale percent.
     // For fit-to-page we measure the print range against `FitToWidth` ×
@@ -173,11 +187,19 @@ let paginate (model: SpreadsheetModel) : Pagination =
     let rowRanges =
         axisBreaks bodyRowStart printRange.To.Row manualRow (rowHeightPx model) effH
 
-    // Down then over: walk row pages within each column page.
+    // Walk order from PageSetup. DownThenOver (Excel default) emits all
+    // row-pages of the first column-slice before the next column-slice;
+    // OverThenDown inverts the outer/inner loops.
     let pages =
-        [ for (cs, ce) in colRanges do
-            for (rs, re) in rowRanges ->
-                { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce } ]
+        match ps.PageOrder with
+        | DownThenOver ->
+            [ for (cs, ce) in colRanges do
+                for (rs, re) in rowRanges ->
+                    { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce } ]
+        | OverThenDown ->
+            [ for (rs, re) in rowRanges do
+                for (cs, ce) in colRanges ->
+                    { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce } ]
 
     { Pages = pages
       PrintBounds = printRange
