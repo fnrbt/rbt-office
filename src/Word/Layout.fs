@@ -704,7 +704,9 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             | _, interval :: rest -> loop (interval :: merged) rest
         loop [] sorted
 
-    let wrapBoundsForY lineY =
+    let wrapIntervalsForY lineY =
+        // Return the list of free (start, end) intervals at this line y, ordered
+        // left-to-right. Empty list means the entire line is blocked.
         let globalLineY = contentY + (lineY - settings.PaddingTop)
         let lineBottom = globalLineY + settings.LineHeight
         let active =
@@ -713,35 +715,36 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             |> List.map (fun (x, _, width, _) -> x, x + width)
             |> mergeIntervals
 
-        let lineStart =
-            active
-            |> List.choose (fun (x, right) ->
-                if x + (right - x) / 2.0 <= availableWidth / 2.0 then Some right
-                else None)
-            |> function
-                | [] -> 0.0
-                | values -> List.max values
+        let mutable gaps = []
+        let mutable cursor = 0.0
+        for (oxStart, oxEnd) in active do
+            let gapEnd = min availableWidth oxStart
+            if gapEnd > cursor then gaps <- (cursor, gapEnd) :: gaps
+            cursor <- max cursor oxEnd
+        if cursor < availableWidth then gaps <- (cursor, availableWidth) :: gaps
+        List.rev gaps
 
-        let lineEnd =
-            active
-            |> List.choose (fun (x, right) ->
-                if x + (right - x) / 2.0 > availableWidth / 2.0 && x > lineStart then Some x
-                else None)
-            |> function
-                | [] -> availableWidth
-                | values -> List.min values
+    // Intervals at the current y that we have not yet started filling. The
+    // currentX/currentLineEnd pair always reflects the interval being filled.
+    let mutable pendingIntervals: (float * float) list = []
 
-        lineStart, max lineStart lineEnd
+    let private_setIntervalToFirst () =
+        match pendingIntervals with
+        | (s, e) :: rest ->
+            currentX <- s
+            currentLineEnd <- e
+            pendingIntervals <- rest
+        | [] ->
+            currentX <- availableWidth
+            currentLineEnd <- availableWidth
 
     let moveToWrappableLine () =
-        let lineStart, lineEnd = wrapBoundsForY y
-        currentX <- lineStart
-        currentLineEnd <- lineEnd
+        pendingIntervals <- wrapIntervalsForY y
+        private_setIntervalToFirst ()
         while currentX >= currentLineEnd do
             y <- y + settings.LineHeight
-            let lineStart, lineEnd = wrapBoundsForY y
-            currentX <- lineStart
-            currentLineEnd <- lineEnd
+            pendingIntervals <- wrapIntervalsForY y
+            private_setIntervalToFirst ()
 
     let flushLine () =
         if not currentSegments.IsEmpty then
@@ -765,8 +768,15 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             }]
             currentSegments <- []
             flushedLineCount <- flushedLineCount + 1
-            y <- y + lineHeight
-            moveToWrappableLine ()
+            match pendingIntervals with
+            | _ :: _ ->
+                // Same y has another free strip (e.g. wrapSquare bothSides
+                // splits a line into a left and right strip). Fill the next
+                // strip before advancing y.
+                private_setIntervalToFirst ()
+            | [] ->
+                y <- y + lineHeight
+                moveToWrappableLine ()
 
     let tabWidth () =
         let defaultTab = (floor (currentX / 48.0) + 1.0) * 48.0
@@ -797,9 +807,8 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                     currentLineEnd <- availableWidth
                 else
                     floatObstacles <- (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) :: floatObstacles
-                    let lineStart, lineEnd = wrapBoundsForY y
-                    currentX <- lineStart
-                    currentLineEnd <- lineEnd
+                    pendingIntervals <- wrapIntervalsForY y
+                    private_setIntervalToFirst ()
             else
                 currentX <- currentX + imgWidth
             if imgRun.Floating then placedBoxes <- floatingBox :: placedBoxes
