@@ -239,8 +239,24 @@ let effectiveBufferInDocument doc paragraphStyle (buffer: TextBuffer) =
                 | Text run -> Text { run with Style = effectiveTextStyleInDocument doc paragraphStyle run.Style }
                 | Image image -> Image image) }
 
-let spacingBefore (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore |> Option.defaultValue 0.0
-let spacingAfter (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter |> Option.defaultValue 10.7
+// DocumentProcessors.twipsToPoints stores SpacingBefore/SpacingAfter as
+// points (twips / 20). Layout runs in CSS-pixels at 96 DPI (margins came
+// out of DocxReader via /15 i.e. twips → px directly), so the spacing
+// values get applied at 75% of their intended size unless we convert
+// pt → px here at the layout boundary. Defaults are already in px.
+let private ptToLayoutPx (pt: float) = pt * 96.0 / 72.0
+
+let spacingBefore (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
+    metadata.SpacingBefore
+    |> Option.orElse paragraphStyle.SpacingBefore
+    |> Option.map ptToLayoutPx
+    |> Option.defaultValue 0.0
+
+let spacingAfter (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
+    metadata.SpacingAfter
+    |> Option.orElse paragraphStyle.SpacingAfter
+    |> Option.map ptToLayoutPx
+    |> Option.defaultValue 10.7
 let lineSpacing (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.LineSpacing |> Option.orElse paragraphStyle.LineSpacing |> Option.defaultValue 1.0
 let lineSpacingRule (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule |> Option.defaultValue "auto"
 let widowControl (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.WidowControl |> Option.orElse paragraphStyle.WidowControl |> Option.defaultValue true
