@@ -9,16 +9,22 @@ open DocxReader
 
 module TypeConversion =
 
-    /// Convert Word font size (half-points) to actual points
-    /// Input: "24" (Word half-points) -> Output: 12.0 (actual points)
-    /// Default: 11.0 points (Word's default)
+    /// Convert Word font size (half-points) to CSS-pixels-at-96-DPI, which is
+    /// the unit the rest of the Word renderer pipeline operates in. Margins,
+    /// indents, spacing-after, and image positions all reach Layout as
+    /// CSS-pixels; font sizes were the last value still flowing through as
+    /// points, which caused 75%-of-correct glyph sizes everywhere.
+    /// Input: "24" (Word half-points) -> Output: 16.0 (12pt as 16 CSS-px).
+    /// Default: 11pt rendered as 14.666... CSS-px.
     let fontSizeToPoints (size: string option) : float =
-        match size with
-        | Some s ->
-            match System.Double.TryParse(s) with
-            | (true, v) -> v / 2.0  // Word uses half-points
-            | _ -> 11.0
-        | None -> 11.0
+        let pt =
+            match size with
+            | Some s ->
+                match System.Double.TryParse(s) with
+                | (true, v) -> v / 2.0
+                | _ -> 11.0
+            | None -> 11.0
+        pt * 96.0 / 72.0
 
     /// Normalize color from Word format to CSS format
     /// Input: "FF0000" or "auto" -> Output: Some "#FF0000" or None

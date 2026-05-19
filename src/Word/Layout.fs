@@ -397,10 +397,11 @@ let private tableCellExplicitLineBoxFactor = 1.266
 let private arialTableCellExplicitLineBoxFactor = 1.193
 
 let private tableCellLineBoxFontSize fontSize =
-    // Browser import stores DOCX point sizes as CSS-pixel sizes. The native/PDF
-    // import path still carries Word point values, so normalize the common
-    // 8-12pt table-cell range before computing Word's automatic line box.
-    if fontSize <= 12.0 then fontSize * 96.0 / 72.0 else fontSize
+    // All import paths now hand us fontSize in CSS-pixels at 96 DPI
+    // (DocumentProcessors.fontSizeToPoints multiplies the pt value by 96/72).
+    // The earlier 8-12pt special case was patching the native/PDF import
+    // path's stale point values; it's no longer needed.
+    fontSize
 
 let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
     match style.FontFamily |> Option.map (fun family -> family.Trim().ToLowerInvariant()) with
@@ -423,12 +424,7 @@ let private wordLineHeight textStyle fontSize lineSpacing =
             wordSingleLineBoxFactor
         else
             lineBoxFactorForTextStyle textStyle
-    // fontSize comes out of DocumentProcessors.fontSizeToPoints as points,
-    // but Layout works in CSS-pixels at 96 DPI (margins are imported via
-    // twips/15 i.e. directly to px). Convert the result so we don't end up
-    // with 75%-of-expected line cells. tableCellLineBoxFontSize already
-    // does this conversion for table-cell paragraphs with small fonts.
-    fontSize * lineSpacing * factor * 96.0 / 72.0
+    fontSize * lineSpacing * factor
 
 let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing =
     let automatic =
