@@ -151,19 +151,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-border-empty-cell-height-word-page1.png" style="--w:1191px; --x:60px; --y:118px; --s:0.433" alt="Word reference merged empty-cell border stress table">
+            <img src="images/word/table-border-empty-cell-height-word-page1.png" style="--w:1191px; --x:60px; --y:118px; --s:0.433" alt="Word reference merged empty-cell border stress table">
           </div>
           <div class="caption">Word keeps the dotted vMerge box, the double-border cell, and the thick top-row borders on their intended merged-cell edges.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-border-empty-cell-height-before.png" style="--w:900px; --x:60px; --y:118px; --s:0.65" alt="Before merged empty-cell border stress fix">
+            <img src="images/baseline/table-border-empty-cell-height-before.png" style="--w:900px; --x:60px; --y:118px; --s:0.65" alt="Before merged empty-cell border stress fix">
           </div>
           <div class="caption">Before: merged-cell borders were clipped or assigned to the wrong source cells, and the following <code>Indent</code> paragraph sat about <code>33px</code> too high.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-border-empty-cell-height-after.png" style="--w:900px; --x:60px; --y:118px; --s:0.65" alt="After merged empty-cell border stress fix">
+            <img src="images/browser/table-border-empty-cell-height-after.png" style="--w:900px; --x:60px; --y:118px; --s:0.65" alt="After merged empty-cell border stress fix">
           </div>
           <div class="caption">After: resolved cell geometry drives the painted border fragments, compound borders render at Word-like width, the dotted vMerge restart exposes the same upper-row border as Word, and the following paragraph is within about <code>0.5px</code> in the PDF-backed text comparison.</div>
         </td>
@@ -187,19 +187,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-spaced-sequence-page-break-word-page3.png" style="--w:1191px; --x:28px; --y:20px; --s:0.433" alt="Word reference empty paragraph page break after table">
+            <img src="images/word/table-spaced-sequence-page-break-word-page3.png" style="--w:1191px; --x:28px; --y:20px; --s:0.433" alt="Word reference empty paragraph page break after table">
           </div>
           <div class="caption">Word suppresses the empty paragraph's visible line box at the page boundary, so <code>Auto size</code> starts near the page-3 top margin.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-spaced-sequence-page-break-before.png" style="--w:900px; --x:28px; --y:1516px; --s:0.65" alt="Before empty paragraph page break after table fix">
+            <img src="images/baseline/table-spaced-sequence-page-break-before.png" style="--w:900px; --x:28px; --y:1516px; --s:0.65" alt="Before empty paragraph page break after table fix">
           </div>
           <div class="caption">Before: the empty paragraph consumed a full Normal line at the top of page 3, putting <code>Auto size</code> about <code>32px</code> below Word.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-spaced-sequence-page-break-after.png" style="--w:900px; --x:28px; --y:1516px; --s:0.65" alt="After empty paragraph page break after table fix">
+            <img src="images/browser/table-spaced-sequence-page-break-after.png" style="--w:900px; --x:28px; --y:1516px; --s:0.65" alt="After empty paragraph page break after table fix">
           </div>
           <div class="caption">After: the empty paragraph only collapses when its normal fit height would force a page break, matching the Word page-top placement while preserving in-page empty paragraphs.</div>
         </td>
@@ -223,19 +223,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-header-page2-docx4j-row-pitch-word.png" style="--w:1191px; --x:42px; --y:823px; --s:0.433" alt="Word reference Arial themed TableGrid row pitch">
+            <img src="images/word/table-header-page2-docx4j-row-pitch-word.png" style="--w:1191px; --x:42px; --y:823px; --s:0.433" alt="Word reference Arial themed TableGrid row pitch">
           </div>
           <div class="caption">Word resolves the docx4j theme's minor font to Arial and advances the dense TableGrid rows at about <code>17.5px</code> CSS-equivalent pitch.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-header-page2-docx4j-row-pitch-theme-before.png" style="--w:900px; --x:42px; --y:823px; --s:0.65" alt="Before Arial theme TableGrid row pitch fix">
+            <img src="images/baseline/table-header-page2-docx4j-row-pitch-theme-before.png" style="--w:900px; --x:42px; --y:823px; --s:0.65" alt="Before Arial theme TableGrid row pitch fix">
           </div>
           <div class="caption">Before: the package importer hardcoded <code>minorHAnsi</code> as Calibri and the table-cell line box stayed at the Calibri pitch, pushing row 14 about <code>16.4px</code> too low.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-header-page2-docx4j-row-pitch-theme-after.png" style="--w:900px; --x:42px; --y:823px; --s:0.65" alt="After Arial theme TableGrid row pitch fix">
+            <img src="images/browser/table-header-page2-docx4j-row-pitch-theme-after.png" style="--w:900px; --x:42px; --y:823px; --s:0.65" alt="After Arial theme TableGrid row pitch fix">
           </div>
           <div class="caption">After: resolved Arial theme fonts flow through the table-preserving importer and the row-14 delta drops to about <code>0.34px</code>.</div>
         </td>
@@ -260,19 +260,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-gridspan-bottom-fit-word.png" style="--w:1191px; --x:40px; --y:1860px; --s:0.6" alt="Word reference single-line paragraph bottom fit after table">
+            <img src="images/word/table-gridspan-bottom-fit-word.png" style="--w:1191px; --x:40px; --y:1860px; --s:0.6" alt="Word reference single-line paragraph bottom fit after table">
           </div>
           <div class="caption">Word leaves the bottom-fit table on page 2 but starts the following one-line paragraph at the top of page 3.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-gridspan-bottom-fit-before-single-line-full-fit-normalized.png" style="--w:794px; --x:40px; --y:1860px; --s:0.9" alt="Before single-line paragraph bottom fit fix">
+            <img src="images/baseline/table-gridspan-bottom-fit-before-single-line-full-fit-normalized.png" style="--w:794px; --x:40px; --y:1860px; --s:0.9" alt="Before single-line paragraph bottom fit fix">
           </div>
           <div class="caption">Before: the page-fit check ignored the paragraph after-spacing, so <code>After gridspan table</code> was allowed into the last page-2 sliver.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-gridspan-bottom-fit-after-single-line-full-fit-normalized.png" style="--w:794px; --x:40px; --y:1860px; --s:0.9" alt="After single-line paragraph bottom fit fix">
+            <img src="images/browser/table-gridspan-bottom-fit-after-single-line-full-fit-normalized.png" style="--w:794px; --x:40px; --y:1860px; --s:0.9" alt="After single-line paragraph bottom fit fix">
           </div>
           <div class="caption">After: single-line paragraphs require their full paragraph box to fit, matching Word's page break.</div>
         </td>
@@ -297,19 +297,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-grid-dense-row-pitch-word.png" style="--w:1224px; --x:40px; --y:80px; --s:0.58" alt="Word reference explicit TableGrid row pitch accumulation">
+            <img src="images/word/table-grid-dense-row-pitch-word.png" style="--w:1224px; --x:40px; --y:80px; --s:0.58" alt="Word reference explicit TableGrid row pitch accumulation">
           </div>
           <div class="caption">Word advances the dense table rows at about <code>18.56px</code> CSS-equivalent pitch, keeping the last row and following paragraph from drifting.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-grid-dense-row-pitch-before-explicit-linebox-retune.png" style="--w:900px; --x:40px; --y:80px; --s:0.87" alt="Before explicit TableGrid row pitch retune">
+            <img src="images/baseline/table-grid-dense-row-pitch-before-explicit-linebox-retune.png" style="--w:900px; --x:40px; --y:80px; --s:0.87" alt="Before explicit TableGrid row pitch retune">
           </div>
           <div class="caption">Before: the explicit table-cell line box was slightly short, accumulating about <code>7px</code> upward drift by row 14.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-grid-dense-row-pitch-after-explicit-linebox-retune.png" style="--w:900px; --x:40px; --y:80px; --s:0.87" alt="After explicit TableGrid row pitch retune">
+            <img src="images/browser/table-grid-dense-row-pitch-after-explicit-linebox-retune.png" style="--w:900px; --x:40px; --y:80px; --s:0.87" alt="After explicit TableGrid row pitch retune">
           </div>
           <div class="caption">After: the per-row pitch matches Word's PDF-extracted visual text boxes, so the row-14 and post-table text stay aligned with the reference.</div>
         </td>
@@ -335,19 +335,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-valign-row-height-word.png" style="--w:1224px; --x:58px; --y:45px; --s:0.433" alt="Word reference visual table-cell vertical alignment">
+            <img src="images/word/table-valign-row-height-word.png" style="--w:1224px; --x:58px; --y:45px; --s:0.433" alt="Word reference visual table-cell vertical alignment">
           </div>
           <div class="caption">Word's printed output visually bottom-aligns the row-two <code>C</code>/<code>D</code> text inside the extra row height.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-valign-row-height-before-visual-valign-fix.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="Before visual table-cell vertical alignment fix">
+            <img src="images/baseline/table-valign-row-height-before-visual-valign-fix.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="Before visual table-cell vertical alignment fix">
           </div>
           <div class="caption">Before: matching VBS <code>Range.Information</code> y-values put <code>C</code>/<code>D</code> at the row top, about <code>61px</code> above Word's visual PDF output.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-valign-row-height-after-visual-valign-fix.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="After visual table-cell vertical alignment fix">
+            <img src="images/browser/table-valign-row-height-after-visual-valign-fix.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="After visual table-cell vertical alignment fix">
           </div>
           <div class="caption">After: the rendered row-two text is bottom-aligned again, matching Word's visual output.</div>
         </td>
@@ -371,19 +371,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-spacing-margins-word.png" style="--w:1191px; --x:26px; --y:52px; --s:0.3867" alt="Word reference spaced table separate borders">
+            <img src="images/word/table-cell-spacing-margins-word.png" style="--w:1191px; --x:26px; --y:52px; --s:0.3867" alt="Word reference spaced table separate borders">
           </div>
           <div class="caption">Word paints each spaced cell as its own bordered box, including the left edges of <code>1b-1d</code> and the top edges of row 2.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-spacing-margins-pre-separate-borders.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="Before spaced table separate border fix">
+            <img src="images/baseline/table-cell-spacing-margins-pre-separate-borders.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="Before spaced table separate border fix">
           </div>
           <div class="caption">Before: collapsed-border conflict resolution removed internal left borders and row-two top borders even though the table had cell spacing.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-cell-spacing-margins-after.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="After spaced table separate border fix">
+            <img src="images/browser/table-cell-spacing-margins-after.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="After spaced table separate border fix">
           </div>
           <div class="caption">After: non-zero <code>tblCellSpacing</code> keeps separate cell borders, so all visible cell edges match Word's spaced-table boxes.</div>
         </td>
@@ -407,19 +407,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-spacing-margins-word.png" style="--w:1191px; --x:26px; --y:52px; --s:0.3867" alt="Word reference spaced table paint boxes and label centering">
+            <img src="images/word/table-cell-spacing-margins-word.png" style="--w:1191px; --x:26px; --y:52px; --s:0.3867" alt="Word reference spaced table paint boxes and label centering">
           </div>
           <div class="caption">Word paints the direct top cell margin as extra border-box height on <code>Cell 2d</code>, while the text stays on the row/table margin origin.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-spacing-margins-pre-border-adjust.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="Before spaced table paint-box refinement">
+            <img src="images/baseline/table-cell-spacing-margins-pre-border-adjust.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="Before spaced table paint-box refinement">
           </div>
           <div class="caption">Before: <code>Cell 2d</code> used the same top and height as <code>2a-2c</code>, and spaced-table labels painted about <code>4px</code> too low.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-cell-spacing-margins-after.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="After spaced table paint-box refinement">
+            <img src="images/browser/table-cell-spacing-margins-after.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="After spaced table paint-box refinement">
           </div>
           <div class="caption">After: <code>Cell 2d</code> extends upward like Word, top-row labels are visually centered, and row-two labels sit at Word's height.</div>
         </td>
@@ -443,19 +443,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-spacing-margins-word.png" style="--w:1191px; --x:26px; --y:52px; --s:0.3867" alt="Word reference table cell spacing and margins">
+            <img src="images/word/table-cell-spacing-margins-word.png" style="--w:1191px; --x:26px; --y:52px; --s:0.3867" alt="Word reference table cell spacing and margins">
           </div>
           <div class="caption">Word keeps a two-spacing outer band, compact cell border boxes, and a small gap before the following paragraph.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-spacing-margins-before.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="Before table cell spacing and margins fix">
+            <img src="images/baseline/table-cell-spacing-margins-before.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="Before table cell spacing and margins fix">
           </div>
           <div class="caption">Before: the table was about <code>25px</code> too low, row text was high inside the cells, and the spaced table was about <code>31px</code> too short.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-cell-spacing-margins-after.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="After table cell spacing and margins fix">
+            <img src="images/browser/table-cell-spacing-margins-after.png" style="--w:900px; --x:26px; --y:52px; --s:0.58" alt="After table cell spacing and margins fix">
           </div>
           <div class="caption">After: browser table lines are within <code>0.4px</code>; table height is <code>152px</code> in both Word and browser, with matching cell boxes.</div>
         </td>
@@ -479,19 +479,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-valign-row-height-word.png" style="--w:1224px; --x:58px; --y:45px; --s:0.433" alt="Word reference vertical-align row-height visual coordinates">
+            <img src="images/word/table-valign-row-height-word.png" style="--w:1224px; --x:58px; --y:45px; --s:0.433" alt="Word reference vertical-align row-height visual coordinates">
           </div>
           <div class="caption">Word's printed PDF exposes the actual visual text boxes for bottom-aligned table cells.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-valign-row-height-vbs-before.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="Before PDF-backed Word measurement">
+            <img src="images/baseline/table-valign-row-height-vbs-before.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="Before PDF-backed Word measurement">
           </div>
           <div class="caption">Before: the VBS reference path reported bottom-aligned cell text at the cell top, flagging this visually aligned render as about <code>55px</code> off.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-valign-row-height-pdf-source-after.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="After PDF-backed Word measurement">
+            <img src="images/browser/table-valign-row-height-pdf-source-after.png" style="--w:900px; --x:58px; --y:50px; --s:0.65" alt="After PDF-backed Word measurement">
           </div>
           <div class="caption">After: <code>--word-source pdf</code> extracts Word's visual text boxes from the printed PDF, so the same render compares against the correct coordinates.</div>
         </td>
@@ -516,19 +516,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference default table-cell line box">
+            <img src="images/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference default table-cell line box">
           </div>
           <div class="caption">Word keeps inherited/default Normal table-cell lines taller than explicit tight TableGrid lines, so stacked empty paragraphs still drive row height.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-before-spacing-default-linebox-before.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before default table-cell line box fix">
+            <img src="images/baseline/table-cell-before-spacing-default-linebox-before.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before default table-cell line box fix">
           </div>
           <div class="caption">Before: the tight TableGrid line-box factor was applied to every table cell, pulling the third row up by accumulated empty-paragraph height.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-cell-before-spacing-default-linebox-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After default table-cell line box fix">
+            <img src="images/browser/table-cell-before-spacing-default-linebox-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After default table-cell line box fix">
           </div>
           <div class="caption">After: default/inherited table-cell line spacing uses the taller Word-like line box, while explicit table-style line spacing keeps the tight dense-row pitch.</div>
         </td>
@@ -553,19 +553,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-grid-dense-row-pitch-word.png" style="--w:1224px; --x:40px; --y:80px; --s:0.58" alt="Word reference TableGrid dense row pitch">
+            <img src="images/word/table-grid-dense-row-pitch-word.png" style="--w:1224px; --x:40px; --y:80px; --s:0.58" alt="Word reference TableGrid dense row pitch">
           </div>
           <div class="caption">Word keeps the single-line TableGrid rows tightly pitched, so the bottom border and following paragraph remain high on the page.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-grid-dense-row-pitch-before.png" style="--w:900px; --x:47px; --y:80px; --s:0.87" alt="Before TableGrid dense row pitch fix">
+            <img src="images/baseline/table-grid-dense-row-pitch-before.png" style="--w:900px; --x:47px; --y:80px; --s:0.87" alt="Before TableGrid dense row pitch fix">
           </div>
           <div class="caption">Before: the table-cell automatic line box was too tall, accumulating visible vertical drift through the dense rows.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-grid-dense-row-pitch-after.png" style="--w:900px; --x:47px; --y:80px; --s:0.87" alt="After TableGrid dense row pitch fix">
+            <img src="images/browser/table-grid-dense-row-pitch-after.png" style="--w:900px; --x:47px; --y:80px; --s:0.87" alt="After TableGrid dense row pitch fix">
           </div>
           <div class="caption">After: the browser row gaps are close to Word's pitch; the native PNG and PDF paths use the same shared table-cell measurement.</div>
         </td>
@@ -591,19 +591,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-style-cell-margin-origin-word.png" style="--w:1224px; --x:53px; --y:88px; --s:0.94" alt="Word reference table style cell margin origin">
+            <img src="images/word/table-style-cell-margin-origin-word.png" style="--w:1224px; --x:53px; --y:88px; --s:0.94" alt="Word reference table style cell margin origin">
           </div>
           <div class="caption">Word aligns the first cell text with the surrounding paragraph text while the table border extends left by the style/default cell margin.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-style-cell-margin-origin-before.png" style="--w:900px; --x:47px; --y:83px; --s:1.35" alt="Before table style cell margin origin fix">
+            <img src="images/baseline/table-style-cell-margin-origin-before.png" style="--w:900px; --x:47px; --y:83px; --s:1.35" alt="Before table style cell margin origin fix">
           </div>
           <div class="caption">Before: the table border started at the paragraph margin and style-derived cell margins pushed all cell text inward.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-style-cell-margin-origin-after.png" style="--w:900px; --x:47px; --y:83px; --s:1.35" alt="After table style cell margin origin fix">
+            <img src="images/browser/table-style-cell-margin-origin-after.png" style="--w:900px; --x:47px; --y:83px; --s:1.35" alt="After table style cell margin origin fix">
           </div>
           <div class="caption">After: table/row default cell margins offset the outer table origin, while direct cell padding remains an interior content offset.</div>
         </td>
@@ -628,19 +628,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-auto-pattern-shading-word.png" style="--w:1224px; --x:20px; --y:35px; --s:0.3" alt="Word reference auto pattern table-cell shading">
+            <img src="images/word/table-cell-auto-pattern-shading-word.png" style="--w:1224px; --x:20px; --y:35px; --s:0.3" alt="Word reference auto pattern table-cell shading">
           </div>
           <div class="caption">Word paints <code>w:shd</code> pattern fills even when the background <code>w:fill</code> is <code>auto</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-auto-pattern-shading-before.png" style="--w:900px; --x:20px; --y:35px; --s:0.45" alt="Before auto pattern table-cell shading fix">
+            <img src="images/baseline/table-cell-auto-pattern-shading-before.png" style="--w:900px; --x:20px; --y:35px; --s:0.45" alt="Before auto pattern table-cell shading fix">
           </div>
           <div class="caption">Before: all <code>fill="auto"</code> pattern shadings were imported as no cell background, leaving the table unshaded.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-cell-auto-pattern-shading-after.png" style="--w:900px; --x:20px; --y:35px; --s:0.45" alt="After auto pattern table-cell shading fix">
+            <img src="images/browser/table-cell-auto-pattern-shading-after.png" style="--w:900px; --x:20px; --y:35px; --s:0.45" alt="After auto pattern table-cell shading fix">
           </div>
           <div class="caption">After: percentage shadings resolve to Word-like coverage fills, and hatch shadings keep their foreground/background pattern data.</div>
         </td>
@@ -665,19 +665,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-style-paragraph-spacing-word.png" style="--w:1224px; --x:60px; --y:100px; --s:0.8" alt="Word reference table style paragraph spacing">
+            <img src="images/word/table-style-paragraph-spacing-word.png" style="--w:1224px; --x:60px; --y:100px; --s:0.8" alt="Word reference table style paragraph spacing">
           </div>
           <div class="caption">Word applies the TableGrid table style's paragraph spacing inside the cells, so row pitch stays tight and <code>After table</code> sits directly below the grid.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-style-paragraph-spacing-before-fix.png" style="--w:900px; --x:60px; --y:100px; --s:1.2" alt="Before table style paragraph spacing fix">
+            <img src="images/baseline/table-style-paragraph-spacing-before-fix.png" style="--w:900px; --x:60px; --y:100px; --s:1.2" alt="Before table style paragraph spacing fix">
           </div>
           <div class="caption">Before: cell paragraphs inherited the document-default loose spacing, making each table row too tall and pushing following content down.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-style-paragraph-spacing-after.png" style="--w:900px; --x:60px; --y:100px; --s:1.2" alt="After table style paragraph spacing fix">
+            <img src="images/browser/table-style-paragraph-spacing-after.png" style="--w:900px; --x:60px; --y:100px; --s:1.2" alt="After table style paragraph spacing fix">
           </div>
           <div class="caption">After: the browser render applies the table-style paragraph properties before cell paragraph conversion; native PNG and PDF use the same import fallback.</div>
         </td>
@@ -701,19 +701,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-grid-style-borders-word.png" style="--w:1224px; --x:60px; --y:85px; --s:0.567" alt="Word reference TableGrid style borders">
+            <img src="images/word/table-grid-style-borders-word.png" style="--w:1224px; --x:60px; --y:85px; --s:0.567" alt="Word reference TableGrid style borders">
           </div>
           <div class="caption">Word paints borders from the table style even when the table itself has no direct <code>w:tblBorders</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-grid-style-borders-before.png" style="--w:900px; --x:60px; --y:85px; --s:0.85" alt="Before TableGrid style border fix">
+            <img src="images/baseline/table-grid-style-borders-before.png" style="--w:900px; --x:60px; --y:85px; --s:0.85" alt="Before TableGrid style border fix">
           </div>
           <div class="caption">Before: text positions were correct, but style-derived table borders were dropped during DOCX import.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-grid-style-borders-after.png" style="--w:900px; --x:60px; --y:85px; --s:.85" alt="After TableGrid style border fix">
+            <img src="images/browser/table-grid-style-borders-after.png" style="--w:900px; --x:60px; --y:85px; --s:.85" alt="After TableGrid style border fix">
           </div>
           <div class="caption">After: browser render receives the style table borders and paints the same grid as Word; native and PDF render the same border surface.</div>
         </td>
@@ -737,19 +737,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-dxa-grid-alignment-row-height-word.png" style="--w:1224px; --x:60px; --y:85px; --s:0.373" alt="Word reference DXA table grid width">
+            <img src="images/word/table-dxa-grid-alignment-row-height-word.png" style="--w:1224px; --x:60px; --y:85px; --s:0.373" alt="Word reference DXA table grid width">
           </div>
           <div class="caption">Word lays out the two <code>4606</code> dxa grid columns across the body width and right-aligns <code>B/D</code> at the cell edge.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-dxa-grid-alignment-row-height-before.png" style="--w:900px; --x:60px; --y:85px; --s:0.56" alt="Before DXA table grid scale fix">
+            <img src="images/baseline/table-dxa-grid-alignment-row-height-before.png" style="--w:900px; --x:60px; --y:85px; --s:0.56" alt="Before DXA table grid scale fix">
           </div>
           <div class="caption">Before: table grid and row-height dxa values used the print point scale, shrinking the table and pulling right-aligned cell text left.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-dxa-grid-alignment-row-height-after.png" style="--w:900px; --x:60px; --y:85px; --s:.56" alt="After DXA table grid scale fix">
+            <img src="images/browser/table-dxa-grid-alignment-row-height-after.png" style="--w:900px; --x:60px; --y:85px; --s:.56" alt="After DXA table grid scale fix">
           </div>
           <div class="caption">After: shared table layout resolves dxa lengths in canvas units, so the table width, row height, and following paragraph position match the Word query.</div>
         </td>
@@ -772,19 +772,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:68px; --y:72px; --s:0.7" alt="Word reference list marker glyph width">
+            <img src="images/word/list-default-indent-word.png" style="--w:1224px; --x:68px; --y:72px; --s:0.7" alt="Word reference list marker glyph width">
           </div>
           <div class="caption">Word draws bullet and number markers at their glyph width inside the hanging marker area.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/list-marker-stretch-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before list marker glyph width fix">
+            <img src="images/baseline/list-marker-stretch-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before list marker glyph width fix">
           </div>
           <div class="caption">Before: the browser renderer stretched marker glyphs to the reserved marker box, turning bullets into horizontal ovals.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/list-marker-stretch-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After list marker glyph width fix">
+            <img src="images/browser/list-marker-stretch-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After list marker glyph width fix">
           </div>
           <div class="caption">After: markers keep their measured glyph width while the paragraph still reserves the same hanging marker space.</div>
         </td>
@@ -809,19 +809,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-explicit-left-padding-word.png" style="--w:1224px; --x:78px; --y:125px; --s:1.1" alt="Word reference explicit table cell left padding">
+            <img src="images/word/table-cell-explicit-left-padding-word.png" style="--w:1224px; --x:78px; --y:125px; --s:1.1" alt="Word reference explicit table cell left padding">
           </div>
           <div class="caption">Word applies the explicit <code>w:tcMar/w:left="108"</code> inset inside each cell.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-explicit-left-padding-before.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="Before explicit table cell left padding fix">
+            <img src="images/baseline/table-cell-explicit-left-padding-before.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="Before explicit table cell left padding fix">
           </div>
           <div class="caption">Before: imported cell padding was canceled by the table outer-inset adjustment, so text started at the cell border.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-cell-explicit-left-padding-after.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="After explicit table cell left padding fix">
+            <img src="images/browser/table-cell-explicit-left-padding-after.png" style="--w:900px; --x:78px; --y:125px; --s:1.65" alt="After explicit table cell left padding fix">
           </div>
           <div class="caption">After: explicit cell padding offsets text within the table cell, matching Word's queried left edge.</div>
         </td>
@@ -845,19 +845,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/heading-cambria-font-wrap-word.png" style="--w:1224px; --x:68px; --y:320px; --s:0.693" alt="Word reference Cambria heading wrap">
+            <img src="images/word/heading-cambria-font-wrap-word.png" style="--w:1224px; --x:68px; --y:320px; --s:0.693" alt="Word reference Cambria heading wrap">
           </div>
           <div class="caption">Word resolves the theme major font to Cambria and wraps the legal Heading 1 before <code>license.</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/heading-cambria-font-wrap-before.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="Before Cambria heading metric fix">
+            <img src="images/baseline/heading-cambria-font-wrap-before.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="Before Cambria heading metric fix">
           </div>
           <div class="caption">Before: the browser runner had no Cambria face, so the heading used fallback metrics, stayed on one line, and pulled following text upward.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/heading-cambria-font-wrap-after.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="After Cambria heading metric fix">
+            <img src="images/browser/heading-cambria-font-wrap-after.png" style="--w:900px; --x:68px; --y:320px; --s:1.04" alt="After Cambria heading metric fix">
           </div>
           <div class="caption">After: the browser runner uses the fetched Windows Cambria faces, and the same heading wraps at the Word break.</div>
         </td>
@@ -881,19 +881,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/top-heading-before-spacing-word.png" style="--w:1224px; --x:52px; --y:62px; --s:0.7" alt="Word reference top heading before spacing">
+            <img src="images/word/top-heading-before-spacing-word.png" style="--w:1224px; --x:52px; --y:62px; --s:0.7" alt="Word reference top heading before spacing">
           </div>
           <div class="caption">Word honors imported paragraph <code>w:before</code> spacing even when the paragraph starts at the top of the body area.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/top-heading-before-spacing-before.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="Before top heading before spacing fix">
+            <img src="images/baseline/top-heading-before-spacing-before.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="Before top heading before spacing fix">
           </div>
           <div class="caption">Before: page-top layout suppressed the imported before-spacing, placing both headings 32px too high.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/top-heading-before-spacing-after.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="After top heading before spacing fix">
+            <img src="images/browser/top-heading-before-spacing-after.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="After top heading before spacing fix">
           </div>
           <div class="caption">After: body layout applies the paragraph before-spacing and matches Word within the line-position threshold.</div>
         </td>
@@ -917,19 +917,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table cell before spacing">
+            <img src="images/word/table-cell-before-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table cell before spacing">
           </div>
           <div class="caption">Word honors explicit paragraph <code>w:before</code> spacing inside each table cell, including empty cell paragraphs.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-before-spacing-before.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before table cell before spacing fix">
+            <img src="images/baseline/table-cell-before-spacing-before.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before table cell before spacing fix">
           </div>
           <div class="caption">Before: row-local table measurement treated cell paragraphs as page-top paragraphs and suppressed their before-spacing.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/table-cell-before-spacing-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After table cell before spacing fix">
+            <img src="images/browser/table-cell-before-spacing-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After table cell before spacing fix">
           </div>
           <div class="caption">After: explicit cell paragraph before-spacing contributes to row height, matching the Word row rhythm.</div>
         </td>
@@ -953,19 +953,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/empty-paragraph-mark-size-word.png" style="--w:1224px; --x:68px; --y:62px; --s:0.68" alt="Word reference empty paragraph mark size">
+            <img src="images/word/empty-paragraph-mark-size-word.png" style="--w:1224px; --x:68px; --y:62px; --s:0.68" alt="Word reference empty paragraph mark size">
           </div>
           <div class="caption">Word gives a true empty Normal paragraph the same fallback paragraph-mark height as nearby 11 pt text.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/empty-paragraph-mark-size-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before empty paragraph mark size fix">
+            <img src="images/baseline/empty-paragraph-mark-size-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before empty paragraph mark size fix">
           </div>
           <div class="caption">Before: when the DOCX omitted document defaults, empty paragraphs fell back to the editor's hardcoded 11px style and were 4.82px too short.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/empty-paragraph-mark-size-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After empty paragraph mark size fix">
+            <img src="images/browser/empty-paragraph-mark-size-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After empty paragraph mark size fix">
           </div>
           <div class="caption">After: empty paragraphs honor the imported <code>ParagraphMarkFontSize</code>, removing the accumulated upward drift.</div>
         </td>
@@ -988,19 +988,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/heading-style-no-spacing-word.png" style="--w:1224px; --x:68px; --y:62px; --s:0.68" alt="Word reference imported heading style spacing">
+            <img src="images/word/heading-style-no-spacing-word.png" style="--w:1224px; --x:68px; --y:62px; --s:0.68" alt="Word reference imported heading style spacing">
           </div>
           <div class="caption">Word uses the spacing from the imported Heading styles; these styles omit explicit before/after spacing.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/heading-style-no-spacing-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before imported heading style spacing fix">
+            <img src="images/baseline/heading-style-no-spacing-before.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="Before imported heading style spacing fix">
           </div>
           <div class="caption">Before: imported headings still inherited the editor's built-in heading spacing, adding drift after blank paragraphs.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/heading-style-no-spacing-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After imported heading style spacing fix">
+            <img src="images/browser/heading-style-no-spacing-after.png" style="--w:900px; --x:68px; --y:62px; --s:1.02" alt="After imported heading style spacing fix">
           </div>
           <div class="caption">After: named DOCX heading styles apply over Normal, so omitted heading spacing stays omitted.</div>
         </td>
@@ -1023,19 +1023,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/widow-control-last-line-word.png" style="--w:1224px; --x:68px; --y:650px; --s:0.693" alt="Word reference widow control last line split">
+            <img src="images/word/widow-control-last-line-word.png" style="--w:1224px; --x:68px; --y:650px; --s:0.693" alt="Word reference widow control last line split">
           </div>
           <div class="caption">Word moves the whole short paragraph when only its last line would be alone on the next page.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/widow-control-last-line-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before widow control last line split fix">
+            <img src="images/baseline/widow-control-last-line-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before widow control last line split fix">
           </div>
           <div class="caption">Before: the first two lines stayed at the page bottom and the final line started the next page by itself.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/widow-control-last-line-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After widow control last line split fix">
+            <img src="images/browser/widow-control-last-line-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After widow control last line split fix">
           </div>
           <div class="caption">After: the short paragraph moves as a unit, matching Word's widow-control behavior.</div>
         </td>
@@ -1058,19 +1058,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/wrapped-paragraph-line-pitch-word.png" style="--w:1224px; --x:68px; --y:650px; --s:0.693" alt="Word reference wrapped paragraph line pitch">
+            <img src="images/word/wrapped-paragraph-line-pitch-word.png" style="--w:1224px; --x:68px; --y:650px; --s:0.693" alt="Word reference wrapped paragraph line pitch">
           </div>
           <div class="caption">Word uses roughly 19-20 CSS-equivalent pixels between wrapped 11 pt Calibri line baselines.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/wrapped-paragraph-line-pitch-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before wrapped paragraph line pitch fix">
+            <img src="images/baseline/wrapped-paragraph-line-pitch-before.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="Before wrapped paragraph line pitch fix">
           </div>
           <div class="caption">Before: wrapped lines advanced by 17.6px, accumulating enough vertical drift to keep text on the wrong page.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/wrapped-paragraph-line-pitch-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After wrapped paragraph line pitch fix">
+            <img src="images/browser/wrapped-paragraph-line-pitch-after.png" style="--w:900px; --x:68px; --y:650px; --s:1.04" alt="After wrapped paragraph line pitch fix">
           </div>
           <div class="caption">After: wrapped line baselines and page break position match the Word reference in the focused repro.</div>
         </td>
@@ -1093,19 +1093,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/running-header-body-offset-word.png" style="--w:1224px; --x:68px; --y:35px; --s:0.68" alt="Word reference running header body offset">
+            <img src="images/word/running-header-body-offset-word.png" style="--w:1224px; --x:68px; --y:35px; --s:0.68" alt="Word reference running header body offset">
           </div>
           <div class="caption">Word starts body text below the running header when the header extends past the top margin.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/running-header-body-offset-before.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="Before running header body offset fix">
+            <img src="images/baseline/running-header-body-offset-before.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="Before running header body offset fix">
           </div>
           <div class="caption">Before: body layout always started at the page top margin, placing the first heading 12px above Word.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/running-header-body-offset-after.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="After running header body offset fix">
+            <img src="images/browser/running-header-body-offset-after.png" style="--w:900px; --x:68px; --y:35px; --s:1.02" alt="After running header body offset fix">
           </div>
           <div class="caption">After: body layout starts at the larger of the top margin and running-header depth.</div>
         </td>
@@ -1128,19 +1128,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/list-default-indent-word.png" style="--w:1224px; --x:68px; --y:72px; --s:0.7" alt="Word reference nested list default indent">
+            <img src="images/word/list-default-indent-word.png" style="--w:1224px; --x:68px; --y:72px; --s:0.7" alt="Word reference nested list default indent">
           </div>
           <div class="caption">Word keeps all text starts at the same 0.5-inch indent when the numbering levels omit explicit <code>w:ind</code> values.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/list-default-indent-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before nested list default indent fix">
+            <img src="images/baseline/list-default-indent-before.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="Before nested list default indent fix">
           </div>
           <div class="caption">Before: fallback indentation multiplied by list nesting level, pushing nested list text 20-44px too far right.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/list-default-indent-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After nested list default indent fix">
+            <img src="images/browser/list-default-indent-after.png" style="--w:900px; --x:68px; --y:72px; --s:1.05" alt="After nested list default indent fix">
           </div>
           <div class="caption">After: missing numbering indents use Word's default hanging list geometry, aligning all nested text starts.</div>
         </td>
@@ -1163,19 +1163,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/normal-paragraph-line-pitch-word.png" style="--w:1224px; --x:70px; --y:75px; --s:0.653" alt="Word reference normal paragraph pitch">
+            <img src="images/word/normal-paragraph-line-pitch-word.png" style="--w:1224px; --x:70px; --y:75px; --s:0.653" alt="Word reference normal paragraph pitch">
           </div>
           <div class="caption">Word advances consecutive Normal paragraphs by 30 CSS-equivalent pixels in this repro.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/normal-paragraph-line-pitch-before-fix.png" style="--w:900px; --x:70px; --y:75px; --s:0.98" alt="Before normal paragraph pitch fix">
+            <img src="images/baseline/normal-paragraph-line-pitch-before-fix.png" style="--w:900px; --x:70px; --y:75px; --s:0.98" alt="Before normal paragraph pitch fix">
           </div>
           <div class="caption">Before: Normal paragraph gaps were 27.6px, and style spacing from DOCX styles was converted as points instead of canvas pixels.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/normal-paragraph-line-pitch-after.png" style="--w:900px; --x:70px; --y:75px; --s:.98" alt="After normal paragraph pitch fix">
+            <img src="images/browser/normal-paragraph-line-pitch-after.png" style="--w:900px; --x:70px; --y:75px; --s:.98" alt="After normal paragraph pitch fix">
           </div>
           <div class="caption">After: consecutive Normal paragraph gaps match Word, and Heading style spacing no longer accumulates vertical drift.</div>
         </td>
@@ -1198,19 +1198,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:70px; --y:105px; --s:0.653" alt="Word reference table following paragraph spacing">
+            <img src="images/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:70px; --y:105px; --s:0.653" alt="Word reference table following paragraph spacing">
           </div>
           <div class="caption">Word starts the paragraph immediately below the table border.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-after-spacing-before-fix.png" style="--w:900px; --x:70px; --y:105px; --s:0.98" alt="Before table following paragraph spacing fix">
+            <img src="images/baseline/table-after-spacing-before-fix.png" style="--w:900px; --x:70px; --y:105px; --s:0.98" alt="Before table following paragraph spacing fix">
           </div>
           <div class="caption">Before: an extra table block gap pushed <code>After table</code> down by 10 layout units.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/repro-table-after-spacing-after.png" style="--w:900px; --x:70px; --y:105px; --s:.98" alt="After table following paragraph spacing fix">
+            <img src="images/browser/repro-table-after-spacing-after.png" style="--w:900px; --x:70px; --y:105px; --s:.98" alt="After table following paragraph spacing fix">
           </div>
           <div class="caption">After: the following paragraph moves up to match the Word table edge spacing more closely.</div>
         </td>
@@ -1233,19 +1233,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table cell inset alignment">
+            <img src="images/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table cell inset alignment">
           </div>
           <div class="caption">Word aligns the heading, table left border, and cell text to the same left edge for this default table.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/repro-table-default-cell-padding-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before default table cell inset alignment fix">
+            <img src="images/baseline/repro-table-default-cell-padding-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before default table cell inset alignment fix">
           </div>
           <div class="caption">Before: the table border was shifted left and the cell text was padded right of the table edge.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/repro-table-cell-padding-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After default table cell inset alignment fix">
+            <img src="images/browser/repro-table-cell-padding-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After default table cell inset alignment fix">
           </div>
           <div class="caption">After: default table padding is zero, so heading, border, and cell text share the left edge unless the DOCX specifies padding.</div>
         </td>
@@ -1268,19 +1268,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/raster/test-complex-tables-word.png" style="--w:1224px; --x:40px; --y:90px; --s:0.547" alt="Word reference complex table borders">
+            <img src="images/raster/test-complex-tables-word.png" style="--w:1224px; --x:40px; --y:90px; --s:0.547" alt="Word reference complex table borders">
           </div>
           <div class="caption">Word anchors each table border grid to its own table text.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/complex-tables-border-before-fix.png" style="--w:900px; --x:40px; --y:90px; --s:0.82" alt="Before cached table border anchor fix">
+            <img src="images/baseline/complex-tables-border-before-fix.png" style="--w:900px; --x:40px; --y:90px; --s:0.82" alt="Before cached table border anchor fix">
           </div>
           <div class="caption">Before: the second table's border grid was painted too high, crossing the prior table/heading area.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/test-complex-tables-border-after.png" style="--w:900px; --x:40px; --y:90px; --s:.82" alt="After cached table border anchor fix">
+            <img src="images/browser/test-complex-tables-border-after.png" style="--w:900px; --x:40px; --y:90px; --s:.82" alt="After cached table border anchor fix">
           </div>
           <div class="caption">After: cached table border paint derives the table anchor from planned block layout Y, not planned line Y.</div>
         </td>
@@ -1302,19 +1302,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference without caret">
+            <img src="images/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference without caret">
           </div>
           <div class="caption">Word print/PDF reference has no active editor caret in the rendered page.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/browser-caret-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before caret capture fix">
+            <img src="images/baseline/browser-caret-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before caret capture fix">
           </div>
           <div class="caption">Before: browser and native snapshot runners captured the initial collapsed selection as a blue caret.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After caret capture fix">
+            <img src="images/browser/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After caret capture fix">
           </div>
           <div class="caption">After: automated snapshots clear selection before reading layout JSON or taking screenshots.</div>
         </td>
@@ -1336,19 +1336,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:60px; --y:75px; --s:0.773" alt="Word reference native text scale repro">
+            <img src="images/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:60px; --y:75px; --s:0.773" alt="Word reference native text scale repro">
           </div>
           <div class="caption">Word renders 11 pt Calibri as roughly 14.7 CSS pixels on the page surface.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/native-text-size-before-fix.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="Before native text scale fix">
+            <img src="images/baseline/native-text-size-before-fix.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="Before native text scale fix">
           </div>
           <div class="caption">Before: native measurement and glyph drawing passed Word point sizes directly to <code>../renderer</code>, shrinking Calibri text.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="After native text scale fix">
+            <img src="images/native/repro-table-cell-spacing-no-caret.png" style="--w:900px; --x:60px; --y:75px; --s:1.16" alt="After native text scale fix">
           </div>
           <div class="caption">After: native measurement and glyph drawing use the same <code>96/72</code> point-to-pixel conversion as the browser canvas path.</div>
         </td>
@@ -1370,19 +1370,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table spacing repro">
+            <img src="images/word/repro-table-cell-spacing-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table spacing repro">
           </div>
           <div class="caption">Word applies the Normal paragraph after-spacing in table cells when the DOCX omits explicit spacing.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-cell-spacing-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before fix table spacing repro">
+            <img src="images/baseline/table-cell-spacing-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before fix table spacing repro">
           </div>
           <div class="caption">Before: cell paragraph spacing was forced to zero, compressing the second row and following paragraph.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/repro-table-cell-spacing-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After fix table spacing repro">
+            <img src="images/browser/repro-table-cell-spacing-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After fix table spacing repro">
           </div>
           <div class="caption">After: omitted spacing remains inherited/defaulted; row positions move down to match Word's cell paragraph rhythm.</div>
         </td>
@@ -1404,19 +1404,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/word/repro-table-import-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table import repro">
+            <img src="images/word/repro-table-import-word.png" style="--w:1224px; --x:55px; --y:70px; --s:0.773" alt="Word reference table import repro">
           </div>
           <div class="caption">Word keeps <code>A1/B1</code> on the same row and <code>A2/B2</code> on the next row.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/table-import-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before fix table import repro">
+            <img src="images/baseline/table-import-before-fix.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="Before fix table import repro">
           </div>
           <div class="caption">Before: browser import flattened table cells into ordinary paragraphs; <code>B1</code> stacked under <code>A1</code> at <code>x=0</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/browser/repro-table-import-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After fix table import repro">
+            <img src="images/browser/repro-table-import-after.png" style="--w:900px; --x:55px; --y:70px; --s:1.16" alt="After fix table import repro">
           </div>
           <div class="caption">After: browser import emits table objects, so same-row cells share Y and distinct X positions.</div>
         </td>

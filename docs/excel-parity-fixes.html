@@ -162,19 +162,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-print-page1-after.png" style="--w:1320px; --x:0px; --y:0px; --s:1.6" alt="Synthetic print fixture — page 1, structurally verified">
+            <img src="images/native/synthetic-print-page1-after.png" style="--w:1320px; --x:0px; --y:0px; --s:1.6" alt="Synthetic print fixture — page 1, structurally verified">
           </div>
           <div class="caption">No Excel reference — synthetic fixture authored to exercise the whole print path. Verification is structural: the fixture's print metadata (landscape, print area A1:F25, repeat row 1, manual break after row 13, header / footer with field codes) should produce exactly two landscape pages, each with the column header re-printed at the top and the appropriate footer.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-print-page1-after.png" style="--w:1320px; --x:0px; --y:0px; --s:1.6" alt="Ours after — page 1">
+            <img src="images/native/synthetic-print-page1-after.png" style="--w:1320px; --x:0px; --y:0px; --s:1.6" alt="Ours after — page 1">
           </div>
           <div class="caption">Page 1: landscape Letter, repeat header row at top (Date / Product / Region / Sales / Margin / Notes), body rows 2–13 of the source (dates 45292–45303, products Widget through Whatsit), header <em>"Report &nbsp;…&nbsp; 2026-05-15"</em> in the top margin (&amp;D resolves to today's date), footer <em>"Report &nbsp; Page 1 of 2 &nbsp; synthetic-print.xlsx"</em> with the sheet name from &amp;A and file name from &amp;F.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-print-page2-after.png" style="--w:1320px; --x:0px; --y:0px; --s:1.6" alt="Ours after — page 2">
+            <img src="images/native/synthetic-print-page2-after.png" style="--w:1320px; --x:0px; --y:0px; --s:1.6" alt="Ours after — page 2">
           </div>
           <div class="caption">Page 2: same repeat header row (the manual <code>&lt;rowBreaks&gt;</code> entry after row 13 forced the split here), body rows 14–25 (the print area stops at row 25 — rows 26–31 of the source are dropped, as Excel does), footer reads "Page 2 of 2".</div>
         </td>
@@ -204,19 +204,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-condformat-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Synthetic conditional-formatting fixture — structurally verified">
+            <img src="images/native/synthetic-condformat-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Synthetic conditional-formatting fixture — structurally verified">
           </div>
           <div class="caption">No Excel reference — synthetic fixture authored to exercise the CF path. Verification is structural: each column's row-1 label names its rule; the after PNG fills/bars/icons exactly the cells whose values satisfy that rule and scales each gradient / bar / icon by the cell's position in the column's 10..90-ish range.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-condformat-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Ours after">
+            <img src="images/native/synthetic-condformat-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Ours after">
           </div>
           <div class="caption">After: col A — A4/A5/A6 (55/70/90) get the dxf-0 overlay (<code>#FFC7CE</code> fill + <code>#9C0006</code> text). Col B — colorScale interpolates each cell across the 3 stops by position: 10→red … 50→yellow … 90→green. Col C — C3/C4 (25/35) get the dxf-1 overlay (<code>#C6EFCE</code> fill + bold <code>#006100</code> text). Col D — a blue data bar from the left edge spanning the value's fraction of min..max. Col E — a red/amber/green icon square chosen by the value's third of the range. Col F — top-2 (70/90) get the green dxf. Col G — above the column mean of 50 (70/90) get the pink dxf. Col H — the <code>expression</code> rule <code>=$A2&gt;50</code> is shifted per row and evaluated by the formula engine; H4/H5/H6 match (A4/A5/A6 = 55/70/90 &gt; 50) and get the green-bold dxf, even though the formula points at column A. Cells outside each rule's match stay plain.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/synthetic-condformat-pre.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Ours before">
+            <img src="images/baseline/synthetic-condformat-pre.png" style="--w:1100px; --x:0px; --y:0px; --s:2.4" alt="Ours before">
           </div>
           <div class="caption">Before: cols A–G match the after PNG (the cellIs/colorScale/dataBar/iconSet/top10/aboveAverage pipeline already shipped), but col H is plain — <code>expression</code> rules were parsed into the model yet the runner's CF post-pass had no <code>expression</code> case, so the formula was never evaluated and the dxf never applied.</div>
         </td>
@@ -250,19 +250,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-namedrange-after.png" style="--w:700px; --x:0px; --y:0px; --s:3.0" alt="Synthetic named-range fixture — structurally verified">
+            <img src="images/native/synthetic-namedrange-after.png" style="--w:700px; --x:0px; --y:0px; --s:3.0" alt="Synthetic named-range fixture — structurally verified">
           </div>
           <div class="caption">No Excel reference — synthetic fixture authored to exercise the recalc + defined-name path. Verification is structural: each row's column-B label is the literal formula text in column C, and the after PNG shows the value that formula must produce against the A1:A5 data (10/20/30/40/50).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-namedrange-after.png" style="--w:700px; --x:0px; --y:0px; --s:3.0" alt="Ours after">
+            <img src="images/native/synthetic-namedrange-after.png" style="--w:700px; --x:0px; --y:0px; --s:3.0" alt="Ours after">
           </div>
           <div class="caption">After: C1 <code>=SUM(Scores)</code> → 150, C2 <code>=AVERAGE(Scores)</code> → 30, C3 <code>=MAX(Scores)</code> → 50, C4 <code>=SUM(Scores)*TaxRate</code> → 30 (150 × 0.2), C5 <code>=A1+A2</code> → 30. The named range resolves through the workbook, the constant name <code>TaxRate</code> resolves too, and the plain uncalculated formula recalculates alongside them.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/synthetic-namedrange-pre.png" style="--w:700px; --x:0px; --y:0px; --s:3.0" alt="Ours before">
+            <img src="images/baseline/synthetic-namedrange-pre.png" style="--w:700px; --x:0px; --y:0px; --s:3.0" alt="Ours before">
           </div>
           <div class="caption">Before: column C entirely blank. <code>XlsxReader</code> returned these cells as <code>Formula(text, Empty)</code> — correct — but the native runner never ran a calculation pass, so the cached value stayed <code>Empty</code> and the renderer drew nothing. Defined names were parsed into <code>NamedRange</code> records and then dropped: the <code>Workbook</code> had no storage for them and the formula engine returned <code>#NAME?</code> for every name.</div>
         </td>
@@ -289,19 +289,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-fmt5-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Synthetic five-feature fixture — structurally verified">
+            <img src="images/native/synthetic-fmt5-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Synthetic five-feature fixture — structurally verified">
           </div>
           <div class="caption">No Excel reference — synthetic fixture authored to exercise these code paths. Verification is structural: each row's column-A label names the exact feature variant assigned to column B, and the after PNG renders the documented visual for each (midpoint-blend for the 2-stop gradient, fixed tones for named grays, density-blended directional patterns, two strokes for double underline, diagonal GridLines matching the up/down flags).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-fmt5-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours after">
+            <img src="images/native/synthetic-fmt5-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours after">
           </div>
           <div class="caption">After: row 1 gradient → orange (yellow↔red midpoint). Rows 2-4 named grays → #E0E0E0 / #A0A0A0 / #606060. Rows 5-7 directional patterns → fgColor blended toward the field by density (dark ≈ 0.7, light ≈ 0.3): navy darkHorizontal, green darkGrid, pink lightUp. Row 8 "HEADING" in the theme major font. Row 9 "important" with two parallel underline strokes. Rows 10-12: diagonal-up stroke, diagonal-down (red), and both (blue X).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/synthetic-fmt5-pre.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours before">
+            <img src="images/baseline/synthetic-fmt5-pre.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours before">
           </div>
           <div class="caption">Before: rows 1-4 blank (gradientFill + named-gray patternTypes returned <code>None</code>). Rows 5-7 rendered as a flat solid of the raw fgColor — the pattern density was lost. Row 8 "HEADING" in default Calibri (scheme reference dropped). Row 9 single underline (the <code>val="double"</code> attribute was ignored). Rows 10-12 had no diagonal strokes at all — <code>&lt;diagonal&gt;</code> wasn't parsed.</div>
         </td>
@@ -330,26 +330,26 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-formatting-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Synthetic formatting — no Excel reference, structurally verified">
+            <img src="images/native/synthetic-formatting-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Synthetic formatting — no Excel reference, structurally verified">
           </div>
           <div class="caption">No Excel reference for these synthetic fixtures (we authored them to exercise the code paths). Verification is structural: the formatting-probe XLSX assigns one font flag per row + one hyperlink + one comment + one list-validation range, and the after PNG renders each at the expected cell. The numfmt-probe XLSX assigns one format code per row and the after PNG matches Excel's documented output for each code.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/synthetic-formatting-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours after — formatting-probe">
+            <img src="images/native/synthetic-formatting-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours after — formatting-probe">
           </div>
           <div class="caption">After (formatting-probe): row 1 B1 in blue + underlined (hyperlink), row 2-4 font flags individually, row 5 combined bold+italic+underline+strike in red, row 6 "has comment" with red corner triangle, row 7 "dropdown" with gray downward arrow on the right edge. After (numfmt-probe, below): col A row labels visible (inline strings), col B shows <code>1,234.56</code> / <code>(1,234.56)</code> / <code>-</code> for accounting +/-/zero, <code>$ 1,234.56</code> for currency, <code>1.23E+08</code> for scientific, <code>1/2</code> + <code>1/3</code> for the two fraction codes, <code>0042</code> for zero-pad, <code>12%</code> + <code>12.30%</code> for percent variants.</div>
           <div class="zoom" style="margin-top:8px">
-            <img src="../artifacts/native/synthetic-numfmt-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours after — numfmt-probe">
+            <img src="images/native/synthetic-numfmt-after.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours after — numfmt-probe">
           </div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/synthetic-formatting-pre-batch.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours before — formatting-probe">
+            <img src="images/baseline/synthetic-formatting-pre-batch.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours before — formatting-probe">
           </div>
           <div class="caption">Before (formatting-probe): B1 "plain" is plain black (hyperlink not detected), no triangle on row 6, no arrow on row 7. Bold/underline/strike rows already worked. Before (numfmt-probe, below): col A entirely blank (inline strings dropped), col B prints the format placeholders as literal text — <code>_(* 1,234.56_)</code>, <code>-_(* (1,234.56)</code>, <code>_(* -??_)</code>, <code>_($* 1,234.56_)</code>, <code>1 ?/?</code>, <code>??/??</code>. Scientific / zero-pad / percent already worked.</div>
           <div class="zoom" style="margin-top:8px">
-            <img src="../artifacts/baseline/synthetic-numfmt-pre-batch.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours before — numfmt-probe">
+            <img src="images/baseline/synthetic-numfmt-pre-batch.png" style="--w:1100px; --x:0px; --y:0px; --s:2.0" alt="Ours before — numfmt-probe">
           </div>
         </td>
         <td>
@@ -383,19 +383,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference: General-format trim">
+            <img src="images/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference: General-format trim">
           </div>
           <div class="caption">Excel reference: row 2 col B = <code>0.98026851</code> (8 sig digits, 10 chars), col C = <code>3.68573088</code> (9 sig digits, 10 chars), col D = <code>-0.3642168</code>, col E = <code>-1.1597381</code>. Cell font Calibri 11, column sized to baseColWidth=10 against the workbook default Calibri 12 (MDW = 8).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test1-after.png" style="--w:1100px; --x:0px; --y:0px; --s:1" alt="Ours after General-format trim">
+            <img src="images/native/pandas-test1-after.png" style="--w:1100px; --x:0px; --y:0px; --s:1" alt="Ours after General-format trim">
           </div>
           <div class="caption">After: same values as Excel — <code>0.98026851 / 3.68573088 / -0.3642168 / -1.1597381</code>. MDW now floors instead of ceils (Calibri 11 = 7 not 8, Calibri 12 = 8 not 9, etc.) and General-format reserves one extra MDW char of right buffer so the trim ladder lands on Excel's effective digit count.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-pre-generaltrim.png" style="--w:1100px; --x:0px; --y:0px; --s:1" alt="Ours before General-format trim">
+            <img src="images/baseline/pandas-test1-pre-generaltrim.png" style="--w:1100px; --x:0px; --y:0px; --s:1" alt="Ours before General-format trim">
           </div>
           <div class="caption">Before: row 2 col B = <code>0.9802685138</code> (10 sig digits, 12 chars), col C = <code>3.685730879</code>, col D = <code>-0.36421681</code>, etc. The cell font's MDW (Calibri 11 = 7) made <code>maxChars = (cellWidth-8)/7 = 11</code>, enough for G10 to fit even though the column was sized against the default font's MDW (Calibri 12 = 8) at 88 px and Excel would only have used 10 chars worth of digits.</div>
         </td>
@@ -421,19 +421,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-df_header_oob-after.png" style="--w:1100px; --x:0px; --y:0px; --s:1.4" alt="Excel reference equivalent — no rendered Excel PDF for this fixture in the corpus">
+            <img src="images/native/pandas-df_header_oob-after.png" style="--w:1100px; --x:0px; --y:0px; --s:1.4" alt="Excel reference equivalent — no rendered Excel PDF for this fixture in the corpus">
           </div>
           <div class="caption">No Excel-rendered reference PNG ships in <code>artifacts/excel/</code> for this fixture (pandas test asset). Verification is structural: <code>&lt;pane xSplit="1" ySplit="3"/&gt;</code> in the sheetView puts the split between cols A/B and rows 3/4, and the darker divider line in the "After" panel lands at exactly those edges.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-df_header_oob-after.png" style="--w:1100px; --x:0px; --y:0px; --s:1.4" alt="Ours after frozen-pane divider">
+            <img src="images/native/pandas-df_header_oob-after.png" style="--w:1100px; --x:0px; --y:0px; --s:1.4" alt="Ours after frozen-pane divider">
           </div>
           <div class="caption">After: darker gray (#595959) stroke runs along the bottom of row 3 and the right edge of column A. <code>buildFreezeDividerItems</code> emits one horizontal + one vertical GridLine at the freeze split (HeaderHeight/RowHeaderWidth offsets baked in so the line lands flush with cellRect coordinates).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-df_header_oob-pre-freeze.png" style="--w:1100px; --x:0px; --y:0px; --s:1.4" alt="Ours before frozen-pane support">
+            <img src="images/baseline/pandas-df_header_oob-pre-freeze.png" style="--w:1100px; --x:0px; --y:0px; --s:1.4" alt="Ours before frozen-pane support">
           </div>
           <div class="caption">Before: no divider visible. The cell rendering itself was correct, but Excel's freeze cue was missing — and the DOM-based interactive view would have scrolled the frozen rows/cols along with the body instead of pinning them.</div>
         </td>
@@ -463,19 +463,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/poi-49156-after.png" style="--w:1100px; --x:0px; --y:230px; --s:0.85" alt="No Excel reference — see internal before/after">
+            <img src="images/native/poi-49156-after.png" style="--w:1100px; --x:0px; --y:230px; --s:0.85" alt="No Excel reference — see internal before/after">
           </div>
           <div class="caption">No Excel-rendered reference in the corpus for this fixture (POI sample workbook). The verification here is that the indexed colors land at the documented Excel 8 palette values — index 22 = <code>#C0C0C0</code> (light gray), index 41 = <code>#CCFFFF</code> (cyan), index 45 = <code>#FF99CC</code> (pink), 43 = <code>#FFFF99</code>. Compare to the OOXML transitional spec's <em>IndexedColors</em> table.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/poi-49156-after.png" style="--w:1100px; --x:0px; --y:230px; --s:0.85" alt="Ours after indexed/theme/tint resolution">
+            <img src="images/native/poi-49156-after.png" style="--w:1100px; --x:0px; --y:230px; --s:0.85" alt="Ours after indexed/theme/tint resolution">
           </div>
           <div class="caption">After: rows 10-13 paint cyan in D, pink in E, gray in F (indexed 41/45/22). Row 14-16 / 18-20 use the same palette spread across additional columns. Without these resolved, the page was a uniform white slab — losing the entire visual layout of the form template.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/poi-49156-pre-indexed.png" style="--w:1100px; --x:0px; --y:230px; --s:0.85" alt="Ours before indexed color support">
+            <img src="images/baseline/poi-49156-pre-indexed.png" style="--w:1100px; --x:0px; --y:230px; --s:0.85" alt="Ours before indexed color support">
           </div>
           <div class="caption">Before: every <code>&lt;fgColor indexed="N"/&gt;</code> hit <code>Xml.attr "rgb"</code> in parseFill, returned None, so all fill colors dropped to default white. The structural borders are still visible because <code>parseBorderSide</code> reads <code>style=</code> which doesn't depend on color resolution.</div>
         </td>
@@ -509,19 +509,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/poi-47813-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference with Verdana columns">
+            <img src="images/excel/poi-47813-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference with Verdana columns">
           </div>
           <div class="caption">Excel reference: col A (Angle) and col B (Sine) wide enough for "##.000" values. Verdana 10 renders heavier than Calibri 10 at the same point size; Excel sizes columns to match that wider rendering.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/poi-47813.png" style="--w:1100px; --x:0px; --y:0px; --s:0.6" alt="Ours after real-font MDW + Verdana">
+            <img src="images/native/poi-47813.png" style="--w:1100px; --x:0px; --y:0px; --s:0.6" alt="Ours after real-font MDW + Verdana">
           </div>
           <div class="caption">After: <code>tools/excel-native-runner</code> loads the workbook's default font via <code>SpreadsheetGrid.rendererFontFor</code> and measures <code>Renderer.Text.measureWidth font pxSize "0"</code>, then ceils. For Verdana 10 (winAscent-anchored) that lands at 8 px. Combined with the new Verdana faces in the font cache, col A now fits "47.000" cleanly.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/poi-47813-pre-verdana.png" style="--w:1100px; --x:0px; --y:0px; --s:0.6" alt="Ours before real-font MDW">
+            <img src="images/baseline/poi-47813-pre-verdana.png" style="--w:1100px; --x:0px; --y:0px; --s:0.6" alt="Ours before real-font MDW">
           </div>
           <div class="caption">Before: MDW computed as <code>round(10 × 7/11) = 6</code> clamped to floor 7 — close to Calibri's '0' but not Verdana's. Col A clamped to 50 px instead of 57 px; numbers ≥ 10 overflow → <code>#####</code>. Verdana itself also wasn't recognized, so text fell back to Calibri (giving the cells a thinner look than Excel).</div>
         </td>
@@ -548,19 +548,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference with bottom-aligned default-height row">
+            <img src="images/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference with bottom-aligned default-height row">
           </div>
           <div class="caption">Excel reference: row 1 "c1" glyph cap at <code>y = 25</code> in a cell spanning <code>y = 20..39</code> — 5 px below cell top, 4 px above bottom. Excel ignores the <code>vertical="top"</code> hint because the 19-px row is barely taller than the Calibri 11 line height (winLineHeight ≈ 17.9 px).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-testmultiindex.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after vAlign collapse">
+            <img src="images/native/pandas-testmultiindex.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after vAlign collapse">
           </div>
           <div class="caption">After: <code>toRendererCommands</code> computes the cell's vertical slack (<code>cell.Height − winLineHeight × lineCount</code>); when vAlign is top AND slack is less than half a line height, collapse to bottom. Row 1 cap now lands at <code>y = 26</code> (Excel's <code>y = 25</code> within 1 px floor diff). Tall wrap-text cells (phpsp-26template row 4/5) still respect the top hint because they have plenty of slack.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-testmultiindex-pre-valign-collapse.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before vAlign collapse">
+            <img src="images/baseline/pandas-testmultiindex-pre-valign-collapse.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before vAlign collapse">
           </div>
           <div class="caption">Before: row 1 cap at <code>y = 21</code> — 1 px below cell top because <code>vAlign=top</code> placed the em-top at cell.top. Visually obvious as header text glued against the top border, ~4 px higher than Excel.</div>
         </td>
@@ -586,19 +586,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/phpsp-26template-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference with CJK glyphs">
+            <img src="images/excel/phpsp-26template-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference with CJK glyphs">
           </div>
           <div class="caption">Excel reference: 切手 visible in the row 1 yellow header inside <em>"Stamps (切手)"</em>; 横浜 inside <em>"Yokohama (横浜)"</em> and 東京 inside <em>"Tokyo (東京)"</em> in row 6. Excel uses Yu Gothic UI for Japanese chars when the run's font is Calibri/Arial (per the HKLM SystemLink registry chain).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after CJK fallback">
+            <img src="images/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after CJK fallback">
           </div>
           <div class="caption">After: 切手 / 横浜 / 東京 now render as actual glyphs, and the run boundaries around them stay aligned with Excel. <code>SpreadsheetGrid.toRendererCommands</code> walks the text codepoint-by-codepoint, asks the primary font (via <code>Renderer.Text.hasGlyph</code>) whether it covers each one, and switches to the first fallback that does. The native measurer goes through the same primary-then-fallback walk via <code>segmentByFontCoverage</code> so a Times run containing kanji doesn't return a too-small width and let the next rich-text run overlap the trailing space. Baseline stays anchored to the primary font's <code>winAscent</code> so mixed-script lines don't jitter vertically.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/phpsp-26template-pre-cjkfallback.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours before CJK fallback">
+            <img src="images/baseline/phpsp-26template-pre-cjkfallback.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours before CJK fallback">
           </div>
           <div class="caption">Before: every CJK codepoint resolved to glyph id 0 (<code>.notdef</code>) in Calibri's cmap, which the shaper rendered as a tofu box. Row 1's <em>"(□□)"</em> in place of <em>"(切手)"</em>; row 6's <em>"(□□)"</em> for both 横浜 and 東京.</div>
         </td>
@@ -634,19 +634,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/phpsp-26template-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference with per-run colors">
+            <img src="images/excel/phpsp-26template-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference with per-run colors">
           </div>
           <div class="caption">Excel reference: row 1 yellow header — <em>"Rare (sjældne) "</em> black + <em>"Stamps (切手) &amp; Letters"</em> in <span style="color:#0070C0">blue</span> + <em>" for sale"</em> black. Row 6 — <em>"1871 Japan. "</em> black + <em>"200 mon dragon cover"</em> <strong style="color:#FF0000">bold red</strong> + <em>". Sent from Yokohama …"</em> black. Each <code>&lt;r&gt;</code> carries its own <code>&lt;rPr&gt;</code> (rFont, sz, b, color rgb).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after per-run rendering">
+            <img src="images/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after per-run rendering">
           </div>
           <div class="caption">After: <code>Workbook.SharedStringRuns</code> carries parsed run lists parallel to the existing <code>SharedStrings</code> text array. <code>SpreadsheetModel.RichRuns</code> indexes the runs by cell address (sparse — only cells with &gt;1 run). <code>Paint.fs</code> pass 3, on a one-line cell with rich runs, emits one DrawText per run positioned along x using the same <code>Viewport.Measurer</code> the wrap path uses. The blue Stamps span and the bold-red "200 mon dragon cover" now match Excel. (CJK glyphs render as boxes — separate font-fallback gap.)</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/phpsp-26template-pre-richruns.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours before per-run rendering">
+            <img src="images/baseline/phpsp-26template-pre-richruns.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours before per-run rendering">
           </div>
           <div class="caption">Before: every <code>&lt;si&gt;</code> went through <code>List.choose Xml.text</code> on all descendant <code>&lt;t&gt;</code> elements, returning a single plain-text string. The cell's base format (font, color, bold) applied uniformly — so the yellow row 1 looked monochrome black, and row 6's "200 mon dragon cover" lost both its bold and red.</div>
         </td>
@@ -675,19 +675,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/phpsp-26template-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference render with correct wrap points">
+            <img src="images/excel/phpsp-26template-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.55" alt="Excel reference render with correct wrap points">
           </div>
           <div class="caption">Excel reference: row 4 (Item description for 10002) wraps at <em>"Rigsbankskilling type 5,"</em> → <em>"plate I pos. 19. Nicely tied by numeral 1. Meget sjælden."</em> — 2 lines. Row 5 (Item description for 10003) wraps at <em>"…plate I type 10 & 2, pos."</em> → <em>"48-58 with black numeral 1 cancellation. Clearly visible disjoined foot in pair with huge margins."</em> — 2 lines.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after real-font wrap measurement">
+            <img src="images/native/phpsp-26template.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours after real-font wrap measurement">
           </div>
           <div class="caption">After: <code>Viewport</code> gains <code>Measurer: TextMeasurer option</code>. Native runner sets it to a closure that runs <code>Renderer.Text.measureWidth</code> against the real loaded font for the cell's <code>(fontName, bold, italic)</code> triple. <code>Paint.wrapLines</code> consults the measurer for both word-fit and char-fit decisions when present. Rows 4 and 5 now wrap at the same word boundaries Excel does.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/phpsp-26template-pre-realwrap.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours before real-font wrap measurement">
+            <img src="images/baseline/phpsp-26template-pre-realwrap.png" style="--w:1100px; --x:0px; --y:0px; --s:0.55" alt="Ours before real-font wrap measurement">
           </div>
           <div class="caption">Before: row 4 wrapped after <em>"single Thiele 2"</em> — 7 words earlier than Excel. Row 5 wrapped into <em>3</em> lines instead of 2: <em>"…plate I type"</em> / <em>"10 & 2, pos. 48-58 with…disjoined"</em> / <em>"foot in pair with huge margins."</em>. The over-estimation made every wrap-text cell visually inflate.</div>
         </td>
@@ -715,19 +715,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test_decimal-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.65" alt="Excel reference render with auto-filter triangles">
+            <img src="images/excel/pandas-test_decimal-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.65" alt="Excel reference render with auto-filter triangles">
           </div>
           <div class="caption">Excel reference: each header cell of the green table strip (Column1..Column6) shows a small ▼ triangle on the right side, ~7 px wide × 4 px tall. Triangle uses the header text fill color (white on accent6 green) on top of the existing accent fill — no separate button background.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test_decimal.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after auto-filter triangle support">
+            <img src="images/native/pandas-test_decimal.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after auto-filter triangle support">
           </div>
           <div class="caption">After: <code>TableDefinition.AutoFilter</code> stores the parsed range. <code>tableOverrideFor</code> flags header cells in the range with <code>FilterButton = true</code>. <code>buildCellPaintItems</code> pass 4 emits five horizontal <code>GridLine</code> commands forming a centered 7×4 triangle, color = <code>format.TextColor</code> (white on green). Visible on Column1..Column6 — same shape, position, and color as Excel.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test_decimal-pre-filterdropdown.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before auto-filter triangle support">
+            <img src="images/baseline/pandas-test_decimal-pre-filterdropdown.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before auto-filter triangle support">
           </div>
           <div class="caption">Before: header cells rendered with just the accent fill and white bold text. No visual cue that filtering was enabled on the table — diverged from Excel everywhere a pandas/openpyxl Table appeared.</div>
         </td>
@@ -756,19 +756,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test1.xlsx Sheet1 — Calibri 12 data rows">
+            <img src="images/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test1.xlsx Sheet1 — Calibri 12 data rows">
           </div>
           <div class="caption">Excel reference: cell B2 digit "0" extends <code>y = 48..57</code> with cell bottom at <code>y = 62</code> — 5 px of descender room. Excel anchors the baseline using <code>winAscent</code> below the em-top of the line block, so <code>baseline = cellBottom − winDescent_px = 62 − 4.30 = 57.7</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after metric-based baseline">
+            <img src="images/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after metric-based baseline">
           </div>
           <div class="caption">After: cell B2 digit "0" extends <code>y = 49..58</code> (1 px floor diff vs Excel). <code>toRendererCommands</code> computes <code>baseline = blockTopY + i × winLineHeight + winAscent</code> with <code>blockTopY</code> anchored per <code>VerticalAlign</code> (top = cell.top, bottom = cell.bottom − blockHeight). For Calibri 12 (<code>winAscent = 1950</code>, <code>winDescent = 550</code>, em = 2048) and a 20-px row, this puts the descender flush with the cell floor.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-pre-winmetrics.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before metric-based baseline — digits jammed at cell bottom">
+            <img src="images/baseline/pandas-test1-pre-winmetrics.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before metric-based baseline — digits jammed at cell bottom">
           </div>
           <div class="caption">Before: cell B2 digit "0" extends <code>y = 52..60</code> — only 2 px of descender room. The old formula was <code>baseline = rect.Y + (rect.Height + pxSize)/2 − 2.0</code>, equivalent to "center a pxSize-tall block in the rect, then nudge up 2 px." It under-counted descender room by ~3 px for Calibri 12 because the magic 2 wasn't actually <code>winDescent_px</code>.</div>
         </td>
@@ -797,19 +797,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test1.xlsx Sheet1">
+            <img src="images/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test1.xlsx Sheet1">
           </div>
           <div class="caption">Excel reference: column-header "B" glyph occupies <code>y = 6..15</code> (10 px cap height — matches Calibri 11 pt × 96/72 dpi). Cell B2 "0.98026851" runs <code>x = 133..207</code> (75 px wide × 10 px tall).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after pt→px font scaling">
+            <img src="images/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after pt→px font scaling">
           </div>
           <div class="caption">After: <code>toRendererCommands</code> now multiplies <code>text.FontSize</code> by <code>96/72</code> before calling <code>Renderer.Text.layout</code>. Column-header "B" glyph occupies <code>y = 6..15</code>, cell B2 number runs <code>x = 136..205</code> (70 px wide × 11 px tall). All glyphs sit at the same source-pixel positions as Excel within ±1 px, so the cell-by-cell overlay in this tracker actually shows like-for-like text.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-pre-pt2px.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before pt→px font scaling">
+            <img src="images/baseline/pandas-test1-pre-pt2px.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before pt→px font scaling">
           </div>
           <div class="caption">Before: <code>FontSize</code> reached the renderer as-is, so "11" got interpreted as 11 px of em-square instead of <code>11 pt = 14.67 px</code>. Column-header "B" glyph was only 8 px tall (vs Excel's 10), cell B2 number ran 52 px × 7 px (vs Excel's 75 × 10). Every glyph rendered ~75% the size Excel showed — fine in isolation, useless for overlay comparison.</div>
         </td>
@@ -832,19 +832,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference render of pandas-testmultiindex.xlsx — 62-px columns">
+            <img src="images/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference render of pandas-testmultiindex.xlsx — 62-px columns">
           </div>
           <div class="caption">Excel reference: <code>defaultColWidth="8.85546875"</code> + Calibri 11 → 62 px per column (column boundaries at source <code>x = 25, 87, 149, 211, 273, …</code>). Column-header strip is 20 px tall; row 1 starts at <code>y = 20</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-testmultiindex-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after MDW-by-font-size and 20-px header fix">
+            <img src="images/native/pandas-testmultiindex-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after MDW-by-font-size and 20-px header fix">
           </div>
           <div class="caption">After: <code>charsToPixels</code> reads the workbook's default <code>FontSize</code> (<code>workbook.Styles.[0]</code>) and derives MDW = <code>round(size × 7/11)</code> — 7 for size 11, 8 for size 12. Pandas-testmultiindex columns now render at 62 px (boundaries at source <code>x = 27, 89, 151, 213, 275, …</code>) and row 1 starts at <code>y = 20</code>. With the parity HTML and Excel screenshot sharing the same per-row <code>--s</code> scale, cells now occupy the same on-page rectangle in both columns.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-testmultiindex-pre-mdw.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before MDW-by-font-size fix">
+            <img src="images/baseline/pandas-testmultiindex-pre-mdw.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before MDW-by-font-size fix">
           </div>
           <div class="caption">Before: every fixture used <code>chars * 8.0</code>, so size-11 columns rendered at <code>8.85546875 × 8 ≈ 71</code> px (boundaries at source <code>x = 27, 98, 169, 240, 311, …</code>) — ~14% wider than Excel. The header strip was 18 px, so row 1 started at <code>y = 18</code> while Excel's started at <code>y = 20</code>; the 2-px drift compounded with the column drift to misalign every cell when the two PNGs were overlaid in the parity tracker.</div>
         </td>
@@ -870,19 +870,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference render of pandas-testmultiindex.xlsx with per-cell borders">
+            <img src="images/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference render of pandas-testmultiindex.xlsx with per-cell borders">
           </div>
           <div class="caption">Excel reference: every cell in rows 1–5 / cols A–E has a solid black border (cellXf <code>borderId=1</code> → <code>&lt;border&gt;</code> with <code>&lt;top/&gt;&lt;bottom/&gt;&lt;left/&gt;&lt;right style="thin"/&gt;</code>).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/testmultiindex-after-borders.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after per-cell border rendering">
+            <img src="images/native/testmultiindex-after-borders.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after per-cell border rendering">
           </div>
           <div class="caption">After: <code>parseBorder</code> reads each side's <code>style</code> + <code>&lt;color&gt;</code>; <code>parseCellXf</code> indexes into the borders array via <code>borderId</code>; <code>cellFormatFromStyle</code> maps to <code>BorderStyle option</code>; <code>buildCellPaintItems</code> emits <code>GridLine</code> commands per side at a stroke width chosen by the OOXML style (<code>thin</code> → 1.0 px, <code>medium</code> → 1.5 px, <code>thick</code> → 2.5 px).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/testmultiindex-before-borders.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before per-cell border rendering">
+            <img src="images/baseline/testmultiindex-before-borders.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before per-cell border rendering">
           </div>
           <div class="caption">Before: <code>parseStyles</code> ignored the <code>&lt;borders&gt;</code> block entirely. The cell paint pipeline only drew the default <code>#a6a6a6</code> gridline, so the rendered table looked faint compared to Excel's strong cell grid.</div>
         </td>
@@ -904,19 +904,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-multiindex_no_index_names-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference render of pandas-multiindex_no_index_names.xlsx">
+            <img src="images/excel/pandas-multiindex_no_index_names-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference render of pandas-multiindex_no_index_names.xlsx">
           </div>
           <div class="caption">Excel reference: cols D / E / F / G all render at the same narrow width (≈ 43 px each) per the shared <code>&lt;col min="4" max="7" width="5.41"/&gt;</code> entry; the table stays compact (~340 px total).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/multiindex_no_index_names-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after range fix">
+            <img src="images/native/multiindex_no_index_names-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours after range fix">
           </div>
           <div class="caption">After: <code>columnInfo</code> records both <code>min</code> and <code>max</code>; the runner fans the same width into every column in the range. Cols D–G now share the 43-px width and the table footprint matches Excel.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/multiindex_no_index_names-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before range fix">
+            <img src="images/baseline/multiindex_no_index_names-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.85" alt="Ours before range fix">
           </div>
           <div class="caption">Before: only column D (the <code>min</code>) got the 5.41-char width; cols E / F / G fell back to the 8.43-char sheet default (≈ 67 px each), so the right-hand block widened by ~70 px and broke the spacing of the merged headers above.</div>
         </td>
@@ -938,19 +938,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/poi-47813-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.8" alt="Excel reference render of poi-47813.xlsx">
+            <img src="images/excel/poi-47813-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.8" alt="Excel reference render of poi-47813.xlsx">
           </div>
           <div class="caption">Excel reference: Sine/Cosine columns render with three fixed decimal places (<code>0.000</code>, <code>0.017</code>, <code>0.035</code>, …) per the cellXf's <code>numFmt 164 = "0.000"</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/poi-47813-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.8" alt="Ours after format code support">
+            <img src="images/native/poi-47813-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.8" alt="Ours after format code support">
           </div>
           <div class="caption">After: real Excel format codes pass through a new <code>formatExcelNumber</code> helper that hands the (positive section of the) format string directly to <code>Double.ToString</code>, which natively understands <code>0.000</code>, <code>#,##0.00</code>, <code>0%</code>, scientific, etc. Sine/Cosine values match Excel exactly to 3 decimals.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/poi-47813-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.8" alt="Ours before format code support">
+            <img src="images/baseline/poi-47813-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.8" alt="Ours before format code support">
           </div>
           <div class="caption">Before: <code>cellDisplayText</code> for non-date format codes called <code>Model.formatNumber</code>, which only recognised the legacy <code>currency</code>/<code>percentage</code>/<code>decimal2</code>/<code>number</code>/<code>date</code> tags and fell through to <code>string n</code> for everything else. <code>0.000</code> didn't match any tag → raw <code>G</code> representation → didn't fit the narrow column → <code>fitOrOverflow</code> emitted <code>#####</code>.</div>
         </td>
@@ -972,19 +972,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/phpsp-32chartreadwrite-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.65" alt="Excel reference render of phpsp-32chartreadwrite.xlsx">
+            <img src="images/excel/phpsp-32chartreadwrite-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.65" alt="Excel reference render of phpsp-32chartreadwrite.xlsx">
           </div>
           <div class="caption">Excel reference: merged banners "Financial Period" / "2008" / "2009" render centred and bold; rows 4–7 (Budget / Projected / Actual / Forecast) show the cached <code>RANDBETWEEN</code> values right-aligned with default-width columns. (Excel's PDF print is page-cropped at column I; the 2010 group sits outside the printable width but exists in the file.)</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/phpsp-32chartreadwrite-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after fix">
+            <img src="images/native/phpsp-32chartreadwrite-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after fix">
           </div>
           <div class="caption">After: cached <code>&lt;v&gt;</code> values populate every data cell, merged banners centre, default columns shrink to 8.43 × 8 ≈ 67 px. Now matches Excel's structural layout (same merged regions, same alignment, same bold, same right-aligned numerics). Data values differ because <code>RANDBETWEEN</code> recomputed between Excel's save and ours.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/phpsp-32chartreadwrite-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before fix">
+            <img src="images/baseline/phpsp-32chartreadwrite-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before fix">
           </div>
           <div class="caption">Before: rows 4–7 rendered <em>empty</em> because <code>Xlsx.cellValue</code> matched <code>&lt;f&gt;</code> before <code>&lt;v&gt;</code> and returned <code>Formula expr</code> with no cache; the runner translated that to <code>Formula (expr, Empty)</code> so <code>cellDisplayText</code> drew nothing. Year banners hugged the right edge of their merged ranges (<code>HorizontalAlign = None</code> → General → right). Default columns rendered at 100 px (generic <code>SpreadsheetModel</code> fallback), spreading the table about 1.5× wider than Excel.</div>
         </td>
@@ -1011,19 +1011,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference render of pandas-testmultiindex.xlsx">
+            <img src="images/excel/pandas-testmultiindex-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.85" alt="Excel reference render of pandas-testmultiindex.xlsx">
           </div>
           <div class="caption">Excel reference: row 1 header (<code>c1</code>, <code>a</code>, <code>b</code>, <code>c</code>, <code>d</code>) and column A index values (<code>0</code>, <code>1</code>, <code>2</code>, <code>3</code>) all render bold. Column D dates show <code>########</code> because the formatted <code>yyyy-mm-dd hh:mm:ss</code> string is wider than the column.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-testmultiindex-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after bold font fix">
+            <img src="images/native/pandas-testmultiindex-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after bold font fix">
           </div>
           <div class="caption">After: a font-variant cache picks <code>calibrib.ttf</code> / <code>calibrii.ttf</code> / <code>calibriz.ttf</code> for bold / italic / bold-italic cells, mirroring the WordEditor cache. Header row and column-A index now render bold like Excel.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-testmultiindex-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before bold font fix">
+            <img src="images/baseline/pandas-testmultiindex-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before bold font fix">
           </div>
           <div class="caption">Before: every glyph went through the default Calibri TTF regardless of <code>PaintText.Bold</code>. Column A index values and the header row rendered visually identical to the data rows.</div>
         </td>
@@ -1045,19 +1045,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-times_1900-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-times_1900.xlsx">
+            <img src="images/excel/pandas-times_1900-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-times_1900.xlsx">
           </div>
           <div class="caption">Excel reference: column A renders the elapsed-time serials with full <code>hh:mm:ss.000</code> precision — <code>01:02:03.000</code>, <code>02:45:56.100</code>, <code>04:29:49.200</code>, … through <code>18:20:54.000</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-times_1900-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after tokenizer fix">
+            <img src="images/native/pandas-times_1900-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after tokenizer fix">
           </div>
           <div class="caption">After: a proper character-level tokenizer walks the Excel format, tracks date-vs-time context for the shared <code>m</code> token, maps <code>hh/h</code> to <code>HH/H</code> (or <code>hh/h</code> when <code>am/pm</code> is present), wraps unknown chars as <code>'…'</code> literals, and translates <code>.000</code> to <code>.fff</code>. Output matches Excel within ~1 ms (rounding artifact between Excel's banker's rounding and .NET's truncation).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-times_1900-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before tokenizer fix">
+            <img src="images/baseline/pandas-times_1900-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before tokenizer fix">
           </div>
           <div class="caption">Before: the substring-replace tokenizer plus a <code>runOf</code> helper that used the outer index on a substring (length 0 against the substring) lost both the leading hour digit and every fractional millisecond — every cell rendered as <code>HH:mm:ss.000</code>.</div>
         </td>
@@ -1080,19 +1080,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test_types-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test_types.xlsx">
+            <img src="images/excel/pandas-test_types-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test_types.xlsx">
           </div>
           <div class="caption">Excel reference: <code>DateCol</code> renders as real dates — <code>10/30/2013</code>, <code>10/31/2013</code>, <code>1/1/1905</code>, <code>12/14/2013</code>, <code>3/14/2015</code>.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test_types-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after date interpretation">
+            <img src="images/native/pandas-test_types-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after date interpretation">
           </div>
           <div class="caption">After: <code>isDateFormat</code> / <code>isTimeFormat</code> detect Excel date/time codes; <code>formatExcelDate</code> converts the serial via <code>excelSerialToDate</code> (handles the 1900-leap-year quirk), maps the Excel format tokens to .NET ones, and respects the <code>;@</code> text-section separator. <code>DateCol</code> matches Excel exactly.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test_types-iter5-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before date interpretation">
+            <img src="images/baseline/pandas-test_types-iter5-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before date interpretation">
           </div>
           <div class="caption">Before: <code>cellDisplayText</code> for <code>Number</code> cells called <code>formatNumber</code> with the raw Excel format code. <code>m/d/yyyy;@</code> isn't one of the legacy tags it understood, so the path fell through to <code>string value</code> and printed the raw Excel serials <code>41577</code>, <code>41578</code>, <code>1828</code>, <code>41622</code>, <code>42077</code>.</div>
         </td>
@@ -1116,19 +1116,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render with no active-cell border">
+            <img src="images/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render with no active-cell border">
           </div>
           <div class="caption">Excel reference: cell <code>A1</code> has no green border. The print path strips the active-cell highlight even when <code>A1</code> is the active cell at save time.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test1-iter4.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after selection-snapshot fix">
+            <img src="images/native/pandas-test1-iter4.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after selection-snapshot fix">
           </div>
           <div class="caption">After: the native runner overrides the model's <code>Selection</code> to <code>SingleCell(-1,-1)</code> (off-grid) before rendering, so the green active-cell box never gets drawn. The Fable interactive shell still gets its <code>SingleCell(0,0)</code> default.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-iter4-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before selection-snapshot fix">
+            <img src="images/baseline/pandas-test1-iter4-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before selection-snapshot fix">
           </div>
           <div class="caption">Before: <code>createEmpty</code> always parks the selection at <code>SingleCell(0,0)</code>, so the paint layer drew the green active-cell border around <code>A1</code> in every snapshot.</div>
         </td>
@@ -1150,19 +1150,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference showing trimmed General format numbers">
+            <img src="images/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference showing trimmed General format numbers">
           </div>
           <div class="caption">Excel reference: <code>B2 = 0.98026851</code> (8 significant digits — fits the 88 px column), <code>C2 = 3.68573088</code>, <code>D2 = -0.3642168</code>, <code>E2 = -1.1597381</code>. Excel's General format trims the precision to match the column width.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test1-iter3.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after General format trimming">
+            <img src="images/native/pandas-test1-iter3.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after General format trimming">
           </div>
           <div class="caption">After: <code>cellDisplayText</code> picks the longest <code>G&lt;n&gt;</code> representation that fits the cell width (8 px padding, ~7 px per character), and falls back to <code>#####</code> when even the shortest formatting doesn't fit.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-iter3-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before General format trimming">
+            <img src="images/baseline/pandas-test1-iter3-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before General format trimming">
           </div>
           <div class="caption">Before: <code>displayValue</code> used .NET's <code>n.ToString("G")</code>, which keeps up to 15 significant digits. Numbers like <code>0.980268513777</code> overflowed the cell and spilled visually into the neighbouring column on the left (after right-alignment).</div>
         </td>
@@ -1184,19 +1184,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference with numbers right-aligned">
+            <img src="images/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference with numbers right-aligned">
           </div>
           <div class="caption">Excel reference: column-A integers, columns B–E floats are right-aligned; row-1 header strings (<code>A</code>, <code>B</code>, <code>C</code>, <code>D</code>) are left-aligned.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test1-iter2.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after alignment fix">
+            <img src="images/native/pandas-test1-iter2.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after alignment fix">
           </div>
           <div class="caption">After: alignment falls through to a new <code>generalAlign</code> helper that mirrors Excel's General alignment — <code>Number</code>/<code>Formula</code> → right, <code>Boolean</code>/<code>Error</code> → center, <code>String</code>/<code>Empty</code> → left.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-iter2-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before alignment fix">
+            <img src="images/baseline/pandas-test1-iter2-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before alignment fix">
           </div>
           <div class="caption">Before: <code>alignFromFormat</code> only looked at <code>format.HorizontalAlign</code>; an absent value fell through to <code>AlignLeft</code>. Every numeric cell rendered left-aligned, which never matches Excel.</div>
         </td>
@@ -1218,19 +1218,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test1.xlsx Sheet1 with row/column headers">
+            <img src="images/excel/pandas-test1-sheet1-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-test1.xlsx Sheet1 with row/column headers">
           </div>
           <div class="caption">Excel reports <code>B1</code> at <code>x = 71.25 pt</code> (95 CSS px) with <code>width = 66 pt</code> (88 CSS px). B/C/D/E all use the sheet's <code>&lt;sheetFormatPr baseColWidth="10"&gt;</code> default. Print captured with <code>PageSetup.PrintHeadings = True</code> so row numbers and column letters are visible (column A renders as <code>######</code> because the explicit 11.83-char width is still too narrow for the datetime values).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after sheetFormatPr fix">
+            <img src="images/native/pandas-test1.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after sheetFormatPr fix">
           </div>
           <div class="caption">After: <code>Xlsx.sheetFormatPr</code> seeds the per-sheet default into <code>ColumnWidths</code> for every used column. The data table now extends to ~495 CSS px wide; <code>B1</code> width matches Excel within 0 px and <code>X</code>-origin within 0.4 px (vs 12 px before).</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test1-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before sheetFormatPr fix">
+            <img src="images/baseline/pandas-test1-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before sheetFormatPr fix">
           </div>
           <div class="caption">Before: with no <code>&lt;col&gt;</code> entry our loader fell back to the generic <code>RedBat.Spreadsheet.Model</code> defaults (column 100 px, row 25 px). The data table extends to ~535 CSS px wide; every column past A drifted ~12 px wider than Excel.</div>
         </td>
@@ -1253,19 +1253,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test_decimal-page-1.png" style="--w:1920px; --x:0px; --y:0px; --s:0.65" alt="Excel reference render of pandas-test_decimal.xlsx">
+            <img src="images/excel/pandas-test_decimal-page-1.png" style="--w:1920px; --x:0px; --y:0px; --s:0.65" alt="Excel reference render of pandas-test_decimal.xlsx">
           </div>
           <div class="caption">Excel paints row 1 (Column1..Column6) with the Accent6 fill (<code>#70AD47</code>) and white bold text. Rows 3 and 5 get a very light tint of the same accent (≈<code>#E2EFDA</code>); rows 2 and 4 stay white because <code>showRowStripes="1"</code> bands every other data row.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test_decimal-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after table style support">
+            <img src="images/native/pandas-test_decimal-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours after table style support">
           </div>
           <div class="caption">After: <code>tableAccentColor</code> resolves <code>TableStyleMedium7</code> to the workbook's <code>accent6</code> color. The header row picks up the dark green fill + white bold; <code>tintHex … 0.80</code> lightens the same accent to the banded stripe color on rows 3 and 5. A forced medium <code>#404040</code> border on every table cell keeps the column/row dividers visible against the saturated green where the default <code>#a6a6a6</code> grid stroke would disappear.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test_decimal-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before table style support">
+            <img src="images/baseline/pandas-test_decimal-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.65" alt="Ours before table style support">
           </div>
           <div class="caption">Before: every cell rendered with the default white background — the cellXf entries for the data rows define no fill of their own, so without a table-style overlay there was nothing to apply. Header row was indistinguishable from data rows.</div>
         </td>
@@ -1293,19 +1293,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-test_converters-page-1.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference for pandas-test_converters">
+            <img src="images/excel/pandas-test_converters-page-1.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference for pandas-test_converters">
           </div>
           <div class="caption">Excel renders pandas-test_converters in Arial (slightly wider stems and rounder counters than Calibri). All other Arial-using fixtures share that pattern.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-test_converters-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after per-cell font support">
+            <img src="images/native/pandas-test_converters-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after per-cell font support">
           </div>
           <div class="caption">After: the cell's font name flows from <code>parseFont</code> → <code>CellStyle.FontName</code> → <code>CellFormat.FontName</code> → <code>PaintText.FontName</code>. <code>SpreadsheetGrid.familyKey</code> normalizes the name to one of <code>arial</code>/<code>cambria</code>/<code>times</code>/<code>calibri</code> and picks the matching TTF set from the same <code>fontDirs</code> chain Calibri uses.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-test_converters-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before per-cell font support">
+            <img src="images/baseline/pandas-test_converters-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before per-cell font support">
           </div>
           <div class="caption">Before: <code>parseFont</code> ignored the <code>&lt;name val="..."/&gt;</code> child and the native renderer hard-coded the Calibri TTFs. Every cell rendered in Calibri regardless of what the file requested.</div>
         </td>
@@ -1328,19 +1328,19 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/excel/pandas-times_1900-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-times_1900.xlsx">
+            <img src="images/excel/pandas-times_1900-headings.png" style="--w:1920px; --x:0px; --y:0px; --s:0.70" alt="Excel reference render of pandas-times_1900.xlsx">
           </div>
           <div class="caption">Excel rounds row 2 to <code>01:02:03.000</code>, row 5 to <code>06:13:42.300</code>, row 6 to <code>07:57:35.400</code>. The format code <code>h:mm:ss.000</code> requests three-digit fractional precision, and Excel applies banker's-rounding to that precision before display.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/native/pandas-times_1900-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after millisecond rounding">
+            <img src="images/native/pandas-times_1900-after.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours after millisecond rounding">
           </div>
           <div class="caption">After: every row matches Excel's print — <code>01:02:03.000</code>, <code>06:13:42.300</code>, <code>07:57:35.400</code> and the rest. The 12 rows that Excel shows are all preserved bit-for-bit.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="../artifacts/baseline/pandas-times_1900-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before millisecond rounding">
+            <img src="images/baseline/pandas-times_1900-before.png" style="--w:1100px; --x:0px; --y:0px; --s:0.70" alt="Ours before millisecond rounding">
           </div>
           <div class="caption">Before: rows 2/5/6 rendered as <code>01:02:02.999</code>, <code>06:13:42.299</code>, <code>07:57:35.399</code>. .NET's <code>fff</code> custom-format token truncates ticks past the millisecond boundary rather than rounding, so values that Excel rolls up to the next whole millisecond rendered one tick low.</div>
         </td>
