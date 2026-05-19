@@ -799,7 +799,18 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             let yOffset = if imgRun.Floating then floatingBox.Y - (contentY + (y - settings.PaddingTop)) else 0.0
             let segment = ImageSegment (imgRun.Src, imageX, yOffset, imgWidth, imgHeight, imgRun.Start, imgRun.Floating, imgRun.Wrap, imgRun.RelativeHeight, imgRun.CropLeft, imgRun.CropTop, imgRun.CropRight, imgRun.CropBottom)
             currentSegments <- segment :: currentSegments
-            if imgRun.Floating && WordLayout.Floating.participatesInWrap floatingBox then
+            // The same float may have been pre-placed by an anchor-extended pass
+            // earlier in the document layout. Detect that by matching the image
+            // source against the existing placed boxes; in that case the
+            // obstacle is already in `floatObstacles` with an extended (upward)
+            // top, so just emit the ImageSegment and keep wrapping as before.
+            let alreadyPlaced =
+                imgRun.Floating
+                && placedBoxes |> List.exists (fun b ->
+                    match b.Kind with
+                    | WordLayout.Floating.ImageBox other -> other.Src = imgRun.Src && other.Src <> ""
+                    | _ -> false)
+            if imgRun.Floating && WordLayout.Floating.participatesInWrap floatingBox && not alreadyPlaced then
                 let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox availableWidth floatingBox
                 if WordLayout.Floating.wrapsTopAndBottom floatingBox.Wrap then
                     floatObstacles <- (0.0, obstacleTop, availableWidth, obstacleHeight) :: floatObstacles
@@ -809,9 +820,13 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                     floatObstacles <- (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) :: floatObstacles
                     pendingIntervals <- wrapIntervalsForY y
                     private_setIntervalToFirst ()
+            elif imgRun.Floating && alreadyPlaced then
+                // pendingIntervals already reflects the pre-placed obstacle; no
+                // change needed beyond emitting the segment.
+                ()
             else
                 currentX <- currentX + imgWidth
-            if imgRun.Floating then placedBoxes <- floatingBox :: placedBoxes
+            if imgRun.Floating && not alreadyPlaced then placedBoxes <- floatingBox :: placedBoxes
 
         | TextBuffer.Text textRun ->
             let runText = TextBuffer.slice textRun.Start textRun.Length buffer
@@ -1443,14 +1458,20 @@ let buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tabl
     buildTableLayoutPlanForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableY
 
 /// Layout document blocks. Table cell paragraphs are included so shared hit/cursor logic works inside tables.
-let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
+let private layoutDocumentWithRangeAndInitial
+        (settings: LayoutSettings)
+        (measureText: TextMeasurer)
+        (measureRange: TextRangeMeasurer)
+        (doc: Document)
+        (initialObstacles: FloatingObstacle list)
+        (initialPlacedBoxes: PlacedFloatingBox list) =
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
     let mutable y = settings.PaddingTop
     let mutable layouts = []
     let mutable numberedCounters = Map.empty<string * int, int>
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
-    let mutable floatingObstacles: FloatingObstacle list = []
-    let mutable placedFloatingBoxes: PlacedFloatingBox list = []
+    let mutable floatingObstacles: FloatingObstacle list = initialObstacles
+    let mutable placedFloatingBoxes: PlacedFloatingBox list = initialPlacedBoxes
     let mutable previousParagraphContext: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
     let blocks = doc.Blocks |> List.toArray
 
@@ -1812,7 +1833,63 @@ let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasure
                 resetPreviousParagraph ()
             traceSlow (sprintf "block[%d]:paragraph total lines=%d" index layout.Lines.Length) blockStart
 
-    layouts
+    layouts, placedFloatingBoxes
+
+// Walk a first-pass layout result and shift each placed float's obstacle top
+// up to the top of whichever line first sits "inside" the float's effective
+// vertical claim. Word's effective claim per paragraph is line + spacing-after
+// (the paragraph BLOCK extent), so a heading whose ink ends above the image
+// can still claim the float horizontally if the paragraph's spacing-after
+// stretches its block bottom into the image span. Preceding paragraphs get
+// re-wrapped against that extended top in the second pass.
+let private computeAnchorExtendedObstacles
+        (availableWidth: float)
+        (layouts: BlockLayout list)
+        (placed: PlacedFloatingBox list) : FloatingObstacle list * PlacedFloatingBox list =
+    // For each line, record (lineTop, paragraphBlockBottom). Using block bottom
+    // — which already includes spacing-after — instead of line bottom is what
+    // makes a one-line heading whose ink ends above the float top still count
+    // as overlapping when the float top sits inside the heading's spacing-after.
+    let lineSpans =
+        [ for layout in layouts do
+            let blockBottom = layout.Y + layout.Height
+            for line in layout.Lines do
+                yield line.Y, blockBottom ]
+    let mutable anyExtended = false
+    let extended =
+        placed
+        |> List.choose (fun box ->
+            if not (WordLayout.Floating.participatesInWrap box) then None
+            else
+                let obstacleX, obstacleTop, obstacleWidth, obstacleHeight =
+                    WordLayout.Floating.obstacleForBox availableWidth box
+                let floatBottom = obstacleTop + obstacleHeight
+                let firstOverlap =
+                    lineSpans
+                    |> List.tryFind (fun (lineTop, blockBottom) ->
+                        blockBottom > obstacleTop && lineTop < floatBottom)
+                let extendedTop =
+                    match firstOverlap with
+                    | Some (lineTop, _) when lineTop < obstacleTop ->
+                        anyExtended <- true
+                        lineTop
+                    | _ -> obstacleTop
+                let extendedHeight = obstacleHeight + (obstacleTop - extendedTop)
+                Some (obstacleX, extendedTop, obstacleWidth, extendedHeight))
+    if anyExtended then extended, placed else [], []
+
+let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
+    let firstPass, placedAfterFirst =
+        layoutDocumentWithRangeAndInitial settings measureText measureRange doc [] []
+    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+    let extendedObstacles, prePlacedBoxes =
+        computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
+    if extendedObstacles.IsEmpty then
+        firstPass
+    else
+        let secondPass, _ =
+            layoutDocumentWithRangeAndInitial settings measureText measureRange doc extendedObstacles prePlacedBoxes
+        secondPass
 
 let layoutDocument (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) =
     layoutDocumentWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) doc
