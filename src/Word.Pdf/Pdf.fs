@@ -90,6 +90,7 @@ type PaintPlan = {
 type private TextContext = {
     FontSet: RedBat.Word.ShaperText.FontSet
     FontBytes: Map<string, byte[]>
+    DefaultFamily: string
     mutable PdfFonts: Map<string, PdfFont.TrueTypeFont>
     GlyphText: System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>
     ShapeCache: System.Collections.Generic.Dictionary<string, (Text.Engine.TextFont * Text.Engine.ShapedText) option>
@@ -126,6 +127,7 @@ let private createTextContext (options: RenderOptions) =
     {
         FontSet = RedBat.Word.ShaperText.createFontSet options.DefaultFontFamily shaperFaces
         FontBytes = options.Fonts |> List.map (fun face -> face.FaceName, face.Data) |> Map.ofList
+        DefaultFamily = options.DefaultFontFamily
         PdfFonts = Map.empty
         GlyphText = System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>()
         ShapeCache = System.Collections.Generic.Dictionary<string, (Text.Engine.TextFont * Text.Engine.ShapedText) option>()
@@ -137,6 +139,21 @@ let private createTextContext (options: RenderOptions) =
         TextAllocMs = 0.0
     }
 
+let private fallbackFaceName (textContext: TextContext) (style: WordPaint.TextPaintStyle) =
+    // Mirror WordModelLayout.Font.exactFace's naming scheme, but anchored on
+    // the FontSet's DefaultFamily.  Used when the requested face (e.g.
+    // "Cambria") isn't registered: the shaper falls back to the default
+    // family internally, so we follow the same chain for the PDF font lookup
+    // — keeps shape and embedded-font face in agreement and avoids dropping
+    // into PDF's Helvetica simple path (which paints spaces at Helvetica
+    // metrics while layout positioned glyphs from the fallback shape).
+    let defaultFamily = textContext.DefaultFamily
+    match style.Bold, style.Italic with
+    | true, true -> defaultFamily + "-BoldItalic"
+    | true, false -> defaultFamily + "-Bold"
+    | false, true -> defaultFamily + "-Italic"
+    | false, false -> defaultFamily
+
 let private tryGetPdfFont (textContext: TextContext) faceName =
     match Map.tryFind faceName textContext.PdfFonts with
     | Some font -> Some font
@@ -147,6 +164,16 @@ let private tryGetPdfFont (textContext: TextContext) faceName =
             let font = PdfFont.parseTrueType bytes
             textContext.PdfFonts <- textContext.PdfFonts |> Map.add faceName font
             Some font
+
+let private tryGetPdfFontWithFallback (textContext: TextContext) (style: WordPaint.TextPaintStyle) faceName =
+    match tryGetPdfFont textContext faceName with
+    | Some font -> Some (faceName, font)
+    | None ->
+        let fallback = fallbackFaceName textContext style
+        if fallback = faceName then None
+        else
+            tryGetPdfFont textContext fallback
+            |> Option.map (fun font -> fallback, font)
 
 let private textStyleKey (style: TextStyle) =
     String.concat "|" [
@@ -345,13 +372,13 @@ let private glyphKernPairs (font: PdfFont.TrueTypeFont) (fontSize: float) (glyph
 let private embeddedTextOps (textContext: TextContext) pageTop pageHeight text (style: WordPaint.TextPaintStyle) x baseline width =
     let yPdf y = pageHeight - (y - pageTop)
     let textStyle = paintStyleToTextStyle style
-    let faceName = rendererPdfFaceName style
+    let requestedFace = rendererPdfFaceName style
     let shapeStart = timingStart ()
-    let pdfFont = tryGetPdfFont textContext faceName
+    let pdfFontResolved = tryGetPdfFontWithFallback textContext style requestedFace
     let shaped = shapeTextCached textContext text textStyle
     if traceTimingEnabled then textContext.TextShapeMs <- textContext.TextShapeMs + (nowMs () - shapeStart)
-    match pdfFont, shaped with
-    | Some pdfFont, Some (_, shapedText) ->
+    match pdfFontResolved, shaped with
+    | Some (faceName, pdfFont), Some (_, shapedText) ->
         let horizontalScale = if width > 0.0 && shapedText.TotalAdvance > 0.0 then width / shapedText.TotalAdvance else 1.0
         let cacheKey = sprintf "%s|%s|%.4f|%s" faceName (textStyleKey textStyle) width text
         let runStart = timingStart ()
