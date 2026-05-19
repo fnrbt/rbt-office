@@ -890,11 +890,18 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                                 elif hasMixedTextMetrics currentSegments then mixedMetricsLineFitSafety
                                 else lineFitSafety
 
-                            if currentX + fitWidth > currentLineEnd - fullFitSafety && not currentSegments.IsEmpty then
+                            let overflows = currentX + fitWidth > currentLineEnd - fullFitSafety
+                            if overflows && not currentSegments.IsEmpty then
                                 flushLine ()
+                            elif overflows && currentSegments.IsEmpty && not pendingIntervals.IsEmpty && not (remaining.Contains("\t")) then
+                                // Narrow strip at this y can't hold the next whole word, but
+                                // there's another strip at the same y — leave this one empty
+                                // and try the next, matching Word's wrap-around-float behavior
+                                // instead of force-breaking the word inside the narrow strip.
+                                private_setIntervalToFirst ()
                             else
                                 let segmentText, segmentWidth =
-                                    if currentX + fitWidth > currentLineEnd - fullFitSafety && not (remaining.Contains("\t")) then
+                                    if overflows && not (remaining.Contains("\t")) then
                                         let maxSegmentWidth = max 1.0 (currentLineEnd - currentX)
                                         let take = fittingLength consumed remaining.Length maxSegmentWidth
                                         remaining.Substring(0, take), measureRange displayRunText displayRunStyle consumed take
