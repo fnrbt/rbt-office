@@ -423,7 +423,12 @@ let private wordLineHeight textStyle fontSize lineSpacing =
             wordSingleLineBoxFactor
         else
             lineBoxFactorForTextStyle textStyle
-    fontSize * lineSpacing * factor
+    // fontSize comes out of DocumentProcessors.fontSizeToPoints as points,
+    // but Layout works in CSS-pixels at 96 DPI (margins are imported via
+    // twips/15 i.e. directly to px). Convert the result so we don't end up
+    // with 75%-of-expected line cells. tableCellLineBoxFontSize already
+    // does this conversion for table-cell paragraphs with small fonts.
+    fontSize * lineSpacing * factor * 96.0 / 72.0
 
 let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing =
     let automatic =
