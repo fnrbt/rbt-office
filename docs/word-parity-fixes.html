@@ -153,6 +153,139 @@
     <tbody>
       <tr>
         <td>
+          <strong>fldSimple <code>w:instr</code> read via prefixed attribute name</strong>
+          <span class="meta">Repro: <code>docx4j-mergefield.docx</code> (every <code>«MERGEFIELD»</code> placeholder in this fixture)</span>
+          <span class="meta">Real fixture class: documents that use the simple-field syntax <code>&lt;w:fldSimple w:instr="..."&gt;</code> (as opposed to the three-part <code>w:fldChar</code> form) for fields like MERGEFIELD, PAGE, DATE.</span>
+          <span class="meta">Paths checked: PDF backend (DocxReader is the parse layer for every renderer).</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/fldsimple-word.png" style="--w:1190px; --x:80px; --y:120px; --s:0.55" alt="Word reference: «Kundenname» placeholders">
+          </div>
+          <div class="caption">Word shows the cached field result inside each fldSimple — for unbound MERGEFIELDs that's the <code>«FieldName»</code> placeholder in guillemets.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/fldsimple-after.png" style="--w:1190px; --x:80px; --y:120px; --s:0.55" alt="After: placeholders rendered">
+          </div>
+          <div class="caption">After: <code>simpleField</code> reads the instruction code with <code>Xml.attr "w:instr"</code> first, then falls back to <code>"instr"</code> for parsers that normalise the prefix away. The cached <code>w:t</code> result (eg. <code>«Kundenname»</code>) now flows through <code>FieldRef.Result</code> into <code>extractRunText</code>. ink-XOR: <code>73.60% → 66.03%</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/fldsimple-before.png" style="--w:1190px; --x:80px; --y:120px; --s:0.55" alt="Before: placeholders missing">
+          </div>
+          <div class="caption">Before: <code>Xml.attr "instr" fldNode</code> looked up the bare name <code>instr</code> in the parsed attribute map. The docx serialises the attribute as <code>w:instr</code> (full prefix) and <code>Xml.attr</code> doesn't strip namespaces, so the lookup returned <code>None</code> and <code>simpleField</code>'s entire <code>Option.map</code> body was skipped — every fldSimple silently dropped, including its cached result.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>simpleField</code> (<code>src/Office.Formats/src/DocxReader.fs</code>), try the prefixed attribute name first.</p>
+          <ul>
+            <li>The bug only affected the <code>w:fldSimple</code> branch; the full <code>w:fldChar</code> (begin/separate/end) path was already going through <code>fieldData</code> which uses the prefixed names correctly.</li>
+            <li>Regression guard: every other repro (float, table, docx4j-tables 1/2/3, heading-cambria-font-wrap, sample-docx, invoice, toc, conventions) ink-XOR unchanged.</li>
+            <li>Follow-up: <code>Xml.attr</code> could be replaced by a namespace-aware lookup so this kind of bug doesn't recur on other prefixed attributes; left for a focused refactor.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Comment body no longer splattered into inline run text</strong>
+          <span class="meta">Repro: <code>docx4j-invoice.docx</code> (any document with <code>w:commentReference</code> markers in the run flow)</span>
+          <span class="meta">Real fixture class: docs that have Word review comments attached to runs in the body, where the comment text lives in <code>word/comments.xml</code> and the body references it via <code>&lt;w:commentReference w:id="N"/&gt;</code>.</span>
+          <span class="meta">Paths checked: PDF backend (the import path that goes through <code>EditorProcessor.extractRunText</code>).</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/comment-inline-word.png" style="--w:1190px; --x:60px; --y:80px; --s:0.55" alt="Word reference: invoice without comment body inline">
+          </div>
+          <div class="caption">Word's print/PDF rendering suppresses comments by default — the body flow contains only the document text.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/comment-inline-after.png" style="--w:1190px; --x:60px; --y:80px; --s:0.55" alt="After: clean body">
+          </div>
+          <div class="caption">After: <code>extractRunText</code> returns <code>""</code> for <code>CommentReference</code>. The editor view can still surface the comment by reading <code>CommentId</code>/<code>CommentText</code> off the run; the rendered body stays clean. ink-XOR: <code>88.77% → 86.67%</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/comment-inline-before.png" style="--w:1190px; --x:60px; --y:80px; --s:0.55" alt="Before: purple comment body inline">
+          </div>
+          <div class="caption">Before: the <code>CommentReference id</code> branch of <code>extractRunText</code> looked up the comment in the comments map and returned <code>comment.InitialText</code> (or a <code>[Comment N]</code> placeholder) as the run's visible string. The whole comment body — annotation text like <em>"The table row is surrounded by a content control..."</em> — rendered inline, interrupting the document flow.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>extractRunText</code> (<code>src/Office.Formats/src/DocumentProcessors.fs</code>), <code>CommentReference _ -> ""</code>.</p>
+          <ul>
+            <li>The editor's hover/popover for comments reads <code>CommentId</code>, <code>CommentText</code>, <code>CommentAuthor</code>, <code>CommentDate</code> off the editor run — already populated upstream; nothing about the comment metadata flow changed.</li>
+            <li>Regression: docx4j-invoice ink-XOR dropped <code>88.77% → 86.67%</code>; every other repro unchanged.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>PDF font lookup falls back to DefaultFamily when the requested face is unregistered</strong>
+          <span class="meta">Repro: <code>docx4j-sample-docx.docx</code> Title style (Cambria) — and any docx whose styles reference fonts our PDF backend doesn't have face files for.</span>
+          <span class="meta">Real fixture class: documents that reference fonts shipped only inside <code>.ttc</code> collections (regular Cambria lives in <code>cambria.ttc</code>; our loader registers separate <code>.ttf</code> files only).</span>
+          <span class="meta">Paths checked: PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/font-fallback-word.png" style="--w:1190px; --x:60px; --y:80px; --s:0.55" alt="Word reference: Docx sample document title">
+          </div>
+          <div class="caption">Word renders the Title style in Cambria with proper inter-word spacing.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/font-fallback-after.png" style="--w:1190px; --x:60px; --y:80px; --s:0.55" alt="After: title with spaces">
+          </div>
+          <div class="caption">After: the embedded-font branch runs with the resolved fallback face (Calibri here). Layout and Paint agree on the active font; "Docx sample document" renders with the right inter-word advance. The glyph shapes are still Calibri (sans-serif) instead of Cambria (serif) — a future fix would extract regular Cambria from <code>cambria.ttc</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/font-fallback-before.png" style="--w:1190px; --x:60px; --y:80px; --s:0.55" alt="Before: Docxsampledocument">
+          </div>
+          <div class="caption">Before: <code>tryGetPdfFont "Cambria"</code> returned <code>None</code> (our font registry only has Cambria-Bold/Italic/BoldItalic), so <code>embeddedTextOps</code> took the simple branch and emitted <code>SetFont "Helvetica" + ShowText text</code>. Layout had positioned segments using Calibri advances (ShaperText.tryFindFont's fallback chain). Helvetica's wider character bodies overran the layout-assigned segment positions and ate the inter-word spaces — "Docx sample document" came out as "Docxsampledocument".</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>tryGetPdfFontWithFallback</code> in <code>Pdf.fs</code>. If the requested face isn't in <code>FontBytes</code>, fall back to <code>{DefaultFamily}{Bold/Italic suffix}</code>, mirroring <code>ShaperText.tryFindFont</code>'s own fallback chain. The embedded-font path then runs with the same face the shaper used; <code>horizontalScale</code> stays at <code>1.0</code> and glyphs line up with the layout positions.</p>
+          <ul>
+            <li>Whole-page ink-XOR for docx4j-sample-docx is still <code>98.10%</code> because the title's serif shape is being painted in sans-serif Calibri. The structural bug (collapsed spaces) is fixed; the typography parity will move when <code>.ttc</code> loading lands.</li>
+            <li>Regression: every other repro unchanged or within ±0.03pp.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>PDF substring measurer aligned with browser + paint backend</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-border-empty-cell-height.docx</code> (any fixture whose paragraphs break mid-word inside a kerning pair)</span>
+          <span class="meta">Real fixture class: tables/paragraphs where layout splits a token at a letter boundary that has a non-zero kern adjustment (eg. AV, VA, Wo). Word breaks at spaces normally, where the adjustment is zero, so this surfaces only in narrow strips or character-level force breaks.</span>
+          <span class="meta">Paths checked: PDF backend.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/measurer-alignment-word.png" style="--w:1190px; --x:40px; --y:60px; --s:0.55" alt="Word reference: border empty-cell-height">
+          </div>
+          <div class="caption">Word reference rendering.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/measurer-alignment-after.png" style="--w:1190px; --x:40px; --y:60px; --s:0.55" alt="After: aligned measurer">
+          </div>
+          <div class="caption">After: <code>createContextRangeMeasurer</code> uses the same <code>rangeMeasurerFromTextMeasurer</code> pattern as the browser renderer — extract the substring, shape it standalone, return that <code>TotalAdvance</code>. Now <code>horizontalScale</code> is <code>1.0</code> on every segment and glyphs render at their true width. ink-XOR: <code>87.43% → 76.53%</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/measurer-alignment-before.png" style="--w:1190px; --x:40px; --y:60px; --s:0.55" alt="Before: stretched glyphs at mid-word splits">
+          </div>
+          <div class="caption">Before: the PDF backend's range measurer shaped the FULL run text and indexed into <code>shapedText.PrefixAdvances</code> via <code>Text.Engine.measureRange</code> (in-string measurement, kerning context preserved across the boundary). The PDF text painter, however, shaped each segment standalone and used that <code>TotalAdvance</code> to compute <code>horizontalScale = layoutWidth / standaloneAdvance</code>. For mid-word splits at kerning pairs the two disagreed by ~0.6 px and the painter compressed or stretched the glyphs to fit the layout-assigned width.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>createContextRangeMeasurer</code> (<code>src/Word.Pdf/Pdf.fs</code>), shape the substring standalone via <code>createContextMeasurer textContext</code> — exactly what the browser renderer and the paint backend do.</p>
+          <ul>
+            <li>The fix doesn't change anything for word-boundary breaks (kern at spaces is zero in every Latin font we test), but eliminates a class of off-by-fractions bugs at mid-word splits.</li>
+            <li>Architectural alignment: all three consumers (browser layout, PDF measurer, PDF text paint) now use one definition of "the width of this substring."</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Default paragraph style applied when <code>w:pStyle</code> is absent</strong>
           <span class="meta">Repro: <code>docx4j-tables.docx</code> page 2 (and every body paragraph in any docx whose styles.xml declares a non-trivial Normal style)</span>
           <span class="meta">Real fixture class: documents where styles.xml's default paragraph style (<code>&lt;w:style w:default="1" w:styleId="Normal"&gt;</code>) carries explicit <code>w:spacing</code> / <code>w:line</code> / <code>w:ind</code> values that should apply to <em>every</em> paragraph &mdash; including ones without their own <code>w:pStyle</code> element.</span>
