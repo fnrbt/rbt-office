@@ -460,15 +460,10 @@ let private paragraphCommandsWithBaselineOffset baselineOffset (settings: Layout
                 if style.Strike then
                     commands <- commands @ [DrawUnderline (paintStyle.Color, textX, textBaseline - WordLayout.Text.canvasStrikethroughOffset style, width)]
 
-            | ImageSegment (src, x, yOffset, width, height, _, floating, _, _, cropLeft, cropTop, cropRight, cropBottom) ->
+            | ImageSegment (src, x, yOffset, width, height, _, _, _, _, cropLeft, cropTop, cropRight, cropBottom) ->
                 let imageX = settings.PaddingLeft + x + lineAlignmentOffset
                 let imageY = line.Y + yOffset
                 commands <- commands @ [DrawImage (src, imageX, imageY, width, height, cropLeft, cropTop, cropRight, cropBottom)]
-                if floating then
-                    commands <- commands @ [
-                        StrokeRect ("#B45309", 1.5, imageX, imageY, width, height)
-                        FillRect ("#F59E0B", imageX, imageY, min 18.0 width, min 4.0 height)
-                    ]
 
     commands
 

@@ -152,21 +152,21 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="images/word/float-image-wrap-square-word.png" style="--w:1224px; --x:80px; --y:120px; --s:0.55" alt="Word reference wrap-square float">
+            <img src="images/word/float-image-wrap-square-word.png" style="--w:1224px; --x:40px; --y:63px; --s:0.55" alt="Word reference wrap-square float">
           </div>
           <div class="caption">Word's heading sits over the image top and Word splits it into <code>Float</code> | <code>wrap-square repro</code> around the picture. The body wraps on both sides, with short tokens (<code>This</code>, <code>side.</code>, <code>line</code>, <code>far the</code>, <code>inside</code>) fitting in the narrow left strip.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="images/baseline/float-image-wrap-square-pdf-before.png" style="--w:1224px; --x:80px; --y:120px; --s:0.55" alt="Before wrap-square float rendering fixes">
+            <img src="images/baseline/float-image-wrap-square-pdf-before.png" style="--w:1224px; --x:40px; --y:63px; --s:0.55" alt="Before wrap-square float rendering fixes">
           </div>
-          <div class="caption">Before: PDF heading collapses to <code>Floatwrap-squarerepro</code> (no Calibri Light face registered, fell through the simple-literal text path), the image renders at <code>~75%</code> of its declared size (Layout fed pt-as-px through Paint, then <code>scalePageOps</code> scaled the page a second time), and the body wraps on the right side only because <code>wrapBoundsForY</code> collapsed each obstructed y to a single range.</div>
+          <div class="caption">Before: PDF heading collapses to <code>Floatwrap-squarerepro</code> (no Calibri Light face registered, fell through the simple-literal text path); the picture renders as an empty stroked rectangle (<code>pdf-runner</code> never decoded the data URL into image bytes); the image is at <code>~75%</code> of its declared size (Layout fed pt-as-px through Paint, <code>scalePageOps</code> scaled the page a second time); and the body wraps on the right side only because <code>wrapBoundsForY</code> collapsed each obstructed y to a single range.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="images/browser/float-image-wrap-square-pdf-after.png" style="--w:1224px; --x:80px; --y:120px; --s:0.55" alt="After wrap-square float rendering fixes">
+            <img src="images/browser/float-image-wrap-square-pdf-after.png" style="--w:1224px; --x:40px; --y:63px; --s:0.55" alt="After wrap-square float rendering fixes">
           </div>
-          <div class="caption">After: clean Calibri Light heading, image at the authored <code>1.6&quot;&times;1.2&quot;</code> (<code>233&times;175px</code> at 144 DPI vs Word's <code>231&times;174px</code>), and body text wraps on both sides &mdash; left strip carries <code>This</code>, <code>floating</code>, <code>overlaps</code>, <code>we can</code>, <code>whether</code>, <code>image.</code>, <code>across</code>, <code>drown</code>, <code>the full</code>. The PDF shaper still doesn't split the heading like Word does (heading line height differs &mdash; tracked separately).</div>
+          <div class="caption">After: clean Calibri Light heading, picture filled with the embedded PNG bytes (<code>pdf-runner</code> now decodes each <code>doc.Images</code> data URL via <code>FsPdf.Image.fromDataUrl</code> and registers them on the PDF backend), image at the authored <code>1.6&quot;&times;1.2&quot;</code> (<code>233&times;175px</code> at 144 DPI vs Word's <code>231&times;174px</code>), and body wraps on both sides &mdash; left strip carries <code>This</code>, <code>floating</code>, <code>overlaps</code>, <code>we can</code>, <code>whether</code>, <code>image.</code>, <code>across</code>, <code>drown</code>, <code>the full</code>. We still don't split the heading like Word does (heading line height differs &mdash; tracked separately).</div>
         </td>
         <td>
           <p><strong>Fix:</strong> three independent precondition fixes for float-layout parity work.</p>
@@ -189,21 +189,21 @@
         </td>
         <td>
           <div class="zoom">
-            <img src="images/word/float-image-wrap-square-word.png" style="--w:1224px; --x:80px; --y:120px; --s:0.55" alt="Word reference both-sides float wrap">
+            <img src="images/word/float-image-wrap-square-word.png" style="--w:1224px; --x:40px; --y:63px; --s:0.55" alt="Word reference both-sides float wrap">
           </div>
           <div class="caption">Word fits short whole words (<code>This</code>, <code>side.</code>, <code>line</code>, <code>far the</code>, <code>inside</code>) in the narrow left strip while the rest of the body flows on the right of the picture.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="images/baseline/float-image-wrap-square-browser-before.png" style="--w:900px; --x:60px; --y:90px; --s:0.75" alt="Before both-sides float wrap fix">
+            <img src="images/baseline/float-image-wrap-square-browser-before.png" style="--w:900px; --x:40px; --y:63px; --s:0.825" alt="Before both-sides float wrap fix">
           </div>
           <div class="caption">Before: <code>wrapBoundsForY</code> collapsed each obstructed y to a single <code>(start, end)</code> range by picking whichever side held the obstacle midpoint on the wider half, so only the right strip ever received text. The narrow left strip stayed empty.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="images/browser/float-image-wrap-square-browser-after.png" style="--w:900px; --x:60px; --y:90px; --s:0.75" alt="After both-sides float wrap fix">
+            <img src="images/browser/float-image-wrap-square-browser-after.png" style="--w:900px; --x:40px; --y:63px; --s:0.825" alt="After both-sides float wrap fix">
           </div>
-          <div class="caption">After: the layout walker keeps a <code>pendingIntervals</code> queue. Each <code>flushLine</code> pops the next free strip at the current y before deciding whether to advance y, so text flows left strip &rarr; right strip on the same visual line. Browser canvas shaping word-aligns: left strip shows <code>This</code>, <code>side.</code>, <code>line</code>, <code>rectang</code>, <code>so we</code>, <code>pushes</code> &mdash; very close to Word's pattern.</div>
+          <div class="caption">After: the layout walker keeps a <code>pendingIntervals</code> queue. Each <code>flushLine</code> pops the next free strip at the current y before deciding whether to advance y, so text flows left strip &rarr; right strip on the same visual line. Browser canvas shaping word-aligns: left strip shows <code>This</code>, <code>side.</code>, <code>line</code>, <code>rectang</code>, <code>so we</code>, <code>pushes</code> &mdash; close to Word's <code>This</code>, <code>side.</code>, <code>line</code>, <code>far the</code>, <code>inside</code>. Image renders filled red because the browser canvas always drew the data URL directly via <code>ctx.drawImage</code>.</div>
         </td>
         <td>
           <p><strong>Fix:</strong> generalise the obstacle-aware wrap from a single available range to a list of free intervals.</p>

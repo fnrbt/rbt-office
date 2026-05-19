@@ -98,13 +98,32 @@ let private pdfOptions () : RedBat.Word.Pdf.RenderOptions =
         Images = []
     }
 
-let private writeProjectPdf (inputPath: string) (outputPath: string) =
-    let doc =
-        match DocxReader.loadBytesNative (File.ReadAllBytes inputPath) with
-        | Some parsed -> NativeRunner.importDoc parsed
-        | None -> failwithf "Could not parse DOCX: %s" inputPath
+let private decodeImageResources (wordDoc: DocxReader.WordDocument) : RedBat.Word.Pdf.ImageResource list =
+    wordDoc.Images
+    |> Map.toList
+    |> List.choose (fun (_, dataUrl) ->
+        match FsPdf.Image.fromDataUrl dataUrl with
+        | Ok info ->
+            Some ({
+                Source = dataUrl
+                Width = info.Width
+                Height = info.Height
+                ColorSpace = info.ColorSpace
+                BitsPerComponent = info.BitsPerComponent
+                Data = info.Data
+                Filter = info.Filter
+            }: RedBat.Word.Pdf.ImageResource)
+        | Error _ -> None)
 
-    let bytes = RedBat.Word.Pdf.toBytes (pdfOptions()) doc
+let private writeProjectPdf (inputPath: string) (outputPath: string) =
+    let raw = File.ReadAllBytes inputPath
+    let wordDoc =
+        match DocxReader.loadBytesNative raw with
+        | Some parsed -> parsed
+        | None -> failwithf "Could not parse DOCX: %s" inputPath
+    let doc = NativeRunner.importDoc wordDoc
+    let options = { pdfOptions() with Images = decodeImageResources wordDoc }
+    let bytes = RedBat.Word.Pdf.toBytes options doc
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, bytes)
     printfn "pdf runner ok: %s -> %s (%d bytes)" inputPath outputPath bytes.Length
