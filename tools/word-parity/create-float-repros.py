@@ -290,9 +290,163 @@ def build_wrap_square_repro() -> tuple[str, str, list]:
     return "float-image-wrap-square.docx", body, images
 
 
+def build_wrap_top_and_bottom_repro() -> tuple[str, str, list]:
+    """wrapTopAndBottom: text appears strictly above and below the picture, never
+    on its sides. Validates the existing Floating.wrapsTopAndBottom branch on
+    a real fixture instead of dead code.
+
+    Geometry:
+      - Same letter page + 1" margins.
+      - Image 3.5" x 1.0" — wide enough that wrap-around-sides would be
+        silly, so wrapTopAndBottom is the natural choice.
+      - Anchored 1.5" right of page-left and 2.2" below page-top — sits
+        inside the body paragraph's vertical span.
+    """
+    image_width_emu = int(3.5 * EMU_PER_INCH)
+    image_height_emu = int(1.0 * EMU_PER_INCH)
+    pos_h_emu = int(1.5 * EMU_PER_INCH)
+    pos_v_emu = int(2.2 * EMU_PER_INCH)
+
+    drawing_run = anchored_image_xml(
+        "rId100", "Top-and-bottom repro image",
+        width_emu=image_width_emu,
+        height_emu=image_height_emu,
+        pos_h_emu=pos_h_emu,
+        pos_v_emu=pos_v_emu,
+        wrap="wrapTopAndBottom",
+    )
+
+    body = (
+        heading("Float wrap-top-and-bottom repro")
+        + '<w:p>'
+        + drawing_run
+        + text_run(
+            "This paragraph should appear entirely above the anchored picture "
+            "because wrapTopAndBottom forbids any text alongside the image. "
+            "We need enough text here that, without the top-and-bottom rule, "
+            "the body would naturally flow into the same vertical span as the "
+            "picture. With the rule applied, Word reserves the full vertical "
+            "band occupied by the image and pushes the rest of the paragraph "
+            "below it. After the image clears, lines resume the full body width."
+        )
+        + '</w:p>'
+        + '<w:p>'
+        + text_run(
+            "A trailing paragraph confirms the body continues at full width "
+            "underneath the picture without any wrapping artifacts."
+        )
+        + '</w:p>'
+    )
+
+    png = make_solid_png(width=336, height=96, rgb=(70, 140, 200))
+    images = [("rId100", "media/image1.png", png)]
+    return "float-image-wrap-top-bottom.docx", body, images
+
+
+def build_behind_doc_repro() -> tuple[str, str, list]:
+    """behindDoc=1: picture sits behind the text layer, no wrap at all. The
+    body paragraph flows full-width over the picture as if it were a
+    background watermark. Validates participatesInWrap returning false.
+    """
+    image_width_emu = int(2.5 * EMU_PER_INCH)
+    image_height_emu = int(1.8 * EMU_PER_INCH)
+    pos_h_emu = int(2.0 * EMU_PER_INCH)
+    pos_v_emu = int(1.6 * EMU_PER_INCH)
+
+    drawing_run = anchored_image_xml(
+        "rId100", "Behind-doc repro image",
+        width_emu=image_width_emu,
+        height_emu=image_height_emu,
+        pos_h_emu=pos_h_emu,
+        pos_v_emu=pos_v_emu,
+        wrap="wrapNone",
+        behind_doc="1",
+    )
+
+    body = (
+        heading("Float behindDoc repro")
+        + '<w:p>'
+        + drawing_run
+        + text_run(WRAP_PARAGRAPH_TEXT)
+        + '</w:p>'
+        + '<w:p>'
+        + text_run(
+            "A trailing paragraph confirms full-width flow continues over the "
+            "watermark picture without wrapping."
+        )
+        + '</w:p>'
+    )
+
+    # Pale color so text on top stays readable.
+    png = make_solid_png(width=240, height=180, rgb=(230, 220, 180))
+    images = [("rId100", "media/image1.png", png)]
+    return "float-image-behind-doc.docx", body, images
+
+
+def build_body_relative_posv_repro() -> tuple[str, str, list]:
+    """positionV relativeFrom="paragraph" anchors the image's top to an offset
+    down from the containing paragraph's own top, not the page top. Exercises
+    the non-page-relative branch of imageCanvasBox and shows whether the
+    two-pass anchor-extension correctly resolves an image whose position
+    depends on layout-time paragraph y values.
+
+    Geometry:
+      - posH paragraph-relative, 0.4" right of paragraph start.
+      - posV paragraph-relative, 0.25" down from the paragraph's top.
+      - 1.4"x1.0" image, wrapSquare on both sides.
+    """
+    image_width_emu = int(1.4 * EMU_PER_INCH)
+    image_height_emu = int(1.0 * EMU_PER_INCH)
+    pos_h_emu = int(0.4 * EMU_PER_INCH)
+    pos_v_emu = int(0.5 * EMU_PER_INCH)
+
+    drawing_run = anchored_image_xml(
+        "rId100", "Paragraph-relative posV image",
+        width_emu=image_width_emu,
+        height_emu=image_height_emu,
+        pos_h_emu=pos_h_emu,
+        pos_v_emu=pos_v_emu,
+        wrap="wrapSquare",
+        relative_from_h="paragraph",
+        relative_from_v="paragraph",
+    )
+
+    body = (
+        heading("Float paragraph-relative posV repro")
+        + '<w:p>'
+        + drawing_run
+        + text_run(
+            "This paragraph is the anchor for an image whose vertical and "
+            "horizontal offsets are measured from the paragraph itself, not "
+            "from the page. Word should still wrap the body around the image "
+            "the same way as page-relative, but our renderer needs to resolve "
+            "the position at layout time after the paragraph's own y is "
+            "known. Enough text follows so multiple lines have to wrap."
+        )
+        + '</w:p>'
+        + '<w:p>'
+        + text_run(
+            "A trailing paragraph confirms the body resumes full width once "
+            "the image clears above."
+        )
+        + '</w:p>'
+    )
+
+    png = make_solid_png(width=210, height=150, rgb=(120, 180, 120))
+    images = [("rId100", "media/image1.png", png)]
+    return "float-image-paragraph-posv.docx", body, images
+
+
 def main():
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("tests/repros/word")
-    repros = [build_wrap_square_repro()]
+    repros = [
+        build_wrap_square_repro(),
+        build_wrap_top_and_bottom_repro(),
+        build_behind_doc_repro(),
+        # build_body_relative_posv_repro(),  # Word VBS chokes on this docx for
+        # reasons that aren't obvious — Word opens it but the print-to-PDF task
+        # exits without creating the file. Re-enable when a workaround exists.
+    ]
     for name, body, images in repros:
         path = out_dir / name
         write_docx(path, body, images)

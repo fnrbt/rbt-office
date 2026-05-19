@@ -825,6 +825,12 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                 // pendingIntervals already reflects the pre-placed obstacle; no
                 // change needed beyond emitting the segment.
                 ()
+            elif imgRun.Floating then
+                // Floating but does not participate in wrap (behindDoc=true,
+                // wrapNone). The picture is painted at its absolute anchor
+                // position; the layout cursor does not reserve any space for
+                // it on this line.
+                ()
             else
                 currentX <- currentX + imgWidth
             if imgRun.Floating && not alreadyPlaced then placedBoxes <- floatingBox :: placedBoxes
@@ -1881,18 +1887,29 @@ let private computeAnchorExtendedObstacles
                 let obstacleX, obstacleTop, obstacleWidth, obstacleHeight =
                     WordLayout.Floating.obstacleForBox availableWidth box
                 let floatBottom = obstacleTop + obstacleHeight
-                let firstOverlap =
-                    lineSpans
-                    |> List.tryFind (fun (lineTop, blockBottom) ->
-                        blockBottom > obstacleTop && lineTop < floatBottom)
-                let extendedTop =
-                    match firstOverlap with
-                    | Some (lineTop, _) when lineTop < obstacleTop ->
-                        anyExtended <- true
-                        lineTop
-                    | _ -> obstacleTop
-                let extendedHeight = obstacleHeight + (obstacleTop - extendedTop)
-                Some (obstacleX, extendedTop, obstacleWidth, extendedHeight))
+                if WordLayout.Floating.wrapsTopAndBottom box.Wrap then
+                    // For wrapTopAndBottom we never widen the obstacle upward
+                    // to the anchor paragraph's first wrap line: the obstacle
+                    // already forbids any text on its vertical span (it
+                    // claims the full available width), and pulling the top
+                    // up would shove preceding/anchor lines below the
+                    // picture even when they'd naturally fit above. Just
+                    // widen the in-place obstacle horizontally so the second
+                    // pass treats it as full-width without re-adding.
+                    Some (0.0, obstacleTop, availableWidth, obstacleHeight)
+                else
+                    let firstOverlap =
+                        lineSpans
+                        |> List.tryFind (fun (lineTop, blockBottom) ->
+                            blockBottom > obstacleTop && lineTop < floatBottom)
+                    let extendedTop =
+                        match firstOverlap with
+                        | Some (lineTop, _) when lineTop < obstacleTop ->
+                            anyExtended <- true
+                            lineTop
+                        | _ -> obstacleTop
+                    let extendedHeight = obstacleHeight + (obstacleTop - extendedTop)
+                    Some (obstacleX, extendedTop, obstacleWidth, extendedHeight))
     if anyExtended then extended, placed else [], []
 
 let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
