@@ -129,6 +129,16 @@
     area rather than full-page screenshots. Baseline images live under <code>artifacts/baseline/</code> and
     are intentionally not committed.
   </p>
+  <p class="lede">
+    <strong>About the numbers.</strong> Rows below the wrapSquare-float entries were authored before
+    <code>tools/word-parity/pixel-diff.py</code> existed, so their captions describe visual approximation rather
+    than measured pixel parity. Existing rows are still 90&ndash;99% ink-XOR vs Word at the pixel level &mdash;
+    that's structural-match parity, not glyph-match parity. The recent pt&rarr;px import-side conversions (commits
+    <code>0be7e1a</code>, <code>e3e716c</code>, <code>bde4a98</code>) shift everything noticeably; sampling four
+    repros showed the PDF backend's ink-XOR vs Word drops by 11&ndash;24 points on table/paragraph rows while
+    browser stays roughly flat. To re-measure any repro:
+    <code>tools/word-parity/measure-parity.sh &lt;repro-name&gt;</code>.
+  </p>
 
   <table>
     <thead>
