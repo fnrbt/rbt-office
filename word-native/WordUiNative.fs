@@ -56,12 +56,16 @@ let viewWith (renderState: ShellRenderState)
              (statusText: unit -> string)
              (state: WordUi.ShellState)
              (actions: WordUi.ShellActions)
+             (extraMenus: RedBat.Office.Ui.MenuSpec list)
              (workspace: Widget) =
     let config : OfficeShell.ShellConfig = {
         Chrome = WordUi.chrome
         Title = title
         StatusText = statusText
-        Menus = WordUi.menus state actions
+        // Extra menus tack onto the end of the standard WordUi set so
+        // the host can register app-specific entries (Tools, Help,
+        // About…) without rewriting WordUi.ShellActions.
+        Menus = WordUi.menus state actions @ extraMenus
         ToolbarRows = WordUi.toolbarRows state actions
         ToolbarGlyph = WordUi.toolbarGlyph
         MenuLeft = WordUi.menuLeft
@@ -71,4 +75,4 @@ let viewWith (renderState: ShellRenderState)
     OfficeShell.view renderState config
 
 let view (renderState: ShellRenderState) (state: WordUi.ShellState) (actions: WordUi.ShellActions) =
-    viewWith renderState "RedBat Word - Document1" (fun () -> "Ready") state actions placeholderWorkspace
+    viewWith renderState "RedBat Word - Document1" (fun () -> "Ready") state actions [] placeholderWorkspace

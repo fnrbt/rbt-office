@@ -180,6 +180,23 @@ module Ui =
         | DialogSelectField of options: ChoiceSpec list
         /// Multi-line read-only label, e.g. a result/status line.
         | DialogStatusField
+        /// A bold section heading + hairline, non-interactive. Use to
+        /// break a long form into named groups ("Spacing", "Indentation"…).
+        | DialogSectionHeader
+        /// Color swatch button. Clicking opens the standard 16-color
+        /// picker; the picked hex is written back to the field's value
+        /// signal. Initial value should be a "#rrggbb" string.
+        | DialogColorField
+        /// Click-to-step slider on a continuous range. Initial value is
+        /// parsed as a float; clicking cycles through the next step,
+        /// wrapping to min when it would overshoot max.
+        | DialogSliderField of minValue: float * maxValue: float
+        /// Multi-line text area. `lines` is the visible row count; the
+        /// underlying TextInput still accepts arbitrarily many lines.
+        | DialogTextAreaField of placeholder: string * lines: int
+        /// Column of radio buttons. The active option's `Value` is what
+        /// gets written to the field's value signal.
+        | DialogRadioField of options: ChoiceSpec list
 
     type DialogField = {
         /// Stable id used as the key in the submit callback's value map.
@@ -209,6 +226,12 @@ module Ui =
         /// Optional one-line description shown under the title.
         Subtitle: string option
         Fields: DialogField list
+        /// Tabbed layout. When non-empty the renderer paints a tab bar
+        /// at the top of the dialog and only shows the active tab's
+        /// fields; `Fields` is ignored in that case. Each entry is
+        /// `(tab-label, fields)`. Use for Preferences / Format Cells
+        /// style dialogs that group lots of fields by topic.
+        Tabs: (string * DialogField list) list
         Buttons: DialogButton list
     }
 
@@ -226,6 +249,23 @@ module Ui =
 
     let dialogStatus id label initial =
         { Id = id; Label = label; Kind = DialogStatusField; Initial = initial }
+
+    let dialogSection (title: string) =
+        // Id has to be unique per spec; mash the title in. Section headers
+        // aren't read back by the submit callback, so this id is internal.
+        { Id = "section-" + title; Label = title; Kind = DialogSectionHeader; Initial = title }
+
+    let dialogColor id label (initialHex: string) =
+        { Id = id; Label = label; Kind = DialogColorField; Initial = initialHex }
+
+    let dialogSlider id label minValue maxValue (initial: float) =
+        { Id = id; Label = label; Kind = DialogSliderField(minValue, maxValue); Initial = sprintf "%g" initial }
+
+    let dialogTextArea id label placeholder lines (initial: string) =
+        { Id = id; Label = label; Kind = DialogTextAreaField(placeholder, lines); Initial = initial }
+
+    let dialogRadio id label options (initial: string) =
+        { Id = id; Label = label; Kind = DialogRadioField options; Initial = initial }
 
     let dialogButton testId label isPrimary action =
         { TestId = testId; Label = label; IsPrimary = isPrimary; Action = action }

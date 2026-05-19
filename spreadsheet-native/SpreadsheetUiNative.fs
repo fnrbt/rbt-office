@@ -122,12 +122,16 @@ let viewWith
         (statusText: unit -> string)
         (state: SpreadsheetUi.ShellState)
         (actions: SpreadsheetUi.ShellActions)
+        (extraMenus: RedBat.Office.Ui.MenuSpec list)
         (workspace: Widget) =
     let config : OfficeShell.ShellConfig = {
         Chrome = SpreadsheetUi.chrome
         Title = title
         StatusText = statusText
-        Menus = SpreadsheetUi.menus state actions
+        // Extras let the host register Tools / Help / About menus
+        // without bloating SpreadsheetUi.ShellActions, which is shared
+        // with the Fable shell.
+        Menus = SpreadsheetUi.menus state actions @ extraMenus
         ToolbarRows = SpreadsheetUi.toolbarRows state actions
         ToolbarGlyph = SpreadsheetUi.toolbarGlyph
         MenuLeft = SpreadsheetUi.menuLeft
@@ -145,4 +149,4 @@ let view
         (actions: SpreadsheetUi.ShellActions) =
     let staticWorkspace =
         expanded (SpreadsheetGrid.widget palette.WindowWidth 360.0 model)
-    viewWith renderState "RedBat Calc - Book1" state.SelectionSummary state actions staticWorkspace
+    viewWith renderState "RedBat Calc - Book1" state.SelectionSummary state actions [] staticWorkspace

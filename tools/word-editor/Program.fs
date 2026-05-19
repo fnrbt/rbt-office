@@ -783,13 +783,47 @@ let main argv =
         ]
         Composit.Ui.OfficeShell.openContextMenu renderState x y items
 
+    // Tools menu exclusively for the native shell — Preferences, the
+    // formatting dialogs that didn't fit a WordUi.ShellActions field,
+    // and the About box. Keeps WordUi.ShellActions (shared with Fable)
+    // minimal.
+    let openPreferences () =
+        WordUi.preferencesDialog (fun values ->
+            status.Value <- sprintf "Saved %d preferences" (Map.count values))
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let openParagraph () =
+        WordUi.paragraphDialog (fun values ->
+            let alignment = Map.tryFind "alignment" values |> Option.defaultValue "left"
+            status.Value <- sprintf "Paragraph applied (alignment=%s, %d fields)" alignment (Map.count values))
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let openCharacter () =
+        WordUi.characterDialog (fun values ->
+            let font = Map.tryFind "font-family" values |> Option.defaultValue ""
+            let size = Map.tryFind "font-size" values |> Option.defaultValue ""
+            status.Value <- sprintf "Character applied (%s %s pt)" font size)
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let openAbout () =
+        WordUi.aboutDialog "0.1.0" "dev"
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let toolsMenu : RedBat.Office.Ui.MenuSpec = {
+        TestId = "word-tools-menu"
+        PanelTestId = "word-tools-menu-panel"
+        Label = "Tools"
+        Items = [
+            RedBat.Office.Ui.menuItem "word-menu-paragraph"  "Paragraph..."  None openParagraph
+            RedBat.Office.Ui.menuItem "word-menu-character"  "Character..."  None openCharacter
+            RedBat.Office.Ui.menuItem "word-menu-prefs"      "Preferences..." None openPreferences
+            RedBat.Office.Ui.menuItem "word-menu-about"      "About RedBat Word..." None openAbout
+        ]
+    }
+
     let buildWidget () =
         let bodyHeight = max 200.0 (float appState.Height - bodyOverhead)
         let editorWidget = Editor.scrollWidget workspaceWidth bodyHeight (fun _ -> None) editor
         let workspace =
             Chrome.documentWorkspace editorWidget
             |> onContextMenu openDocContextMenu
-        Chrome.viewWith renderState (titleText ()) statusText state actions workspace
+        Chrome.viewWith renderState (titleText ()) statusText state actions [ toolsMenu ] workspace
 
     Platform.requestRedraw <- fun () -> window.RequestRedraw()
     Platform.setTimeout <- fun ms cb -> window.SetTimeout(ms, cb)

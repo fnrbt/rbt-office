@@ -18,10 +18,14 @@ open RedBat.Office.Ui
 type OpenDialogState(
     spec: DialogSpec,
     values: System.Collections.Generic.Dictionary<string, Signal<string>>,
-    focusIds: System.Collections.Generic.Dictionary<string, int>) =
+    focusIds: System.Collections.Generic.Dictionary<string, int>,
+    activeTab: Signal<int>) =
     member _.Spec = spec
     member _.Values = values
     member _.FocusIds = focusIds
+    /// Index into `Spec.Tabs` of the currently-active tab. Ignored when
+    /// the spec uses the un-tabbed Fields layout.
+    member _.ActiveTab = activeTab
 
 /// Captures an open context (right-click) menu plus its anchor coordinates
 /// in screen space. Reference equality (the MenuItemSpec list contains
@@ -114,13 +118,21 @@ let openTriggeredContextMenu (state: ShellRenderState) (triggerId: string) (x: f
 let openDialog (state: ShellRenderState) (spec: DialogSpec) =
     let values = System.Collections.Generic.Dictionary<string, Signal<string>>()
     let focusIds = System.Collections.Generic.Dictionary<string, int>()
-    for field in spec.Fields do
+    let initField (field: DialogField) =
         values.[field.Id] <- signal field.Initial
         match field.Kind with
-        | DialogTextField _ | DialogNumberField _ -> focusIds.[field.Id] <- Focus.allocId()
+        | DialogTextField _ | DialogNumberField _ | DialogTextAreaField _ ->
+            focusIds.[field.Id] <- Focus.allocId()
         | _ -> ()
+    // Init both the flat Fields list and every tab's fields, so submit
+    // callbacks see values from any tab regardless of which is currently
+    // visible.
+    for field in spec.Fields do initField field
+    for _, tabFields in spec.Tabs do
+        for field in tabFields do initField field
+    let activeTab = signal 0
     state.OpenMenu.Value <- None
-    state.OpenDialog.Value <- Some (OpenDialogState(spec, values, focusIds))
+    state.OpenDialog.Value <- Some (OpenDialogState(spec, values, focusIds, activeTab))
 
 let closeDialog (state: ShellRenderState) =
     state.OpenDialog.Value <- None
@@ -635,9 +647,10 @@ let private renderMenuPanel (p: ChromePalette) (renderState: ShellRenderState) (
 
 let private dialogFieldWidth = 360.0
 
-let private renderDialogField (p: ChromePalette) (state: OpenDialogState) (field: DialogField) : Widget =
+let private renderDialogField (p: ChromePalette) (renderState: ShellRenderState) (state: OpenDialogState) (field: DialogField) : Widget =
     let valueSignal = state.Values.[field.Id]
     let labelColor = parseHexColor "#5F6368"
+    let accent = parseHexColor "#1A73E8"
     let inputHeight = 36.0
     let textInputWithId (placeholder: string) =
         // Allocate-once FocusId stored in the OpenDialogState — keeps the
@@ -651,6 +664,13 @@ let private renderDialogField (p: ChromePalette) (state: OpenDialogState) (field
         match field.Kind with
         | DialogTextField placeholder -> textInputWithId placeholder
         | DialogNumberField(_, _) -> textInputWithId ""
+        | DialogTextAreaField(placeholder, lines) ->
+            // Multi-line text area. Same TextInput widget but sized to N
+            // rows so wrapped content has room. Lines * 18 px is the
+            // line-height the TextInput uses internally at fontSize 12.5.
+            let fid = state.FocusIds.[field.Id]
+            sized dialogFieldWidth (float lines * 18.0 + 16.0) (
+                Composit.Ui.Widget.TextInput(createTextInputState valueSignal fid placeholder 12.5))
         | DialogCheckboxField ->
             let toggle () =
                 valueSignal.Value <- if valueSignal.Value = "true" then "false" else "true"
@@ -659,7 +679,6 @@ let private renderDialogField (p: ChromePalette) (state: OpenDialogState) (field
                     rowAlign MStart CCenter 10.0 [
                         dynamic (fun () ->
                             let isChecked = valueSignal.Value = "true"
-                            let accent = parseHexColor "#1A73E8"
                             sized 18.0 18.0 (
                                 stack [
                                     rounded 3.0 (if isChecked then accent else p.Input) empty
@@ -697,9 +716,105 @@ let private renderDialogField (p: ChromePalette) (state: OpenDialogState) (field
                 let v = valueSignal.Value
                 if v = "" then empty
                 else textStyled Font.sm labelColor v)
+        | DialogSectionHeader ->
+            // Bold section title with a 1px hairline beneath it. Not
+            // interactive; lets long forms breathe with named groups.
+            sizedH 28.0 (
+                stack [
+                    canvas dialogFieldWidth 28.0 (fun w h ->
+                        [ Renderer.FillRect(Renderer.Types.rect 0.0 (h - 1.0) w 1.0, p.ChromeMid) ])
+                    rowAlign MStart CCenter 0.0 [
+                        textBoldStyled Font.sm p.Text field.Label
+                    ]
+                ])
+        | DialogColorField ->
+            // Color swatch: 28×28 chip with a hairline border. Clicking
+            // opens the standard 16-color picker; the picked hex is
+            // written back into the field's value signal.
+            let openPicker () =
+                let x, y = renderState.LastClickPos.Value
+                let items =
+                    standardColors
+                    |> List.map (fun (name, hex) ->
+                        menuItem
+                            (sprintf "%s-%s" field.Id hex)
+                            (sprintf "● %s" name)
+                            (Some (fun () -> valueSignal.Value = hex))
+                            (fun () -> valueSignal.Value <- hex))
+                openTriggeredContextMenu renderState field.Id x y items
+            withHover renderState field.Id (
+                clickable openPicker (
+                    sizedH inputHeight (
+                        rowAlign MStart CCenter 12.0 [
+                            dynamic (fun () ->
+                                sized 28.0 28.0 (
+                                    stack [
+                                        rounded 4.0 (parseHexColor valueSignal.Value) empty
+                                        border p.Border 1.0 4.0 empty
+                                    ]))
+                            dynamic (fun () -> textStyled Font.sm labelColor valueSignal.Value)
+                        ])))
+        | DialogSliderField(minV, maxV) ->
+            // Click-anywhere-on-the-track to step through the range. The
+            // step is (max-min)/10 and wraps to min when it would
+            // overshoot — same behavior as the standalone widgets slider.
+            // Drag isn't wired yet; clicking the track is enough for
+            // most settings (zoom %, autosave interval, etc.).
+            let trackWidth = dialogFieldWidth - 60.0
+            sizedH inputHeight (
+                rowAlign MStart CCenter 12.0 [
+                    dynamic (fun () ->
+                        let v =
+                            match System.Double.TryParse(valueSignal.Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+                            | true, parsed -> max minV (min maxV parsed)
+                            | _ -> minV
+                        let pct = (v - minV) / (max 0.0001 (maxV - minV))
+                        let thumbX = max 8.0 (min (trackWidth - 8.0) (trackWidth * pct))
+                        let step = (maxV - minV) / 10.0
+                        let advance () =
+                            let next = if v + step > maxV then minV else v + step
+                            valueSignal.Value <- sprintf "%g" next
+                        clickable advance (
+                            sized trackWidth 24.0 (
+                                canvas trackWidth 24.0 (fun w _ ->
+                                    [ Renderer.FillRoundedRect(Renderer.Types.rect 0.0 10.0 w 4.0, LanguagePrimitives.FloatWithMeasure 2.0, p.Border)
+                                      Renderer.FillRoundedRect(Renderer.Types.rect 0.0 10.0 (w * pct) 4.0, LanguagePrimitives.FloatWithMeasure 2.0, accent)
+                                      Renderer.FillCircle(Renderer.Types.vec2 thumbX 12.0, LanguagePrimitives.FloatWithMeasure 9.0, Color.rgba 0uy 0uy 0uy 18uy)
+                                      Renderer.FillCircle(Renderer.Types.vec2 thumbX 11.0, LanguagePrimitives.FloatWithMeasure 8.0, Palette.white)
+                                      Renderer.FillCircle(Renderer.Types.vec2 thumbX 11.0, LanguagePrimitives.FloatWithMeasure 4.0, accent) ]))))
+                    dynamic (fun () ->
+                        // Right-side numeric readout so the user knows
+                        // the current value at a glance.
+                        textStyled Font.sm p.Text valueSignal.Value)
+                ])
+        | DialogRadioField options ->
+            // Column of radio buttons. Outer circle with `accent` border
+            // when selected, plain border otherwise; inner dot when the
+            // option matches valueSignal.
+            columnSpaced 8.0 [
+                for opt in options ->
+                    let isSelected () = valueSignal.Value = opt.Value
+                    let select () = valueSignal.Value <- opt.Value
+                    clickable select (
+                        sizedH 24.0 (
+                            rowAlign MStart CCenter 10.0 [
+                                dynamic (fun () ->
+                                    let sel = isSelected ()
+                                    sized 16.0 16.0 (
+                                        stack [
+                                            rounded 8.0 p.Input empty
+                                            border (if sel then accent else p.Border) 1.5 8.0 (
+                                                if sel then
+                                                    center (
+                                                        sized 6.0 6.0 (rounded 3.0 accent empty))
+                                                else empty)
+                                        ]))
+                                textStyled Font.sm p.Text opt.Label
+                            ]))
+            ]
 
     match field.Kind with
-    | DialogCheckboxField | DialogStatusField -> inputBox
+    | DialogCheckboxField | DialogStatusField | DialogSectionHeader -> inputBox
     | _ -> columnSpaced 6.0 [ labelLine; inputBox ]
 
 let private renderDialogButton (p: ChromePalette) (renderState: ShellRenderState) (values: System.Collections.Generic.Dictionary<string, Signal<string>>) (btn: DialogButton) : Widget =
@@ -733,21 +848,70 @@ let private renderDialog (p: ChromePalette) (renderState: ShellRenderState) (sta
         | Some _ -> columnSpaced 6.0 [ title; subtitle ]
         | None -> title
 
-    let fields =
-        spec.Fields
-        |> List.map (renderDialogField p state)
+    // Tab bar — only rendered when the spec actually has tabs. Each tab
+    // is a natural-width clickable label whose footprint is just its
+    // text + horizontal padding; an active tab adds a 2 px accent strip
+    // along the bottom edge of its own column. Building it as
+    // `column [pad text; underline]` (rather than a fixed-width canvas
+    // overlay) lets the row of tabs auto-fit the panel — a 5-tab dialog
+    // like Format Cells no longer overflows.
+    let accent = parseHexColor "#1A73E8"
+    let renderTab (idx: int) (label: string) =
+        let tabId = sprintf "%s-tab-%d" spec.TestId idx
+        dynamic (fun () ->
+            let isActive = state.ActiveTab.Value = idx
+            let labelColor = if isActive then p.Text else parseHexColor "#5F6368"
+            let weight = if isActive then textBoldStyled else textStyled
+            let underlineColor = if isActive then accent else Palette.transparent
+            let hoverBg =
+                dynamic (fun () ->
+                    if renderState.HoveredId.Value = Some tabId && not isActive
+                    then box p.HotTop empty
+                    else empty)
+            withHover renderState tabId (
+                clickable (fun () -> state.ActiveTab.Value <- idx) (
+                    stack [
+                        hoverBg
+                        column [
+                            padXY 14.0 8.0 (
+                                rowAlign MStart CCenter 0.0 [ weight Font.sm labelColor label ])
+                            sizedH 2.0 (box underlineColor empty)
+                        ]
+                    ])))
+    let tabBar =
+        if List.isEmpty spec.Tabs then empty
+        else
+            stack [
+                canvas (dialogFieldWidth + 72.0) 34.0 (fun w h ->
+                    [ Renderer.FillRect(Renderer.Types.rect 0.0 (h - 1.0) w 1.0, p.ChromeMid) ])
+                rowAlign MStart CCenter 4.0 (spec.Tabs |> List.mapi (fun i (label, _) -> renderTab i label))
+            ]
+
+    // Field list for the current view: when there are tabs, use the
+    // active tab's fields; otherwise fall back to Fields.
+    let renderFields fields =
+        fields
+        |> List.map (renderDialogField p renderState state)
         |> columnSpaced 18.0
+    let fields =
+        if List.isEmpty spec.Tabs then renderFields spec.Fields
+        else
+            dynamic (fun () ->
+                let idx = max 0 (min (spec.Tabs.Length - 1) state.ActiveTab.Value)
+                let _, tabFields = spec.Tabs.[idx]
+                renderFields tabFields)
 
     let buttons =
         spec.Buttons
         |> List.map (renderDialogButton p renderState state.Values)
         |> rowAlign MEnd CCenter 8.0
 
-    // Body of the dialog. Wrap header / fields / buttons in their own
-    // groups with generous vertical breathing room.
+    // Body of the dialog. Wrap header / tabs / fields / buttons in their
+    // own groups with generous vertical breathing room.
     let body =
-        columnSpaced 24.0 [
+        columnSpaced 20.0 [
             header
+            if not (List.isEmpty spec.Tabs) then tabBar
             fields
             buttons
         ]

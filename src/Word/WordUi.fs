@@ -489,6 +489,7 @@ module Ui =
                 dialogCheckbox "case" "Match case" false
                 dialogStatus statusFieldId "Result" ""
             ]
+            Tabs = []
             Buttons = [
                 dialogCancel
                 dialogButton "dlg-find-next" "Find next" false (fun values ->
@@ -514,6 +515,7 @@ module Ui =
         Fields = [
             dialogText "url" "URL" "https://" ""
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-insert-link-ok" "Insert" true (fun values ->
@@ -531,6 +533,7 @@ module Ui =
             dialogNumber "rows" "Rows" (Some "1") (Some "100") "2"
             dialogNumber "cols" "Columns" (Some "1") (Some "20") "3"
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-insert-table-ok" "Insert" true (fun values ->
@@ -567,6 +570,7 @@ module Ui =
                 dialogNumber "marginTop" "Top margin" (Some "0") (Some "500") (sprintf "%g" initialMarginTop)
                 dialogNumber "marginBottom" "Bottom margin" (Some "0") (Some "500") (sprintf "%g" initialMarginBottom)
             ]
+            Tabs = []
             Buttons = [
                 dialogCancel
                 dialogButton "dlg-page-setup-ok" "Apply" true (fun values ->
@@ -596,6 +600,7 @@ module Ui =
         Fields = [
             dialogText "src" "Image source" "/path/or/url" ""
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-insert-image-ok" "Insert" true (fun values ->
@@ -616,6 +621,7 @@ module Ui =
         Fields = [
             dialogText "path" "File path" "/path/to/doc.docx" ""
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-open-file-ok" "Open" true (fun values ->
@@ -636,6 +642,7 @@ module Ui =
         Fields = [
             dialogText "path" "File path" "/path/to/doc.docx" initialPath
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-save-file-ok" "Save" true (fun values ->
@@ -646,3 +653,237 @@ module Ui =
                     true)
         ]
     }
+
+    // ── Advanced widget showcase dialogs ─────────────────────────
+    //
+    // The following builders exist primarily to demonstrate the new dialog
+    // field kinds (section header, color, slider, radio, tabs, text area)
+    // and to give the editor a more professional surface area. The submit
+    // callbacks just record the picked values via `apply`; the host
+    // decides what to do with them (typically a status-line confirmation).
+
+    /// Application preferences. Tabbed, with one tab per concern area:
+    /// General, Editor, Display, Files. Demonstrates the full kit —
+    /// sections, sliders, color picker, radio buttons, text area, plus
+    /// the existing select/checkbox/text inputs.
+    let preferencesDialog (apply: Map<string, string> -> unit) : DialogSpec =
+        let themes = [ choice "light" "Light"; choice "dark" "Dark"; choice "auto" "Match system" ]
+        let saveModes = [
+            choice "docx"  "Word document (.docx)"
+            choice "pdf"   "PDF (read-only)"
+            choice "html"  "Web page (.html)"
+            choice "txt"   "Plain text (.txt)"
+        ]
+        let backupChoices = [
+            choice "every-edit" "Snapshot every edit"
+            choice "every-min"  "Every minute"
+            choice "every-5min" "Every five minutes"
+            choice "off"        "Off"
+        ]
+        {
+            TestId = "word-dlg-preferences"
+            Title = "Preferences"
+            Subtitle = Some "Configure how the editor looks and behaves."
+            Fields = []
+            Tabs = [
+                "General", [
+                    dialogSection "Identity"
+                    dialogText "name" "Your name" "Jane Doe" ""
+                    dialogText "initials" "Initials" "JD" ""
+                    dialogText "email" "Email" "jane@example.com" ""
+                    dialogSection "Behaviour"
+                    dialogCheckbox "spellcheck" "Check spelling as you type" true
+                    dialogCheckbox "autocorrect" "Auto-correct common typos" true
+                    dialogCheckbox "autocomplete" "Suggest completions while typing" false
+                    dialogSection "Recents"
+                    dialogSlider "recent-count" "Number of recent documents" 0.0 30.0 12.0
+                ]
+                "Appearance", [
+                    dialogSection "Theme"
+                    dialogRadio "theme" "Theme" themes "light"
+                    dialogSection "Accent"
+                    dialogColor "accent-color" "Accent colour" "#1A73E8"
+                    dialogColor "highlight-color" "Default highlight" "#FFF2CC"
+                    dialogSection "Type"
+                    dialogSelect "ui-font" "Interface font" [
+                        choice "calibri" "Calibri"
+                        choice "segoe-ui" "Segoe UI"
+                        choice "ibm-plex" "IBM Plex Sans"
+                        choice "system" "System default"
+                    ] "calibri"
+                    dialogSlider "ui-font-size" "Interface font size (pt)" 9.0 18.0 11.0
+                ]
+                "Editor", [
+                    dialogSection "Composition"
+                    dialogCheckbox "smart-quotes" "Use smart quotes" true
+                    dialogCheckbox "smart-dashes" "Convert -- to em-dash" true
+                    dialogCheckbox "auto-bullets" "Auto-start bullet lists from - or *" true
+                    dialogCheckbox "show-invisibles" "Show paragraph marks and tabs" false
+                    dialogSection "Defaults"
+                    dialogSlider "default-font-size" "Default font size (pt)" 8.0 24.0 12.0
+                    dialogSlider "line-spacing" "Default line spacing (×)" 1.0 3.0 1.15
+                    dialogSlider "para-spacing" "Default spacing after paragraph (pt)" 0.0 24.0 8.0
+                    dialogSection "Comments"
+                    dialogTextArea "comment-template" "Comment signature" "-- Jane Doe" 3 ""
+                ]
+                "Files", [
+                    dialogSection "Save"
+                    dialogSelect "default-format" "Default save format" saveModes "docx"
+                    dialogText "autosave-folder" "Auto-save folder" "~/Documents/Word" "~/Documents/Word"
+                    dialogCheckbox "save-on-blur" "Save when the window loses focus" false
+                    dialogSection "Backup"
+                    dialogRadio "backup-mode" "Backup snapshots" backupChoices "every-min"
+                    dialogSlider "backup-keep" "Maximum backups to retain" 1.0 100.0 20.0
+                    dialogSection "Recovery"
+                    dialogCheckbox "recover-on-open" "Offer recovery on next open after crash" true
+                ]
+            ]
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-prefs-apply" "Apply" true (fun values ->
+                    apply values
+                    true)
+            ]
+        }
+
+    /// Paragraph formatting — alignment / indents / spacing / line break
+    /// behaviour. Demonstrates radio groups, sliders, and section
+    /// headers grouping logically related fields.
+    let paragraphDialog (apply: Map<string, string> -> unit) : DialogSpec =
+        let alignments = [
+            choice "left"    "Left"
+            choice "center"  "Centre"
+            choice "right"   "Right"
+            choice "justify" "Justify"
+        ]
+        let lineRules = [
+            choice "single"   "Single"
+            choice "1.15"     "1.15"
+            choice "1.5"      "1.5"
+            choice "double"   "Double"
+            choice "exactly"  "Exactly (pt)"
+            choice "multiple" "Multiple (×)"
+        ]
+        let outlineLevels = [
+            choice "body"     "Body text"
+            choice "level1"   "Level 1"
+            choice "level2"   "Level 2"
+            choice "level3"   "Level 3"
+            choice "level4"   "Level 4"
+        ]
+        {
+            TestId = "word-dlg-paragraph"
+            Title = "Paragraph"
+            Subtitle = Some "Indent, spacing, and line-break behaviour for the selected paragraphs."
+            Fields = [
+                dialogSection "Alignment"
+                dialogRadio "alignment" "Alignment" alignments "left"
+                dialogSelect "outline-level" "Outline level" outlineLevels "body"
+                dialogSection "Indentation"
+                dialogSlider "indent-left"  "Left indent (pt)"  0.0 144.0 0.0
+                dialogSlider "indent-right" "Right indent (pt)" 0.0 144.0 0.0
+                dialogSlider "indent-first" "First-line indent (pt)" 0.0 72.0 0.0
+                dialogCheckbox "mirror-indents" "Mirror indents on facing pages" false
+                dialogSection "Spacing"
+                dialogSlider "space-before" "Before (pt)" 0.0 36.0 0.0
+                dialogSlider "space-after"  "After  (pt)" 0.0 36.0 8.0
+                dialogSelect "line-rule"    "Line spacing" lineRules "1.15"
+                dialogSlider "line-amount"  "Line spacing amount" 1.0 4.0 1.15
+                dialogSection "Pagination"
+                dialogCheckbox "keep-with-next" "Keep with next paragraph" false
+                dialogCheckbox "keep-together"  "Keep lines together" false
+                dialogCheckbox "page-before"    "Page break before" false
+                dialogCheckbox "widow-orphan"   "Widow/orphan control" true
+            ]
+            Tabs = []
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-paragraph-apply" "Apply" true (fun values ->
+                    apply values
+                    true)
+            ]
+        }
+
+    /// Character formatting — font, weight, colour, position, effects.
+    /// Showcases the color picker alongside sliders for tracking +
+    /// position offsets, plus toggles for visual effects.
+    let characterDialog (apply: Map<string, string> -> unit) : DialogSpec =
+        let weights = [
+            choice "regular"    "Regular"
+            choice "light"      "Light"
+            choice "medium"     "Medium"
+            choice "semibold"   "Semi-bold"
+            choice "bold"       "Bold"
+            choice "black"      "Black"
+        ]
+        let underlines = [
+            choice "none"   "(none)"
+            choice "single" "Single"
+            choice "double" "Double"
+            choice "thick"  "Thick"
+            choice "dotted" "Dotted"
+            choice "wavy"   "Wavy"
+        ]
+        {
+            TestId = "word-dlg-character"
+            Title = "Character"
+            Subtitle = Some "Font, weight, colour, and visual effects for the selected text."
+            Fields = [
+                dialogSection "Font"
+                dialogSelect "font-family" "Family" fontFamilies "Calibri"
+                dialogSelect "font-weight" "Weight" weights "regular"
+                dialogSlider "font-size" "Size (pt)" 6.0 96.0 11.0
+                dialogSection "Colour"
+                dialogColor "font-color" "Text colour" "#000000"
+                dialogColor "highlight" "Highlight" "#FFFFFF"
+                dialogSection "Decoration"
+                dialogSelect "underline" "Underline" underlines "none"
+                dialogColor "underline-color" "Underline colour" "#000000"
+                dialogCheckbox "strike" "Strikethrough" false
+                dialogCheckbox "double-strike" "Double strikethrough" false
+                dialogCheckbox "small-caps" "Small caps" false
+                dialogCheckbox "all-caps" "All caps" false
+                dialogCheckbox "hidden" "Hidden text" false
+                dialogSection "Position"
+                dialogSlider "tracking" "Character spacing (1/100 em)" -20.0 50.0 0.0
+                dialogSlider "raise" "Vertical position (pt, +up/-down)" -12.0 12.0 0.0
+                dialogSlider "scale" "Horizontal scale (%)" 50.0 200.0 100.0
+            ]
+            Tabs = []
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-character-apply" "Apply" true (fun values ->
+                    apply values
+                    true)
+            ]
+        }
+
+    /// About box. Demo of section headers paired with the read-only
+    /// status field for a polished "About" panel.
+    let aboutDialog (version: string) (build: string) : DialogSpec =
+        let creditsField = dialogStatus "credits" "Credits" ""
+        let creditsLong =
+            "RedBat Word native shell\n" +
+            "  • Composit UI widgets\n" +
+            "  • RedBat.Office.Ui spec layer\n" +
+            "  • RedBat.Word document model\n\n" +
+            "Built on Text.Engine, OpenType.Core, Bidi, Shaper.Core."
+        {
+            TestId = "word-dlg-about"
+            Title = "About RedBat Word"
+            Subtitle = Some "A native, F#-first Word-compatible editor."
+            Fields = [
+                dialogSection "Version"
+                dialogStatus "version" "Version" version
+                dialogStatus "build"   "Build"   build
+                dialogSection "Project"
+                dialogStatus "homepage" "Homepage" "https://example.com/redbat-word"
+                dialogStatus "license"  "License"  "MIT"
+                dialogSection "Components"
+                { creditsField with Initial = creditsLong }
+            ]
+            Tabs = []
+            Buttons = [
+                dialogButton "dlg-about-close" "Close" true (fun _ -> true)
+            ]
+        }

@@ -488,6 +488,7 @@ module Ui =
                 dialogCheckbox "case" "Match case" false
                 dialogStatus "result" "Result" ""
             ]
+            Tabs = []
             Buttons = [
                 dialogCancel
                 dialogButton "dlg-find-next" "Find next" false (fun values ->
@@ -513,6 +514,7 @@ module Ui =
         Fields = [
             dialogText "name" "Sheet name" "Sheet" ""
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-insert-sheet-ok" "Add" true (fun values ->
@@ -532,6 +534,7 @@ module Ui =
         Fields = [
             dialogText "name" "New name" "Sheet" initialName
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-rename-sheet-ok" "Rename" true (fun values ->
@@ -552,6 +555,7 @@ module Ui =
             dialogNumber "rows" "Rows" (Some "1") (Some "1000") "3"
             dialogNumber "cols" "Columns" (Some "1") (Some "100") "3"
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-insert-table-ok" "Insert" true (fun values ->
@@ -581,6 +585,7 @@ module Ui =
             dialogText "text" "Text color (#hex)" "#000000" initialTextColor
             dialogText "bg" "Fill color (#hex)" "#FFFFFF" initialBgColor
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-format-cells-ok" "Apply" true (fun values ->
@@ -615,6 +620,7 @@ module Ui =
                 dialogNumber "marginTop" "Top margin" (Some "0") (Some "500") (sprintf "%g" initialMarginTop)
                 dialogNumber "marginBottom" "Bottom margin" (Some "0") (Some "500") (sprintf "%g" initialMarginBottom)
             ]
+            Tabs = []
             Buttons = [
                 dialogCancel
                 dialogButton "dlg-page-setup-ok" "Apply" true (fun values ->
@@ -643,6 +649,7 @@ module Ui =
         Fields = [
             dialogText "path" "File path" "/path/to/book.xlsx" ""
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-open-file-ok" "Open" true (fun values ->
@@ -662,6 +669,7 @@ module Ui =
         Fields = [
             dialogText "path" "File path" "/path/to/book.xlsx" initialPath
         ]
+        Tabs = []
         Buttons = [
             dialogCancel
             dialogButton "dlg-save-file-ok" "Save" true (fun values ->
@@ -672,3 +680,245 @@ module Ui =
                     true)
         ]
     }
+
+    // ── Advanced widget showcase dialogs ─────────────────────────
+
+    /// Format Cells — the classic Excel tabbed dialog. Number / Alignment /
+    /// Font / Border / Fill, each as its own tab. The submit callback
+    /// receives a map keyed by field id (e.g. `number-category`,
+    /// `font-color`, `border-style`) so the host can apply whatever
+    /// subset it actually supports.
+    let formatCellsAdvancedDialog (apply: Map<string, string> -> unit) : DialogSpec =
+        let numberCategories = [
+            choice "general" "General"
+            choice "number"  "Number"
+            choice "currency" "Currency"
+            choice "accounting" "Accounting"
+            choice "date"    "Date"
+            choice "time"    "Time"
+            choice "percent" "Percentage"
+            choice "fraction" "Fraction"
+            choice "scientific" "Scientific"
+            choice "text"    "Text"
+            choice "custom"  "Custom"
+        ]
+        let horizontalAligns = [
+            choice "general" "General"
+            choice "left"    "Left (indent)"
+            choice "center"  "Centre"
+            choice "right"   "Right (indent)"
+            choice "fill"    "Fill"
+            choice "justify" "Justify"
+            choice "center-across" "Centre across selection"
+        ]
+        let verticalAligns = [
+            choice "top"     "Top"
+            choice "middle"  "Centre"
+            choice "bottom"  "Bottom"
+            choice "justify" "Justify"
+            choice "distributed" "Distributed"
+        ]
+        let borderStylesOpts = [
+            choice "none"    "(none)"
+            choice "thin"    "Thin"
+            choice "medium"  "Medium"
+            choice "thick"   "Thick"
+            choice "dashed"  "Dashed"
+            choice "dotted"  "Dotted"
+            choice "double"  "Double"
+        ]
+        let fillPatterns = [
+            choice "none"        "No fill"
+            choice "solid"       "Solid"
+            choice "gray25"      "25% gray"
+            choice "gray50"      "50% gray"
+            choice "gray75"      "75% gray"
+            choice "diagonal"    "Diagonal stripes"
+            choice "horizontal"  "Horizontal stripes"
+            choice "vertical"    "Vertical stripes"
+        ]
+        {
+            TestId = "xl-dlg-format-cells-advanced"
+            Title = "Format cells"
+            Subtitle = Some "Applies to the current selection."
+            Fields = []
+            Tabs = [
+                "Number", [
+                    dialogSection "Format"
+                    dialogRadio "number-category" "Category" numberCategories "general"
+                    dialogSection "Options"
+                    dialogSlider "number-decimals" "Decimal places" 0.0 10.0 2.0
+                    dialogCheckbox "number-thousands" "Use 1000 separator (,)" true
+                    dialogText "number-custom" "Custom format code" "0.00" ""
+                ]
+                "Alignment", [
+                    dialogSection "Text alignment"
+                    dialogSelect "h-align" "Horizontal" horizontalAligns "general"
+                    dialogSelect "v-align" "Vertical"   verticalAligns "bottom"
+                    dialogSlider "indent" "Indent (chars)" 0.0 15.0 0.0
+                    dialogSection "Text control"
+                    dialogCheckbox "wrap"  "Wrap text" false
+                    dialogCheckbox "shrink" "Shrink to fit" false
+                    dialogCheckbox "merge" "Merge cells" false
+                    dialogSection "Orientation"
+                    dialogSlider "rotation" "Rotation (degrees, -90…90)" -90.0 90.0 0.0
+                ]
+                "Font", [
+                    dialogSection "Family"
+                    dialogSelect "font-family" "Font" [
+                        choice "Calibri" "Calibri"
+                        choice "Arial" "Arial"
+                        choice "Cambria" "Cambria"
+                        choice "Consolas" "Consolas"
+                        choice "Courier New" "Courier New"
+                        choice "Times New Roman" "Times New Roman"
+                        choice "Verdana" "Verdana"
+                    ] "Calibri"
+                    dialogSlider "font-size" "Size (pt)" 6.0 96.0 11.0
+                    dialogSection "Weight & style"
+                    dialogCheckbox "bold"   "Bold" false
+                    dialogCheckbox "italic" "Italic" false
+                    dialogCheckbox "strike" "Strikethrough" false
+                    dialogSelect "underline" "Underline" [
+                        choice "none"   "(none)"
+                        choice "single" "Single"
+                        choice "double" "Double"
+                    ] "none"
+                    dialogSection "Colour"
+                    dialogColor "font-color" "Text colour" "#000000"
+                ]
+                "Border", [
+                    dialogSection "Outline"
+                    dialogSelect "border-outline" "Outline style" borderStylesOpts "thin"
+                    dialogColor  "border-outline-color" "Outline colour" "#404040"
+                    dialogSection "Inside"
+                    dialogSelect "border-inside" "Inside grid style" borderStylesOpts "thin"
+                    dialogColor  "border-inside-color" "Inside grid colour" "#A6A6A6"
+                    dialogSection "Sides"
+                    dialogCheckbox "border-top" "Top edge" true
+                    dialogCheckbox "border-right" "Right edge" true
+                    dialogCheckbox "border-bottom" "Bottom edge" true
+                    dialogCheckbox "border-left" "Left edge" true
+                    dialogCheckbox "border-diagonal-down" "Diagonal ↘" false
+                    dialogCheckbox "border-diagonal-up"   "Diagonal ↗" false
+                ]
+                "Fill", [
+                    dialogSection "Background"
+                    dialogColor "fill-color" "Fill colour" "#FFFFFF"
+                    dialogSection "Pattern"
+                    dialogSelect "fill-pattern" "Pattern" fillPatterns "none"
+                    dialogColor "fill-pattern-color" "Pattern colour" "#A6A6A6"
+                ]
+            ]
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-format-cells-advanced-apply" "Apply" true (fun values ->
+                    apply values
+                    true)
+            ]
+        }
+
+    /// Spreadsheet preferences — same tabbed layout as the Word version,
+    /// but with workbook-specific concerns (R1C1 vs A1, default zoom,
+    /// auto-recalc, gridline rendering, default sheet count).
+    let preferencesDialog (apply: Map<string, string> -> unit) : DialogSpec =
+        let refStyle = [
+            choice "a1"  "A1 (column letters, row numbers)"
+            choice "r1c1" "R1C1 (numeric rows and columns)"
+        ]
+        let recalcModes = [
+            choice "auto"       "Automatic"
+            choice "auto-except-tables" "Automatic except for data tables"
+            choice "manual"     "Manual (F9 to recalculate)"
+        ]
+        {
+            TestId = "xl-dlg-preferences"
+            Title = "Preferences"
+            Subtitle = Some "Workbook display, formulas, and save behaviour."
+            Fields = []
+            Tabs = [
+                "General", [
+                    dialogSection "Reference style"
+                    dialogRadio "ref-style" "Cell references" refStyle "a1"
+                    dialogSection "Defaults"
+                    dialogSlider "default-zoom" "Default zoom (%)" 25.0 400.0 100.0
+                    dialogSlider "default-sheet-count" "Sheets in a new workbook" 1.0 16.0 3.0
+                    dialogSelect "default-font" "Default font" [
+                        choice "Calibri" "Calibri"
+                        choice "Arial"   "Arial"
+                        choice "Cambria" "Cambria"
+                    ] "Calibri"
+                    dialogSlider "default-font-size" "Default font size (pt)" 8.0 24.0 11.0
+                ]
+                "Display", [
+                    dialogSection "Grid"
+                    dialogCheckbox "show-gridlines" "Show gridlines" true
+                    dialogColor "gridline-color" "Gridline colour" "#D0D7E2"
+                    dialogCheckbox "show-row-headers" "Show row and column headers" true
+                    dialogSection "Selection"
+                    dialogColor "selection-stroke" "Selection outline colour" "#217346"
+                    dialogColor "selection-fill"   "Highlighted range fill"  "#E8F5E9"
+                    dialogSection "Formulas"
+                    dialogCheckbox "show-formula-bar" "Show formula bar" true
+                    dialogCheckbox "show-formulas-in-cells" "Show formulas in cells (Ctrl+\\)" false
+                ]
+                "Formulas", [
+                    dialogSection "Calculation"
+                    dialogRadio "recalc-mode" "Recalculation" recalcModes "auto"
+                    dialogCheckbox "iterative" "Enable iterative calculation" false
+                    dialogSlider "iterative-max" "Maximum iterations" 1.0 1000.0 100.0
+                    dialogSlider "iterative-change" "Maximum change (×10⁻³)" 1.0 1000.0 1.0
+                    dialogSection "Errors"
+                    dialogCheckbox "warn-circular" "Warn on circular references" true
+                    dialogCheckbox "highlight-errors" "Highlight cells with errors" true
+                ]
+                "Save", [
+                    dialogSection "Format"
+                    dialogSelect "default-format" "Default save format" [
+                        choice "xlsx" "Workbook (.xlsx)"
+                        choice "csv"  "Comma-separated values (.csv)"
+                        choice "tsv"  "Tab-separated values (.tsv)"
+                        choice "pdf"  "PDF (read-only)"
+                    ] "xlsx"
+                    dialogText "autosave-folder" "Auto-save folder" "~/Documents/Calc" "~/Documents/Calc"
+                    dialogSlider "autosave-interval" "Auto-save every (minutes)" 1.0 60.0 5.0
+                    dialogSection "Compatibility"
+                    dialogCheckbox "strict-xlsx" "Use strict XLSX (no legacy features)" false
+                ]
+            ]
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-xl-prefs-apply" "Apply" true (fun values ->
+                    apply values
+                    true)
+            ]
+        }
+
+    /// About box for the spreadsheet shell.
+    let aboutDialog (version: string) (build: string) : DialogSpec =
+        let creditsField = dialogStatus "credits" "Credits" ""
+        let creditsLong =
+            "RedBat Calc native shell\n" +
+            "  • Composit UI widgets\n" +
+            "  • RedBat.Office.Ui spec layer\n" +
+            "  • RedBat.Spreadsheet model + layout\n\n" +
+            "Built on Text.Engine, OpenType.Core, Bidi, Shaper.Core."
+        {
+            TestId = "xl-dlg-about"
+            Title = "About RedBat Calc"
+            Subtitle = Some "A native, F#-first spreadsheet workbench."
+            Fields = [
+                dialogSection "Version"
+                dialogStatus "version" "Version" version
+                dialogStatus "build"   "Build"   build
+                dialogSection "Project"
+                dialogStatus "homepage" "Homepage" "https://example.com/redbat-calc"
+                dialogStatus "license"  "License"  "MIT"
+                dialogSection "Components"
+                { creditsField with Initial = creditsLong }
+            ]
+            Tabs = []
+            Buttons = [
+                dialogButton "dlg-xl-about-close" "Close" true (fun _ -> true)
+            ]
+        }

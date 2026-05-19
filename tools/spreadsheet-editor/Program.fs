@@ -769,12 +769,39 @@ let main argv =
         ]
         Composit.Ui.OfficeShell.openContextMenu renderState x y items
 
+    // Tools menu unique to the native shell — Preferences, the advanced
+    // Format Cells dialog, and the About box. Bypasses
+    // SpreadsheetUi.ShellActions so the Fable shell's ShellActions
+    // record stays unchanged.
+    let openPreferences () =
+        XlUi.preferencesDialog (fun values ->
+            status.Value <- sprintf "Saved %d preferences" (Map.count values))
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let openFormatCells () =
+        XlUi.formatCellsAdvancedDialog (fun values ->
+            let cat = Map.tryFind "number-category" values |> Option.defaultValue "general"
+            status.Value <- sprintf "Format Cells applied (number=%s, %d fields)" cat (Map.count values))
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let openAbout () =
+        XlUi.aboutDialog "0.1.0" "dev"
+        |> Composit.Ui.OfficeShell.openDialog renderState
+    let toolsMenu : RedBat.Office.Ui.MenuSpec = {
+        TestId = "xl-tools-menu"
+        PanelTestId = "xl-tools-menu-panel"
+        Label = "Tools"
+        Items = [
+            RedBat.Office.Ui.menuItem "xl-menu-format-cells-advanced" "Format cells..." None openFormatCells
+            RedBat.Office.Ui.menuItem "xl-menu-prefs"  "Preferences..."        None openPreferences
+            RedBat.Office.Ui.menuItem "xl-menu-about" "About RedBat Calc..." None openAbout
+        ]
+    }
+
     let buildWidget () =
         let bodyHeight = max 200.0 (float appState.Height - bodyOverhead)
         let workspace =
             Chrome.workspace editor bodyHeight actions.InsertSheet
             |> onContextMenu openGridContextMenu
-        Chrome.viewWith renderState (titleText ()) statusText state actions workspace
+        Chrome.viewWith renderState (titleText ()) statusText state actions [ toolsMenu ] workspace
 
     Platform.requestRedraw <- fun () -> window.RequestRedraw()
     Platform.setTimeout <- fun ms cb -> window.SetTimeout(ms, cb)
