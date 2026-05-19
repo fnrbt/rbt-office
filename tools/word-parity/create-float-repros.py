@@ -253,13 +253,14 @@ def build_wrap_square_repro() -> tuple[str, str, list]:
     Geometry:
       - 8.5"x11" letter, 1" margins, so body width is 6.5" = 5,943,600 EMU.
       - Image is 1.6"x1.2" (1,463,040 x 1,097,280 EMU) anchored 1.6" right of
-        page-left and 1.7" below page-top, putting it inside the body box
-        with text wrapping on both sides.
+        page-left and 1.5" below page-top — just under the heading so the
+        first body line vertically overlaps the picture in both Word and
+        our renderers, making the both-sides wrap straightforward to read.
     """
     image_width_emu = int(1.6 * EMU_PER_INCH)
     image_height_emu = int(1.2 * EMU_PER_INCH)
     pos_h_emu = int(1.6 * EMU_PER_INCH)
-    pos_v_emu = int(1.7 * EMU_PER_INCH)
+    pos_v_emu = int(1.5 * EMU_PER_INCH)
 
     drawing_run = anchored_image_xml(
         "rId100", "Float repro image",
