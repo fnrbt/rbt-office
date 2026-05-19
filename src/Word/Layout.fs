@@ -706,9 +706,10 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
 
     let wrapBoundsForY lineY =
         let globalLineY = contentY + (lineY - settings.PaddingTop)
+        let lineBottom = globalLineY + settings.LineHeight
         let active =
             floatObstacles
-            |> List.filter (fun (_, top, _, height) -> globalLineY >= top && globalLineY < top + height)
+            |> List.filter (fun (_, top, _, height) -> lineBottom > top && globalLineY < top + height)
             |> List.map (fun (x, _, width, _) -> x, x + width)
             |> mergeIntervals
 
@@ -777,7 +778,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
     for run in buffer.Runs do
         match run with
         | TextBuffer.Image imgRun ->
-            let imgWidth, imgHeight = WordLayout.Image.printSize imgRun.Width imgRun.Height
+            let imgWidth, imgHeight = WordLayout.Image.canvasSize imgRun.Width imgRun.Height
 
             if currentX + imgWidth > currentLineEnd && not currentSegments.IsEmpty then
                 flushLine ()

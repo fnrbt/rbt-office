@@ -262,11 +262,15 @@ module Floating =
         let positionX = img.PositionX |> Option.defaultValue 0.0
         let positionY = img.PositionY |> Option.defaultValue 0.0
         let x = lineRelativePosition marginLeft currentX img.PositionHRelativeFrom positionX
-        let yOffset = lineRelativePosition contentY 0.0 img.PositionVRelativeFrom positionY
+        // Page-relative posV anchors the image to an absolute page-Y; body-relative
+        // (margin/paragraph/line) anchors it to an offset down from the current line.
+        let y =
+            if isPageRelative img.PositionVRelativeFrom then positionY
+            else contentY + (lineY - paddingTop) + positionY
         {
             Kind = ImageBox img
             X = x
-            Y = contentY + (lineY - paddingTop) + yOffset
+            Y = y
             Width = width
             Height = height
             Wrap = img.Wrap
