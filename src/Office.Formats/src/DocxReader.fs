@@ -887,7 +887,12 @@ module Docx =
         else Unknown normalized
 
     let simpleField (fldNode: XmlNode) : Run option =
-        Xml.attr "instr" fldNode
+        // OOXML serialises the instruction code on the w: namespaced attribute
+        // ("w:instr"). Xml.attr is a plain-string lookup on the attrs map, so
+        // we have to ask for the prefixed form for documents that ship the
+        // namespace declaration this way. Fall back to the bare local name
+        // for parsers/serialisers that strip the prefix.
+        (Xml.attr "w:instr" fldNode |> Option.orElseWith (fun () -> Xml.attr "instr" fldNode))
         |> Option.map (fun code ->
             let result =
                 wElems "r" fldNode
