@@ -99,11 +99,15 @@ type RunContent =
     | BookmarkEnd of string
     | FieldRef of Field
     | EquationXml of string
+    | RenderedPageBreak
     | PageBreak
 
 type Run = {
     Content: RunContent
     Properties: RunProperties
+    BookmarkStart: BookmarkReference option
+    BookmarkEnd: string option
+    RenderedPageBreakBefore: bool
     RevisionId: string option  // For track changes
     RevisionType: string option
     RevisionAuthor: string option
@@ -148,6 +152,7 @@ type ParagraphProperties = {
     FirstLineIndent: string option
     HangingIndent: string option
     RightTabPosition: string option
+    RightTabLeader: string option
     SpacingBefore: string option
     SpacingBeforeAuto: bool option
     SpacingAfter: string option
@@ -545,10 +550,30 @@ module Docx =
             Left = paragraphBorder "left" borders
         })
 
+    let rightTabStop props =
+        wElem "tabs" props
+        |> Option.bind (fun tabs ->
+            Xml.children tabs
+            |> List.tryPick (fun tab ->
+                if Xml.name tab |> Option.exists (fun name -> Ns.stripNs name = "tab") && attr "val" tab = Some "right" then
+                    Some (attr "pos" tab, attr "leader" tab)
+                else
+                    None))
+
     let paragraphProps node =
         let pPr = wElem "pPr" node
         match pPr with
         | Some props ->
+            let rightTab = rightTabStop props
+            let frameAlignment =
+                wElem "framePr" props
+                |> Option.bind (fun frame -> attr "xAlign" frame)
+                |> Option.bind (fun value ->
+                    match value.ToLowerInvariant() with
+                    | "left"
+                    | "center"
+                    | "right" -> Some value
+                    | _ -> None)
             let listInfo =
                 wElem "numPr" props
                 |> Option.bind (fun numPr ->
@@ -567,17 +592,13 @@ module Docx =
                 ContentControlId = None
                 ContentControlTag = None
                 ContentControlAlias = None
-                Alignment = getPropVal "jc" "val" props
+                Alignment = getPropVal "jc" "val" props |> Option.orElse frameAlignment
                 IndentLeft = getPropVal "ind" "left" props
                 IndentRight = getPropVal "ind" "right" props
                 FirstLineIndent = getPropVal "ind" "firstLine" props
                 HangingIndent = getPropVal "ind" "hanging" props
-                RightTabPosition =
-                    wElem "tabs" props
-                    |> Option.bind (fun tabs ->
-                        Xml.children tabs
-                        |> List.tryPick (fun tab ->
-                            if Xml.name tab |> Option.exists (fun name -> Ns.stripNs name = "tab") && attr "val" tab = Some "right" then attr "pos" tab else None))
+                RightTabPosition = rightTab |> Option.bind fst
+                RightTabLeader = rightTab |> Option.bind snd
                 SpacingBefore = getPropVal "spacing" "before" props
                 SpacingBeforeAuto = getPropVal "spacing" "beforeAutospacing" props |> Option.map (fun value -> value = "1" || value.ToLowerInvariant() = "true")
                 SpacingAfter = getPropVal "spacing" "after" props
@@ -612,6 +633,7 @@ module Docx =
                 FirstLineIndent = None
                 HangingIndent = None
                 RightTabPosition = None
+                RightTabLeader = None
                 SpacingBefore = None
                 SpacingBeforeAuto = None
                 SpacingAfter = None
@@ -905,6 +927,9 @@ module Docx =
                 |> Option.defaultValue (runProps fldNode)
             { Content = FieldRef { FieldType = fieldTypeFromCode code; Code = code; Result = if result = "" then None else Some result }
               Properties = props
+              BookmarkStart = None
+              BookmarkEnd = None
+              RenderedPageBreakBefore = false
               RevisionId = None
               RevisionType = None
               RevisionAuthor = None
@@ -939,91 +964,295 @@ module Docx =
            | "" -> None
            | text -> Some text
 
+    type private RunToken =
+        | RunToken of Run
+        | FieldBeginToken of RunProperties
+        | FieldSeparateToken
+        | FieldEndToken
+        | FieldInstructionToken of string
+
+    type private ComplexFieldState = {
+        Properties: RunProperties
+        CodeParts: string list
+        ResultRuns: Run list
+        CollectingResult: bool
+    }
+
+    let private textFromRun (run: Run) =
+        match run.Content with
+        | Text text -> text
+        | Link link -> link.Text
+        | FieldRef field -> field.Result |> Option.defaultValue field.Code
+        | Image img -> img.Description |> Option.map (sprintf "[Image: %s]") |> Option.defaultValue "[Image]"
+        | NoteRef note -> sprintf "[%s %s]" note.NoteType note.Id
+        | EquationXml _ -> "[Equation]"
+        | CommentReference _
+        | BookmarkStart _
+        | BookmarkEnd _
+        | RenderedPageBreak
+        | PageBreak -> ""
+
+    let private appendRun (output: Run list) (stack: ComplexFieldState list) (run: Run) =
+        match stack with
+        | [] -> output @ [run], stack
+        | current :: rest ->
+            output, { current with ResultRuns = current.ResultRuns @ [run] } :: rest
+
+    let private completeFieldRun (field: ComplexFieldState) : Run =
+        let code = field.CodeParts |> String.concat "" |> fun value -> value.Trim()
+        let result = field.ResultRuns |> List.map textFromRun |> String.concat ""
+        let props =
+            field.ResultRuns
+            |> List.tryHead
+            |> Option.map (fun run -> run.Properties)
+            |> Option.defaultValue field.Properties
+        let firstResult = field.ResultRuns |> List.tryHead
+        {
+            Content = FieldRef {
+                FieldType = fieldTypeFromCode code
+                Code = code
+                Result = if result = "" then None else Some result
+            }
+            Properties = props
+            BookmarkStart = firstResult |> Option.bind (fun run -> run.BookmarkStart)
+            BookmarkEnd = firstResult |> Option.bind (fun run -> run.BookmarkEnd)
+            RenderedPageBreakBefore = firstResult |> Option.exists (fun run -> run.RenderedPageBreakBefore)
+            RevisionId = firstResult |> Option.bind (fun run -> run.RevisionId)
+            RevisionType = firstResult |> Option.bind (fun run -> run.RevisionType)
+            RevisionAuthor = firstResult |> Option.bind (fun run -> run.RevisionAuthor)
+            RevisionDate = firstResult |> Option.bind (fun run -> run.RevisionDate)
+        }
+
+    let private flattenIncompleteField (output: Run list) (stack: ComplexFieldState list) =
+        match stack with
+        | [] -> output, stack
+        | current :: rest ->
+            let output, rest =
+                current.ResultRuns
+                |> List.fold (fun (currentOutput, currentStack) run -> appendRun currentOutput currentStack run) (output, rest)
+            output, rest
+
+    let private collapseComplexFieldTokens (tokens: RunToken list) =
+        let mutable output: Run list = []
+        let mutable stack: ComplexFieldState list = []
+
+        for token in tokens do
+            match token with
+            | RunToken run ->
+                let newOutput, newStack = appendRun output stack run
+                output <- newOutput
+                stack <- newStack
+            | FieldBeginToken props ->
+                stack <- { Properties = props; CodeParts = []; ResultRuns = []; CollectingResult = false } :: stack
+            | FieldInstructionToken code ->
+                match stack with
+                | current :: rest when not current.CollectingResult ->
+                    stack <- { current with CodeParts = current.CodeParts @ [code] } :: rest
+                | _ -> ()
+            | FieldSeparateToken ->
+                match stack with
+                | current :: rest -> stack <- { current with CollectingResult = true } :: rest
+                | [] -> ()
+            | FieldEndToken ->
+                match stack with
+                | current :: rest ->
+                    stack <- rest
+                    let fieldRun = completeFieldRun current
+                    let newOutput, newStack = appendRun output stack fieldRun
+                    output <- newOutput
+                    stack <- newStack
+                | [] -> ()
+
+        while not stack.IsEmpty do
+            let newOutput, newStack = flattenIncompleteField output stack
+            output <- newOutput
+            stack <- newStack
+
+        output
+
+    let private attachRunMarkers (runs: Run list) =
+        let mutable pendingStarts: BookmarkReference list = []
+        let mutable pendingRenderedPageBreak = false
+        let output = ResizeArray<Run>()
+
+        let attachStart run =
+            let withBookmark =
+                match pendingStarts with
+                | [] -> run
+                | first :: _ -> { run with BookmarkStart = Some first }
+            if pendingRenderedPageBreak then { withBookmark with RenderedPageBreakBefore = true } else withBookmark
+
+        for run in runs do
+            match run.Content with
+            | BookmarkStart bookmark ->
+                pendingStarts <- pendingStarts @ [bookmark]
+            | BookmarkEnd id ->
+                if output.Count > 0 then
+                    let previous = output.[output.Count - 1]
+                    output.[output.Count - 1] <- { previous with BookmarkEnd = Some id }
+                pendingStarts <- []
+            | RenderedPageBreak ->
+                pendingRenderedPageBreak <- true
+            | _ ->
+                output.Add(attachStart run)
+                pendingStarts <- []
+                pendingRenderedPageBreak <- false
+
+        output |> Seq.toList
+
+    let private clearTocHyperlinkStyle (run: Run) =
+        let props =
+            match run.Properties.Style with
+            | Some style when style = "Hyperlink" -> { run.Properties with Style = None }
+            | _ -> run.Properties
+        let content =
+            match run.Content with
+            | Link link ->
+                let linkProps =
+                    match link.Properties.Style with
+                    | Some style when style = "Hyperlink" -> { link.Properties with Style = None }
+                    | _ -> link.Properties
+                Link { link with Properties = linkProps }
+            | _ -> run.Content
+        { run with Content = content; Properties = props }
+
+    let private normalizeTocRuns (props: ParagraphProperties) (runs: Run list) =
+        match props.Style with
+        | Some style when style.StartsWith("TOC", StringComparison.OrdinalIgnoreCase) ->
+            runs |> List.map clearTocHyperlinkStyle
+        | _ -> runs
+
     // Run extraction preserves child order. In WordprocessingML, w:br is a run
     // child at the exact break location, not a paragraph-level flag.
-    let runsFromRun (rNode: XmlNode) : Run list =
+    let private tokensFromRun (rNode: XmlNode) : RunToken list =
         let props = runProps rNode
         let revId = wElem "rPr" rNode
                     |> Option.bind (wElem "rPrChange")
                     |> Option.bind (Xml.attr "id")
         let makeRun content =
-            { Content = content; Properties = props; RevisionId = revId; RevisionType = None; RevisionAuthor = None; RevisionDate = None }
+            { Content = content
+              Properties = props
+              BookmarkStart = None
+              BookmarkEnd = None
+              RenderedPageBreakBefore = false
+              RevisionId = revId
+              RevisionType = None
+              RevisionAuthor = None
+              RevisionDate = None }
 
-        let childRuns =
+        let childTokens =
             Xml.children rNode
             |> List.choose (fun child ->
                 Xml.name child
                 |> Option.bind (fun name ->
                     match Ns.stripNs name with
                     | "t"
-                    | "delText" -> Xml.text child |> Option.map (Text >> makeRun)
-                    | "tab" -> Some (makeRun (Text "\t"))
+                    | "delText" -> Xml.text child |> Option.map (Text >> makeRun >> RunToken)
+                    | "tab" -> Some (makeRun (Text "\t") |> RunToken)
                     | "br" ->
                         match attr "type" child with
-                        | Some "page" -> Some (makeRun PageBreak)
-                        | _ -> Some (makeRun (Text "\n"))
+                        | Some "page" -> Some (makeRun PageBreak |> RunToken)
+                        | _ -> Some (makeRun (Text "\n") |> RunToken)
+                    | "lastRenderedPageBreak" -> Some (makeRun RenderedPageBreak |> RunToken)
                     | "drawing"
-                    | "pict" -> imageData rNode |> Option.map (Image >> makeRun)
-                    | "commentReference" -> attr "id" child |> Option.map (CommentReference >> makeRun)
-                    | "footnoteReference" -> attr "id" child |> Option.map (fun id -> makeRun (NoteRef { Id = id; NoteType = "footnote" }))
-                    | "endnoteReference" -> attr "id" child |> Option.map (fun id -> makeRun (NoteRef { Id = id; NoteType = "endnote" }))
-                    | "fldChar" -> fieldData rNode |> Option.map (FieldRef >> makeRun)
+                    | "pict" -> imageData rNode |> Option.map (Image >> makeRun >> RunToken)
+                    | "commentReference" -> attr "id" child |> Option.map (CommentReference >> makeRun >> RunToken)
+                    | "footnoteReference" -> attr "id" child |> Option.map (fun id -> makeRun (NoteRef { Id = id; NoteType = "footnote" }) |> RunToken)
+                    | "endnoteReference" -> attr "id" child |> Option.map (fun id -> makeRun (NoteRef { Id = id; NoteType = "endnote" }) |> RunToken)
+                    | "fldChar" ->
+                        match attr "fldCharType" child with
+                        | Some "begin" -> Some (FieldBeginToken props)
+                        | Some "separate" -> Some FieldSeparateToken
+                        | Some "end" -> Some FieldEndToken
+                        | _ -> None
+                    | "instrText" -> Xml.text child |> Option.map FieldInstructionToken
                     | _ -> None))
 
-        if not childRuns.IsEmpty then childRuns
+        if not childTokens.IsEmpty then childTokens
         else
             match imageData rNode with
-            | Some img -> [makeRun (Image img)]
+            | Some img -> [makeRun (Image img) |> RunToken]
             | None ->
                 match commentReference rNode with
-                | Some commentId -> [makeRun (CommentReference commentId)]
+                | Some commentId -> [makeRun (CommentReference commentId) |> RunToken]
                 | None ->
                     match noteReference rNode with
-                    | Some noteRef -> [makeRun (NoteRef noteRef)]
+                    | Some noteRef -> [makeRun (NoteRef noteRef) |> RunToken]
                     | None ->
                         match fieldData rNode with
-                        | Some field -> [makeRun (FieldRef field)]
-                        | None -> textContent rNode |> Option.map (Text >> makeRun >> List.singleton) |> Option.defaultValue []
+                        | Some field -> [makeRun (FieldRef field) |> RunToken]
+                        | None -> textContent rNode |> Option.map (Text >> makeRun >> RunToken >> List.singleton) |> Option.defaultValue []
+
+    let runsFromRun (rNode: XmlNode) : Run list =
+        tokensFromRun rNode |> collapseComplexFieldTokens |> attachRunMarkers
+
+    let private tokenHasField = function
+        | FieldBeginToken _
+        | FieldSeparateToken
+        | FieldEndToken
+        | FieldInstructionToken _ -> true
+        | RunToken _ -> false
+
+    let private hyperlinkRunProps (props: RunProperties) =
+        match props.Style with
+        | Some _ -> props
+        | None -> { props with Style = Some "Hyperlink" }
+
+    let private hyperlinkToken = function
+        | RunToken run -> RunToken { run with Properties = hyperlinkRunProps run.Properties }
+        | FieldBeginToken props -> FieldBeginToken (hyperlinkRunProps props)
+        | token -> token
+
+    let private tokensFromHyperlink (hlNode: XmlNode) : RunToken list =
+        let rId = Xml.attr "r:id" hlNode
+        let tokens = wElems "r" hlNode |> List.collect tokensFromRun
+
+        if tokens |> List.exists tokenHasField then
+            tokens |> List.map hyperlinkToken
+        else
+            let runs = tokens |> collapseComplexFieldTokens |> attachRunMarkers
+
+            // Extract text from runs
+            let text =
+                runs
+                |> List.map (fun r ->
+                    match r.Content with
+                    | Text t -> t
+                    | _ -> "")
+                |> String.concat ""
+
+            let props =
+                runs
+                |> List.tryHead
+                |> Option.map (fun r -> hyperlinkRunProps r.Properties)
+                |> Option.defaultValue {
+                    Style = Some "Hyperlink"
+                    Bold = None; Italic = None; Underline = None
+                    AllCaps = None; SmallCaps = None
+                    FontSize = None; FontFamily = None; ThemeFont = None; Color = None
+                    ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None; VertAlign = None
+                }
+
+            [RunToken {
+                Content = Link {
+                    Text = text
+                    Target = None  // Resolved from relationships later
+                    RelationshipId = rId
+                    Properties = props
+                }
+                Properties = props
+                BookmarkStart = None
+                BookmarkEnd = None
+                RenderedPageBreakBefore = false
+                RevisionId = None
+                RevisionType = None
+                RevisionAuthor = None
+                RevisionDate = None
+            }]
 
     // Hyperlink extraction
     let hyperlink (hlNode: XmlNode) : Run list =
-        let rId = Xml.attr "r:id" hlNode
-        let runs = wElems "r" hlNode |> List.collect runsFromRun
-
-        // Extract text from runs
-        let text =
-            runs
-            |> List.map (fun r ->
-                match r.Content with
-                | Text t -> t
-                | _ -> "")
-            |> String.concat ""
-
-        let props =
-            runs
-            |> List.tryHead
-            |> Option.map (fun r -> r.Properties)
-            |> Option.defaultValue {
-                Style = None
-                Bold = None; Italic = None; Underline = None
-                AllCaps = None; SmallCaps = None
-                FontSize = None; FontFamily = None; ThemeFont = None; Color = None
-                ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None; VertAlign = None
-            }
-
-        [{
-            Content = Link {
-                Text = text
-                Target = None  // Resolved from relationships later
-                RelationshipId = rId
-                Properties = props
-            }
-            Properties = props
-            RevisionId = None
-            RevisionType = None
-            RevisionAuthor = None
-            RevisionDate = None
-        }]
+        tokensFromHyperlink hlNode |> collapseComplexFieldTokens |> attachRunMarkers
 
     let private hasRenderedPageBreakBeforeText (pNode: XmlNode) =
         let rec loop seenText nodes =
@@ -1067,41 +1296,43 @@ module Docx =
             else
                 withRenderedBreak
 
-        let rec runsFromNode node =
+        let rec tokensFromNode node =
             Xml.children node
             |> List.collect (fun child ->
                 match Xml.name child with
                 | Some name when Ns.stripNs name = "r" ->
-                    runsFromRun child
+                    tokensFromRun child
                 | Some name when Ns.stripNs name = "hyperlink" ->
-                    hyperlink child
+                    tokensFromHyperlink child
                 | Some name when Ns.stripNs name = "fldSimple" ->
-                    simpleField child |> Option.toList
+                    simpleField child |> Option.map RunToken |> Option.toList
                 | Some name when Ns.stripNs name = "oMath" || Ns.stripNs name = "oMathPara" ->
-                    [{ Content = EquationXml (xmlToString child); Properties = runProps child; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None }]
+                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None }]
                 | Some name when Ns.stripNs name = "bookmarkStart" ->
-                    Xml.attr "id" child
-                    |> Option.map (fun id -> { Content = BookmarkStart { Id = id; Name = Xml.attr "name" child }; Properties = runProps child; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None })
+                    attr "id" child
+                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None })
                     |> Option.toList
                 | Some name when Ns.stripNs name = "bookmarkEnd" ->
-                    Xml.attr "id" child
-                    |> Option.map (fun id -> { Content = BookmarkEnd id; Properties = runProps child; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None })
+                    attr "id" child
+                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None })
                     |> Option.toList
                 | Some name when Ns.stripNs name = "ins" || Ns.stripNs name = "del" ->
                     let revisionType = if Ns.stripNs name = "del" then "delete" else "insert"
                     let revisionId = Xml.attr "id" child |> Option.orElse (Xml.attr "w:id" child)
                     let author = Xml.attr "author" child |> Option.orElse (Xml.attr "w:author" child)
                     let date = Xml.attr "date" child |> Option.orElse (Xml.attr "w:date" child)
-                    runsFromNode child
-                    |> List.map (fun run -> { run with RevisionId = revisionId; RevisionType = Some revisionType; RevisionAuthor = author; RevisionDate = date })
+                    tokensFromNode child
+                    |> List.map (function
+                        | RunToken run -> RunToken { run with RevisionId = revisionId; RevisionType = Some revisionType; RevisionAuthor = author; RevisionDate = date }
+                        | token -> token)
                 | Some name when Ns.stripNs name = "sdt" ->
                     Ns.childNs "sdtContent" child
-                    |> Option.map runsFromNode
+                    |> Option.map tokensFromNode
                     |> Option.defaultValue []
                 | _ -> [])
 
         // Extract runs and hyperlinks
-        let runs = runsFromNode pNode
+        let runs = tokensFromNode pNode |> collapseComplexFieldTokens |> attachRunMarkers |> normalizeTocRuns props
 
         { Runs = runs; Properties = props }
 
@@ -1413,6 +1644,7 @@ module Styles =
         }
 
     let parseParagraphPropsFromStyle (pPr: XmlNode) : ParagraphProperties =
+        let rightTab = Docx.rightTabStop pPr
         let listInfo =
             Ns.childNs "numPr" pPr
             |> Option.bind (fun numPr ->
@@ -1435,12 +1667,8 @@ module Styles =
             IndentRight = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "right")
             FirstLineIndent = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "firstLine")
             HangingIndent = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "hanging")
-            RightTabPosition =
-                Ns.childNs "tabs" pPr
-                |> Option.bind (fun tabs ->
-                    Xml.children tabs
-                    |> List.tryPick (fun tab ->
-                        if Xml.name tab |> Option.exists (fun name -> Ns.stripNs name = "tab") && Docx.attr "val" tab = Some "right" then Docx.attr "pos" tab else None))
+            RightTabPosition = rightTab |> Option.bind fst
+            RightTabLeader = rightTab |> Option.bind snd
             SpacingBefore = Ns.childNs "spacing" pPr |> Option.bind (Docx.attr "before")
             SpacingBeforeAuto = Ns.childNs "spacing" pPr |> Option.bind (Docx.attr "beforeAutospacing") |> Option.map (fun value -> value = "1" || value.ToLowerInvariant() = "true")
             SpacingAfter = Ns.childNs "spacing" pPr |> Option.bind (Docx.attr "after")
@@ -2472,6 +2700,7 @@ let extractText (doc: WordDocument) : string =
         | BookmarkEnd _ -> ""
         | FieldRef field -> field.Result |> Option.defaultValue $"[Field:{field.Code}]"
         | EquationXml _ -> "[Equation]"
+        | RenderedPageBreak -> ""
         | PageBreak -> "\n"
 
     let rec paraText (para: Paragraph) =
@@ -2547,6 +2776,15 @@ let private wordTwipsToPoints (twips: string option) =
         match System.Double.TryParse(value) with
         | true, parsed -> Some (parsed / 15.0)
         | false, _ -> None)
+
+let private wordSpacingTwipsToPoints (twips: string option) =
+    twips
+    |> Option.bind (fun value ->
+        match System.Double.TryParse(value) with
+        | true, parsed -> Some (parsed / 20.0)
+        | false, _ -> None)
+
+let private wordAutoSpacing = 14.0
 
 let private wordLineSpacingToMultiple fontSize (line: string option) (lineRule: string option) =
     line
@@ -2635,8 +2873,8 @@ let private bordersToEditor (borders: CellBorders option) =
 
 let private paragraphLayoutProps fontSize (props: ParagraphProperties) =
     let spacingAfter =
-        if props.SpacingAfterAuto = Some true then Some 0.0
-        else wordTwipsToPoints props.SpacingAfter
+        if props.SpacingAfterAuto = Some true then Some wordAutoSpacing
+        else wordSpacingTwipsToPoints props.SpacingAfter
     let firstLineIndent =
         match wordTwipsToPoints props.FirstLineIndent, wordTwipsToPoints props.HangingIndent with
         | Some firstLine, _ -> Some firstLine
@@ -2650,7 +2888,8 @@ let private paragraphLayoutProps fontSize (props: ParagraphProperties) =
         "IndentRight" ==> wordTwipsToPoints props.IndentRight
         "FirstLineIndent" ==> firstLineIndent
         "RightTabPosition" ==> wordTwipsToPoints props.RightTabPosition
-        "SpacingBefore" ==> (if props.SpacingBeforeAuto = Some true then Some 0.0 else wordTwipsToPoints props.SpacingBefore)
+        "RightTabLeader" ==> props.RightTabLeader
+        "SpacingBefore" ==> (if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore)
         "SpacingAfter" ==> spacingAfter
         "LineSpacing" ==> wordLineSpacingToMultiple fontSize props.LineSpacing props.LineRule
         "LineSpacingRule" ==> props.LineRule
@@ -2715,6 +2954,7 @@ let private mergeParagraphProperties baseProps props = {
     FirstLineIndent = props.FirstLineIndent |> Option.orElse baseProps.FirstLineIndent
     HangingIndent = props.HangingIndent |> Option.orElse baseProps.HangingIndent
     RightTabPosition = props.RightTabPosition |> Option.orElse baseProps.RightTabPosition
+    RightTabLeader = props.RightTabLeader |> Option.orElse baseProps.RightTabLeader
     SpacingBefore = props.SpacingBefore |> Option.orElse baseProps.SpacingBefore
     SpacingBeforeAuto = props.SpacingBeforeAuto |> Option.orElse baseProps.SpacingBeforeAuto
     SpacingAfter = props.SpacingAfter |> Option.orElse baseProps.SpacingAfter
@@ -2896,7 +3136,11 @@ let private resolvedRunProperties (styleMap: Map<string, StyleDefinition>) (para
     let baseRun, _ = resolveStyle styleMap styleId
     let characterRun, _ = resolveStyle styleMap runProps.Style
     let paragraphRun = paraProps.ParagraphRunProperties |> Option.defaultValue emptyRunProperties
-    mergeRunProperties (mergeRunProperties (mergeRunProperties (mergeRunProperties docDefaultRun baseRun) paragraphRun) characterRun) runProps
+    let merged = mergeRunProperties (mergeRunProperties (mergeRunProperties (mergeRunProperties docDefaultRun baseRun) paragraphRun) characterRun) runProps
+    if merged.FontFamily.IsNone && merged.ThemeFont.IsNone then
+        { merged with FontFamily = docDefaultRun.FontFamily; ThemeFont = docDefaultRun.ThemeFont }
+    else
+        merged
 
 let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) : obj array =
     let styleMap = buildStyleMap styles
@@ -2923,6 +3167,12 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                 para.Runs
                 |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
                 || effectiveParaProps.SectionBreak = Some "nextPage"
+            let bookmarkRunProps (run: Run) = [
+                "BookmarkStartId" ==> (run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id))
+                "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
+                "BookmarkEndId" ==> run.BookmarkEnd
+                "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
+            ]
 
             // Convert Run to EditorRun format
             let editorRuns =
@@ -2932,7 +3182,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                     match run.Content with
                     | Text text ->
                         // Text run
-                        Some (createObj [
+                        Some (createObj ([
                             "Text" ==> text
                             "Style" ==> run.Properties.Style
                             "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -2951,7 +3201,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                             "RevisionType" ==> run.RevisionType
                             "RevisionAuthor" ==> run.RevisionAuthor
                             "RevisionDate" ==> run.RevisionDate
-                        ])
+                        ] @ bookmarkRunProps run))
                     | Image img ->
                         // Image run - resolve relationship ID to data URL
                         let imageSrc =
@@ -2992,7 +3242,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                         ])
                     | Link link ->
                         // Hyperlink as text run with link property
-                        Some (createObj [
+                        Some (createObj ([
                             "Text" ==> link.Text
                             "Style" ==> link.Properties.Style
                             "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -3008,7 +3258,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                             "VertAlign" ==> effectiveRunProps.VertAlign
                             "IsImage" ==> false
                             "Hyperlink" ==> link.Target
-                        ])
+                        ] @ bookmarkRunProps run))
                         | CommentReference id ->
                             Some (createObj [
                                 "Text" ==> (sprintf "[Comment %s]" id)
@@ -3072,7 +3322,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "BookmarkEndId" ==> id
                             ])
                         | FieldRef field ->
-                            Some (createObj [
+                            Some (createObj ([
                                 "Text" ==> (field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
                                 "Style" ==> run.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -3093,7 +3343,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "RevisionType" ==> run.RevisionType
                                 "RevisionAuthor" ==> run.RevisionAuthor
                                 "RevisionDate" ==> run.RevisionDate
-                            ])
+                            ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (createObj [
                                 "Text" ==> "[Equation]"
@@ -3109,6 +3359,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "IsEquation" ==> true
                                 "EquationXml" ==> xml
                             ])
+                        | RenderedPageBreak -> None
                         | PageBreak -> None
                 )
                 |> List.toArray
@@ -3132,6 +3383,8 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                     | true, level -> ("Heading", max 1 (min 3 level))
                     | false, _ -> ("Heading", 1)
                 | _ -> ("Paragraph", 0)
+
+            let layoutParaProps = { effectiveParaProps with ParagraphBorders = para.Properties.ParagraphBorders }
 
             Some (createObj ([
                 "Type" ==> itemType
@@ -3157,7 +3410,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                 "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                 "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                 "ParagraphMarkFontSize" ==> paragraphFontSize
-            ] @ paragraphLayoutProps paragraphFontSize effectiveParaProps))
+            ] @ paragraphLayoutProps paragraphFontSize layoutParaProps))
         | Tbl table ->
             // Convert table to editor format
             let convertCellParagraph (para: Paragraph) : obj =
@@ -3166,6 +3419,12 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                     para.Runs
                     |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
                     || effectiveParaProps.SectionBreak = Some "nextPage"
+                let bookmarkRunProps (run: Run) = [
+                    "BookmarkStartId" ==> (run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id))
+                    "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
+                    "BookmarkEndId" ==> run.BookmarkEnd
+                    "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
+                ]
 
                 let editorRuns =
                     para.Runs
@@ -3173,7 +3432,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                         let effectiveRunProps = resolvedRunProperties styleMap effectiveParaProps run.Properties
                         match run.Content with
                         | Text text ->
-                            Some (createObj [
+                            Some (createObj ([
                                 "Text" ==> text
                                 "Style" ==> run.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -3192,7 +3451,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "RevisionType" ==> run.RevisionType
                                 "RevisionAuthor" ==> run.RevisionAuthor
                                 "RevisionDate" ==> run.RevisionDate
-                            ])
+                            ] @ bookmarkRunProps run))
                         | Image img ->
                             let imageSrc =
                                 images
@@ -3232,7 +3491,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                             ])
                         | Link link ->
                             let effectiveLinkProps = resolvedRunProperties styleMap effectiveParaProps link.Properties
-                            Some (createObj [
+                            Some (createObj ([
                                 "Text" ==> link.Text
                                 "Style" ==> link.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveLinkProps.Bold
@@ -3248,7 +3507,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "VertAlign" ==> effectiveLinkProps.VertAlign
                                 "IsImage" ==> false
                                 "Hyperlink" ==> link.Target
-                            ])
+                            ] @ bookmarkRunProps run))
                         | CommentReference id ->
                             Some (createObj [
                                 "Text" ==> (sprintf "[Comment %s]" id)
@@ -3312,7 +3571,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "BookmarkEndId" ==> id
                             ])
                         | FieldRef field ->
-                            Some (createObj [
+                            Some (createObj ([
                                 "Text" ==> (field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
                                 "Style" ==> run.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -3333,7 +3592,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "RevisionType" ==> run.RevisionType
                                 "RevisionAuthor" ==> run.RevisionAuthor
                                 "RevisionDate" ==> run.RevisionDate
-                            ])
+                            ] @ bookmarkRunProps run))
                         | EquationXml xml ->
                             Some (createObj [
                                 "Text" ==> "[Equation]"
@@ -3349,6 +3608,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "IsEquation" ==> true
                                 "EquationXml" ==> xml
                             ])
+                        | RenderedPageBreak -> None
                         | PageBreak -> None
                     )
                     |> List.toArray
@@ -3368,6 +3628,8 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                     |> function
                         | [] -> fallback
                         | sizes -> List.max sizes
+
+                let layoutParaProps = { effectiveParaProps with ParagraphBorders = para.Properties.ParagraphBorders }
 
                 createObj ([
                     "Runs" ==> editorRuns
@@ -3397,7 +3659,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                     "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                     "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                     "ParagraphMarkFontSize" ==> paragraphFontSize
-                ] @ paragraphLayoutProps paragraphFontSize effectiveParaProps)
+                ] @ paragraphLayoutProps paragraphFontSize layoutParaProps)
 
             let tableStyle = resolveTableStyle styleMap table.StyleId
             let tableStyleProperties = tableStyle |> Option.bind (fun style -> style.TableProperties)

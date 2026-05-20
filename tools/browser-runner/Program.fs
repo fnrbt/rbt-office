@@ -54,6 +54,9 @@ let private getQueryParam (_name: string) : string = jsNative
 [<Emit("(document.fonts ? document.fonts.ready.then(function(){}) : Promise.resolve())")>]
 let private documentFontsReady () : JS.Promise<unit> = jsNative
 
+[<Emit("Promise.race([(document.fonts ? document.fonts.ready.then(function(){}) : Promise.resolve()), new Promise(function(resolve) { setTimeout(resolve, $0); })])")>]
+let private documentFontsReadyOrTimeout (_timeoutMs: int) : JS.Promise<unit> = jsNative
+
 [<Emit("$0.catch($1)")>]
 let private promiseCatch (_promise: JS.Promise<'a>) (_handler: obj -> obj) : JS.Promise<'a> = jsNative
 
@@ -101,6 +104,9 @@ let private loadArrayBuffer (state: RunnerState) sourceName (buffer: obj) =
         let editor = ensureEditor state
         let! package = Formats.Processors.forEditorPackage buffer
         WordApi.importFromDocxPackage editor package
+        do! documentFontsReadyOrTimeout 1500
+        WordApi.refreshFields editor
+        WordApi.clearSelection editor
         setTimeout (fun () ->
             let segments = getLayoutSegments state
             status state (sprintf "Loaded %s: %d layout segments" sourceName segments.Length)) 0

@@ -293,8 +293,12 @@ let private paragraphVisibleFitHeight (paragraphStyle: ParagraphStyle) (layout: 
         let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata
         match layout.Lines with
         | [] -> max 0.0 (layout.Height - spacingAfter)
-        // Word does not place a one-line paragraph at the page bottom unless its
-        // full paragraph box, including after-spacing, fits on that page.
+        // Word allows a single-line heading to sit at the page bottom even when
+        // its after-spacing falls beyond the printable body.
+        | [line] when paragraphStyle.OutlineLevel.IsSome || layout.Metadata.Style = Some "Heading1" ->
+            max 0.0 ((line.Y - layout.Y) + lineVisibleFitHeight line)
+        // Non-heading one-line paragraphs still need their full paragraph box,
+        // including after-spacing, to fit on the page.
         | [_] -> layout.Height
         | _ ->
             let lastLine = layout.Lines |> List.last
@@ -336,6 +340,12 @@ let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
                 lines
     | _ -> lines
 
+let private lineHasRenderedPageBreakBefore (line: MeasuredLine) =
+    line.Segments
+    |> List.exists (function
+        | TextSegment (_, style, _, _, _) -> style.RenderedPageBreakBefore
+        | ImageSegment _ -> false)
+
 let private paginateLines settings widowControl (lines: MeasuredLine list) =
     let mutable delta = 0.0
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
@@ -353,7 +363,8 @@ let private paginateLines settings widowControl (lines: MeasuredLine list) =
         let contentBottom =
             WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
             - footnoteReserveHeight settings pageFootnotes
-        if shiftedY > contentTop && shiftedY + lineVisibleFitHeight line > contentBottom + pageFitTolerance then
+        let renderedBreakBefore = lineHasRenderedPageBreakBefore line
+        if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineVisibleFitHeight line > contentBottom + pageFitTolerance) then
             let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
             delta <- delta + (nextY - shiftedY)
             let nextPageIndex = pageIndexForY settings nextY
@@ -389,7 +400,7 @@ let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
 
 // Word line boxes include font leading beyond the nominal font size.
 let private wordLineBoxFactor = 1.20
-let private wordSingleLineBoxFactor = 1.316
+let private wordSingleLineBoxFactor = 1.15
 let private monospaceLineBoxFactor = 1.18
 let private tableCellDefaultLineBoxFactor = 1.336
 // Matches Word's visual single-line pitch for explicit 11pt TableGrid cell paragraphs.
@@ -784,14 +795,53 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                 y <- y + lineHeight
                 moveToWrappableLine ()
 
-    let tabWidth () =
+    let runs = buffer.Runs |> List.toArray
+
+    let followingTextWidth runIndex currentTextStart (currentDisplayText: string) currentDisplayStyle =
+        let mutable width = 0.0
+        let addTextUntilBreak (displayText: string) displayStyle start =
+            if start >= displayText.Length then false
+            else
+                let text = displayText.Substring(start)
+                let stop =
+                    text
+                    |> Seq.tryFindIndex (fun ch -> ch = '\t' || ch = '\r' || ch = '\n')
+                    |> Option.defaultValue text.Length
+                if stop > 0 then
+                    width <- width + measureRange displayText displayStyle start stop
+                stop < text.Length
+
+        let mutable index = runIndex
+        let mutable keepGoing = true
+        while keepGoing && index < runs.Length do
+            match runs.[index] with
+            | TextBuffer.Text nextRun ->
+                let rawText = TextBuffer.slice nextRun.Start nextRun.Length buffer
+                let displayText =
+                    if index = runIndex then currentDisplayText
+                    else WordLayout.Text.displayText nextRun.Style rawText
+                let displayStyle =
+                    if index = runIndex then currentDisplayStyle
+                    else WordLayout.Text.displayStyle nextRun.Style
+                let start = if index = runIndex then currentTextStart else 0
+                if addTextUntilBreak displayText displayStyle start then keepGoing <- false
+            | TextBuffer.Image _ -> keepGoing <- false
+            index <- index + 1
+        width
+
+    let tabWidth runIndex currentTextStart (currentDisplayText: string) currentDisplayStyle =
         let defaultTab = (floor (currentX / 48.0) + 1.0) * 48.0
-        let target = rightTabPosition |> Option.defaultValue defaultTab |> min currentLineEnd
-        max 12.0 (target - currentX - 24.0)
+        match rightTabPosition with
+        | Some rightTab ->
+            let target = min rightTab currentLineEnd
+            max 0.0 (target - currentX - followingTextWidth runIndex currentTextStart currentDisplayText currentDisplayStyle)
+        | None ->
+            max 12.0 (min defaultTab currentLineEnd - currentX)
 
     moveToWrappableLine ()
 
-    for run in buffer.Runs do
+    for runIndex in 0 .. runs.Length - 1 do
+        let run = runs.[runIndex]
         match run with
         | TextBuffer.Image imgRun ->
             let imgWidth, imgHeight = WordLayout.Image.canvasSize imgRun.Width imgRun.Height
@@ -841,6 +891,9 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             if imgRun.Floating && not alreadyPlaced then placedBoxes <- floatingBox :: placedBoxes
 
         | TextBuffer.Text textRun ->
+            if textRun.Style.RenderedPageBreakBefore && not currentSegments.IsEmpty then
+                flushLine ()
+
             let runText = TextBuffer.slice textRun.Start textRun.Length buffer
             let displayRunText = WordLayout.Text.displayText textRun.Style runText
             let displayRunStyle = WordLayout.Text.displayStyle textRun.Style
@@ -879,7 +932,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                                 moveToWrappableLine ()
 
                             let width =
-                                if remaining.Contains("\t") then tabWidth ()
+                                if remaining.Contains("\t") then tabWidth runIndex (consumed + remaining.Length) displayRunText displayRunStyle
                                 else measureRange displayRunText displayRunStyle consumed remaining.Length
                             let fitWidth =
                                 if remaining.Contains("\t") then width
@@ -947,7 +1000,9 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let rightIndent = WordLayout.Paragraph.rightIndent metadata
     let firstLineIndent = WordLayout.Paragraph.firstLineIndent metadata
     let rawSpacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle metadata
-    let spacingBefore = rawSpacingBefore
+    let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
+    let startsAtPageTop = abs (y - WordLayout.Page.contentTop settings.PaddingTop pageTop) < 0.01
+    let spacingBefore = if startsAtPageTop then 0.0 else rawSpacingBefore
     let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle metadata
     let lineSpacing = WordLayout.Paragraph.lineSpacing paragraphStyle metadata
     let lineSpacingRule = WordStyles.lineSpacingRule paragraphStyle metadata
@@ -1020,7 +1075,8 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         adjustedLines
         |> List.map (fun line -> { line with Height = lineHeightWithMarker line })
 
-    let pagedLines = paginateLines settings (widowControl paragraphStyle metadata) adjustedLines
+    let hasRenderedPageBreak = adjustedLines |> List.exists lineHasRenderedPageBreakBefore
+    let pagedLines = paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) adjustedLines
 
     let blockHeight =
         if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing
@@ -1522,6 +1578,10 @@ let private layoutDocumentWithRangeAndInitial
     let paragraphTextIsEmpty (para: ParagraphBlock) =
         TextBuffer.toString para.Buffer |> fun text -> text.Trim() = ""
 
+    let paragraphTextIsNonbreakingBlank (para: ParagraphBlock) =
+        let text = TextBuffer.toString para.Buffer
+        text <> "" && text |> Seq.forall (fun ch -> System.Char.IsWhiteSpace ch || ch = '\u00A0')
+
     let previousBlockIsTextTable index =
         index > 0
         && match blocks.[index - 1] with
@@ -1544,6 +1604,20 @@ let private layoutDocumentWithRangeAndInitial
         match paragraphBlockAt (index + 1) with
         | Some (_, nextPara) -> paragraphTextIsEmpty nextPara
         | None -> false
+
+    let nextNonEmptyParagraphBlock index =
+        let mutable probeIndex = index + 1
+        let mutable result = None
+        while result.IsNone && probeIndex < blocks.Length do
+            match paragraphBlockAt probeIndex with
+            | Some (nextBlock, nextPara) ->
+                if paragraphTextIsEmpty nextPara then
+                    probeIndex <- probeIndex + 1
+                else
+                    result <- Some (nextBlock, nextPara)
+            | None ->
+                probeIndex <- probeIndex + 1
+        result
 
     let shouldMoveKeepGroup currentY groupHeight =
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) currentY
@@ -1849,6 +1923,21 @@ let private layoutDocumentWithRangeAndInitial
                     { layout with Height = layout.Height + 5.0 }
                 else
                     layout
+            let layout =
+                if layout.Lines.IsEmpty then
+                    match previousParagraphContext, nextNonEmptyParagraphBlock index with
+                    | Some (_, _, previousMetadata, _), Some (_, nextPara)
+                        when previousMetadata.Style = Some "TOC1" && nextPara.Metadata.Style = Some "NormalWeb" ->
+                        let trailingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata
+                        { layout with Height = max 0.0 (layout.Height - trailingAfter) }
+                    | _ -> layout
+                else
+                    layout
+            let layout =
+                match layout.Lines with
+                | [line] when paragraphTextIsNonbreakingBlank para ->
+                    { layout with Height = layout.Height + line.Height }
+                | _ -> layout
             numberedCounters <- counters
             floatingObstacles <- obstacles
             placedFloatingBoxes <- placedBoxes

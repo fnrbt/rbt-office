@@ -120,6 +120,15 @@ module TypeConversion =
             | true, parsed -> Some (parsed / 20.0)
             | false, _ -> None)
 
+    let twipsToCanvasPixels (twips: string option) : float option =
+        twips
+        |> Option.bind (fun value ->
+            match System.Double.TryParse(value) with
+            | true, parsed -> Some (parsed / 15.0)
+            | false, _ -> None)
+
+    let wordAutoSpacingPoints = 14.0
+
     let lineSpacingToMultiple (line: string option) : float option =
         line
         |> Option.bind (fun value ->
@@ -154,6 +163,8 @@ module StyleResolution =
         IndentLeft: float option
         IndentRight: float option
         FirstLineIndent: float option
+        RightTabPosition: float option
+        RightTabLeader: string option
         SpacingBefore: float option
         SpacingAfter: float option
         ContextualSpacing: bool option
@@ -179,6 +190,8 @@ module StyleResolution =
         IndentLeft = None
         IndentRight = None
         FirstLineIndent = None
+        RightTabPosition = None
+        RightTabLeader = None
         SpacingBefore = None
         SpacingAfter = None
         ContextualSpacing = None
@@ -265,14 +278,21 @@ module StyleResolution =
                     | Some firstLine, _ -> Some firstLine
                     | None, Some hanging -> Some -hanging
                     | None, None -> baseProps.FirstLineIndent
+                RightTabPosition =
+                    match props.RightTabPosition with
+                    | Some _ -> TypeConversion.twipsToCanvasPixels props.RightTabPosition
+                    | None -> baseProps.RightTabPosition
+                RightTabLeader = props.RightTabLeader |> Option.orElse baseProps.RightTabLeader
                 SpacingBefore =
-                    match props.SpacingBefore with
-                    | Some _ -> TypeConversion.twipsToPoints props.SpacingBefore
-                    | None -> baseProps.SpacingBefore
+                    match props.SpacingBeforeAuto, props.SpacingBefore with
+                    | Some true, _ -> Some TypeConversion.wordAutoSpacingPoints
+                    | _, Some _ -> TypeConversion.twipsToPoints props.SpacingBefore
+                    | _ -> baseProps.SpacingBefore
                 SpacingAfter =
-                    match props.SpacingAfter with
-                    | Some _ -> TypeConversion.twipsToPoints props.SpacingAfter
-                    | None -> baseProps.SpacingAfter
+                    match props.SpacingAfterAuto, props.SpacingAfter with
+                    | Some true, _ -> Some TypeConversion.wordAutoSpacingPoints
+                    | _, Some _ -> TypeConversion.twipsToPoints props.SpacingAfter
+                    | _ -> baseProps.SpacingAfter
                 ContextualSpacing = props.ContextualSpacing |> Option.orElse baseProps.ContextualSpacing
                 LineSpacing =
                     match props.LineSpacing with
@@ -403,6 +423,13 @@ module EditorProcessor =
         NoteId: string option
         NoteType: string option
         NoteText: string option
+        Hyperlink: string option
+        BookmarkStartId: string option
+        BookmarkName: string option
+        BookmarkEndId: string option
+        FieldCode: string option
+        FieldResult: string option
+        RenderedPageBreakBefore: bool
         // Image support
         IsImage: bool
         ImageSrc: string option      // Data URL for image
@@ -443,6 +470,8 @@ module EditorProcessor =
         IndentLeft: float option
         IndentRight: float option
         FirstLineIndent: float option
+        RightTabPosition: float option
+        RightTabLeader: string option
         SpacingBefore: float option
         SpacingAfter: float option
         LineSpacing: float option
@@ -473,6 +502,7 @@ module EditorProcessor =
             | Some result -> result
             | None -> field.Code
         | EquationXml _ -> "[Equation]"
+        | RenderedPageBreak -> ""
         | PageBreak -> ""
 
     let private noteBodyText (note: Note) =
@@ -515,6 +545,13 @@ module EditorProcessor =
                 NoteId = None
                 NoteType = None
                 NoteText = None
+                Hyperlink = None
+                BookmarkStartId = None
+                BookmarkName = None
+                BookmarkEndId = None
+                FieldCode = None
+                FieldResult = None
+                RenderedPageBreakBefore = run.RenderedPageBreakBefore
                 IsImage = true
                 ImageSrc = None  // Will be populated when we have archive access
                 ImageLinked = img.Linked
@@ -567,6 +604,16 @@ module EditorProcessor =
                     | NoteRef note -> Some note
                     | _ -> None
 
+                let field =
+                    match run.Content with
+                    | FieldRef field -> Some field
+                    | _ -> None
+
+                let hyperlink =
+                    match run.Content with
+                    | Link link -> link.Target
+                    | _ -> None
+
                 Some {
                     Text = text
                     Bold = finalProps.Bold
@@ -585,6 +632,13 @@ module EditorProcessor =
                     NoteId = note |> Option.map (fun value -> value.Id)
                     NoteType = note |> Option.map (fun value -> value.NoteType)
                     NoteText = note |> Option.bind (noteText notes)
+                    Hyperlink = hyperlink
+                    BookmarkStartId = run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id)
+                    BookmarkName = run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name)
+                    BookmarkEndId = run.BookmarkEnd
+                    FieldCode = field |> Option.map (fun value -> value.Code)
+                    FieldResult = field |> Option.bind (fun value -> value.Result)
+                    RenderedPageBreakBefore = run.RenderedPageBreakBefore
                     IsImage = false
                     ImageSrc = None
                     ImageLinked = false
@@ -636,7 +690,10 @@ module EditorProcessor =
                 match styleMap.TryFind(styleId) with
                 | Some (runProps, _) -> runProps
                 | None -> StyleResolution.defaultRunProps
-            | None -> StyleResolution.defaultRunProps
+            | None ->
+                styleMap.TryFind(StyleResolution.documentDefaultsStyleId)
+                |> Option.map fst
+                |> Option.defaultValue StyleResolution.defaultRunProps
 
         // Convert all runs
         let runs =
@@ -649,6 +706,8 @@ module EditorProcessor =
             IndentLeft = paraProps.IndentLeft
             IndentRight = paraProps.IndentRight
             FirstLineIndent = paraProps.FirstLineIndent
+            RightTabPosition = paraProps.RightTabPosition
+            RightTabLeader = paraProps.RightTabLeader
             SpacingBefore = paraProps.SpacingBefore
             SpacingAfter = paraProps.SpacingAfter
             LineSpacing = paraProps.LineSpacing

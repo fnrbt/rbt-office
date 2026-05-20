@@ -4,6 +4,11 @@ open System
 open System.IO
 open RedBat.Word
 
+module Doc = RedBat.Word.Document
+module WordLayout = RedBat.Word.Layout
+module WordModelLayout = RedBat.Word.WordLayout
+module WordPdf = RedBat.Word.Pdf
+
 let private usage () =
     eprintfn "Usage: dotnet run --project tools/pdf-runner -- <input.docx> <output.pdf>"
 
@@ -120,14 +125,121 @@ let private decodeImageResources (wordDoc: DocxReader.WordDocument) : RedBat.Wor
             }: RedBat.Word.Pdf.ImageResource)
         | Error _ -> None)
 
+let private pageNumberForY (doc: Doc.Document) y =
+    let stride = doc.PageSetup.PageHeight + WordModelLayout.Page.gap
+    int (Math.Floor(max 0.0 y / stride)) + 1
+
+let private displayPageNumberForPhysicalPage (restartPoints: (int * int) list) physicalPage =
+    restartPoints
+    |> List.filter (fun (restartPhysicalPage, _) -> restartPhysicalPage <= physicalPage)
+    |> List.tryLast
+    |> Option.map (fun (restartPhysicalPage, restartDisplayPage) -> restartDisplayPage + physicalPage - restartPhysicalPage)
+    |> Option.defaultValue physicalPage
+
+let private pdfLayoutSettings (doc: Doc.Document) : WordLayout.LayoutSettings =
+    let lineHeight = 21.0
+    let footerReserve =
+        if not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty then doc.PageSetup.FooterDistance + lineHeight * 1.5
+        else doc.PageSetup.MarginBottom
+    {
+        Width = doc.PageSetup.PageWidth
+        PageHeight = doc.PageSetup.PageHeight
+        FontSize = 14.0
+        LineHeight = lineHeight
+        PaddingLeft = doc.PageSetup.MarginLeft
+        PaddingTop = WordModelLayout.Page.bodyTopWithRunningHeader doc
+        MarginRight = doc.PageSetup.MarginRight
+        MarginBottom = max doc.PageSetup.MarginBottom footerReserve
+        InTableCell = false
+        TableContinuationHeaderHeight = 0.0
+    }
+
+let private pageMapFromLayouts (doc: Doc.Document) (layouts: WordLayout.BlockLayout list) : Doc.PageMap =
+    let restartPoints =
+        layouts
+        |> List.choose (fun layout ->
+            Doc.findParagraph doc layout.BlockId
+            |> Option.bind (fun para ->
+                para.Metadata.SectionPageNumberStart
+                |> Option.map (fun start -> pageNumberForY doc layout.Y, max 1 start)))
+        |> List.sortBy fst
+
+    let displayPageNumberForY y =
+        y
+        |> pageNumberForY doc
+        |> displayPageNumberForPhysicalPage restartPoints
+
+    let fieldAnchors =
+        layouts
+        |> List.collect (fun layout ->
+            layout.Lines
+            |> List.collect (fun line ->
+                line.Segments
+                |> List.choose (function
+                    | WordLayout.TextSegment (_, style, _, _, startOffset) ->
+                        style.FieldCode
+                        |> Option.map (fun code ->
+                            ({
+                                PageFieldBlockId = layout.BlockId
+                                PageFieldStartOffset = startOffset
+                                PageFieldCode = code
+                                PageNumber = displayPageNumberForY line.Y
+                            }: Doc.PageFieldAnchor))
+                    | WordLayout.ImageSegment _ -> None)))
+
+    let bookmarkAnchors =
+        layouts
+        |> List.collect (fun layout ->
+            layout.Lines
+            |> List.collect (fun line ->
+                line.Segments
+                |> List.choose (function
+                    | WordLayout.TextSegment (_, style, _, _, startOffset) ->
+                        style.BookmarkName
+                        |> Option.map (fun name ->
+                            ({
+                                PageBookmarkName = name
+                                PageBookmarkBlockId = layout.BlockId
+                                PageBookmarkStartOffset = startOffset
+                                PageNumber = displayPageNumberForY line.Y
+                            }: Doc.PageBookmarkAnchor))
+                    | WordLayout.ImageSegment _ -> None)))
+        |> List.distinctBy (fun anchor -> anchor.PageBookmarkName)
+
+    let blockAnchors =
+        layouts
+        |> List.map (fun layout ->
+            ({
+                PageBlockId = layout.BlockId
+                PageNumber = displayPageNumberForY layout.Y
+            }: Doc.PageBlockAnchor))
+
+    let pageCount =
+        layouts
+        |> List.map (fun layout -> pageNumberForY doc (layout.Y + layout.Height))
+        |> List.fold max 1
+
+    {
+        PageCount = pageCount
+        BlockAnchors = blockAnchors
+        Fields = fieldAnchors
+        Bookmarks = bookmarkAnchors
+    }
+
+let private refreshFieldsForPdf (options: WordPdf.RenderOptions) (doc: Doc.Document) =
+    let measureText = WordPdf.createMeasurer options
+    let measureRange = WordLayout.rangeMeasurerFromTextMeasurer measureText
+    let layouts = WordLayout.layoutDocumentWithRange (pdfLayoutSettings doc) measureText measureRange doc
+    Doc.refreshFieldsWithPageMap (pageMapFromLayouts doc layouts) doc
+
 let private writeProjectPdf (inputPath: string) (outputPath: string) =
     let raw = File.ReadAllBytes inputPath
     let wordDoc =
         match DocxReader.loadBytesNative raw with
         | Some parsed -> parsed
         | None -> failwithf "Could not parse DOCX: %s" inputPath
-    let doc = NativeRunner.importDoc wordDoc
     let options = { pdfOptions() with Images = decodeImageResources wordDoc }
+    let doc = NativeRunner.importDoc wordDoc |> refreshFieldsForPdf options
     let bytes = RedBat.Word.Pdf.toBytes options doc
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, bytes)

@@ -84,6 +84,34 @@ let private lineBaselineWithOffset baselineOffset (fallbackFontSize: float) (lin
 let private lineBaseline fallbackFontSize line =
     lineBaselineWithOffset 0.0 fallbackFontSize line
 
+let private tabLeaderText (measureText: TextMeasurer) (style: TextStyle) (width: float) (leader: string option) =
+    match leader |> Option.map (fun value -> value.Trim().ToLowerInvariant()) with
+    | Some "dot" when width > 0.0 ->
+        let dotAdvance = measureText "." style
+        let leaderPitch = max 1.0 (WordLayout.Text.printFontSize style * 0.25)
+        if dotAdvance <= 0.0 then None
+        else
+            let wideMeasuredDot = dotAdvance > leaderPitch * 1.05
+            let inset =
+                if wideMeasuredDot then min leaderPitch (width * 0.5)
+                else min (dotAdvance * 0.35) (width * 0.5)
+            let count =
+                if wideMeasuredDot then
+                    int (System.Math.Round((max 0.0 (width - inset)) / leaderPitch, System.MidpointRounding.AwayFromZero))
+                else
+                    int (System.Math.Round(width / dotAdvance, System.MidpointRounding.AwayFromZero))
+            if count <= 0 then None
+            else
+                let text = String.replicate count "."
+                let targetWidth =
+                    if wideMeasuredDot then max 0.0 (width - inset)
+                    else max 0.0 (measureText text style - inset)
+                Some (text, targetWidth, inset)
+    | _ -> None
+
+let private isTabOnlySegment (text: string) =
+    text.IndexOf('\t') >= 0 && text |> Seq.forall System.Char.IsWhiteSpace
+
 let private dashStyleForTableBorderStyle style =
     match RedBat.BorderGrid.styleKey style with
     | "dotted" -> 1
@@ -442,18 +470,19 @@ let private paragraphCommandsWithBaselineOffset baselineOffset (settings: Layout
                 match paintStyle.Highlight with
                 | Some color -> commands <- commands @ [FillRect (color, textX, line.Y, width, line.Height)]
                 | None -> ()
-                if style.BookmarkStartId.IsSome || style.BookmarkName.IsSome || style.BookmarkEndId.IsSome then
-                    commands <- commands @ [
-                        StrokeRect ("#7C3AED", 1.0, textX, line.Y, width, line.Height)
-                        FillRect ("#A855F7", textX, line.Y, min 24.0 width, min 3.0 line.Height)
-                    ]
                 let textBaseline =
                     match paintStyle.VertAlign with
                     | Some "superscript" -> baseline - paintStyle.FontSize * 0.5
                     | Some "subscript" -> baseline + paintStyle.FontSize * 0.25
                     | _ -> baseline
                 let displayText = WordLayout.Text.displayText style text
-                commands <- commands @ [DrawText (displayText, paintStyle, textX, textBaseline, width)]
+                if isTabOnlySegment displayText then
+                    match tabLeaderText measureText style width layout.Metadata.RightTabLeader with
+                    | Some (leaderText, leaderWidth, leaderInset) ->
+                        commands <- commands @ [DrawText (leaderText, paintStyle, textX + leaderInset, textBaseline, leaderWidth)]
+                    | None -> ()
+                else
+                    commands <- commands @ [DrawText (displayText, paintStyle, textX, textBaseline, width)]
 
                 // Skip underline/strike on segments that are entirely whitespace —
                 // tab segments (eg. the gap between a TOC entry and its page
@@ -515,17 +544,6 @@ let markupMarkerCommands (settings: LayoutSettings) (layouts: BlockLayout list) 
             ]
         | None -> ()
 
-        for line in layout.Lines do
-            let lineAlignmentOffset = alignmentOffset layout line
-            for segment in line.Segments do
-                match segment with
-                | TextSegment (_, style, x, width, _) when style.BookmarkStartId.IsSome || style.BookmarkName.IsSome || style.BookmarkEndId.IsSome ->
-                    let textX = settings.PaddingLeft + x + lineAlignmentOffset
-                    commands <- commands @ [
-                        StrokeRect ("#7C3AED", 1.0, textX, line.Y, width, line.Height)
-                        FillRect ("#A855F7", textX, line.Y, min 24.0 width, min 3.0 line.Height)
-                    ]
-                | _ -> ()
     commands
 
 let private tableBorderCommandsCore (styleContext: Document option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) =
@@ -847,7 +865,7 @@ let private headerFooterCommands (settings: LayoutSettings) fontFamily measureTe
             let headerY = pageY + max 8.0 doc.PageSetup.HeaderDistance
             yield! repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount headerY headers
         if not footers.IsEmpty then
-            let footerY = pageY + settings.PageHeight - max 16.0 doc.PageSetup.FooterDistance
+            let footerY = pageY + settings.PageHeight - max 16.0 doc.PageSetup.FooterDistance - settings.LineHeight * 0.78
             yield! repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount footerY footers ]
 
 let private textBoxCommands (settings: LayoutSettings) fontFamily measureText measureRange (textBox: TextBoxBlock) =

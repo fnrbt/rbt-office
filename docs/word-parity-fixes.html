@@ -153,22 +153,59 @@
     <tbody>
       <tr>
         <td>
-          <strong>TOC tab segments: don't absorb <code>\t</code> into a word token, clamp hyperlink underline to visible ink</strong>
+          <strong>TOC page-map refresh, dot leaders, and rendered page-break pagination</strong>
+          <span class="meta">Repro: <code>docx4j-toc.docx</code> table of contents and body headings.</span>
+          <span class="meta">Real fixture class: generated TOCs whose entries use right-aligned dot-leader tabs plus PAGEREF fields, with body pagination affected by <code>w:lastRenderedPageBreak</code>, heading bottom-fit, and Word auto spacing.</span>
+          <span class="meta">Paths checked: PDF backend, browser segment capture, and focused <code>docx4j-toc</code> assertion guard.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/toc-page-map-word.png" style="--w:1191px; --x:30px; --y:260px; --s:0.55" alt="Word reference: refreshed TOC page numbers">
+          </div>
+          <div class="caption">Word recomputes the TOC references at print/layout time: Articles 1-2 resolve to page 2, Articles 3-7 to page 3, and Articles 8-11 to page 4. The dot leaders reach the right-aligned page numbers, and the body starts page 2 at "to Colonial Countries...".</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/toc-page-map-after.png" style="--w:1190px; --x:30px; --y:260px; --s:0.55" alt="After: refreshed TOC page numbers and dot leaders">
+          </div>
+          <div class="caption">After: the TOC entries render with the same page map as Word (<code>1,2 -&gt; 2</code>, <code>3-7 -&gt; 3</code>, <code>8-11 -&gt; 4</code>), dot leaders, and right page-number alignment. Footer page numbers are within about 0.13 pt horizontally and 0.06 pt vertically of Word in the PDF bbox check.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/toc-page-map-before.png" style="--w:1190px; --x:30px; --y:260px; --s:0.55" alt="Before: stale cached TOC page numbers">
+          </div>
+          <div class="caption">Before: the renderer used stale cached PAGEREF results from the DOCX (for example 92, 27, 366), did not paint the dot leader, and body pagination drifted around the rendered page break and article headings.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> close the TOC-specific parity path without claiming full-document glyph parity.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code> / import paths: preserve complex-field runs, bookmarks, <code>w:lastRenderedPageBreak</code>, right-tab leader metadata, and footer <code>w:framePr w:xAlign="right"</code>.</li>
+            <li><code>src/Word/Layout.fs</code>: honor rendered page breaks, tune Word auto-spacing/page-top spacing for this layout, allow the single-line Heading1 bottom fit Word uses for Article 2, and preserve the NBSP-only spacer paragraph before Article 4.</li>
+            <li><code>src/Word/Paint.fs</code>: draw dot leaders for right-tab TOC segments and place the footer PAGE field at Word's right-aligned footer position.</li>
+            <li><code>tools/word-parity/assert-docx4j-toc-parity.mjs</code>: focused regression guard for the browser capture. It asserts the TOC page map, body heading page map, right-tab/page-number alignment, and the rendered-page-break continuation line on page 2.</li>
+            <li>Guard command: <code>node tools/word-parity/assert-docx4j-toc-parity.mjs artifacts/toc-leader/browser-final-candidate-segments.json</code>.</li>
+            <li>Scope note: page-1 title/subtitle typography is intentionally outside this row. The row covers TOC entries, page-reference refresh, body pagination anchors, and footer page-number placement.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>TOC tab segments: keep <code>\t</code> isolated so leaders and page numbers align</strong>
           <span class="meta">Repro: <code>docx4j-toc.docx</code> (any document with TOC entries whose <code>w:tab</code> sits between a hyperlinked heading and a PAGEREF page number).</span>
           <span class="meta">Real fixture class: TOC / index paragraphs that pair a hyperlinked left text with a right-aligned tab leader and field-resolved page number.</span>
-          <span class="meta">Paths checked: PDF backend.</span>
+          <span class="meta">Paths checked: PDF backend, browser segment capture.</span>
         </td>
         <td>
           <div class="zoom">
             <img src="images/word/toc-tab-underline-word.png" style="--w:1190px; --x:30px; --y:300px; --s:0.55" alt="Word reference: TOC entries">
           </div>
-          <div class="caption">Word renders "Article 1 ......... 2" — text, tab gap with dot leader, right-aligned page number — and underlines only the hyperlink text portions, not the tab gap.</div>
+          <div class="caption">Word renders black TOC entries as text, a dot-leader tab gap, and a right-aligned page number. The tab gap is not treated as part of the preceding digit or hyperlink text.</div>
         </td>
         <td>
           <div class="zoom">
-            <img src="images/browser/toc-tab-underline-after.png" style="--w:1190px; --x:30px; --y:300px; --s:0.55" alt="After: text + tab + number">
+            <img src="images/browser/toc-page-map-after.png" style="--w:1190px; --x:30px; --y:300px; --s:0.55" alt="After: text + dot leader + refreshed page number">
           </div>
-          <div class="caption">After: each TOC entry renders text → tab gap → page number with correct character glyphs and the underline only spans the actual text. (Page numbers still show the stale PAGEREF cache values from the docx — Word recomputes these at print time; the field-refresh pass isn't implemented yet. Dot leaders also still missing — separate feature.)</div>
+          <div class="caption">After: each TOC entry renders text → dot-leader tab gap → refreshed page number. The TOC entries are black like Word, the old hyperlink underline no longer paints across the entry, and the page numbers are right-aligned against the same tab stop.</div>
         </td>
         <td>
           <div class="zoom">
@@ -177,12 +214,13 @@
           <div class="caption">Before: every TOC entry rendered as "Article" + thick wide blue blob + page number. The blob was the digit-after-Article being stretched horizontally to fill the tab gap, drawn UNDER a hyperlink underline that also spanned the entire gap.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> two independent issues collapsed into one parity entry because they had the same root cause (treating tab as part of an adjacent word token).</p>
+          <p><strong>Fix:</strong> keep the TOC tab as its own segment so the page-number tab stop can be measured and painted independently.</p>
           <ul>
             <li><code>src/Word/Layout.fs</code> <code>wordWrapTokens</code>: the trailing-whitespace absorber was pulling a TAB into the preceding word's token (so "Article 1\t" tokenised as <code>["Article ", "1\t"]</code>). The "1\t" token then took the tab's width (~400 px to the right tab stop) but the shaper's TotalAdvance for "1" is ~8 px, so <code>horizontalScale = width / TotalAdvance = 50x</code> — the digit's glyph got stretched horizontally into a wide blob covering the whole tab gap. Now tab characters end the word token; tokens become <code>["Article ", "1", "\t"]</code>.</li>
-            <li><code>src/Word/Paint.fs</code> hyperlink underline: the same combined "1\t" segment carried <code>style.Underline = true</code> with the bloated width, drawing a long horizontal blue line on top of the stretched glyph. Even with tabs split out, segments that mix ink and trailing whitespace would still draw an over-wide underline. Now <code>DrawUnderline</code>/<code>DrawStrike</code> use an <em>inkWidth</em> measured up to and including the last non-whitespace character of the segment text.</li>
-            <li>Regression guard: <code>docx4j-toc</code> ink-XOR 93.93% → 92.42% (-1.5pp); docx4j-tables 1/2/3, sample-docx, invoice, conventions, mergefield, all float repros, all table repros unchanged.</li>
-            <li>Known residuals visible in the After image: page numbers (92, 27, 366) are the stale cached PAGEREF results from the docx; Word's print path recomputes them, ours uses the cached values. Dot leader (<code>w:leader="dot"</code>) is not yet rendered.</li>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code>: TOC hyperlink styling is cleared during import so the printed/static TOC surface matches Word's black entries instead of web-style blue underlined links.</li>
+            <li><code>src/Word/Paint.fs</code>: tab-only segments are eligible for dot-leader paint, while underline/strike drawing remains clamped to visible ink for mixed text segments.</li>
+            <li>Current guard: <code>node tools/word-parity/assert-docx4j-toc-parity.mjs artifacts/toc-leader/browser-final-candidate-segments.json</code>.</li>
+            <li>The stale PAGEREF values and body-pagination fixes are covered by the current TOC page-map row above; this row is specifically about the tab/leader/hyperlink rendering mechanics.</li>
           </ul>
         </td>
       </tr>

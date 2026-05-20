@@ -28,6 +28,7 @@ type TextStyle = {
     BookmarkEndId: string option
     FieldCode: string option
     FieldResult: string option
+    RenderedPageBreakBefore: bool
     EquationXml: string option
     RevisionId: string option
     RevisionType: string option
@@ -62,6 +63,7 @@ let defaultStyle = {
     BookmarkEndId = None
     FieldCode = None
     FieldResult = None
+    RenderedPageBreakBefore = false
     EquationXml = None
     RevisionId = None
     RevisionType = None
@@ -488,6 +490,7 @@ let clearFormatting start len buffer =
                 BookmarkEndId = style.BookmarkEndId
                 FieldCode = style.FieldCode
                 FieldResult = style.FieldResult
+                RenderedPageBreakBefore = style.RenderedPageBreakBefore
                 EquationXml = style.EquationXml
                 RevisionId = style.RevisionId
                 RevisionType = style.RevisionType

@@ -168,6 +168,7 @@ let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties)
     FirstLineIndent = props.FirstLineIndent |> Option.orElse baseProps.FirstLineIndent
     HangingIndent = props.HangingIndent |> Option.orElse baseProps.HangingIndent
     RightTabPosition = props.RightTabPosition |> Option.orElse baseProps.RightTabPosition
+    RightTabLeader = props.RightTabLeader |> Option.orElse baseProps.RightTabLeader
     SpacingBefore = props.SpacingBefore |> Option.orElse baseProps.SpacingBefore
     SpacingBeforeAuto = props.SpacingBeforeAuto |> Option.orElse baseProps.SpacingBeforeAuto
     SpacingAfter = props.SpacingAfter |> Option.orElse baseProps.SpacingAfter
@@ -290,6 +291,11 @@ let private lineSpacingValue value rule =
     | Some "atLeast" -> twipsToPoints value
     | _ -> TC.lineSpacingToMultiple value
 
+let private wordAutoSpacingPoints = 14.0
+
+let private spacingValue value auto =
+    if auto = Some true then Some wordAutoSpacingPoints else twipsToPoints value
+
 let private textStyle (run: EP.EditorRun) : RedBat.Word.TextBuffer.TextStyle =
     {
         defaultStyle with
@@ -308,6 +314,13 @@ let private textStyle (run: EP.EditorRun) : RedBat.Word.TextBuffer.TextStyle =
             NoteId = run.NoteId
             NoteType = run.NoteType
             NoteText = run.NoteText
+            Hyperlink = run.Hyperlink
+            BookmarkStartId = run.BookmarkStartId
+            BookmarkName = run.BookmarkName
+            BookmarkEndId = run.BookmarkEndId
+            FieldCode = run.FieldCode
+            FieldResult = run.FieldResult
+            RenderedPageBreakBefore = run.RenderedPageBreakBefore
             VertAlign = run.VertAlign
     }
 
@@ -354,8 +367,13 @@ let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun
             })
             offset <- offset + 1
         elif not (String.IsNullOrEmpty run.Text) then
+            let style = textStyle run
             parts.Add(run.Text)
-            bufferRuns.Add(Text { Start = offset; Length = run.Text.Length; Style = textStyle run })
+            if style.RenderedPageBreakBefore && run.Text.Length > 1 then
+                bufferRuns.Add(Text { Start = offset; Length = 1; Style = style })
+                bufferRuns.Add(Text { Start = offset + 1; Length = run.Text.Length - 1; Style = { style with RenderedPageBreakBefore = false } })
+            else
+                bufferRuns.Add(Text { Start = offset; Length = run.Text.Length; Style = style })
             offset <- offset + run.Text.Length
 
     { Rope = Rope.ofString (String.Concat parts); Runs = bufferRuns |> Seq.toList }
@@ -364,7 +382,7 @@ let private paraMetadata resolver (para: DocxReader.Paragraph) (editorPara: EP.E
     let props = para.Properties
     let numberingDef = resolvedNumberingDefinition resolver props
     let numberingIndentLeft = numberingDef |> Option.bind (fun def -> twipsToPoints def.IndentLeft)
-    let numberingRightTab = numberingDef |> Option.bind (fun def -> twipsToPoints def.RightTabPosition)
+    let numberingRightTab = numberingDef |> Option.bind (fun def -> twipsToCanvasPixels def.RightTabPosition)
     let numberingFirstLineIndent =
         numberingDef
         |> Option.bind (fun def ->
@@ -385,9 +403,10 @@ let private paraMetadata resolver (para: DocxReader.Paragraph) (editorPara: EP.E
                 match twipsToPoints props.HangingIndent with
                 | Some hanging -> Some -hanging
                 | None -> editorPara.FirstLineIndent |> Option.orElse numberingFirstLineIndent
-            RightTabPosition = twipsToPoints props.RightTabPosition |> Option.orElse numberingRightTab
-            SpacingBefore = editorPara.SpacingBefore
-            SpacingAfter = editorPara.SpacingAfter
+            RightTabPosition = editorPara.RightTabPosition |> Option.orElse numberingRightTab
+            RightTabLeader = editorPara.RightTabLeader
+            SpacingBefore = if props.SpacingBeforeAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingBefore
+            SpacingAfter = if props.SpacingAfterAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingAfter
             ContextualSpacing = props.ContextualSpacing
             LineSpacing = editorPara.LineSpacing
             LineSpacingRule = props.LineRule
@@ -574,8 +593,8 @@ let private namedStyle (theme: DocxReader.Theme option) (style: DocxReader.Style
                     Highlight = r.Highlight
                     VertAlign = r.VertAlign
             })
-        SpacingBefore = para |> Option.bind (fun p -> twipsToPoints p.SpacingBefore)
-        SpacingAfter = para |> Option.bind (fun p -> twipsToPoints p.SpacingAfter)
+        SpacingBefore = para |> Option.bind (fun p -> spacingValue p.SpacingBefore p.SpacingBeforeAuto)
+        SpacingAfter = para |> Option.bind (fun p -> spacingValue p.SpacingAfter p.SpacingAfterAuto)
         ContextualSpacing = para |> Option.bind (fun p -> p.ContextualSpacing)
         LineSpacing = para |> Option.bind (fun p -> lineSpacingValue p.LineSpacing p.LineRule)
         LineSpacingRule = para |> Option.bind (fun p -> p.LineRule)

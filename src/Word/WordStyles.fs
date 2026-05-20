@@ -130,7 +130,7 @@ let private applyNamedParagraphStyle (styles: Map<(string * string), NamedStyle>
 let normal = {
     Text = { TextBuffer.defaultStyle with FontFamily = Some "Calibri" }
     SpacingBefore = None
-    SpacingAfter = Some 10.7
+    SpacingAfter = Some 8.0
     ContextualSpacing = None
     LineSpacing = None
     LineSpacingRule = None
@@ -258,7 +258,7 @@ let effectiveBufferInDocument doc paragraphStyle (buffer: TextBuffer) =
 // points (twips / 20). Layout runs in CSS-pixels at 96 DPI (margins came
 // out of DocxReader via /15 i.e. twips → px directly), so the spacing
 // values get applied at 75% of their intended size unless we convert
-// pt → px here at the layout boundary. Defaults are already in px.
+// pt → px here at the layout boundary.
 let private ptToLayoutPx (pt: float) = pt * 96.0 / 72.0
 
 let spacingBefore (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =

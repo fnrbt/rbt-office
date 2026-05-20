@@ -94,6 +94,7 @@ type BlockMetadata = {
     IndentRight: float option
     FirstLineIndent: float option
     RightTabPosition: float option
+    RightTabLeader: string option
     SpacingBefore: float option
     SpacingAfter: float option
     ParagraphMarkFontSize: float option
@@ -130,6 +131,7 @@ let defaultMetadata = {
     IndentRight = None
     FirstLineIndent = None
     RightTabPosition = None
+    RightTabLeader = None
     SpacingBefore = None
     SpacingAfter = None
     ParagraphMarkFontSize = None

@@ -6,9 +6,16 @@ import { createRequire } from 'node:module';
 
 const officeRoot = path.resolve(process.env.OFFICE_ROOT ?? process.cwd());
 const runnerRoot = path.join(officeRoot, 'tools/browser-runner');
-const fixture = path.resolve(process.argv[2] ?? '');
-const outputPng = path.resolve(process.argv[3] ?? '');
-const outputJson = process.argv[4] ? path.resolve(process.argv[4]) : null;
+const args = process.argv.slice(2);
+let outputJsonArg = null;
+if (args[2] === '--segments') {
+  outputJsonArg = args[3] ?? null;
+} else {
+  outputJsonArg = args[2] ?? null;
+}
+const fixture = path.resolve(args[0] ?? '');
+const outputPng = path.resolve(args[1] ?? '');
+const outputJson = outputJsonArg ? path.resolve(outputJsonArg) : null;
 const port = Number(process.env.BROWSER_CAPTURE_PORT ?? 5181);
 const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(officeRoot, 'artifacts/fonts/windows'));
 const layoutMode = process.env.BROWSER_CAPTURE_LAYOUT ?? 'segments';
@@ -16,9 +23,10 @@ const viewportWidth = Number(process.env.BROWSER_CAPTURE_VIEWPORT_WIDTH ?? 1100)
 const viewportHeight = Number(process.env.BROWSER_CAPTURE_VIEWPORT_HEIGHT ?? 1800);
 const canvasWidth = Number(process.env.BROWSER_CAPTURE_CANVAS_WIDTH ?? 900);
 const canvasHeight = Number(process.env.BROWSER_CAPTURE_CANVAS_HEIGHT ?? 1600);
+const loadTimeoutMs = Number(process.env.BROWSER_CAPTURE_LOAD_TIMEOUT_MS ?? 30000);
 
-if (!process.argv[2] || !process.argv[3]) {
-  console.error('Usage: OFFICE_ROOT=/path/to/office node tools/word-parity/capture-browser-docx.mjs input.docx output.png [layout.json]');
+if (!args[0] || !args[1] || (args[2] === '--segments' && !args[3])) {
+  console.error('Usage: OFFICE_ROOT=/path/to/office node tools/word-parity/capture-browser-docx.mjs input.docx output.png [layout.json|--segments layout.json]');
   process.exit(2);
 }
 
@@ -91,7 +99,7 @@ try {
   await page.waitForFunction(
     () => window.rbWordRunner && document.querySelector('#status')?.textContent?.startsWith('Loaded '),
     null,
-    { timeout: 30000 }
+    { timeout: loadTimeoutMs }
   );
   await page.evaluate(
     ({ width, height }) => window.rbWordRunner.setCanvasSize(width, height),

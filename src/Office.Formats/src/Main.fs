@@ -122,6 +122,18 @@ module Processors =
             | true, parsed -> Some (parsed / 15.0)
             | false, _ -> None)
 
+    let private wordTwipsToPoints (value: string option) =
+        value
+        |> Option.bind (fun text ->
+            match System.Double.TryParse(text) with
+            | true, parsed -> Some (parsed / 20.0)
+            | false, _ -> None)
+
+    let private wordAutoSpacingPoints = 14.0
+
+    let private wordStyleSpacing value auto =
+        if auto = Some true then Some wordAutoSpacingPoints else wordTwipsToPoints value
+
     let private wordLineSpacingValue (fontSize: float option) (value: string option) (rule: string option) =
         value
         |> Option.bind (fun text ->
@@ -201,8 +213,8 @@ module Processors =
             "StyleFontFamily" ==> (style.RunProperties |> Option.bind (fun props -> props.FontFamily |> Option.orElse (resolveThemeFont theme props.ThemeFont)))
             "StyleColor" ==> (style.RunProperties |> Option.bind (fun props -> wordColorToCss props.Color |> Option.orElse (resolveThemeColor theme props.ThemeColor props.ThemeTint props.ThemeShade)))
             "StyleHighlight" ==> (style.RunProperties |> Option.bind (fun props -> props.Highlight))
-            "StyleSpacingBefore" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.SpacingBefore))
-            "StyleSpacingAfter" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.SpacingAfter))
+            "StyleSpacingBefore" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordStyleSpacing props.SpacingBefore props.SpacingBeforeAuto))
+            "StyleSpacingAfter" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordStyleSpacing props.SpacingAfter props.SpacingAfterAuto))
             "StyleLineSpacing" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordLineSpacingValue (style.RunProperties |> Option.bind (fun run -> wordFontSizeToCssPixels run.FontSize)) props.LineSpacing props.LineRule))
             "StyleLineRule" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.LineRule))
             "StyleAlignment" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.Alignment))
@@ -224,6 +236,8 @@ module Processors =
             "IndentLeft" ==> para.IndentLeft
             "IndentRight" ==> para.IndentRight
             "FirstLineIndent" ==> para.FirstLineIndent
+            "RightTabPosition" ==> para.RightTabPosition
+            "RightTabLeader" ==> para.RightTabLeader
             "SpacingBefore" ==> para.SpacingBefore
             "SpacingAfter" ==> para.SpacingAfter
             "LineSpacing" ==> para.LineSpacing

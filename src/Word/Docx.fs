@@ -331,6 +331,7 @@ let private metadataFromEditor (item: obj) =
     let indentRight = optionalFloat (item?IndentRight)
     let firstLineIndent = optionalFloat (item?FirstLineIndent)
     let rightTabPosition = optionalFloat (item?RightTabPosition)
+    let rightTabLeader = optionalString (item?RightTabLeader)
     let spacingBefore = optionalFloat (item?SpacingBefore)
     let spacingAfter = optionalFloat (item?SpacingAfter)
     let paragraphMarkFontSize = optionalFloat (item?ParagraphMarkFontSize)
@@ -364,6 +365,7 @@ let private metadataFromEditor (item: obj) =
             IndentRight = indentRight
             FirstLineIndent = firstLineIndent
             RightTabPosition = rightTabPosition
+            RightTabLeader = rightTabLeader
             SpacingBefore = spacingBefore
             SpacingAfter = spacingAfter
             ParagraphMarkFontSize = paragraphMarkFontSize
@@ -493,6 +495,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 let bookmarkEndId = optionalString (run?BookmarkEndId)
                 let fieldCode = optionalString (run?FieldCode)
                 let fieldResult = optionalString (run?FieldResult)
+                let renderedPageBreakBefore = run?RenderedPageBreakBefore |> boolOrDefault false
                 let equationXml = optionalString (run?EquationXml)
                 let revisionId = optionalString (run?RevisionId)
                 let revisionType = optionalString (run?RevisionType)
@@ -526,6 +529,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                     BookmarkEndId = bookmarkEndId
                     FieldCode = fieldCode
                     FieldResult = fieldResult
+                    RenderedPageBreakBefore = renderedPageBreakBefore
                     EquationXml = equationXml
                     RevisionId = revisionId
                     RevisionType = revisionType
@@ -535,11 +539,17 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 }
 
                 textParts <- textParts @ [text]
-                bufferRuns <- bufferRuns @ [Text {
-                    Start = currentOffset
-                    Length = text.Length
-                    Style = style
-                }]
+                if style.RenderedPageBreakBefore && text.Length > 1 then
+                    bufferRuns <- bufferRuns @ [
+                        Text { Start = currentOffset; Length = 1; Style = style }
+                        Text { Start = currentOffset + 1; Length = text.Length - 1; Style = { style with RenderedPageBreakBefore = false } }
+                    ]
+                else
+                    bufferRuns <- bufferRuns @ [Text {
+                        Start = currentOffset
+                        Length = text.Length
+                        Style = style
+                    }]
 
                 currentOffset <- currentOffset + text.Length
 
@@ -1013,6 +1023,7 @@ let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
                     "BookmarkEndId" ==> tr.Style.BookmarkEndId
                     "FieldCode" ==> tr.Style.FieldCode
                     "FieldResult" ==> tr.Style.FieldResult
+                    "RenderedPageBreakBefore" ==> tr.Style.RenderedPageBreakBefore
                     "IsEquation" ==> tr.Style.EquationXml.IsSome
                     "EquationXml" ==> tr.Style.EquationXml
                     "RevisionId" ==> tr.Style.RevisionId

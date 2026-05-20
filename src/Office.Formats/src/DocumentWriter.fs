@@ -757,6 +757,13 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
                         NoteId = optionalString (runObj?NoteId)
                         NoteType = optionalString (runObj?NoteType)
                         NoteText = optionalString (runObj?NoteText)
+                        Hyperlink = optionalString (runObj?Hyperlink)
+                        BookmarkStartId = optionalString (runObj?BookmarkStartId)
+                        BookmarkName = optionalString (runObj?BookmarkName)
+                        BookmarkEndId = optionalString (runObj?BookmarkEndId)
+                        FieldCode = optionalString (runObj?FieldCode)
+                        FieldResult = optionalString (runObj?FieldResult)
+                        RenderedPageBreakBefore = boolOrDefault false (runObj?RenderedPageBreakBefore)
                         IsImage = false
                         ImageSrc = None
                         ImageLinked = false
