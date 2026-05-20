@@ -431,8 +431,9 @@ let rangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : TextRangeMeasure
 let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
     WordLayout.Table.tableColumnWidths WordLayout.canvasScale (Some maxWidth) tableBlock
 
-// Word line boxes include font leading beyond the nominal font size.
-let private wordLineBoxFactor = 1.20
+// Word line boxes include font leading beyond the nominal font size. Auto
+// w:line multiples (eg 259/276) still need this Calibri-leading factor.
+let private wordLineBoxFactor = 1.224
 let private wordSingleLineBoxFactor = 1.15
 let private wordDefaultSpacingSingleLineBoxFactor = 1.316
 let private wordTableFollowSingleLineBoxFactor = wordDefaultSpacingSingleLineBoxFactor

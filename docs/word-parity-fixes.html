@@ -153,6 +153,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Auto line-spacing line box</strong>
+          <span class="meta">Repro: <code>tests/repros/word/heading-cambria-font-wrap.docx</code></span>
+          <span class="meta">Companion repro: <code>tests/repros/word/float-image-wrap-square.docx</code></span>
+          <span class="meta">Real fixture class: imported Normal/docDefaults paragraph styles with <code>w:spacing w:lineRule="auto"</code> and non-1.0 <code>w:line</code> values such as <code>259</code> or <code>276</code>.</span>
+          <span class="meta">Font check: Word PDF embeds <code>Calibri</code>; browser segment capture reports <code>Calibri</code> at <code>14.666px</code> for the body runs in this comparison.</span>
+          <span class="meta">Paths checked: Word PDF layout, browser canvas, float/heading line-height guards, table row-pitch guards, list indent, wrapped paragraph pitch, and top-heading guards.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/auto-line-spacing-linebox-word.png" style="--w:1224px; --x:68px; --y:360px; --s:0.693" alt="Word reference auto line-spacing line box">
+          </div>
+          <div class="caption">Word advances inherited Calibri 11pt body lines with the extra leading needed for <code>w:line="276"</code>, keeping the lower employer paragraph on the expected y rhythm.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/auto-line-spacing-linebox-after.png" style="--w:900px; --x:68px; --y:360px; --s:1.04" alt="After auto line-spacing line-box fix">
+          </div>
+          <div class="caption">After: <code>heading-cambria-font-wrap.docx</code> reports <code>ok</code> with <code>15 matched lines</code>; the last employer paragraph lines move from ~<code>6.8px</code> high to within <code>0.3px</code> of Word.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/auto-line-spacing-linebox-before.png" style="--w:900px; --x:68px; --y:360px; --s:1.04" alt="Before auto line-spacing line-box fix">
+          </div>
+          <div class="caption">Before: the non-table auto-line-spacing branch used a <code>1.20</code> line-box factor, giving <code>20.24px</code> lines for Normal <code>w:line="276"</code> and accumulating visible upward drift.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> tune the non-table, non-monospace auto-line-spacing line-box factor to Word's measured Calibri-leading rhythm.</p>
+          <ul>
+            <li><code>src/Word/Layout.fs</code>: <code>wordLineBoxFactor</code> moves from <code>1.20</code> to <code>1.224</code>, so imported auto <code>w:line</code> multiples retain Word's internal font leading instead of shaving ~0.4px per body line.</li>
+            <li>Scoped away from separate line-height paths: single-line default spacing, TOC entries, heading default line boxes, monospace text, and table-cell line boxes keep their existing factors.</li>
+            <li>Regression guards: the 12-fixture comparison batch reports all <code>ok</code>, including <code>float-image-wrap-square</code>, <code>heading-cambria-font-wrap</code>, <code>table-header-docx4j-style-row-pitch</code>, <code>table-header-page2-docx4j-row-pitch</code>, <code>wrapped-paragraph-line-pitch</code>, and <code>top-heading-before-spacing</code>.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Heading before-spacing line box</strong>
           <span class="meta">Repro: <code>tests/repros/word/top-heading-before-spacing.docx</code></span>
           <span class="meta">Real fixture class: imported numeric <code>Heading1</code>/<code>Heading2</code> styles whose fixed or missing spacing uses Word's default heading line box; imported 14pt/14pt Word auto-spacing stays excluded.</span>
