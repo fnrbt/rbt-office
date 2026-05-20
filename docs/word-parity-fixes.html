@@ -153,6 +153,41 @@
     <tbody>
       <tr>
         <td>
+          <strong>Heading before-spacing line box</strong>
+          <span class="meta">Repro: <code>tests/repros/word/top-heading-before-spacing.docx</code></span>
+          <span class="meta">Real fixture class: imported numeric <code>Heading1</code> styles with positive <code>w:before</code> spacing and zero <code>w:after</code> spacing.</span>
+          <span class="meta">Font check: Word PDF embeds <code>Calibri</code>/<code>Calibri-Bold</code>; browser capture uses <code>artifacts/fonts/windows</code> and reports <code>Calibri</code> for the heading runs.</span>
+          <span class="meta">Paths checked: Word PDF layout, browser canvas, PDF backend build, native build, and TOC regression guards.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/heading-linebox-before-spacing-word.png" style="--w:1224px; --x:52px; --y:62px; --s:0.7" alt="Word reference heading before-spacing line box">
+          </div>
+          <div class="caption">Word applies the imported <code>w:before=480</code> spacing and advances each single-line heading with a taller automatic line box, keeping the following paragraph on the same y rhythm.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/heading-linebox-before-spacing-after.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="After heading before-spacing line-box fix">
+          </div>
+          <div class="caption">After: the second heading and following paragraph stay within the PDF-backed comparison threshold; <code>top-heading-before-spacing.docx</code> reports <code>ok</code> with <code>3 matched lines</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/heading-linebox-before-spacing-before.png" style="--w:900px; --x:52px; --y:62px; --s:1.05" alt="Before heading before-spacing line-box fix">
+          </div>
+          <div class="caption">Before: the imported before-spacing was present, but the heading line box was too short; the second heading drifted <code>6.92px</code> high and <code>After heading</code> drifted <code>8.93px</code> high.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> use Word's taller automatic single-line box only for numeric heading styles that combine positive before-spacing with zero after-spacing.</p>
+          <ul>
+            <li><code>src/Word/Layout.fs</code>: detects <code>Heading1</code>/<code>Heading2</code>-style paragraphs with effective before-spacing and zero after-spacing, then applies the existing default-spacing single-line factor to that scoped case.</li>
+            <li>Scope guard: <code>docx4j-toc.docx</code> remains <code>ok</code> with <code>122 matched lines</code>; TOC browser and generated-PDF assertion scripts both pass.</li>
+            <li>Regression guards: <code>heading-style-no-spacing.docx</code>, <code>table-cell-default-after-spacing.docx</code>, and <code>table-spaced-sequence-page-break.docx</code> remain <code>ok</code>.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>TOC title, entry pitch, and body flow</strong>
           <span class="meta">Repro: <code>../office/tests/test-documents-business/docx4j-toc.docx</code></span>
           <span class="meta">Real fixture class: generated TOCs with centered Cambria titles, <code>TOC1</code> entries, and Times New Roman declaration body text across page breaks.</span>

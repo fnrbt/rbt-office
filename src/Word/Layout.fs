@@ -475,23 +475,38 @@ let private isTocEntryStyle (metadata: BlockMetadata) =
         && style.Length > 3
         && (style.Substring(3) |> Seq.forall System.Char.IsDigit))
 
-let private wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing tocEntry =
+let private isHeadingStyle (metadata: BlockMetadata) =
+    metadata.Style
+    |> Option.exists (fun style ->
+        style.StartsWith("Heading", System.StringComparison.OrdinalIgnoreCase)
+        && style.Length > 7
+        && (style.Substring(7) |> Seq.forall System.Char.IsDigit))
+
+let private headingWithBeforeAndZeroAfter (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
+    let before = metadata.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore
+    let after = metadata.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter
+    isHeadingStyle metadata
+    && (before |> Option.exists (fun value -> value > 0.0))
+    && (after |> Option.exists (fun value -> abs value < 0.001))
+
+let private wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing tocEntry headingBeforeZeroAfter =
     let factor =
         if abs (lineSpacing - 1.0) < 0.001 then
             if tocEntry then wordTocEntrySingleLineBoxFactor
+            elif headingBeforeZeroAfter then wordDefaultSpacingSingleLineBoxFactor
             elif defaultParagraphSpacing then wordDefaultSpacingSingleLineBoxFactor
             else wordSingleLineBoxFactor
         else
             lineBoxFactorForTextStyle textStyle
     fontSize * lineSpacing * factor
 
-let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry =
+let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingBeforeZeroAfter =
     let automatic =
         if settings.InTableCell then
             let factor = tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing textStyle
             tableCellLineBoxFontSize fontSize * lineSpacing * factor
         else
-            wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing tocEntry
+            wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing tocEntry headingBeforeZeroAfter
 
     match lineSpacingRule with
     | "exact" -> max 1.0 lineSpacing
@@ -1136,6 +1151,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         || paragraphStyle.LineSpacingRule.IsSome
     let defaultParagraphSpacing = usesDefaultParagraphSpacing metadata
     let tocEntry = isTocEntryStyle metadata
+    let headingBeforeZeroAfter = headingWithBeforeAndZeroAfter paragraphStyle metadata
     let borderBefore, borderAfter = paragraphBorderVerticalAdvance metadata
     let borderRight = paragraphBorderRightAdvance metadata
     let contentY = y + spacingBefore + borderBefore
@@ -1171,7 +1187,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         |> List.sortByDescending WordLayout.Text.displayFontSize
         |> List.tryHead
         |> Option.defaultValue paragraphStyle.Text
-    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry }
+    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingBeforeZeroAfter }
     let lines, updatedObstacles, updatedPlacedBoxes = layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.RightTabPosition initialObstacles initialPlacedBoxes
 
     let adjustedLines =
@@ -1205,7 +1221,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) adjustedLines
 
     let blockHeight =
-        if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry
+        if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingBeforeZeroAfter
         else
             let lastLine = List.last pagedLines
             (lastLine.Y - contentY) + lastLine.Height

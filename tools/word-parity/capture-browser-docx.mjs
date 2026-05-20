@@ -91,19 +91,25 @@ try {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight } });
   const docUrl = `/@fs/${servedFixture}`;
-  const params = new URLSearchParams({ doc: docUrl });
+  const params = new URLSearchParams();
   if (await fileExists(path.join(fontDir, 'calibri.ttf'))) {
     params.set('fontRoot', `/@fs/${fontDir}`);
   }
   await page.goto(`http://127.0.0.1:${port}/?${params.toString()}`);
   await page.waitForFunction(
-    () => window.rbWordRunner && document.querySelector('#status')?.textContent?.startsWith('Loaded '),
+    () => window.rbWordRunner,
     null,
     { timeout: loadTimeoutMs }
   );
   await page.evaluate(
     ({ width, height }) => window.rbWordRunner.setCanvasSize(width, height),
     { width: canvasWidth, height: canvasHeight }
+  );
+  await page.evaluate(url => window.rbWordRunner.loadDocxUrl(url), docUrl);
+  await page.waitForFunction(
+    () => document.querySelector('#status')?.textContent?.startsWith('Loaded '),
+    null,
+    { timeout: loadTimeoutMs }
   );
   await page.evaluate(() => window.rbWordRunner.clearSelection());
   if (outputJson) {
