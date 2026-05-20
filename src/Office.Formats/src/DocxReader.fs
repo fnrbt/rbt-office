@@ -2947,6 +2947,9 @@ let private directParagraphFormattingResetsMissingSpacing (props: ParagraphPrope
     || props.ParagraphBorders.IsSome
     || props.ContextualSpacing.IsSome
 
+let private tableStyleParagraphResetsMissingSpacing (props: ParagraphProperties) =
+    props.LineSpacing.IsSome || props.LineRule.IsSome
+
 let private hasDirectParagraphFormatting (props: ParagraphProperties) =
     props.Style.IsSome
     || props.Alignment.IsSome
@@ -3519,7 +3522,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
             ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders layoutParaProps))
         | Tbl table ->
             // Convert table to editor format
-            let convertCellParagraph (para: Paragraph) : obj =
+            let convertCellParagraph defaultMissingSpacingToZero (para: Paragraph) : obj =
                 let effectiveParaProps = resolvedParagraphProperties styleMap para.Properties
                 let pageBreakAfter =
                     para.Runs
@@ -3766,7 +3769,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                     "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                     "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                     "ParagraphMarkFontSize" ==> paragraphFontSize
-                ] @ paragraphLayoutProps paragraphFontSize false effectiveParaProps.ParagraphBorders layoutParaProps)
+                ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders layoutParaProps)
 
             let tableStyle = resolveTableStyle styleMap table.StyleId
             let tableStyleProperties = tableStyle |> Option.bind (fun style -> style.TableProperties)
@@ -3833,6 +3836,8 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
 
             let convertCell rowIndex (cell: TableCell) : obj =
                 let paragraphStyle = tableParagraphStyleProperties rowIndex
+                let defaultMissingSpacingToZero =
+                    paragraphStyle |> Option.exists tableStyleParagraphResetsMissingSpacing
                 let cellParagraphs =
                     cell.Paragraphs
                     |> List.map (fun para ->
@@ -3846,7 +3851,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                     properties
                             { para with Properties = properties }
                         | None -> para)
-                    |> List.map convertCellParagraph
+                    |> List.map (convertCellParagraph defaultMissingSpacingToZero)
                     |> List.toArray
 
                 let backgroundColor =

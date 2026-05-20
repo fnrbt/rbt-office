@@ -516,6 +516,9 @@ let private directParagraphFormattingResetsMissingSpacing (props: DocxReader.Par
     || props.ParagraphBorders.IsSome
     || props.ContextualSpacing.IsSome
 
+let private tableStyleParagraphResetsMissingSpacing (props: DocxReader.ParagraphProperties) =
+    props.LineSpacing.IsSome || props.LineRule.IsSome
+
 let private mkPara resolver images styleMap comments notes useDocumentMarkForPureEmpty defaultMissingSpacingToZero para =
     let editorPara = EP.toEditorParagraph None styleMap comments notes para
     {
@@ -538,12 +541,14 @@ let private tableCell resolver images styleMap comments notes (paragraphProperti
             { para with Properties = properties }
         | None -> para
     let emptyPara : DocxReader.Paragraph = { Runs = []; Properties = DocxReader.Docx.paragraphProps XmlDsl.Empty }
+    let defaultMissingSpacingToZero =
+        paragraphProperties |> Option.exists tableStyleParagraphResetsMissingSpacing
     let content =
         cell.Paragraphs
         |> List.map applyTableParagraphProperties
-        |> List.map (mkPara resolver images styleMap comments notes false false)
+        |> List.map (mkPara resolver images styleMap comments notes false defaultMissingSpacingToZero)
     {
-        Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes false false (applyTableParagraphProperties emptyPara)] else content
+        Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes false defaultMissingSpacingToZero (applyTableParagraphProperties emptyPara)] else content
         ColSpan = props |> Option.bind (fun p -> p.ColSpan) |> Option.defaultValue 1
         BackgroundColor = props |> Option.bind (fun p -> p.Shading) |> Option.bind directShadingBackgroundColor
         Shading = props |> Option.bind (fun p -> p.Shading) |> Option.map shading

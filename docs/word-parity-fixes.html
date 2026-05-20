@@ -153,6 +153,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Table style line-spacing without after-spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-style-line-spacing-only.docx</code></span>
+          <span class="meta">Real fixture class: table styles whose <code>w:pPr</code> sets <code>w:spacing w:line="240"</code> but omits <code>w:after</code>, as in Office/Calibre-style light-list tables.</span>
+          <span class="meta">Font check: focused comparison uses Calibri in both Word PDF and browser captures; embedded-font Calibre layout remains a separate gap.</span>
+          <span class="meta">Paths checked: Word PDF layout, browser canvas layout, native metadata importer mirror, default table-cell after-spacing guard, dense row-pitch guard, and <code>docx4j-tables.docx</code>.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/table-style-line-spacing-only-word.png" style="--w:1224px; --x:34px; --y:56px; --s:0.5" alt="Word reference table style line-spacing-only rows">
+          </div>
+          <div class="caption">Word treats the table style's line-spacing-only paragraph properties as dense table-cell rhythm; rows advance at about <code>18.6px</code> in this focused fixture.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/table-style-line-spacing-only-after.png" style="--w:900px; --x:34px; --y:56px; --s:0.75" alt="After table style line-spacing-only fix">
+          </div>
+          <div class="caption">After: <code>table-style-line-spacing-only.docx</code> reports <code>ok</code> with <code>8 matched lines</code>; table row pitch is <code>18.57px</code>, within <code>0.15px</code> of Word.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/table-style-line-spacing-only-before.png" style="--w:900px; --x:34px; --y:56px; --s:0.75" alt="Before table style line-spacing-only fix">
+          </div>
+          <div class="caption">Before: table-cell paragraphs inherited default after-spacing even though the table style supplied direct line spacing, making every row visibly too tall.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> apply the zero-spacing fallback only for table style paragraph properties that set line spacing without explicit spacing.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code>: table-cell paragraph metadata now treats table-style <code>w:line</code>/<code>w:lineRule</code> as the direct table-style spacing context, while plain/direct-border table cells still inherit default after-spacing.</li>
+            <li><code>tools/native-runner/Program.fs</code>: mirrors the same table-cell metadata rule for native/PDF import paths.</li>
+            <li><code>tools/word-parity/create-focused-repros.py</code>: adds a line-spacing-only table style repro.</li>
+            <li>Regression guards: <code>table-cell-default-after-spacing.docx</code>, <code>table-style-paragraph-spacing.docx</code>, <code>table-grid-dense-row-pitch.docx</code>, and <code>docx4j-tables.docx</code> remain <code>ok</code>.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Alignment-only paragraph spacing</strong>
           <span class="meta">Repro: <code>tests/repros/word/alignment-inherits-default-spacing.docx</code></span>
           <span class="meta">Real fixture class: top-level DOCX paragraphs whose direct <code>w:pPr</code> contains <code>w:jc</code> but omits <code>w:spacing</code>, such as the aligned paragraphs in <code>test-formatting.docx</code>.</span>
