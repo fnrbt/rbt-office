@@ -664,7 +664,7 @@ let private hasMixedTextMetrics (segments: Segment list) =
     let keys =
         segments
         |> List.choose (function
-            | TextSegment (_, style, _, _, _) -> Some (style.FontFamily, style.FontSize, style.VertAlign, style.SmallCaps)
+            | TextSegment (_, style, _, _, _) -> Some (style.FontFamily, style.FontSize, style.Bold, style.Italic, style.VertAlign, style.SmallCaps)
             | ImageSegment _ -> None)
         |> List.distinct
     keys.Length > 1
