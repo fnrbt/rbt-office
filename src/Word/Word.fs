@@ -661,6 +661,31 @@ module API =
         |> Option.map ((+) 1)
         |> Option.defaultValue 0
 
+    // Word/PDF range positions use a text-top coordinate for large default-spaced
+    // runs; our layout line keeps the line-box top for rendering and pagination.
+    let private wordVerticalTextTopOffsetFactor = 0.21
+    let private wordVerticalTextTopOffsetMinFontSize = 24.0
+
+    let private usesDefaultWordRangeTopOffset (metadata: Doc.BlockMetadata) =
+        metadata.SpacingBefore.IsNone
+        && metadata.SpacingAfter.IsNone
+        && metadata.LineSpacing.IsNone
+        && metadata.LineSpacingRule.IsNone
+        && metadata.ContextualSpacing.IsNone
+
+    let private wordVerticalPositionTop applyTextTopOffset (line: Layout.MeasuredLine) =
+        let fontSize =
+            line.Segments
+            |> List.choose (function
+                | Layout.TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.printFontSize style)
+                | Layout.ImageSegment _ -> None)
+            |> function
+                | [] -> 0.0
+                | sizes -> List.max sizes
+        if applyTextTopOffset && fontSize >= wordVerticalTextTopOffsetMinFontSize then
+            line.Y + fontSize * wordVerticalTextTopOffsetFactor
+        else line.Y
+
     let getRangeInformation (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
         let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
         let contexts = paragraphContexts editor.Doc
@@ -682,8 +707,10 @@ module API =
             let x = editor.Doc.PageSetup.MarginLeft + alignOffset + Layout.xForOffsetWithRange measureRange line offset
             let page = pageForYInDoc editor.Doc line.Y
             let pageTop = pageTopForYInDoc editor.Doc line.Y
-            let pageY = line.Y - pageTop
             let context = contexts |> Map.tryFind blockId
+            let isInTable = context.IsSome && context.Value.TableIndex.IsSome
+            let wordTop = wordVerticalPositionTop (not isInTable && usesDefaultWordRangeTopOffset layout.Metadata) line
+            let pageY = wordTop - pageTop
             let boundaryLeft, boundaryTop =
                 textBoundaryOrigin editor.Doc editor.Doc.PageSetup.MarginLeft layout line context
             let bounds = rangeBounds editor.Doc layouts measureRange blockId startOffset endOffset
@@ -699,10 +726,10 @@ module API =
                 "wdHorizontalPositionRelativeToPage" ==> x
                 "wdVerticalPositionRelativeToPage" ==> pageY
                 "wdHorizontalPositionRelativeToTextBoundary" ==> (x - boundaryLeft)
-                "wdVerticalPositionRelativeToTextBoundary" ==> (max 0.0 (line.Y - boundaryTop))
+                "wdVerticalPositionRelativeToTextBoundary" ==> (max 0.0 (wordTop - boundaryTop))
                 "wdFirstCharacterColumnNumber" ==> firstCharacterColumn (paragraphs |> Map.tryFind blockId) line offset
                 "wdFirstCharacterLineNumber" ==> pageLineNumber editor.Doc layouts layout line
-                "wdWithInTable" ==> (context.IsSome && context.Value.TableIndex.IsSome)
+                "wdWithInTable" ==> isInTable
                 "wdStartOfRangeRowNumber" ==> (context |> Option.bind _.RowIndex |> jsOpt)
                 "wdEndOfRangeRowNumber" ==> (context |> Option.bind _.RowIndex |> jsOpt)
                 "wdMaximumNumberOfRows" ==> (context |> Option.bind _.MaxRows |> jsOpt)
@@ -799,6 +826,7 @@ module API =
                 let isInTable = context |> Option.bind _.TableIndex |> Option.isSome
                 let boundaryLeft, boundaryTop =
                     textBoundaryOrigin editor.Doc pageLeft layout line context
+                let wordTop = wordVerticalPositionTop (not isInTable && usesDefaultWordRangeTopOffset layout.Metadata) line
                 createObj [
                     "Kind" ==> "line"
                     "BlockId" ==> layout.BlockId
@@ -809,15 +837,15 @@ module API =
                     "Section" ==> (sections |> Map.tryFind layout.BlockId |> Option.defaultValue 1)
                     "PageCount" ==> pageCount
                     "X" ==> x
-                    "Y" ==> line.Y
-                    "PageY" ==> (line.Y - pageTop)
+                    "Y" ==> wordTop
+                    "PageY" ==> (wordTop - pageTop)
                     "Width" ==> width
                     "Height" ==> line.Height
                     "LineWidth" ==> line.Width
                     "HorizontalPositionRelativeToPage" ==> x
-                    "VerticalPositionRelativeToPage" ==> (line.Y - pageTop)
+                    "VerticalPositionRelativeToPage" ==> (wordTop - pageTop)
                     "HorizontalPositionRelativeToTextBoundary" ==> (x - boundaryLeft)
-                    "VerticalPositionRelativeToTextBoundary" ==> (max 0.0 (line.Y - boundaryTop))
+                    "VerticalPositionRelativeToTextBoundary" ==> (max 0.0 (wordTop - boundaryTop))
                     "FirstCharacterLineNumber" ==> pageLine
                     "FirstCharacterColumnNumber" ==> firstCharacterColumn (paragraphs |> Map.tryFind layout.BlockId) line line.StartOffset
                     "StartOffset" ==> line.StartOffset
