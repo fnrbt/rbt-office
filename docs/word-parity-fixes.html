@@ -155,9 +155,9 @@
         <td>
           <strong>Heading before-spacing line box</strong>
           <span class="meta">Repro: <code>tests/repros/word/top-heading-before-spacing.docx</code></span>
-          <span class="meta">Real fixture class: imported numeric <code>Heading1</code> styles with positive <code>w:before</code> spacing and zero <code>w:after</code> spacing.</span>
+          <span class="meta">Real fixture class: imported numeric <code>Heading1</code>/<code>Heading2</code> styles whose fixed or missing spacing uses Word's default heading line box; imported 14pt/14pt Word auto-spacing stays excluded.</span>
           <span class="meta">Font check: Word PDF embeds <code>Calibri</code>/<code>Calibri-Bold</code>; browser capture uses <code>artifacts/fonts/windows</code> and reports <code>Calibri</code> for the heading runs.</span>
-          <span class="meta">Paths checked: Word PDF layout, browser canvas, PDF backend build, native build, and TOC regression guards.</span>
+          <span class="meta">Paths checked: Word PDF layout, browser canvas, PDF backend build, native build, wrapped-heading line-pitch guard, and TOC regression guards.</span>
         </td>
         <td>
           <div class="zoom">
@@ -178,11 +178,11 @@
           <div class="caption">Before: the imported before-spacing was present, but the heading line box was too short; the second heading drifted <code>6.92px</code> high and <code>After heading</code> drifted <code>8.93px</code> high.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> use Word's taller automatic single-line box only for numeric heading styles that combine positive before-spacing with zero after-spacing.</p>
+          <p><strong>Fix:</strong> use Word's taller automatic single-line box for numeric heading styles unless the effective paragraph spacing is Word's imported 14pt/14pt auto-spacing.</p>
           <ul>
-            <li><code>src/Word/Layout.fs</code>: detects <code>Heading1</code>/<code>Heading2</code>-style paragraphs with effective before-spacing and zero after-spacing, then applies the existing default-spacing single-line factor to that scoped case.</li>
-            <li>Scope guard: <code>docx4j-toc.docx</code> remains <code>ok</code> with <code>122 matched lines</code>; TOC browser and generated-PDF assertion scripts both pass.</li>
-            <li>Regression guards: <code>heading-style-no-spacing.docx</code>, <code>table-cell-default-after-spacing.docx</code>, and <code>table-spaced-sequence-page-break.docx</code> remain <code>ok</code>.</li>
+            <li><code>src/Word/Layout.fs</code>: detects numeric <code>Heading*</code> styles from effective paragraph spacing and applies the existing default-spacing single-line factor, while explicitly excluding imported auto-spaced headings at <code>14pt/14pt</code>.</li>
+            <li>Scope guard: <code>docx4j-toc.docx</code> keeps its Article heading flow; TOC browser and generated-PDF assertion scripts both pass.</li>
+            <li>Regression guards: <code>wrapped-paragraph-line-pitch.docx</code>, <code>heading-style-no-spacing.docx</code>, <code>table-cell-default-after-spacing.docx</code>, and <code>table-spaced-sequence-page-break.docx</code> remain <code>ok</code>.</li>
           </ul>
         </td>
       </tr>

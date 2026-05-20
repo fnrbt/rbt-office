@@ -24,6 +24,11 @@ const viewportHeight = Number(process.env.BROWSER_CAPTURE_VIEWPORT_HEIGHT ?? 180
 const canvasWidth = Number(process.env.BROWSER_CAPTURE_CANVAS_WIDTH ?? 900);
 const canvasHeight = Number(process.env.BROWSER_CAPTURE_CANVAS_HEIGHT ?? 1600);
 const loadTimeoutMs = Number(process.env.BROWSER_CAPTURE_LOAD_TIMEOUT_MS ?? 30000);
+const serverSettleMs = Number(process.env.BROWSER_CAPTURE_SERVER_SETTLE_MS ?? 500);
+const requestedCaptureAttempts = Number(process.env.BROWSER_CAPTURE_ATTEMPTS ?? 2);
+const captureAttempts = Number.isFinite(requestedCaptureAttempts) && requestedCaptureAttempts > 0
+  ? Math.floor(requestedCaptureAttempts)
+  : 1;
 
 if (!args[0] || !args[1] || (args[2] === '--segments' && !args[3])) {
   console.error('Usage: OFFICE_ROOT=/path/to/office node tools/word-parity/capture-browser-docx.mjs input.docx output.png [layout.json|--segments layout.json]');
@@ -86,54 +91,75 @@ if (!serverReady) {
   server.kill('SIGKILL');
   throw new Error('vite server did not start');
 }
+await new Promise(resolve => setTimeout(resolve, serverSettleMs));
+
+async function captureOnce() {
+  let browser = null;
+  try {
+    browser = await chromium.launch({
+      args: ['--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight } });
+    const docUrl = `/@fs/${servedFixture}`;
+    const params = new URLSearchParams({
+      doc: docUrl,
+      canvasWidth: String(canvasWidth),
+      canvasHeight: String(canvasHeight),
+    });
+    if (await fileExists(path.join(fontDir, 'calibri.ttf'))) {
+      params.set('fontRoot', `/@fs/${fontDir}`);
+    }
+    await page.goto(`http://127.0.0.1:${port}/?${params.toString()}`);
+    await page.waitForFunction(
+      () => window.rbWordRunner && document.querySelector('#status')?.textContent?.startsWith('Loaded '),
+      null,
+      { timeout: loadTimeoutMs }
+    );
+    await page.evaluate(() => window.rbWordRunner.clearSelection());
+    if (outputJson) {
+      const layout = layoutMode === 'range-info' || layoutMode === 'vba-range-info'
+        ? await page.evaluate(() =>
+            window.rbWordRunner.getVbaLayoutLines().map(line => ({
+              ...line,
+              Information: window.rbWordRunner.getRangeInformation(line.BlockId, line.StartOffset, line.EndOffset),
+              Statistics: window.rbWordRunner.computeRangeStatistics(line.BlockId, line.StartOffset, line.EndOffset),
+              Bounds: window.rbWordRunner.getRangeBounds(line.BlockId, line.StartOffset, line.EndOffset),
+            }))
+          )
+        : layoutMode === 'table-geometry'
+          ? await page.evaluate(() => window.rbWordRunner.getTableGeometry())
+        : layoutMode === 'vba' || layoutMode === 'vba-lines'
+        ? await page.evaluate(() => window.rbWordRunner.getVbaLayoutLines())
+        : layoutMode === 'lines'
+          ? await page.evaluate(() => window.rbWordRunner.getLayoutLines())
+          : await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
+      await fs.writeFile(outputJson, JSON.stringify(layout, null, 2));
+    }
+    await page.locator('#word-canvas').screenshot({ path: outputPng });
+    console.log(`browser capture ok: ${fixture} -> ${outputPng}`);
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+  }
+}
 
 try {
-  const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight } });
-  const docUrl = `/@fs/${servedFixture}`;
-  const params = new URLSearchParams();
-  if (await fileExists(path.join(fontDir, 'calibri.ttf'))) {
-    params.set('fontRoot', `/@fs/${fontDir}`);
+  let lastError = null;
+  for (let attempt = 1; attempt <= captureAttempts; attempt += 1) {
+    try {
+      await captureOnce();
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError = error;
+      if (attempt < captureAttempts) {
+        console.warn(`browser capture attempt ${attempt} failed: ${error.message}`);
+        await new Promise(resolve => setTimeout(resolve, 750));
+      }
+    }
   }
-  await page.goto(`http://127.0.0.1:${port}/?${params.toString()}`);
-  await page.waitForFunction(
-    () => window.rbWordRunner,
-    null,
-    { timeout: loadTimeoutMs }
-  );
-  await page.evaluate(
-    ({ width, height }) => window.rbWordRunner.setCanvasSize(width, height),
-    { width: canvasWidth, height: canvasHeight }
-  );
-  await page.evaluate(url => window.rbWordRunner.loadDocxUrl(url), docUrl);
-  await page.waitForFunction(
-    () => document.querySelector('#status')?.textContent?.startsWith('Loaded '),
-    null,
-    { timeout: loadTimeoutMs }
-  );
-  await page.evaluate(() => window.rbWordRunner.clearSelection());
-  if (outputJson) {
-    const layout = layoutMode === 'range-info' || layoutMode === 'vba-range-info'
-      ? await page.evaluate(() =>
-          window.rbWordRunner.getVbaLayoutLines().map(line => ({
-            ...line,
-            Information: window.rbWordRunner.getRangeInformation(line.BlockId, line.StartOffset, line.EndOffset),
-            Statistics: window.rbWordRunner.computeRangeStatistics(line.BlockId, line.StartOffset, line.EndOffset),
-            Bounds: window.rbWordRunner.getRangeBounds(line.BlockId, line.StartOffset, line.EndOffset),
-          }))
-        )
-      : layoutMode === 'table-geometry'
-        ? await page.evaluate(() => window.rbWordRunner.getTableGeometry())
-      : layoutMode === 'vba' || layoutMode === 'vba-lines'
-      ? await page.evaluate(() => window.rbWordRunner.getVbaLayoutLines())
-      : layoutMode === 'lines'
-        ? await page.evaluate(() => window.rbWordRunner.getLayoutLines())
-        : await page.evaluate(() => window.rbWordRunner.getLayoutSegments());
-    await fs.writeFile(outputJson, JSON.stringify(layout, null, 2));
-  }
-  await page.locator('#word-canvas').screenshot({ path: outputPng });
-  await browser.close();
-  console.log(`browser capture ok: ${fixture} -> ${outputPng}`);
+  if (lastError) throw lastError;
 } finally {
   server.kill('SIGKILL');
 }

@@ -64,6 +64,14 @@ let private queryParam name =
     let value = getQueryParam name
     if isNull value || value = "" then None else Some value
 
+let private queryIntParam name fallback =
+    match queryParam name with
+    | Some value ->
+        match System.Int32.TryParse(value) with
+        | true, parsed -> parsed
+        | false, _ -> fallback
+    | None -> fallback
+
 let private status (state: RunnerState) text =
     state.Status.textContent <- text
 
@@ -188,7 +196,7 @@ let private boot () =
     let canvas = document.getElementById("word-canvas") :?> HTMLCanvasElement
     let statusEl = document.getElementById("status") :?> HTMLElement
     let state = { Canvas = canvas; Status = statusEl; Editor = None }
-    setCanvasSize state 900 1600
+    setCanvasSize state (queryIntParam "canvasWidth" 900) (queryIntParam "canvasHeight" 1600)
     let editor = ensureEditor state
     WordApi.setContent editor "Browser Word runner ready."
     status state "Ready"
