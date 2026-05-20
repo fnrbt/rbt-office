@@ -199,7 +199,7 @@ let private verticalStripeCommands color x y width height =
 
 let private diagonalStripeCommands reverse color x y width height =
     let commands = ResizeArray<PaintCommand>()
-    let spacing = 2.0
+    let spacing = 3.0
     if reverse then
         let mutable c = 0.0
         while c <= width + height do

@@ -153,6 +153,40 @@
     <tbody>
       <tr>
         <td>
+          <strong>Diagonal table-cell shading density</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-auto-pattern-shading.docx</code></span>
+          <span class="meta">Real fixture class: <code>docx4j-tables.docx</code> cells with diagonal <code>w:shd</code> patterns and explicit foreground colors.</span>
+          <span class="meta">Paths checked: Word PDF raster, PDF backend, browser canvas, native PNG, and focused visual color assertion.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/table-diagonal-shading-density-word.png" style="--w:1224px; --x:120px; --y:180px; --s:0.58" alt="Word reference diagonal table-cell shading density">
+          </div>
+          <div class="caption">Word renders the green reverse-diagonal stripe as a lighter coverage pattern; the sampled stripe interior averages <code>(183.0,216.5,140.0)</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/table-diagonal-shading-density-after.png" style="--w:1224px; --x:120px; --y:180px; --s:0.58" alt="After diagonal table-cell shading density fix">
+          </div>
+          <div class="caption">After: diagonal hatch spacing matches the Word-like coverage; the sampled stripe interior is <code>(183.2,217.0,141.2)</code> and the visual guard reports max channel delta <code>1.2</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/table-diagonal-shading-density-before.png" style="--w:1224px; --x:120px; --y:180px; --s:0.58" alt="Before diagonal table-cell shading density fix">
+          </div>
+          <div class="caption">Before: 2px diagonal hatch spacing made the green pattern too dense and dark; the sampled stripe interior averaged <code>(149.0,199.0,86.7)</code>, a max-channel delta of <code>53.3</code> vs Word.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> loosen diagonal hatch spacing from <code>2px</code> to <code>3px</code>, reducing the effective coverage to Word's reverse-diagonal stripe density.</p>
+          <ul>
+            <li>Visual guard: <code>assert-table-auto-pattern-shading-visual.py</code> samples the <code>pct5</code>, <code>pct10</code>, and diagonal stripe cells from 144dpi Word/ours rasters.</li>
+            <li>Focused result: percentage fills stay within <code>2.7</code> channels, and the diagonal stripe drops from <code>53.3</code> to <code>1.2</code> max-channel delta.</li>
+            <li>Scope: this is a paint-only hatch density change; text-position residuals in this repro remain the separate table-top spacing issue.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>vMerge vertical alignment row-span height</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-vmerge-valign-rowspan.docx</code></span>
           <span class="meta">Real fixture class: <code>docx4j-tables.docx</code> &ldquo;Merging, alignment, row height&rdquo; tables where text in a <code>w:vMerge</code> restart cell is centered across the merged row span.</span>
