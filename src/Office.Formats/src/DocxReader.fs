@@ -2936,8 +2936,7 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
     ]
 
 let private directParagraphFormattingResetsMissingSpacing (props: ParagraphProperties) =
-    props.Alignment.IsSome
-    || props.IndentLeft.IsSome
+    props.IndentLeft.IsSome
     || props.IndentRight.IsSome
     || props.FirstLineIndent.IsSome
     || props.HangingIndent.IsSome

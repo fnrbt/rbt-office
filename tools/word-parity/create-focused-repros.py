@@ -1153,6 +1153,14 @@ def main():
             + paragraph("Third normal line")
             + paragraph("Wrapped line pitch - Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.")
         )),
+        "alignment-inherits-default-spacing.docx": (False, (
+            paragraph("Alignment inherits default spacing repro", "Heading1")
+            + paragraph("Before aligned paragraph")
+            + paragraph("Left aligned direct pPr", alignment="left")
+            + paragraph("Center aligned direct pPr", alignment="center")
+            + paragraph("Right aligned direct pPr", alignment="right")
+            + paragraph("After aligned paragraph")
+        )),
         "empty-normal-paragraph-mark-size.docx": (False, False, False, (
             paragraph("Empty paragraph mark size repro")
             + empty_paragraph()

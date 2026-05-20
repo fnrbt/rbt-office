@@ -505,8 +505,7 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
     }
 
 let private directParagraphFormattingResetsMissingSpacing (props: DocxReader.ParagraphProperties) =
-    props.Alignment.IsSome
-    || props.IndentLeft.IsSome
+    props.IndentLeft.IsSome
     || props.IndentRight.IsSome
     || props.FirstLineIndent.IsSome
     || props.HangingIndent.IsSome

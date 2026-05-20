@@ -153,6 +153,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Alignment-only paragraph spacing</strong>
+          <span class="meta">Repro: <code>tests/repros/word/alignment-inherits-default-spacing.docx</code></span>
+          <span class="meta">Real fixture class: top-level DOCX paragraphs whose direct <code>w:pPr</code> contains <code>w:jc</code> but omits <code>w:spacing</code>, such as the aligned paragraphs in <code>test-formatting.docx</code>.</span>
+          <span class="meta">Font check: Word PDF and browser captures both use the Calibri/Arial Windows font set for this comparison.</span>
+          <span class="meta">Paths checked: Word PDF layout, browser canvas layout, native metadata importer mirror, table-cell spacing guard, table page-break guard, and TOC guard.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/alignment-inherits-default-spacing-word.png" style="--w:1224px; --x:40px; --y:42px; --s:0.387" alt="Word reference alignment-only paragraph spacing">
+          </div>
+          <div class="caption">Word lets alignment-only direct paragraph properties inherit Normal/default after-spacing, so left, center, right, and following paragraphs keep the same vertical rhythm.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/alignment-inherits-default-spacing-after.png" style="--w:900px; --x:40px; --y:42px; --s:0.58" alt="After alignment-only paragraph spacing fix">
+          </div>
+          <div class="caption">After: the focused repro reports <code>ok</code> with <code>6 matched lines</code>; aligned paragraph gaps are within <code>0.11px</code> of Word and y drift stays under <code>2.9px</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/alignment-inherits-default-spacing-before.png" style="--w:900px; --x:40px; --y:42px; --s:0.58" alt="Before alignment-only paragraph spacing fix">
+          </div>
+          <div class="caption">Before: <code>w:jc</code> was treated as a direct-formatting signal that reset missing spacing to <code>0pt</code>; the aligned paragraphs collapsed to line-height-only spacing.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> stop treating paragraph alignment by itself as a spacing reset.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code>: alignment-only <code>w:pPr</code> now preserves missing spacing as inherited instead of forcing <code>0pt</code>.</li>
+            <li><code>tools/native-runner/Program.fs</code>: mirrors the same metadata rule for native/PDF import paths.</li>
+            <li><code>tools/word-parity/create-focused-repros.py</code>: adds a focused alignment-spacing repro with left, center, and right direct <code>w:jc</code> paragraphs.</li>
+            <li>Regression guards: <code>normal-paragraph-line-pitch.docx</code>, <code>table-cell-default-after-spacing.docx</code>, <code>table-spaced-sequence-page-break.docx</code>, and <code>docx4j-toc.docx</code> remain <code>ok</code>.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Auto line-spacing line box</strong>
           <span class="meta">Repro: <code>tests/repros/word/heading-cambria-font-wrap.docx</code></span>
           <span class="meta">Companion repro: <code>tests/repros/word/float-image-wrap-square.docx</code></span>
