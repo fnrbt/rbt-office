@@ -153,6 +153,40 @@
     <tbody>
       <tr>
         <td>
+          <strong>vMerge vertical alignment row-span height</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-vmerge-valign-rowspan.docx</code></span>
+          <span class="meta">Real fixture class: <code>docx4j-tables.docx</code> &ldquo;Merging, alignment, row height&rdquo; tables where text in a <code>w:vMerge</code> restart cell is centered across the merged row span.</span>
+          <span class="meta">Paths checked: PDF-backed Word comparison, browser canvas, native PNG, PDF backend, and focused layout assertion.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/table-vmerge-valign-rowspan-word.png" style="--w:1224px; --x:90px; --y:115px; --s:0.58" alt="Word reference vertically merged cell alignment">
+          </div>
+          <div class="caption">Word centers <code>B</code> across the two-row merged cell while <code>A</code> and <code>C</code> remain aligned to their own row content origins.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/table-vmerge-valign-rowspan-after.png" style="--w:1224px; --x:90px; --y:115px; --s:0.58" alt="After vMerge row-span vertical alignment fix">
+          </div>
+          <div class="caption">After: the PDF backend places <code>B</code> within <code>1.11px</code> of Word. The browser guard compares row-relative drift and reports <code>B-A=-0.76px</code>, <code>B-C=-0.04px</code> with <code>5 matched lines</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/table-vmerge-valign-rowspan-before.png" style="--w:1224px; --x:90px; --y:115px; --s:0.58" alt="Before vMerge row-span vertical alignment fix">
+          </div>
+          <div class="caption">Before: vertical alignment used only the restart row height, so the merged <code>B</code> text sat <code>38.40px</code> too high even though <code>A</code> and <code>C</code> were already within about a pixel.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> resolve the row span for each merged source cell and feed the total spanned height into the vertical-content offset.</p>
+          <ul>
+            <li>Shared layout now uses the row-span height when emitting table-cell text layouts for vertically aligned <code>w:vMerge</code> restart cells.</li>
+            <li>Table fragment geometry and canonical table-y helpers use the same row-span-aware offset, keeping paint, range geometry, and browser/native/PDF paths aligned.</li>
+            <li>Focused guard: <code>compare-word-browser-layouts --word-source pdf</code> reports <code>ok</code>, and <code>assert-table-vmerge-valign-rowspan.mjs</code> verifies the merged <code>B</code> row no longer has row-specific y drift.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>TOC title character spacing</strong>
           <span class="meta">Repro: <code>docx4j-toc.docx</code> Title paragraph on page 1.</span>
           <span class="meta">Real fixture class: DOCX title/heading styles with expanded run spacing (<code>w:rPr/w:spacing</code>) that must affect measurement and paint.</span>

@@ -91,6 +91,7 @@ def cell(
     text,
     width=2400,
     grid_span=None,
+    vertical_merge=None,
     spacing_after=None,
     padding_left=None,
     padding_top=None,
@@ -108,6 +109,11 @@ def cell(
     tc_props = [f'<w:tcW w:w="{width}" w:type="dxa"/>']
     if grid_span is not None:
         tc_props.append(f'<w:gridSpan w:val="{grid_span}"/>')
+    if vertical_merge is not None:
+        if vertical_merge == "continue":
+            tc_props.append("<w:vMerge/>")
+        else:
+            tc_props.append(f'<w:vMerge w:val="{esc(vertical_merge)}"/>')
     if shading:
         tc_props.append(
             f'<w:shd w:val="{esc(shading)}" w:color="{esc(shading_color)}" w:fill="{esc(shading_fill)}"/>'
@@ -1072,6 +1078,20 @@ def main():
                 ], height=1134),
             ], [4606, 4606])
             + paragraph("After valign table")
+        ), True, True, table_grid_paragraph_spacing_styles()),
+        "table-vmerge-valign-rowspan.docx": (False, False, False, (
+            paragraph("Table vMerge valign row-span repro", "Heading1")
+            + table_grid_style_table([
+                row_cells_props([
+                    cell("A", width=4606),
+                    cell("B", width=4606, vertical_merge="restart", valign="center"),
+                ], height=1134),
+                row_cells_props([
+                    cell("C", width=4606),
+                    empty_cell_with_props(4606, vertical_merge="continue"),
+                ], height=1134),
+            ], [4606, 4606])
+            + paragraph("After vMerge table")
         ), True, True, table_grid_paragraph_spacing_styles()),
         "table-cell-spacing-margins.docx": (False, False, False, (
             paragraph("Table cell spacing and margins repro", spacing_after=0)

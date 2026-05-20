@@ -331,13 +331,16 @@ module API =
         | [] -> None
         | values ->
             let planAtZero = Layout.buildTableLayoutPlanForDocumentAt settings measureText measureRange doc table 0.0
+            let resolveAlignmentHeight = Layout.tableCellVerticalAlignmentHeightResolverForPlan planAtZero
             let plannedContentY =
                 planAtZero.Rows
                 |> List.collect (fun row ->
                     row.Measurement.CellGroups
-                    |> List.collect (fun group ->
-                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment row.Height group.PaddingTop group.PaddingBottom group.ContentHeight
-                        group.Layouts |> List.map (fun layout -> layout.Y + offset)))
+                    |> List.mapi (fun groupIndex group ->
+                        let alignmentHeight = resolveAlignmentHeight row.RowIndex groupIndex row.Height
+                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment alignmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
+                        group.Layouts |> List.map (fun layout -> layout.Y + offset))
+                    |> List.collect id)
             match plannedContentY with
             | [] -> None
             | plannedValues -> Some ((values |> List.min) - (plannedValues |> List.min))

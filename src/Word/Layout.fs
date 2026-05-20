@@ -167,6 +167,36 @@ type TableCellFragmentPlan = {
     BlockIds: BlockId list
 }
 
+let private rowSpanHeightAt (rowHeights: float array) rowIndex rowSpan fallback =
+    [rowIndex .. rowIndex + max 1 rowSpan - 1]
+    |> List.sumBy (fun index -> rowHeights |> Array.tryItem index |> Option.defaultValue 0.0)
+    |> max fallback
+
+let private resolvedCellRowSpan (resolvedRows: WordLayout.Table.ResolvedRow array) rowIndex sourceCellIndex =
+    resolvedRows
+    |> Array.tryItem rowIndex
+    |> Option.bind (fun row ->
+        row.Cells
+        |> List.tryFind (fun cell -> cell.SourceCellIndex = sourceCellIndex)
+        |> Option.map _.RowSpan)
+    |> Option.defaultValue 1
+
+let private tableCellVerticalAlignmentHeight resolvedRows rowHeights rowIndex sourceCellIndex fallback =
+    let rowSpan = resolvedCellRowSpan resolvedRows rowIndex sourceCellIndex
+    rowSpanHeightAt rowHeights rowIndex rowSpan fallback
+
+let tableCellVerticalAlignmentHeightResolverForPlan (plan: TableLayoutPlan) =
+    let resolvedRows =
+        WordLayout.Table.resolveTable WordLayout.canvasScale (Some plan.TableMaxWidth) plan.Table
+        |> fun resolved -> resolved.BodyRows |> List.toArray
+    let rowHeights = plan.Rows |> List.map _.Height |> List.toArray
+    fun rowIndex sourceCellIndex fallback ->
+        tableCellVerticalAlignmentHeight resolvedRows rowHeights rowIndex sourceCellIndex fallback
+
+let tableCellVerticalAlignmentHeightForPlan (plan: TableLayoutPlan) rowIndex sourceCellIndex fallback =
+    let resolveHeight = tableCellVerticalAlignmentHeightResolverForPlan plan
+    resolveHeight rowIndex sourceCellIndex fallback
+
 type LayoutSettings = {
     Width: float
     PageHeight: float
@@ -1243,10 +1273,6 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
         WordLayout.Table.resolveTable WordLayout.canvasScale (Some plan.TableMaxWidth) tableBlock
         |> fun resolved -> resolved.BodyRows |> List.toArray
     let rowHeights = plan.Rows |> List.map _.Height |> List.toArray
-    let rowSpanHeightAt rowIndex rowSpan fallback =
-        [rowIndex .. rowIndex + max 1 rowSpan - 1]
-        |> List.sumBy (fun index -> rowHeights |> Array.tryItem index |> Option.defaultValue 0.0)
-        |> max fallback
     plan.Rows
     |> List.collect (fun planRow ->
         let row = tableBlock.Rows.[planRow.RowIndex]
@@ -1284,8 +1310,8 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
                         else
                             cellPadding
                     let paintTopAdjustment = WordLayout.Table.spacedCellPaintTopAdjustment cellSpacing textPadding cellPadding
-                    let cellFragmentHeight = rowSpanHeightAt planRow.RowIndex resolvedCell.RowSpan fragment.Height
-                    let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment planRow.Height group.PaddingTop group.PaddingBottom group.ContentHeight
+                    let cellFragmentHeight = tableCellVerticalAlignmentHeight resolvedRows rowHeights planRow.RowIndex resolvedCell.SourceCellIndex fragment.Height
+                    let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment cellFragmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
                     let visibleLines =
                         group.Layouts
                         |> List.filter (fun layout -> fragment.BlockIds |> List.contains layout.BlockId)
@@ -1669,12 +1695,28 @@ let private layoutDocumentWithRangeAndInitial
                 let mutable rowY = tableY
                 let headerRows = WordLayout.Table.headerRows tableBlock
                 let traceRows = traceTimingEnabled && tableBlock.Rows.Length >= 10
+                let tablePlan = lazy (buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY)
                 let tracePlanRows =
                     if traceRows then
-                        let plan = buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY
-                        plan.Rows |> List.map (fun row -> row.RowIndex, row) |> Map.ofList |> Some
+                        tablePlan.Value.Rows |> List.map (fun row -> row.RowIndex, row) |> Map.ofList |> Some
                     else
                         None
+
+                let hasRowSpanningVerticalAlignment =
+                    tableBlock.Rows
+                    |> List.exists (fun row ->
+                        row.Cells
+                        |> List.exists (fun cell ->
+                            match cell.VerticalMerge, cell.VerticalAlignment with
+                            | Some RestartMerge, Some alignment when alignment = "center" || alignment = "bottom" -> true
+                            | _ -> false))
+                let verticalAlignmentHeightResolver = lazy (tableCellVerticalAlignmentHeightResolverForPlan tablePlan.Value)
+
+                let verticalAlignmentHeightForCell rowIndex sourceCellIndex rowHeight =
+                    if hasRowSpanningVerticalAlignment then
+                        verticalAlignmentHeightResolver.Value rowIndex sourceCellIndex rowHeight
+                    else
+                        rowHeight
 
                 if traceRows then
                     traceTableLayout (sprintf "start rows=%d y=%.2f page=%d widths=%s" tableBlock.Rows.Length tableY (pageNumberForY settings tableY) (columnWidths |> List.map (sprintf "%.2f") |> String.concat ","))
@@ -1694,10 +1736,11 @@ let private layoutDocumentWithRangeAndInitial
 
                 let addHeaderLayoutsAt headerY =
                     let mutable headerRowY = headerY
-                    for headerRow in headerRows do
+                    for headerRowIndex, headerRow in headerRows |> List.indexed do
                         let headerMeasurement = measureRow headerRow headerRowY 0.0
-                        for group in headerMeasurement.CellGroups do
-                            let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment headerMeasurement.Height group.PaddingTop group.PaddingBottom group.ContentHeight
+                        for groupIndex, group in headerMeasurement.CellGroups |> List.indexed do
+                            let alignmentHeight = verticalAlignmentHeightForCell headerRowIndex groupIndex headerMeasurement.Height
+                            let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment alignmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
                             let adjustedLayouts =
                                 group.Layouts
                                 |> List.filter (fun layout -> not layout.Lines.IsEmpty)
@@ -1761,8 +1804,9 @@ let private layoutDocumentWithRangeAndInitial
                             traceTableLayout (sprintf "planCompare row=%d actualY=%.2f actualH=%.2f planY=%.2f planH=%.2f dy=%.2f dh=%.2f fragments=%d pages=%s lines=%s reasons=%s" rowIndex rowY rowHeight planRow.Y planRow.Height (rowY - planRow.Y) (rowHeight - planRow.Height) planRow.Fragments.Length fragmentPages fragmentLineCounts fragmentReasons)
                         | None -> ()
 
-                    for group in cellLayoutGroups do
-                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment rowHeight group.PaddingTop group.PaddingBottom group.ContentHeight
+                    for groupIndex, group in cellLayoutGroups |> List.indexed do
+                        let alignmentHeight = verticalAlignmentHeightForCell rowIndex groupIndex rowHeight
+                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment alignmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
                         let adjustedLayouts =
                             group.Layouts
                             |> List.filter (fun layout -> not layout.Lines.IsEmpty)

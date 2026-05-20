@@ -897,13 +897,16 @@ let private canonicalTableYFromLayouts settings measureText measureRange doc (la
         | values ->
             let firstActualContentY = List.min values
             let planAtZero = buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock 0.0
+            let resolveAlignmentHeight = tableCellVerticalAlignmentHeightResolverForPlan planAtZero
             let firstPlannedContentOffset =
                 planAtZero.Rows
                 |> List.collect (fun row ->
                     row.Measurement.CellGroups
-                    |> List.collect (fun group ->
-                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment row.Height group.PaddingTop group.PaddingBottom group.ContentHeight
-                        group.Layouts |> List.map (fun layout -> layout.Y + offset)))
+                    |> List.mapi (fun groupIndex group ->
+                        let alignmentHeight = resolveAlignmentHeight row.RowIndex groupIndex row.Height
+                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment alignmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
+                        group.Layouts |> List.map (fun layout -> layout.Y + offset))
+                    |> List.collect id)
                 |> function
                     | [] -> 0.0
                     | plannedValues -> List.min plannedValues
