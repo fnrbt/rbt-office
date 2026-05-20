@@ -757,6 +757,12 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
     let mutable floatObstacles = initialObstacles
     let mutable placedBoxes = initialPlacedBoxes
 
+    let hasFlowContent segments =
+        segments
+        |> List.exists (function
+            | ImageSegment (_, _, _, _, _, _, floating, _, _, _, _, _, _) when floating -> false
+            | _ -> true)
+
     let mergeIntervals intervals =
         let sorted = intervals |> List.sortBy fst
         let rec loop merged remaining =
@@ -788,6 +794,16 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
         if cursor < availableWidth then gaps <- (cursor, availableWidth) :: gaps
         List.rev gaps
 
+    let nextObstacleClearY lineY =
+        let globalLineY = contentY + (lineY - settings.PaddingTop)
+        let lineBottom = globalLineY + settings.LineHeight
+        floatObstacles
+        |> List.choose (fun (_, top, _, height) ->
+            let bottom = top + height
+            if lineBottom > top && globalLineY < bottom then Some bottom else None)
+        |> List.sort
+        |> List.tryHead
+
     // Intervals at the current y that we have not yet started filling. The
     // currentX/currentLineEnd pair always reflects the interval being filled.
     let mutable pendingIntervals: (float * float) list = []
@@ -806,7 +822,12 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
         pendingIntervals <- wrapIntervalsForY y
         private_setIntervalToFirst ()
         while currentX >= currentLineEnd do
-            y <- y + settings.LineHeight
+            match nextObstacleClearY y with
+            | Some clearGlobalY ->
+                let clearY = settings.PaddingTop + (clearGlobalY - contentY)
+                if clearY > y + 0.01 then y <- clearY else y <- y + settings.LineHeight
+            | None ->
+                y <- y + settings.LineHeight
             pendingIntervals <- wrapIntervalsForY y
             private_setIntervalToFirst ()
 
@@ -917,8 +938,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                 let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox availableWidth floatingBox
                 if WordLayout.Floating.wrapsTopAndBottom floatingBox.Wrap then
                     floatObstacles <- (0.0, obstacleTop, availableWidth, obstacleHeight) :: floatObstacles
-                    currentX <- availableWidth
-                    currentLineEnd <- availableWidth
+                    moveToWrappableLine ()
                 else
                     floatObstacles <- (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) :: floatObstacles
                     pendingIntervals <- wrapIntervalsForY y
@@ -1008,9 +1028,9 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                                     let vw = measureRange displayRunText displayRunStyle consumed visibleLength
                                     currentX + vw > currentLineEnd - fullFitSafety
                                 else overflows
-                            if overflows && not currentSegments.IsEmpty then
+                            if overflows && hasFlowContent currentSegments then
                                 flushLine ()
-                            elif visibleOverflows && currentSegments.IsEmpty && not pendingIntervals.IsEmpty && not (remaining.Contains("\t")) then
+                            elif visibleOverflows && not (hasFlowContent currentSegments) && not pendingIntervals.IsEmpty && not (remaining.Contains("\t")) then
                                 // Narrow strip at this y can't hold the next whole word, but
                                 // there's another strip at the same y — leave this one empty
                                 // and try the next, matching Word's wrap-around-float behavior

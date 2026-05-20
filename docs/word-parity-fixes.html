@@ -153,6 +153,41 @@
     <tbody>
       <tr>
         <td>
+          <strong>wrapTopAndBottom float: no image-only layout line</strong>
+          <span class="meta">Repro: <code>tests/repros/word/float-image-wrap-top-bottom.docx</code></span>
+          <span class="meta">Real fixture class: anchored DrawingML pictures with <code>wp:wrapTopAndBottom</code> that reserve a full-width vertical band but do not consume a text line at the anchor run.</span>
+          <span class="meta">Paths checked: Word PDF layout, VBS layout, browser canvas, and PDF backend raster.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/float-image-wrap-top-bottom-word.png" style="--w:1224px; --x:90px; --y:120px; --s:0.62" alt="Word reference wrapTopAndBottom float">
+          </div>
+          <div class="caption">Word keeps three full-width body lines above the blue picture, reserves the picture's vertical band, then resumes the paragraph immediately below the image.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/float-image-wrap-top-bottom-pdf-after.png" style="--w:1224px; --x:90px; --y:120px; --s:0.62" alt="After wrapTopAndBottom float line-flow fix">
+          </div>
+          <div class="caption">After: top/bottom float obstacles are registered without flushing the floating image as a standalone line, and blocked full-width lines jump to the obstacle bottom. PDF-backed comparison reports <code>ok</code> with <code>7 matched lines</code>; VBS layout reports <code>ok</code> with <code>5 matched lines</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/float-image-wrap-top-bottom-pdf-before.png" style="--w:1224px; --x:90px; --y:120px; --s:0.62" alt="Before wrapTopAndBottom float line-flow fix">
+          </div>
+          <div class="caption">Before: the floating image run flushed as its own logical line before text layout, pushing the paragraph down by one line so only two lines fit above the image and the below-image text landed too low.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> treat floating image segments as paint-only when deciding whether a line has flow content, and recompute the current free interval after inserting a top/bottom obstacle instead of marking the current line full.</p>
+          <ul>
+            <li><code>src/Word/Layout.fs</code>: <code>hasFlowContent</code> excludes floating images from text-flow flush decisions, so a float run at paragraph start does not create an image-only text line.</li>
+            <li><code>moveToWrappableLine</code>: when a full-width obstacle blocks the current line, advance directly to the obstacle bottom instead of stepping by whole line heights and leaving extra vertical gap.</li>
+            <li>Focused guard: <code>float-image-wrap-top-bottom.docx</code> is clean in both PDF-backed and VBS-backed layout comparisons; the float-region ink-XOR improves from <code>35.74%</code> to <code>25.58%</code>.</li>
+            <li>Regression guard: <code>float-image-wrap-square.docx</code> keeps its existing Word/PDF structural match; the remaining PDF rows are the pre-existing sub-line-pitch drift at the document tail.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Pure empty paragraph mark after spaced table</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-spaced-sequence-page-break.docx</code></span>
           <span class="meta">Real fixture class: docx4j table sequences with a pure empty <code>&lt;w:p/&gt;</code> between a spaced table and the next text/table block.</span>
