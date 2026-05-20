@@ -21,7 +21,7 @@ let extracted;
 try {
   extracted = execFileSync(
     'pdftotext',
-    ['-f', '2', '-l', '2', '-layout', pdfPath, '-'],
+    ['-f', '2', '-l', '4', '-layout', pdfPath, '-'],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
   );
 } catch (error) {
@@ -33,14 +33,21 @@ const lines = extracted
   .map((line) => line.replace(/\s+/g, ' ').trim())
   .filter(Boolean);
 
-const expectedFirstLine =
-  '1. Solemnly affirms the necessity of speedily eliminating racial discrimination throughout the world,';
-const expectedSecondLinePrefix =
-  'in all its forms and manifestations, and of securing understanding of and respect for the';
+const expectedLines = [
+  'the prejudice of racial superiority or on racial hatred, besides constituting a violation of fundamental',
+  '1. Solemnly affirms the necessity of speedily eliminating racial discrimination throughout the world,',
+  'Discrimination between human beings on the ground of race, colour or ethnic origin is an offence to',
+  '3. Special concrete measures shall be taken in appropriate circumstances in order to secure adequate',
+  '2. Everyone shall have the right to an effective remedy and protection against any discrimination he',
+  'may suffer on the ground of race, colour or ethnic origin with respect to his fundamental rights and',
+];
 
-if (!lines.includes(expectedFirstLine)) {
-  const nearby = lines.filter((line) => /Solemnly|world,|in all its forms/.test(line)).join(' / ');
-  fail(`body paragraph wrap does not match Word. Nearby extracted lines: ${nearby || '<none>'}`);
+for (const expectedLine of expectedLines) {
+  if (!lines.includes(expectedLine)) {
+    const pattern = expectedLine.split(' ').slice(0, 6).join('|');
+    const nearby = lines.filter((line) => new RegExp(pattern).test(line)).join(' / ');
+    fail(`missing Word-matching line: ${expectedLine}. Nearby extracted lines: ${nearby || '<none>'}`);
+  }
 }
 
 const worldLead = lines.find((line) => line.startsWith('world, in all its forms'));
@@ -48,6 +55,21 @@ if (worldLead) {
   fail(`line starts with "world,"; Word keeps "world," on the prior line: ${worldLead}`);
 }
 
+const badStarts = [
+  'fundamental human rights,',
+  'to human dignity and shall',
+  'adequate development or protection',
+  'he may suffer on the ground',
+  'and freedoms through independent',
+];
+
+for (const badStart of badStarts) {
+  const line = lines.find((candidate) => candidate.startsWith(badStart));
+  if (line) fail(`line starts with "${badStart}"; Word keeps that text on the prior line: ${line}`);
+}
+
+const expectedSecondLinePrefix =
+  'in all its forms and manifestations, and of securing understanding of and respect for the';
 const secondLine = lines.find((line) => line.startsWith(expectedSecondLinePrefix));
 if (!secondLine) {
   const nearby = lines.filter((line) => /in all its forms|dignity/.test(line)).join(' / ');

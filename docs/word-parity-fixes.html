@@ -153,34 +153,34 @@
     <tbody>
       <tr>
         <td>
-          <strong>TOC body wrap: keep line-ending space from ejecting <code>world,</code></strong>
-          <span class="meta">Repro: <code>docx4j-toc.docx</code> page 2 numbered declaration paragraph.</span>
-          <span class="meta">Real fixture class: mixed italic/regular body paragraphs where a trailing space after the final word is wider than Word's visible line-fit decision.</span>
+          <strong>TOC body wrap: keep line-ending spaces from ejecting final words</strong>
+          <span class="meta">Repro: <code>docx4j-toc.docx</code> body paragraphs on pages 2-4.</span>
+          <span class="meta">Real fixture class: body paragraphs where a trailing space after the final word is wider than Word's visible line-fit decision.</span>
           <span class="meta">Paths checked: PDF backend line layout and focused <code>pdftotext</code> assertion guard.</span>
         </td>
         <td>
           <div class="zoom">
             <img src="images/word/toc-body-wrap-word.png" style="--w:1191px; --x:20px; --y:930px; --s:0.75" alt="Word reference: page 2 body wrap keeps world on the first line">
           </div>
-          <div class="caption">Word keeps <code>world,</code> on the first line of the numbered paragraph and starts the continuation with <code>in all its forms...</code>.</div>
+          <div class="caption">Word keeps final visible words such as <code>fundamental</code>, <code>world,</code>, <code>to</code>, <code>adequate</code>, and <code>he</code> on the prior line even when the following space would cross the text boundary.</div>
         </td>
         <td>
           <div class="zoom">
             <img src="images/browser/toc-body-wrap-after.png" style="--w:1190px; --x:20px; --y:930px; --s:0.75" alt="After: PDF body wrap matches Word">
           </div>
-          <div class="caption">After: the PDF backend matches the Word wrap. The extracted first-line bbox ends at <code>xMax=537.26pt</code> versus Word's <code>537.34pt</code>.</div>
+          <div class="caption">After: the PDF backend matches the Word body wraps. The extracted <code>world,</code> line ends at <code>xMax=537.26pt</code> versus Word's <code>537.34pt</code>.</div>
         </td>
         <td>
           <div class="zoom">
             <img src="images/baseline/toc-body-wrap-before.png" style="--w:1190px; --x:20px; --y:930px; --s:0.75" alt="Before: PDF body wrap pushes world to the next line">
           </div>
-          <div class="caption">Before: PDF layout measured the trailing space after <code>world,</code> as part of the fit decision and pushed <code>world,</code> onto the next line.</div>
+          <div class="caption">Before: PDF layout measured the trailing space as part of the fit decision and pushed visible words such as <code>world,</code> and <code>fundamental</code> onto the next line.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> treat bold/italic changes as mixed text metrics for Word-style trailing-space fit.</p>
+          <p><strong>Fix:</strong> apply Word-style visible-token fit whenever only trailing whitespace exceeds the line.</p>
           <ul>
-            <li><code>src/Word/Layout.fs</code>: <code>hasMixedTextMetrics</code> now includes <code>Bold</code> and <code>Italic</code>, so mixed italic/regular runs use the existing visible-token width path when only trailing whitespace exceeds the line.</li>
-            <li><code>tools/word-parity/assert-docx4j-toc-pdf-wrap.mjs</code>: extracts page 2 from the generated PDF and asserts that <code>world,</code> stays on the Word-matching line.</li>
+            <li><code>src/Word/Layout.fs</code>: <code>hasMixedTextMetrics</code> now includes <code>Bold</code> and <code>Italic</code>, the visible-token path applies to first lines too, and its safety matches the normal line-fit tolerance.</li>
+            <li><code>tools/word-parity/assert-docx4j-toc-pdf-wrap.mjs</code>: extracts the generated PDF and asserts the Word-matching body wrap lines across pages 2-4.</li>
             <li>Guard command: <code>node tools/word-parity/assert-docx4j-toc-pdf-wrap.mjs artifacts/toc-style/ours.pdf</code>.</li>
           </ul>
         </td>

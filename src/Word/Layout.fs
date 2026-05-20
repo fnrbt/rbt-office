@@ -649,7 +649,7 @@ type PlacedFloatingBox = WordLayout.Floating.Box
 let private isWhitespaceChar (ch: char) =
     ch = ' ' || ch = '\t' || ch = '\r' || ch = '\n'
 
-let private trailingSpaceFitSafety = 1.0
+let private trailingSpaceFitSafety = 0.25
 let private lineFitSafety = 0.25
 let private tableCellLineFitSafety = 2.0
 let private mixedMetricsLineFitSafety = 0.75
@@ -941,8 +941,9 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                                 if remaining.Contains("\t") then width
                                 else
                                     let visibleLength = visibleTokenLength remaining
-                                    let canUseVisibleFit = flushedLineCount > 0 || hasMixedTextMetrics currentSegments
-                                    if canUseVisibleFit && visibleLength > 0 && visibleLength < remaining.Length then
+                                    if visibleLength > 0 && visibleLength < remaining.Length then
+                                        // Word fits the visible token; a trailing space may cross
+                                        // the text boundary without forcing the word to the next line.
                                         let visibleWidth = measureRange displayRunText displayRunStyle consumed visibleLength
                                         if currentLineEnd - (currentX + visibleWidth) >= trailingSpaceFitSafety then visibleWidth else width
                                     else width
