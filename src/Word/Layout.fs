@@ -208,6 +208,9 @@ type LayoutSettings = {
     MarginBottom: float
     InTableCell: bool
     TableContinuationHeaderHeight: float
+    // Long trailing-space tokens need backend-specific slack: PDF/native
+    // shapers track Word more closely than browser canvas for some fonts.
+    LongTrailingSpaceFitSafety: float
 }
 
 let pageHeight settings = settings.PageHeight
@@ -433,6 +436,7 @@ let private wordLineBoxFactor = 1.20
 let private wordSingleLineBoxFactor = 1.15
 let private wordDefaultSpacingSingleLineBoxFactor = 1.316
 let private wordTableFollowSingleLineBoxFactor = wordDefaultSpacingSingleLineBoxFactor
+let private wordTocEntrySingleLineBoxFactor = 1.266
 let private monospaceLineBoxFactor = 1.18
 let private tableCellDefaultLineBoxFactor = 1.336
 // Matches Word's visual single-line pitch for explicit 11pt TableGrid cell paragraphs.
@@ -464,21 +468,30 @@ let private tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing (style: Te
 let private usesDefaultParagraphSpacing (metadata: BlockMetadata) =
     metadata.SpacingBefore.IsNone && metadata.SpacingAfter.IsNone
 
-let private wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing =
+let private isTocEntryStyle (metadata: BlockMetadata) =
+    metadata.Style
+    |> Option.exists (fun style ->
+        style.StartsWith("TOC", System.StringComparison.OrdinalIgnoreCase)
+        && style.Length > 3
+        && (style.Substring(3) |> Seq.forall System.Char.IsDigit))
+
+let private wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing tocEntry =
     let factor =
         if abs (lineSpacing - 1.0) < 0.001 then
-            if defaultParagraphSpacing then wordDefaultSpacingSingleLineBoxFactor else wordSingleLineBoxFactor
+            if tocEntry then wordTocEntrySingleLineBoxFactor
+            elif defaultParagraphSpacing then wordDefaultSpacingSingleLineBoxFactor
+            else wordSingleLineBoxFactor
         else
             lineBoxFactorForTextStyle textStyle
     fontSize * lineSpacing * factor
 
-let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing =
+let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry =
     let automatic =
         if settings.InTableCell then
             let factor = tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing textStyle
             tableCellLineBoxFontSize fontSize * lineSpacing * factor
         else
-            wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing
+            wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing tocEntry
 
     match lineSpacingRule with
     | "exact" -> max 1.0 lineSpacing
@@ -493,6 +506,30 @@ let private lineMaxTextFontSize fallback (line: MeasuredLine) =
     |> function
         | [] -> fallback
         | sizes -> List.max sizes
+
+let private startsAtPageContentTop settings y =
+    let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
+    abs (y - WordLayout.Page.contentTop settings.PaddingTop pageTop) < 0.5
+
+let private suppressLayoutPageTopBeforeSpacing settings paragraphStyle (layout: BlockLayout) =
+    let spacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle layout.Metadata
+    match layout.Lines with
+    | firstPaged :: _ when spacingBefore > 0.0 && startsAtPageContentTop settings layout.Y ->
+        let firstPagedPageTop = WordLayout.Page.pageTopForY (pageHeight settings) firstPaged.Y
+        let firstPagedContentTop = WordLayout.Page.contentTop settings.PaddingTop firstPagedPageTop
+        let lineTopOffset = firstPaged.Y - firstPagedContentTop
+        if abs (lineTopOffset - spacingBefore) > 0.5 then layout
+        else
+            let shift = min spacingBefore (max 0.0 lineTopOffset)
+            let firstPagedPage = pageIndexForY settings firstPaged.Y
+            { layout with
+                Height = max 0.0 (layout.Height - shift)
+                Lines =
+                    layout.Lines
+                    |> List.map (fun line ->
+                        if pageIndexForY settings line.Y = firstPagedPage then { line with Y = line.Y - shift }
+                        else line) }
+    | _ -> layout
 
 let private paragraphBorderAdvance (border: ParagraphBorder option) =
     match border with
@@ -693,7 +730,7 @@ type PlacedFloatingBox = WordLayout.Floating.Box
 let private isWhitespaceChar (ch: char) =
     ch = ' ' || ch = '\t' || ch = '\r' || ch = '\n'
 
-let private trailingSpaceFitSafety = 0.25
+let private shortTrailingSpaceFitSafety = 0.25
 let private lineFitSafety = 0.25
 let private tableCellLineFitSafety = 2.0
 let private mixedMetricsLineFitSafety = 0.75
@@ -703,6 +740,26 @@ let private visibleTokenLength (text: string) =
     while length > 0 && isWhitespaceChar text.[length - 1] do
         length <- length - 1
     length
+
+let private trailingSpaceFitSafety settings visibleLength =
+    if visibleLength <= 3 then shortTrailingSpaceFitSafety else settings.LongTrailingSpaceFitSafety
+
+let private lineAlignmentWidth (measureRange: TextRangeMeasurer) (segments: Segment list) fallbackEnd =
+    let rec visibleEnd = function
+        | [] -> 0.0
+        | ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) :: _ -> x + width
+        | TextSegment (text, style, x, width, _) :: rest ->
+            let visibleLength = visibleTokenLength text
+            if visibleLength = text.Length then
+                x + width
+            elif visibleLength > 0 then
+                let displayText = WordLayout.Text.displayText style text
+                let displayStyle = WordLayout.Text.displayStyle style
+                x + measureRange displayText displayStyle 0 visibleLength
+            else
+                visibleEnd rest
+
+    min fallbackEnd (visibleEnd (List.rev segments))
 
 let private hasMixedTextMetrics (segments: Segment list) =
     let keys =
@@ -846,7 +903,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             lines <- lines @ [{
                 Segments = segments
                 Y = y
-                Width = currentX
+                Width = lineAlignmentWidth measureRange segments currentX
                 Height = lineHeight
                 StartOffset = segments |> List.head |> segmentStart
                 EndOffset = segments |> List.last |> segmentEnd
@@ -1009,7 +1066,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                                         // Word fits the visible token; a trailing space may cross
                                         // the text boundary without forcing the word to the next line.
                                         let visibleWidth = measureRange displayRunText displayRunStyle consumed visibleLength
-                                        if currentLineEnd - (currentX + visibleWidth) >= trailingSpaceFitSafety then visibleWidth else width
+                                        if currentLineEnd - (currentX + visibleWidth) >= trailingSpaceFitSafety settings visibleLength then visibleWidth else width
                                     else width
 
                             let fullFitSafety =
@@ -1078,6 +1135,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         || metadata.LineSpacingRule.IsSome
         || paragraphStyle.LineSpacingRule.IsSome
     let defaultParagraphSpacing = usesDefaultParagraphSpacing metadata
+    let tocEntry = isTocEntryStyle metadata
     let borderBefore, borderAfter = paragraphBorderVerticalAdvance metadata
     let borderRight = paragraphBorderRightAdvance metadata
     let contentY = y + spacingBefore + borderBefore
@@ -1113,7 +1171,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         |> List.sortByDescending WordLayout.Text.displayFontSize
         |> List.tryHead
         |> Option.defaultValue paragraphStyle.Text
-    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing }
+    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry }
     let lines, updatedObstacles, updatedPlacedBoxes = layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.RightTabPosition initialObstacles initialPlacedBoxes
 
     let adjustedLines =
@@ -1143,10 +1201,11 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         |> List.map (fun line -> { line with Height = lineHeightWithMarker line })
 
     let hasRenderedPageBreak = adjustedLines |> List.exists lineHasRenderedPageBreakBefore
-    let pagedLines = paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) adjustedLines
+    let pagedLines =
+        paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) adjustedLines
 
     let blockHeight =
-        if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing
+        if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry
         else
             let lastLine = List.last pagedLines
             (lastLine.Y - contentY) + lastLine.Height
@@ -2028,6 +2087,9 @@ let private layoutDocumentWithRangeAndInitial
                         layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth pagedY 0.0 paragraphStyle (effectiveBufferInDocument doc) para numberedCounters floatingObstacles placedFloatingBoxes
                     traceSlow (sprintf "block[%d]:relayout" index) relayoutStart
                     result
+            let layout =
+                if pagedY = y then layout
+                else suppressLayoutPageTopBeforeSpacing settings paragraphStyle layout
             let layout =
                 if layout.Lines.IsEmpty && previousBlockIsTable index && not (previousBlockIsTextTable index) && not emptyParagraphWouldMovePage then
                     { layout with Height = layout.Height + 5.0 }

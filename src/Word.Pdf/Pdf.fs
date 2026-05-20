@@ -632,6 +632,7 @@ let collectPaintCommandsWithLayouts defaultFontFamily (measureText: WordCanvasLa
         MarginBottom = max doc.PageSetup.MarginBottom footerReserve
         InTableCell = false
         TableContinuationHeaderHeight = 0.0
+        LongTrailingSpaceFitSafety = 0.25
     }
     let layoutStart = timingStart ()
     let layouts, paintCommands, pageCount = WordPaint.collectDocumentCommandsWithLayouts settings defaultFontFamily measureText measureRange doc cachedLayouts

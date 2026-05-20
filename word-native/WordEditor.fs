@@ -195,6 +195,7 @@ let private layoutSettings width (doc: Document) : WordLayout.LayoutSettings =
         MarginBottom = max (doc.PageSetup.MarginBottom * scale) footerReserve
         InTableCell = false
         TableContinuationHeaderHeight = 0.0
+        LongTrailingSpaceFitSafety = 0.25
     }
 
 let hitTest width doc x y =

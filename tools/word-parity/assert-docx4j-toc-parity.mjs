@@ -149,11 +149,11 @@ if (titleText !== 'United Nations Declaration on the') {
   fail(`title first line text changed to ${JSON.stringify(titleText)}`);
 }
 const titleLineWidth = titleLine.reduce((right, segment) => Math.max(right, segment.X + segment.Width), 0) - titleLine[0].X;
-if (Math.abs(titleLineWidth - 529.3) > 2.0) {
-  fail(`title first line width is ${titleLineWidth.toFixed(1)}; expected expanded Title character spacing`);
+if (Math.abs(titleLineWidth - 520.0) > 2.0) {
+  fail(`title first line width is ${titleLineWidth.toFixed(1)}; expected Word-matching Cambria title metrics`);
 }
-if (Math.abs(titleStart.X - 56.6) > 2.0) {
-  fail(`title first line x drifted to ${titleStart.X.toFixed(1)}; expected centered expanded title`);
+if (Math.abs(titleStart.X - 65.6) > 2.0) {
+  fail(`title first line x drifted to ${titleStart.X.toFixed(1)}; expected centered visible title text`);
 }
 
 for (const entry of actualTocEntries) {
@@ -173,11 +173,35 @@ const colonialLine = lines.find((line) => line.text.startsWith('to Colonial Coun
 if (!colonialLine) fail('missing rendered-page-break continuation line: "to Colonial Countries..."');
 if (colonialLine.page !== 2) fail(`rendered-page-break continuation starts on page ${colonialLine.page}, expected page 2`);
 
+const expectedBodyLines = [
+  ['Discrimination between human beings on the ground of race, colour or ethnic origin is an offence to', 2],
+  ['3. Special concrete measures shall be taken in appropriate circumstances in order to secure adequate', 3],
+  ['All States shall take effective measures to revise governmental and other public policies and to', 3],
+  ['rescind laws and regulations which have the effect of creating and perpetuating racial', 3],
+  ['discrimination wherever it still exists. They should pass legislation for prohibiting such', 3],
+  ['discrimination and should take all appropriate measures to combat those prejudices which lead to', 3],
+  ['racial discrimination.', 3],
+  ['2. Everyone shall have the right to an effective remedy and protection against any discrimination he', 4],
+];
+
+for (const [expectedText, expectedPage] of expectedBodyLines) {
+  const line = lines.find((candidate) => candidate.text === expectedText);
+  if (!line) fail(`missing Word-matching body wrap line: ${expectedText}`);
+  if (line.page !== expectedPage) {
+    fail(`body wrap line "${expectedText}" is on page ${line.page}, expected page ${expectedPage}`);
+  }
+}
+
 const article2 = actualBodyHeadings.find((entry) => entry.article === 2);
 const article3 = actualBodyHeadings.find((entry) => entry.article === 3);
+const article5 = actualBodyHeadings.find((entry) => entry.article === 5);
 const article8 = actualBodyHeadings.find((entry) => entry.article === 8);
 if (!article2 || article2.page !== 2) fail('Article 2 heading is not on page 2');
 if (!article3 || article3.page !== 3) fail('Article 3 heading is not on page 3');
+if (!article5 || article5.page !== 3) fail('Article 5 heading is not on page 3');
+if (Math.abs(article5.y - (pageStride * 2) - 685) > 6) {
+  fail(`Article 5 y drifted to ${(article5.y - (pageStride * 2)).toFixed(1)} on page 3; expected about 685`);
+}
 if (!article8 || article8.page !== 4) fail('Article 8 heading is not on page 4');
 
 console.log('docx4j-toc parity assertion ok');

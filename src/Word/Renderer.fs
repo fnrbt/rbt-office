@@ -78,6 +78,15 @@ let createContext (canvas: HTMLCanvasElement) = {
 let private cssFontFamily (family: string) =
     if family.Contains(" ") then sprintf "\"%s\"" (family.Replace("\"", "")) else family
 
+let private browserMetricScale (family: string) (style: TextBuffer.TextStyle) =
+    // Chromium canvas metrics for loaded Windows faces diverge from Word/PDF
+    // shaping enough to change centering and wrap decisions in real DOCX bodies.
+    match family.Trim().ToLowerInvariant() with
+    | "cambria" when not style.Bold && not style.Italic -> 0.982
+    | "times new roman" when style.Bold && style.Italic -> 0.945
+    | "times new roman" when not style.Bold && not style.Italic -> 1.0185
+    | _ -> 1.0
+
 /// Get image from cache (JS Map.get())
 [<Emit("$0.get($1)")>]
 let private mapGet (map: obj) (key: string) : obj = jsNative
@@ -91,7 +100,7 @@ let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.Tex
     let fontFamily = style.FontFamily |> Option.defaultValue ctx.FontFamily
     let fontSize = if style.VertAlign.IsSome then style.FontSize * 0.7 else style.FontSize
     ctx.Ctx.font <- sprintf "%s %fpx %s" fontStyle fontSize (cssFontFamily fontFamily)
-    ctx.Ctx.measureText(text).width + TextBuffer.characterSpacingAdvance text style
+    (ctx.Ctx.measureText(text).width * browserMetricScale fontFamily style) + TextBuffer.characterSpacingAdvance text style
 
 let layoutSettings (ctx: RenderContext) (doc: Document) =
     let hasFooter = not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty
@@ -109,6 +118,7 @@ let layoutSettings (ctx: RenderContext) (doc: Document) =
     MarginBottom = max doc.PageSetup.MarginBottom footerReserve
     InTableCell = false
     TableContinuationHeaderHeight = 0.0
+    LongTrailingSpaceFitSafety = 3.5
     }
 
 let measureWithContext ctx text style =

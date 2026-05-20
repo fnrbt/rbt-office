@@ -38,6 +38,11 @@ const expectedLines = [
   '1. Solemnly affirms the necessity of speedily eliminating racial discrimination throughout the world,',
   'Discrimination between human beings on the ground of race, colour or ethnic origin is an offence to',
   '3. Special concrete measures shall be taken in appropriate circumstances in order to secure adequate',
+  'All States shall take effective measures to revise governmental and other public policies and to',
+  'rescind laws and regulations which have the effect of creating and perpetuating racial',
+  'discrimination wherever it still exists. They should pass legislation for prohibiting such',
+  'discrimination and should take all appropriate measures to combat those prejudices which lead to',
+  'racial discrimination.',
   '2. Everyone shall have the right to an effective remedy and protection against any discrimination he',
   'may suffer on the ground of race, colour or ethnic origin with respect to his fundamental rights and',
 ];
@@ -59,6 +64,8 @@ const badStarts = [
   'fundamental human rights,',
   'to human dignity and shall',
   'adequate development or protection',
+  'rescind laws and regulations which have the effect of creating and perpetuating racial discrimination',
+  'wherever it still exists. They should pass legislation for prohibiting such discrimination and should',
   'he may suffer on the ground',
   'and freedoms through independent',
 ];

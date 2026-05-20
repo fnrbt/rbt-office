@@ -152,6 +152,7 @@ let private pdfLayoutSettings (doc: Doc.Document) : WordLayout.LayoutSettings =
         MarginBottom = max doc.PageSetup.MarginBottom footerReserve
         InTableCell = false
         TableContinuationHeaderHeight = 0.0
+        LongTrailingSpaceFitSafety = 0.25
     }
 
 let private pageMapFromLayouts (doc: Doc.Document) (layouts: WordLayout.BlockLayout list) : Doc.PageMap =

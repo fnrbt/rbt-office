@@ -153,6 +153,41 @@
     <tbody>
       <tr>
         <td>
+          <strong>TOC title, entry pitch, and body flow</strong>
+          <span class="meta">Repro: <code>../office/tests/test-documents-business/docx4j-toc.docx</code></span>
+          <span class="meta">Real fixture class: generated TOCs with centered Cambria titles, <code>TOC1</code> entries, and Times New Roman declaration body text across page breaks.</span>
+          <span class="meta">Paths checked: Word PDF layout, browser canvas layout, PDF backend wrap guard, and focused browser/PDF TOC assertions.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/toc-entry-body-flow-word.png" style="--w:1191px; --x:36px; --y:249px; --s:0.407" alt="Word reference TOC title, entry pitch, and body flow">
+          </div>
+          <div class="caption">Word centers the visible title glyphs, gives each TOC entry a taller single-line box, starts the body at the matching y, and keeps the Article body wraps stable through pages 3-4.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/toc-entry-body-flow-after.png" style="--w:900px; --x:36px; --y:250px; --s:0.61" alt="After TOC title, entry pitch, and body flow fix">
+          </div>
+          <div class="caption">After: centered lines ignore trailing break spaces, TOC entries use a Word-matching line box, page-top before-spacing is suppressed only for paragraphs moved by pagination, and browser font metrics no longer admit extra line-end words.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/toc-entry-body-flow-before.png" style="--w:900px; --x:36px; --y:246px; --s:0.61" alt="Before TOC title, entry pitch, and body flow fix">
+          </div>
+          <div class="caption">Before: the title was shifted left, the TOC entry rows were too tight, pulling the body upward; later body paragraphs also wrapped too greedily on browser canvas.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> align centered visible text, scope the taller single-line box to numeric TOC entry styles, correct browser-only font wrap measurement, and remove carried before-spacing only when a paragraph is relaid out at a new page top.</p>
+          <ul>
+            <li><code>src/Word/Layout.fs</code>: ignores trailing whitespace for line alignment, detects <code>TOC1</code>/<code>TOC2</code>-style entries without catching <code>TOCHeading</code>, and gives browser layout a backend-specific long trailing-space safety for line-end words.</li>
+            <li><code>src/Word/Renderer.fs</code>: applies Cambria/Times New Roman browser metric correction only on the canvas path; PDF/native shapers keep the existing safety.</li>
+            <li>Focused guard: <code>docx4j-toc.docx</code> PDF-backed browser comparison reports <code>ok</code> with <code>122 matched lines</code>.</li>
+            <li>Regression guards: <code>docx4j-tables.docx</code> remains <code>ok</code> with <code>116 matched lines</code>; table page-break/row-pitch repros stay <code>ok</code>; browser and PDF TOC assertion scripts now pin the Article 4/5 wrap and y position.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>wrapTopAndBottom float: no image-only layout line</strong>
           <span class="meta">Repro: <code>tests/repros/word/float-image-wrap-top-bottom.docx</code></span>
           <span class="meta">Real fixture class: anchored DrawingML pictures with <code>wp:wrapTopAndBottom</code> that reserve a full-width vertical band but do not consume a text line at the anchor run.</span>
