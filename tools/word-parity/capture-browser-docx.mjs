@@ -29,6 +29,7 @@ const requestedCaptureAttempts = Number(process.env.BROWSER_CAPTURE_ATTEMPTS ?? 
 const captureAttempts = Number.isFinite(requestedCaptureAttempts) && requestedCaptureAttempts > 0
   ? Math.floor(requestedCaptureAttempts)
   : 1;
+const captureTmpRoot = path.resolve(process.env.BROWSER_CAPTURE_TMPDIR ?? path.join(officeRoot, 'artifacts/tmp/browser-capture'));
 
 if (!args[0] || !args[1] || (args[2] === '--segments' && !args[3])) {
   console.error('Usage: OFFICE_ROOT=/path/to/office node tools/word-parity/capture-browser-docx.mjs input.docx output.png [layout.json|--segments layout.json]');
@@ -53,6 +54,10 @@ async function fileExists(file) {
 
 await fs.mkdir(path.dirname(outputPng), { recursive: true });
 if (outputJson) await fs.mkdir(path.dirname(outputJson), { recursive: true });
+await fs.mkdir(captureTmpRoot, { recursive: true });
+process.env.TMPDIR = captureTmpRoot;
+process.env.TEMP = captureTmpRoot;
+process.env.TMP = captureTmpRoot;
 const servedDir = path.join(runnerRoot, '.capture-docx');
 await fs.mkdir(servedDir, { recursive: true });
 const servedFixture = path.join(servedDir, path.basename(fixture));
@@ -98,6 +103,12 @@ async function captureOnce() {
   try {
     browser = await chromium.launch({
       args: ['--disable-dev-shm-usage', '--disable-gpu'],
+      env: {
+        ...process.env,
+        TMPDIR: captureTmpRoot,
+        TEMP: captureTmpRoot,
+        TMP: captureTmpRoot,
+      },
     });
     const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight } });
     const docUrl = `/@fs/${servedFixture}`;
