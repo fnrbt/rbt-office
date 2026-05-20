@@ -2905,10 +2905,11 @@ let private bordersToEditor (borders: CellBorders option) =
         "InsideV" ==> borderToEditor value.InsideV
     ])
 
-let private paragraphLayoutProps fontSize (borderAdvanceSource: ParagraphBorders option) (props: ParagraphProperties) =
+let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdvanceSource: ParagraphBorders option) (props: ParagraphProperties) =
+    let missingSpacingFallback = if defaultMissingSpacingToZero then Some 0.0 else None
     let spacingAfter =
         if props.SpacingAfterAuto = Some true then Some wordAutoSpacing
-        else wordSpacingTwipsToPoints props.SpacingAfter |> Option.orElse (Some 0.0)
+        else wordSpacingTwipsToPoints props.SpacingAfter |> Option.orElse missingSpacingFallback
     let firstLineIndent =
         match wordTwipsToPoints props.FirstLineIndent, wordTwipsToPoints props.HangingIndent with
         | Some firstLine, _ -> Some firstLine
@@ -2923,7 +2924,7 @@ let private paragraphLayoutProps fontSize (borderAdvanceSource: ParagraphBorders
         "FirstLineIndent" ==> firstLineIndent
         "RightTabPosition" ==> wordTwipsToPoints props.RightTabPosition
         "RightTabLeader" ==> props.RightTabLeader
-        "SpacingBefore" ==> (if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore |> Option.orElse (Some 0.0))
+        "SpacingBefore" ==> (if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore |> Option.orElse missingSpacingFallback)
         "SpacingAfter" ==> spacingAfter
         "LineSpacing" ==> wordLineSpacingToMultiple fontSize props.LineSpacing props.LineRule
         "LineSpacingRule" ==> props.LineRule
@@ -2933,6 +2934,19 @@ let private paragraphLayoutProps fontSize (borderAdvanceSource: ParagraphBorders
         "ParagraphBorderAfter" ==> (borderAdvanceSource |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Bottom))
         "RenderedPageBreakBefore" ==> props.RenderedPageBreakBefore
     ]
+
+let private directParagraphFormattingResetsMissingSpacing (props: ParagraphProperties) =
+    props.Alignment.IsSome
+    || props.IndentLeft.IsSome
+    || props.IndentRight.IsSome
+    || props.FirstLineIndent.IsSome
+    || props.HangingIndent.IsSome
+    || props.RightTabPosition.IsSome
+    || props.RightTabLeader.IsSome
+    || props.ParagraphRunProperties.IsSome
+    || props.BackgroundColor.IsSome
+    || props.ParagraphBorders.IsSome
+    || props.ContextualSpacing.IsSome
 
 let private referenceObjects (refs: HeaderFooterReference list) =
     refs
@@ -3435,6 +3449,8 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
 
             let layoutParaProps = { effectiveParaProps with ParagraphBorders = para.Properties.ParagraphBorders }
 
+            let defaultMissingSpacingToZero = directParagraphFormattingResetsMissingSpacing para.Properties
+
             Some (createObj ([
                 "Type" ==> itemType
                 "HeadingLevel" ==> headingLevel
@@ -3459,7 +3475,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                 "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                 "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                 "ParagraphMarkFontSize" ==> paragraphFontSize
-            ] @ paragraphLayoutProps paragraphFontSize effectiveParaProps.ParagraphBorders layoutParaProps))
+            ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders layoutParaProps))
         | Tbl table ->
             // Convert table to editor format
             let convertCellParagraph (para: Paragraph) : obj =
@@ -3709,7 +3725,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                     "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                     "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                     "ParagraphMarkFontSize" ==> paragraphFontSize
-                ] @ paragraphLayoutProps paragraphFontSize effectiveParaProps.ParagraphBorders layoutParaProps)
+                ] @ paragraphLayoutProps paragraphFontSize false effectiveParaProps.ParagraphBorders layoutParaProps)
 
             let tableStyle = resolveTableStyle styleMap table.StyleId
             let tableStyleProperties = tableStyle |> Option.bind (fun style -> style.TableProperties)

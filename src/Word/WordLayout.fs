@@ -1090,6 +1090,17 @@ module Table =
               InsideH = printBorderStrokeFromBorder borders.InsideH None None
               InsideV = printBorderStrokeFromBorder borders.InsideV None None }
 
+    let collapsedHorizontalBorderExtent (table: TableBlock) (row: TableRow) =
+        row.BordersOverride
+        |> Option.orElse table.Borders
+        |> tablePrintBorders
+        |> fun borders ->
+            [ borders.Top; borders.Bottom; borders.InsideH ]
+            |> List.choose (Option.map _.Width)
+            |> function
+                | [] -> 0.0
+                | widths -> List.max widths
+
     let private cellPrintBordersWithTableFallback tableBorders rowIndex rowCount columnCount (positioned: PositionedCell) cell =
         let cellBorders = cellPrintBorders cell
         let tableBorders = tablePrintBorders tableBorders

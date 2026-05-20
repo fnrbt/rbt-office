@@ -153,6 +153,41 @@
     <tbody>
       <tr>
         <td>
+          <strong>Default table-cell after-spacing and table follow y</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
+          <span class="meta">Real fixture class: direct-border tables whose cell paragraphs omit <code>w:spacing/@after</code> after an imported heading with no explicit line-spacing.</span>
+          <span class="meta">Paths checked: Word PDF layout, PDF/backend raster, browser canvas layout, native PNG, and TOC regression guards.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/table-cell-default-after-spacing-word.png" style="--w:1224px; --x:80px; --y:145px; --s:0.72" alt="Word reference default table-cell after-spacing">
+          </div>
+          <div class="caption">Word keeps the default cell paragraph after-spacing when the cell paragraph omits direct spacing; the first-to-second row text pitch is about <code>30.6px</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/table-cell-default-after-spacing-after.png" style="--w:1224px; --x:80px; --y:145px; --s:0.72" alt="After default table-cell after-spacing fix">
+          </div>
+          <div class="caption">After: the PDF/backend raster matches Word's table area. Browser layout guard reports row pitch <code>30.93px</code>, <code>Beta gapDy=0.37px</code>, <code>Delta gapDy=0.21px</code>, and no row exceeds the <code>6px</code> threshold.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/table-cell-default-after-spacing-before.png" style="--w:900px; --x:55px; --y:130px; --s:1.08" alt="Before default table-cell after-spacing fix">
+          </div>
+          <div class="caption">Before: missing cell paragraph spacing was treated as explicit <code>0pt</code>, collapsing row pitch to <code>19.59px</code>; <code>Gamma</code> drifted <code>17.98px</code> high and <code>After table</code> drifted <code>29.10px</code> high.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> preserve genuinely missing paragraph spacing so Word/default spacing can apply, while still using the zero-spacing fallback for directly formatted top-level DOCX paragraphs whose missing spacing Word treats as explicit.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code> and <code>tools/native-runner/Program.fs</code>: preserve missing spacing for plain Normal/heading paragraphs and table cells; use the zero fallback only for direct-formatted top-level paragraphs such as the TOC spacer.</li>
+            <li><code>src/Word/Layout.fs</code>: use Word's taller default single-line box for missing/default-spacing body paragraphs, keep the smaller explicit/auto-spacing line box for TOC pagination, and apply the table-follow adjustment only to that explicit-spacing case.</li>
+            <li><code>src/Word/WordLayout.fs</code>: auto-height rows that inherit default cell after-spacing also reserve the collapsed horizontal table border, matching Word's visible row pitch.</li>
+            <li>Focused guard: <code>assert-table-cell-default-after-spacing.mjs</code> checks row pitch and whole-table y drift against the PDF-backed Word layout.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Diagonal table-cell shading density</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-cell-auto-pattern-shading.docx</code></span>
           <span class="meta">Real fixture class: <code>docx4j-tables.docx</code> cells with diagonal <code>w:shd</code> patterns and explicit foreground colors.</span>
@@ -168,7 +203,7 @@
           <div class="zoom">
             <img src="images/browser/table-diagonal-shading-density-after.png" style="--w:1224px; --x:120px; --y:180px; --s:0.58" alt="After diagonal table-cell shading density fix">
           </div>
-          <div class="caption">After: diagonal hatch spacing matches the Word-like coverage; the sampled stripe interior is <code>(183.2,217.0,141.2)</code> and the visual guard reports max channel delta <code>1.2</code>.</div>
+          <div class="caption">After: diagonal hatch spacing matches the Word-like coverage on the correctly aligned table; the sampled stripe interior is <code>(186.8,218.9,147.0)</code> and the visual guard reports max channel delta <code>7.0</code>.</div>
         </td>
         <td>
           <div class="zoom">
@@ -177,11 +212,11 @@
           <div class="caption">Before: 2px diagonal hatch spacing made the green pattern too dense and dark; the sampled stripe interior averaged <code>(149.0,199.0,86.7)</code>, a max-channel delta of <code>53.3</code> vs Word.</div>
         </td>
         <td>
-          <p><strong>Fix:</strong> loosen diagonal hatch spacing from <code>2px</code> to <code>3px</code>, reducing the effective coverage to Word's reverse-diagonal stripe density.</p>
+          <p><strong>Fix:</strong> loosen diagonal hatch spacing from <code>2px</code> to <code>3.3px</code>, reducing the effective coverage to Word's reverse-diagonal stripe density.</p>
           <ul>
             <li>Visual guard: <code>assert-table-auto-pattern-shading-visual.py</code> samples the <code>pct5</code>, <code>pct10</code>, and diagonal stripe cells from 144dpi Word/ours rasters.</li>
-            <li>Focused result: percentage fills stay within <code>2.7</code> channels, and the diagonal stripe drops from <code>53.3</code> to <code>1.2</code> max-channel delta.</li>
-            <li>Scope: this is a paint-only hatch density change; text-position residuals in this repro remain the separate table-top spacing issue.</li>
+            <li>Focused result: percentage fills stay within <code>0.8</code> channels, and the diagonal stripe drops from <code>53.3</code> to <code>7.0</code> max-channel delta.</li>
+            <li>Scope: this is a paint-only hatch density change; the table placement in this repro is covered by the default table-cell after-spacing row above.</li>
           </ul>
         </td>
       </tr>

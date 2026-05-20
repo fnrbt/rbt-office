@@ -399,7 +399,7 @@ let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun
 
     { Rope = Rope.ofString (String.Concat parts); Runs = bufferRuns |> Seq.toList }
 
-let private paraMetadata styleMap resolver (para: DocxReader.Paragraph) (editorPara: EP.EditorParagraph) =
+let private paraMetadata styleMap resolver defaultMissingSpacingToZero (para: DocxReader.Paragraph) (editorPara: EP.EditorParagraph) =
     let props = para.Properties
     let resolvedParaProps = DocumentProcessors.StyleResolution.resolveParagraphProps styleMap props
     let numberingDef = resolvedNumberingDefinition resolver props
@@ -412,6 +412,7 @@ let private paraMetadata styleMap resolver (para: DocxReader.Paragraph) (editorP
             | Some firstLine, _ -> Some firstLine
             | None, Some hanging -> Some -hanging
             | None, None -> None)
+    let missingSpacingFallback = if defaultMissingSpacingToZero then Some 0.0 else None
     {
         defaultMetadata with
             Style = props.Style
@@ -427,8 +428,8 @@ let private paraMetadata styleMap resolver (para: DocxReader.Paragraph) (editorP
                 | None -> editorPara.FirstLineIndent |> Option.orElse numberingFirstLineIndent
             RightTabPosition = editorPara.RightTabPosition |> Option.orElse numberingRightTab
             RightTabLeader = editorPara.RightTabLeader
-            SpacingBefore = if props.SpacingBeforeAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingBefore |> Option.orElse (Some 0.0)
-            SpacingAfter = if props.SpacingAfterAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingAfter |> Option.orElse (Some 0.0)
+            SpacingBefore = if props.SpacingBeforeAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingBefore |> Option.orElse missingSpacingFallback
+            SpacingAfter = if props.SpacingAfterAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingAfter |> Option.orElse missingSpacingFallback
             ContextualSpacing = props.ContextualSpacing
             LineSpacing = editorPara.LineSpacing
             LineSpacingRule = props.LineRule
@@ -460,12 +461,25 @@ let private paraMetadata styleMap resolver (para: DocxReader.Paragraph) (editorP
             ParagraphMarkFontSize = props.ParagraphRunProperties |> Option.map (fun rPr -> TC.fontSizeToPoints rPr.FontSize)
     }
 
-let private mkPara resolver images styleMap comments notes para =
+let private directParagraphFormattingResetsMissingSpacing (props: DocxReader.ParagraphProperties) =
+    props.Alignment.IsSome
+    || props.IndentLeft.IsSome
+    || props.IndentRight.IsSome
+    || props.FirstLineIndent.IsSome
+    || props.HangingIndent.IsSome
+    || props.RightTabPosition.IsSome
+    || props.RightTabLeader.IsSome
+    || props.ParagraphRunProperties.IsSome
+    || props.BackgroundColor.IsSome
+    || props.ParagraphBorders.IsSome
+    || props.ContextualSpacing.IsSome
+
+let private mkPara resolver images styleMap comments notes defaultMissingSpacingToZero para =
     let editorPara = EP.toEditorParagraph None styleMap comments notes para
     {
         Id = Guid.NewGuid().ToString("N")
         Buffer = editorRunsToBuffer images editorPara.Runs
-        Metadata = paraMetadata styleMap resolver para editorPara
+        Metadata = paraMetadata styleMap resolver defaultMissingSpacingToZero para editorPara
     }
 
 let private tableCell resolver images styleMap comments notes (paragraphProperties: DocxReader.ParagraphProperties option) (cell: DocxReader.TableCell) =
@@ -485,9 +499,9 @@ let private tableCell resolver images styleMap comments notes (paragraphProperti
     let content =
         cell.Paragraphs
         |> List.map applyTableParagraphProperties
-        |> List.map (mkPara resolver images styleMap comments notes)
+        |> List.map (mkPara resolver images styleMap comments notes false)
     {
-        Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes (applyTableParagraphProperties emptyPara)] else content
+        Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes false (applyTableParagraphProperties emptyPara)] else content
         ColSpan = props |> Option.bind (fun p -> p.ColSpan) |> Option.defaultValue 1
         BackgroundColor = props |> Option.bind (fun p -> p.Shading) |> Option.bind directShadingBackgroundColor
         Shading = props |> Option.bind (fun p -> p.Shading) |> Option.map shading
@@ -662,7 +676,7 @@ let private headerFooterPart resolver images styleMap comments notes (item: Docx
     {
         Kind = item.Type
         RelationshipId = item.RelationshipId
-        Blocks = item.Content |> List.map (mkPara resolver images styleMap comments notes >> Paragraph)
+        Blocks = item.Content |> List.map (mkPara resolver images styleMap comments notes true >> Paragraph)
     }
 
 let importDoc (doc: DocxReader.WordDocument) =
@@ -683,7 +697,7 @@ let importDoc (doc: DocxReader.WordDocument) =
     let blocks =
         doc.Content
         |> List.map (function
-            | DocxReader.Para para -> Paragraph (mkPara resolver doc.Images styleMap comments notes para)
+            | DocxReader.Para para -> Paragraph (mkPara resolver doc.Images styleMap comments notes (directParagraphFormattingResetsMissingSpacing para.Properties) para)
             | DocxReader.Tbl table -> tableBlock resolver doc.Images styleMap tableStyleMap comments notes table)
 
     let firstParagraph =

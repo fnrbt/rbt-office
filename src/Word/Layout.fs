@@ -431,6 +431,8 @@ let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
 // Word line boxes include font leading beyond the nominal font size.
 let private wordLineBoxFactor = 1.20
 let private wordSingleLineBoxFactor = 1.15
+let private wordDefaultSpacingSingleLineBoxFactor = 1.316
+let private wordTableFollowSingleLineBoxFactor = wordDefaultSpacingSingleLineBoxFactor
 let private monospaceLineBoxFactor = 1.18
 let private tableCellDefaultLineBoxFactor = 1.336
 // Matches Word's visual single-line pitch for explicit 11pt TableGrid cell paragraphs.
@@ -459,26 +461,38 @@ let private tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing (style: Te
         | Some "arial" -> arialTableCellExplicitLineBoxFactor
         | _ -> tableCellExplicitLineBoxFactor
 
-let private wordLineHeight textStyle fontSize lineSpacing =
+let private usesDefaultParagraphSpacing (metadata: BlockMetadata) =
+    metadata.SpacingBefore.IsNone && metadata.SpacingAfter.IsNone
+
+let private wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing =
     let factor =
         if abs (lineSpacing - 1.0) < 0.001 then
-            wordSingleLineBoxFactor
+            if defaultParagraphSpacing then wordDefaultSpacingSingleLineBoxFactor else wordSingleLineBoxFactor
         else
             lineBoxFactorForTextStyle textStyle
     fontSize * lineSpacing * factor
 
-let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing =
+let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing =
     let automatic =
         if settings.InTableCell then
             let factor = tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing textStyle
             tableCellLineBoxFontSize fontSize * lineSpacing * factor
         else
-            wordLineHeight textStyle fontSize lineSpacing
+            wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing
 
     match lineSpacingRule with
     | "exact" -> max 1.0 lineSpacing
     | "atLeast" -> max automatic lineSpacing
     | _ -> automatic
+
+let private lineMaxTextFontSize fallback (line: MeasuredLine) =
+    line.Segments
+    |> List.choose (function
+        | TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.displayFontSize style)
+        | ImageSegment _ -> None)
+    |> function
+        | [] -> fallback
+        | sizes -> List.max sizes
 
 let private paragraphBorderAdvance (border: ParagraphBorder option) =
     match border with
@@ -1034,9 +1048,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let rightIndent = WordLayout.Paragraph.rightIndent metadata
     let firstLineIndent = WordLayout.Paragraph.firstLineIndent metadata
     let rawSpacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle metadata
-    let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
-    let startsAtPageTop = abs (y - WordLayout.Page.contentTop settings.PaddingTop pageTop) < 0.01
-    let spacingBefore = if startsAtPageTop then 0.0 else rawSpacingBefore
+    let spacingBefore = rawSpacingBefore
     let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle metadata
     let lineSpacing = WordLayout.Paragraph.lineSpacing paragraphStyle metadata
     let lineSpacingRule = WordStyles.lineSpacingRule paragraphStyle metadata
@@ -1045,6 +1057,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         || paragraphStyle.LineSpacing.IsSome
         || metadata.LineSpacingRule.IsSome
         || paragraphStyle.LineSpacingRule.IsSome
+    let defaultParagraphSpacing = usesDefaultParagraphSpacing metadata
     let borderBefore, borderAfter = paragraphBorderVerticalAdvance metadata
     let borderRight = paragraphBorderRightAdvance metadata
     let contentY = y + spacingBefore + borderBefore
@@ -1080,7 +1093,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         |> List.sortByDescending WordLayout.Text.displayFontSize
         |> List.tryHead
         |> Option.defaultValue paragraphStyle.Text
-    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing }
+    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing }
     let lines, updatedObstacles, updatedPlacedBoxes = layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.RightTabPosition initialObstacles initialPlacedBoxes
 
     let adjustedLines =
@@ -1113,7 +1126,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let pagedLines = paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) adjustedLines
 
     let blockHeight =
-        if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing
+        if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing
         else
             let lastLine = List.last pagedLines
             (lastLine.Y - contentY) + lastLine.Height
@@ -1165,6 +1178,9 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
 
     for positioned in WordLayout.Table.positionedCells row do
         let cell = positioned.Cell
+        let usesInheritedCellAfterSpacing =
+            cell.Content
+            |> List.exists (fun para -> para.Metadata.SpacingAfter.IsNone)
         let fallbackWidth = tableMaxWidth / float numColumns
         let colWidth = WordLayout.Table.positionedSpacedCellWidth columnWidths cellSpacing fallbackWidth positioned
         let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row cell
@@ -1178,7 +1194,12 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
                 cellPadding
         let verticalMarginExcess =
             if cellSpacing > 0.0 then WordLayout.Table.spacedVerticalMarginExcess textPadding cellPadding else 0.0
-        let verticalBorderExtent = WordLayout.Table.cellVerticalBorderExtent cell
+        let collapsedBorderExtent =
+            if row.Height.IsNone && usesInheritedCellAfterSpacing then
+                WordLayout.Table.collapsedHorizontalBorderExtent tableBlock row
+            else
+                0.0
+        let verticalBorderExtent = max (WordLayout.Table.cellVerticalBorderExtent cell) collapsedBorderExtent
         let cellX = WordLayout.Table.positionedSpacedCellX columnWidths cellSpacing positioned + textPadding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing positioned.StartColumn
         let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth textPadding
         let cellY = rowY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
@@ -1587,6 +1608,7 @@ let private layoutDocumentWithRangeAndInitial
     let mutable floatingObstacles: FloatingObstacle list = initialObstacles
     let mutable placedFloatingBoxes: PlacedFloatingBox list = initialPlacedBoxes
     let mutable previousParagraphContext: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
+    let mutable previousParagraphLayout: BlockLayout option = None
     let blocks = doc.Blocks |> List.toArray
 
     let nextParagraphBlock index =
@@ -1668,6 +1690,12 @@ let private layoutDocumentWithRangeAndInitial
     let contextualSpacingEnabled (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
         metadata.ContextualSpacing |> Option.orElse paragraphStyle.ContextualSpacing |> Option.defaultValue false
 
+    let hasExplicitLineSpacing (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
+        metadata.LineSpacing.IsSome
+        || paragraphStyle.LineSpacing.IsSome
+        || metadata.LineSpacingRule.IsSome
+        || paragraphStyle.LineSpacingRule.IsSome
+
     let sameParagraphBorders (previous: BlockMetadata) (current: BlockMetadata) =
         previous.ParagraphBorders.IsSome
         && previous.ParagraphBorders = current.ParagraphBorders
@@ -1676,6 +1704,16 @@ let private layoutDocumentWithRangeAndInitial
 
     let resetPreviousParagraph () =
         previousParagraphContext <- None
+        previousParagraphLayout <- None
+
+    let tableFollowDefaultLineHeightAdjustment () =
+        match previousParagraphContext, previousParagraphLayout with
+        | Some (_, paragraphStyle, metadata, _), Some layout when not (hasExplicitLineSpacing paragraphStyle metadata) && not (usesDefaultParagraphSpacing metadata) ->
+            layout.Lines
+            |> List.sumBy (fun line ->
+                let fontSize = lineMaxTextFontSize paragraphStyle.Text.FontSize line
+                max 0.0 (fontSize * (wordTableFollowSingleLineBoxFactor - wordSingleLineBoxFactor)))
+        | _ -> 0.0
 
     let addTextBoxObstacle (textBox: TextBoxBlock) =
         let rawFloatingBox = WordLayout.Floating.textBoxCanvasBox settings.PaddingLeft settings.PaddingTop textBox
@@ -1831,16 +1869,17 @@ let private layoutDocumentWithRangeAndInitial
             resetPreviousParagraph ()
             addTextBoxObstacle textBox
         | Table tableBlock ->
+            let tableY = y + tableFollowDefaultLineHeightAdjustment ()
             resetPreviousParagraph ()
             let blockStart = timingStart ()
-            let nextY, tableWidth = layoutTableAt tableBlock y
+            let nextY, tableWidth = layoutTableAt tableBlock tableY
             if tableBlock.Floating then
-                let tableHeight = max 0.0 (nextY - y - WordLayout.Table.afterSpacing)
-                floatingObstacles <- (0.0, y, tableWidth + 12.0, tableHeight) :: floatingObstacles
+                let tableHeight = max 0.0 (nextY - tableY - WordLayout.Table.afterSpacing)
+                floatingObstacles <- (0.0, tableY, tableWidth + 12.0, tableHeight) :: floatingObstacles
                 placedFloatingBoxes <- {
                     Kind = WordLayout.Floating.TableBox tableBlock
                     X = settings.PaddingLeft
-                    Y = y
+                    Y = tableY
                     Width = tableWidth
                     Height = tableHeight
                     Wrap = Some "square"
@@ -1996,6 +2035,7 @@ let private layoutDocumentWithRangeAndInitial
             footnotesByPage <- addLayoutFootnotes settings footnotesByPage layout
             y <- layout.Y + layout.Height
             previousParagraphContext <- Some (para, paragraphStyle, layout.Metadata, WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata)
+            previousParagraphLayout <- Some layout
             if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
                 y <- advanceToNextPage settings y
                 resetPreviousParagraph ()
