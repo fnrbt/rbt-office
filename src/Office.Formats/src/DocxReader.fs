@@ -2948,6 +2948,40 @@ let private directParagraphFormattingResetsMissingSpacing (props: ParagraphPrope
     || props.ParagraphBorders.IsSome
     || props.ContextualSpacing.IsSome
 
+let private hasDirectParagraphFormatting (props: ParagraphProperties) =
+    props.Style.IsSome
+    || props.Alignment.IsSome
+    || props.IndentLeft.IsSome
+    || props.IndentRight.IsSome
+    || props.FirstLineIndent.IsSome
+    || props.HangingIndent.IsSome
+    || props.RightTabPosition.IsSome
+    || props.RightTabLeader.IsSome
+    || props.SpacingBefore.IsSome
+    || props.SpacingBeforeAuto.IsSome
+    || props.SpacingAfter.IsSome
+    || props.SpacingAfterAuto.IsSome
+    || props.LineSpacing.IsSome
+    || props.LineRule.IsSome
+    || props.OutlineLevel.IsSome
+    || props.KeepNext.IsSome
+    || props.KeepLines.IsSome
+    || props.PageBreakBefore.IsSome
+    || props.WidowControl.IsSome
+    || props.ContextualSpacing.IsSome
+    || props.BackgroundColor.IsSome
+    || props.ParagraphRunProperties.IsSome
+    || props.ParagraphBorders.IsSome
+    || props.ListInfo.IsSome
+    || props.SectionBreak.IsSome
+    || props.SectionPageNumberStart.IsSome
+    || props.RenderedPageBreakBefore.IsSome
+    || not props.HeaderReferences.IsEmpty
+    || not props.FooterReferences.IsEmpty
+
+let private isPureEmptyParagraph (para: Paragraph) =
+    para.Runs.IsEmpty && not (hasDirectParagraphFormatting para.Properties)
+
 let private referenceObjects (refs: HeaderFooterReference list) =
     refs
     |> List.map (fun ref -> createObj [ "Kind" ==> ref.Kind; "RelationshipId" ==> ref.RelationshipId ])
@@ -3202,6 +3236,15 @@ let private resolvedRunProperties (styleMap: Map<string, StyleDefinition>) (para
     else
         merged
 
+let private paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (para: Paragraph) =
+    let fallbackRunProps =
+        if isPureEmptyParagraph para then
+            let docDefaultRun, _ = resolveStyle styleMap (Some Styles.defaultStyleId)
+            docDefaultRun
+        else
+            resolvedRunProperties styleMap effectiveParaProps emptyRunProperties
+    wordFontSizeToPoints fallbackRunProps.FontSize
+
 let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) : obj array =
     let styleMap = buildStyleMap styles
     content
@@ -3210,8 +3253,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
         | Para para ->
             let effectiveParaProps = resolvedParagraphProperties styleMap para.Properties
             let paragraphFontSize =
-                let fallbackRunProps = resolvedRunProperties styleMap effectiveParaProps emptyRunProperties
-                let fallback = wordFontSizeToPoints fallbackRunProps.FontSize
+                let fallback = paragraphMarkFontSize styleMap effectiveParaProps para
                 let runSizes =
                     para.Runs
                     |> List.choose (fun run ->

@@ -153,6 +153,41 @@
     <tbody>
       <tr>
         <td>
+          <strong>Pure empty paragraph mark after spaced table</strong>
+          <span class="meta">Repro: <code>tests/repros/word/table-spaced-sequence-page-break.docx</code></span>
+          <span class="meta">Real fixture class: docx4j table sequences with a pure empty <code>&lt;w:p/&gt;</code> between a spaced table and the next text/table block.</span>
+          <span class="meta">Paths checked: VBS layout, PDF-backed Word visual layout, browser canvas, native runner, PDF runner, and TOC regression guards.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/table-spaced-sequence-empty-mark-word.png" style="--w:720px; --x:0px; --y:0px; --s:0.75" alt="Word reference pure empty paragraph mark after spaced table">
+          </div>
+          <div class="caption">Word keeps the spaced table itself aligned, then advances the pure empty paragraph using the document-default paragraph mark size before <code>Mergin, Auto size</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/table-spaced-sequence-empty-mark-after.png" style="--w:720px; --x:0px; --y:0px; --s:0.75" alt="After pure empty paragraph mark after spaced table fix">
+          </div>
+          <div class="caption">After: the following paragraph and grid-span table move up to Word's y rhythm; VBS comparison reports <code>20 matched lines</code> and PDF-backed visual comparison reports <code>16 matched lines</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/table-spaced-sequence-empty-mark-before.png" style="--w:720px; --x:0px; --y:0px; --s:0.75" alt="Before pure empty paragraph mark after spaced table fix">
+          </div>
+          <div class="caption">Before: the empty paragraph mark inherited the implicit Normal run size, putting <code>Mergin, Auto size</code> and the following grid-span table about <code>6px</code> too low.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> when a top-level paragraph is a pure empty <code>&lt;w:p/&gt;</code> with no direct formatting, use the document-default run size for its paragraph mark instead of the implicit Normal style run size.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code>: apply document-default paragraph mark sizing only to pure empty top-level paragraphs; visible text, directly formatted spacers, and table-cell paragraphs keep their existing style resolution.</li>
+            <li><code>tools/native-runner/Program.fs</code>: mirror the same top-level-only paragraph mark sizing for native/PDF import paths.</li>
+            <li>Focused guards: <code>table-spaced-sequence-page-break.docx</code>, <code>empty-normal-paragraph-mark-size.docx</code>, and <code>table-cell-default-after-spacing.docx</code> compare cleanly in both VBS/PDF-backed runs.</li>
+            <li>Regression guards: TOC browser/PDF assertions still pass; the broader focused risk slice is clean except the documented VBS-only bottom-aligned-cell false positive, whose PDF-backed visual compare remains <code>ok</code>.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Default table-cell after-spacing and table follow y</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-cell-default-after-spacing.docx</code></span>
           <span class="meta">Real fixture class: direct-border tables whose cell paragraphs omit <code>w:spacing/@after</code> after an imported heading with no explicit line-spacing.</span>
