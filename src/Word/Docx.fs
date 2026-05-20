@@ -340,6 +340,8 @@ let private metadataFromEditor (item: obj) =
     let widowControl = optionalBool (item?StyleWidowControl) |> Option.orElse (optionalBool (item?WidowControl))
     let backgroundColor = optionalString (item?BackgroundColor)
     let paragraphBorders = paragraphBordersFromEditor (item?ParagraphBorders)
+    let paragraphBorderBefore = optionalFloat (item?ParagraphBorderBefore)
+    let paragraphBorderAfter = optionalFloat (item?ParagraphBorderAfter)
     let pageBreakBefore = item?PageBreakBefore |> boolOrDefault false
     let pageBreakAfter = item?PageBreakAfter |> boolOrDefault false
     let sectionBreak = optionalString (item?SectionBreak)
@@ -375,6 +377,8 @@ let private metadataFromEditor (item: obj) =
             WidowControl = widowControl
             BackgroundColor = backgroundColor
             ParagraphBorders = paragraphBorders
+            ParagraphBorderBefore = paragraphBorderBefore
+            ParagraphBorderAfter = paragraphBorderAfter
             PageBreakBefore = pageBreakBefore
             PageBreakAfter = pageBreakAfter
             SectionBreak = sectionBreak
@@ -596,6 +600,13 @@ let private styleTextFromEditor (value: obj) =
                 Highlight = optionalString (value?StyleHighlight)
         }
 
+let private styleTextBoldFromEditor (value: obj) = optionalBool (value?StyleBold)
+let private styleTextItalicFromEditor (value: obj) = optionalBool (value?StyleItalic)
+let private styleTextUnderlineFromEditor (value: obj) = optionalBool (value?StyleUnderline)
+let private styleTextAllCapsFromEditor (value: obj) = optionalBool (value?StyleAllCaps)
+let private styleTextSmallCapsFromEditor (value: obj) = optionalBool (value?StyleSmallCaps)
+let private styleTextStrikeFromEditor (value: obj) = optionalBool (value?StyleStrike)
+
 let private paragraphStyleFromEditor (item: obj) =
     optionalString (item?Style)
     |> Option.map (fun styleId -> {
@@ -612,6 +623,12 @@ let private paragraphStyleFromEditor (item: obj) =
         SemiHidden = optionalBool (item?StyleSemiHidden) |> Option.defaultValue false
         UnhideWhenUsed = optionalBool (item?StyleUnhideWhenUsed) |> Option.defaultValue false
         Text = styleTextFromEditor item
+        TextBold = styleTextBoldFromEditor item
+        TextItalic = styleTextItalicFromEditor item
+        TextUnderline = styleTextUnderlineFromEditor item
+        TextAllCaps = styleTextAllCapsFromEditor item
+        TextSmallCaps = styleTextSmallCapsFromEditor item
+        TextStrike = styleTextStrikeFromEditor item
         SpacingBefore = optionalFloat (item?StyleSpacingBefore)
         SpacingAfter = optionalFloat (item?StyleSpacingAfter)
         ContextualSpacing = optionalBool (item?StyleContextualSpacing)
@@ -645,6 +662,12 @@ let private runStyleFromEditor (run: obj) =
         SemiHidden = optionalBool (run?StyleSemiHidden) |> Option.defaultValue false
         UnhideWhenUsed = optionalBool (run?StyleUnhideWhenUsed) |> Option.defaultValue false
         Text = styleTextFromEditor run
+        TextBold = styleTextBoldFromEditor run
+        TextItalic = styleTextItalicFromEditor run
+        TextUnderline = styleTextUnderlineFromEditor run
+        TextAllCaps = styleTextAllCapsFromEditor run
+        TextSmallCaps = styleTextSmallCapsFromEditor run
+        TextStrike = styleTextStrikeFromEditor run
         SpacingBefore = None
         SpacingAfter = None
         ContextualSpacing = None
@@ -708,6 +731,12 @@ let private stylesFromCatalog (items: obj array) =
             SemiHidden = optionalBool (item?StyleSemiHidden) |> Option.defaultValue false
             UnhideWhenUsed = optionalBool (item?StyleUnhideWhenUsed) |> Option.defaultValue false
             Text = styleTextFromEditor item
+            TextBold = styleTextBoldFromEditor item
+            TextItalic = styleTextItalicFromEditor item
+            TextUnderline = styleTextUnderlineFromEditor item
+            TextAllCaps = styleTextAllCapsFromEditor item
+            TextSmallCaps = styleTextSmallCapsFromEditor item
+            TextStrike = styleTextStrikeFromEditor item
             SpacingBefore = optionalFloat (item?StyleSpacingBefore)
             SpacingAfter = optionalFloat (item?StyleSpacingAfter)
             ContextualSpacing = optionalBool (item?StyleContextualSpacing)
@@ -739,12 +768,12 @@ let private styleToEditor (style: NamedStyle) =
         "StyleUiPriority" ==> style.UiPriority
         "StyleSemiHidden" ==> style.SemiHidden
         "StyleUnhideWhenUsed" ==> style.UnhideWhenUsed
-        "StyleBold" ==> (style.Text |> Option.map (fun text -> text.Bold))
-        "StyleItalic" ==> (style.Text |> Option.map (fun text -> text.Italic))
-        "StyleUnderline" ==> (style.Text |> Option.map (fun text -> text.Underline))
-        "StyleAllCaps" ==> (style.Text |> Option.map (fun text -> text.AllCaps))
-        "StyleSmallCaps" ==> (style.Text |> Option.map (fun text -> text.SmallCaps))
-        "StyleStrike" ==> (style.Text |> Option.map (fun text -> text.Strike))
+        "StyleBold" ==> (style.TextBold |> Option.orElse (style.Text |> Option.map (fun text -> text.Bold)))
+        "StyleItalic" ==> (style.TextItalic |> Option.orElse (style.Text |> Option.map (fun text -> text.Italic)))
+        "StyleUnderline" ==> (style.TextUnderline |> Option.orElse (style.Text |> Option.map (fun text -> text.Underline)))
+        "StyleAllCaps" ==> (style.TextAllCaps |> Option.orElse (style.Text |> Option.map (fun text -> text.AllCaps)))
+        "StyleSmallCaps" ==> (style.TextSmallCaps |> Option.orElse (style.Text |> Option.map (fun text -> text.SmallCaps)))
+        "StyleStrike" ==> (style.TextStrike |> Option.orElse (style.Text |> Option.map (fun text -> text.Strike)))
         "StyleVertAlign" ==> (style.Text |> Option.bind (fun text -> text.VertAlign))
         "StyleFontSize" ==> (style.Text |> Option.map (fun text -> text.FontSize))
         "StyleFontFamily" ==> (style.Text |> Option.bind (fun text -> text.FontFamily))
@@ -890,6 +919,8 @@ let private isDiscardableTrailingParagraph para =
     && para.Metadata.HeaderReferences.IsEmpty
     && para.Metadata.FooterReferences.IsEmpty
     && para.Metadata.ParagraphBorders.IsNone
+    && para.Metadata.ParagraphBorderBefore.IsNone
+    && para.Metadata.ParagraphBorderAfter.IsNone
 
 let private trimTrailingEmptyParagraphs blocks =
     let rec trim = function
@@ -1091,6 +1122,8 @@ let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
         "WidowControl" ==> para.Metadata.WidowControl
         "BackgroundColor" ==> para.Metadata.BackgroundColor
         "ParagraphBorders" ==> paragraphBordersToEditor para.Metadata.ParagraphBorders
+        "ParagraphBorderBefore" ==> para.Metadata.ParagraphBorderBefore
+        "ParagraphBorderAfter" ==> para.Metadata.ParagraphBorderAfter
         "PageBreakBefore" ==> para.Metadata.PageBreakBefore
         "PageBreakAfter" ==> para.Metadata.PageBreakAfter
         "SectionBreak" ==> para.Metadata.SectionBreak

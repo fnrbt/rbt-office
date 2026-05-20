@@ -2842,6 +2842,29 @@ let private paragraphBorderSpaceToPoints (border: ParagraphBorder option) =
         | true, parsed -> Some parsed
         | false, _ -> None)
 
+let private paragraphBorderAdvanceToLayoutPx (border: ParagraphBorder option) =
+    border
+    |> Option.bind (fun value ->
+        match value.Style |> Option.map (fun style -> style.ToLowerInvariant()) with
+        | Some "none"
+        | Some "nil" -> None
+        | _ ->
+            let widthPt =
+                value.Width
+                |> Option.bind (fun raw ->
+                    match System.Double.TryParse(raw) with
+                    | true, parsed -> Some (parsed / 8.0)
+                    | false, _ -> None)
+                |> Option.defaultValue 0.5
+            let spacePt =
+                value.Space
+                |> Option.bind (fun raw ->
+                    match System.Double.TryParse(raw) with
+                    | true, parsed -> Some parsed
+                    | false, _ -> None)
+                |> Option.defaultValue 0.0
+            Some ((spacePt + widthPt * 2.0) * 96.0 / 72.0))
+
 let private paragraphBorderToEditor (border: ParagraphBorder option) =
     border
     |> Option.map (fun value -> createObj [
@@ -2871,10 +2894,10 @@ let private bordersToEditor (borders: CellBorders option) =
         "InsideV" ==> borderToEditor value.InsideV
     ])
 
-let private paragraphLayoutProps fontSize (props: ParagraphProperties) =
+let private paragraphLayoutProps fontSize (borderAdvanceSource: ParagraphBorders option) (props: ParagraphProperties) =
     let spacingAfter =
         if props.SpacingAfterAuto = Some true then Some wordAutoSpacing
-        else wordSpacingTwipsToPoints props.SpacingAfter
+        else wordSpacingTwipsToPoints props.SpacingAfter |> Option.orElse (Some 0.0)
     let firstLineIndent =
         match wordTwipsToPoints props.FirstLineIndent, wordTwipsToPoints props.HangingIndent with
         | Some firstLine, _ -> Some firstLine
@@ -2889,12 +2912,14 @@ let private paragraphLayoutProps fontSize (props: ParagraphProperties) =
         "FirstLineIndent" ==> firstLineIndent
         "RightTabPosition" ==> wordTwipsToPoints props.RightTabPosition
         "RightTabLeader" ==> props.RightTabLeader
-        "SpacingBefore" ==> (if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore)
+        "SpacingBefore" ==> (if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore |> Option.orElse (Some 0.0))
         "SpacingAfter" ==> spacingAfter
         "LineSpacing" ==> wordLineSpacingToMultiple fontSize props.LineSpacing props.LineRule
         "LineSpacingRule" ==> props.LineRule
         "BackgroundColor" ==> wordColorToCss props.BackgroundColor
         "ParagraphBorders" ==> paragraphBordersToEditor props.ParagraphBorders
+        "ParagraphBorderBefore" ==> (borderAdvanceSource |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Top))
+        "ParagraphBorderAfter" ==> (borderAdvanceSource |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Bottom))
         "RenderedPageBreakBefore" ==> props.RenderedPageBreakBefore
     ]
 
@@ -2931,8 +2956,16 @@ let private mergeRunProperties (baseProps: RunProperties) (props: RunProperties)
     SmallCaps = props.SmallCaps |> Option.orElse baseProps.SmallCaps
     Strike = props.Strike |> Option.orElse baseProps.Strike
     FontSize = props.FontSize |> Option.orElse baseProps.FontSize
-    FontFamily = props.FontFamily |> Option.orElse baseProps.FontFamily
-    ThemeFont = props.ThemeFont |> Option.orElse baseProps.ThemeFont
+    FontFamily =
+        match props.FontFamily, props.ThemeFont with
+        | Some family, _ -> Some family
+        | None, Some _ -> None
+        | None, None -> baseProps.FontFamily
+    ThemeFont =
+        match props.FontFamily, props.ThemeFont with
+        | Some _, None -> None
+        | _, Some themeFont -> Some themeFont
+        | None, None -> baseProps.ThemeFont
     Color = props.Color |> Option.orElse baseProps.Color
     ThemeColor = props.ThemeColor |> Option.orElse baseProps.ThemeColor
     ThemeTint = props.ThemeTint |> Option.orElse baseProps.ThemeTint
@@ -3410,7 +3443,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                 "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                 "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                 "ParagraphMarkFontSize" ==> paragraphFontSize
-            ] @ paragraphLayoutProps paragraphFontSize layoutParaProps))
+            ] @ paragraphLayoutProps paragraphFontSize effectiveParaProps.ParagraphBorders layoutParaProps))
         | Tbl table ->
             // Convert table to editor format
             let convertCellParagraph (para: Paragraph) : obj =
@@ -3659,7 +3692,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                     "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
                     "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
                     "ParagraphMarkFontSize" ==> paragraphFontSize
-                ] @ paragraphLayoutProps paragraphFontSize layoutParaProps)
+                ] @ paragraphLayoutProps paragraphFontSize effectiveParaProps.ParagraphBorders layoutParaProps)
 
             let tableStyle = resolveTableStyle styleMap table.StyleId
             let tableStyleProperties = tableStyle |> Option.bind (fun style -> style.TableProperties)

@@ -128,6 +128,17 @@ assertEqualJson(
   expectedTocEntries,
 );
 
+const tocHeading = segments.find((segment) => segment.Kind === 'text' && segment.Text === 'Contents');
+if (!tocHeading) fail('missing TOC heading segment: "Contents"');
+if (tocHeading.Bold !== true) fail('TOC heading is not bold');
+if (tocHeading.Italic !== false) fail('TOC heading is italic; expected TOCHeading w:i val="0" to override inherited Heading1 italic');
+if (!String(tocHeading.FontFamily ?? '').includes('Cambria')) {
+  fail(`TOC heading font is ${tocHeading.FontFamily ?? '<missing>'}, expected Cambria`);
+}
+if (Math.abs(tocHeading.Y - 289) > 1.5) {
+  fail(`TOC heading y drifted to ${tocHeading.Y}; expected about 289`);
+}
+
 for (const entry of actualTocEntries) {
   if (entry.tabWidth < 500) fail(`TOC article ${entry.article} tab leader segment is too narrow (${entry.tabWidth})`);
   if (entry.pageX < 630) fail(`TOC article ${entry.article} page number is not right-aligned (x=${entry.pageX})`);

@@ -184,7 +184,43 @@
             <li><code>src/Word/Paint.fs</code>: draw dot leaders for right-tab TOC segments and place the footer PAGE field at Word's right-aligned footer position.</li>
             <li><code>tools/word-parity/assert-docx4j-toc-parity.mjs</code>: focused regression guard for the browser capture. It asserts the TOC page map, body heading page map, right-tab/page-number alignment, and the rendered-page-break continuation line on page 2.</li>
             <li>Guard command: <code>node tools/word-parity/assert-docx4j-toc-parity.mjs artifacts/toc-leader/browser-final-candidate-segments.json</code>.</li>
-            <li>Scope note: page-1 title/subtitle typography is intentionally outside this row. The row covers TOC entries, page-reference refresh, body pagination anchors, and footer page-number placement.</li>
+            <li>Scope note: page-1 title/subtitle and TOC-heading typography are covered by the adjacent <code>TOC heading style</code> row. This row covers TOC entries, page-reference refresh, body pagination anchors, and footer page-number placement.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>TOC heading style and page-1 vertical parity</strong>
+          <span class="meta">Repro: <code>docx4j-toc.docx</code> title, subtitle, <code>TOCHeading</code>, blank spacer, and first TOC rows.</span>
+          <span class="meta">Real fixture class: generated TOCs whose heading style overrides inherited Heading1 toggles and whose preceding title style carries a paragraph border in style properties.</span>
+          <span class="meta">Paths checked: PDF backend, browser segment capture, and focused <code>docx4j-toc</code> assertion guard.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/toc-heading-style-word.png" style="--w:1191px; --x:0px; --y:110px; --s:0.47" alt="Word reference: TOC heading and page-one vertical placement">
+          </div>
+          <div class="caption">Word renders <code>Contents</code> as bold upright Cambria with no title rule above it. The title third-line, subtitle, TOC heading, and first TOC row baselines align to the Word 2013 PDF export.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/toc-heading-style-after.png" style="--w:1190px; --x:0px; --y:110px; --s:0.47" alt="After: TOC heading style and spacing match Word">
+          </div>
+          <div class="caption">After: <code>TOCHeading</code> preserves explicit <code>w:i w:val="0"</code>, resolves <code>majorHAnsi</code> to Cambria, keeps DOCX missing spacing as 0 pt, and reserves the title style's paragraph-border advance without painting a blue rule.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/toc-heading-style-before.png" style="--w:1190px; --x:0px; --y:110px; --s:0.47" alt="Before: italic TOC heading and vertical drift">
+          </div>
+          <div class="caption">Before: the <code>Contents</code> heading inherited Heading1 italic and rendered in the wrong type style, while page-1 vertical flow drifted around the title, subtitle, blank spacer, and TOC heading.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> handle style toggles and style-derived vertical border advance separately from visible border paint.</p>
+          <ul>
+            <li><code>src/Word/Document.fs</code>, <code>src/Word/Docx.fs</code>, <code>src/Word/WordStyles.fs</code>: carry explicit style toggle options so <code>w:i w:val="0"</code> can override inherited Heading1 italic instead of being lost in boolean OR merging.</li>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code> and <code>tools/native-runner/Program.fs</code>: when a style uses a theme font, do not let the document-default concrete font family mask it; <code>TOCHeading</code> now resolves to Cambria.</li>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code>: imported DOCX paragraphs with no resolved spacing import as explicit 0 pt, so the editor's authoring default of 8 pt does not leak into Word-layout parity.</li>
+            <li><code>src/Word/Layout.fs</code>: layout can consume paragraph-border vertical advance from resolved style properties without exposing that style border to paint; this matches Word's no-rule title while keeping the subtitle and TOC baselines in place.</li>
+            <li><code>tools/word-parity/assert-docx4j-toc-parity.mjs</code>: guard now asserts the <code>Contents</code> segment is bold, upright, Cambria, and at the expected page-1 y position, in addition to the existing TOC page-map and leader checks.</li>
           </ul>
         </td>
       </tr>

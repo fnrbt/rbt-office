@@ -177,7 +177,7 @@ module API =
                 let alignOffset = Layout.alignmentOffset layout line
                 line.Segments
                 |> List.map (function
-                    | Layout.TextSegment (text, _, x, width, startOffset) ->
+                    | Layout.TextSegment (text, style, x, width, startOffset) ->
                         createObj [
                             "Kind" ==> "text"
                             "Text" ==> text
@@ -187,6 +187,12 @@ module API =
                             "Y" ==> line.Y
                             "Width" ==> width
                             "Height" ==> line.Height
+                            "FontFamily" ==> style.FontFamily
+                            "FontSize" ==> style.FontSize
+                            "Bold" ==> style.Bold
+                            "Italic" ==> style.Italic
+                            "Underline" ==> style.Underline
+                            "Color" ==> style.Color
                         ]
                     | Layout.ImageSegment (_, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, _, _, _, _) ->
                         createObj [

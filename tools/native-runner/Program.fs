@@ -146,8 +146,16 @@ let private mergeRunProperties (baseProps: DocxReader.RunProperties) (props: Doc
     AllCaps = props.AllCaps |> Option.orElse baseProps.AllCaps
     SmallCaps = props.SmallCaps |> Option.orElse baseProps.SmallCaps
     FontSize = props.FontSize |> Option.orElse baseProps.FontSize
-    FontFamily = props.FontFamily |> Option.orElse baseProps.FontFamily
-    ThemeFont = props.ThemeFont |> Option.orElse baseProps.ThemeFont
+    FontFamily =
+        match props.FontFamily, props.ThemeFont with
+        | Some family, _ -> Some family
+        | None, Some _ -> None
+        | None, None -> baseProps.FontFamily
+    ThemeFont =
+        match props.FontFamily, props.ThemeFont with
+        | Some _, None -> None
+        | _, Some themeFont -> Some themeFont
+        | None, None -> baseProps.ThemeFont
     Color = props.Color |> Option.orElse baseProps.Color
     ThemeColor = props.ThemeColor |> Option.orElse baseProps.ThemeColor
     ThemeTint = props.ThemeTint |> Option.orElse baseProps.ThemeTint
@@ -251,6 +259,17 @@ let private paraBorders (value: DocxReader.ParagraphBorders option) : RedBat.Wor
         Bottom = paraBorder b.Bottom
         Left = paraBorder b.Left
     })
+
+let private paragraphBorderAdvanceToLayoutPx (value: DocxReader.ParagraphBorder option) =
+    value
+    |> Option.bind (fun border ->
+        match border.Style |> Option.map (fun style -> style.ToLowerInvariant()) with
+        | Some "none"
+        | Some "nil" -> None
+        | _ ->
+            let widthPt = parseFloat border.Width |> Option.map (fun size -> size / 8.0) |> Option.defaultValue 0.5
+            let spacePt = parseFloat border.Space |> Option.defaultValue 0.0
+            Some ((spacePt + widthPt * 2.0) * 96.0 / 72.0))
 
 type private NumberingResolver = {
     ById: Map<string * int, DocxReader.NumberingDefinition>
@@ -378,8 +397,9 @@ let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun
 
     { Rope = Rope.ofString (String.Concat parts); Runs = bufferRuns |> Seq.toList }
 
-let private paraMetadata resolver (para: DocxReader.Paragraph) (editorPara: EP.EditorParagraph) =
+let private paraMetadata styleMap resolver (para: DocxReader.Paragraph) (editorPara: EP.EditorParagraph) =
     let props = para.Properties
+    let resolvedParaProps = DocumentProcessors.StyleResolution.resolveParagraphProps styleMap props
     let numberingDef = resolvedNumberingDefinition resolver props
     let numberingIndentLeft = numberingDef |> Option.bind (fun def -> twipsToPoints def.IndentLeft)
     let numberingRightTab = numberingDef |> Option.bind (fun def -> twipsToCanvasPixels def.RightTabPosition)
@@ -405,14 +425,16 @@ let private paraMetadata resolver (para: DocxReader.Paragraph) (editorPara: EP.E
                 | None -> editorPara.FirstLineIndent |> Option.orElse numberingFirstLineIndent
             RightTabPosition = editorPara.RightTabPosition |> Option.orElse numberingRightTab
             RightTabLeader = editorPara.RightTabLeader
-            SpacingBefore = if props.SpacingBeforeAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingBefore
-            SpacingAfter = if props.SpacingAfterAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingAfter
+            SpacingBefore = if props.SpacingBeforeAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingBefore |> Option.orElse (Some 0.0)
+            SpacingAfter = if props.SpacingAfterAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingAfter |> Option.orElse (Some 0.0)
             ContextualSpacing = props.ContextualSpacing
             LineSpacing = editorPara.LineSpacing
             LineSpacingRule = props.LineRule
             WidowControl = props.WidowControl
             BackgroundColor = color props.BackgroundColor
             ParagraphBorders = paraBorders props.ParagraphBorders
+            ParagraphBorderBefore = resolvedParaProps.ParagraphBorders |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Top)
+            ParagraphBorderAfter = resolvedParaProps.ParagraphBorders |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Bottom)
             PageBreakBefore = props.PageBreakBefore |> Option.defaultValue false
             PageBreakAfter = para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false)
             SectionBreak = props.SectionBreak
@@ -441,7 +463,7 @@ let private mkPara resolver images styleMap comments notes para =
     {
         Id = Guid.NewGuid().ToString("N")
         Buffer = editorRunsToBuffer images editorPara.Runs
-        Metadata = paraMetadata resolver para editorPara
+        Metadata = paraMetadata styleMap resolver para editorPara
     }
 
 let private tableCell resolver images styleMap comments notes (paragraphProperties: DocxReader.ParagraphProperties option) (cell: DocxReader.TableCell) =
@@ -593,6 +615,12 @@ let private namedStyle (theme: DocxReader.Theme option) (style: DocxReader.Style
                     Highlight = r.Highlight
                     VertAlign = r.VertAlign
             })
+        TextBold = run |> Option.bind (fun r -> r.Bold)
+        TextItalic = run |> Option.bind (fun r -> r.Italic)
+        TextUnderline = run |> Option.bind (fun r -> r.Underline)
+        TextAllCaps = run |> Option.bind (fun r -> r.AllCaps)
+        TextSmallCaps = run |> Option.bind (fun r -> r.SmallCaps)
+        TextStrike = run |> Option.bind (fun r -> r.Strike)
         SpacingBefore = para |> Option.bind (fun p -> spacingValue p.SpacingBefore p.SpacingBeforeAuto)
         SpacingAfter = para |> Option.bind (fun p -> spacingValue p.SpacingAfter p.SpacingAfterAuto)
         ContextualSpacing = para |> Option.bind (fun p -> p.ContextualSpacing)

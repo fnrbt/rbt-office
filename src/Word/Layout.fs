@@ -460,9 +460,12 @@ let private paragraphBorderAdvance (border: ParagraphBorder option) =
     | None -> 0.0
 
 let private paragraphBorderVerticalAdvance metadata =
-    match metadata.ParagraphBorders with
-    | Some borders -> paragraphBorderAdvance borders.Top, paragraphBorderAdvance borders.Bottom
-    | None -> 0.0, 0.0
+    let visibleBefore, visibleAfter =
+        match metadata.ParagraphBorders with
+        | Some borders -> paragraphBorderAdvance borders.Top, paragraphBorderAdvance borders.Bottom
+        | None -> 0.0, 0.0
+    metadata.ParagraphBorderBefore |> Option.defaultValue visibleBefore,
+    metadata.ParagraphBorderAfter |> Option.defaultValue visibleAfter
 
 let private paragraphBorderRightAdvance metadata =
     match metadata.ParagraphBorders with
@@ -1639,7 +1642,10 @@ let private layoutDocumentWithRangeAndInitial
         metadata.ContextualSpacing |> Option.orElse paragraphStyle.ContextualSpacing |> Option.defaultValue false
 
     let sameParagraphBorders (previous: BlockMetadata) (current: BlockMetadata) =
-        previous.ParagraphBorders.IsSome && previous.ParagraphBorders = current.ParagraphBorders
+        previous.ParagraphBorders.IsSome
+        && previous.ParagraphBorders = current.ParagraphBorders
+        && previous.ParagraphBorderBefore = current.ParagraphBorderBefore
+        && previous.ParagraphBorderAfter = current.ParagraphBorderAfter
 
     let resetPreviousParagraph () =
         previousParagraphContext <- None

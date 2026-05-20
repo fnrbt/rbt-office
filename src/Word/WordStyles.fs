@@ -49,15 +49,36 @@ let private mergeTextStyle (baseStyle: TextStyle) (overrideStyle: TextStyle) =
             VertAlign = overrideStyle.VertAlign |> Option.orElse baseStyle.VertAlign
     }
 
+let private mergeNamedTextStyle (baseStyle: TextStyle) (named: NamedStyle) =
+    match named.Text with
+    | None -> baseStyle
+    | Some overrideStyle ->
+        let merged = mergeTextStyle baseStyle overrideStyle
+        {
+            merged with
+                Bold = named.TextBold |> Option.defaultValue merged.Bold
+                Italic = named.TextItalic |> Option.defaultValue merged.Italic
+                Underline = named.TextUnderline |> Option.defaultValue merged.Underline
+                AllCaps = named.TextAllCaps |> Option.defaultValue merged.AllCaps
+                SmallCaps = named.TextSmallCaps |> Option.defaultValue merged.SmallCaps
+                Strike = named.TextStrike |> Option.defaultValue merged.Strike
+        }
+
 let private mergeNamedStyle (baseStyle: NamedStyle) (overrideStyle: NamedStyle) =
     {
         overrideStyle with
             Text =
                 match baseStyle.Text, overrideStyle.Text with
-                | Some baseText, Some overrideText -> Some (mergeTextStyle baseText overrideText)
+                | Some baseText, Some _ -> Some (mergeNamedTextStyle baseText overrideStyle)
                 | Some baseText, None -> Some baseText
                 | None, Some overrideText -> Some overrideText
                 | None, None -> None
+            TextBold = overrideStyle.TextBold |> Option.orElse baseStyle.TextBold
+            TextItalic = overrideStyle.TextItalic |> Option.orElse baseStyle.TextItalic
+            TextUnderline = overrideStyle.TextUnderline |> Option.orElse baseStyle.TextUnderline
+            TextAllCaps = overrideStyle.TextAllCaps |> Option.orElse baseStyle.TextAllCaps
+            TextSmallCaps = overrideStyle.TextSmallCaps |> Option.orElse baseStyle.TextSmallCaps
+            TextStrike = overrideStyle.TextStrike |> Option.orElse baseStyle.TextStrike
             SpacingBefore = overrideStyle.SpacingBefore |> Option.orElse baseStyle.SpacingBefore
             SpacingAfter = overrideStyle.SpacingAfter |> Option.orElse baseStyle.SpacingAfter
             ContextualSpacing = overrideStyle.ContextualSpacing |> Option.orElse baseStyle.ContextualSpacing
@@ -110,7 +131,7 @@ let private applyNamedParagraphStyle (styles: Map<(string * string), NamedStyle>
     | None -> paragraphStyle
     | Some named ->
         { paragraphStyle with
-            Text = named.Text |> Option.map (fun text -> mergeTextStyle paragraphStyle.Text text) |> Option.defaultValue paragraphStyle.Text
+            Text = mergeNamedTextStyle paragraphStyle.Text named
             SpacingBefore = named.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore
             SpacingAfter = named.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter
             ContextualSpacing = named.ContextualSpacing |> Option.orElse paragraphStyle.ContextualSpacing
@@ -151,7 +172,7 @@ let private applyDocumentDefaults doc (paragraphStyle: ParagraphStyle) : Paragra
     | None -> paragraphStyle
     | Some defaults ->
         { paragraphStyle with
-            Text = defaults.Text |> Option.map (fun text -> mergeTextStyle paragraphStyle.Text text) |> Option.defaultValue paragraphStyle.Text
+            Text = mergeNamedTextStyle paragraphStyle.Text defaults
             SpacingBefore = defaults.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore
             SpacingAfter = defaults.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter
             ContextualSpacing = defaults.ContextualSpacing |> Option.orElse paragraphStyle.ContextualSpacing

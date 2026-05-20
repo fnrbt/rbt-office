@@ -104,6 +104,8 @@ type BlockMetadata = {
     WidowControl: bool option
     BackgroundColor: string option
     ParagraphBorders: ParagraphBorders option
+    ParagraphBorderBefore: float option
+    ParagraphBorderAfter: float option
     PageBreakBefore: bool
     PageBreakAfter: bool
     SectionBreak: string option
@@ -141,6 +143,8 @@ let defaultMetadata = {
     WidowControl = None
     BackgroundColor = None
     ParagraphBorders = None
+    ParagraphBorderBefore = None
+    ParagraphBorderAfter = None
     PageBreakBefore = false
     PageBreakAfter = false
     SectionBreak = None
@@ -349,6 +353,12 @@ type NamedStyle = {
     SemiHidden: bool
     UnhideWhenUsed: bool
     Text: TextBuffer.TextStyle option
+    TextBold: bool option
+    TextItalic: bool option
+    TextUnderline: bool option
+    TextAllCaps: bool option
+    TextSmallCaps: bool option
+    TextStrike: bool option
     SpacingBefore: float option
     SpacingAfter: float option
     ContextualSpacing: bool option
