@@ -122,6 +122,8 @@ module Processors =
             | true, parsed -> Some (parsed / 15.0)
             | false, _ -> None)
 
+    let private wordCharacterSpacingToCssPixels = wordTwipsToCssPixels
+
     let private wordTwipsToPoints (value: string option) =
         value
         |> Option.bind (fun text ->
@@ -210,6 +212,7 @@ module Processors =
             "StyleStrike" ==> (style.RunProperties |> Option.bind (fun props -> props.Strike))
             "StyleVertAlign" ==> (style.RunProperties |> Option.bind (fun props -> props.VertAlign))
             "StyleFontSize" ==> (style.RunProperties |> Option.bind (fun props -> wordFontSizeToCssPixels props.FontSize))
+            "StyleCharacterSpacing" ==> (style.RunProperties |> Option.bind (fun props -> wordCharacterSpacingToCssPixels props.CharacterSpacing))
             "StyleFontFamily" ==> (style.RunProperties |> Option.bind (fun props -> props.FontFamily |> Option.orElse (resolveThemeFont theme props.ThemeFont)))
             "StyleColor" ==> (style.RunProperties |> Option.bind (fun props -> wordColorToCss props.Color |> Option.orElse (resolveThemeColor theme props.ThemeColor props.ThemeTint props.ThemeShade)))
             "StyleHighlight" ==> (style.RunProperties |> Option.bind (fun props -> props.Highlight))

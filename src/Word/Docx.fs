@@ -483,6 +483,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 let smallCaps = run?SmallCaps |> boolOrDefault false
                 let strike = run?Strike |> boolOrDefault false
                 let fontSize = run?FontSize |> floatOrDefault TextBuffer.defaultStyle.FontSize
+                let characterSpacing = optionalFloat (run?CharacterSpacing) |> Option.defaultValue TextBuffer.defaultStyle.CharacterSpacing
                 let fontFamily = optionalString (run?FontFamily)
                 let color = optionalString (run?Color)
                 let highlight = optionalString (run?Highlight)
@@ -517,6 +518,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                     SmallCaps = smallCaps
                     Strike = strike
                     FontSize = fontSize
+                    CharacterSpacing = characterSpacing
                     FontFamily = fontFamily
                     Color = color
                     Highlight = highlight
@@ -580,6 +582,7 @@ let private styleTextFromEditor (value: obj) =
         || not (isNullOrUndefined value?StyleStrike)
         || not (isNullOrUndefined value?StyleVertAlign)
         || not (isNullOrUndefined value?StyleFontSize)
+        || not (isNullOrUndefined value?StyleCharacterSpacing)
         || not (isNullOrUndefined value?StyleFontFamily)
         || not (isNullOrUndefined value?StyleColor)
         || not (isNullOrUndefined value?StyleHighlight)
@@ -595,6 +598,7 @@ let private styleTextFromEditor (value: obj) =
                 Strike = boolOrDefault false (value?StyleStrike)
                 VertAlign = optionalString (value?StyleVertAlign)
                 FontSize = optionalFloat (value?StyleFontSize) |> Option.defaultValue TextBuffer.defaultStyle.FontSize
+                CharacterSpacing = optionalFloat (value?StyleCharacterSpacing) |> Option.defaultValue TextBuffer.defaultStyle.CharacterSpacing
                 FontFamily = optionalString (value?StyleFontFamily)
                 Color = optionalString (value?StyleColor)
                 Highlight = optionalString (value?StyleHighlight)
@@ -776,6 +780,7 @@ let private styleToEditor (style: NamedStyle) =
         "StyleStrike" ==> (style.TextStrike |> Option.orElse (style.Text |> Option.map (fun text -> text.Strike)))
         "StyleVertAlign" ==> (style.Text |> Option.bind (fun text -> text.VertAlign))
         "StyleFontSize" ==> (style.Text |> Option.map (fun text -> text.FontSize))
+        "StyleCharacterSpacing" ==> (style.Text |> Option.map (fun text -> text.CharacterSpacing))
         "StyleFontFamily" ==> (style.Text |> Option.bind (fun text -> text.FontFamily))
         "StyleColor" ==> (style.Text |> Option.bind (fun text -> text.Color))
         "StyleHighlight" ==> (style.Text |> Option.bind (fun text -> text.Highlight))
@@ -1038,6 +1043,7 @@ let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
                     "SmallCaps" ==> tr.Style.SmallCaps
                     "Strike" ==> tr.Style.Strike
                     "FontSize" ==> tr.Style.FontSize
+                    "CharacterSpacing" ==> tr.Style.CharacterSpacing
                     "FontFamily" ==> (tr.Style.FontFamily |> Option.defaultValue "Calibri")
                     "Color" ==> tr.Style.Color
                     "Highlight" ==> tr.Style.Highlight

@@ -111,6 +111,7 @@ let private paintStyleToTextStyle (style: WordPaint.TextPaintStyle) : TextStyle 
         SmallCaps = style.SmallCaps
         Strike = style.Strike
         FontSize = style.FontSize
+        CharacterSpacing = style.CharacterSpacing
         FontFamily = style.FontFamily
         Color = Some style.Color
         Highlight = style.Highlight
@@ -183,6 +184,7 @@ let private textStyleKey (style: TextStyle) =
         if style.Italic then "i" else ""
         if style.SmallCaps then "sc" else ""
         if style.AllCaps then "ac" else ""
+        string style.CharacterSpacing
     ]
 
 let private shapeTextCached (textContext: TextContext) text style =
@@ -221,6 +223,7 @@ let createMeasurer (options: RenderOptions) : WordCanvasLayout.TextMeasurer =
                     if style.Italic then "i" else ""
                     if style.SmallCaps then "sc" else ""
                     if style.AllCaps then "ac" else ""
+                    string style.CharacterSpacing
                     text
                 ]
             match cache.TryGetValue key with
@@ -241,7 +244,7 @@ let private createContextMeasurer (textContext: TextContext) : WordCanvasLayout.
             if cache.Count > textCacheLimit then cache.Clear()
             let value =
                 match shapeTextCached textContext text style with
-                | Some (_, shapedText) -> shapedText.TotalAdvance
+                | Some (_, shapedText) -> shapedText.TotalAdvance + TextBuffer.characterSpacingAdvance text style
                 | None -> 0.0
             cache.[key] <- value
             value
@@ -357,14 +360,14 @@ let private pdfFontName (style: WordPaint.TextPaintStyle) =
     | false, true -> "Helvetica-Oblique"
     | false, false -> "Helvetica"
 
-let private glyphKernPairs (font: PdfFont.TrueTypeFont) (fontSize: float) (glyphs: Text.Engine.PositionedGlyph[]) =
+let private glyphKernPairs (font: PdfFont.TrueTypeFont) (fontSize: float) characterSpacing (glyphs: Text.Engine.PositionedGlyph[]) =
     glyphs
-    |> Array.map (fun glyph ->
+    |> Array.mapi (fun index glyph ->
         let baseWidthFu =
             if glyph.GlyphId >= 0 && glyph.GlyphId < font.GlyphWidths.Length then font.GlyphWidths.[glyph.GlyphId]
             else font.GlyphWidths.[0]
         let baseWidthPt = float baseWidthFu / float font.UnitsPerEm * fontSize
-        let actualAdvancePt = glyph.XAdv
+        let actualAdvancePt = glyph.XAdv + if index < glyphs.Length - 1 then characterSpacing else 0.0
         let diff = baseWidthPt - actualAdvancePt
         let kern = int (Math.Round(diff / fontSize * 1000.0))
         glyph.GlyphId, kern)
@@ -379,7 +382,8 @@ let private embeddedTextOps (textContext: TextContext) pageTop pageHeight text (
     if traceTimingEnabled then textContext.TextShapeMs <- textContext.TextShapeMs + (nowMs () - shapeStart)
     match pdfFontResolved, shaped with
     | Some (faceName, pdfFont), Some (_, shapedText) ->
-        let horizontalScale = if width > 0.0 && shapedText.TotalAdvance > 0.0 then width / shapedText.TotalAdvance else 1.0
+        let spacedAdvance = shapedText.TotalAdvance + TextBuffer.characterSpacingAdvance text textStyle
+        let horizontalScale = if width > 0.0 && spacedAdvance > 0.0 then width / spacedAdvance else 1.0
         let cacheKey = sprintf "%s|%s|%.4f|%s" faceName (textStyleKey textStyle) width text
         let runStart = timingStart ()
         let runs =
@@ -392,7 +396,7 @@ let private embeddedTextOps (textContext: TextContext) pageTop pageHeight text (
                     |> List.choose (fun run ->
                         let glyphs = run.Glyphs |> Array.filter (fun glyph -> not (controlWhitespaceAt text glyph.Cluster))
                         if glyphs.Length = 0 then None
-                        else Some (glyphs.[0].X, glyphs.[0].Y, glyphKernPairs pdfFont style.FontSize glyphs, clusterTextMappings text glyphs))
+                        else Some (glyphs.[0].X, glyphs.[0].Y, glyphKernPairs pdfFont style.FontSize style.CharacterSpacing glyphs, clusterTextMappings text glyphs))
                 textContext.PdfRunCache.[cacheKey] <- value
                 value
         if traceTimingEnabled then textContext.TextRunMs <- textContext.TextRunMs + (nowMs () - runStart)

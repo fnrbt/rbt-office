@@ -105,14 +105,14 @@ let measureText (fontSet: FontSet) (text: string) (style: TextStyle) =
     else
         match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
         | None -> 0.0
-        | Some entry -> Text.Engine.measureWidth entry.Font style.FontSize text
+        | Some entry -> Text.Engine.measureWidth entry.Font style.FontSize text + TextBuffer.characterSpacingAdvance text style
 
 let tryMeasureText (fontSet: FontSet) (text: string) (style: TextStyle) =
     if System.String.IsNullOrEmpty text then Some 0.0
     else
         match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
         | None -> None
-        | Some entry -> Some (Text.Engine.measureWidth entry.Font style.FontSize text)
+        | Some entry -> Some (Text.Engine.measureWidth entry.Font style.FontSize text + TextBuffer.characterSpacingAdvance text style)
 
 let tryLineMetrics (fontSet: FontSet) (style: TextStyle) =
     match tryFindFont fontSet style.FontFamily style.Bold style.Italic with

@@ -139,6 +139,23 @@ if (Math.abs(tocHeading.Y - 289) > 1.5) {
   fail(`TOC heading y drifted to ${tocHeading.Y}; expected about 289`);
 }
 
+const titleStart = segments.find((segment) => segment.Kind === 'text' && segment.Text === 'United ');
+if (!titleStart) fail('missing title segment: "United "');
+const titleLine = segments
+  .filter((segment) => segment.Kind === 'text' && segment.BlockId === titleStart.BlockId && Math.abs(segment.Y - titleStart.Y) < 0.1)
+  .sort((a, b) => a.X - b.X);
+const titleText = titleLine.map((segment) => segment.Text ?? '').join('').trimEnd();
+if (titleText !== 'United Nations Declaration on the') {
+  fail(`title first line text changed to ${JSON.stringify(titleText)}`);
+}
+const titleLineWidth = titleLine.reduce((right, segment) => Math.max(right, segment.X + segment.Width), 0) - titleLine[0].X;
+if (Math.abs(titleLineWidth - 529.3) > 2.0) {
+  fail(`title first line width is ${titleLineWidth.toFixed(1)}; expected expanded Title character spacing`);
+}
+if (Math.abs(titleStart.X - 56.6) > 2.0) {
+  fail(`title first line x drifted to ${titleStart.X.toFixed(1)}; expected centered expanded title`);
+}
+
 for (const entry of actualTocEntries) {
   if (entry.tabWidth < 500) fail(`TOC article ${entry.article} tab leader segment is too narrow (${entry.tabWidth})`);
   if (entry.pageX < 630) fail(`TOC article ${entry.article} page number is not right-aligned (x=${entry.pageX})`);

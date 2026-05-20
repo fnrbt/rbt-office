@@ -38,6 +38,7 @@ let private mergeTextStyle (baseStyle: TextStyle) (overrideStyle: TextStyle) =
             SmallCaps = baseStyle.SmallCaps || overrideStyle.SmallCaps
             Strike = baseStyle.Strike || overrideStyle.Strike
             FontSize = if overrideStyle.FontSize = TextBuffer.defaultStyle.FontSize then baseStyle.FontSize else overrideStyle.FontSize
+            CharacterSpacing = if abs overrideStyle.CharacterSpacing < 0.001 then baseStyle.CharacterSpacing else overrideStyle.CharacterSpacing
             FontFamily = overrideStyle.FontFamily |> Option.orElse baseStyle.FontFamily
             Color = overrideStyle.Color |> Option.orElse baseStyle.Color
             Highlight = overrideStyle.Highlight |> Option.orElse baseStyle.Highlight
@@ -246,6 +247,7 @@ let effectiveTextStyle (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
             Bold = paragraphStyle.Text.Bold || runStyle.Bold
             Italic = paragraphStyle.Text.Italic || runStyle.Italic
             FontSize = if runStyle.FontSize = defaultStyle.FontSize then paragraphStyle.Text.FontSize else runStyle.FontSize
+            CharacterSpacing = if abs runStyle.CharacterSpacing < 0.001 then paragraphStyle.Text.CharacterSpacing else runStyle.CharacterSpacing
             FontFamily = inheritFontFamily paragraphStyle.Text runStyle
             Color = runStyle.Color |> Option.orElse paragraphStyle.Text.Color
             Highlight = runStyle.Highlight |> Option.orElse paragraphStyle.Text.Highlight

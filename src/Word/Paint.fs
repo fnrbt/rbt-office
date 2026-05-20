@@ -13,6 +13,7 @@ type TextPaintStyle = {
     SmallCaps: bool
     Strike: bool
     FontSize: float
+    CharacterSpacing: float
     FontFamily: string option
     Color: string
     Highlight: string option
@@ -35,6 +36,7 @@ let private styleFromTextStyle (style: TextStyle) = {
     SmallCaps = style.SmallCaps
     Strike = style.Strike || WordLayout.Text.isDeletedRevision style
     FontSize = WordLayout.Text.printFontSize style
+    CharacterSpacing = style.CharacterSpacing
     FontFamily = style.FontFamily
     Color = WordLayout.Text.fallbackColor style
     Highlight = style.Highlight
@@ -49,6 +51,7 @@ let private defaultPaintStyle fontSize fontFamily = {
     SmallCaps = false
     Strike = false
     FontSize = fontSize
+    CharacterSpacing = 0.0
     FontFamily = Some fontFamily
     Color = "#000000"
     Highlight = None

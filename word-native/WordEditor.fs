@@ -84,7 +84,7 @@ let private fontForPaintStyle (style: WordPaint.TextPaintStyle) =
 
 let private measureText (text: string) (style: RedBat.Word.TextBuffer.TextStyle) =
     let font = fontForTextStyle style
-    Renderer.Text.measureWidth font (pointsToPixels style.FontSize) text
+    Renderer.Text.measureWidth font (pointsToPixels style.FontSize) text + RedBat.Word.TextBuffer.characterSpacingAdvance text style
 
 let private parseHexColor (value: string) =
     let value =

@@ -91,7 +91,7 @@ let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.Tex
     let fontFamily = style.FontFamily |> Option.defaultValue ctx.FontFamily
     let fontSize = if style.VertAlign.IsSome then style.FontSize * 0.7 else style.FontSize
     ctx.Ctx.font <- sprintf "%s %fpx %s" fontStyle fontSize (cssFontFamily fontFamily)
-    ctx.Ctx.measureText(text).width
+    ctx.Ctx.measureText(text).width + TextBuffer.characterSpacingAdvance text style
 
 let layoutSettings (ctx: RenderContext) (doc: Document) =
     let hasFooter = not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty
@@ -344,18 +344,36 @@ let private drawImageWithCrop (ctx: RenderContext) (src: string) (x: float) (y: 
         else
             drawImageCropped ctx.Ctx img sx sy sw sh x y width height
 
-let private fillTextFitted (ctx: RenderContext) text x baseline targetWidth =
-    if targetWidth <= 0.0 || System.String.IsNullOrEmpty text then
-        ctx.Ctx.fillText(text, x, baseline)
+let private paintCharacterSpacedText (ctx: RenderContext) (text: string) characterSpacing =
+    if abs characterSpacing < 0.001 || text.Length <= 1 then
+        ctx.Ctx.fillText(text, 0.0, 0.0)
     else
-        let actualWidth = ctx.Ctx.measureText(text).width
+        let mutable cursor = 0.0
+        for i in 0 .. text.Length - 1 do
+            let ch = text.Substring(i, 1)
+            ctx.Ctx.fillText(ch, cursor, 0.0)
+            cursor <- cursor + ctx.Ctx.measureText(ch).width
+            if i < text.Length - 1 || System.Char.IsWhiteSpace text.[i] then
+                cursor <- cursor + characterSpacing
+
+let private fillTextFitted (ctx: RenderContext) (style: TextPaintStyle) text x baseline targetWidth =
+    if targetWidth <= 0.0 || System.String.IsNullOrEmpty text then
+        ctx.Ctx.save()
+        ctx.Ctx.translate(x, baseline)
+        paintCharacterSpacedText ctx text style.CharacterSpacing
+        ctx.Ctx.restore()
+    else
+        let actualWidth = ctx.Ctx.measureText(text).width + style.CharacterSpacing * TextBuffer.characterSpacingSlots text
         if actualWidth <= 0.0 || abs (actualWidth - targetWidth) < 0.01 then
-            ctx.Ctx.fillText(text, x, baseline)
+            ctx.Ctx.save()
+            ctx.Ctx.translate(x, baseline)
+            paintCharacterSpacedText ctx text style.CharacterSpacing
+            ctx.Ctx.restore()
         else
             ctx.Ctx.save()
             ctx.Ctx.translate(x, baseline)
             ctx.Ctx.scale(targetWidth / actualWidth, 1.0)
-            ctx.Ctx.fillText(text, 0.0, 0.0)
+            paintCharacterSpacedText ctx text style.CharacterSpacing
             ctx.Ctx.restore()
 
 let private renderPaintCommand (ctx: RenderContext) = function
@@ -365,7 +383,7 @@ let private renderPaintCommand (ctx: RenderContext) = function
         | _ ->
             ctx.Ctx.font <- fontString style ctx.FontFamily
             ctx.Ctx.fillStyle <- U3.Case1 style.Color
-            fillTextFitted ctx text x baseline width
+            fillTextFitted ctx style text x baseline width
     | DrawUnderline (color, x, y, width) ->
         ctx.Ctx.strokeStyle <- U3.Case1 color
         ctx.Ctx.lineWidth <- 1.0
@@ -411,6 +429,7 @@ let private renderFootnotes (ctx: RenderContext) (doc: Document) (layouts: Block
         SmallCaps = false
         Strike = false
         FontSize = 10.0
+        CharacterSpacing = 0.0
         FontFamily = Some ctx.FontFamily
         Color = "#4B5563"
         Highlight = None
@@ -455,6 +474,7 @@ let private renderEndnotes (ctx: RenderContext) (doc: Document) (layouts: BlockL
             SmallCaps = false
             Strike = false
             FontSize = 10.0
+            CharacterSpacing = 0.0
             FontFamily = Some ctx.FontFamily
             Color = "#4B5563"
             Highlight = None

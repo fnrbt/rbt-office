@@ -47,6 +47,7 @@ type DocumentBuilder(state: DocumentBuilderState) =
             Underline = underline
             Strike = false
             FontSize = fontSize
+            CharacterSpacing = 0.0
             FontFamily = fontFamily
             Color = options.Color
             Highlight = None
@@ -176,6 +177,7 @@ let createRun (text: string) (bold: bool) (italic: bool) (fontSize: float) (font
         Underline = false
         Strike = false
         FontSize = fontSize
+        CharacterSpacing = 0.0
         FontFamily = fontFamily
         Color = color
         Highlight = None

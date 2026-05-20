@@ -173,6 +173,11 @@ let generateRunProps (run: EditorRun) : string list =
         (selfClosing "w:szCs" [("w:val", sz)]) :: props
 
     let props =
+        if abs run.CharacterSpacing >= 0.001 then
+            (selfClosing "w:spacing" [("w:val", string (int (run.CharacterSpacing * 15.0)))]) :: props
+        else props
+
+    let props =
         (selfClosing "w:rFonts" [("w:ascii", run.FontFamily); ("w:hAnsi", run.FontFamily); ("w:cs", run.FontFamily)]) :: props
 
     let props =
@@ -746,6 +751,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
                         Underline = boolOrDefault false (runObj?Underline)
                         Strike = boolOrDefault false (runObj?Strike)
                         FontSize = if isNullOrUndefined runObj?FontSize then 11.0 else unbox<float> runObj?FontSize
+                        CharacterSpacing = optionalFloat (runObj?CharacterSpacing) |> Option.defaultValue 0.0
                         FontFamily = runObj?FontFamily |> stringOrDefault "Calibri"
                         Color = if isNullOrUndefined runObj?Color then None else unbox<string option> runObj?Color
                         Highlight = optionalString (runObj?Highlight)
@@ -1383,6 +1389,7 @@ type StyleInfo = {
     Strike: bool option
     VertAlign: string option
     FontSize: float option
+    CharacterSpacing: float option
     FontFamily: string option
     Color: string option
     Highlight: string option
@@ -1422,6 +1429,7 @@ let private emptyStyleInfo styleId styleType = {
     Strike = None
     VertAlign = None
     FontSize = None
+    CharacterSpacing = None
     FontFamily = None
     Color = None
     Highlight = None
@@ -1469,6 +1477,7 @@ let private styleInfoFromObject defaultType (value: obj) =
                     Strike = optionalBool (value?StyleStrike)
                     VertAlign = optionalString (value?StyleVertAlign)
                     FontSize = optionalFloat (value?StyleFontSize)
+                    CharacterSpacing = optionalFloat (value?StyleCharacterSpacing)
                     FontFamily = optionalString (value?StyleFontFamily)
                     Color = optionalString (value?StyleColor)
                     Highlight = optionalString (value?StyleHighlight)
@@ -1511,6 +1520,7 @@ let private styleIdFromParagraph (para: obj) =
                 Strike = optionalBool (para?StyleStrike)
                 VertAlign = optionalString (para?StyleVertAlign)
                 FontSize = optionalFloat (para?StyleFontSize)
+                CharacterSpacing = optionalFloat (para?StyleCharacterSpacing)
                 FontFamily = optionalString (para?StyleFontFamily)
                 Color = optionalString (para?StyleColor)
                 Highlight = optionalString (para?StyleHighlight)
@@ -1555,6 +1565,7 @@ let private styleIdFromRun (run: obj) =
                 Strike = optionalBool (run?StyleStrike)
                 VertAlign = optionalString (run?StyleVertAlign)
                 FontSize = optionalFloat (run?StyleFontSize)
+                CharacterSpacing = optionalFloat (run?StyleCharacterSpacing)
                 FontFamily = optionalString (run?StyleFontFamily)
                 Color = optionalString (run?StyleColor)
                 Highlight = optionalString (run?StyleHighlight)
@@ -1611,6 +1622,9 @@ let private styleRunProps style =
             let value = InverseConversion.pointsToHalfPoints size
             yield selfClosing "w:sz" [("w:val", value)]
             yield selfClosing "w:szCs" [("w:val", value)]
+        | _ -> ()
+        match style.CharacterSpacing with
+        | Some spacing when abs spacing >= 0.001 -> yield selfClosing "w:spacing" [("w:val", string (int (spacing * 15.0)))]
         | _ -> ()
         match InverseConversion.cssColorToWord style.Color with
         | Some color -> yield selfClosing "w:color" [("w:val", color)]

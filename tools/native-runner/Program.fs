@@ -146,6 +146,7 @@ let private mergeRunProperties (baseProps: DocxReader.RunProperties) (props: Doc
     AllCaps = props.AllCaps |> Option.orElse baseProps.AllCaps
     SmallCaps = props.SmallCaps |> Option.orElse baseProps.SmallCaps
     FontSize = props.FontSize |> Option.orElse baseProps.FontSize
+    CharacterSpacing = props.CharacterSpacing |> Option.orElse baseProps.CharacterSpacing
     FontFamily =
         match props.FontFamily, props.ThemeFont with
         | Some family, _ -> Some family
@@ -323,6 +324,7 @@ let private textStyle (run: EP.EditorRun) : RedBat.Word.TextBuffer.TextStyle =
             Underline = run.Underline
             Strike = run.Strike
             FontSize = run.FontSize
+            CharacterSpacing = run.CharacterSpacing
             FontFamily = Some run.FontFamily
             Color = run.Color
             Highlight = run.Highlight
@@ -608,6 +610,7 @@ let private namedStyle (theme: DocxReader.Theme option) (style: DocxReader.Style
                     SmallCaps = r.SmallCaps |> Option.defaultValue false
                     Strike = r.Strike |> Option.defaultValue false
                     FontSize = TC.fontSizeToPoints r.FontSize
+                    CharacterSpacing = twipsToCanvasPixels r.CharacterSpacing |> Option.defaultValue 0.0
                     FontFamily =
                         r.FontFamily
                         |> Option.orElseWith (fun () -> resolveThemeFontFamily theme r.ThemeFont)

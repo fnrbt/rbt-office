@@ -222,6 +222,7 @@ let createSimpleTable (data: string list list) : Table =
                             Underline = false
                             Strike = false
                             FontSize = 11.0
+                            CharacterSpacing = 0.0
                             FontFamily = "Calibri"
                             Color = None
                             Highlight = None

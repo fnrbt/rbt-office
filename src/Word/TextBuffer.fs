@@ -12,6 +12,7 @@ type TextStyle = {
     SmallCaps: bool
     Strike: bool
     FontSize: float  // in points
+    CharacterSpacing: float
     FontFamily: string option
     Color: string option
     Highlight: string option
@@ -47,6 +48,7 @@ let defaultStyle = {
     SmallCaps = false
     Strike = false
     FontSize = 11.0  // 11pt default (like Word)
+    CharacterSpacing = 0.0
     FontFamily = None
     Color = None
     Highlight = None
@@ -71,6 +73,20 @@ let defaultStyle = {
     RevisionDate = None
     VertAlign = None
 }
+
+let characterSpacingSlots (text: string) =
+    if System.String.IsNullOrEmpty text then 0.0
+    else
+        let chars =
+            text
+            |> Seq.filter (fun ch -> ch <> '\t' && ch <> '\r' && ch <> '\n')
+            |> Seq.toArray
+        if chars.Length = 0 then 0.0
+        elif System.Char.IsWhiteSpace chars.[chars.Length - 1] then float chars.Length
+        else float (chars.Length - 1)
+
+let characterSpacingAdvance (text: string) (style: TextStyle) =
+    style.CharacterSpacing * characterSpacingSlots text
 
 /// Image data for inline images
 type ImageRun = {

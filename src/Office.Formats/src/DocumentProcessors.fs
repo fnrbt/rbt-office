@@ -152,6 +152,7 @@ module StyleResolution =
         Underline: bool
         Strike: bool
         FontSize: float
+        CharacterSpacing: float
         FontFamily: string
         Color: string option
         VertAlign: string option
@@ -179,6 +180,7 @@ module StyleResolution =
         Underline = false
         Strike = false
         FontSize = 11.0
+        CharacterSpacing = 0.0
         FontFamily = "Calibri"
         Color = None
         VertAlign = None
@@ -213,6 +215,10 @@ module StyleResolution =
                     match props.FontSize with
                     | Some _ -> TypeConversion.fontSizeToPoints props.FontSize
                     | None -> baseProps.FontSize
+                CharacterSpacing =
+                    match props.CharacterSpacing with
+                    | Some _ -> TypeConversion.twipsToCanvasPixels props.CharacterSpacing |> Option.defaultValue baseProps.CharacterSpacing
+                    | None -> baseProps.CharacterSpacing
                 FontFamily =
                     match props.FontFamily, props.ThemeFont with
                     | Some _, _
@@ -250,6 +256,7 @@ module StyleResolution =
                 Underline = if styleProps.Underline <> defaults.Underline then styleProps.Underline else baseProps.Underline
                 Strike = if styleProps.Strike <> defaults.Strike then styleProps.Strike else baseProps.Strike
                 FontSize = if styleProps.FontSize <> defaults.FontSize then styleProps.FontSize else baseProps.FontSize
+                CharacterSpacing = if abs (styleProps.CharacterSpacing - defaults.CharacterSpacing) >= 0.001 then styleProps.CharacterSpacing else baseProps.CharacterSpacing
                 FontFamily = if styleProps.FontFamily <> defaults.FontFamily then styleProps.FontFamily else baseProps.FontFamily
                 Color = if styleProps.Color <> defaults.Color then styleProps.Color else baseProps.Color
                 VertAlign = if styleProps.VertAlign <> defaults.VertAlign then styleProps.VertAlign else baseProps.VertAlign
@@ -416,6 +423,7 @@ module EditorProcessor =
         Color: string option
         Highlight: string option
         VertAlign: string option
+        CharacterSpacing: float
         CommentId: string option
         CommentText: string option
         CommentAuthor: string option
@@ -534,6 +542,7 @@ module EditorProcessor =
                 Underline = false
                 Strike = false
                 FontSize = 11.0
+                CharacterSpacing = 0.0
                 FontFamily = "Calibri"
                 Color = None
                 Highlight = None
@@ -621,6 +630,7 @@ module EditorProcessor =
                     Underline = finalProps.Underline
                     Strike = finalProps.Strike
                     FontSize = finalProps.FontSize
+                    CharacterSpacing = finalProps.CharacterSpacing
                     FontFamily = finalProps.FontFamily
                     Color = finalProps.Color
                     Highlight = run.Properties.Highlight

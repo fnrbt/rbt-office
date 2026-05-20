@@ -153,6 +153,40 @@
     <tbody>
       <tr>
         <td>
+          <strong>TOC title character spacing</strong>
+          <span class="meta">Repro: <code>docx4j-toc.docx</code> Title paragraph on page 1.</span>
+          <span class="meta">Real fixture class: DOCX title/heading styles with expanded run spacing (<code>w:rPr/w:spacing</code>) that must affect measurement and paint.</span>
+          <span class="meta">Paths checked: DOCX import, browser layout/paint, PDF layout/paint, and the focused TOC parity guard.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/toc-title-character-spacing-word.png" style="--w:1191px; --x:140px; --y:95px; --s:0.9" alt="Word reference: expanded TOC title character spacing">
+          </div>
+          <div class="caption">Word expands the Title style by <code>w:spacing w:val="5"</code> (0.25 pt). The first title line measures <code>382.996pt</code> in the Word PDF text bbox.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/toc-title-character-spacing-after.png" style="--w:1190px; --x:140px; --y:95px; --s:0.9" alt="After: expanded title spacing matches Word width">
+          </div>
+          <div class="caption">After: the imported character spacing is carried into layout and paint. The first title line now measures <code>383.599pt</code>, within <code>0.603pt</code> of Word.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/toc-title-character-spacing-before.png" style="--w:1190px; --x:140px; --y:95px; --s:0.9" alt="Before: title rendered too narrow">
+          </div>
+          <div class="caption">Before: the title used the right Cambria face but ignored expanded character spacing, leaving the first line about <code>7.4pt</code> too narrow.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> import DOCX run spacing into <code>TextStyle.CharacterSpacing</code>, include it in wrapping/centering measurement, and paint it explicitly in browser canvas and embedded PDF text.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code>, <code>DocumentProcessors.fs</code>, and <code>tools/native-runner/Program.fs</code>: carry <code>w:spacing</code> through style resolution as layout pixels.</li>
+            <li><code>src/ShaperText/ShaperText.fs</code>, <code>src/Word/Renderer.fs</code>, and <code>src/Word.Pdf/Pdf.fs</code>: include character spacing in measurement and render per-character advances instead of stretching glyph outlines.</li>
+            <li>Guard command: <code>node tools/word-parity/assert-docx4j-toc-parity.mjs artifacts/toc-style/browser-segments.json</code>.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>TOC body wrap: keep line-ending spaces from ejecting final words</strong>
           <span class="meta">Repro: <code>docx4j-toc.docx</code> body paragraphs on pages 2-4.</span>
           <span class="meta">Real fixture class: body paragraphs where a trailing space after the final word is wider than Word's visible line-fit decision.</span>

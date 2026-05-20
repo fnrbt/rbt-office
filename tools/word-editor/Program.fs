@@ -94,6 +94,8 @@ module DocxWrite =
         // Font size in DOCX is in half-points.
         let halfPt = int (style.FontSize * 2.0)
         rPr.Append (sprintf "<w:sz w:val=\"%d\"/><w:szCs w:val=\"%d\"/>" halfPt halfPt) |> ignore
+        if abs style.CharacterSpacing >= 0.001 then
+            rPr.Append (sprintf "<w:spacing w:val=\"%d\"/>" (int (style.CharacterSpacing * 15.0))) |> ignore
         match style.Color with
         | Some hex ->
             let v = if hex.StartsWith "#" then hex.Substring(1) else hex

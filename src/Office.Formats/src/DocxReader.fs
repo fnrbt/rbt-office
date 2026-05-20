@@ -15,6 +15,7 @@ type RunProperties = {
     AllCaps: bool option
     SmallCaps: bool option
     FontSize: string option
+    CharacterSpacing: string option
     FontFamily: string option
     ThemeFont: string option
     Color: string option
@@ -492,6 +493,7 @@ module Docx =
                 AllCaps = onOff "caps" props
                 SmallCaps = onOff "smallCaps" props
                 FontSize = getPropVal "sz" "val" props
+                CharacterSpacing = getPropVal "spacing" "val" props
                 FontFamily = getPropVal "rFonts" "ascii" props
                 ThemeFont = getPropVal "rFonts" "asciiTheme" props
                 Color = getPropVal "color" "val" props
@@ -511,6 +513,7 @@ module Docx =
                 AllCaps = None
                 SmallCaps = None
                 FontSize = None
+                CharacterSpacing = None
                 FontFamily = None
                 ThemeFont = None
                 Color = None
@@ -1229,7 +1232,7 @@ module Docx =
                     Style = Some "Hyperlink"
                     Bold = None; Italic = None; Underline = None
                     AllCaps = None; SmallCaps = None
-                    FontSize = None; FontFamily = None; ThemeFont = None; Color = None
+                    FontSize = None; CharacterSpacing = None; FontFamily = None; ThemeFont = None; Color = None
                     ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None; VertAlign = None
                 }
 
@@ -1632,6 +1635,7 @@ module Styles =
             AllCaps = Docx.onOff "caps" rPr
             SmallCaps = Docx.onOff "smallCaps" rPr
             FontSize = Ns.childNs "sz" rPr |> Option.bind (Docx.attr "val")
+            CharacterSpacing = Ns.childNs "spacing" rPr |> Option.bind (Docx.attr "val")
             FontFamily = Ns.childNs "rFonts" rPr |> Option.bind (Docx.attr "ascii")
             ThemeFont = Ns.childNs "rFonts" rPr |> Option.bind (Docx.attr "asciiTheme")
             Color = Ns.childNs "color" rPr |> Option.bind (Docx.attr "val")
@@ -2730,6 +2734,13 @@ let private wordFontSizeToPoints (fontSize: string option) =
         | false, _ -> 11.0 * 96.0 / 72.0
     | None -> 11.0 * 96.0 / 72.0
 
+let private wordCharacterSpacingToCssPixels (spacing: string option) =
+    spacing
+    |> Option.bind (fun value ->
+        match System.Double.TryParse(value) with
+        | true, twips -> Some (twips / 15.0)
+        | false, _ -> None)
+
 let private resolveThemeFont (theme: Theme option) (themeFont: string option) =
     match theme, themeFont with
     | Some theme, Some value when value.StartsWith("major") -> theme.MajorFont
@@ -2936,6 +2947,7 @@ let private emptyRunProperties = {
     AllCaps = None
     SmallCaps = None
     FontSize = None
+    CharacterSpacing = None
     FontFamily = None
     ThemeFont = None
     Color = None
@@ -2956,6 +2968,7 @@ let private mergeRunProperties (baseProps: RunProperties) (props: RunProperties)
     SmallCaps = props.SmallCaps |> Option.orElse baseProps.SmallCaps
     Strike = props.Strike |> Option.orElse baseProps.Strike
     FontSize = props.FontSize |> Option.orElse baseProps.FontSize
+    CharacterSpacing = props.CharacterSpacing |> Option.orElse baseProps.CharacterSpacing
     FontFamily =
         match props.FontFamily, props.ThemeFont with
         | Some family, _ -> Some family
@@ -3225,6 +3238,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                             "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                             "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
+                            "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
                             "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                             "Color" ==> wordColorToCss effectiveRunProps.Color
                             "Highlight" ==> effectiveRunProps.Highlight
@@ -3285,6 +3299,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                             "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                             "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
+                            "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
                             "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                             "Color" ==> wordColorToCss effectiveRunProps.Color
                             "Highlight" ==> effectiveRunProps.Highlight
@@ -3365,6 +3380,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
+                                "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
                                 "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                                 "Color" ==> wordColorToCss effectiveRunProps.Color
                                 "Highlight" ==> effectiveRunProps.Highlight
@@ -3534,6 +3550,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                                 "SmallCaps" ==> effectiveOnOff effectiveLinkProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveLinkProps.Strike
                                 "FontSize" ==> wordFontSizeToPoints effectiveLinkProps.FontSize
+                                "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveLinkProps.CharacterSpacing |> Option.defaultValue 0.0)
                                 "FontFamily" ==> wordFontFamilyToCss theme effectiveLinkProps
                                 "Color" ==> wordColorToCss effectiveLinkProps.Color
                                 "Highlight" ==> effectiveLinkProps.Highlight
