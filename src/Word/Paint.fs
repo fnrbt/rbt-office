@@ -1073,6 +1073,33 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
         |> List.fold max settings.PaddingTop
     let stride = settings.PageHeight + pageGap
     let pageCount = max 1 (int (floor (max 0.0 bottom / stride)) + 1)
+
+    // Column separator rules (w:sep): a vertical line centred in each gap,
+    // spanning the body content on each page.
+    match doc.PageSetup.Columns with
+    | Some columns when columns.Count >= 2 && columns.Separator ->
+        let n = columns.Count
+        let full = settings.Width - settings.PaddingLeft - settings.MarginRight
+        let colWidth = (full - float (n - 1) * columns.Gap) / float n
+        let bodyLines =
+            layouts
+            |> List.filter (fun layout -> not (layout.BlockId.StartsWith footnoteBlockIdPrefix || layout.BlockId.StartsWith endnoteBlockIdPrefix))
+            |> List.collect (fun layout -> layout.Lines)
+        for page in 0 .. pageCount - 1 do
+            let pageTop = float page * stride
+            let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
+            let contentBottom = WordLayout.Page.contentBottom settings.PageHeight settings.MarginBottom pageTop
+            let pageBottom =
+                bodyLines
+                |> List.filter (fun line -> int (floor (line.Y / stride)) = page)
+                |> List.map (fun line -> line.Y + line.Height)
+                |> function [] -> contentTop | ys -> min contentBottom (List.max ys)
+            if pageBottom > contentTop then
+                for c in 0 .. n - 2 do
+                    let x = settings.PaddingLeft + float (c + 1) * colWidth + float c * columns.Gap + columns.Gap / 2.0
+                    commands.Add(StrokeLine ("#000000", 0.5, 0, 0.0, x, contentTop, x, pageBottom))
+    | _ -> ()
+
     commands.AddRange(headerFooterCommands settings fontFamily measureText measureRange doc layouts pageCount)
     layouts, List.ofSeq commands, pageCount
 
