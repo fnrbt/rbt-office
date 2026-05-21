@@ -840,19 +840,20 @@ let private partForReferences preferredKind refs (parts: HeaderFooterPart list) 
             if kind = "default" then parts |> List.tryFind (fun part -> part.RelationshipId = Some relationshipId)
             else None))
 
-let private pageIndexForY (settings: LayoutSettings) y =
-    let stride = settings.PageHeight + pageGap
-    int (floor (max 0.0 y / stride))
+let private pageIndexForY (pages: PageInfo list) y =
+    let mutable idx = 0
+    pages |> List.iteri (fun i info -> if y >= info.Top - 0.01 then idx <- i)
+    idx
 
-let private sectionRefsForPage (settings: LayoutSettings) pageIndex isHeader (layouts: BlockLayout list) =
+let private sectionRefsForPage (pages: PageInfo list) pageIndex isHeader (layouts: BlockLayout list) =
     layouts
     |> List.choose (fun layout ->
         let refs = if isHeader then layout.Metadata.HeaderReferences else layout.Metadata.FooterReferences
         if refs.IsEmpty then None
         else
             let startPage =
-                if layout.Metadata.SectionBreak = Some "nextPage" || layout.Metadata.PageBreakAfter then pageIndexForY settings layout.Y + 1
-                else pageIndexForY settings (layout.Y + layout.Height)
+                if layout.Metadata.SectionBreak = Some "nextPage" || layout.Metadata.PageBreakAfter then pageIndexForY pages layout.Y + 1
+                else pageIndexForY pages (layout.Y + layout.Height)
             Some (startPage, refs))
     |> List.filter (fun (startPage, _) -> startPage <= pageIndex)
     |> List.sortBy fst
@@ -860,7 +861,7 @@ let private sectionRefsForPage (settings: LayoutSettings) pageIndex isHeader (la
     |> Option.map snd
     |> Option.defaultValue []
 
-let private blocksForPage (settings: LayoutSettings) (pageSetup: PageSetup) pageIndex isHeader fallback (parts: HeaderFooterPart list) layouts =
+let private blocksForPage (settings: LayoutSettings) (pageSetup: PageSetup) (pages: PageInfo list) pageIndex isHeader fallback (parts: HeaderFooterPart list) layouts =
     if parts.IsEmpty then
         fallback
     else
@@ -869,7 +870,7 @@ let private blocksForPage (settings: LayoutSettings) (pageSetup: PageSetup) page
             if pageNumber = 1 && pageSetup.DifferentFirstPage then "first"
             elif pageNumber % 2 = 0 && pageSetup.EvenAndOddHeaders then "even"
             else "default"
-        let refs = sectionRefsForPage settings pageIndex isHeader layouts
+        let refs = sectionRefsForPage pages pageIndex isHeader layouts
         partForReferences preferredKind refs parts
         |> Option.orElseWith (fun () -> parts |> List.tryFind (fun part -> part.Kind = preferredKind))
         |> Option.orElseWith (fun () -> parts |> List.tryFind (fun part -> part.Kind = "default"))
@@ -902,8 +903,8 @@ let private headerFooterCommands (settings: LayoutSettings) fontFamily measureTe
     let pageCount = pages.Length
     [ for pageIndex, info in List.indexed pages do
         let pageNumber = pageIndex + 1
-        let headers = blocksForPage settings doc.PageSetup pageIndex true (doc.Headers |> List.map Paragraph) doc.HeaderParts layouts
-        let footers = blocksForPage settings doc.PageSetup pageIndex false (doc.Footers |> List.map Paragraph) doc.FooterParts layouts
+        let headers = blocksForPage settings doc.PageSetup pages pageIndex true (doc.Headers |> List.map Paragraph) doc.HeaderParts layouts
+        let footers = blocksForPage settings doc.PageSetup pages pageIndex false (doc.Footers |> List.map Paragraph) doc.FooterParts layouts
         if not headers.IsEmpty then
             let headerY = info.Top + max 8.0 doc.PageSetup.HeaderDistance
             yield! repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount headerY headers
