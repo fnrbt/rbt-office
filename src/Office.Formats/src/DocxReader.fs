@@ -3310,7 +3310,7 @@ let private paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effe
             resolvedRunProperties styleMap effectiveParaProps emptyRunProperties
     wordFontSizeToPoints fallbackRunProps.FontSize
 
-let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) : obj array =
+let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
     let styleMap = buildStyleMap styles
     let _, documentDefaultParagraphProperties = resolveStyle styleMap (Some Styles.defaultStyleId)
     let documentDefaultMissingSpacingToZero =
@@ -3467,6 +3467,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "IsImage" ==> false
                                 "NoteId" ==> Some note.Id
                                 "NoteType" ==> Some note.NoteType
+                                "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
                             ])
                         | BookmarkStart bookmark ->
                             Some (createObj [
@@ -3726,6 +3727,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "IsImage" ==> false
                                 "NoteId" ==> Some note.Id
                                 "NoteType" ==> Some note.NoteType
+                                "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
                             ])
                         | BookmarkStart bookmark ->
                             Some (createObj [
@@ -3935,7 +3937,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 let nestedTables =
                     cell.NestedTables
                     |> List.choose (fun nested ->
-                        toEditorParagraphsInternal theme styles [Tbl nested] images
+                        toEditorParagraphsInternal theme styles [Tbl nested] images noteBodies
                         |> Array.tryHead)
                     |> List.toArray
 
@@ -4124,20 +4126,34 @@ let private applyNumberingDefinitions (numberingDefinitions: NumberingDefinition
     items |> Array.map apply
 
 let toEditorParagraphs (content: DocumentContent list) (images: Map<string, string>) : obj array =
-    toEditorParagraphsInternal None [] content images
+    toEditorParagraphsInternal None [] content images Map.empty
 
 let toEditorParagraphsWithStyles (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
-    toEditorParagraphsInternal None styles content images
+    toEditorParagraphsInternal None styles content images Map.empty
 
 let toEditorParagraphsWithStylesAndTheme (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
-    toEditorParagraphsInternal theme styles content images
+    toEditorParagraphsInternal theme styles content images Map.empty
 
 let toEditorParagraphsWithStylesAndNumbering (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) : obj array =
-    toEditorParagraphsInternal None styles content images
+    toEditorParagraphsInternal None styles content images Map.empty
     |> applyNumberingDefinitions numberingDefinitions
 
-let toEditorParagraphsWithStylesThemeAndNumbering (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) : obj array =
-    toEditorParagraphsInternal theme styles content images
+let private noteBodyMap (footnotes: Note list) (endnotes: Note list) : Map<string * string, string> =
+    let bodyText (note: Note) =
+        note.Content
+        |> List.collect (fun para -> para.Runs)
+        |> List.map (fun run ->
+            match run.Content with
+            | Text text -> text
+            | Link link -> link.Text
+            | _ -> "")
+        |> String.concat ""
+    (footnotes |> List.map (fun note -> ("footnote", note.Id), bodyText note))
+    @ (endnotes |> List.map (fun note -> ("endnote", note.Id), bodyText note))
+    |> Map.ofList
+
+let toEditorParagraphsWithStylesThemeAndNumbering (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (footnotes: Note list) (endnotes: Note list) : obj array =
+    toEditorParagraphsInternal theme styles content images (noteBodyMap footnotes endnotes)
     |> applyNumberingDefinitions numberingDefinitions
 
 let toEditorHeaderFooters (items: HeaderFooter list) (images: Map<string, string>) : obj array =

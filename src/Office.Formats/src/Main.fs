@@ -337,7 +337,7 @@ module Processors =
             match docOpt with
             | Some doc ->
                 let paragraphs =
-                    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering doc.Theme doc.Content doc.Images doc.Styles doc.NumberingDefinitions
+                    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering doc.Theme doc.Content doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes doc.Endnotes
                 return createObj [
                     "Paragraphs" ==> paragraphs
                     "Styles" ==> (doc.Styles |> List.map (styleToObj doc.Theme) |> List.toArray)

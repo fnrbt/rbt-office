@@ -428,48 +428,6 @@ let private renderPaintCommand (ctx: RenderContext) = function
         ctx.Ctx.stroke()
         setLineDash ctx.Ctx [||]
 
-let private renderFootnotes (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
-    let settings = layoutSettings ctx doc
-    let anchorsByPage = footnoteAnchorsForLayouts settings layouts |> List.groupBy _.PageIndex
-    let noteStyle = {
-        Bold = false
-        Italic = false
-        Underline = false
-        AllCaps = false
-        SmallCaps = false
-        Strike = false
-        FontSize = 10.0
-        CharacterSpacing = 0.0
-        FontFamily = Some ctx.FontFamily
-        Color = "#4B5563"
-        Highlight = None
-        VertAlign = None
-    }
-
-    for pageIndex, anchors in anchorsByPage do
-        let pageTop = float pageIndex * (pageHeight settings + pageGap)
-        let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-        let separatorY = contentBottom + 6.0
-        let textStartY = separatorY + 14.0
-        let x = settings.PaddingLeft
-        let mutable lineIndex = 0
-
-        ctx.Ctx.strokeStyle <- U3.Case1 "#9CA3AF"
-        ctx.Ctx.lineWidth <- 1.0
-        ctx.Ctx.beginPath()
-        ctx.Ctx.moveTo(x, separatorY)
-        ctx.Ctx.lineTo(x + 120.0, separatorY)
-        ctx.Ctx.stroke()
-
-        anchors
-        |> List.iter (fun anchor ->
-            for line in wrapNoteText settings (sprintf "%s. %s" anchor.Id anchor.Text) do
-                let baseline = textStartY + float lineIndex * 13.0
-                ctx.Ctx.fillStyle <- U3.Case1 noteStyle.Color
-                ctx.Ctx.font <- fontString noteStyle ctx.FontFamily
-                ctx.Ctx.fillText(line, x, baseline)
-                lineIndex <- lineIndex + 1)
-
 let private renderEndnotes (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
     let anchors = endnoteAnchorsForLayouts layouts
     if not anchors.IsEmpty then
@@ -527,7 +485,9 @@ let render (ctx: RenderContext) (doc: Document) =
     let layouts, commands, _ = collectDocumentCommands settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc
     renderPages ctx doc layouts
     commands |> List.iter (renderPaintCommand ctx)
-    renderFootnotes ctx doc layouts
+    // Footnotes are laid out and painted via the shared Layout/Paint pass (so the
+    // browser canvas and the PDF/native paths match); only endnotes still need the
+    // canvas-specific renderer.
     renderEndnotes ctx doc layouts
     renderCommentAnchors ctx doc layouts
 
