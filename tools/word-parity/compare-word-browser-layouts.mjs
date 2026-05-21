@@ -182,7 +182,14 @@ function run(command, args, extraEnv = {}) {
 }
 
 function parseWordTsv(file) {
-  const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
+  // The VBA extractor writes some docs' TSV as UTF-16 LE (BOM ff fe) and others
+  // as UTF-8; detect the BOM and decode accordingly (reading UTF-16 as UTF-8
+  // yields NUL-interleaved garbage and parses to zero usable lines).
+  const buf = fs.readFileSync(file);
+  const text =
+    (buf[0] === 0xff && buf[1] === 0xfe) ? buf.toString('utf16le').replace(/^\uFEFF/, '')
+    : (buf[0] === 0xfe && buf[1] === 0xff) ? Buffer.from(buf).swap16().toString('utf16le').replace(/^\uFEFF/, '')
+    : buf.toString('utf8').replace(/^\uFEFF/, '');
   const rows = text.split(/\r?\n/).filter(Boolean);
   if (rows.length === 0) return [];
   const headers = rows[0].split('\t');
