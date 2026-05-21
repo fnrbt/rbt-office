@@ -709,7 +709,9 @@ module API =
             let pageTop = pageTopForYInDoc editor.Doc line.Y
             let context = contexts |> Map.tryFind blockId
             let isInTable = context.IsSome && context.Value.TableIndex.IsSome
-            let wordTop = wordVerticalPositionTop (not isInTable && usesDefaultWordRangeTopOffset layout.Metadata) line
+            // Word's VBA Information API reports the unaligned cell content origin,
+            // ignoring center/bottom vertical alignment; subtract the applied offset to match.
+            let wordTop = wordVerticalPositionTop (not isInTable && usesDefaultWordRangeTopOffset layout.Metadata) line - layout.VAlignOffset
             let pageY = wordTop - pageTop
             let boundaryLeft, boundaryTop =
                 textBoundaryOrigin editor.Doc editor.Doc.PageSetup.MarginLeft layout line context
@@ -826,7 +828,9 @@ module API =
                 let isInTable = context |> Option.bind _.TableIndex |> Option.isSome
                 let boundaryLeft, boundaryTop =
                     textBoundaryOrigin editor.Doc pageLeft layout line context
-                let wordTop = wordVerticalPositionTop (not isInTable && usesDefaultWordRangeTopOffset layout.Metadata) line
+                // Match Word's VBA Information API, which reports the unaligned cell
+                // content origin regardless of center/bottom vertical alignment.
+                let wordTop = wordVerticalPositionTop (not isInTable && usesDefaultWordRangeTopOffset layout.Metadata) line - layout.VAlignOffset
                 createObj [
                     "Kind" ==> "line"
                     "BlockId" ==> layout.BlockId

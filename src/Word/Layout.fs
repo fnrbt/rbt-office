@@ -64,6 +64,10 @@ type BlockLayout = {
     PrefixStyle: TextBuffer.TextStyle option
     PrefixWidth: float
     Indent: float
+    // Vertical-alignment offset applied to this cell's lines (center/bottom
+    // vAlign). Word's VBA position API reports the *unaligned* content origin,
+    // so layout queries subtract this to match Microsoft Word.
+    VAlignOffset: float
 }
 
 /// Table cell layout.
@@ -1267,6 +1271,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         PrefixStyle = prefixStyle
         PrefixWidth = prefixWidth
         Indent = indent + xOffset
+        VAlignOffset = 0.0
     }, counters, updatedObstacles, updatedPlacedBoxes)
 
 let layoutParagraphAtWithStyleAndObstacles (settings: LayoutSettings) (measureText: TextMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
@@ -1419,6 +1424,7 @@ let rec measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMe
                             |> List.map (fun layout ->
                                 { layout with
                                     Y = layout.Y + offset
+                                    VAlignOffset = layout.VAlignOffset + offset
                                     Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + offset }) })
                         nestedLayouts <- nestedLayouts @ adjustedLayouts
                     nestedY <- nestedY + measurement.Height
@@ -2018,12 +2024,14 @@ let private layoutDocumentWithRangeAndInitial
                         for groupIndex, group in headerMeasurement.CellGroups |> List.indexed do
                             let alignmentHeight = verticalAlignmentHeightForCell headerRowIndex groupIndex headerMeasurement.Height
                             let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment alignmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
+                            let queryVAlignOffset = if alignmentHeight > headerMeasurement.Height + 0.5 then 0.0 else offset
                             let adjustedLayouts =
                                 group.Layouts
                                 |> List.filter (fun layout -> not layout.Lines.IsEmpty)
                                 |> List.map (fun layout ->
                                     { layout with
                                         Y = layout.Y + offset
+                                        VAlignOffset = layout.VAlignOffset + queryVAlignOffset
                                         Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + offset }) })
                             layouts <- layouts @ adjustedLayouts
                             footnotesByPage <- adjustedLayouts |> List.fold (addLayoutFootnotes settings) footnotesByPage
@@ -2092,12 +2100,17 @@ let private layoutDocumentWithRangeAndInitial
                     for groupIndex, group in cellLayoutGroups |> List.indexed do
                         let alignmentHeight = verticalAlignmentHeightForCell rowIndex groupIndex rowHeight
                         let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment alignmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
+                        // Word's VBA position API ignores single-row cell vAlign (reports the
+                        // unaligned origin) but reflects vMerge row-span centering, so only the
+                        // single-row offset is subtracted back out in layout queries.
+                        let queryVAlignOffset = if alignmentHeight > rowHeight + 0.5 then 0.0 else offset
                         let adjustedLayouts =
                             group.Layouts
                             |> List.filter (fun layout -> not layout.Lines.IsEmpty)
                             |> List.map (fun layout ->
                                 { layout with
                                     Y = layout.Y + offset
+                                    VAlignOffset = layout.VAlignOffset + queryVAlignOffset
                                     Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + offset }) })
                         layouts <- layouts @ adjustedLayouts
                         footnotesByPage <- adjustedLayouts |> List.fold (addLayoutFootnotes settings) footnotesByPage
