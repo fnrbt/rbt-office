@@ -155,6 +155,30 @@
     <tbody>
       <tr>
         <td>
+          <strong>Accounting number format: currency-tag <code>* </code> fill (<code>[$$-409]* #,##0</code>)</strong>
+          <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code> "All Chains" column. The accounting format <code>_-[$$-409]* #,##0_</code> uses <code>* </code> to fill space so Excel left-aligns the $ and right-aligns the number. We only expanded the fill when the char before <code>* </code> was a literal <code>$</code>; here it's <code>]</code> (close of the <code>[$$-409]</code> locale-currency tag), so the fill collapsed and the $ sat next to the number.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:180px; aspect-ratio:1.1 / 1;">
+            <img src="../artifacts/excel/dash-accounting.png" style="--w:200px; --x:0px; --y:0px; --s:1.0" alt="Excel — $ left">
+          </div>
+          <div class="caption">Excel: $ at the cell's left edge, number right-aligned.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:180px; aspect-ratio:1.1 / 1;">
+            <img src="../artifacts/native/dash-accounting.png" style="--w:200px; --x:0px; --y:0px; --s:1.0" alt="Ours — $ left">
+          </div>
+          <div class="caption">After: $ left-aligned, number right-aligned — matches.</div>
+        </td>
+        <td>
+          <div class="placeholder">Before: "$&nbsp;639,172" with the $ jammed against the number.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>expandAccountingFill</code> now triggers when the character before <code>* </code> is <code>$</code> <em>or</em> <code>]</code> (a <code>[$…]</code> currency tag), not just a literal <code>$</code>.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Slicers — filter-control boxes</strong>
           <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code> — three slicers (Financial Year / State / Category) in column A. Items resolve through slicer → slicerCache → pivotCacheDefinition shared items; position from the drawing's slicer anchor.</span>
         </td>

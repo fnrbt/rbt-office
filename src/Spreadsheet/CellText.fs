@@ -686,10 +686,11 @@ let private expandAccountingFill
         if star <= 0 then text
         else
             let prev = section.[star - 1]
-            // Covers Excel's common accounting pattern `_($* #,##0.00_)`.
-            // Non-currency star fills are left collapsed because right-
-            // aligned drawing already gives the same visual placement.
-            if prev <> '$' then text
+            // Covers Excel's common accounting patterns: literal `_($* #,##0)`
+            // (prev = '$') and the locale currency tag `_-[$$-409]* #,##0`
+            // (prev = ']', the close of a `[$…]` marker). Non-currency star
+            // fills stay collapsed — right-aligned drawing already matches.
+            if prev <> '$' && prev <> ']' then text
             else
                 let marker = "$ "
                 let markerAt = text.IndexOf(marker, System.StringComparison.Ordinal)
