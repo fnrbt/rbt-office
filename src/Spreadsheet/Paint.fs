@@ -54,16 +54,53 @@ type PaintText = {
     Rotation: int
 }
 
+/// A single segment of a vector path. Coordinates are in the same px space
+/// as everything else in PaintItem. Mirrors the renderer / canvas / PDF path
+/// primitives so a chart scene can be expressed once and drawn by all three.
+type VecSeg =
+    | VMove of float * float
+    | VLine of float * float
+    | VCubic of float * float * float * float * float * float
+    | VClose
+
 type PaintItem =
     | FillRect of Rect * Color
     | StrokeRect of Rect * Color * float
     | DrawText of PaintText
     | GridLine of float * float * float * float * Color * float
+    /// Arbitrary vector path with an optional fill and an optional
+    /// (color, width) stroke — the primitive charts (and future drawings)
+    /// emit. At least one of fill/stroke is expected.
+    | VecPath of VecSeg list * fill: Color option * stroke: (Color * float) option
+    /// A nested scene transformed by a 2×3 affine (a, b, c, d, e, f), i.e.
+    /// x' = a·x + c·y + e, y' = b·x + d·y + f. Used to place/scale a chart
+    /// scene into its anchor rect.
+    | VecGroup of (float * float * float * float * float * float) * PaintItem list
 
 type ViewportPaintItem = {
     Zone: ViewportZone
     Item: PaintItem
 }
+
+/// A hand-built vector scene used to prove the VecPath/VecGroup primitives
+/// render identically through the native, canvas, and PDF paths (the
+/// foundation a chart adapter would emit). Exercises a filled triangle, a
+/// stroked polyline, a filled+stroked box, and a `“data bar”` strip — all
+/// inside a translated group plus standalone axes.
+let vectorTestScene : PaintItem list =
+    [ // Plot frame (axes) as a stroked path, no group.
+      VecPath ([ VMove (40.0, 20.0); VLine (40.0, 200.0); VLine (320.0, 200.0) ], None, Some ("#808080", 1.0))
+      // Everything else placed by a group translated to the plot origin.
+      VecGroup ((1.0, 0.0, 0.0, 1.0, 40.0, 200.0),
+        [ // Filled area (semi-triangle) under a curve — fill only.
+          VecPath ([ VMove (0.0, 0.0); VLine (0.0, -60.0); VCubic (40.0, -120.0, 90.0, -40.0, 130.0, -90.0); VLine (130.0, 0.0); VClose ],
+                   Some "#BDD7EE", None)
+          // Line on top of the area — stroke only.
+          VecPath ([ VMove (0.0, -60.0); VCubic (40.0, -120.0, 90.0, -40.0, 130.0, -90.0) ], None, Some ("#1F497D", 2.0))
+          // Three column bars — filled + thin stroke.
+          VecPath ([ VMove (160.0, 0.0); VLine (190.0, 0.0); VLine (190.0, -70.0); VLine (160.0, -70.0); VClose ], Some "#70AD47", Some ("#000000", 0.75))
+          VecPath ([ VMove (200.0, 0.0); VLine (230.0, 0.0); VLine (230.0, -110.0); VLine (200.0, -110.0); VClose ], Some "#70AD47", Some ("#000000", 0.75))
+          VecPath ([ VMove (240.0, 0.0); VLine (270.0, 0.0); VLine (270.0, -45.0); VLine (240.0, -45.0); VClose ], Some "#70AD47", Some ("#000000", 0.75)) ]) ]
 
 /// Excel's General horizontal alignment puts numbers/booleans on the right,
 /// strings on the left, and errors in the center. Explicit alignment on
@@ -847,6 +884,26 @@ let private translatePaintItem viewport zone item =
         let p1 = tx { X = x1; Y = y1; Width = 0.0; Height = 0.0 }
         let p2 = tx { X = x2; Y = y2; Width = 0.0; Height = 0.0 }
         GridLine (p1.X, p1.Y, p2.X, p2.Y, color, width)
+    | VecPath (segs, fill, stroke) ->
+        // The zone offset is a pure translation; shift every path point by it.
+        let o = tx { X = 0.0; Y = 0.0; Width = 0.0; Height = 0.0 }
+        let mv x y = x + o.X, y + o.Y
+        let segs' =
+            segs |> List.map (function
+                | VMove (x, y) -> let a, b = mv x y in VMove (a, b)
+                | VLine (x, y) -> let a, b = mv x y in VLine (a, b)
+                | VCubic (x1, y1, x2, y2, x, y) ->
+                    let a1, b1 = mv x1 y1
+                    let a2, b2 = mv x2 y2
+                    let a, b = mv x y
+                    VCubic (a1, b1, a2, b2, a, b)
+                | VClose -> VClose)
+        VecPath (segs', fill, stroke)
+    | VecGroup ((a, b, c, d, e, f), children) ->
+        // Fold the zone offset into the group's translation component;
+        // children stay in group-local coordinates.
+        let o = tx { X = 0.0; Y = 0.0; Width = 0.0; Height = 0.0 }
+        VecGroup ((a, b, c, d, e + o.X, f + o.Y), children)
 
 let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): ViewportPaintItem list =
     [

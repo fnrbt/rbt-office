@@ -42,6 +42,24 @@ let private canvasSave (ctx: obj): unit = jsNative
 [<Emit("$0.restore()")>]
 let private canvasRestore (ctx: obj): unit = jsNative
 
+// Vector-path + transform emits (for VecPath / VecGroup — the chart scene).
+[<Emit("$0.beginPath()")>]
+let private canvasBeginPath (ctx: obj): unit = jsNative
+[<Emit("$0.moveTo($1, $2)")>]
+let private canvasMoveTo (ctx: obj) (x: float) (y: float): unit = jsNative
+[<Emit("$0.lineTo($1, $2)")>]
+let private canvasLineTo (ctx: obj) (x: float) (y: float): unit = jsNative
+[<Emit("$0.bezierCurveTo($1, $2, $3, $4, $5, $6)")>]
+let private canvasBezierTo (ctx: obj) (x1: float) (y1: float) (x2: float) (y2: float) (x: float) (y: float): unit = jsNative
+[<Emit("$0.closePath()")>]
+let private canvasClosePath (ctx: obj): unit = jsNative
+[<Emit("$0.fillStyle = $1; $0.fill()")>]
+let private canvasFillPath (ctx: obj) (color: string): unit = jsNative
+[<Emit("$0.strokeStyle = $1; $0.lineWidth = $2; $0.stroke()")>]
+let private canvasStrokePath (ctx: obj) (color: string) (width: float): unit = jsNative
+[<Emit("$0.transform($1, $2, $3, $4, $5, $6)")>]
+let private canvasTransform (ctx: obj) (a: float) (b: float) (c: float) (d: float) (e: float) (f: float): unit = jsNative
+
 [<Emit("$0.beginPath(); $0.rect($1, $2, $3, $4); $0.clip()")>]
 let private canvasClipRect (ctx: obj) (x: float) (y: float) (width: float) (height: float): unit = jsNative
 
@@ -118,6 +136,28 @@ type Spreadsheet(container: Element) =
         let ctx = getCanvasContext canvas
         setCanvasSize canvas viewport.Width viewport.Height
 
+        // Recursive renderer for vector paint items (VecPath / VecGroup) — a
+        // group concatenates its 2×3 transform and draws its children.
+        let rec drawVec (item: SpreadsheetPaint.PaintItem) =
+            match item with
+            | SpreadsheetPaint.VecPath (segs, fill, stroke) ->
+                canvasBeginPath ctx
+                for s in segs do
+                    match s with
+                    | SpreadsheetPaint.VMove (x, y) -> canvasMoveTo ctx x y
+                    | SpreadsheetPaint.VLine (x, y) -> canvasLineTo ctx x y
+                    | SpreadsheetPaint.VCubic (x1, y1, x2, y2, x, y) -> canvasBezierTo ctx x1 y1 x2 y2 x y
+                    | SpreadsheetPaint.VClose -> canvasClosePath ctx
+                (match fill with Some c -> canvasFillPath ctx c | None -> ())
+                (match stroke with Some (c, w) -> canvasStrokePath ctx c w | None -> ())
+            | SpreadsheetPaint.VecGroup ((a, b, c, d, e, f), children) ->
+                canvasSave ctx
+                canvasTransform ctx a b c d e f
+                children |> List.iter drawVec
+                canvasRestore ctx
+            | SpreadsheetPaint.FillRect (r, col) -> canvasFillRect ctx r.X r.Y r.Width r.Height col
+            | SpreadsheetPaint.StrokeRect (r, col, w) -> canvasStrokeRect ctx r.X r.Y r.Width r.Height col w
+            | _ -> ()
         for painted in SpreadsheetPaint.buildViewportPaintItems model viewport do
             // viewportClipFor narrows BodyZone to the area past the frozen
             // rows/cols so the body paint can't bleed into the pinned bands.
@@ -140,6 +180,7 @@ type Spreadsheet(container: Element) =
                 if abs (y1 - y2) < 0.01 then canvasLine ctx x1 (snap y1) x2 (snap y1) color w
                 elif abs (x1 - x2) < 0.01 then canvasLine ctx (snap x1) y1 (snap x1) y2 color w
                 else canvasLine ctx x1 y1 x2 y2 color w
+            | SpreadsheetPaint.VecPath _ | SpreadsheetPaint.VecGroup _ -> drawVec painted.Item
             | SpreadsheetPaint.DrawText text ->
                 let align =
                     match text.Align with

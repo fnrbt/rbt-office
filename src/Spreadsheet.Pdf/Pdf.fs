@@ -175,7 +175,46 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
     let sz v = v * pxToPt * placement.Scale          // size in pt
     let xPt x = placement.LeftPtOffset + sz x
     let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
+    // Vector paths/groups. The 2×3 transform is applied in CSS space (so it
+    // matches the native/canvas Group), then each point is flipped into PDF
+    // space via xPt/yPdf. VecGroup composes its transform onto its children.
+    let rec vec (a, b, c, d, e, f) (it: PaintItem) : PdfDraw.DrawOp list =
+        match it with
+        | VecPath (segs, fill, stroke) ->
+            let pt x y = xPt (a * x + c * y + e), yPdf (b * x + d * y + f)
+            let pathOps =
+                segs |> List.map (fun s ->
+                    match s with
+                    | VMove (x, y) -> let px, py = pt x y in PdfDraw.MoveTo (px, py)
+                    | VLine (x, y) -> let px, py = pt x y in PdfDraw.LineTo (px, py)
+                    | VCubic (x1, y1, x2, y2, x, y) ->
+                        let p1x, p1y = pt x1 y1
+                        let p2x, p2y = pt x2 y2
+                        let px, py = pt x y
+                        PdfDraw.CurveTo (p1x, p1y, p2x, p2y, px, py)
+                    | VClose -> PdfDraw.ClosePath)
+            let setup =
+                [ match fill with
+                  | Some col -> PdfDraw.SetFillColor (parseHexColor col)
+                  | None -> ()
+                  match stroke with
+                  | Some (col, w) ->
+                      PdfDraw.SetStrokeColor (parseHexColor col)
+                      PdfDraw.SetLineWidth (sz w)
+                  | None -> () ]
+            let paint =
+                match fill, stroke with
+                | Some _, Some _ -> [ PdfDraw.FillAndStroke ]
+                | Some _, None -> [ PdfDraw.Fill ]
+                | None, Some _ -> [ PdfDraw.Stroke ]
+                | None, None -> []
+            setup @ pathOps @ paint
+        | VecGroup ((a2, b2, c2, d2, e2, f2), children) ->
+            let comp = (a*a2 + c*b2, b*a2 + d*b2, a*c2 + c*d2, b*c2 + d*d2, a*e2 + c*f2 + e, b*e2 + d*f2 + f)
+            children |> List.collect (vec comp)
+        | _ -> []
     match item with
+    | (VecPath _ | VecGroup _) -> vec (1.0, 0.0, 0.0, 1.0, 0.0, 0.0) item
     | FillRect (rect, color) ->
         [ PdfDraw.SetFillColor (parseHexColor (bwFill placement.BlackAndWhite color))
           PdfDraw.Rect (xPt rect.X, yPdf (rect.Y + rect.Height), sz rect.Width, sz rect.Height)
@@ -1108,4 +1147,18 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
         let ops = contentOps @ headerOps @ footerOps
         PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames [] ops |> ignore
 
+    PdfDoc.toBytes builder
+
+/// Render a standalone vector PaintItem scene (no model/text) to a one-page
+/// PDF — proves the VecPath/VecGroup primitives through the PDF path.
+let sceneToBytes (widthPx: float) (heightPx: float) (items: PaintItem list) : byte[] =
+    let builder = PdfDoc.create ()
+    let pageWidthPt = widthPx * pxToPt
+    let pageHeightPt = heightPx * pxToPt
+    let placement =
+        { LeftPtOffset = 0.0; TopPtOffset = 0.0; PageHeightPt = pageHeightPt
+          Scale = 1.0; BlackAndWhite = false }
+    let opts = { DefaultFontFamily = "Calibri"; Fonts = []; CjkFallback = []; SheetName = ""; FileName = "" }
+    let ops = items |> List.collect (translateItem opts Map.empty Map.empty Map.empty placement)
+    PdfDoc.addPage builder (pageWidthPt, pageHeightPt) [] [] ops |> ignore
     PdfDoc.toBytes builder

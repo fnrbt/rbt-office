@@ -1508,6 +1508,15 @@ let main argv =
         let jsonEnv = Environment.GetEnvironmentVariable("EXCEL_NATIVE_JSON")
         let jsonOpt = if String.IsNullOrWhiteSpace jsonEnv then None else Some (fullPath jsonEnv)
         match argv with
+        | [| "--vectortest"; output |] ->
+            // Render the hand-built vector scene (VecPath/VecGroup) through the
+            // native rasterizer — proves the new paint primitives end-to-end.
+            let w, h = 400, 280
+            let widget = Composit.Ui.SpreadsheetGrid.renderScene (float w) (float h) RedBat.Spreadsheet.Paint.vectorTestScene
+            let backend = Raster.create()
+            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
+            0
         | [| input; output |] ->
             renderXlsx (fullPath input) (fullPath output) 1100 720 (Choice1Of2 0) jsonOpt
             0

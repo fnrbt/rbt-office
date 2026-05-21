@@ -407,7 +407,8 @@ let private toRendererCommands (text: PaintText) =
         let xform = Matrix3x2.multiply rot (Matrix3x2.translate shiftX shiftY)
         [ Cmd.Group(xform, 1.0, inner) ]
 
-let private renderPaintItem = function
+let rec private renderPaintItem item =
+    match item with
     | FillRect (rect, color) ->
         [ Cmd.FillRect(Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color) ]
     | StrokeRect (rect, color, width) ->
@@ -442,6 +443,25 @@ let private renderPaintItem = function
             MiterLimit = 4.0
         }
         [ Cmd.StrokePath([MoveTo (vec2 sx1 sy1); LineTo (vec2 sx2 sy2)], style) ]
+    | VecPath (segs, fill, stroke) ->
+        let toSeg = function
+            | VMove (x, y) -> MoveTo (vec2 x y)
+            | VLine (x, y) -> LineTo (vec2 x y)
+            | VCubic (x1, y1, x2, y2, x, y) -> CubicTo (vec2 x1 y1, vec2 x2 y2, vec2 x y)
+            | VClose -> Close
+        let ps = segs |> List.map toSeg
+        [ match fill with
+          | Some c -> yield Cmd.FillPath(ps, Solid (parseHexColor c), NonZero)
+          | None -> ()
+          match stroke with
+          | Some (c, w) ->
+              yield Cmd.StrokePath(ps, { Width = px w; Cap = Butt; Join = Miter
+                                         Paint = Solid (parseHexColor c)
+                                         DashArray = []; DashOffset = px 0.0; MiterLimit = 4.0 })
+          | None -> () ]
+    | VecGroup ((a, b, c, d, e, f), children) ->
+        let xform = { M11 = a; M12 = b; M21 = c; M22 = d; DX = e; DY = f }
+        [ Cmd.Group(xform, 1.0, children |> List.collect renderPaintItem) ]
 
 /// Measure a text run in pixels using the real loaded font. Plugged into
 /// Viewport.Measurer so Paint.wrapLines can break lines on actual glyph
@@ -526,3 +546,10 @@ let private cellCommands (model: SpreadsheetModel) width height =
 
 let widget width height (model: SpreadsheetModel) =
     canvas width height (fun w h -> cellCommands model w h)
+
+/// Render a standalone vector PaintItem scene (no model) on a white
+/// background — used to prove the VecPath/VecGroup primitives end-to-end.
+let renderScene width height (items: PaintItem list) =
+    canvas width height (fun w h ->
+        Cmd.FillRect(Renderer.Types.rect 0.0 0.0 w h, parseHexColor "#FFFFFF")
+        :: (items |> List.collect renderPaintItem))

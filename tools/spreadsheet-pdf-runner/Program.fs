@@ -123,6 +123,10 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
 let main argv =
     try
         match argv with
+        | [| "--vectortest"; output |] ->
+            let bytes = RedBat.Spreadsheet.Pdf.Render.sceneToBytes 400.0 280.0 RedBat.Spreadsheet.Paint.vectorTestScene
+            System.IO.File.WriteAllBytes(fullPath output, bytes)
+            0
         | [| input; output |] ->
             renderPdf (fullPath input) (fullPath output) 0
             0
