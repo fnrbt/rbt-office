@@ -52,6 +52,26 @@ surfaces have actually been checked. It complements
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
 
+## Real-world goal: jumeirah-hotel.xlsx (full parity)
+
+- One real, model-specific bug found + fixed: a hard line break `\n` in cell
+  G68 ("Uses of \nFunds:") with wrapText OFF was treated as a line break,
+  doubling row 68 (31.5pt vs Excel 15.75pt) and drifting the section below.
+  Fixed (commit 52e80cb): wrapping/`\n` only apply when wrapText is on; the
+  break is stripped on a single line otherwise.
+- Everything else already matched via the lyric-derived global fixes
+  (showGridLines off, centerContinuous, borders/fills/number-formats, font
+  bytes = MS Calibri). Verified region-by-region against Excel screenshots
+  (top, sensitivity tables, financing, sources/uses, market data, assumptions
+  detail, property pro-forma, far-right FY21/FY22) — content matches.
+- Row heights: an Excel COM dump (probe-rowheights.vbs) shows every row is
+  15.75pt except the title (row 2 = 18.75pt); ours computes identical heights
+  for every row. No cumulative drift — an earlier band-spacing "163 vs 168"
+  reading was ±3px detection noise; deeper-region MAE is denser number rows
+  (more AA pixels), not misalignment.
+- Residual: ClearType-vs-grayscale text antialiasing only.
+- Status: at render parity (commit 52e80cb).
+
 ## Real-world goal: lyric-multifamily.xlsx (full parity)
 
 - Sheet 1 (Lyric-PF-DCF) visible region: ~94% match (MAE ~6%), dominated by
