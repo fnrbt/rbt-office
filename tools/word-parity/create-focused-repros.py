@@ -1551,6 +1551,14 @@ def main():
     )
     print(twocol_path)
 
+    twocol_sep_path = out_dir / "two-column-separator.docx"
+    write_docx(
+        twocol_sep_path,
+        paragraph("Two column with separator", "Heading1") + repeated_long_paragraphs(10),
+        page_geometry={"cols": '<w:cols w:num="2" w:space="720" w:sep="1"/>'},
+    )
+    print(twocol_sep_path)
+
 
 if __name__ == "__main__":
     main()
