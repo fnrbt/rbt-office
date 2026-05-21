@@ -1630,6 +1630,26 @@ def main():
     )
     print(landscape_path)
 
+    # PAGE/NUMPAGES fields in a non-uniform (landscape then portrait) document:
+    # the field on page 2 must resolve to "2 of 2", which needs per-page geometry
+    # rather than a uniform stride.
+    _pf_mar = '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>'
+    _page_field = (
+        '<w:p><w:r><w:t>This is page </w:t></w:r>'
+        '<w:fldSimple w:instr=" PAGE "><w:r><w:t>0</w:t></w:r></w:fldSimple>'
+        '<w:r><w:t> of </w:t></w:r>'
+        '<w:fldSimple w:instr=" NUMPAGES "><w:r><w:t>0</w:t></w:r></w:fldSimple>'
+        '<w:r><w:t>.</w:t></w:r></w:p>')
+    page_field_path = out_dir / "page-field-non-uniform.docx"
+    write_docx(
+        page_field_path,
+        (paragraph("Landscape (page 1)", "Heading1") + repeated_long_paragraphs(2)
+         + f'<w:p><w:pPr><w:sectPr><w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/>{_pf_mar}</w:sectPr></w:pPr></w:p>'
+         + paragraph("Portrait (page 2)", "Heading1") + _page_field),
+        page_geometry={"section_type": "nextPage"},
+    )
+    print(page_field_path)
+
     # Manual column break: content after <w:br w:type="column"/> jumps to the
     # next column, leaving column 1 short.
     colbreak_path = out_dir / "column-break.docx"

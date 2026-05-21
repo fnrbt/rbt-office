@@ -125,9 +125,12 @@ let private decodeImageResources (wordDoc: DocxReader.WordDocument) : RedBat.Wor
             }: RedBat.Word.Pdf.ImageResource)
         | Error _ -> None)
 
-let private pageNumberForY (doc: Doc.Document) y =
-    let stride = doc.PageSetup.PageHeight + WordModelLayout.Page.gap
-    int (Math.Floor(max 0.0 y / stride)) + 1
+// 1-based index of the page whose band contains y, using the actual per-page
+// geometry (so page numbers are correct when sections have different page sizes).
+let private pageNumberForY (pages: WordLayout.PageInfo list) y =
+    let mutable idx = 0
+    pages |> List.iteri (fun i info -> if y >= info.Top - 0.01 then idx <- i)
+    idx + 1
 
 let private displayPageNumberForPhysicalPage (restartPoints: (int * int) list) physicalPage =
     restartPoints
@@ -155,19 +158,19 @@ let private pdfLayoutSettings (doc: Doc.Document) : WordLayout.LayoutSettings =
         LongTrailingSpaceFitSafety = 0.25
     }
 
-let private pageMapFromLayouts (doc: Doc.Document) (layouts: WordLayout.BlockLayout list) : Doc.PageMap =
+let private pageMapFromLayouts (doc: Doc.Document) (pages: WordLayout.PageInfo list) (layouts: WordLayout.BlockLayout list) : Doc.PageMap =
     let restartPoints =
         layouts
         |> List.choose (fun layout ->
             Doc.findParagraph doc layout.BlockId
             |> Option.bind (fun para ->
                 para.Metadata.SectionPageNumberStart
-                |> Option.map (fun start -> pageNumberForY doc layout.Y, max 1 start)))
+                |> Option.map (fun start -> pageNumberForY pages layout.Y, max 1 start)))
         |> List.sortBy fst
 
     let displayPageNumberForY y =
         y
-        |> pageNumberForY doc
+        |> pageNumberForY pages
         |> displayPageNumberForPhysicalPage restartPoints
 
     let fieldAnchors =
@@ -215,10 +218,7 @@ let private pageMapFromLayouts (doc: Doc.Document) (layouts: WordLayout.BlockLay
                 PageNumber = displayPageNumberForY layout.Y
             }: Doc.PageBlockAnchor))
 
-    let pageCount =
-        layouts
-        |> List.map (fun layout -> pageNumberForY doc (layout.Y + layout.Height))
-        |> List.fold max 1
+    let pageCount = max 1 pages.Length
 
     {
         PageCount = pageCount
@@ -230,8 +230,8 @@ let private pageMapFromLayouts (doc: Doc.Document) (layouts: WordLayout.BlockLay
 let private refreshFieldsForPdf (options: WordPdf.RenderOptions) (doc: Doc.Document) =
     let measureText = WordPdf.createMeasurer options
     let measureRange = WordLayout.rangeMeasurerFromTextMeasurer measureText
-    let layouts = WordLayout.layoutDocumentWithRange (pdfLayoutSettings doc) measureText measureRange doc
-    Doc.refreshFieldsWithPageMap (pageMapFromLayouts doc layouts) doc
+    let layouts, pages = WordLayout.layoutDocumentPages (pdfLayoutSettings doc) measureText measureRange doc
+    Doc.refreshFieldsWithPageMap (pageMapFromLayouts doc pages layouts) doc
 
 let private writeProjectPdf (inputPath: string) (outputPath: string) =
     let raw = File.ReadAllBytes inputPath
