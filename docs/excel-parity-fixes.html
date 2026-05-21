@@ -155,6 +155,30 @@
     <tbody>
       <tr>
         <td>
+          <strong>Charts wired into the render pipeline — all six in-place</strong>
+          <span class="meta">Repro: <code>tests/real-world/chart-zoo.xlsx</code> rendered through the <em>normal</em> path (<code>excel-native-runner chart-zoo.xlsx out.png</code>), not <code>--charttest</code>. Each chart is parsed from its <code>chartN.xml</code> + drawing anchor and overlaid at the anchor's cell rect (<code>Layout.cellRect</code>) via a translated <code>VecGroup</code>. Full-sheet MAE ~8.5 vs Excel.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:294px; aspect-ratio:2.18 / 1;">
+            <img src="../artifacts/excel/chart-zoo-full.png" style="--w:640px; --x:0px; --y:0px; --s:0.5" alt="Excel — sheet with charts">
+          </div>
+          <div class="caption">Excel: data table + charts laid out at their anchors.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:294px; aspect-ratio:2.18 / 1;">
+            <img src="../artifacts/native/chart-zoo-full.png" style="--w:640px; --x:0px; --y:0px; --s:0.5" alt="Ours — sheet with charts in-place">
+          </div>
+          <div class="caption">Ours — charts render in-place at the same cell anchors.</div>
+        </td>
+        <td>
+          <div class="placeholder">Before: charts weren't rendered in the sheet at all.</div>
+        </td>
+        <td>
+          <p><strong>Pipeline wiring + polish.</strong> <code>ChartRender.parseAllCharts</code> reads every chart with its anchor; <code>renderXlsx</code> overlays them on the sheet through <code>SpreadsheetGrid.widgetWith</code>. Also: pie radius/centre calibrated to Excel (MAE ~4) and the series palette now read from <code>xl/theme/theme1.xml</code> (accent1..6) rather than hard-coded.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Charts — Bar (clustered, horizontal) (chart-zoo)</strong>
           <span class="meta">Repro: <code>tests/real-world/chart-zoo.xlsx</code> (built via <code>tools/excel-parity/build-chart-zoo.vbs</code>), rendered via <code>--charttest</code>. Crops are the chart area at its exact 400×267&nbsp;px bounds.</span>
         </td>

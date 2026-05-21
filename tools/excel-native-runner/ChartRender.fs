@@ -22,7 +22,8 @@ type ChartSpec =
       Values: float list
       Gridlines: bool
       GapWidth: int
-      SeriesColor: string }        // "#RRGGBB"
+      SeriesColor: string          // "#RRGGBB" (= accent1)
+      Palette: string list }       // theme accent1..6, for pie slices etc.
 
 let private localName (e: XElement) = e.Name.LocalName
 let private descendants (name: string) (e: XElement) =
@@ -45,6 +46,19 @@ let private points (block: XElement) : string list =
     |> List.ofSeq
 
 let private pf (s: string) = match Double.TryParse(s, Globalization.CultureInfo.InvariantCulture) with true, n -> n | _ -> 0.0
+
+let private defaultAccents = [ "#5B9BD5"; "#ED7D31"; "#A5A5A5"; "#FFC000"; "#4472C4"; "#70AD47" ]
+
+/// Read the theme accent1..6 colours (the chart series palette).
+let private parseTheme (zip: ZipArchive) : string list =
+    match readEntry zip "xl/theme/theme1.xml" with
+    | None -> defaultAccents
+    | Some xml ->
+        let root = (XDocument.Parse xml).Root
+        [ for i in 1 .. 6 ->
+            match firstDesc (sprintf "accent%d" i) root |> Option.bind (firstDesc "srgbClr") with
+            | Some c -> "#" + c.Attribute(XName.Get "val").Value
+            | None -> List.item (i - 1) defaultAccents ]
 
 let parseChart (xlsxPath: string) (chartIdx: int) : ChartSpec option =
     use fs = File.OpenRead xlsxPath
@@ -82,8 +96,10 @@ let parseChart (xlsxPath: string) (chartIdx: int) : ChartSpec option =
                 |> Option.map (fun t -> t.Value)
             let gridlines = root |> descendants "valAx" |> Seq.exists (fun ax -> firstDesc "majorGridlines" ax |> Option.isSome)
             let gap = firstDesc "gapWidth" plot |> Option.map (fun e -> int (e.Attribute(XName.Get "val").Value)) |> Option.defaultValue 150
+            let accents = parseTheme zip
             Some { Kind = kind; Title = title; Categories = cats; Values = vals
-                   Gridlines = gridlines; GapWidth = gap; SeriesColor = "#5B9BD5" }
+                   Gridlines = gridlines; GapWidth = gap
+                   SeriesColor = List.head accents; Palette = accents }
 
 /// Chart pixel size from the twoCellAnchor (default 64px cols / 20px rows;
 /// EMU offsets at 9525 EMU/px). Good enough for the synthetic fixture.
@@ -110,6 +126,39 @@ let parseAnchorSize (xlsxPath: string) (chartIdx: int) : float * float =
         let toX = colPx (pick "to" "col") + pick "to" "colOff" / 9525.0
         let toY = rowPx (pick "to" "row") + pick "to" "rowOff" / 9525.0
         (toX - fromX), (toY - fromY)
+
+/// A parsed chart together with its drawing-anchor placement (cell + EMU
+/// offset, and pixel size). Used to overlay charts onto the sheet.
+type ChartPlacement =
+    { Spec: ChartSpec
+      FromCol: int; FromColOffPx: float
+      FromRow: int; FromRowOffPx: float
+      WidthPx: float; HeightPx: float }
+
+/// Parse every chart in the workbook with its anchor. Assumes anchor document
+/// order matches chart number (true for charts added in sequence).
+let parseAllCharts (xlsxPath: string) : ChartPlacement list =
+    use fs = File.OpenRead xlsxPath
+    use zip = new ZipArchive(fs, ZipArchiveMode.Read)
+    match readEntry zip "xl/drawings/drawing1.xml" with
+    | None -> []
+    | Some xml ->
+        let anchors = descendants "twoCellAnchor" (XDocument.Parse xml).Root |> Seq.toList
+        anchors
+        |> List.mapi (fun i anchor ->
+            let getf tag child =
+                firstDesc tag anchor |> Option.bind (firstDesc child) |> Option.map (fun e -> float e.Value) |> Option.defaultValue 0.0
+            let fromCol, fromColOff = getf "from" "col", getf "from" "colOff" / 9525.0
+            let fromRow, fromRowOff = getf "from" "row", getf "from" "rowOff" / 9525.0
+            let toCol, toColOff = getf "to" "col", getf "to" "colOff" / 9525.0
+            let toRow, toRowOff = getf "to" "row", getf "to" "rowOff" / 9525.0
+            let wPx = (toCol - fromCol) * 64.0 + toColOff - fromColOff
+            let hPx = (toRow - fromRow) * 20.0 + toRowOff - fromRowOff
+            parseChart xlsxPath (i + 1)
+            |> Option.map (fun spec ->
+                { Spec = spec; FromCol = int fromCol; FromColOffPx = fromColOff
+                  FromRow = int fromRow; FromRowOffPx = fromRowOff; WidthPx = wPx; HeightPx = hPx }))
+        |> List.choose id
 
 // ---- layout --------------------------------------------------------------
 
@@ -315,9 +364,12 @@ let buildScatterChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
 let buildPieChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
     let titleH, _, _, _ = insets spec
     let total = List.sum spec.Values
+    let pal = if List.isEmpty spec.Palette then palette |> Array.toList else spec.Palette
     let cx = w / 2.0
-    let cy = titleH + (h - titleH) / 2.0
-    let r = (min w (h - titleH)) / 2.0 * 0.78
+    // Measured against Excel: centre ~45% down the below-title area, radius
+    // ~0.90 of half the smaller plot dimension.
+    let cy = titleH + (h - titleH) * 0.45
+    let r = (min w (h - titleH)) / 2.0 * 0.90
     let pt a = cx + r * sin a, cy - r * cos a       // a = radians from top, clockwise
     [ yield! frame spec w h
       if total > 0.0 then
@@ -328,7 +380,7 @@ let buildPieChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
               let steps = max 2 (int (ceil ((a1 - a0) / (System.Math.PI / 90.0))))
               let arc = [ for s in 0 .. steps -> let a = a0 + (a1 - a0) * float s / float steps in let px, py = pt a in VLine (px, py) ]
               let segs = VMove (cx, cy) :: arc @ [ VClose ]
-              yield VecPath (segs, Some palette.[i % palette.Length], Some ("#FFFFFF", 1.0))
+              yield VecPath (segs, Some (List.item (i % List.length pal) pal), Some ("#FFFFFF", 1.0))
               a0 <- a1 ]
 
 /// Dispatch on chart kind.

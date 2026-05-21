@@ -522,7 +522,7 @@ let private measureText
     segmentByFontCoverage font bold text
     |> List.sumBy (fun (f, s) -> Renderer.Text.measureWidth f pxSize s)
 
-let private viewportOf (model: SpreadsheetModel) width height : Viewport =
+let viewportOf (model: SpreadsheetModel) width height : Viewport =
     // Match Excel's column/row header pixel sizes at 96 DPI / 100% zoom so
     // parity screenshots align cell-for-cell with our PNG renders. Measured
     // against artifacts/excel/pandas-test1-sheet1-headings.png: the column
@@ -546,6 +546,11 @@ let private cellCommands (model: SpreadsheetModel) width height =
 
 let widget width height (model: SpreadsheetModel) =
     canvas width height (fun w h -> cellCommands model w h)
+
+/// Render the sheet with extra paint items (e.g. charts) overlaid on top, in
+/// the same viewport pixel space as the cells.
+let widgetWith width height (model: SpreadsheetModel) (extra: PaintItem list) =
+    canvas width height (fun w h -> (cellCommands model w h) @ (extra |> List.collect renderPaintItem))
 
 /// Render a standalone vector PaintItem scene (no model) on a white
 /// background — used to prove the VecPath/VecGroup primitives end-to-end.

@@ -60,8 +60,14 @@ at parity via ChartRender.fs (--charttest <xlsx> <n> <out>):
   clockwise from 12 o'clock), Area ✓ (edge-to-edge fill, MAE ~4),
   Scatter ✓ (numeric axes + full gridline grid, MAE ~4).
 - Each logged as a gallery row.
-- Remaining polish: pie radius slightly small; theme-driven colors (palette
-  hard-coded); wiring charts into the normal render pipeline (still --charttest).
+- Polish done: pie radius/centre calibrated (MAE ~4); palette read from
+  theme1.xml accents; charts WIRED INTO THE NORMAL PIPELINE — renderXlsx
+  overlays parseAllCharts results at anchor cell rects (Layout.cellRect) via
+  SpreadsheetGrid.widgetWith, so the whole file renders with charts in-place
+  (full-sheet MAE ~8.5 vs Excel).
+- Remaining: anchor->chart mapping assumes document order; chart sizing uses
+  default 64/20 col/row px; only sheet1 drawing; canvas/PDF paths render the
+  vector primitives but charts not yet wired into those runners.
 
 ## Charts (new)
 
