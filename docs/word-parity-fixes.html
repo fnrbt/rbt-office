@@ -153,6 +153,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Footnote rendering (reference + footnote area)</strong>
+          <span class="meta">Repro: <code>tests/repros/word/footnote-placement.docx</code></span>
+          <span class="meta">Real fixture class: any document with footnotes &mdash; a superscript reference mark in the body and the note text in a smaller (10pt) font at the bottom of the page.</span>
+          <span class="meta">Font check: Calibri in both Word PDF and our PDF rasters; all three columns are 120&nbsp;dpi PDF renders. Crop frames the footnote area at the page bottom.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/footnote-placement-word.png" style="--w:1020px; --x:0px; --y:758px; --s:0.7" alt="Word reference footnote area: separator and 10pt notes with superscript marks">
+          </div>
+          <div class="caption">Word: a short separator rule above the footnotes, each note prefixed by a superscript mark number, in a 10pt font at the bottom of the page.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/footnote-placement-after.png" style="--w:1020px; --x:0px; --y:758px; --s:0.7" alt="After footnote rendering fix">
+          </div>
+          <div class="caption">After: separator rule + footnotes at 10pt with superscript mark numbers, matching Word (footnote/body cap ratio 0.93 vs Word 0.90; separator within ~4px). Body references render as superscript numbers in the normal colour.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/footnote-placement-before.png" style="--w:1020px; --x:0px; --y:758px; --s:0.7" alt="Before footnote rendering fix">
+          </div>
+          <div class="caption">Before: footnotes were never painted &mdash; the page bottom was blank (and body references showed a purple <code>[footnote N]</code> placeholder).</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> render footnote references as superscript mark numbers and lay out / paint the footnote area at the correct size and position.</p>
+          <ul>
+            <li><code>DocumentProcessors.fs</code> &amp; <code>DocxReader.fs</code>: a footnote reference renders as its superscript mark number in the normal text colour, not the <code>[footnote N]</code> placeholder (native/PDF and browser paths).</li>
+            <li><code>src/Word/Layout.fs</code>: a shared pass lays out each page's footnotes (Calibri 10pt, superscript mark number) by their real height so the block ends just above the bottom margin; font size is in CSS px (10pt = 13.333) to match the editor's px convention.</li>
+            <li><code>src/Word/Paint.fs</code>: paints the footnote paragraphs + separator rule.</li>
+            <li><code>src/Word/WordLayout.fs</code>: footnote reference marks print black; <code>src/Word/Renderer.fs</code>: removed the duplicate canvas footnote drawing (shared layout now used).</li>
+            <li><code>tools/word-parity/create-focused-repros.py</code>: footnote repro with a real <code>FootnoteText</code> (10pt) style.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Nested table ordering inside a cell</strong>
           <span class="meta">Repro: <code>tests/repros/word/nested-table-cell-layout.docx</code></span>
           <span class="meta">Real fixture class: a table cell whose content interleaves text and a nested table, e.g. an intro paragraph, then a nested table, then a closing paragraph &mdash; common in form/invoice layouts.</span>
