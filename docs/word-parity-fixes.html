@@ -153,6 +153,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Endnote rendering (reference + endnotes at document end)</strong>
+          <span class="meta">Repro: <code>tests/repros/word/endnote-placement.docx</code></span>
+          <span class="meta">Real fixture class: any document with endnotes &mdash; a superscript reference mark in the body and the notes collected at the end of the document.</span>
+          <span class="meta">Font check: Calibri in both Word PDF and our PDF rasters; all three columns are 120&nbsp;dpi PDF renders. Crop frames the end of the body + the endnote area.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/endnote-placement-word.png" style="--w:1020px; --x:0px; --y:336px; --s:0.7" alt="Word reference: endnotes collected at the end of the document with lowercase roman marks">
+          </div>
+          <div class="caption">Word: a separator rule after the body, then the endnotes in a 10pt font, each prefixed by a superscript lowercase-roman mark (i, ii). Body references use the same roman marks.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/endnote-placement-after.png" style="--w:1020px; --x:0px; --y:336px; --s:0.7" alt="After endnote rendering">
+          </div>
+          <div class="caption">After: separator + 10pt endnotes with superscript lowercase-roman marks at the end of the document, matching Word (same position, size and numbering). Rendered via the shared layout, so PDF/native and browser agree.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/endnote-placement-before.png" style="--w:1020px; --x:0px; --y:336px; --s:0.7" alt="Before endnote rendering">
+          </div>
+          <div class="caption">Before: the PDF/native path never rendered endnotes &mdash; the end of the document was blank after the last body paragraph.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> render endnotes via the shared layout/paint pass, after all body content.</p>
+          <ul>
+            <li><code>src/Word/Layout.fs</code>: collect every endnote in document order and lay them out (Calibri 10pt) after the body content; mark numbers use lowercase roman (Word's endnote default).</li>
+            <li><code>src/Word/Paint.fs</code>: paint the endnote paragraphs + a separator rule above the first.</li>
+            <li><code>src/Word/Renderer.fs</code>: removed the canvas-only <code>renderEndnotes</code> so browser + PDF share one pass.</li>
+            <li><code>DocumentProcessors.fs</code> &amp; <code>DocxReader.fs</code>: endnote reference marks render as superscript lowercase-roman numbers.</li>
+            <li><code>tools/word-parity/create-focused-repros.py</code>: endnotes.xml support + endnote-placement repro with a real <code>EndnoteText</code> (10pt) style.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Footnote rendering (reference + footnote area)</strong>
           <span class="meta">Repro: <code>tests/repros/word/footnote-placement.docx</code></span>
           <span class="meta">Real fixture class: any document with footnotes &mdash; a superscript reference mark in the body and the note text in a smaller (10pt) font at the bottom of the page.</span>
