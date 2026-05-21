@@ -155,6 +155,30 @@
     <tbody>
       <tr>
         <td>
+          <strong>In-cell sparklines (line) — dashboard</strong>
+          <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code>, Dashboard sheet. Three x14 sparkline groups (cols F/G/H, rows 15–22) draw line sparklines from data on the <code>Sparklines Pivot</code> sheet. Colours: black (rgb), theme accent (green), blue (rgb).</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.5 / 1;">
+            <img src="../artifacts/excel/dash-sparklines.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Excel — sparklines">
+          </div>
+          <div class="caption">Excel: All Chains Trend / Next Look / Fashions Direct mini line charts per row.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:200px; aspect-ratio:2.5 / 1;">
+            <img src="../artifacts/native/dash-sparklines.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours — sparklines">
+          </div>
+          <div class="caption">Ours — line shapes and colours match. (Data-bar colour in the All Chains column is a separate fix.)</div>
+        </td>
+        <td>
+          <div class="placeholder">Before: sparkline cells were blank.</div>
+        </td>
+        <td>
+          <p><strong>Sparklines.</strong> <code>ChartRender.parseSparklines</code> reads the <code>x14:sparklineGroup</code> defs (extLst), resolves each line's data range across sheets (workbook rels → worksheet XML), and <code>buildSparkline</code> draws a scaled poly-line in the cell rect (<code>Layout.cellRect</code>) via <code>VecPath</code>. Wired into <code>renderSheetToPath</code> alongside charts.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Charts wired into the render pipeline — all six in-place</strong>
           <span class="meta">Repro: <code>tests/real-world/chart-zoo.xlsx</code> rendered through the <em>normal</em> path (<code>excel-native-runner chart-zoo.xlsx out.png</code>), not <code>--charttest</code>. Each chart is parsed from its <code>chartN.xml</code> + drawing anchor and overlaid at the anchor's cell rect (<code>Layout.cellRect</code>) via a translated <code>VecGroup</code>. Full-sheet MAE ~8.5 vs Excel.</span>
         </td>

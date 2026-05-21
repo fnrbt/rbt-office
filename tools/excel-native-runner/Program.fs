@@ -1426,7 +1426,7 @@ let private renderSheetToPath
         | None -> createEmpty 1048576 16384
     let model = RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) (Some sheetId) baseModel
 
-    // Overlay any charts from the sheet's drawing at their anchor cell rects.
+    // Overlay charts and sparklines at their anchor / cell rects.
     let viewport = Composit.Ui.SpreadsheetGrid.viewportOf model (float width) (float height)
     let chartItems =
         ChartRender.parseAllCharts inputPath
@@ -1435,7 +1435,12 @@ let private renderSheetToPath
             let left = r.X + pl.FromColOffPx
             let top = r.Y + pl.FromRowOffPx
             [ RedBat.Spreadsheet.Paint.VecGroup((1.0, 0.0, 0.0, 1.0, left, top), ChartRender.buildChart pl.Spec pl.WidthPx pl.HeightPx) ])
-    let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float width) (float height) model chartItems
+    let sparkItems =
+        ChartRender.parseSparklines inputPath sheetIndex
+        |> List.collect (fun sp ->
+            let r = RedBat.Spreadsheet.Layout.cellRect model viewport sp.Row sp.Col
+            ChartRender.buildSparkline sp.Values r sp.Color)
+    let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float width) (float height) model (chartItems @ sparkItems)
     let backend = Raster.create()
     let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend width height widget
     let png = PngEncode.encode framebuffer

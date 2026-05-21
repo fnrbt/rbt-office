@@ -160,6 +160,102 @@ let parseAllCharts (xlsxPath: string) : ChartPlacement list =
                   FromRow = int fromRow; FromRowOffPx = fromRowOff; WidthPx = wPx; HeightPx = hPx }))
         |> List.choose id
 
+// ---- sparklines ----------------------------------------------------------
+
+let private attr (name: string) (e: XElement) =
+    match e.Attribute(XName.Get name) with null -> None | a -> Some a.Value
+/// The `r:id` attribute lives in the relationships namespace.
+let private relId (e: XElement) =
+    match e.Attribute(XName.Get("id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")) with
+    | null -> None
+    | a -> Some a.Value
+
+let private colIndex0 (letters: string) =
+    (letters |> Seq.fold (fun acc ch -> acc * 26 + (int (Char.ToUpper ch) - int 'A' + 1)) 0) - 1
+/// "B38" -> (row0, col0).
+let private parseRef (r: string) =
+    let letters = r |> Seq.takeWhile Char.IsLetter |> Seq.toArray |> System.String
+    let digits = r |> Seq.skipWhile Char.IsLetter |> Seq.toArray |> System.String
+    (int digits - 1), colIndex0 letters
+
+/// Sheets in document (tab) order as (display name, "xl/worksheets/sheetN.xml")
+/// pairs, resolved through workbook.xml + its rels.
+let private sheetsInOrder (zip: ZipArchive) : (string * string) list =
+    match readEntry zip "xl/workbook.xml", readEntry zip "xl/_rels/workbook.xml.rels" with
+    | Some wb, Some rels ->
+        let relMap =
+            descendants "Relationship" (XDocument.Parse rels).Root
+            |> Seq.choose (fun r ->
+                match attr "Id" r, attr "Target" r with
+                | Some id, Some t -> Some (id, "xl/" + t.Replace("/xl/", "").TrimStart('/'))
+                | _ -> None)
+            |> Map.ofSeq
+        descendants "sheet" (XDocument.Parse wb).Root
+        |> Seq.choose (fun s ->
+            match attr "name" s, relId s |> Option.bind (fun id -> Map.tryFind id relMap) with
+            | Some name, Some file -> Some (name, file)
+            | _ -> None)
+        |> List.ofSeq
+    | _ -> []
+
+/// Numeric values of a single-row/column range, read from a sheet's XML.
+let private readRange (zip: ZipArchive) (sheetFile: string) (range: string) : float list =
+    match readEntry zip sheetFile with
+    | None -> []
+    | Some xml ->
+        let cells =
+            descendants "c" (XDocument.Parse xml).Root
+            |> Seq.choose (fun c ->
+                match attr "r" c, firstDesc "v" c with
+                | Some r, Some v -> Some (r, pf v.Value)
+                | _ -> None)
+            |> Map.ofSeq
+        match range.Split(':') with
+        | [| a; b |] ->
+            let r1, c1 = parseRef a
+            let r2, c2 = parseRef b
+            [ for r in (min r1 r2) .. (max r1 r2) do
+                for c in (min c1 c2) .. (max c1 c2) ->
+                    Map.tryFind (sprintf "%c%d" (char (int 'A' + c)) (r + 1)) cells ]
+            |> List.choose id
+        | _ -> []
+
+type Sparkline = { Row: int; Col: int; Values: float list; Color: string }
+
+/// Parse the x14 sparkline groups on the sheet at `sheetIndex` (tab order),
+/// resolving each line's data range (which may live on another sheet).
+let parseSparklines (xlsxPath: string) (sheetIndex: int) : Sparkline list =
+    use fs = File.OpenRead xlsxPath
+    use zip = new ZipArchive(fs, ZipArchiveMode.Read)
+    let sheets = sheetsInOrder zip
+    let fileMap = Map.ofList sheets
+    let accents = parseTheme zip
+    match sheets |> List.tryItem sheetIndex |> Option.bind (fun (_, f) -> readEntry zip f) with
+    | None -> []
+    | Some xml ->
+        [ for g in descendants "sparklineGroup" (XDocument.Parse xml).Root do
+            let color =
+                match firstDesc "colorSeries" g with
+                | Some cs ->
+                    match attr "rgb" cs with
+                    | Some hex when hex.Length = 8 -> "#" + hex.Substring 2
+                    | _ ->
+                        match attr "theme" cs |> Option.map int with
+                        | Some i when i >= 4 && i - 4 < List.length accents -> List.item (i - 4) accents
+                        | _ -> "#376092"
+                | None -> "#376092"
+            for sp in descendants "sparkline" g do
+                match firstDesc "f" sp, firstDesc "sqref" sp with
+                | Some fe, Some sq ->
+                    let row, col = parseRef sq.Value
+                    match fe.Value.Split('!') with     // "'Sheet Name'!B38:Y38"
+                    | [| sheetPart; rng |] ->
+                        match Map.tryFind (sheetPart.Trim('\'')) fileMap with
+                        | Some sf -> yield { Row = row; Col = col; Values = readRange zip sf rng; Color = color }
+                        | None -> ()
+                    | _ -> ()
+                | _ -> () ]
+
 // ---- layout --------------------------------------------------------------
 
 let private niceStep (dataMax: float) : float =
@@ -392,3 +488,19 @@ let buildChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
     | "scatter" -> buildScatterChart spec w h
     | "pie" -> buildPieChart spec w h
     | _ -> buildColumnChart spec w h
+
+/// Draw a line sparkline inside its cell rect (Excel insets ~2px and scales
+/// the series between the cell's min and max).
+let buildSparkline (values: float list) (rect: Rect) (color: string) : PaintItem list =
+    match values with
+    | [] | [_] -> []
+    | _ ->
+        let lo, hi = List.min values, List.max values
+        let span = if hi - lo < 1e-9 then 1.0 else hi - lo
+        let pad = 2.0
+        let x0, y0 = rect.X + pad, rect.Y + pad
+        let w, h = rect.Width - 2.0 * pad, rect.Height - 2.0 * pad
+        let n = List.length values
+        let pt i v = x0 + (float i / float (n - 1)) * w, y0 + h - ((v - lo) / span) * h
+        let segs = values |> List.mapi (fun i v -> let x, y = pt i v in if i = 0 then VMove (x, y) else VLine (x, y))
+        [ VecPath (segs, None, Some (color, 1.0)) ]
