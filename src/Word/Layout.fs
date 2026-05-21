@@ -2530,7 +2530,7 @@ let private shiftBlockY dy (layout: BlockLayout) =
 /// balances a column section that ends with a section break); otherwise each
 /// column fills to the page bottom and the flow wraps to the next page after
 /// `count` columns. Returns the placed layouts.
-let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (startPage: int) (startY: float) (balanced: bool) =
+let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) =
     let n = max 1 columns.Count
     let full = settings.Width - settings.PaddingLeft - settings.MarginRight
     let widthsArr =
@@ -2546,10 +2546,13 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
         x
     let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (pageTopOf page)
     let contentBottomAt page = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (pageTopOf page)
-    // Lay each paragraph out without the engine's own (uniform-stride) pagination —
-    // flowColumns controls column/page placement itself, so internal pagination
-    // would mis-position content whose absolute Y doesn't match the uniform grid.
-    let flowSettings = { settings with PageHeight = 1_000_000.0 }
+    // When pages are non-uniform (multi-section), lay each paragraph out without
+    // the engine's own (uniform-stride) pagination — flowColumns controls
+    // placement itself, and internal pagination would mis-position content whose
+    // absolute Y doesn't match the uniform grid. For single-section columns the
+    // grid is uniform, so keep the engine's pagination (and its widow/orphan
+    // handling) unchanged.
+    let flowSettings = if nonUniform then { settings with PageHeight = 1_000_000.0 } else settings
     // Balanced target height: lay the section out once at column width to get its
     // total height H, then each column targets H/n (on the start page).
     let balancedHeight =
@@ -2729,7 +2732,7 @@ let private layoutSections (settings: LayoutSettings) (measureText: TextMeasurer
         let secColumns = columnsOrSingle columns
         let secDoc = { doc with Blocks = blocks; PageSetup = { doc.PageSetup with Columns = columns } }
         let balanced = (not isFinal) && secColumns.Count >= 2
-        let secLayouts, endPage, endY = flowColumns secSettings measureText measureRange secDoc secColumns pageTopOf currentPage currentY balanced
+        let secLayouts, endPage, endY = flowColumns secSettings measureText measureRange secDoc secColumns pageTopOf true currentPage currentY balanced
         results.AddRange secLayouts
         // Record the geometry of every page this section used.
         for p in sectionBase .. endPage do recordPage p secSettings (pageTopOf p)
@@ -2748,7 +2751,7 @@ let layoutDocumentPages (settings: LayoutSettings) (measureText: TextMeasurer) (
             match columns with
             | Some c when c.Count >= 2 ->
                 let stride = pageHeight settings + pageGap
-                let r, _, _ = flowColumns settings measureText measureRange doc c (fun p -> float p * stride) 0 (WordLayout.Page.contentTop settings.PaddingTop 0.0) false
+                let r, _, _ = flowColumns settings measureText measureRange doc c (fun p -> float p * stride) false 0 (WordLayout.Page.contentTop settings.PaddingTop 0.0) false
                 r
             | _ ->
                 let firstPass, placedAfterFirst =
