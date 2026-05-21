@@ -2347,6 +2347,7 @@ let private layoutDocumentWithRangeAndInitial
                         TextBuffer.ofString noteString
                         |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
                         |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
+                        |> TextBuffer.setVertAlign 0 id.Length (Some "superscript")
                     let para = { Id = sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
                     let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth tempY 0.0 para Map.empty
                     tempY <- tempY + layout.Height
