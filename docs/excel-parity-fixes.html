@@ -155,6 +155,39 @@
     <tbody>
       <tr>
         <td>
+          <strong>Manual line breaks (<code>\n</code>) are ignored when wrapText is OFF — no row inflation</strong>
+          <span class="meta">Target: <code>tests/real-world/jumeirah-hotel.xlsx</code>. Cell G68 = <code>"Uses of \nFunds:"</code> — an embedded break but wrapText OFF. Crops aligned on the row-66 band, gridlines off, MS Calibri.</span>
+          <span class="meta">Part of the <code>jumeirah-hotel</code> full-parity goal.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:330px; aspect-ratio:2.18 / 1;">
+            <img src="../artifacts/excel/jumeirah-hardbreak-crop.png" style="--w:720px; --x:0px; --y:0px; --s:1.0" alt="Excel — Sources/Uses header one line">
+          </div>
+          <div class="caption">Excel: the "Sources of Funds:" / "Uses of Funds:" gray header is one row tall (row 68 = 15.75 pt); the break in "Uses of \nFunds:" is ignored, shown as "Uses of Funds:".</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:330px; aspect-ratio:2.18 / 1;">
+            <img src="../artifacts/native/jumeirah-hardbreak-after.png" style="--w:720px; --x:0px; --y:0px; --s:1.0" alt="Ours after — one row, aligned">
+          </div>
+          <div class="caption">After: row 68 is one row tall, "Uses of Funds:" on one line, and everything below (Market Data band, occupancy rows) realigns with Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:330px; aspect-ratio:2.18 / 1;">
+            <img src="../artifacts/baseline/jumeirah-hardbreak-before.png" style="--w:720px; --x:0px; --y:0px; --s:1.0" alt="Ours before — row doubled in height">
+          </div>
+          <div class="caption">Before: the <code>\n</code> grew row 68 to two lines (31.5 pt), inflating the gray header box and pushing the rest of the section down out of alignment.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> wrapping and manual line breaks only apply when wrapText is ON (Excel auto-enables wrapText on Alt+Enter; with it off, the break is ignored and the text renders on one line).</p>
+          <ul>
+            <li><code>excel-native-runner</code> auto-grow: <code>needsGrow</code> requires <code>WrapText</code> — a bare <code>\n</code> no longer grows the row (was 31.5 pt, now 15.75 pt).</li>
+            <li><code>Paint.fs</code>: single-line render when wrapText is off, with the <code>\n</code> stripped ("Uses of Funds:" single space, matching Excel — not the double space a space-substitution would give).</li>
+            <li>Gate clean; Fable clean. Canvas path already gated on wrapText.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Center Across Selection (<code>horizontal="centerContinuous"</code>) centres text across the cell run</strong>
           <span class="meta">Target: <code>tests/real-world/lyric-multifamily.xlsx</code> "Lyric-PF-DCF", the "Projected:" header (cell G58 + empty centerContinuous cells H58…). Crops aligned on cell content, gridlines off, MS Calibri.</span>
           <span class="meta">Part of the <code>lyric-multifamily</code> full-parity goal.</span>

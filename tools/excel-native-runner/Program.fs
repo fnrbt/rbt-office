@@ -1148,14 +1148,14 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             // cell text has literal `\n` line breaks (Alt+Enter authored).
             // For the wrap case we count word-wrapped lines; for the
             // hard-break case we just count `\n`+1 lines (no word wrap).
-            let hasHardBreak = text.Contains('\n')
             let colWidth =
                 Map.tryFind addr.Col columnWidths
                 |> Option.defaultValue defaultColWidthPx
-            // A hidden column (0 width) never grows the row — Excel doesn't wrap
-            // text in a hidden column. Without this, the hidden cell's text
-            // wraps to one glyph per line and inflates the row height.
-            let needsGrow = (cd.Format.WrapText || hasHardBreak) && text.Length > 0 && colWidth > 0.0
+            // Excel only honors wrapping / manual line breaks (and grows the row)
+            // when wrapText is ON. A cell with an embedded `\n` but wrapText OFF
+            // renders on a single line (Excel ignores the break), so it must NOT
+            // grow the row. A hidden column (0 width) never grows either.
+            let needsGrow = cd.Format.WrapText && text.Length > 0 && colWidth > 0.0
             let alreadyExplicit = Map.containsKey addr.Row explicitRows
             if needsGrow && not alreadyExplicit then
                 let fontPt = cd.Format.FontSize |> Option.map float |> Option.defaultValue 11.0

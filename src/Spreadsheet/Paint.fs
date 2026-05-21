@@ -567,11 +567,14 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     |> Option.orElse format.TextColor
                     |> Option.defaultValue "#000000"
                 let align = alignFromFormat format value
-                let hasHardBreak = displayText.Contains("\n")
+                // Wrapping and manual `\n` line breaks only apply when wrapText
+                // is ON. With wrapText OFF, Excel renders on a single line and
+                // ignores any embedded break (shown as a space), so the row is
+                // not multi-line.
                 let lines =
-                    if format.WrapText || hasHardBreak then
+                    if format.WrapText then
                         wrapLines measure textRect.Width fontPt displayText
-                    else [ displayText ]
+                    else [ displayText.Replace("\n", "") ]
                 let vAlign =
                     match format.VerticalAlign |> Option.map (fun s -> s.ToLowerInvariant()) with
                     | Some "top" -> VAlignTop
