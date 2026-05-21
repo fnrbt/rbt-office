@@ -1614,6 +1614,22 @@ def main():
     )
     print(table_in_cols_path)
 
+    # Per-section page setup: a landscape first section (its sectPr on the break
+    # paragraph) followed by a portrait section (body sectPr, nextPage). Page 1
+    # is landscape, page 2 portrait.
+    _land_mar = '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720"/>'
+    landscape_path = out_dir / "landscape-section.docx"
+    write_docx(
+        landscape_path,
+        (paragraph("Landscape section (page 1)", "Heading1")
+         + repeated_long_paragraphs(3)
+         + f'<w:p><w:pPr><w:sectPr><w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/>{_land_mar}</w:sectPr></w:pPr></w:p>'
+         + paragraph("Portrait section (page 2)", "Heading1")
+         + repeated_long_paragraphs(3)),
+        page_geometry={"section_type": "nextPage"},
+    )
+    print(landscape_path)
+
     # Manual column break: content after <w:br w:type="column"/> jumps to the
     # next column, leaving column 1 short.
     colbreak_path = out_dir / "column-break.docx"

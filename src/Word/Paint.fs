@@ -898,18 +898,17 @@ let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureT
         | TextBox _ -> ()
     List.ofSeq commands
 
-let private headerFooterCommands (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) layouts pageCount =
-    let stride = settings.PageHeight + pageGap
-    [ for pageIndex in 0 .. pageCount - 1 do
+let private headerFooterCommands (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) layouts (pages: PageInfo list) =
+    let pageCount = pages.Length
+    [ for pageIndex, info in List.indexed pages do
         let pageNumber = pageIndex + 1
-        let pageY = float pageIndex * stride
         let headers = blocksForPage settings doc.PageSetup pageIndex true (doc.Headers |> List.map Paragraph) doc.HeaderParts layouts
         let footers = blocksForPage settings doc.PageSetup pageIndex false (doc.Footers |> List.map Paragraph) doc.FooterParts layouts
         if not headers.IsEmpty then
-            let headerY = pageY + max 8.0 doc.PageSetup.HeaderDistance
+            let headerY = info.Top + max 8.0 doc.PageSetup.HeaderDistance
             yield! repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount headerY headers
         if not footers.IsEmpty then
-            let footerY = pageY + settings.PageHeight - max 16.0 doc.PageSetup.FooterDistance - settings.LineHeight * 0.78
+            let footerY = info.Top + info.Height - max 16.0 doc.PageSetup.FooterDistance - settings.LineHeight * 0.78
             yield! repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount footerY footers ]
 
 let private textBoxCommands (settings: LayoutSettings) fontFamily measureText measureRange (textBox: TextBoxBlock) =
@@ -1031,7 +1030,10 @@ let rec private addNestedTableBorders (styleContext: Document option) (settings:
                 addNestedTableBorders styleContext settings measureText measureRange layoutsById commands nestedTable
 
 let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
-    let layouts = cachedLayouts |> Option.defaultWith (fun () -> layoutDocumentWithRange settings measureText measureRange doc)
+    let layouts, pages =
+        match cachedLayouts with
+        | Some ls -> ls, uniformPageInfos settings ls
+        | None -> layoutDocumentPages settings measureText measureRange doc
     let layoutById = layouts |> List.map (fun layout -> layout.BlockId, layout) |> Map.ofList
     let layoutsById = layouts |> List.groupBy _.BlockId |> Map.ofList
     let commands = ResizeArray<PaintCommand>()
@@ -1095,12 +1097,8 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
             let width = if page = startPage then 192.0 else fullWidth
             commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 8.0, separatorX + width, topY - 8.0)))
 
-    let bottom =
-        layouts
-        |> List.map (fun layout -> layout.Y + layout.Height)
-        |> List.fold max settings.PaddingTop
-    let stride = settings.PageHeight + pageGap
-    let pageCount = max 1 (int (floor (max 0.0 bottom / stride)) + 1)
+    let pageArr = Array.ofList pages
+    let pageCount = max 1 pageArr.Length
 
     // Column separator rules (w:sep): a vertical line centred in each gap,
     // spanning the body content on each page.
@@ -1114,12 +1112,12 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
             |> List.filter (fun layout -> not (layout.BlockId.StartsWith footnoteBlockIdPrefix || layout.BlockId.StartsWith endnoteBlockIdPrefix))
             |> List.collect (fun layout -> layout.Lines)
         for page in 0 .. pageCount - 1 do
-            let pageTop = float page * stride
-            let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-            let contentBottom = WordLayout.Page.contentBottom settings.PageHeight settings.MarginBottom pageTop
+            let info = pageArr.[page]
+            let contentTop = info.Top + info.MarginTop
+            let contentBottom = info.Top + info.Height - info.MarginBottom
             let pageBottom =
                 bodyLines
-                |> List.filter (fun line -> int (floor (line.Y / stride)) = page)
+                |> List.filter (fun line -> line.Y >= info.Top - 0.5 && line.Y < info.Top + info.Height)
                 |> List.map (fun line -> line.Y + line.Height)
                 |> function [] -> contentTop | ys -> min contentBottom (List.max ys)
             if pageBottom > contentTop then
@@ -1128,8 +1126,8 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
                     commands.Add(StrokeLine ("#000000", 0.5, 0, 0.0, x, contentTop, x, pageBottom))
     | _ -> ()
 
-    commands.AddRange(headerFooterCommands settings fontFamily measureText measureRange doc layouts pageCount)
-    layouts, List.ofSeq commands, pageCount
+    commands.AddRange(headerFooterCommands settings fontFamily measureText measureRange doc layouts pages)
+    layouts, List.ofSeq commands, pages
 
 let collectDocumentCommands settings fontFamily measureText measureRange doc =
     collectDocumentCommandsWithLayouts settings fontFamily measureText measureRange doc None

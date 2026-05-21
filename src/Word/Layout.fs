@@ -2546,6 +2546,10 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
         x
     let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (pageTopOf page)
     let contentBottomAt page = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (pageTopOf page)
+    // Lay each paragraph out without the engine's own (uniform-stride) pagination —
+    // flowColumns controls column/page placement itself, so internal pagination
+    // would mis-position content whose absolute Y doesn't match the uniform grid.
+    let flowSettings = { settings with PageHeight = 1_000_000.0 }
     // Balanced target height: lay the section out once at column width to get its
     // total height H, then each column targets H/n (on the start page).
     let balancedHeight =
@@ -2592,7 +2596,7 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
             while not placed do
                 let colBottom = columnBottom ()
                 let layout, newCounters, _, _ =
-                    layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInDocument doc) remaining counters [] []
+                    layoutParagraphAtWithStyleAndObstaclesWithRange flowSettings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInDocument doc) remaining counters [] []
                 let fitCount = layout.Lines |> List.filter (fun line -> line.Y + line.Height <= colBottom + 0.5) |> List.length
                 if fitCount = layout.Lines.Length then
                     results.Add(shiftBlockX (columnDx col) layout)
@@ -2674,7 +2678,7 @@ let private pageInfoOf (s: LayoutSettings) top =
     { Top = top; Width = s.Width; Height = pageHeight s; MarginTop = s.PaddingTop; MarginBottom = s.MarginBottom; MarginLeft = s.PaddingLeft; MarginRight = s.MarginRight }
 
 /// The uniform page list for a single-section document (legacy stride model).
-let private uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
+let uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
     let stride = pageHeight settings + pageGap
     let bottom = layouts |> List.collect (fun l -> l.Lines) |> List.map (fun l -> l.Y + l.Height) |> (function [] -> 0.0 | ys -> List.max ys)
     let pageCount = max 1 (int (floor (max 0.0 bottom / stride)) + 1)

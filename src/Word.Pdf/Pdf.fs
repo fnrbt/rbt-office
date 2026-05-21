@@ -82,7 +82,7 @@ type RenderOptions = {
 type PaintPlan = {
     Settings: WordCanvasLayout.LayoutSettings
     Commands: WordPaint.PaintCommand list
-    PageCount: int
+    Pages: WordCanvasLayout.PageInfo list
     ImageSources: string list
     ImageUses: ImageUse list
 }
@@ -452,18 +452,25 @@ let private intersectsPage pageTop pageHeight command =
     | None -> false
     | Some (_, y1, _, y2) -> y2 >= pageTop && y1 <= pageTop + pageHeight
 
-let private commandPageRange stride pageCount command =
+// Index of the page whose [Top, Top+Height) band contains y (clamped).
+let private pageIndexForY (pages: WordCanvasLayout.PageInfo[]) y =
+    let mutable idx = 0
+    for p in 0 .. pages.Length - 1 do
+        if y >= pages.[p].Top - 0.01 then idx <- p
+    idx
+
+let private commandPageRange (pages: WordCanvasLayout.PageInfo[]) command =
     match commandBounds command with
     | None -> None
     | Some (_, y1, _, y2) ->
-        let firstPage = int (floor (max 0.0 y1 / stride)) |> max 0 |> min (pageCount - 1)
-        let lastPage = int (floor (max 0.0 y2 / stride)) |> max 0 |> min (pageCount - 1)
+        let firstPage = pageIndexForY pages (max 0.0 y1)
+        let lastPage = pageIndexForY pages (max 0.0 y2)
         if lastPage < firstPage then None else Some (firstPage, lastPage)
 
-let private bucketCommandsByPage stride pageCount commands =
-    let buckets = Array.init pageCount (fun _ -> ResizeArray<WordPaint.PaintCommand>())
+let private bucketCommandsByPage (pages: WordCanvasLayout.PageInfo[]) commands =
+    let buckets = Array.init pages.Length (fun _ -> ResizeArray<WordPaint.PaintCommand>())
     for command in commands do
-        match commandPageRange stride pageCount command with
+        match commandPageRange pages command with
         | None -> ()
         | Some (firstPage, lastPage) ->
             for pageIndex in firstPage .. lastPage do
@@ -650,10 +657,10 @@ let collectPaintCommandsWithLayouts defaultFontFamily (measureText: WordCanvasLa
         LongTrailingSpaceFitSafety = 0.25
     }
     let layoutStart = timingStart ()
-    let layouts, paintCommands, pageCount = WordPaint.collectDocumentCommandsWithLayouts settings defaultFontFamily measureText measureRange doc cachedLayouts
+    let layouts, paintCommands, pages = WordPaint.collectDocumentCommandsWithLayouts settings defaultFontFamily measureText measureRange doc cachedLayouts
     let layoutLabel = if cachedLayouts.IsSome then "collect:cachedLayouts:done" else "collect:layoutDocument:done"
-    traceElapsed (sprintf "%s layouts=%d commands=%d pages=%d" layoutLabel layouts.Length paintCommands.Length pageCount) layoutStart
-    settings, paintCommands, pageCount
+    traceElapsed (sprintf "%s layouts=%d commands=%d pages=%d" layoutLabel layouts.Length paintCommands.Length pages.Length) layoutStart
+    settings, paintCommands, pages
 
 let collectPaintCommands defaultFontFamily (measureText: WordCanvasLayout.TextMeasurer) (measureRange: WordCanvasLayout.TextRangeMeasurer) (doc: Document) =
     collectPaintCommandsWithLayouts defaultFontFamily measureText measureRange doc None
@@ -676,10 +683,10 @@ let private collectPaintPlanWithCachedLayouts (cachedLayouts: WordCanvasLayout.B
     let textContext = createTextContext options
     let measureText = createContextMeasurer textContext
     let measureRange = createContextRangeMeasurer textContext
-    let settings, commands, pageCount = collectPaintCommandsWithLayouts options.DefaultFontFamily measureText measureRange doc cachedLayouts
+    let settings, commands, pages = collectPaintCommandsWithLayouts options.DefaultFontFamily measureText measureRange doc cachedLayouts
     { Settings = settings
       Commands = commands
-      PageCount = pageCount
+      Pages = pages
       ImageSources = imageSourcesFromCommands commands
       ImageUses = imageUsesFromCommands commands }
 
@@ -701,23 +708,23 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
     trace "toBytes:createTextContext:done"
     let settings = plan.Settings
     let commands = plan.Commands
-    let pageCount = plan.PageCount
+    let pages = plan.Pages |> Array.ofList
+    let pageCount = pages.Length
     trace (sprintf "toBytes:paintPlan commands=%d pages=%d" commands.Length pageCount)
     let builder = PdfDoc.create()
     let imageNames = addImages builder options.Images
-    let stride = settings.PageHeight + WordModelLayout.Page.gap
-    let commandBuckets = bucketCommandsByPage stride pageCount commands
+    let commandBuckets = bucketCommandsByPage pages commands
     trace "toBytes:pageOps:start"
     let pageOps =
         [ for pageIndex in 0 .. pageCount - 1 do
-            let pageTop = float pageIndex * stride
+            let info = pages.[pageIndex]
             let ops = ResizeArray<PdfDraw.DrawOp>()
             ops.Add(PdfDraw.SetFillColor PdfColor.white)
-            ops.Add(PdfDraw.Rect (0.0, 0.0, settings.Width, settings.PageHeight))
+            ops.Add(PdfDraw.Rect (0.0, 0.0, info.Width, info.Height))
             ops.Add(PdfDraw.Fill)
             for command in commandBuckets.[pageIndex] do
-                if intersectsPage pageTop settings.PageHeight command then
-                    ops.AddRange(pdfOpsForCommand textContext imageNames pageTop settings.PageHeight command)
+                if intersectsPage info.Top info.Height command then
+                    ops.AddRange(pdfOpsForCommand textContext imageNames info.Top info.Height command)
             yield List.ofSeq ops ]
     trace (sprintf "toBytes:pageOps:done pages=%d" pageOps.Length)
     if traceTimingEnabled then
@@ -754,11 +761,13 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
         |> List.distinct
 
     trace "toBytes:addPages:start"
-    let pageScale = pdfScaleForPageWidth settings.Width
-    for ops in pageOps do
-        let pageSize = settings.Width * pageScale, settings.PageHeight * pageScale
-        let usedImages = imageNames |> Map.toList |> List.map snd
-        PdfDoc.addPage builder pageSize pageFonts usedImages (ops |> remapPdfGlyphOps remaps |> scalePageOps pageScale) |> ignore
+    let usedImages = imageNames |> Map.toList |> List.map snd
+    pageOps
+    |> List.iteri (fun pageIndex ops ->
+        let info = pages.[pageIndex]
+        let pageScale = pdfScaleForPageWidth info.Width
+        let pageSize = info.Width * pageScale, info.Height * pageScale
+        PdfDoc.addPage builder pageSize pageFonts usedImages (ops |> remapPdfGlyphOps remaps |> scalePageOps pageScale) |> ignore)
     trace "toBytes:addPages:done"
 
     trace "toBytes:serialize:start"
@@ -769,7 +778,7 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
 let private toBytesWithCachedLayouts (cachedLayouts: WordCanvasLayout.BlockLayout list option) (options: RenderOptions) (doc: Document) =
     trace "toBytes:createPaintPlan:start"
     let plan = collectPaintPlanWithCachedLayouts cachedLayouts options doc
-    trace (sprintf "toBytes:createPaintPlan:done commands=%d pages=%d" plan.Commands.Length plan.PageCount)
+    trace (sprintf "toBytes:createPaintPlan:done commands=%d pages=%d" plan.Commands.Length plan.Pages.Length)
     toBytesWithPaintPlan options plan
 
 let toBytes (options: RenderOptions) (doc: Document) =
