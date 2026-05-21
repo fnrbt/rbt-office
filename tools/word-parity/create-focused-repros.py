@@ -1593,6 +1593,27 @@ def main():
     )
     print(balanced_path)
 
+    # Table inside a multi-column section: the table (forced into column 2 by a
+    # column break) keeps its borders aligned with the cells inside the column.
+    _tbl_borders = "".join(
+        f'<w:{n} w:val="single" w:sz="4" w:space="0" w:color="000000"/>'
+        for n in ("top", "left", "bottom", "right", "insideH", "insideV"))
+    def _tbl_cell(t):
+        return f'<w:tc><w:tcPr><w:tcW w:w="1400" w:type="dxa"/></w:tcPr><w:p><w:r><w:t>{t}</w:t></w:r></w:p></w:tc>'
+    _tbl = (f'<w:tbl><w:tblPr><w:tblW w:w="2800" w:type="dxa"/><w:tblBorders>{_tbl_borders}</w:tblBorders></w:tblPr>'
+            '<w:tblGrid><w:gridCol w:w="1400"/><w:gridCol w:w="1400"/></w:tblGrid>'
+            f'<w:tr>{_tbl_cell("A")}{_tbl_cell("B")}</w:tr><w:tr>{_tbl_cell("C")}{_tbl_cell("D")}</w:tr></w:tbl>')
+    table_in_cols_path = out_dir / "table-in-columns.docx"
+    write_docx(
+        table_in_cols_path,
+        (paragraph("Table in columns repro", "Heading1")
+         + repeated_long_paragraphs(2)
+         + '<w:p><w:r><w:br w:type="column"/></w:r></w:p>'
+         + _tbl + repeated_long_paragraphs(2)),
+        page_geometry={"cols": '<w:cols w:num="2" w:space="720"/>'},
+    )
+    print(table_in_cols_path)
+
     # Manual column break: content after <w:br w:type="column"/> jumps to the
     # next column, leaving column 1 short.
     colbreak_path = out_dir / "column-break.docx"

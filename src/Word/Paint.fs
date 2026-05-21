@@ -953,11 +953,39 @@ let private canonicalTableYFromLayouts settings measureText measureRange doc (la
                     | plannedValues -> List.min plannedValues
             Some (firstActualContentY - firstPlannedContentOffset)
 
+let private shiftCommandX dx command =
+    match command with
+    | DrawText (t, s, x, b, w) -> DrawText (t, s, x + dx, b, w)
+    | DrawUnderline (c, x, y, w) -> DrawUnderline (c, x + dx, y, w)
+    | DrawImage (s, x, y, w, h, cl, ct, cr, cb) -> DrawImage (s, x + dx, y, w, h, cl, ct, cr, cb)
+    | FillRect (c, x, y, w, h) -> FillRect (c, x + dx, y, w, h)
+    | StrokeRect (c, lw, x, y, w, h) -> StrokeRect (c, lw, x + dx, y, w, h)
+    | StrokeLine (c, lw, ds, doff, x1, y1, x2, y2) -> StrokeLine (c, lw, ds, doff, x1 + dx, y1, x2 + dx, y2)
+
+/// When a table sits in a multi-column section its cell layouts were shifted by
+/// the column offset (their Indent gained columnDx); the freshly built plan is
+/// at full width. The difference is the X offset to shift the borders by.
+let private tableColumnOffset (layoutById: Map<BlockId, BlockLayout>) (plan: TableLayoutPlan) (tableBlock: TableBlock) =
+    let cellIds = tableBlock.Rows |> List.collect (fun row -> row.Cells |> List.collect (fun cell -> cell.Content |> List.map (fun p -> p.Id)))
+    let cellIdSet = Set.ofList cellIds
+    let actual = cellIds |> List.choose (fun id -> layoutById |> Map.tryFind id |> Option.map (fun l -> l.Indent))
+    let planned =
+        plan.Rows
+        |> List.collect (fun row -> row.Measurement.CellGroups |> List.collect (fun g -> g.Layouts))
+        |> List.filter (fun (l: BlockLayout) -> cellIdSet.Contains l.BlockId)
+        |> List.map (fun l -> l.Indent)
+    match actual, planned with
+    | (_ :: _), (_ :: _) -> List.min actual - List.min planned
+    | _ -> 0.0
+
 let private tableFragmentPaintCommandsForDocument settings measureText measureRange doc layoutById tableBlock =
     canonicalTableYFromLayouts settings measureText measureRange doc layoutById tableBlock
     |> Option.map (fun tableY ->
         let plan = buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY
-        tableFragmentPaintCommands plan, plan.NextY)
+        let dx = tableColumnOffset layoutById plan tableBlock
+        let commands = tableFragmentPaintCommands plan
+        let commands = if abs dx > 0.5 then commands |> List.map (shiftCommandX dx) else commands
+        commands, plan.NextY)
 
 let rec private addTableTextCommands (settings: LayoutSettings) fontFamily measureText layoutsById (commands: ResizeArray<PaintCommand>) (tableBlock: TableBlock) =
     for row in tableBlock.Rows do
