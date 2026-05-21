@@ -155,6 +155,30 @@
     <tbody>
       <tr>
         <td>
+          <strong>Conditional-format colours: resolve <code>theme</code> + <code>tint</code> (data bars / color scales)</strong>
+          <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code> — the "All Chains" data bar is <code>&lt;color theme="0" tint="-0.35"/&gt;</code> (theme white, darkened 35% → grey). We were reading only the <code>rgb</code> attribute, so it fell back to the default blue.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:180px; aspect-ratio:1.1 / 1;">
+            <img src="../artifacts/excel/dash-databar.png" style="--w:200px; --x:0px; --y:0px; --s:1.0" alt="Excel — grey data bars">
+          </div>
+          <div class="caption">Excel: grey data bars behind the All Chains values.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:180px; aspect-ratio:1.1 / 1;">
+            <img src="../artifacts/native/dash-databar.png" style="--w:200px; --x:0px; --y:0px; --s:1.0" alt="Ours — grey data bars">
+          </div>
+          <div class="caption">After: grey, matching Excel (bar lengths align).</div>
+        </td>
+        <td>
+          <div class="placeholder">Before: data bars rendered in the fallback blue.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>parseRule</code> (CF) now threads the workbook <code>themeColors</code> and resolves dataBar / colorScale colours through <code>resolveColorElement</code> (rgb → theme + tint → indexed) instead of <code>rgb</code> only. Fixes theme-coloured colour scales too.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>In-cell sparklines (line) — dashboard</strong>
           <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code>, Dashboard sheet. Three x14 sparkline groups (cols F/G/H, rows 15–22) draw line sparklines from data on the <code>Sparklines Pivot</code> sheet. Colours: black (rgb), theme accent (green), blue (rgb).</span>
         </td>

@@ -1868,7 +1868,7 @@ module CellComments =
 
 // Conditional Formatting parsing
 module ConditionalFormats =
-    let parseRule (ruleNode: XmlNode) : ConditionalFormatRule =
+    let parseRule (themeColors: string array) (ruleNode: XmlNode) : ConditionalFormatRule =
         let ruleType = Xml.attr "type" ruleNode |> Option.defaultValue "cellIs"
         let priority = Xml.attr "priority" ruleNode |> Option.map int
         let stopIfTrue = Xml.attr "stopIfTrue" ruleNode |> Option.map (fun v -> v = "1") |> Option.defaultValue false
@@ -1894,10 +1894,7 @@ module ConditionalFormats =
                         CfvoType = Xml.attr "type" cfvo |> Option.defaultValue "min"
                         CfvoValue = Xml.attr "val" cfvo
                         Color =
-                            Xml.attr "rgb" colorNode
-                            |> Option.map (fun raw ->
-                                let t = raw.TrimStart('#')
-                                if t.Length = 8 then t.Substring 2 else t)
+                            Xlsx.resolveColorElement themeColors colorNode
                             |> Option.defaultValue "FFFFFF"
                     }))
             |> Option.defaultValue []
@@ -1916,8 +1913,7 @@ module ConditionalFormats =
                 let color =
                     Ns.descendantsNs "color" db
                     |> List.tryHead
-                    |> Option.bind (Xml.attr "rgb")
-                    |> Option.map stripAlpha
+                    |> Option.bind (Xlsx.resolveColorElement themeColors)
                 color, cfvoPairs db
             | None -> None, []
         // <iconSet iconSet="3TrafficLights1"><cfvo .../>...</iconSet>
@@ -1966,20 +1962,20 @@ module ConditionalFormats =
             StopIfTrue = stopIfTrue
         }
 
-    let parseConditionalFormat (cfNode: XmlNode) : ConditionalFormat option =
+    let parseConditionalFormat (themeColors: string array) (cfNode: XmlNode) : ConditionalFormat option =
         Xml.attr "sqref" cfNode
         |> Option.map (fun range ->
             let rules =
                 Ns.descendantsNs "cfRule" cfNode
-                |> List.map parseRule
+                |> List.map (parseRule themeColors)
             {
                 Range = range
                 Rules = rules
             })
 
-    let parseConditionalFormats (sheet: XmlNode) : ConditionalFormat list =
+    let parseConditionalFormats (themeColors: string array) (sheet: XmlNode) : ConditionalFormat list =
         Ns.descendantsNs "conditionalFormatting" sheet
-        |> List.choose parseConditionalFormat
+        |> List.choose (parseConditionalFormat themeColors)
 
     /// Parse the `<dxfs>` table out of styles.xml. Each `<dxf>` carries a
     /// partial font + fill; conditional-format rules reference them by
@@ -2339,7 +2335,7 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
                                 let sheet = XmlDsl.parse xml
 
                                 // Parse conditional formats and data validations from sheet
-                                let condFormats = ConditionalFormats.parseConditionalFormats sheet
+                                let condFormats = ConditionalFormats.parseConditionalFormats themeColors sheet
                                 let dataVals = DataValidations.parseDataValidations sheet
 
                                 // Load comments for this sheet
@@ -2590,7 +2586,7 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
                     match ZipInterop.getFileTextNative archive sheetPath with
                     | Some xml ->
                         let sheet = XmlDsl.parse xml
-                        let condFormats = ConditionalFormats.parseConditionalFormats sheet
+                        let condFormats = ConditionalFormats.parseConditionalFormats themeColors sheet
                         let dataVals = DataValidations.parseDataValidations sheet
                         let sheetRels = loadSheetRels sheetPath
                         let tables = loadSheetTables sheetPath sheetRels
