@@ -998,6 +998,7 @@ let private pageSetupFromEditor (value: obj) =
                             | w when isNullOrUndefined w -> []
                             | w -> [ for i in 0 .. jsArrayLength w - 1 -> let o = jsArrayGet w i in (optionalFloat (o?W) |> Option.defaultValue 0.0, optionalFloat (o?S) |> Option.defaultValue 0.0) ] }: SectionColumns)
             | _ -> None
+        SectionStart = optionalString (value?SectionStart)
     }
 
 /// Import EditorParagraphs from Office.Formats into Word document

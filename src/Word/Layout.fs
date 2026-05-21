@@ -2644,7 +2644,8 @@ let private splitIntoSections (doc: Document) =
             result.Add(List.ofSeq current, para.Metadata.SectionColumns, para.Metadata.SectionBreak, false)
             current <- ResizeArray<Block>()
         | _ -> ()
-    result.Add(List.ofSeq current, doc.PageSetup.Columns, None, true)
+    // The final section's start type comes from the body sectPr.
+    result.Add(List.ofSeq current, doc.PageSetup.Columns, doc.PageSetup.SectionStart, true)
     List.ofSeq result
 
 let private columnsOrSingle (columns: SectionColumns option) =
@@ -2662,21 +2663,22 @@ let private layoutSections (settings: LayoutSettings) (measureText: TextMeasurer
     let mutable page = 0
     let mutable y = contentTopAt 0
     sections
-    |> List.iter (fun (blocks, columns, breakType, isFinal) ->
+    |> List.iteri (fun i (blocks, columns, breakType, isFinal) ->
+        // Stitch BEFORE this section using its own start type: a continuous
+        // section continues on the same page below the previous one; otherwise
+        // it starts on a new page.
+        if i > 0 then
+            match breakType with
+            | Some "continuous" -> ()
+            | _ -> page <- page + 1; y <- contentTopAt page
         let secColumns = columnsOrSingle columns
         let secDoc = { doc with Blocks = blocks; PageSetup = { doc.PageSetup with Columns = columns } }
         let balanced = (not isFinal) && secColumns.Count >= 2
         let secLayouts = flowColumns settings measureText measureRange secDoc secColumns page y balanced
         results.AddRange secLayouts
-        if not isFinal then
-            let bottom = secLayouts |> List.collect (fun l -> l.Lines) |> List.map (fun l -> l.Y + l.Height) |> (function [] -> y | ys -> List.max ys)
-            match breakType with
-            | Some "continuous" ->
-                page <- int (floor (bottom / stride))
-                y <- bottom
-            | _ ->
-                page <- int (floor (bottom / stride)) + 1
-                y <- contentTopAt page)
+        let bottom = secLayouts |> List.collect (fun l -> l.Lines) |> List.map (fun l -> l.Y + l.Height) |> (function [] -> y | ys -> List.max ys)
+        page <- int (floor (bottom / stride))
+        y <- bottom)
     List.ofSeq results
 
 let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =

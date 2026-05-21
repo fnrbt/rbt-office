@@ -401,6 +401,7 @@ type PageSetup = {
     DifferentFirstPage: bool option
     EvenAndOddHeaders: bool option
     Columns: SectionColumns option
+    SectionStart: string option   // body sectPr w:type (e.g. "continuous")
 }
 
 type NumberingDefinition = {
@@ -2392,6 +2393,7 @@ let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetu
             DifferentFirstPage = Some (Docx.onOff "titlePg" section |> Option.defaultValue false)
             EvenAndOddHeaders = Some evenAndOddHeaders
             Columns = columns
+            SectionStart = Docx.getPropVal "type" "val" section
         })
 
 // Extract image as data URL from archive
@@ -4256,4 +4258,5 @@ let toEditorPageSetup (doc: WordDocument) : obj =
             "ColumnSpace" ==> (setup.Columns |> Option.map (fun c -> c.Gap) |> Option.defaultValue 0.0)
             "ColumnSeparator" ==> (setup.Columns |> Option.map (fun c -> c.Separator) |> Option.defaultValue false)
             "ColumnWidths" ==> (setup.Columns |> Option.map (fun c -> c.Widths |> List.map (fun (w, s) -> createObj [ "W" ==> w; "S" ==> s ]) |> Array.ofList) |> Option.defaultValue [||])
+            "SectionStart" ==> setup.SectionStart
         ]

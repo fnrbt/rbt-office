@@ -762,6 +762,7 @@ let private pageSetup (doc: DocxReader.WordDocument) =
             DifferentFirstPage = setup.DifferentFirstPage |> Option.defaultValue defaultPageSetup.DifferentFirstPage
             EvenAndOddHeaders = setup.EvenAndOddHeaders |> Option.defaultValue defaultPageSetup.EvenAndOddHeaders
             Columns = setup.Columns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: RedBat.Word.Document.SectionColumns))
+            SectionStart = setup.SectionStart
         }
 
 let private headerFooterPart resolver images styleMap comments notes (item: DocxReader.HeaderFooter) =

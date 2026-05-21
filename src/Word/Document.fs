@@ -356,6 +356,7 @@ type PageSetup = {
     DifferentFirstPage: bool
     EvenAndOddHeaders: bool
     Columns: SectionColumns option
+    SectionStart: string option
 }
 
 type NamedStyle = {
@@ -407,6 +408,7 @@ let defaultPageSetup = {
     DifferentFirstPage = false
     EvenAndOddHeaders = false
     Columns = None
+    SectionStart = None
 }
 
 type Document = {

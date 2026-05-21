@@ -391,7 +391,9 @@ def section_properties(include_header_footer=False, margin_bottom=1440, include_
     footer = page_geometry.get("footer", 720)
     doc_grid = page_geometry.get("doc_grid", '<w:docGrid w:type="default" w:linePitch="360" w:charSpace="4294965247"/>') if include_doc_grid else ""
     cols = page_geometry.get("cols", "")
-    return f'<w:sectPr>{refs}<w:pgSz w:w="{page_width}" w:h="{page_height}"/><w:pgMar w:top="{margin_top}" w:right="{margin_right}" w:bottom="{margin_bottom}" w:left="{margin_left}" w:header="{header}" w:footer="{footer}"/>{cols}{doc_grid}</w:sectPr>'
+    sec_type = page_geometry.get("section_type", "")
+    sec_type_xml = f'<w:type w:val="{sec_type}"/>' if sec_type else ""
+    return f'<w:sectPr>{refs}{sec_type_xml}<w:pgSz w:w="{page_width}" w:h="{page_height}"/><w:pgMar w:top="{margin_top}" w:right="{margin_right}" w:bottom="{margin_bottom}" w:left="{margin_left}" w:header="{header}" w:footer="{footer}"/>{cols}{doc_grid}</w:sectPr>'
 
 
 def document(body_xml, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_doc_grid=False, page_geometry=None):
@@ -1576,6 +1578,20 @@ def main():
         page_geometry={"cols": '<w:cols w:num="2" w:equalWidth="0" w:space="360"><w:col w:w="3000" w:space="360"/><w:col w:w="6000"/></w:cols>'},
     )
     print(uneqcol_path)
+
+    # Balanced columns: a 2-column section (its sectPr on the break paragraph)
+    # followed by a continuous 1-column section. Word balances the 2-col section
+    # (equal column heights) and the footer continues on the same page.
+    balanced_path = out_dir / "balanced-columns.docx"
+    write_docx(
+        balanced_path,
+        (paragraph("Balanced columns repro", "Heading1")
+         + repeated_long_paragraphs(6)
+         + '<w:p><w:pPr><w:sectPr><w:cols w:num="2" w:space="720"/></w:sectPr></w:pPr></w:p>'
+         + paragraph("This single-column footer follows the balanced two-column section on the same page.")),
+        page_geometry={"section_type": "continuous"},
+    )
+    print(balanced_path)
 
     # Manual column break: content after <w:br w:type="column"/> jumps to the
     # next column, leaving column 1 short.
