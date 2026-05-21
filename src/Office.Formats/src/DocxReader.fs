@@ -3448,8 +3448,11 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "CommentId" ==> Some id
                             ])
                         | NoteRef note ->
+                            // Render the reference as its superscript mark number
+                            // (Word writes note ids sequentially) in the normal
+                            // text colour, matching the native/PDF path.
                             Some (createObj [
-                                "Text" ==> (sprintf "[%s %s]" note.NoteType note.Id)
+                                "Text" ==> note.Id
                                 "Bold" ==> false
                                 "Italic" ==> false
                                 "Underline" ==> false
@@ -3458,8 +3461,9 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Strike" ==> false
                                 "FontSize" ==> 11.0
                                 "FontFamily" ==> "Calibri"
-                                "Color" ==> Some "#7c3aed"
+                                "Color" ==> None
                                 "Highlight" ==> None
+                                "VertAlign" ==> Some "superscript"
                                 "IsImage" ==> false
                                 "NoteId" ==> Some note.Id
                                 "NoteType" ==> Some note.NoteType
@@ -3703,8 +3707,11 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "CommentId" ==> Some id
                             ])
                         | NoteRef note ->
+                            // Render the reference as its superscript mark number
+                            // (Word writes note ids sequentially) in the normal
+                            // text colour, matching the native/PDF path.
                             Some (createObj [
-                                "Text" ==> (sprintf "[%s %s]" note.NoteType note.Id)
+                                "Text" ==> note.Id
                                 "Bold" ==> false
                                 "Italic" ==> false
                                 "Underline" ==> false
@@ -3713,8 +3720,9 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Strike" ==> false
                                 "FontSize" ==> 11.0
                                 "FontFamily" ==> "Calibri"
-                                "Color" ==> Some "#7c3aed"
+                                "Color" ==> None
                                 "Highlight" ==> None
+                                "VertAlign" ==> Some "superscript"
                                 "IsImage" ==> false
                                 "NoteId" ==> Some note.Id
                                 "NoteType" ==> Some note.NoteType
