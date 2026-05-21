@@ -200,6 +200,7 @@ let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties)
     ParagraphBorders = props.ParagraphBorders |> Option.orElse baseProps.ParagraphBorders
     ListInfo = props.ListInfo |> Option.orElse baseProps.ListInfo
     SectionBreak = props.SectionBreak |> Option.orElse baseProps.SectionBreak
+    SectionColumns = props.SectionColumns |> Option.orElse baseProps.SectionColumns
     SectionPageNumberStart = props.SectionPageNumberStart |> Option.orElse baseProps.SectionPageNumberStart
     RenderedPageBreakBefore = props.RenderedPageBreakBefore |> Option.orElse baseProps.RenderedPageBreakBefore
     HeaderReferences = if props.HeaderReferences.IsEmpty then baseProps.HeaderReferences else props.HeaderReferences
@@ -514,6 +515,7 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             PageBreakBefore = props.PageBreakBefore |> Option.defaultValue false
             PageBreakAfter = para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false)
             SectionBreak = props.SectionBreak
+            SectionColumns = props.SectionColumns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: RedBat.Word.Document.SectionColumns))
             SectionPageNumberStart = props.SectionPageNumberStart
             RenderedPageBreakBefore = props.RenderedPageBreakBefore
             HeaderReferences = props.HeaderReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)

@@ -78,6 +78,15 @@ type ParagraphBorders = {
 }
 
 /// Block metadata
+/// Newspaper columns for a section (w:cols). Per-column widths in Widths
+/// (empty = equal width).
+type SectionColumns = {
+    Count: int
+    Gap: float          // gap between columns, px (equal-width case)
+    Separator: bool     // draw a rule between columns (w:sep)
+    Widths: (float * float) list  // per-column (width, spaceAfter) px; empty = equal width
+}
+
 type BlockMetadata = {
     Style: string option
     ContentControlId: string option
@@ -109,6 +118,7 @@ type BlockMetadata = {
     PageBreakBefore: bool
     PageBreakAfter: bool
     SectionBreak: string option
+    SectionColumns: SectionColumns option
     SectionPageNumberStart: int option
     RenderedPageBreakBefore: int option
     SectionPageSetup: SectionPageSetup option
@@ -148,6 +158,7 @@ let defaultMetadata = {
     PageBreakBefore = false
     PageBreakAfter = false
     SectionBreak = None
+    SectionColumns = None
     SectionPageNumberStart = None
     RenderedPageBreakBefore = None
     SectionPageSetup = None
@@ -332,14 +343,6 @@ type HeaderFooterPart = {
     Blocks: Block list
 }
 
-/// Equal-width newspaper columns for a section (w:cols). Custom per-column
-/// widths are not modelled yet; columns are treated as equal width.
-type SectionColumns = {
-    Count: int
-    Gap: float          // gap between columns, px (equal-width case)
-    Separator: bool     // draw a rule between columns (w:sep)
-    Widths: (float * float) list  // per-column (width, spaceAfter) px; empty = equal width
-}
 
 type PageSetup = {
     PageWidth: float

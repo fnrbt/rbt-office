@@ -142,6 +142,13 @@ type HeaderFooterReference = {
     RelationshipId: string
 }
 
+type SectionColumns = {
+    Count: int
+    Gap: float
+    Separator: bool
+    Widths: (float * float) list
+}
+
 type ParagraphProperties = {
     Style: string option
     ContentControlId: string option
@@ -171,6 +178,7 @@ type ParagraphProperties = {
     ParagraphBorders: ParagraphBorders option
     ListInfo: ListInfo option
     SectionBreak: string option
+    SectionColumns: SectionColumns option
     SectionPageNumberStart: int option
     RenderedPageBreakBefore: int option
     HeaderReferences: HeaderFooterReference list
@@ -381,13 +389,6 @@ type Shape = {
     BorderWidth: float option
 }
 
-type SectionColumns = {
-    Count: int
-    Gap: float
-    Separator: bool
-    Widths: (float * float) list
-}
-
 type PageSetup = {
     PageWidth: float option
     PageHeight: float option
@@ -491,6 +492,21 @@ module Docx =
             | Some "false"
             | Some "off" -> false
             | _ -> true)
+
+    // Parse a sectPr's <w:cols> into a SectionColumns (twips/15 = px).
+    let parseColumns (sectPr: XmlNode) : SectionColumns option =
+        let twips (s: string option) = s |> Option.bind (fun v -> match System.Double.TryParse v with | true, n -> Some (n / 15.0) | _ -> None)
+        Ns.childNs "cols" sectPr
+        |> Option.bind (fun cols ->
+            let num = attr "num" cols |> Option.bind (fun v -> match System.Int32.TryParse v with | true, n -> Some n | _ -> None) |> Option.defaultValue 1
+            let space = twips (attr "space" cols) |> Option.defaultValue 36.0
+            let sep = onOff "sep" cols |> Option.defaultValue false
+            let colWidths =
+                Ns.descendantsNs "col" cols
+                |> List.choose (fun col -> twips (attr "w" col) |> Option.map (fun w -> w, twips (attr "space" col) |> Option.defaultValue 0.0))
+            let count = if colWidths.Length >= 2 then colWidths.Length else num
+            if count <= 1 then None
+            else Some { Count = count; Gap = space; Separator = sep; Widths = (if colWidths.Length >= 2 then colWidths else []) })
 
     // Run properties extraction with defaults
     let runProps node =
@@ -631,6 +647,7 @@ module Docx =
                 ParagraphBorders = paragraphBorders props
                 ListInfo = listInfo
                 SectionBreak = sectPr |> Option.map (fun section -> getPropVal "type" "val" section |> Option.defaultValue "nextPage")
+                SectionColumns = sectPr |> Option.bind parseColumns
                 SectionPageNumberStart = sectPr |> Option.bind (fun section -> getPropVal "pgNumType" "start" section) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
                 RenderedPageBreakBefore = None
                 HeaderReferences = sectPr |> Option.map (headerFooterReferences "headerReference") |> Option.defaultValue []
@@ -666,6 +683,7 @@ module Docx =
                 ParagraphBorders = None
                 ListInfo = None
                 SectionBreak = None
+                SectionColumns = None
                 SectionPageNumberStart = None
                 RenderedPageBreakBefore = None
                 HeaderReferences = []
@@ -1731,6 +1749,7 @@ module Styles =
             ParagraphBorders = Docx.paragraphBorders pPr
             ListInfo = listInfo
             SectionBreak = None
+            SectionColumns = None
             SectionPageNumberStart = None
             RenderedPageBreakBefore = None
             HeaderReferences = []
@@ -2360,21 +2379,7 @@ let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetu
     |> Option.map (fun section ->
         let pgSz = Ns.childNs "pgSz" section
         let pgMar = Ns.childNs "pgMar" section
-        let columns =
-            Ns.childNs "cols" section
-            |> Option.bind (fun cols ->
-                let num = cols |> Docx.attr "num" |> Option.bind (fun v -> match System.Int32.TryParse v with | true, n -> Some n | _ -> None) |> Option.defaultValue 1
-                let space = cols |> Docx.attr "space" |> wordTwipsToPixels |> Option.defaultValue 36.0
-                let sep = Docx.onOff "sep" cols |> Option.defaultValue false
-                // Per-column widths (w:col) when equalWidth is off.
-                let colWidths =
-                    Ns.descendantsNs "col" cols
-                    |> List.choose (fun col ->
-                        col |> Docx.attr "w" |> wordTwipsToPixels
-                        |> Option.map (fun w -> w, col |> Docx.attr "space" |> wordTwipsToPixels |> Option.defaultValue 0.0))
-                let count = if colWidths.Length >= 2 then colWidths.Length else num
-                if count <= 1 then None
-                else Some { Count = count; Gap = space; Separator = sep; Widths = (if colWidths.Length >= 2 then colWidths else []) })
+        let columns = Docx.parseColumns section
         {
             PageWidth = pgSz |> Option.bind (Docx.attr "w") |> wordTwipsToPixels
             PageHeight = pgSz |> Option.bind (Docx.attr "h") |> wordTwipsToPixels
@@ -3151,6 +3156,7 @@ let private mergeParagraphProperties baseProps props = {
     ParagraphBorders = props.ParagraphBorders |> Option.orElse baseProps.ParagraphBorders
     ListInfo = props.ListInfo |> Option.orElse baseProps.ListInfo
     SectionBreak = props.SectionBreak
+    SectionColumns = props.SectionColumns
     SectionPageNumberStart = props.SectionPageNumberStart
     RenderedPageBreakBefore = props.RenderedPageBreakBefore
     HeaderReferences = props.HeaderReferences
