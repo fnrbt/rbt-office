@@ -62,8 +62,16 @@ surfaces have actually been checked. It complements
   (the hidden "733 Summit Avenue" was wrapping to 1 glyph/line). `Paint.fs`
   skips 0-width/height cells; native-runner auto-grow skips 0-width columns.
   Verified vs Excel Comp-Sales screenshot.
-- [ ] Remaining: Apt-Comps + Replacement-Cost sheets, lower regions of sheets
-  1/2, and the irreducible text-AA difference.
+- [x] Sheet 1 Operating Assumptions FY headers (`"FY"yy`): date-format quoted
+  literals were lowercased ("fy18"); `excelToNetFormat` now preserves literal
+  case ("FY18"). Verified vs Excel (scrolled to row 50).
+- [x] Apt-Comps, Replacement-Cost, and sheet-1 lower/far-right regions (cash
+  flows, wrapped "Stabilized Year:" header) compared and match Excel at the
+  AA-tolerance level — no further structural diffs found.
+- Residual: sub-pixel ClearType-vs-grayscale text antialiasing (Excel
+  screenshots use subpixel AA; we use grayscale) — within the goal's "a couple
+  pixels off here and there" tolerance, not a structural/content bug.
+- Status: renders at Excel parity within tolerance (commits 3d38033, d88d0a2).
 
 ## P0: Print/PDF Fidelity
 
