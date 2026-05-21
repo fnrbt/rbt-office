@@ -1892,15 +1892,9 @@ let private layoutDocumentWithRangeAndInitial
         (doc: Document)
         (initialObstacles: FloatingObstacle list)
         (initialPlacedBoxes: PlacedFloatingBox list) =
-    // For multi-column sections, lay the body out at a single column's width; the
-    // existing page-bottom pagination then splits it into column-height chunks
-    // that applyColumnTransform remaps to (page, column) afterwards.
-    let maxWidth =
-        let full = settings.Width - settings.PaddingLeft - settings.MarginRight
-        match doc.PageSetup.Columns with
-        | Some columns when columns.Count >= 2 ->
-            (full - float (columns.Count - 1) * columns.Gap) / float columns.Count
-        | _ -> full
+    // Multi-column sections are flowed by columnFlowLayout, which drives this
+    // function per column at the column width; here we always use the full width.
+    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
     let mutable y = settings.PaddingTop
     let mutable layouts = []
     let mutable numberedCounters = Map.empty<string * int, int>
@@ -2515,49 +2509,115 @@ let private shiftSegmentX dx segment =
     | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
         ImageSegment (src, x + dx, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
 
-/// Remap a body laid out at one column's width (paginated into column-height
-/// chunks) onto real (page, column) positions: layout-page i becomes column
-/// (i mod count) of real page (i div count). Note layouts stay full-width.
-let private applyColumnTransform (settings: LayoutSettings) (columns: SectionColumns) (layouts: BlockLayout list) =
-    let stride = pageHeight settings + pageGap
+let private shiftBlockX dx (layout: BlockLayout) =
+    { layout with
+        Indent = layout.Indent + dx
+        Lines = layout.Lines |> List.map (fun line -> { line with Segments = line.Segments |> List.map (shiftSegmentX dx) }) }
+
+let private shiftBlockY dy (layout: BlockLayout) =
+    { layout with
+        Y = layout.Y + dy
+        Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + dy }) }
+
+/// Lay the document body out column by column. Each paragraph is laid out at the
+/// current column's width and, if it overflows, split at the column boundary —
+/// the remaining text continues in the next column at *that* column's width
+/// (so columns of differing widths wrap independently). After `count` columns
+/// the flow wraps to the next page. This drives the doc-aware paragraph layout,
+/// so styles/numbering/spacing are the engine's, not a re-implementation.
+let private columnFlowLayout (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) =
     let n = max 1 columns.Count
     let full = settings.Width - settings.PaddingLeft - settings.MarginRight
+    // Equal widths for now; per-column widths plug into columnWidth/columnDx.
     let colWidth = (full - float (n - 1) * columns.Gap) / float n
+    let columnWidth (_col: int) = colWidth
     let columnDx col = float col * (colWidth + columns.Gap)
-    let isNote (block: BlockLayout) =
-        block.BlockId.StartsWith footnoteBlockIdPrefix || block.BlockId.StartsWith endnoteBlockIdPrefix
-    layouts
-    |> List.map (fun block ->
-        if isNote block || block.Lines.IsEmpty then block
-        else
-            let remap (line: MeasuredLine) =
-                let layoutPage = int (floor (line.Y / stride))
-                let dy = float (layoutPage / n - layoutPage) * stride
-                let dx = columnDx (layoutPage % n)
-                { line with Y = line.Y + dy; Segments = line.Segments |> List.map (shiftSegmentX dx) }
-            let newLines = block.Lines |> List.map remap
-            let firstCol = (int (floor (block.Lines.Head.Y / stride))) % n
-            let newY = newLines |> List.map (fun line -> line.Y) |> List.min
-            let newBottom = newLines |> List.map (fun line -> line.Y + line.Height) |> List.max
-            { block with Lines = newLines; Y = newY; Height = newBottom - newY; Indent = block.Indent + columnDx firstCol })
+    let stride = pageHeight settings + pageGap
+    let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (float page * stride)
+    let contentBottomAt page = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (float page * stride)
 
-let private applyColumnsIfNeeded (settings: LayoutSettings) (doc: Document) layouts =
-    match doc.PageSetup.Columns with
-    | Some columns when columns.Count >= 2 -> applyColumnTransform settings columns layouts
-    | _ -> layouts
+    let results = ResizeArray<BlockLayout>()
+    let mutable col = 0
+    let mutable page = 0
+    let mutable y = contentTopAt 0
+    let mutable counters : Map<string * int, int> = Map.empty
+    let atColumnTop () = abs (y - contentTopAt page) < 0.5
+    let advanceColumn () =
+        col <- col + 1
+        if col >= n then col <- 0; page <- page + 1
+        y <- contentTopAt page
+
+    for block in doc.Blocks do
+        match tryGetParagraph block with
+        | Some para0 ->
+            // A page/column break before this paragraph moves to the next column.
+            if (para0.Metadata.PageBreakBefore || para0.Metadata.RenderedPageBreakBefore.IsSome) && not (atColumnTop ()) then
+                advanceColumn ()
+            let style = forBlockInDocument doc block
+            let mutable remaining = para0
+            let mutable placed = false
+            while not placed do
+                let colBottom = contentBottomAt page
+                let layout, newCounters, _, _ =
+                    layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInDocument doc) remaining counters [] []
+                let fitCount = layout.Lines |> List.filter (fun line -> line.Y + line.Height <= colBottom + 0.5) |> List.length
+                if fitCount = layout.Lines.Length then
+                    results.Add(shiftBlockX (columnDx col) layout)
+                    counters <- newCounters
+                    y <- layout.Y + layout.Height
+                    placed <- true
+                elif fitCount = 0 then
+                    if atColumnTop () then
+                        // Paragraph taller than a whole column: place it and move on
+                        // (avoids an infinite loop).
+                        results.Add(shiftBlockX (columnDx col) layout)
+                        counters <- newCounters
+                        y <- layout.Y + layout.Height
+                        placed <- true
+                    else advanceColumn ()
+                else
+                    let fitLines = layout.Lines |> List.truncate fitCount
+                    let lastFit = List.last fitLines
+                    results.Add(shiftBlockX (columnDx col) { layout with Lines = fitLines; Height = lastFit.Y + lastFit.Height - layout.Y })
+                    remaining <- { remaining with Buffer = TextBuffer.delete 0 lastFit.EndOffset remaining.Buffer }
+                    advanceColumn ()
+            if para0.Metadata.PageBreakAfter && not (atColumnTop ()) then advanceColumn ()
+        | None ->
+            // Non-paragraph block (table / text box): lay it out atomically at the
+            // current column width and place it, advancing the column if it would
+            // overflow. (Splitting tables across columns is not handled.)
+            let sub = { doc with Blocks = [block] }
+            let subLayouts, _ =
+                layoutDocumentWithRangeAndInitial { settings with Width = settings.PaddingLeft + columnWidth col + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange sub [] []
+            match subLayouts with
+            | [] -> ()
+            | _ ->
+                let subTop = subLayouts |> List.map (fun l -> l.Y) |> List.min
+                let subBottom = subLayouts |> List.map (fun l -> l.Y + l.Height) |> List.max
+                let height = subBottom - subTop
+                if not (atColumnTop ()) && y + height > contentBottomAt page + 0.5 then advanceColumn ()
+                let dy = y - subTop
+                for sl in subLayouts do
+                    results.Add(sl |> shiftBlockY dy |> shiftBlockX (columnDx col))
+                y <- y + height
+    List.ofSeq results
 
 let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
-    let firstPass, placedAfterFirst =
-        layoutDocumentWithRangeAndInitial settings measureText measureRange doc [] []
-    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-    let extendedObstacles, prePlacedBoxes =
-        computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
-    if extendedObstacles.IsEmpty then
-        applyColumnsIfNeeded settings doc firstPass
-    else
-        let secondPass, _ =
-            layoutDocumentWithRangeAndInitial settings measureText measureRange doc extendedObstacles prePlacedBoxes
-        applyColumnsIfNeeded settings doc secondPass
+    match doc.PageSetup.Columns with
+    | Some columns when columns.Count >= 2 ->
+        columnFlowLayout settings measureText measureRange doc columns
+    | _ ->
+        let firstPass, placedAfterFirst =
+            layoutDocumentWithRangeAndInitial settings measureText measureRange doc [] []
+        let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+        let extendedObstacles, prePlacedBoxes =
+            computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
+        if extendedObstacles.IsEmpty then
+            firstPass
+        else
+            let secondPass, _ =
+                layoutDocumentWithRangeAndInitial settings measureText measureRange doc extendedObstacles prePlacedBoxes
+            secondPass
 
 let layoutDocument (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) =
     layoutDocumentWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) doc
