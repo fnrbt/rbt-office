@@ -35,6 +35,18 @@ fi
 vm=${WORD_VM:-wordvm}
 vm_dir=${WORD_VM_DIR:-C:/Users/worduser/RedBatWordParity}
 run_mode=${WORD_VM_RUN_MODE:-task}
+
+# Optional RDP keepalive (disabled by default; needs xfreerdp3 + Xvfb, which are
+# not installed everywhere). The Word VM's interactive session sits "Disc" when
+# idle. In testing that did NOT slow extraction -- the cost is the VBS's per-line
+# Range.Information COM calls -- but a *fully* desktop-less session can still make
+# the interactive scheduled task hang, which this guards against. If you hit
+# hangs (vs. just slowness), run `vm-rdp-keepalive.sh run` as a background daemon,
+# or uncomment the block below to ensure an Active session per call.
+# if [[ "${WORD_VM_RDP_KEEPALIVE:-0}" == "1" ]]; then
+#   "$script_dir/vm-rdp-keepalive.sh" ensure </dev/null || \
+#     echo "warning: could not ensure an Active RDP session on $vm; Word may hang" >&2
+# fi
 run_id=$(date -u +%Y%m%dT%H%M%SZ)-$$
 remote_dir="${vm_dir}/${run_id}"
 

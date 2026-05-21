@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory = $true)][string]$ScriptPath,
   [Parameter(Mandatory = $true)][string]$InputPath,
   [Parameter(Mandatory = $true)][string]$OutputPath,
-  [int]$TimeoutSeconds = 180
+  [int]$TimeoutSeconds = 600
 )
 
 $ErrorActionPreference = "Stop"
