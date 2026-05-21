@@ -15,15 +15,22 @@ open RedBat.Spreadsheet.Paint
 
 // ---- parsing -------------------------------------------------------------
 
+type ChartSeries =
+    { Name: string option
+      Values: float list
+      Color: string }              // "#RRGGBB"
+
 type ChartSpec =
     { Kind: string                 // "col" (barDir)
       Title: string option
       Categories: string list
-      Values: float list
+      Series: ChartSeries list
       Gridlines: bool
       GapWidth: int
-      SeriesColor: string          // "#RRGGBB" (= accent1)
-      Palette: string list }       // theme accent1..6, for pie slices etc.
+      Palette: string list }       // theme accent1..6
+    /// First series' values / colour — convenience for single-series paths.
+    member s.Values = match s.Series with x :: _ -> x.Values | [] -> []
+    member s.SeriesColor = match s.Series with x :: _ -> x.Color | [] -> "#5B9BD5"
 
 let private localName (e: XElement) = e.Name.LocalName
 let private descendants (name: string) (e: XElement) =
@@ -80,26 +87,43 @@ let parseChart (xlsxPath: string) (chartIdx: int) : ChartSpec option =
         match plotKind with
         | None -> None
         | Some (plot, kind) ->
-            let ser = firstDesc "ser" plot
-            let cats, vals =
-                if kind = "scatter" then
-                    let xs = ser |> Option.bind (firstDesc "xVal") |> Option.map points |> Option.defaultValue []
-                    let ys = ser |> Option.bind (firstDesc "yVal") |> Option.map points |> Option.defaultValue []
-                    xs, (ys |> List.map pf)
-                else
-                    let c = ser |> Option.bind (firstDesc "cat") |> Option.map points |> Option.defaultValue []
-                    let v = ser |> Option.bind (firstDesc "val") |> Option.map points |> Option.defaultValue [] |> List.map pf
-                    c, v
+            let accents = parseTheme zip
+            let valAttr name (e: XElement) = match e.Attribute(XName.Get name) with null -> None | a -> Some a.Value
+            let allSer = descendants "ser" plot |> Seq.toList
+            // Series colour: explicit spPr solidFill (rgb or theme accent), else
+            // the palette by series index.
+            let serColor i (ser: XElement) =
+                let scheme (v: string) =
+                    if v.StartsWith "accent" then
+                        match System.Int32.TryParse(v.Substring 6) with
+                        | true, n when n >= 1 && n <= List.length accents -> Some (List.item (n - 1) accents)
+                        | _ -> None
+                    else None
+                descendants "solidFill" ser |> Seq.tryHead
+                |> Option.bind (fun sf ->
+                    match firstDesc "srgbClr" sf with
+                    | Some c -> valAttr "val" c |> Option.map (fun v -> "#" + v)
+                    | None -> firstDesc "schemeClr" sf |> Option.bind (valAttr "val") |> Option.bind scheme)
+                |> Option.defaultValue (List.item (i % List.length accents) accents)
+            let categories =
+                allSer |> List.tryHead
+                |> Option.bind (firstDesc (if kind = "scatter" then "xVal" else "cat"))
+                |> Option.map points |> Option.defaultValue []
+            let series =
+                allSer |> List.mapi (fun i ser ->
+                    let name = firstDesc "tx" ser |> Option.bind (firstDesc "v") |> Option.map (fun v -> v.Value)
+                    let vals =
+                        (if kind = "scatter" then firstDesc "yVal" ser else firstDesc "val" ser)
+                        |> Option.map points |> Option.defaultValue [] |> List.map pf
+                    { Name = name; Values = vals; Color = serColor i ser })
             let title =
                 firstDesc "title" root
                 |> Option.bind (fun t -> descendants "t" t |> Seq.tryHead)
                 |> Option.map (fun t -> t.Value)
             let gridlines = root |> descendants "valAx" |> Seq.exists (fun ax -> firstDesc "majorGridlines" ax |> Option.isSome)
             let gap = firstDesc "gapWidth" plot |> Option.map (fun e -> int (e.Attribute(XName.Get "val").Value)) |> Option.defaultValue 150
-            let accents = parseTheme zip
-            Some { Kind = kind; Title = title; Categories = cats; Values = vals
-                   Gridlines = gridlines; GapWidth = gap
-                   SeriesColor = List.head accents; Palette = accents }
+            Some { Kind = kind; Title = title; Categories = categories; Series = series
+                   Gridlines = gridlines; GapWidth = gap; Palette = accents }
 
 /// Chart pixel size from the twoCellAnchor (default 64px cols / 20px rows;
 /// EMU offsets at 9525 EMU/px). Good enough for the synthetic fixture.
@@ -269,6 +293,10 @@ let private niceMax (dataMax: float) (step: float) : float =
     let m = ceil (dataMax / step) * step
     if m <= dataMax + 1e-9 then m + step else m
 
+/// Largest value across every series (drives the value axis).
+let private dataMaxOf (spec: ChartSpec) =
+    match spec.Series |> List.collect (fun s -> s.Values) with [] -> 1.0 | vs -> List.max vs
+
 let private text (s: string) (rect: Rect) (size: float) (color: string) (align: TextAlign) (vAlign: VerticalAlign) : PaintItem =
     DrawText { Text = s; Rect = rect; Color = color; FontSize = size; FontName = Some "Calibri"
                Bold = false; Italic = false; Underline = false; UnderlineDouble = false; Strikethrough = false
@@ -276,6 +304,13 @@ let private text (s: string) (rect: Rect) (size: float) (color: string) (align: 
 
 let private axisColor = "#595959"
 let private gridColor = "#D9D9D9"
+/// Axis-label number format — thousands separators, never scientific notation
+/// (Excel shows "3,000,000", not "3e+06"; display-unit scaling is a TODO).
+let private fmtNum (v: float) : string =
+    let ci = System.Globalization.CultureInfo.InvariantCulture
+    if v = 0.0 then "0"
+    elif abs v >= 1000.0 then v.ToString("#,0", ci)
+    else v.ToString("0.###", ci)
 // Excel default series palette (accent1..6).
 let private palette = [| "#5B9BD5"; "#ED7D31"; "#A5A5A5"; "#FFC000"; "#4472C4"; "#70AD47" |]
 
@@ -302,12 +337,13 @@ let private frame (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
       | None -> () ]
 
 let private yAxisLabel (v: float) (y: float) (leftAxisW: float) : PaintItem =
-    text (sprintf "%g" v) { X = 0.0; Y = y - 8.0; Width = leftAxisW - 4.0; Height = 14.0 } 10.0 axisColor AlignRight VAlignMiddle
+    text (fmtNum v) { X = 0.0; Y = y - 8.0; Width = leftAxisW - 4.0; Height = 14.0 } 10.0 axisColor AlignRight VAlignMiddle
 
-/// Clustered column chart.
+/// Clustered column chart (one bar per series within each category band).
 let buildColumnChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
-    let n = List.length spec.Values
-    let dataMax = if List.isEmpty spec.Values then 1.0 else List.max spec.Values
+    let n = spec.Series |> List.map (fun s -> List.length s.Values) |> (fun ls -> if List.isEmpty ls then 0 else List.max ls)
+    let nSer = max 1 (List.length spec.Series)
+    let dataMax = dataMaxOf spec
     let step = niceStep dataMax
     let yMax = niceMax dataMax step
     let nSteps = int (round (yMax / step))
@@ -325,20 +361,27 @@ let buildColumnChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
           yield yAxisLabel v y leftAxisW
       if n > 0 then
           let bandW = plotW / float n
-          let barW = bandW / (1.0 + float spec.GapWidth / 100.0)
+          let groupW = bandW / (1.0 + float spec.GapWidth / 100.0)
+          let barW = groupW / float nSer
           for i in 0 .. n - 1 do
-              let bandLeft = plotX + float i * bandW
-              let barX = bandLeft + (bandW - barW) / 2.0
-              let topY = yToPx spec.Values.[i]
-              yield VecPath ([ VMove (barX, baselineY); VLine (barX, topY); VLine (barX + barW, topY); VLine (barX + barW, baselineY); VClose ], Some spec.SeriesColor, None)
+              let groupLeft = plotX + float i * bandW + (bandW - groupW) / 2.0
+              for si in 0 .. List.length spec.Series - 1 do
+                  let s = spec.Series.[si]
+                  match List.tryItem i s.Values with
+                  | Some v ->
+                      let barX = groupLeft + float si * barW
+                      let topY = yToPx v
+                      yield VecPath ([ VMove (barX, baselineY); VLine (barX, topY); VLine (barX + barW, topY); VLine (barX + barW, baselineY); VClose ], Some s.Color, None)
+                  | None -> ()
               let cat = spec.Categories |> List.tryItem i |> Option.defaultValue ""
-              yield text cat { X = bandLeft; Y = baselineY + 2.0; Width = bandW; Height = bottomAxisH } 10.0 axisColor AlignCenter VAlignTop ]
+              yield text cat { X = plotX + float i * bandW; Y = baselineY + 2.0; Width = bandW; Height = bottomAxisH } 10.0 axisColor AlignCenter VAlignTop ]
 
 /// Clustered bar chart (horizontal): value axis along the bottom, categories
 /// up the left with category 1 at the bottom.
 let buildBarChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
-    let n = List.length spec.Values
-    let dataMax = if List.isEmpty spec.Values then 1.0 else List.max spec.Values
+    let n = spec.Series |> List.map (fun s -> List.length s.Values) |> (fun ls -> if List.isEmpty ls then 0 else List.max ls)
+    let nSer = max 1 (List.length spec.Series)
+    let dataMax = dataMaxOf spec
     let step = niceStep dataMax
     let vMax = niceMax dataMax step
     let nSteps = int (round (vMax / step))
@@ -353,23 +396,28 @@ let buildBarChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
           let v = float i * step
           let x = xToPx v
           yield VecPath ([ VMove (x, titleH); VLine (x, baselineY) ], None, Some (gridColor, 1.0))
-          yield text (sprintf "%g" v) { X = x - 20.0; Y = baselineY + 2.0; Width = 40.0; Height = 14.0 } 10.0 axisColor AlignCenter VAlignTop
+          yield text (fmtNum v) { X = x - 20.0; Y = baselineY + 2.0; Width = 40.0; Height = 14.0 } 10.0 axisColor AlignCenter VAlignTop
       if n > 0 then
           let bandH = plotH / float n
-          let barH = bandH / (1.0 + float spec.GapWidth / 100.0)
+          let groupH = bandH / (1.0 + float spec.GapWidth / 100.0)
+          let barH = groupH / float nSer
           for i in 0 .. n - 1 do
-              let bandTop = titleH + plotH - float (i + 1) * bandH   // category 1 at the bottom
-              let barY = bandTop + (bandH - barH) / 2.0
-              let endX = xToPx spec.Values.[i]
-              yield VecPath ([ VMove (plotX, barY); VLine (endX, barY); VLine (endX, barY + barH); VLine (plotX, barY + barH); VClose ], Some spec.SeriesColor, None)
+              let groupTop = titleH + plotH - float (i + 1) * bandH + (bandH - groupH) / 2.0   // category 1 at the bottom
+              for si in 0 .. List.length spec.Series - 1 do
+                  match List.tryItem i spec.Series.[si].Values with
+                  | Some v ->
+                      let barY = groupTop + float si * barH
+                      let endX = xToPx v
+                      yield VecPath ([ VMove (plotX, barY); VLine (endX, barY); VLine (endX, barY + barH); VLine (plotX, barY + barH); VClose ], Some spec.Series.[si].Color, None)
+                  | None -> ()
               let cat = spec.Categories |> List.tryItem i |> Option.defaultValue ""
-              yield text cat { X = 0.0; Y = barY + barH / 2.0 - 7.0; Width = leftAxisW - 4.0; Height = 14.0 } 10.0 axisColor AlignRight VAlignMiddle ]
+              yield text cat { X = 0.0; Y = titleH + plotH - float (i + 1) * bandH + bandH / 2.0 - 7.0; Width = leftAxisW - 4.0; Height = 14.0 } 10.0 axisColor AlignRight VAlignMiddle ]
 
 /// Value-axis chrome (gridlines + y labels) + category x positions, shared by
 /// line and area. Returns (items, xOfCategory, yToPx, baselineY, plotX, plotW).
 let private valueAxisChrome (edgeMode: bool) (spec: ChartSpec) (w: float) (h: float) =
-    let n = List.length spec.Values
-    let dataMax = if List.isEmpty spec.Values then 1.0 else List.max spec.Values
+    let n = spec.Series |> List.map (fun s -> List.length s.Values) |> (fun ls -> if List.isEmpty ls then 0 else List.max ls)
+    let dataMax = dataMaxOf spec
     let step = niceStep dataMax
     let yMax = niceMax dataMax step
     let nSteps = int (round (yMax / step))
@@ -397,30 +445,33 @@ let private valueAxisChrome (edgeMode: bool) (spec: ChartSpec) (w: float) (h: fl
               yield text cat { X = xOf i - bandW / 2.0; Y = baselineY + 2.0; Width = bandW; Height = bandW } 10.0 axisColor AlignCenter VAlignTop ]
     chrome, xOf, yToPx, baselineY
 
-/// Line chart with markers.
+/// Line chart — one poly-line per series (markers only for small series, like
+/// Excel's marker default).
 let buildLineChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
     let chrome, xOf, yToPx, _ = valueAxisChrome false spec w h
-    let pts = spec.Values |> List.mapi (fun i v -> xOf i, yToPx v)
     [ yield! chrome
-      match pts with
-      | [] -> ()
-      | (x0, y0) :: rest ->
-          let segs = VMove (x0, y0) :: (rest |> List.map (fun (x, y) -> VLine (x, y)))
-          yield VecPath (segs, None, Some (spec.SeriesColor, 2.0))
-          for (x, y) in pts do
-              yield VecPath (circle x y 3.5, Some spec.SeriesColor, None) ]
+      for s in spec.Series do
+          let pts = s.Values |> List.mapi (fun i v -> xOf i, yToPx v)
+          match pts with
+          | [] -> ()
+          | (x0, y0) :: rest ->
+              yield VecPath (VMove (x0, y0) :: (rest |> List.map (fun (x, y) -> VLine (x, y))), None, Some (s.Color, 2.0))
+              if List.length pts <= 12 then
+                  for (x, y) in pts do
+                      yield VecPath (circle x y 3.5, Some s.Color, None) ]
 
-/// Area chart (filled to baseline).
+/// Area chart — one filled area per series (overlaid).
 let buildAreaChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
     let chrome, xOf, yToPx, baselineY = valueAxisChrome true spec w h
-    let pts = spec.Values |> List.mapi (fun i v -> xOf i, yToPx v)
     [ yield! chrome
-      match pts with
-      | [] -> ()
-      | (x0, _) :: _ ->
-          let xn, _ = List.last pts
-          let area = VMove (x0, baselineY) :: (pts |> List.map (fun (x, y) -> VLine (x, y))) @ [ VLine (xn, baselineY); VClose ]
-          yield VecPath (area, Some spec.SeriesColor, None) ]
+      for s in spec.Series do
+          let pts = s.Values |> List.mapi (fun i v -> xOf i, yToPx v)
+          match pts with
+          | [] -> ()
+          | (x0, _) :: _ ->
+              let xn, _ = List.last pts
+              let area = VMove (x0, baselineY) :: (pts |> List.map (fun (x, y) -> VLine (x, y))) @ [ VLine (xn, baselineY); VClose ]
+              yield VecPath (area, Some s.Color, None) ]
 
 /// Scatter (markers only); both axes numeric.
 let buildScatterChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
@@ -450,7 +501,7 @@ let buildScatterChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
           let x = xToPx v
           // Scatter has both horizontal and vertical gridlines.
           yield VecPath ([ VMove (x, titleH); VLine (x, baselineY) ], None, Some (gridColor, 1.0))
-          yield text (sprintf "%g" v) { X = x - 20.0; Y = baselineY + 2.0; Width = 40.0; Height = 14.0 } 10.0 axisColor AlignCenter VAlignTop
+          yield text (fmtNum v) { X = x - 20.0; Y = baselineY + 2.0; Width = 40.0; Height = 14.0 } 10.0 axisColor AlignCenter VAlignTop
       for i in 0 .. List.length ys - 1 do
           let x = xToPx (List.item i xsData)
           let y = yToPx ys.[i]

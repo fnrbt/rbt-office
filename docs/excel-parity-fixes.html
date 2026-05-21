@@ -155,6 +155,30 @@
     <tbody>
       <tr>
         <td>
+          <strong>Charts: multi-series + non-scientific axis labels — dashboard</strong>
+          <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code> "Sales By Chain" (2-series line) and the clustered bar charts. Previously only the first series drew; axis labels showed scientific notation (<code>3e+06</code>).</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:210px; aspect-ratio:2.48 / 1;">
+            <img src="../artifacts/excel/dash-multiseries.png" style="--w:520px; --x:0px; --y:0px; --s:1.0" alt="Excel — 2-series line">
+          </div>
+          <div class="caption">Excel: two lines (olive + teal), trends matching.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:210px; aspect-ratio:2.48 / 1;">
+            <img src="../artifacts/native/dash-multiseries.png" style="--w:520px; --x:0px; --y:0px; --s:1.0" alt="Ours — 2-series line">
+          </div>
+          <div class="caption">After: both series render with theme colours; axis labels are comma-formatted. (Excel's "Thousands" display unit and the month×year multi-level category axis are still TODO.)</div>
+        </td>
+        <td>
+          <div class="placeholder">Before: only the first series drew; axis showed 3e+06.</div>
+        </td>
+        <td>
+          <p><strong>Multi-series.</strong> <code>ChartSpec</code> now holds a list of <code>ChartSeries</code> (name, values, per-series colour from <code>spPr</code> solidFill / theme accent or the palette by index). All builders (column / bar / line / area) loop over series — clustered bars, one poly-line each. The value axis spans all series; <code>fmtNum</code> formats labels with thousands separators instead of <code>%g</code> scientific notation. Single-series (chart-zoo) unchanged.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Conditional-format colours: resolve <code>theme</code> + <code>tint</code> (data bars / color scales)</strong>
           <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code> — the "All Chains" data bar is <code>&lt;color theme="0" tint="-0.35"/&gt;</code> (theme white, darkened 35% → grey). We were reading only the <code>rgb</code> attribute, so it fell back to the default blue.</span>
         </td>
