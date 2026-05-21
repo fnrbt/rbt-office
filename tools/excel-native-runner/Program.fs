@@ -558,7 +558,14 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                             | Some cd ->
                                 match numericOf cd.Value with
                                 | Some n ->
-                                    let frac = if span = 0.0 then 1.0 else (n - rangeMin) / span
+                                    // Excel's automatic data bar for all-positive
+                                    // data measures from a 0 baseline (value/max),
+                                    // so the smallest value still shows a small bar
+                                    // — not (value-min)/(max-min), which zeroes it.
+                                    let frac =
+                                        if rangeMin >= 0.0 && rangeMax > 0.0 then n / rangeMax
+                                        elif span = 0.0 then 1.0
+                                        else (n - rangeMin) / span
                                     let frac = max 0.0 (min 1.0 frac)
                                     acc <- Map.add addr { cd with Format = { cd.Format with DataBar = Some (frac, "#" + barColor) } } acc
                                 | None -> ()
