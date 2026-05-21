@@ -38,6 +38,13 @@ let private localName (e: XElement) = e.Name.LocalName
 let private descendants (name: string) (e: XElement) =
     e.Descendants() |> Seq.filter (fun d -> d.Name.LocalName = name)
 let private firstDesc name e = descendants name e |> Seq.tryHead
+let private attr (name: string) (e: XElement) =
+    match e.Attribute(XName.Get name) with null -> None | a -> Some a.Value
+/// The `r:id` attribute lives in the relationships namespace.
+let private relId (e: XElement) =
+    match e.Attribute(XName.Get("id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")) with
+    | null -> None
+    | a -> Some a.Value
 
 let private readEntry (zip: ZipArchive) (path: string) : string option =
     match zip.GetEntry path with
@@ -174,48 +181,53 @@ let parseAnchorSize (xlsxPath: string) (chartIdx: int) : float * float =
         let toY = rowPx (pick "to" "row") + pick "to" "rowOff" / 9525.0
         (toX - fromX), (toY - fromY)
 
-/// A parsed chart together with its drawing-anchor placement (cell + EMU
-/// offset, and pixel size). Used to overlay charts onto the sheet.
+/// A parsed chart together with its drawing-anchor placement (from/to cells +
+/// EMU offsets). The runner derives the pixel rect from the live cell layout.
 type ChartPlacement =
     { Spec: ChartSpec
-      FromCol: int; FromColOffPx: float
-      FromRow: int; FromRowOffPx: float
-      WidthPx: float; HeightPx: float }
+      FromCol: int; FromColOffPx: float; FromRow: int; FromRowOffPx: float
+      ToCol: int; ToColOffPx: float; ToRow: int; ToRowOffPx: float }
 
-/// Parse every chart in the workbook with its anchor. Assumes anchor document
-/// order matches chart number (true for charts added in sequence).
+/// chart index N from a rels Target like "../charts/chart3.xml". Use the LAST
+/// "chart" so the "charts/" directory segment doesn't match first.
+let private chartNumFromTarget (t: string) =
+    let i = t.LastIndexOf "chart"
+    if i < 0 then None
+    else
+        let ds = t.Substring(i + 5) |> Seq.takeWhile Char.IsDigit |> Seq.toArray |> System.String
+        if ds = "" then None else Some (int ds)
+
+/// Parse every chart in the sheet's drawing, mapping each anchor to its chart
+/// via the graphicFrame's `c:chart r:id` → drawing rels → chartN.xml (drawing1
+/// also holds slicer/textbox anchors, so positional mapping is wrong).
 let parseAllCharts (xlsxPath: string) : ChartPlacement list =
     use fs = File.OpenRead xlsxPath
     use zip = new ZipArchive(fs, ZipArchiveMode.Read)
-    match readEntry zip "xl/drawings/drawing1.xml" with
-    | None -> []
-    | Some xml ->
-        let anchors = descendants "twoCellAnchor" (XDocument.Parse xml).Root |> Seq.toList
-        anchors
-        |> List.mapi (fun i anchor ->
+    match readEntry zip "xl/drawings/drawing1.xml", readEntry zip "xl/drawings/_rels/drawing1.xml.rels" with
+    | Some xml, Some relsXml ->
+        let relChart =
+            descendants "Relationship" (XDocument.Parse relsXml).Root
+            |> Seq.choose (fun r ->
+                match attr "Id" r, attr "Target" r |> Option.bind chartNumFromTarget with
+                | Some id, Some n -> Some (id, n)
+                | _ -> None)
+            |> Map.ofSeq
+        descendants "twoCellAnchor" (XDocument.Parse xml).Root
+        |> Seq.choose (fun a ->
+            firstDesc "chart" a |> Option.bind relId |> Option.bind (fun rid -> Map.tryFind rid relChart)
+            |> Option.bind (fun n -> parseChart xlsxPath n |> Option.map (fun spec -> a, spec)))
+        |> Seq.map (fun (a, spec) ->
             let getf tag child =
-                firstDesc tag anchor |> Option.bind (firstDesc child) |> Option.map (fun e -> float e.Value) |> Option.defaultValue 0.0
-            let fromCol, fromColOff = getf "from" "col", getf "from" "colOff" / 9525.0
-            let fromRow, fromRowOff = getf "from" "row", getf "from" "rowOff" / 9525.0
-            let toCol, toColOff = getf "to" "col", getf "to" "colOff" / 9525.0
-            let toRow, toRowOff = getf "to" "row", getf "to" "rowOff" / 9525.0
-            let wPx = (toCol - fromCol) * 64.0 + toColOff - fromColOff
-            let hPx = (toRow - fromRow) * 20.0 + toRowOff - fromRowOff
-            parseChart xlsxPath (i + 1)
-            |> Option.map (fun spec ->
-                { Spec = spec; FromCol = int fromCol; FromColOffPx = fromColOff
-                  FromRow = int fromRow; FromRowOffPx = fromRowOff; WidthPx = wPx; HeightPx = hPx }))
-        |> List.choose id
+                firstDesc tag a |> Option.bind (firstDesc child) |> Option.map (fun e -> float e.Value) |> Option.defaultValue 0.0
+            { Spec = spec
+              FromCol = int (getf "from" "col"); FromColOffPx = getf "from" "colOff" / 9525.0
+              FromRow = int (getf "from" "row"); FromRowOffPx = getf "from" "rowOff" / 9525.0
+              ToCol = int (getf "to" "col"); ToColOffPx = getf "to" "colOff" / 9525.0
+              ToRow = int (getf "to" "row"); ToRowOffPx = getf "to" "rowOff" / 9525.0 })
+        |> List.ofSeq
+    | _ -> []
 
 // ---- sparklines ----------------------------------------------------------
-
-let private attr (name: string) (e: XElement) =
-    match e.Attribute(XName.Get name) with null -> None | a -> Some a.Value
-/// The `r:id` attribute lives in the relationships namespace.
-let private relId (e: XElement) =
-    match e.Attribute(XName.Get("id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships")) with
-    | null -> None
-    | a -> Some a.Value
 
 let private colIndex0 (letters: string) =
     (letters |> Seq.fold (fun acc ch -> acc * 26 + (int (Char.ToUpper ch) - int 'A' + 1)) 0) - 1

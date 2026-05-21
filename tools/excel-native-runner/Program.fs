@@ -1431,10 +1431,13 @@ let private renderSheetToPath
     let chartItems =
         ChartRender.parseAllCharts inputPath
         |> List.collect (fun pl ->
-            let r = RedBat.Spreadsheet.Layout.cellRect model viewport pl.FromRow pl.FromCol
-            let left = r.X + pl.FromColOffPx
-            let top = r.Y + pl.FromRowOffPx
-            [ RedBat.Spreadsheet.Paint.VecGroup((1.0, 0.0, 0.0, 1.0, left, top), ChartRender.buildChart pl.Spec pl.WidthPx pl.HeightPx) ])
+            let f = RedBat.Spreadsheet.Layout.cellRect model viewport pl.FromRow pl.FromCol
+            let t = RedBat.Spreadsheet.Layout.cellRect model viewport pl.ToRow pl.ToCol
+            let left = f.X + pl.FromColOffPx
+            let top = f.Y + pl.FromRowOffPx
+            let w = (t.X + pl.ToColOffPx) - left
+            let h = (t.Y + pl.ToRowOffPx) - top
+            [ RedBat.Spreadsheet.Paint.VecGroup((1.0, 0.0, 0.0, 1.0, left, top), ChartRender.buildChart pl.Spec w h) ])
     let sparkItems =
         ChartRender.parseSparklines inputPath sheetIndex
         |> List.collect (fun sp ->
