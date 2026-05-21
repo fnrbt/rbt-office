@@ -52,6 +52,16 @@ surfaces have actually been checked. It complements
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
 
+## Real-world goal: milk-street-office.xlsx
+
+- Both sheets (Annual, Monthly) at AA-level parity via the global fixes — no
+  model-specific bug. Aligned MAE ~8.5 (Annual) / ~7 (Monthly). Verified
+  region-by-region: acquisition overview, assumptions, renovation/exit/
+  financing (Holdback, LIBOR, Mezzanine), and the Monthly rent-roll + tenant
+  sections. Values, yellow inputs, dates, currency, and grouped-row outline
+  all match. The only embedded drawing is a legacy VML drawing (not a chart).
+- Status: at render parity.
+
 ## Chart zoo (goal: render chart-zoo.xlsx at parity, one type at a time)
 
 chart-zoo.xlsx (build-chart-zoo.vbs): one of each common type. All six render
