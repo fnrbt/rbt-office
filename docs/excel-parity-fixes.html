@@ -155,6 +155,40 @@
     <tbody>
       <tr>
         <td>
+          <strong>Honor <code>showGridLines="0"</code> — suppress the screen gridlines (real-world: The Lyric model)</strong>
+          <span class="meta">Target: <code>tests/real-world/lyric-multifamily.xlsx</code> (all sheets set <code>sheetView showGridLines="0"</code>). Crops aligned on cell content at identical scale (Excel's row-outline gutter chrome excluded). Genuine MS Calibri font bytes (<code>../office/artifacts/fonts/windows/calibri.ttf</code>) on both sides.</span>
+          <span class="meta">Part of the <code>lyric-multifamily</code> full-parity goal.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:330px; aspect-ratio:1.82 / 1;">
+            <img src="../artifacts/excel/lyric-gridlines-crop.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Excel — no gridlines">
+          </div>
+          <div class="caption">Excel: no grey gridlines — clean white background, only the navy bands, yellow inputs and borders.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:330px; aspect-ratio:1.82 / 1;">
+            <img src="../artifacts/native/lyric-gridlines-after.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours after — gridlines suppressed">
+          </div>
+          <div class="caption">After: gridlines suppressed — matches Excel. (Residual edge differences are ClearType vs grayscale antialiasing; the font bytes and glyph metrics are identical.)</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:330px; aspect-ratio:1.82 / 1;">
+            <img src="../artifacts/baseline/lyric-gridlines-before.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours before — grey gridlines everywhere">
+          </div>
+          <div class="caption">Before: the always-on grey grid drew around every cell, which Excel hides on this workbook.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> the screen renderer always drew the light grey cell grid; it ignored the sheet's <code>showGridLines</code>. Now read from the worksheet:</p>
+          <ul>
+            <li><code>XlsxReader</code>: parse <code>sheetView showGridLines</code> (default true) onto the sheet.</li>
+            <li><code>Model.ShowGridLines</code> carries it; the native runner sets it from the sheet.</li>
+            <li><code>Paint.fs</code> skips the grey gridline pass when it's false (explicit borders still draw).</li>
+            <li>Gate clean (78/78 VBA-layout, print-PDF, smoke render); Fable build clean. (Web/canvas SheetJS path defaults to on — separate follow-up.)</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Date-format quoted literals keep their case (<code>"FY"yy</code> → "FY18", not "fy18")</strong>
           <span class="meta">Target: <code>tests/real-world/lyric-multifamily.xlsx</code> "Lyric-PF-DCF" sheet, Operating Assumptions year headers (<code>"FY"yy</code> over a date). Matched 96-dpi Excel screenshot (scrolled to row 50) ↔ our native render.</span>
           <span class="meta">Part of the <code>lyric-multifamily</code> full-parity goal.</span>

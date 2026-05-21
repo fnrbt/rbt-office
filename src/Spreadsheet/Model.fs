@@ -500,6 +500,12 @@ type SpreadsheetModel = {
     /// font's bold (which is what Excel COM `cell.Font.Bold` returns,
     /// regardless of any CF overlay).
     CfBoldCells: Set<CellAddress>
+
+    /// Whether the sheet shows the light grey screen gridlines. From the
+    /// sheetView `showGridLines` attribute (default true). Many polished
+    /// workbooks turn this off (`showGridLines="0"`) and rely on explicit
+    /// cell borders, so the renderer must suppress the always-on grid.
+    ShowGridLines: bool
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -548,6 +554,7 @@ let createEmpty rowCount colCount = {
     PageSetup = defaultPageSetup
     Tables = []
     CfBoldCells = Set.empty
+    ShowGridLines = true
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")

@@ -499,6 +499,8 @@ type Worksheet = {
     /// `<sheetView showZeros="false"/>`. When false, cells with numeric
     /// value 0 render as blank (Excel default = true).
     ShowZeros: bool
+    /// `<sheetView showGridLines="0"/>`. False = hide the screen gridlines.
+    ShowGridLines: bool
     Hyperlinks: Hyperlink list
     /// `<pageSetup>` + `<sheetPr><pageSetUpPr>`. None when neither is present.
     PageSetup: PageSetup option
@@ -841,6 +843,15 @@ module Xlsx =
         |> Option.map (fun v -> not (v = "0" || v = "false"))
         |> Option.defaultValue true
 
+    /// `<sheetView showGridLines="0"/>`. Excel's default is true; polished
+    /// workbooks turn it off and rely on explicit cell borders.
+    let private showGridLines (sheet: XmlNode) : bool =
+        sElem "sheetViews" sheet
+        |> Option.bind (sElem "sheetView")
+        |> Option.bind (Xml.attr "showGridLines")
+        |> Option.map (fun v -> not (v = "0" || v = "false"))
+        |> Option.defaultValue true
+
     /// Read `<sheetView><pane xSplit ySplit state="frozen"/></sheetView>`.
     /// Excel only renders the freeze divider when state is "frozen" (or
     /// "frozenSplit"); plain "split" puts a draggable bar in instead and
@@ -1020,6 +1031,7 @@ module Xlsx =
             Tables = tables
             FrozenPane = frozenPane sheet
             ShowZeros = showZeros sheet
+            ShowGridLines = showGridLines sheet
             Hyperlinks = hyperlinks resolveRel sheet
             PageSetup = pageSetup sheet
             PageMargins = pageMargins sheet

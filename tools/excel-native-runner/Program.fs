@@ -1317,7 +1317,8 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
         PageSetup = pageSetup
         Tables = modelTables
-        CfBoldCells = cfBoldCells }
+        CfBoldCells = cfBoldCells
+        ShowGridLines = sheet.ShowGridLines }
 
 /// Build a RedBat.Spreadsheet workbook context from the parsed XLSX: every
 /// sheet's model plus the workbook's defined names. This is what the

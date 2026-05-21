@@ -361,7 +361,9 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
             let r, c = cell.Address.Row, cell.Address.Col
             if selected then
                 yield zone, StrokeRect (rect, "#217346", 2.0)
-            else
+            // Suppress the light grey screen gridlines when the sheet has
+            // `showGridLines="0"` (polished workbooks rely on explicit borders).
+            elif model.ShowGridLines then
                 let bordered (mine: BorderStyle option) nr nc nside =
                     mine.IsSome || (neighborSide nr nc nside).IsSome
                 let g = "#a6a6a6"
