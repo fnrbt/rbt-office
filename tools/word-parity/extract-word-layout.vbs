@@ -94,14 +94,24 @@ outFile.WriteLine _
   "style" & vbTab & _
   "text"
 
-Dim paraIndex
+Dim paraIndex, paraTotal, startSeconds
 paraIndex = 0
+paraTotal = doc.Paragraphs.Count
+startSeconds = Timer
+WScript.StdErr.WriteLine "progress: " & paraTotal & " paragraphs; t=0.0s"
 
 Dim para
 For Each para In doc.Paragraphs
   paraIndex = paraIndex + 1
   EmitParagraphLines doc, inputPath, outFile, para, paraIndex
+  ' Progress to stderr (captured in the task log) so a stall is visible at the
+  ' paragraph it stops on instead of just timing out opaquely.
+  If paraIndex Mod 10 = 0 Or paraIndex = paraTotal Then
+    WScript.StdErr.WriteLine "progress: paragraph " & paraIndex & "/" & paraTotal & " t=" & FormatNumber(Timer - startSeconds, 1) & "s"
+  End If
 Next
+
+WScript.StdErr.WriteLine "progress: done t=" & FormatNumber(Timer - startSeconds, 1) & "s"
 
 outFile.Close
 doc.Close wdDoNotSaveChanges
