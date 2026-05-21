@@ -371,6 +371,11 @@ Risk:
 
 Checks to add:
 
+- [x] Hidden/empty sections + `@` text format on numbers:
+  `synthetic-numfmt-hide.xlsx`. Empty section renders "" (`0.00;;` hides
+  zeros/negatives, `0;;` hides zeros); `@` on a number shows its General text
+  and `alignFromFormat` left-aligns it (Excel treats it as text). Engineering
+  notation (`##0.0E+0`) still TODO (no native .NET support).
 - [x] Trailing-comma scaling: `#,##0,` (thousands), `#,##0.0,`, `0.0,,`
   (millions), `#,##0.0,,"M"`. `synthetic-numfmt-scale.xlsx`. `CellText.fs`
   `trailingScale` strips end-of-section commas and divides by 1000ⁿ (.NET only

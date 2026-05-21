@@ -155,6 +155,41 @@
     <tbody>
       <tr>
         <td>
+          <strong>Hidden sections (<code>0.00;;</code>) and the <code>@</code> text format on numbers</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-numfmt-hide.xlsx</code> (built via <code>tools/excel-parity/build-numfmt-hide-fixture.vbs</code>). Col B <code>0.00;;</code>, col C <code>0;;</code>, col D <code>@</code> at 5 / 0 / −5 / 3.5.</span>
+          <span class="meta">Ground truth: Excel <code>cell.Text</code> probe + screenshot; matched 96-dpi screenshot ↔ our native render.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:130px; aspect-ratio:4.2 / 1;">
+            <img src="../artifacts/excel/synthetic-numfmt-hide-crop.png" style="--w:540px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — hidden sections + @ text">
+          </div>
+          <div class="caption">Excel: <code>0.00;;</code> blanks 0 and −5; <code>0;;</code> blanks 0; <code>@</code> shows the number as left-aligned text (5 / 0 / −5 / 3.5).</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:130px; aspect-ratio:4.2 / 1;">
+            <img src="../artifacts/native/synthetic-numfmt-hide-after.png" style="--w:540px; --x:0px; --y:0px; --s:1.0" alt="Ours after — matches Excel">
+          </div>
+          <div class="caption">After: empty sections render blank, and <code>@</code> shows the number's General text, left-aligned (Excel treats a <code>@</code>-formatted number as text).</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:130px; aspect-ratio:4.2 / 1;">
+            <img src="../artifacts/baseline/synthetic-numfmt-hide-before.png" style="--w:540px; --x:0px; --y:0px; --s:1.0" alt="Ours before — sections not hidden, literal @">
+          </div>
+          <div class="caption">Before: zeros/negatives weren't hidden (showed 0 / 5), and <code>@</code> rendered as the literal "@" (right-aligned).</div>
+        </td>
+        <td>
+          <p><strong>Fix</strong> (<code>src/Spreadsheet/CellText.fs</code> + <code>Paint.fs</code>):</p>
+          <ul>
+            <li>An <strong>empty section</strong> renders nothing — <code>formatExcelNumber</code> returns "" when the value's section is blank (<code>0.00;;</code> hides zeros/negatives, <code>0;;</code> hides zeros).</li>
+            <li><strong><code>@</code> text placeholder</strong> on a number → substitute the number's General text (with quoted literals/escapes unwrapped, colour tags dropped).</li>
+            <li><strong>Alignment:</strong> a <code>@</code> (Text) number format makes Excel General-align the value LEFT (as text); <code>alignFromFormat</code> now matches.</li>
+            <li>Known gap: engineering notation (<code>##0.0E+0</code>, exponent a multiple of 3) is not yet implemented (.NET has no native support).</li>
+            <li>Regression guard: 78/78 VBA-layout clean, 12/12 print-PDF within MAE, 92/92 smoke render.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Number-format trailing-comma scaling (<code>#,##0.0,</code> thousands, <code>0.0,,</code> millions)</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-numfmt-scale.xlsx</code> (built via <code>tools/excel-parity/build-scale-fixture.vbs</code>). Cols <code>#,##0,</code> / <code>#,##0.0,</code> / <code>0.0,,</code> / <code>#,##0.0,,"M"</code> at 1234567 / 2500000 / 12345678.</span>
           <span class="meta">Ground truth: an Excel <code>cell.Text</code> probe (24 pairs incl. rounding/negatives). Matched 96-dpi screenshot ↔ our native render.</span>

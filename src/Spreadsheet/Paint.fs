@@ -82,7 +82,12 @@ let private alignFromFormat (format: CellFormat) (value: CellValue): TextAlign =
     | Some "center" -> AlignCenter
     | Some "right" -> AlignRight
     | Some "left" -> AlignLeft
-    | _ -> generalAlign value
+    | _ ->
+        // A `@` (Text) number format makes Excel treat the value as text, so
+        // even a number is General-aligned left rather than right.
+        match format.NumberFormat with
+        | Some nf when nf.Trim() = "@" -> AlignLeft
+        | _ -> generalAlign value
 
 let private isSelected (selection: Selection) row col =
     match selection with

@@ -558,6 +558,12 @@ let private trailingScale (section: string) : string * float =
         if commas = 0 then section, 1.0
         else section.Substring(0, idx + 1) + section.Substring(i), (1000.0 ** float commas)
 
+/// Excel's General text for a number, used when a `@` text placeholder is
+/// applied to a numeric value (Excel shows the number, e.g. `@`→"5"/"-3.5").
+let private generalString (inv: System.Globalization.CultureInfo) (n: float) : string =
+    if n = floor n && abs n < 1e15 then (int64 n).ToString(inv)
+    else n.ToString("G15", inv)
+
 /// Apply an Excel non-date number-format code (`0.000`, `#,##0.00`, `0%`,
 /// `0.00E+00`, etc.) using .NET's custom-format-string support. Excel's
 /// number-format grammar is largely compatible with .NET's; we strip the
@@ -637,12 +643,25 @@ let private formatExcelNumber (code: string) (n: float) : string =
     let cleaned =
         System.Text.RegularExpressions.Regex.Replace(
             cleaned, @"\[(?:<=|>=|<>|=|<|>)-?[0-9]+(?:\.[0-9]+)?\]", "")
-    let formatted =
-        try valueForSection.ToString(cleaned, inv)
-        with _ ->
-            try n.ToString("G", inv)
-            with _ -> string n
-    if prependMinus then "-" + formatted else formatted
+    if System.String.IsNullOrWhiteSpace pos then
+        // An empty section renders nothing — e.g. `0.00;;` hides zeros and
+        // negatives, `0;;` hides zeros.
+        ""
+    elif pos.Contains "@" then
+        // `@` text placeholder on a number → its General text, with quoted
+        // literals / escapes unwrapped and colour tags dropped.
+        let s = pos.Replace("@", generalString inv n)
+        let s = System.Text.RegularExpressions.Regex.Replace(s, "\"([^\"]*)\"", "$1")
+        let s = System.Text.RegularExpressions.Regex.Replace(s, @"\\(.)", "$1")
+        System.Text.RegularExpressions.Regex.Replace(
+            s, @"\[(?:Red|Black|Green|White|Blue|Magenta|Yellow|Cyan)\]", "")
+    else
+        let formatted =
+            try valueForSection.ToString(cleaned, inv)
+            with _ ->
+                try n.ToString("G", inv)
+                with _ -> string n
+        if prependMinus then "-" + formatted else formatted
 
 /// Expand Excel's `* ` accounting fill when it follows a literal currency
 /// marker. The fill characters are alignment padding, not overflow content:
