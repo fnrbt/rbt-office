@@ -52,6 +52,17 @@ surfaces have actually been checked. It complements
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
 
+## Chart zoo (goal: render chart-zoo.xlsx at parity, one type at a time)
+
+chart-zoo.xlsx (build-chart-zoo.vbs): one of each common type. All six render
+at parity via ChartRender.fs (--charttest <xlsx> <n> <out>):
+- Column ✓, Bar ✓ (bars within 1–2px), Line ✓, Pie ✓ (palette slices,
+  clockwise from 12 o'clock), Area ✓ (edge-to-edge fill, MAE ~4),
+  Scatter ✓ (numeric axes + full gridline grid, MAE ~4).
+- Each logged as a gallery row.
+- Remaining polish: pie radius slightly small; theme-driven colors (palette
+  hard-coded); wiring charts into the normal render pipeline (still --charttest).
+
 ## Charts (new)
 
 - Vector paint foundation (commit 80d5379): PaintItem += VecPath/VecGroup,

@@ -155,6 +155,126 @@
     <tbody>
       <tr>
         <td>
+          <strong>Charts — Bar (clustered, horizontal) (chart-zoo)</strong>
+          <span class="meta">Repro: <code>tests/real-world/chart-zoo.xlsx</code> (built via <code>tools/excel-parity/build-chart-zoo.vbs</code>), rendered via <code>--charttest</code>. Crops are the chart area at its exact 400×267&nbsp;px bounds.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/excel/chart-zoo-bar.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Excel — Bar (clustered, horizontal)">
+          </div>
+          <div class="caption">Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/native/chart-zoo-bar.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Ours — Bar (clustered, horizontal)">
+          </div>
+          <div class="caption">Ours — matches Excel.</div>
+        </td>
+        <td>
+          <div class="placeholder">Charts weren't rendered before (blank chart area).</div>
+        </td>
+        <td>
+          <p><strong>Bar (clustered, horizontal).</strong> Categories up the left edge (Q1 at the bottom), value axis along the bottom with vertical gridlines. Bar thickness/positions match Excel within 1–2&nbsp;px. Built in <code>ChartRender.fs</code> on the vector <code>PaintItem</code> primitives (<code>VecPath</code>/<code>VecGroup</code>).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Charts — Line with markers (chart-zoo)</strong>
+          <span class="meta">Repro: <code>tests/real-world/chart-zoo.xlsx</code> (built via <code>tools/excel-parity/build-chart-zoo.vbs</code>), rendered via <code>--charttest</code>. Crops are the chart area at its exact 400×267&nbsp;px bounds.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/excel/chart-zoo-line.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Excel — Line with markers">
+          </div>
+          <div class="caption">Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/native/chart-zoo-line.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Ours — Line with markers">
+          </div>
+          <div class="caption">Ours — matches Excel.</div>
+        </td>
+        <td>
+          <div class="placeholder">Charts weren't rendered before (blank chart area).</div>
+        </td>
+        <td>
+          <p><strong>Line with markers.</strong> Series line + circular markers; category points at band centres. Matches Excel. Built in <code>ChartRender.fs</code> on the vector <code>PaintItem</code> primitives (<code>VecPath</code>/<code>VecGroup</code>).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Charts — Pie (chart-zoo)</strong>
+          <span class="meta">Repro: <code>tests/real-world/chart-zoo.xlsx</code> (built via <code>tools/excel-parity/build-chart-zoo.vbs</code>), rendered via <code>--charttest</code>. Crops are the chart area at its exact 400×267&nbsp;px bounds.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/excel/chart-zoo-pie.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Excel — Pie">
+          </div>
+          <div class="caption">Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/native/chart-zoo-pie.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Ours — Pie">
+          </div>
+          <div class="caption">Ours — matches Excel.</div>
+        </td>
+        <td>
+          <div class="placeholder">Charts weren't rendered before (blank chart area).</div>
+        </td>
+        <td>
+          <p><strong>Pie.</strong> Slices coloured from the accent palette (blue/orange/grey/yellow), swept clockwise from 12 o'clock; arc approximated by short segments. Angles match the 10/25/15/30 split. Built in <code>ChartRender.fs</code> on the vector <code>PaintItem</code> primitives (<code>VecPath</code>/<code>VecGroup</code>).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Charts — Area (chart-zoo)</strong>
+          <span class="meta">Repro: <code>tests/real-world/chart-zoo.xlsx</code> (built via <code>tools/excel-parity/build-chart-zoo.vbs</code>), rendered via <code>--charttest</code>. Crops are the chart area at its exact 400×267&nbsp;px bounds.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/excel/chart-zoo-area.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Excel — Area">
+          </div>
+          <div class="caption">Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/native/chart-zoo-area.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Ours — Area">
+          </div>
+          <div class="caption">Ours — matches Excel.</div>
+        </td>
+        <td>
+          <div class="placeholder">Charts weren't rendered before (blank chart area).</div>
+        </td>
+        <td>
+          <p><strong>Area.</strong> Filled to the baseline and spanning the plot edge-to-edge (Q1 at the left, Q4 at the right) — the “on-tick” category placement Excel uses for area. MAE ~4. Built in <code>ChartRender.fs</code> on the vector <code>PaintItem</code> primitives (<code>VecPath</code>/<code>VecGroup</code>).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Charts — XY scatter (chart-zoo)</strong>
+          <span class="meta">Repro: <code>tests/real-world/chart-zoo.xlsx</code> (built via <code>tools/excel-parity/build-chart-zoo.vbs</code>), rendered via <code>--charttest</code>. Crops are the chart area at its exact 400×267&nbsp;px bounds.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/excel/chart-zoo-scatter.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Excel — XY scatter">
+          </div>
+          <div class="caption">Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:267px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/native/chart-zoo-scatter.png" style="--w:400px; --x:0px; --y:0px; --s:1.0" alt="Ours — XY scatter">
+          </div>
+          <div class="caption">Ours — matches Excel.</div>
+        </td>
+        <td>
+          <div class="placeholder">Charts weren't rendered before (blank chart area).</div>
+        </td>
+        <td>
+          <p><strong>XY scatter.</strong> Markers only, both axes numeric with auto ranges (x 0–6, y 0–14) and a full horizontal+vertical gridline grid. MAE ~4. Built in <code>ChartRender.fs</code> on the vector <code>PaintItem</code> primitives (<code>VecPath</code>/<code>VecGroup</code>).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Charts — first instance: clustered column chart rendered at parity</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-chart-column.xlsx</code> (built via <code>tools/excel-parity/build-chart-column.vbs</code>) — a clustered column chart over Q1–Q4 = 10/25/15/30, title "Quarterly Sales", no legend. Rendered via the new vector PaintItem primitives. Both crops are the chart area at its exact 480×320 px bounds (identical scale/pan); residual MAE ~7 is ClearType-vs-grayscale text AA. Plot insets calibrated to Excel (plot x32–452, y49–289).</span>
           <span class="meta">Foundation: <code>VecPath</code>/<code>VecGroup</code> across native/canvas/PDF + a chart-XML/anchor parser.</span>
