@@ -845,19 +845,19 @@ let private pageIndexForY (pages: PageInfo list) y =
     pages |> List.iteri (fun i info -> if y >= info.Top - 0.01 then idx <- i)
     idx
 
+// A header/footer reference lives in a section's sectPr, which (for a section
+// closed by a break paragraph) sits on that section's LAST paragraph. So the
+// reference applies to the section ending on that page; for a target page we
+// want the section with the smallest end-page that still contains it.
 let private sectionRefsForPage (pages: PageInfo list) pageIndex isHeader (layouts: BlockLayout list) =
     layouts
     |> List.choose (fun layout ->
         let refs = if isHeader then layout.Metadata.HeaderReferences else layout.Metadata.FooterReferences
         if refs.IsEmpty then None
-        else
-            let startPage =
-                if layout.Metadata.SectionBreak = Some "nextPage" || layout.Metadata.PageBreakAfter then pageIndexForY pages layout.Y + 1
-                else pageIndexForY pages (layout.Y + layout.Height)
-            Some (startPage, refs))
-    |> List.filter (fun (startPage, _) -> startPage <= pageIndex)
+        else Some (pageIndexForY pages (layout.Y + layout.Height), refs))
+    |> List.filter (fun (endPage, _) -> endPage >= pageIndex)
     |> List.sortBy fst
-    |> List.tryLast
+    |> List.tryHead
     |> Option.map snd
     |> Option.defaultValue []
 

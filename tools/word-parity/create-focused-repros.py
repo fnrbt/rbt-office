@@ -1630,6 +1630,35 @@ def main():
     )
     print(landscape_path)
 
+    # Different headers per section: section 1's break-paragraph sectPr references
+    # a second header part (rId10), the body (section 2) keeps header1 (rId3), so
+    # page 1 and page 2 show different headers.
+    two_header_path = out_dir / "two-header-sections.docx"
+    _th_break = '<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rId10"/><w:type w:val="nextPage"/></w:sectPr></w:pPr></w:p>'
+    write_docx(
+        two_header_path,
+        (paragraph("Section one", "Heading1") + repeated_long_paragraphs(2) + _th_break
+         + paragraph("Section two", "Heading1") + repeated_long_paragraphs(2)),
+        include_header_footer=True,
+        page_geometry={"section_type": "nextPage"},
+    )
+    _hdr2 = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:hdr xmlns:w="{WORD_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>SECTION ONE HEADER</w:t></w:r></w:p></w:hdr>')
+    _th_tmp = out_dir / "two-header-sections.tmp.docx"
+    with zipfile.ZipFile(two_header_path) as zin, zipfile.ZipFile(_th_tmp, "w", zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.namelist():
+            data = zin.read(item)
+            if item == "[Content_Types].xml":
+                data = data.decode("utf-8").replace("</Types>", '<Override PartName="/word/header2.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>').encode("utf-8")
+            elif item == "word/_rels/document.xml.rels":
+                data = data.decode("utf-8").replace("</Relationships>", '<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header2.xml"/></Relationships>').encode("utf-8")
+            zout.writestr(item, data)
+        zout.writestr("word/header2.xml", _hdr2)
+    shutil.move(str(_th_tmp), str(two_header_path))
+    print(two_header_path)
+
     # PAGE/NUMPAGES fields in a non-uniform (landscape then portrait) document:
     # the field on page 2 must resolve to "2 of 2", which needs per-page geometry
     # rather than a uniform stride.
