@@ -215,6 +215,13 @@ let createMeasurer (options: RenderOptions) : WordCanvasLayout.TextMeasurer =
         let measure = RedBat.Word.ShaperText.createMeasurer fontSet
         let cache = System.Collections.Generic.Dictionary<string, float>()
         fun text style ->
+            // Measure at the effective rendered size: superscript/subscript draw
+            // at FontSize*0.7 (the render uses printFontSize), so the layout width
+            // must match or the PDF horizontalScale stretches the glyphs.
+            let style =
+                match style.VertAlign with
+                | Some "superscript" | Some "subscript" -> { style with FontSize = style.FontSize * 0.7 }
+                | _ -> style
             let key =
                 String.concat "|" [
                     defaultArg style.FontFamily ""
@@ -237,6 +244,14 @@ let createMeasurer (options: RenderOptions) : WordCanvasLayout.TextMeasurer =
 let private createContextMeasurer (textContext: TextContext) : WordCanvasLayout.TextMeasurer =
     let cache = System.Collections.Generic.Dictionary<string, float>()
     fun text style ->
+        // Measure superscript/subscript at the effective rendered size
+        // (FontSize*0.7, what printFontSize/embeddedTextOps draw) so the layout
+        // width matches the shaped advance and horizontalScale stays 1.0 instead
+        // of stretching the mark glyph.
+        let style =
+            match style.VertAlign with
+            | Some "superscript" | Some "subscript" -> { style with FontSize = style.FontSize * 0.7 }
+            | _ -> style
         let key = textStyleKey style + "|" + text
         match cache.TryGetValue key with
         | true, value -> value
