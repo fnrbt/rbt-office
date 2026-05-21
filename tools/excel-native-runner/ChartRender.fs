@@ -23,6 +23,7 @@ type ChartSeries =
 type ChartSpec =
     { Kind: string                 // "col" (barDir)
       Title: string option
+      TitlePos: (float * float) option  // manualLayout (x,y) fractions, edge mode
       Categories: string list
       Series: ChartSeries list
       Gridlines: bool
@@ -125,10 +126,17 @@ let parseChart (xlsxPath: string) (chartIdx: int) : ChartSpec option =
                         (if kind = "scatter" then firstDesc "yVal" ser else firstDesc "val" ser)
                         |> Option.map points |> Option.defaultValue [] |> List.map pf
                     { Name = name; Values = vals; Color = serColor i ser })
+            let titleEl = firstDesc "title" root
             let title =
-                firstDesc "title" root
+                titleEl
                 |> Option.bind (fun t -> descendants "t" t |> Seq.tryHead)
                 |> Option.map (fun t -> t.Value)
+            let titlePos =
+                titleEl |> Option.bind (firstDesc "manualLayout")
+                |> Option.bind (fun ml ->
+                    match firstDesc "x" ml |> Option.bind (valAttr "val"), firstDesc "y" ml |> Option.bind (valAttr "val") with
+                    | Some xs, Some ys -> Some (float xs, float ys)
+                    | _ -> None)
             let gridlines = root |> descendants "valAx" |> Seq.exists (fun ax -> firstDesc "majorGridlines" ax |> Option.isSome)
             let gap = firstDesc "gapWidth" plot |> Option.map (fun e -> int (e.Attribute(XName.Get "val").Value)) |> Option.defaultValue 150
             let dispUnit =
@@ -137,7 +145,7 @@ let parseChart (xlsxPath: string) (chartIdx: int) : ChartSpec option =
                     | "hundreds" -> 100.0 | "thousands" -> 1e3 | "tenThousands" -> 1e4 | "hundredThousands" -> 1e5
                     | "millions" -> 1e6 | "tenMillions" -> 1e7 | "hundredMillions" -> 1e8 | "billions" -> 1e9 | "trillions" -> 1e12 | _ -> 1.0)
                 |> Option.defaultValue 1.0
-            Some { Kind = kind; Title = title; Categories = categories; Series = series
+            Some { Kind = kind; Title = title; TitlePos = titlePos; Categories = categories; Series = series
                    Gridlines = gridlines; GapWidth = gap; DispUnit = dispUnit; Palette = accents }
 
 /// Chart pixel size from the twoCellAnchor (default 64px cols / 20px rows;
@@ -421,14 +429,23 @@ let private circle (cx: float) (cy: float) (r: float) : VecSeg list =
 
 // Shared plot insets (measured against Excel's column chart).
 let private titleSize = 14.0
-let private insets (spec: ChartSpec) = (match spec.Title with Some _ -> 49.0 | None -> 10.0), 32.0, 31.0, 28.0  // titleH, leftAxisW, bottomAxisH, rightPad
+// titleH, leftAxisW, bottomAxisH, rightPad. A manual-layout (left-anchored)
+// title is small and sits near the top, so it reserves a thinner band than a
+// centred title.
+let private insets (spec: ChartSpec) =
+    let titleH = match spec.Title, spec.TitlePos with Some _, Some _ -> 30.0 | Some _, None -> 49.0 | None, _ -> 10.0
+    titleH, 32.0, 31.0, 28.0
 
-/// Chart-area background, border, and centred title.
+/// Chart-area background, border, and title (left-anchored when the chart
+/// carries a manualLayout, else centred).
 let private frame (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
     [ yield FillRect ({ X = 0.0; Y = 0.0; Width = w; Height = h }, "#FFFFFF")
       yield StrokeRect ({ X = 0.5; Y = 0.5; Width = w - 1.0; Height = h - 1.0 }, gridColor, 1.0)
       match spec.Title with
-      | Some t -> yield text t { X = 0.0; Y = 15.0; Width = w; Height = titleSize + 4.0 } titleSize "#595959" AlignCenter VAlignTop
+      | Some t ->
+          match spec.TitlePos with
+          | Some (tx, ty) -> yield text t { X = tx * w + 2.0; Y = ty * h; Width = w - tx * w - 6.0; Height = titleSize + 4.0 } titleSize "#595959" AlignLeft VAlignTop
+          | None -> yield text t { X = 0.0; Y = 15.0; Width = w; Height = titleSize + 4.0 } titleSize "#595959" AlignCenter VAlignTop
       | None -> () ]
 
 let private yAxisLabel (dispUnit: float) (v: float) (y: float) (leftAxisW: float) : PaintItem =
