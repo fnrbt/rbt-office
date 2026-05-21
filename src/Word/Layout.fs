@@ -2530,7 +2530,7 @@ let private shiftBlockY dy (layout: BlockLayout) =
 /// balances a column section that ends with a section break); otherwise each
 /// column fills to the page bottom and the flow wraps to the next page after
 /// `count` columns. Returns the placed layouts.
-let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (startPage: int) (startY: float) (balanced: bool) =
+let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (startPage: int) (startY: float) (balanced: bool) =
     let n = max 1 columns.Count
     let full = settings.Width - settings.PaddingLeft - settings.MarginRight
     let widthsArr =
@@ -2544,9 +2544,8 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
         for i in 0 .. col - 1 do
             x <- x + fst widthsArr.[i] + snd widthsArr.[i]
         x
-    let stride = pageHeight settings + pageGap
-    let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (float page * stride)
-    let contentBottomAt page = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (float page * stride)
+    let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (pageTopOf page)
+    let contentBottomAt page = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (pageTopOf page)
     // Balanced target height: lay the section out once at column width to get its
     // total height H, then each column targets H/n (on the start page).
     let balancedHeight =
@@ -2629,23 +2628,36 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
                 for sl in subLayouts do
                     results.Add(sl |> shiftBlockY dy |> shiftBlockX (columnDx col))
                 y <- y + height
-    List.ofSeq results
+    List.ofSeq results, page, y
+
+/// Absolute geometry of one rendered page. For single-section documents every
+/// page is identical (uniform), matching the legacy stride-based model; with
+/// per-section page setup the size/margins can differ page to page.
+type PageInfo = {
+    Top: float
+    Width: float
+    Height: float
+    MarginTop: float
+    MarginBottom: float
+    MarginLeft: float
+    MarginRight: float
+}
 
 /// Split the document into sections at paragraphs carrying a section break;
 /// the final section uses the body PageSetup. Each entry is
-/// (blocks, columns, breakType, isFinal).
+/// (blocks, columns, geometry, breakType, isFinal).
 let private splitIntoSections (doc: Document) =
-    let result = ResizeArray<Block list * SectionColumns option * string option * bool>()
+    let result = ResizeArray<Block list * SectionColumns option * SectionPageSetup option * string option * bool>()
     let mutable current = ResizeArray<Block>()
     for block in doc.Blocks do
         current.Add block
         match tryGetParagraph block with
         | Some para when para.Metadata.SectionBreak.IsSome ->
-            result.Add(List.ofSeq current, para.Metadata.SectionColumns, para.Metadata.SectionBreak, false)
+            result.Add(List.ofSeq current, para.Metadata.SectionColumns, para.Metadata.SectionPageSetup, para.Metadata.SectionBreak, false)
             current <- ResizeArray<Block>()
         | _ -> ()
     // The final section's start type comes from the body sectPr.
-    result.Add(List.ofSeq current, doc.PageSetup.Columns, doc.PageSetup.SectionStart, true)
+    result.Add(List.ofSeq current, doc.PageSetup.Columns, None, doc.PageSetup.SectionStart, true)
     List.ofSeq result
 
 let private columnsOrSingle (columns: SectionColumns option) =
@@ -2653,53 +2665,104 @@ let private columnsOrSingle (columns: SectionColumns option) =
     | Some c when c.Count >= 2 -> c
     | _ -> { Count = 1; Gap = 0.0; Separator = false; Widths = [] }
 
-/// Lay out a multi-section document section by section: a continuous break
-/// continues on the same page below the previous section; otherwise the next
-/// section starts on a new page. Multi-column non-final sections are balanced.
-let private layoutSections (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) sections =
+let private settingsForGeometry (settings: LayoutSettings) (geometry: SectionPageSetup option) =
+    match geometry with
+    | Some g -> { settings with Width = g.PageWidth; PageHeight = g.PageHeight; PaddingLeft = g.MarginLeft; PaddingTop = g.MarginTop; MarginRight = g.MarginRight; MarginBottom = g.MarginBottom }
+    | None -> settings
+
+let private pageInfoOf (s: LayoutSettings) top =
+    { Top = top; Width = s.Width; Height = pageHeight s; MarginTop = s.PaddingTop; MarginBottom = s.MarginBottom; MarginLeft = s.PaddingLeft; MarginRight = s.MarginRight }
+
+/// The uniform page list for a single-section document (legacy stride model).
+let private uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
     let stride = pageHeight settings + pageGap
-    let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (float page * stride)
+    let bottom = layouts |> List.collect (fun l -> l.Lines) |> List.map (fun l -> l.Y + l.Height) |> (function [] -> 0.0 | ys -> List.max ys)
+    let pageCount = max 1 (int (floor (max 0.0 bottom / stride)) + 1)
+    [ for p in 0 .. pageCount - 1 -> pageInfoOf settings (float p * stride) ]
+
+/// Lay out a multi-section document section by section. A continuous break
+/// continues on the same page below the previous section; otherwise the next
+/// section starts on a new page (using that section's page size — supporting a
+/// landscape page mid-document). Non-final multi-column sections are balanced.
+/// Returns the layouts plus the per-page geometry.
+let private layoutSections (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) sections =
     let results = ResizeArray<BlockLayout>()
-    let mutable page = 0
-    let mutable y = contentTopAt 0
+    let pageTops = ResizeArray<float>()    // absolute top of each page index
+    let pageSettings = ResizeArray<LayoutSettings>()  // settings owning each page
+    pageTops.Add 0.0
+    let mutable currentPage = 0
+    let mutable currentY = 0.0             // absolute Y where the next section starts
+    let mutable started = false
+    let recordPage page (s: LayoutSettings) top =
+        while pageTops.Count <= page do pageTops.Add 0.0
+        while pageSettings.Count <= page do pageSettings.Add s
+        pageTops.[page] <- top
+        pageSettings.[page] <- s
     sections
-    |> List.iteri (fun i (blocks, columns, breakType, isFinal) ->
-        // Stitch BEFORE this section using its own start type: a continuous
-        // section continues on the same page below the previous one; otherwise
-        // it starts on a new page.
-        if i > 0 then
+    |> List.iteri (fun i (blocks, columns, geometry, breakType, isFinal) ->
+        let secSettings = settingsForGeometry settings geometry
+        let secStride = pageHeight secSettings + pageGap
+        // Stitch before this section.
+        if not started then
+            currentPage <- 0
+            recordPage 0 secSettings 0.0
+            currentY <- WordLayout.Page.contentTop secSettings.PaddingTop 0.0
+            started <- true
+        else
             match breakType with
-            | Some "continuous" -> ()
-            | _ -> page <- page + 1; y <- contentTopAt page
+            | Some "continuous" -> ()  // same page, continue at currentY
+            | _ ->
+                // New page: top = previous page top + previous page height + gap.
+                let prevSettings = pageSettings.[currentPage]
+                let newTop = pageTops.[currentPage] + pageHeight prevSettings + pageGap
+                currentPage <- currentPage + 1
+                recordPage currentPage secSettings newTop
+                currentY <- WordLayout.Page.contentTop secSettings.PaddingTop newTop
+        // Page tops within this section are uniform (secStride from the section top).
+        let sectionBase = currentPage
+        let sectionBaseTop = pageTops.[currentPage]
+        let pageTopOf p = sectionBaseTop + float (p - sectionBase) * secStride
         let secColumns = columnsOrSingle columns
         let secDoc = { doc with Blocks = blocks; PageSetup = { doc.PageSetup with Columns = columns } }
         let balanced = (not isFinal) && secColumns.Count >= 2
-        let secLayouts = flowColumns settings measureText measureRange secDoc secColumns page y balanced
+        let secLayouts, endPage, endY = flowColumns secSettings measureText measureRange secDoc secColumns pageTopOf currentPage currentY balanced
         results.AddRange secLayouts
-        let bottom = secLayouts |> List.collect (fun l -> l.Lines) |> List.map (fun l -> l.Y + l.Height) |> (function [] -> y | ys -> List.max ys)
-        page <- int (floor (bottom / stride))
-        y <- bottom)
-    List.ofSeq results
+        // Record the geometry of every page this section used.
+        for p in sectionBase .. endPage do recordPage p secSettings (pageTopOf p)
+        currentPage <- endPage
+        currentY <- endY)
+    let maxPage = pageTops.Count - 1
+    let pages = [ for p in 0 .. maxPage -> pageInfoOf pageSettings.[p] pageTops.[p] ]
+    List.ofSeq results, pages
 
-let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
+/// Lay out a document, returning the layouts and the per-page geometry.
+let layoutDocumentPages (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) : BlockLayout list * PageInfo list =
     match splitIntoSections doc with
-    | [ (_, columns, _, _) ] ->
-        // Single section: keep the existing path.
-        match columns with
-        | Some c when c.Count >= 2 -> flowColumns settings measureText measureRange doc c 0 (WordLayout.Page.contentTop settings.PaddingTop 0.0) false
-        | _ ->
-            let firstPass, placedAfterFirst =
-                layoutDocumentWithRangeAndInitial settings measureText measureRange doc [] []
-            let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-            let extendedObstacles, prePlacedBoxes =
-                computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
-            if extendedObstacles.IsEmpty then firstPass
-            else
-                let secondPass, _ =
-                    layoutDocumentWithRangeAndInitial settings measureText measureRange doc extendedObstacles prePlacedBoxes
-                secondPass
+    | [ (_, columns, _, _, _) ] ->
+        // Single section: keep the existing path; uniform page list.
+        let layouts =
+            match columns with
+            | Some c when c.Count >= 2 ->
+                let stride = pageHeight settings + pageGap
+                let r, _, _ = flowColumns settings measureText measureRange doc c (fun p -> float p * stride) 0 (WordLayout.Page.contentTop settings.PaddingTop 0.0) false
+                r
+            | _ ->
+                let firstPass, placedAfterFirst =
+                    layoutDocumentWithRangeAndInitial settings measureText measureRange doc [] []
+                let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+                let extendedObstacles, prePlacedBoxes =
+                    computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
+                if extendedObstacles.IsEmpty then firstPass
+                else
+                    let secondPass, _ =
+                        layoutDocumentWithRangeAndInitial settings measureText measureRange doc extendedObstacles prePlacedBoxes
+                    secondPass
+        layouts, uniformPageInfos settings layouts
     | sections ->
         layoutSections settings measureText measureRange doc sections
+
+let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
+    layoutDocumentPages settings measureText measureRange doc |> fst
 
 let layoutDocument (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) =
     layoutDocumentWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) doc
