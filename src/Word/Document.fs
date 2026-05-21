@@ -222,6 +222,10 @@ and TableRow = {
 and TableCell = {
     Content: ParagraphBlock list  // Cells can contain multiple paragraphs
     NestedTables: TableBlock list
+    // For each entry in NestedTables, the number of cell paragraphs that
+    // precede it in document order. Lets layout/paint interleave paragraphs
+    // and nested tables instead of hoisting all tables to the cell top.
+    NestedTableAnchors: int list
     ColSpan: int
     BackgroundColor: string option
     Shading: Shading option
@@ -793,6 +797,7 @@ let private emptyTableCell () =
             }
         ]
         NestedTables = []
+        NestedTableAnchors = []
         ColSpan = 1
         BackgroundColor = None
         Shading = None

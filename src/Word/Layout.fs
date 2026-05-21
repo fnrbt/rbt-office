@@ -1303,11 +1303,52 @@ let private tableAlignmentOffset (alignment: string option) availableWidth table
 let private paragraphIsVisuallyEmpty (para: ParagraphBlock) =
     System.String.IsNullOrWhiteSpace(TextBuffer.toString para.Buffer)
 
-let private trimTrailingEmptyParagraphs paragraphs =
-    paragraphs
-    |> List.rev
-    |> List.skipWhile paragraphIsVisuallyEmpty
-    |> List.rev
+/// A cell's content laid out in document order: paragraphs interleaved with
+/// nested tables at the positions recorded by NestedTableAnchors.
+type private CellContentItem =
+    | CellParagraph of ParagraphBlock
+    | CellNestedTable of TableBlock
+
+let private orderedCellContent (cell: TableCell) : CellContentItem list =
+    if cell.NestedTables.IsEmpty then
+        cell.Content |> List.map CellParagraph
+    else
+        let content = cell.Content |> List.toArray
+        // Pair each nested table with its anchor (paragraphs preceding it);
+        // anchors beyond the available paragraph count fall at the end.
+        let anchored =
+            cell.NestedTables
+            |> List.mapi (fun i table ->
+                let anchor =
+                    cell.NestedTableAnchors
+                    |> List.tryItem i
+                    |> Option.defaultValue content.Length
+                    |> max 0
+                    |> min content.Length
+                table, anchor)
+            |> List.sortBy snd
+            |> List.toArray
+        let items = ResizeArray<CellContentItem>()
+        let mutable tableIndex = 0
+        let emitTablesAt paraIndex =
+            while tableIndex < anchored.Length && snd anchored.[tableIndex] = paraIndex do
+                items.Add(CellNestedTable (fst anchored.[tableIndex]))
+                tableIndex <- tableIndex + 1
+        for paraIndex in 0 .. content.Length do
+            emitTablesAt paraIndex
+            if paraIndex < content.Length then
+                items.Add(CellParagraph content.[paraIndex])
+        // Word requires a paragraph after a nested table; drop trailing empty
+        // paragraph marks so a cell that ends with a table is not over-tall.
+        let trimmed =
+            items
+            |> List.ofSeq
+            |> List.rev
+            |> List.skipWhile (function
+                | CellParagraph para -> paragraphIsVisuallyEmpty para
+                | CellNestedTable _ -> false)
+            |> List.rev
+        trimmed
 
 let rec measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (tableMaxWidth: float) (columnWidths: float list) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
     let cellSettings = {
@@ -1384,31 +1425,29 @@ let rec measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMe
 
                 nestedLayouts, (nestedY - nestedTableY) + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale nestedTable
 
-        for nestedTable in cell.NestedTables do
-            let nestedLayouts, nestedHeight = layoutNestedTable nestedTable paraY
-            cellLayouts <- cellLayouts @ nestedLayouts
-            paraY <- paraY + nestedHeight
-
-        let cellParagraphs =
-            (if cell.NestedTables.IsEmpty then cell.Content
-             else trimTrailingEmptyParagraphs cell.Content)
-            |> List.toArray
         let mutable pendingEmptyHeight = 0.0
-        for paraIndex in 0 .. cellParagraphs.Length - 1 do
-            let para = tableCellParagraphForLayout cellParagraphs.[paraIndex]
-            let paragraphStyle = paragraphStyleForParagraph para
-            let layout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange cellSettings measureText measureRange cellMaxWidth paraY cellX paragraphStyle effectiveBufferForParagraph para Map.empty [] []
-            let layout = if layout.Lines.IsEmpty then moveLayoutToY paraY layout else layout
-            let layout =
-                match layout.Lines with
-                | firstLine :: _ when pendingEmptyHeight > 0.0 && pageNumberForY cellSettings layout.Y <> pageNumberForY cellSettings firstLine.Y ->
-                    { layout with
-                        Height = layout.Height + pendingEmptyHeight
-                        Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + pendingEmptyHeight }) }
-                | _ -> layout
-            cellLayouts <- cellLayouts @ [layout]
-            pendingEmptyHeight <- if layout.Lines.IsEmpty then pendingEmptyHeight + layout.Height else 0.0
-            paraY <- paraY + layout.Height
+        for item in orderedCellContent cell do
+            match item with
+            | CellNestedTable nestedTable ->
+                let nestedLayouts, nestedHeight = layoutNestedTable nestedTable paraY
+                cellLayouts <- cellLayouts @ nestedLayouts
+                paraY <- paraY + nestedHeight
+                pendingEmptyHeight <- 0.0
+            | CellParagraph rawPara ->
+                let para = tableCellParagraphForLayout rawPara
+                let paragraphStyle = paragraphStyleForParagraph para
+                let layout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange cellSettings measureText measureRange cellMaxWidth paraY cellX paragraphStyle effectiveBufferForParagraph para Map.empty [] []
+                let layout = if layout.Lines.IsEmpty then moveLayoutToY paraY layout else layout
+                let layout =
+                    match layout.Lines with
+                    | firstLine :: _ when pendingEmptyHeight > 0.0 && pageNumberForY cellSettings layout.Y <> pageNumberForY cellSettings firstLine.Y ->
+                        { layout with
+                            Height = layout.Height + pendingEmptyHeight
+                            Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + pendingEmptyHeight }) }
+                    | _ -> layout
+                cellLayouts <- cellLayouts @ [layout]
+                pendingEmptyHeight <- if layout.Lines.IsEmpty then pendingEmptyHeight + layout.Height else 0.0
+                paraY <- paraY + layout.Height
 
         let contentHeight = max 0.0 (paraY - contentStartY)
         rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + verticalBorderExtent + rowSpacingAdvance)

@@ -153,6 +153,44 @@
     <tbody>
       <tr>
         <td>
+          <strong>Nested table ordering inside a cell</strong>
+          <span class="meta">Repro: <code>tests/repros/word/nested-table-cell-layout.docx</code></span>
+          <span class="meta">Real fixture class: a table cell whose content interleaves text and a nested table, e.g. an intro paragraph, then a nested table, then a closing paragraph &mdash; common in form/invoice layouts.</span>
+          <span class="meta">Font check: focused comparison uses Calibri in Word PDF and both our PDF rasters; all three columns are 120&nbsp;dpi PDF renders for a like-for-like crop.</span>
+          <span class="meta">Paths checked: Word PDF layout, browser canvas layout (<code>ok</code>, 10 matched lines), native/PDF importer mirror, and the focused table regression repros.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/nested-table-cell-layout-word.png" style="--w:1020px; --x:50px; --y:80px; --s:0.5" alt="Word reference nested table ordered after the intro paragraph">
+          </div>
+          <div class="caption">Word lays the cell out in document order: the <code>Outer right intro</code> paragraph, then the nested table, then <code>Outer right after nested</code>.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/nested-table-cell-layout-after.png" style="--w:1020px; --x:50px; --y:80px; --s:0.5" alt="After nested table ordering fix">
+          </div>
+          <div class="caption">After: paragraphs and the nested table interleave in document order; the focused repro reports <code>ok</code> with <code>10 matched lines</code> against Word. (Nested-table inner borders are still unpainted &mdash; a separate gap.)</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/nested-table-cell-layout-before.png" style="--w:1020px; --x:50px; --y:80px; --s:0.5" alt="Before nested table ordering fix">
+          </div>
+          <div class="caption">Before: the nested table was hoisted to the top of the cell, pushing the intro and closing paragraphs below it &mdash; the <code>N1&ndash;N4</code> rows landed about <code>30px</code> above their Word positions.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> preserve the document order of paragraphs and nested tables within a table cell instead of laying out all nested tables first.</p>
+          <ul>
+            <li><code>src/Office.Formats/src/DocxReader.fs</code>: cell parsing now walks <code>w:p</code>/<code>w:tbl</code> children in order and records each nested table's anchor (the count of preceding paragraphs); the editor bridge forwards <code>NestedTableAnchors</code>.</li>
+            <li><code>src/Word/Document.fs</code>: <code>TableCell</code> gains a <code>NestedTableAnchors</code> field.</li>
+            <li><code>src/Word/Layout.fs</code>: <code>orderedCellContent</code> interleaves paragraphs and nested tables at their anchors, then trims trailing empty paragraph marks so a cell ending with a table is not over-tall.</li>
+            <li><code>src/Word/Docx.fs</code>, <code>tools/native-runner/Program.fs</code>: import/export and the native path carry the anchors through.</li>
+            <li><code>tools/word-parity/create-focused-repros.py</code>: adds the interleaved nested-table repro.</li>
+            <li>Regression guards: <code>table-import-preserves-structure</code>, <code>table-cell-default-after-spacing</code>, <code>table-style-line-spacing-only</code>, <code>table-vmerge-valign-rowspan</code>, <code>table-cell-spacing-margins</code>, and <code>two-tables-border-position</code> remain <code>ok</code>.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Table style line-spacing without after-spacing</strong>
           <span class="meta">Repro: <code>tests/repros/word/table-style-line-spacing-only.docx</code></span>
           <span class="meta">Real fixture class: table styles whose <code>w:pPr</code> sets <code>w:spacing w:line="240"</code> but omits <code>w:after</code>, as in Office/Calibre-style light-list tables.</span>

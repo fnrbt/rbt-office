@@ -1583,6 +1583,7 @@ module API =
     let private tableCell id text : Doc.TableCell =
         { Content = [paragraphFromText id text]
           NestedTables = []
+          NestedTableAnchors = []
           ColSpan = 1
           BackgroundColor = None
           Shading = None

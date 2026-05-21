@@ -139,6 +139,19 @@ def cell(
     )
 
 
+def cell_with_table(intro, nested_table_xml, width=4606, trailing=""):
+    """A table cell whose content is an intro paragraph, a nested table, then a
+    closing paragraph (Word requires a paragraph after a nested table)."""
+    return (
+        "<w:tc>"
+        f'<w:tcPr><w:tcW w:w="{width}" w:type="dxa"/></w:tcPr>'
+        f"{paragraph(intro)}"
+        f"{nested_table_xml}"
+        f"{paragraph(trailing)}"
+        "</w:tc>"
+    )
+
+
 def table_border(side, val, sz=None, color="auto"):
     attrs = [f'w:val="{esc(val)}"']
     if sz is not None:
@@ -1186,6 +1199,28 @@ def main():
                 ]),
             ])
             + paragraph("After table")
+        )),
+        "nested-table-cell-layout.docx": (False, (
+            paragraph("Nested table cell layout repro", "Heading1")
+            + table_with_grid([
+                row_cells([
+                    cell("Outer left cell", width=4606),
+                    cell_with_table(
+                        "Outer right intro",
+                        table_with_grid([
+                            row_cells([cell("N1", width=2000), cell("N2", width=2000)]),
+                            row_cells([cell("N3", width=2000), cell("N4", width=2000)]),
+                        ], [2000, 2000]),
+                        width=4606,
+                        trailing="Outer right after nested",
+                    ),
+                ]),
+                row_cells([
+                    cell("Outer bottom left", width=4606),
+                    cell("Outer bottom right", width=4606),
+                ]),
+            ], [4606, 4606])
+            + paragraph("After outer table")
         )),
         "two-tables-border-position.docx": (False, (
             paragraph("Two table border position repro", "Heading1")

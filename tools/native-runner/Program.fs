@@ -584,6 +584,7 @@ let rec private tableCell resolver images styleMap tableStyleMap comments notes 
     {
         Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes false defaultMissingSpacingToZero (applyTableParagraphProperties emptyPara)] else content
         NestedTables = cell.NestedTables |> List.map (tableBlock resolver images styleMap tableStyleMap comments notes)
+        NestedTableAnchors = cell.NestedTableAnchors
         ColSpan = props |> Option.bind (fun p -> p.ColSpan) |> Option.defaultValue 1
         BackgroundColor = props |> Option.bind (fun p -> p.Shading) |> Option.bind directShadingBackgroundColor
         Shading = props |> Option.bind (fun p -> p.Shading) |> Option.map shading

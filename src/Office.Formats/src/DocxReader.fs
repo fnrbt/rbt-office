@@ -274,6 +274,8 @@ and TableRow = {
 and TableCell = {
     Paragraphs: Paragraph list
     NestedTables: Table list
+    // For each nested table, how many cell paragraphs precede it in document order.
+    NestedTableAnchors: int list
     Properties: TableCellProperties option
 }
 
@@ -1410,15 +1412,25 @@ module Docx =
 
     // Table extraction with nested document builder
     let rec tableCell (tcNode: XmlNode) : TableCell =
-        let paragraphs =
-            wChildElems "p" tcNode
-            |> List.map paragraph
-        let nestedTables =
-            wChildElems "tbl" tcNode
-            |> List.map table
+        // Walk p/tbl children in document order so we can record, for each nested
+        // table, how many paragraphs precede it (its interleave anchor).
+        let mutable paragraphCount = 0
+        let mutable paragraphs = []
+        let mutable nestedTables = []
+        let mutable nestedAnchors = []
+        for child in Xml.children tcNode do
+            match Xml.name child |> Option.map Ns.stripNs with
+            | Some "p" ->
+                paragraphs <- paragraph child :: paragraphs
+                paragraphCount <- paragraphCount + 1
+            | Some "tbl" ->
+                nestedTables <- table child :: nestedTables
+                nestedAnchors <- paragraphCount :: nestedAnchors
+            | _ -> ()
         {
-            Paragraphs = paragraphs
-            NestedTables = nestedTables
+            Paragraphs = List.rev paragraphs
+            NestedTables = List.rev nestedTables
+            NestedTableAnchors = List.rev nestedAnchors
             Properties = tableCellProps tcNode
         }
 
@@ -3946,6 +3958,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 createObj [
                     "Paragraphs" ==> cellParagraphs
                     "NestedTables" ==> nestedTables
+                    "NestedTableAnchors" ==> (cell.NestedTableAnchors |> List.toArray)
                     "ColSpan" ==> (cell.Properties |> Option.bind (fun props -> props.ColSpan) |> Option.defaultValue 1)
                     "BackgroundColor" ==> backgroundColor
                     "Shading" ==> shading

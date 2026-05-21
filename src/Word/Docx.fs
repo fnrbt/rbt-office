@@ -859,9 +859,13 @@ let rec private blockFromEditor (item: obj) =
                                     match blockFromEditor item with
                                     | Table table -> Some table
                                     | _ -> None)
+                        let nestedTableAnchors =
+                            if isNullOrUndefined cell?NestedTableAnchors then []
+                            else cell?NestedTableAnchors |> unbox<int array> |> Array.toList
                         {
                             Content = cellParagraphs
                             NestedTables = nestedTables
+                            NestedTableAnchors = nestedTableAnchors
                             ColSpan = optionalInt (cell?ColSpan) |> Option.defaultValue 1 |> max 1
                             BackgroundColor = optionalString (cell?BackgroundColor)
                             Shading = shadingFromEditorFields cell
@@ -1189,6 +1193,7 @@ let rec private blockToEditor block =
                             createObj [
                                 "Paragraphs" ==> (cell.Content |> List.map (paragraphToEditor "Paragraph" 0) |> List.toArray)
                                 "NestedTables" ==> (cell.NestedTables |> List.map (Table >> blockToEditor) |> List.toArray)
+                                "NestedTableAnchors" ==> (cell.NestedTableAnchors |> List.toArray)
                                 "ColSpan" ==> cell.ColSpan
                                 "BackgroundColor" ==> cell.BackgroundColor
                                 "Shading" ==> shadingToEditor cell.Shading
