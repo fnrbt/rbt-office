@@ -32,6 +32,14 @@ fonts=(
   verdanab.ttf
   verdanai.ttf
   verdanaz.ttf
+  # Monotype Garamond (Office) + Segoe UI — used by the dashboard fixtures.
+  GARA.TTF
+  GARABD.TTF
+  GARAIT.TTF
+  segoeui.ttf
+  segoeuib.ttf
+  segoeuii.ttf
+  segoeuiz.ttf
   # CJK font-link fallbacks Excel uses when a Calibri/Arial cell hits a
   # codepoint outside the Latin set. Matches the GDI font-link chain
   # that Office uses on a stock Win10/11 install: Yu Gothic for

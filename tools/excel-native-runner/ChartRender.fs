@@ -29,6 +29,7 @@ type ChartSpec =
       Gridlines: bool
       GapWidth: int
       DispUnit: float              // value-axis display unit (1000 = "Thousands")
+      Font: string                 // theme minor font (chart text)
       Palette: string list }       // theme accent1..6
     /// First series' values / colour — convenience for single-series paths.
     member s.Values = match s.Series with x :: _ -> x.Values | [] -> []
@@ -72,6 +73,15 @@ let private catPoints (catEl: XElement) : string list =
 let private pf (s: string) = match Double.TryParse(s, Globalization.CultureInfo.InvariantCulture) with true, n -> n | _ -> 0.0
 
 let private defaultAccents = [ "#5B9BD5"; "#ED7D31"; "#A5A5A5"; "#FFC000"; "#4472C4"; "#70AD47" ]
+
+/// Theme minor-font latin typeface (charts use it via `+mn-lt`; cells via the
+/// body font). Falls back to Calibri.
+let private parseMinorFont (zip: ZipArchive) : string =
+    match readEntry zip "xl/theme/theme1.xml" with
+    | None -> "Calibri"
+    | Some xml ->
+        (XDocument.Parse xml).Root |> firstDesc "minorFont" |> Option.bind (firstDesc "latin")
+        |> Option.bind (attr "typeface") |> Option.defaultValue "Calibri"
 
 /// Read the theme accent1..6 colours (the chart series palette).
 let private parseTheme (zip: ZipArchive) : string list =
@@ -153,7 +163,7 @@ let parseChart (xlsxPath: string) (chartIdx: int) : ChartSpec option =
                     | "millions" -> 1e6 | "tenMillions" -> 1e7 | "hundredMillions" -> 1e8 | "billions" -> 1e9 | "trillions" -> 1e12 | _ -> 1.0)
                 |> Option.defaultValue 1.0
             Some { Kind = kind; Title = title; TitlePos = titlePos; Categories = categories; Series = series
-                   Gridlines = gridlines; GapWidth = gap; DispUnit = dispUnit; Palette = accents }
+                   Gridlines = gridlines; GapWidth = gap; DispUnit = dispUnit; Font = parseMinorFont zip; Palette = accents }
 
 /// Chart pixel size from the twoCellAnchor (default 64px cols / 20px rows;
 /// EMU offsets at 9525 EMU/px). Good enough for the synthetic fixture.
@@ -323,6 +333,7 @@ type SlicerSpec =
       Items: SlicerItem list
       ColumnCount: int
       Accent: string               // theme accent1 — selected-button fill
+      Font: string                 // theme minor font
       FromCol: int; FromColOffPx: float; FromRow: int; FromRowOffPx: float
       ToCol: int; ToColOffPx: float; ToRow: int; ToRowOffPx: float }
 
@@ -347,6 +358,7 @@ let parseSlicers (xlsxPath: string) : SlicerSpec list =
     use fs = File.OpenRead xlsxPath
     use zip = new ZipArchive(fs, ZipArchiveMode.Read)
     let accent = parseTheme zip |> List.tryHead |> Option.defaultValue "#5B9BD5"
+    let font = parseMinorFont zip
     let shared = pivotSharedItems zip
     // cache name -> (sourceField, [(itemIndex, selected)])
     let caches =
@@ -389,7 +401,7 @@ let parseSlicers (xlsxPath: string) : SlicerSpec list =
                 match anchorOf name with
                 | Some (fc, fco, fr, fro, tc, tco, tr, tro) ->
                     yield { Caption = caption; Items = items; ColumnCount = (attr "columnCount" sl |> Option.map int |> Option.defaultValue 1)
-                            Accent = accent
+                            Accent = accent; Font = font
                             FromCol = fc; FromColOffPx = fco; FromRow = fr; FromRowOffPx = fro
                             ToCol = tc; ToColOffPx = tco; ToRow = tr; ToRowOffPx = tro }
                 | None -> ()
@@ -412,8 +424,12 @@ let private niceMax (dataMax: float) (step: float) : float =
 let private dataMaxOf (spec: ChartSpec) =
     match spec.Series |> List.collect (fun s -> s.Values) with [] -> 1.0 | vs -> List.max vs
 
+/// Font for chart/slicer text — set per render from the workbook theme so we
+/// use Excel's actual font (e.g. Garamond) rather than a hardcoded Calibri.
+let mutable private chartTextFont = "Calibri"
+
 let private text (s: string) (rect: Rect) (size: float) (color: string) (align: TextAlign) (vAlign: VerticalAlign) : PaintItem =
-    DrawText { Text = s; Rect = rect; Color = color; FontSize = size; FontName = Some "Calibri"
+    DrawText { Text = s; Rect = rect; Color = color; FontSize = size; FontName = Some chartTextFont
                Bold = false; Italic = false; Underline = false; UnderlineDouble = false; Strikethrough = false
                Align = align; VerticalAlign = vAlign; LineIndex = 0; LineCount = 1; BaselineShift = 0.0; Rotation = 0 }
 
@@ -656,6 +672,7 @@ let buildPieChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
 
 /// Dispatch on chart kind.
 let buildChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
+    chartTextFont <- spec.Font
     match spec.Kind with
     | "bar" -> buildBarChart spec w h
     | "line" -> buildLineChart spec w h
@@ -683,6 +700,7 @@ let buildSparkline (values: float list) (rect: Rect) (color: string) : PaintItem
 /// Render a slicer: outer box, caption header, and a grid of item buttons
 /// (selected = white, filtered-out = grey).
 let buildSlicer (spec: SlicerSpec) (rect: Rect) : PaintItem list =
+    chartTextFont <- spec.Font
     let border = "#D9D9D9"
     // Excel's "Light" slicer style tints the accent toward white for selected
     // buttons; approximate with a 45% lighten.
@@ -705,7 +723,7 @@ let buildSlicer (spec: SlicerSpec) (rect: Rect) : PaintItem list =
       yield StrokeRect ({ X = rect.X + 0.5; Y = rect.Y + 0.5; Width = rect.Width - 1.0; Height = rect.Height - 1.0 }, border, 1.0)
       // Caption (bold) + divider under the header.
       yield DrawText { Text = spec.Caption; Rect = { X = rect.X + 5.0; Y = rect.Y; Width = rect.Width - 10.0; Height = headerH }
-                       Color = "#595959"; FontSize = 11.0; FontName = Some "Calibri"; Bold = true; Italic = false
+                       Color = "#595959"; FontSize = 11.0; FontName = Some spec.Font; Bold = true; Italic = false
                        Underline = false; UnderlineDouble = false; Strikethrough = false
                        Align = AlignLeft; VerticalAlign = VAlignMiddle; LineIndex = 0; LineCount = 1; BaselineShift = 0.0; Rotation = 0 }
       yield VecPath ([ VMove (rect.X, bodyTop); VLine (rect.X + rect.Width, bodyTop) ], None, Some (border, 1.0))

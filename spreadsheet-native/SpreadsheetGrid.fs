@@ -44,6 +44,8 @@ let private familyKey (name: string option) =
         elif lower.StartsWith "cambria" then "cambria"
         elif lower.StartsWith "times" then "times"
         elif lower.StartsWith "verdana" then "verdana"
+        elif lower.StartsWith "garamond" then "garamond"
+        elif lower.StartsWith "segoe" then "segoeui"
         // Localized "Body Text Font" names from non-English Excel installs.
         // OOXML stores the localized display name verbatim; Windows resolves
         // it through the OS locale. For our purposes Arial is the closest
@@ -84,6 +86,17 @@ let private fontFiles family bold italic =
         elif bold then ["verdanab.ttf"; "verdana.ttf"]
         elif italic then ["verdanai.ttf"; "verdana.ttf"]
         else ["verdana.ttf"]
+    | "garamond" ->
+        // Monotype Garamond (ships with Office) — no dedicated bold-italic.
+        if bold && italic then ["GARABD.TTF"; "GARAIT.TTF"; "GARA.TTF"]
+        elif bold then ["GARABD.TTF"; "GARA.TTF"]
+        elif italic then ["GARAIT.TTF"; "GARA.TTF"]
+        else ["GARA.TTF"]
+    | "segoeui" ->
+        if bold && italic then ["segoeuiz.ttf"; "segoeuib.ttf"; "segoeui.ttf"]
+        elif bold then ["segoeuib.ttf"; "segoeui.ttf"]
+        elif italic then ["segoeuii.ttf"; "segoeui.ttf"]
+        else ["segoeui.ttf"]
     | _ ->
         if bold && italic then ["calibriz.ttf"; "calibrib.ttf"; "calibri.ttf"]
         elif bold then ["calibrib.ttf"; "calibri.ttf"]
