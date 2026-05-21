@@ -80,6 +80,9 @@ let rec private generalAlign (value: CellValue): TextAlign =
 let private alignFromFormat (format: CellFormat) (value: CellValue): TextAlign =
     match format.HorizontalAlign with
     | Some "center" -> AlignCenter
+    // "Center Across Selection" — the text is centred (across a run of
+    // centerContinuous cells; the run rect is computed at paint time).
+    | Some "centerContinuous" -> AlignCenter
     | Some "right" -> AlignRight
     | Some "left" -> AlignLeft
     | _ ->
@@ -504,10 +507,32 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 let rightIndent =
                     if indentPx > 0.0 && horizForIndent = "right" then indentPx
                     else 0.0
+                // "Center Across Selection" (`horizontal="centerContinuous"`):
+                // centre the text across the contiguous run of centerContinuous
+                // cells to the right that carry no content of their own — Excel
+                // does this without merging. Expand the base rect over the run.
+                let baseRect =
+                    if horizForIndent = "centercontinuous" then
+                        let row = cell.Address.Row
+                        let mutable lastCol = cell.Address.Col
+                        let mutable c2 = cell.Address.Col + 1
+                        let mutable go = true
+                        while go && c2 < model.ColCount do
+                            let naddr = { Row = row; Col = c2 }
+                            let nfmt = getCell naddr model |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
+                            let nHoriz = nfmt.HorizontalAlign |> Option.map (fun s -> s.ToLowerInvariant()) |> Option.defaultValue ""
+                            let nEmpty = match getCellValue naddr model with CellValue.Empty -> true | _ -> false
+                            if nHoriz = "centercontinuous" && nEmpty then lastCol <- c2; c2 <- c2 + 1
+                            else go <- false
+                        if lastCol > cell.Address.Col then
+                            let r = cellRect model viewport row lastCol
+                            { cell.Rect with Width = (r.X + r.Width) - cell.Rect.X }
+                        else cell.Rect
+                    else cell.Rect
                 let textRect =
-                    { cell.Rect with
-                        X = cell.Rect.X + 4.0 + iconGutter + leftIndent
-                        Width = max 0.0 (cell.Rect.Width - 8.0 - iconGutter - leftIndent - rightIndent) }
+                    { baseRect with
+                        X = baseRect.X + 4.0 + iconGutter + leftIndent
+                        Width = max 0.0 (baseRect.Width - 8.0 - iconGutter - leftIndent - rightIndent) }
                 // ShrinkToFit (single-line text only — wrap-mode escapes via
                 // line breaks). When the text overflows the cell width and
                 // shrinkToFit is set, scale the font size down until it fits,

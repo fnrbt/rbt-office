@@ -155,6 +155,34 @@
     <tbody>
       <tr>
         <td>
+          <strong>Center Across Selection (<code>horizontal="centerContinuous"</code>) centres text across the cell run</strong>
+          <span class="meta">Target: <code>tests/real-world/lyric-multifamily.xlsx</code> "Lyric-PF-DCF", the "Projected:" header (cell G58 + empty centerContinuous cells H58…). Crops aligned on cell content, gridlines off, MS Calibri.</span>
+          <span class="meta">Part of the <code>lyric-multifamily</code> full-parity goal.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:48px; aspect-ratio:12.5 / 1;">
+            <img src="../artifacts/excel/lyric-centeracross-crop.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Excel — Projected centered across span">
+          </div>
+          <div class="caption">Excel: "Projected:" is centred across its run of cells (G58…), not merged.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:48px; aspect-ratio:12.5 / 1;">
+            <img src="../artifacts/native/lyric-centeracross-after.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours after — centered">
+          </div>
+          <div class="caption">After: centred across the same run — matches Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:48px; aspect-ratio:12.5 / 1;">
+            <img src="../artifacts/baseline/lyric-centeracross-before.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours before — left aligned">
+          </div>
+          <div class="caption">Before: "Projected:" left-aligned in cell G58 (centerContinuous treated as left).</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>Paint.fs</code>. <code>alignFromFormat</code> now maps <code>centerContinuous</code> to centre; and the text rect is expanded across the contiguous run of centerContinuous cells to the right that have no content of their own, so the text centres over the whole run (Excel's "Center Across Selection", which centres without merging).</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Honor <code>showGridLines="0"</code> — suppress the screen gridlines (real-world: The Lyric model)</strong>
           <span class="meta">Target: <code>tests/real-world/lyric-multifamily.xlsx</code> (all sheets set <code>sheetView showGridLines="0"</code>). Crops aligned on cell content at identical scale (Excel's row-outline gutter chrome excluded). Genuine MS Calibri font bytes (<code>../office/artifacts/fonts/windows/calibri.ttf</code>) on both sides.</span>
           <span class="meta">Part of the <code>lyric-multifamily</code> full-parity goal.</span>
