@@ -1051,12 +1051,21 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
     let endnoteLayouts = layouts |> List.filter (fun layout -> layout.BlockId.StartsWith endnoteBlockIdPrefix)
     for layout in endnoteLayouts do
         commands.AddRange(paragraphCommands settings fontFamily measureText layout)
-    endnoteLayouts
-    |> List.groupBy (fun layout -> int (floor (layout.Y / (settings.PageHeight + pageGap))))
-    |> List.iter (fun (_, pageLayouts) ->
-        let topY = pageLayouts |> List.map (fun layout -> layout.Y) |> List.min
-        let separatorX = settings.PaddingLeft
-        commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 8.0, separatorX + 192.0, topY - 8.0)))
+    match endnoteLayouts with
+    | [] -> ()
+    | _ ->
+        // Short (~2in) separator above the first endnote; Word draws a full-width
+        // continuation separator on pages the endnotes spill onto.
+        let pageOf (layout: BlockLayout) = int (floor (layout.Y / (settings.PageHeight + pageGap)))
+        let startPage = endnoteLayouts |> List.map pageOf |> List.min
+        let fullWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+        endnoteLayouts
+        |> List.groupBy pageOf
+        |> List.iter (fun (page, pageLayouts) ->
+            let topY = pageLayouts |> List.map (fun layout -> layout.Y) |> List.min
+            let separatorX = settings.PaddingLeft
+            let width = if page = startPage then 192.0 else fullWidth
+            commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 8.0, separatorX + width, topY - 8.0)))
 
     let bottom =
         layouts
