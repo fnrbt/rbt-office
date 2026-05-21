@@ -2401,6 +2401,7 @@ let private layoutDocumentWithRangeAndInitial
             bodyLayouts
             |> List.map (fun layout -> layout.Y + layout.Height)
             |> List.fold max settings.PaddingTop
+        let stride = pageHeight settings + pageGap
         let mutable noteY = bodyBottom + endnoteTopGap
         endnotes |> List.iteri (fun noteIndex (id, text) ->
             let mark = endnoteMark id
@@ -2411,9 +2412,22 @@ let private layoutDocumentWithRangeAndInitial
                 |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
                 |> TextBuffer.setVertAlign 0 mark.Length (Some "superscript")
             let para = { Id = sprintf "%s%d" endnoteBlockIdPrefix noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
-            let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth noteY 0.0 para Map.empty
-            layouts <- layouts @ [layout]
-            noteY <- noteY + layout.Height)
+            // Lay the note out at a safe Y (page-1 content top) to get its natural
+            // height without triggering layoutParagraph's own page-break handling,
+            // then place it; if it won't fit on the current page, start it at the
+            // top of the next page (Word continues endnotes across pages).
+            let probe, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth settings.PaddingTop 0.0 para Map.empty
+            let height = probe.Height
+            let pageIndex = int (floor (noteY / stride))
+            let pageTop = float pageIndex * stride
+            let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
+            let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+            let startY =
+                if noteY > contentTop && noteY + height > contentBottom
+                then WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride)
+                else noteY
+            layouts <- layouts @ [moveLayoutToY startY probe]
+            noteY <- startY + height)
 
     layouts, placedFloatingBoxes
 

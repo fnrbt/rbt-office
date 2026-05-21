@@ -1051,12 +1051,12 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
     let endnoteLayouts = layouts |> List.filter (fun layout -> layout.BlockId.StartsWith endnoteBlockIdPrefix)
     for layout in endnoteLayouts do
         commands.AddRange(paragraphCommands settings fontFamily measureText layout)
-    match endnoteLayouts with
-    | [] -> ()
-    | _ ->
-        let topY = endnoteLayouts |> List.map (fun layout -> layout.Y) |> List.min
+    endnoteLayouts
+    |> List.groupBy (fun layout -> int (floor (layout.Y / (settings.PageHeight + pageGap))))
+    |> List.iter (fun (_, pageLayouts) ->
+        let topY = pageLayouts |> List.map (fun layout -> layout.Y) |> List.min
         let separatorX = settings.PaddingLeft
-        commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 8.0, separatorX + 192.0, topY - 8.0))
+        commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 8.0, separatorX + 192.0, topY - 8.0)))
 
     let bottom =
         layouts
