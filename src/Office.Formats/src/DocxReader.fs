@@ -149,6 +149,15 @@ type SectionColumns = {
     Widths: (float * float) list
 }
 
+type SectionGeometry = {
+    PageWidth: float
+    PageHeight: float
+    MarginTop: float
+    MarginBottom: float
+    MarginLeft: float
+    MarginRight: float
+}
+
 type ParagraphProperties = {
     Style: string option
     ContentControlId: string option
@@ -179,6 +188,7 @@ type ParagraphProperties = {
     ListInfo: ListInfo option
     SectionBreak: string option
     SectionColumns: SectionColumns option
+    SectionGeometry: SectionGeometry option
     SectionPageNumberStart: int option
     RenderedPageBreakBefore: int option
     HeaderReferences: HeaderFooterReference list
@@ -509,6 +519,21 @@ module Docx =
             if count <= 1 then None
             else Some { Count = count; Gap = space; Separator = sep; Widths = (if colWidths.Length >= 2 then colWidths else []) })
 
+    // Parse a sectPr's pgSz/pgMar into a SectionGeometry (twips/15 = px).
+    let parseSectionGeometry (sectPr: XmlNode) : SectionGeometry option =
+        let twips (s: string option) = s |> Option.bind (fun v -> match System.Double.TryParse v with | true, n -> Some (n / 15.0) | _ -> None)
+        match Ns.childNs "pgSz" sectPr, Ns.childNs "pgMar" sectPr with
+        | None, None -> None
+        | pgSz, pgMar ->
+            Some {
+                PageWidth = pgSz |> Option.bind (attr "w") |> twips |> Option.defaultValue 816.0
+                PageHeight = pgSz |> Option.bind (attr "h") |> twips |> Option.defaultValue 1056.0
+                MarginTop = pgMar |> Option.bind (attr "top") |> twips |> Option.defaultValue 96.0
+                MarginBottom = pgMar |> Option.bind (attr "bottom") |> twips |> Option.defaultValue 96.0
+                MarginLeft = pgMar |> Option.bind (attr "left") |> twips |> Option.defaultValue 96.0
+                MarginRight = pgMar |> Option.bind (attr "right") |> twips |> Option.defaultValue 96.0
+            }
+
     // Run properties extraction with defaults
     let runProps node =
         let rPr = wElem "rPr" node
@@ -649,6 +674,7 @@ module Docx =
                 ListInfo = listInfo
                 SectionBreak = sectPr |> Option.map (fun section -> getPropVal "type" "val" section |> Option.defaultValue "nextPage")
                 SectionColumns = sectPr |> Option.bind parseColumns
+                SectionGeometry = sectPr |> Option.bind parseSectionGeometry
                 SectionPageNumberStart = sectPr |> Option.bind (fun section -> getPropVal "pgNumType" "start" section) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
                 RenderedPageBreakBefore = None
                 HeaderReferences = sectPr |> Option.map (headerFooterReferences "headerReference") |> Option.defaultValue []
@@ -685,6 +711,7 @@ module Docx =
                 ListInfo = None
                 SectionBreak = None
                 SectionColumns = None
+                SectionGeometry = None
                 SectionPageNumberStart = None
                 RenderedPageBreakBefore = None
                 HeaderReferences = []
@@ -1750,6 +1777,7 @@ module Styles =
             ParagraphBorders = Docx.paragraphBorders pPr
             ListInfo = listInfo
             SectionBreak = None
+            SectionGeometry = None
             SectionColumns = None
             SectionPageNumberStart = None
             RenderedPageBreakBefore = None
@@ -3159,6 +3187,7 @@ let private mergeParagraphProperties baseProps props = {
     ListInfo = props.ListInfo |> Option.orElse baseProps.ListInfo
     SectionBreak = props.SectionBreak
     SectionColumns = props.SectionColumns
+    SectionGeometry = props.SectionGeometry
     SectionPageNumberStart = props.SectionPageNumberStart
     RenderedPageBreakBefore = props.RenderedPageBreakBefore
     HeaderReferences = props.HeaderReferences
