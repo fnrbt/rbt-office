@@ -52,6 +52,18 @@ surfaces have actually been checked. It complements
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
 
+## Real-world: dcf-stock-analysis.xlsx + conditional-formatting-tutorial.xlsx
+
+- dcf-stock-analysis (Main, Financial Model): at parity. Stock Snapshot / Key
+  Events / Management / Profile boxes (light-blue headers + borders) match;
+  ~3px global origin offset only.
+- conditional-formatting-tutorial (Demographics, Sales): at parity. Despite
+  the name it has NO conditional formatting — two dense data tables. Columns
+  align to 0–2px; elevated MAE (~22) is dense small-text ClearType-vs-grayscale
+  AA (text in every cell × 11 cols). Only nit: a 1-char text-clip difference
+  on a couple of overflow cells (column-width rounding).
+- Status: both at render parity, no fix needed.
+
 ## Real-world goal: milk-street-office.xlsx
 
 - Both sheets (Annual, Monthly) at AA-level parity via the global fixes — no
@@ -61,6 +73,18 @@ surfaces have actually been checked. It complements
   sections. Values, yellow inputs, dates, currency, and grouped-row outline
   all match. The only embedded drawing is a legacy VML drawing (not a chart).
 - Status: at render parity.
+
+## Dashboards (assessment only — large multi-feature targets)
+
+dashboard-sales-analysis.xlsx (8 sheets; 5 charts / 16 pivots / 2 images) and
+dashboard-ecommerce-sales.xlsx (19 charts / 30 pivots / 11 images).
+
+Rendered the sales-analysis Dashboard sheet: the new chart pipeline already
+draws several charts in-place (bar "Sales By Category/Manager", line "Sales By
+Chain"). NOT yet rendered: slicers (filter-button controls), in-cell
+sparklines, images/logos; pivot tables show as cached cell values (OK).
+Reaching parity needs: slicer rendering, sparklines, image embedding, and
+chart-position/layout polish. Not started — flagged as the big next goal.
 
 ## Chart zoo (goal: render chart-zoo.xlsx at parity, one type at a time)
 
