@@ -491,13 +491,16 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 // the same — the icon occupies a ~16 px gutter).
                 let iconGutter = if format.IconSet.IsSome then 16.0 else 0.0
                 // Excel's `<alignment indent="N"/>` adds N units of leading
-                // padding (≈ 3 character widths per unit). It applies from
-                // the LEFT for left/distributed alignment, from the RIGHT
-                // for right align; ignored for center alignment.
+                // padding. Measured against Excel (synthetic-cell-indent 11pt
+                // and the jumeirah model 12pt), one level ≈ 10 px at 96 dpi —
+                // roughly font-independent and ≈ 1.4× the max-digit width, NOT
+                // the 3× ("3 character widths") we used before, which indented
+                // ~2× too far. Applies from the LEFT for left/distributed, from
+                // the RIGHT for right align; ignored for center.
                 let indentPx =
                     if format.Indent <= 0 then 0.0
                     else
-                        let unit = mdwPx fontPt * 3.0
+                        let unit = mdwPx fontPt * 1.4
                         float format.Indent * unit
                 let horizForIndent =
                     format.HorizontalAlign |> Option.map (fun s -> s.ToLowerInvariant()) |> Option.defaultValue ""

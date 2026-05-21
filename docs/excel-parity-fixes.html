@@ -1073,20 +1073,20 @@
       <tr>
         <td>
           <strong>Cell alignment — honor <code>&lt;alignment indent="N"/&gt;</code></strong>
-          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-cell-indent.xlsx</code> — four left-aligned cells in column A with <code>indent</code> values 0, 1, 2, 4. Excel pads inward from the cell's leading edge by ~3 characters per unit.</span>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-cell-indent.xlsx</code> — four left-aligned cells in column A with <code>indent</code> values 0, 1, 2, 4. Measured against Excel, each unit pads inward by ~10&nbsp;px at 96&nbsp;dpi (≈ 1.4× the max-digit width), roughly font-independent.</span>
           <span class="meta">Path checked: Excel PDF export via <code>tools/excel-parity/excel-print-pdf.sh</code> on <code>wordvm</code>, our PDF export via <code>tools/spreadsheet-pdf-runner</code>; top-left 500×190 crop.</span>
         </td>
         <td>
           <div class="zoom" style="min-height:190px; aspect-ratio:2.6 / 1;">
             <img src="../artifacts/excel/synthetic-cell-indent-expected.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — progressively indented">
           </div>
-          <div class="caption">Excel reference: the four rows step further right as <code>indent</code> climbs, with each unit adding roughly three character widths of leading padding.</div>
+          <div class="caption">Excel reference: the four rows step further right as <code>indent</code> climbs — measured at ~10&nbsp;px per unit (text-left 71→81→92→112 for indent 0/1/2/4).</div>
         </td>
         <td>
           <div class="zoom" style="min-height:190px; aspect-ratio:2.6 / 1;">
             <img src="../artifacts/native/synthetic-cell-indent-after.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Ours after — same stepping">
           </div>
-          <div class="caption">After: same indentation steps. <code>Paint.fs</code> shifts the cell's text rect by <code>format.Indent * 3 * mdwPx fontPt</code> for left / distributed alignment (matches Excel's "<em>N units of ~3 chars</em>" rule).</div>
+          <div class="caption">After: matches Excel's ~10&nbsp;px/level (ours steps 33→43→53→72, +10/level). <code>Paint.fs</code> shifts the text rect by <code>format.Indent * 1.4 * mdwPx fontPt</code> for left / distributed alignment. (Originally shipped at <code>×3</code>, which over-indented ~2×; retuned after measuring Excel — caught on the jumeirah model where "Base/Downside/Upside" sat too far right.)</div>
         </td>
         <td>
           <div class="zoom" style="min-height:190px; aspect-ratio:2.6 / 1;">
