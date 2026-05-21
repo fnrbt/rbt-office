@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <Compile Include="../../../widgets/x11-viewer/PngEncode.fs" />
+    <Compile Include="ChartRender.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

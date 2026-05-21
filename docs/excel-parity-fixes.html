@@ -155,6 +155,39 @@
     <tbody>
       <tr>
         <td>
+          <strong>Charts — first instance: clustered column chart rendered at parity</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-chart-column.xlsx</code> (built via <code>tools/excel-parity/build-chart-column.vbs</code>) — a clustered column chart over Q1–Q4 = 10/25/15/30, title "Quarterly Sales", no legend. Rendered via the new vector PaintItem primitives. Both crops are the chart area at its exact 480×320 px bounds (identical scale/pan); residual MAE ~7 is ClearType-vs-grayscale text AA. Plot insets calibrated to Excel (plot x32–452, y49–289).</span>
+          <span class="meta">Foundation: <code>VecPath</code>/<code>VecGroup</code> across native/canvas/PDF + a chart-XML/anchor parser.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:320px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/excel/synthetic-chart-column-crop.png" style="--w:480px; --x:0px; --y:0px; --s:1.0" alt="Excel — column chart">
+          </div>
+          <div class="caption">Excel: title, Y-axis 0–35 with gridlines, 4 blue (accent1) columns, Q1–Q4 categories, no legend.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:320px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/native/synthetic-chart-column-after.png" style="--w:480px; --x:0px; --y:0px; --s:1.0" alt="Ours after — column chart at parity">
+          </div>
+          <div class="caption">After: matches Excel — same auto Y-range (0–35), gridlines, bar width (34&nbsp;px, from <code>gapWidth=219</code>), heights, colors, title.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:320px; aspect-ratio:1.5 / 1;">
+            <img src="../artifacts/baseline/synthetic-chart-column-before.png" style="--w:480px; --x:0px; --y:0px; --s:1.0" alt="Ours before — chart not rendered">
+          </div>
+          <div class="caption">Before: charts weren't rendered at all (only the data cells appear; the chart area was blank).</div>
+        </td>
+        <td>
+          <p><strong>Work:</strong> the chart bridge, built on the new vector paint layer:</p>
+          <ul>
+            <li><code>PaintItem</code> gained <code>VecPath</code>/<code>VecGroup</code> (filled/stroked arbitrary paths + 2×3 transforms), rendered by all three paths (native/canvas/PDF) — proven identical on a hand-built scene.</li>
+            <li><code>ChartRender.fs</code>: parse <code>xl/charts/chart1.xml</code> (barDir, categories, values, title, <code>gapWidth</code>, gridlines) + the drawing anchor; lay out an Excel-faithful clustered column chart (nice-number Y-axis, gridlines, bar geometry) → <code>PaintItem</code>s.</li>
+            <li>Next: theme colors / multi-series / other chart types, then wire into the normal render pipeline (currently a <code>--charttest</code> mode).</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Conditional formatting: <code>cellIs</code> with a cell-reference threshold (<code>&gt; $C$1</code>)</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-cf-cellref.xlsx</code> (built via <code>tools/excel-parity/build-cf-cellref.vbs</code>). A2:A6 = 5/12/8/20/3 with a <code>cellIs greaterThan =$C$1</code> rule (threshold C1 = 10) → pink fill + red font. Found while sweeping <code>saopaulo-condos</code> (whose E11 rule references <code>$E$10</code>).</span>
         </td>

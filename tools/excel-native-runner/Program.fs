@@ -1508,6 +1508,19 @@ let main argv =
         let jsonEnv = Environment.GetEnvironmentVariable("EXCEL_NATIVE_JSON")
         let jsonOpt = if String.IsNullOrWhiteSpace jsonEnv then None else Some (fullPath jsonEnv)
         match argv with
+        | [| "--charttest"; input; output |] ->
+            // Parse the workbook's first chart and render it through the
+            // vector PaintItem path (proves the chart bridge end-to-end).
+            match ChartRender.parseChart (fullPath input) with
+            | None -> eprintfn "no chart found"; 2
+            | Some spec ->
+                let w, h = ChartRender.parseAnchorSize (fullPath input)
+                let items = ChartRender.buildColumnChart spec w h
+                let widget = Composit.Ui.SpreadsheetGrid.renderScene w h items
+                let backend = Raster.create()
+                let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend (int (ceil w)) (int (ceil h)) widget
+                File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
+                0
         | [| "--vectortest"; output |] ->
             // Render the hand-built vector scene (VecPath/VecGroup) through the
             // native rasterizer — proves the new paint primitives end-to-end.

@@ -52,6 +52,21 @@ surfaces have actually been checked. It complements
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
 
+## Charts (new)
+
+- Vector paint foundation (commit 80d5379): PaintItem += VecPath/VecGroup,
+  rendered by native/canvas/PDF; proven identical on a hand-built scene.
+- First chart instance AT PARITY: clustered column chart
+  (synthetic-chart-column.xlsx, build-chart-column.vbs). ChartRender.fs parses
+  chart1.xml (barDir/categories/values/title/gapWidth/gridlines) + the drawing
+  anchor and lays out an Excel-faithful column chart (nice-number Y-axis 0–35,
+  gridlines, 34px bars from gapWidth=219) -> PaintItems. Plot-region MAE ~6 vs
+  Excel; bar widths/positions/heights/colors/title all match. Rendered via the
+  native runner `--charttest` mode.
+- TODO: theme colors (currently hard-coded accent1), legends, multi-series,
+  line/pie/area types, wiring charts into the normal render pipeline (read
+  charts in XlsxReader -> model -> Paint), and the chart-heavy dashboards.
+
 ## Real-world goal: saopaulo-condos.xlsx
 
 - Both sheets (Assumptions, Monthly-CF) at AA-level parity via the global fixes
