@@ -56,6 +56,7 @@ On Error GoTo 0
 Set doc = word.Documents.Open(inputPath, False, True, False)
 word.ActiveWindow.View.Type = wdPrintView
 doc.Repaginate
+SettlePagination doc
 
 Set outFile = fso.CreateTextFile(outputPath, True, True)
 outFile.WriteLine _
@@ -94,8 +95,10 @@ outFile.WriteLine _
   "style" & vbTab & _
   "text"
 
-Dim paraIndex, paraTotal, startSeconds
+Dim paraIndex, paraTotal, startSeconds, gSkipCount, gEmitCount
 paraIndex = 0
+gSkipCount = 0
+gEmitCount = 0
 paraTotal = doc.Paragraphs.Count
 startSeconds = Timer
 WScript.StdErr.WriteLine "progress: " & paraTotal & " paragraphs; t=0.0s"
@@ -111,11 +114,30 @@ For Each para In doc.Paragraphs
   End If
 Next
 
-WScript.StdErr.WriteLine "progress: done t=" & FormatNumber(Timer - startSeconds, 1) & "s"
+WScript.StdErr.WriteLine "progress: done t=" & FormatNumber(Timer - startSeconds, 1) & "s lines=" & gEmitCount & " skippedEmptyPositions=" & gSkipCount
 
 outFile.Close
 doc.Close wdDoNotSaveChanges
 word.Quit
+
+' Force Word to lay out the whole document before we read positions. Repaginate
+' alone can leave trailing pages un-laid-out, so positions there come back empty
+' and the extract loop skips them -- producing non-deterministic truncation. We
+' touch the last character (which forces pagination through to the end) and
+' re-read the page count until it stops changing.
+Sub SettlePagination(docObj)
+  Dim lastCount, curCount, tries, endRange
+  curCount = -1
+  tries = 0
+  Do
+    lastCount = curCount
+    Set endRange = docObj.Range(docObj.Content.End - 1, docObj.Content.End)
+    SafeInfo endRange, wdActiveEndPageNumber
+    curCount = SafeInfo(docObj.Content, wdNumberOfPagesInDocument)
+    tries = tries + 1
+  Loop While curCount <> lastCount And tries < 30
+  WScript.StdErr.WriteLine "progress: pagination settled pages=" & curCount & " tries=" & tries
+End Sub
 
 Sub EmitParagraphLines(docObj, docPath, fileObj, paragraph, paragraphIndex)
   Dim baseStart, baseEnd, charCount
@@ -139,12 +161,14 @@ Sub EmitParagraphLines(docObj, docPath, fileObj, paragraph, paragraphIndex)
     y = SafeInfo(r, wdVerticalPositionRelativeToPage)
 
     If pageNum = "" Or lineNum = "" Then
+      gSkipCount = gSkipCount + 1
       offset = NextVisibleOffset(docObj, baseEnd, offset + 1)
     Else
       lineEnd = FindLineEnd(docObj, baseEnd, offset, pageNum, lineNum)
       textEnd = TrimTrailingSkipped(docObj, offset, lineEnd)
 
       If textEnd > offset Then
+        gEmitCount = gEmitCount + 1
         Set lastRange = docObj.Range(textEnd - 1, textEnd)
         lastX = SafeInfo(lastRange, wdHorizontalPositionRelativeToPage)
         lastY = SafeInfo(lastRange, wdVerticalPositionRelativeToPage)
