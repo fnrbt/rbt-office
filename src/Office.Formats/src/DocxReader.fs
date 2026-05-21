@@ -1165,7 +1165,11 @@ module Docx =
                     | "tab" -> Some (makeRun (Text "\t") |> RunToken)
                     | "br" ->
                         match attr "type" child with
-                        | Some "page" -> Some (makeRun PageBreak |> RunToken)
+                        // A column break forces the following content to the next
+                        // column; in a multi-column section the layout's page-break
+                        // (chunk) boundary is remapped to the next column, and in a
+                        // single-column section it behaves as a page break (as Word).
+                        | Some "page" | Some "column" -> Some (makeRun PageBreak |> RunToken)
                         | _ -> Some (makeRun (Text "\n") |> RunToken)
                     | "lastRenderedPageBreak" -> Some (makeRun RenderedPageBreak |> RunToken)
                     | "drawing"

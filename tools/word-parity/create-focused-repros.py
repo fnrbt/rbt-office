@@ -1559,6 +1559,27 @@ def main():
     )
     print(twocol_sep_path)
 
+    threecol_path = out_dir / "three-column-section.docx"
+    write_docx(
+        threecol_path,
+        paragraph("Three column repro", "Heading1") + repeated_long_paragraphs(14),
+        page_geometry={"cols": '<w:cols w:num="3" w:space="432"/>'},
+    )
+    print(threecol_path)
+
+    # Manual column break: content after <w:br w:type="column"/> jumps to the
+    # next column, leaving column 1 short.
+    colbreak_path = out_dir / "column-break.docx"
+    write_docx(
+        colbreak_path,
+        (paragraph("Column break repro", "Heading1")
+         + paragraph("This short paragraph is alone in column one before the column break.")
+         + '<w:p><w:r><w:br w:type="column"/></w:r></w:p>'
+         + repeated_long_paragraphs(5)),
+        page_geometry={"cols": '<w:cols w:num="2" w:space="720"/>'},
+    )
+    print(colbreak_path)
+
 
 if __name__ == "__main__":
     main()
