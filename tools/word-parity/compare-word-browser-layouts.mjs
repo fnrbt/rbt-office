@@ -89,6 +89,21 @@ for (const docx of docs) {
     continue;
   }
 
+  // If few lines align by text, Word and the browser are segmenting the text
+  // differently (e.g. two-sided float wrap), so per-line position deltas would
+  // compare unrelated lines. Flag it for a visual check instead of emitting
+  // bogus deltas.
+  const matchRate = pairs.length / Math.min(wordLines.length, browserLines.length);
+  if (matchRate < 0.5) {
+    summaryRows.push({
+      doc: rel,
+      status: 'low-match',
+      score: '',
+      detail: `only ${pairs.length}/${Math.min(wordLines.length, browserLines.length)} lines align by text (word=${wordLines.length} browser=${browserLines.length}); line segmentation differs — verify visually`,
+    });
+    continue;
+  }
+
   const suspicious = diffs
     .filter(row => row.score >= options.threshold)
     .sort((a, b) => b.score - a.score)
@@ -296,10 +311,12 @@ function alignLines(wordLines, browserLines) {
     }
   }
 
-  if (pairs.length < Math.min(n, m) * 0.25) {
-    const count = Math.min(n, m);
-    return Array.from({ length: count }, (_, index) => ({ word: wordLines[index], browser: browserLines[index] }));
-  }
+  // Note: we deliberately do NOT fall back to positional (line N vs line N)
+  // matching when LCS aligns few lines. A low match rate means Word and the
+  // browser segment the text into different lines (e.g. Word keeps a line that
+  // a float splits whole, while we emit it as two), and pairing unrelated lines
+  // by index produces large bogus dx/dy that look like render bugs. The caller
+  // reports a low match rate as its own status instead.
   return pairs;
 }
 
