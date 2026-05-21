@@ -169,7 +169,7 @@
           <div class="zoom">
             <img src="images/browser/nested-table-cell-layout-after.png" style="--w:1020px; --x:50px; --y:80px; --s:0.5" alt="After nested table ordering fix">
           </div>
-          <div class="caption">After: paragraphs and the nested table interleave in document order; the focused repro reports <code>ok</code> with <code>10 matched lines</code> against Word. (Nested-table inner borders are still unpainted &mdash; a separate gap.)</div>
+          <div class="caption">After: paragraphs and the nested table interleave in document order, and the nested table's borders are painted at its laid-out position &mdash; matching Word. The focused repro reports <code>ok</code> with <code>10 matched lines</code>.</div>
         </td>
         <td>
           <div class="zoom">
@@ -183,6 +183,7 @@
             <li><code>src/Office.Formats/src/DocxReader.fs</code>: cell parsing now walks <code>w:p</code>/<code>w:tbl</code> children in order and records each nested table's anchor (the count of preceding paragraphs); the editor bridge forwards <code>NestedTableAnchors</code>.</li>
             <li><code>src/Word/Document.fs</code>: <code>TableCell</code> gains a <code>NestedTableAnchors</code> field.</li>
             <li><code>src/Word/Layout.fs</code>: <code>orderedCellContent</code> interleaves paragraphs and nested tables at their anchors, then trims trailing empty paragraph marks so a cell ending with a table is not over-tall.</li>
+            <li><code>src/Word/Paint.fs</code>: <code>addNestedTableBorders</code> locates each nested table from its content layouts and paints its grid (the fragment paint path otherwise only draws outer-table borders).</li>
             <li><code>src/Word/Docx.fs</code>, <code>tools/native-runner/Program.fs</code>: import/export and the native path carry the anchors through.</li>
             <li><code>tools/word-parity/create-focused-repros.py</code>: adds the interleaved nested-table repro.</li>
             <li>Regression guards: <code>table-import-preserves-structure</code>, <code>table-cell-default-after-spacing</code>, <code>table-style-line-spacing-only</code>, <code>table-vmerge-valign-rowspan</code>, <code>table-cell-spacing-margins</code>, and <code>two-tables-border-position</code> remain <code>ok</code>.</li>

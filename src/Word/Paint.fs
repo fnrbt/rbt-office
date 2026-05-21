@@ -971,6 +971,37 @@ let rec private addTableTextCommands (settings: LayoutSettings) fontFamily measu
             for nestedTable in cell.NestedTables do
                 addTableTextCommands settings fontFamily measureText layoutsById commands nestedTable
 
+// The fragment paint path draws outer-table borders but not nested-table
+// borders. Locate each nested table from its content paragraph layouts and draw
+// its grid with the shared border painter at that position.
+let rec private addNestedTableBorders (styleContext: Document option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (layoutsById: Map<BlockId, BlockLayout list>) (commands: ResizeArray<PaintCommand>) (tableBlock: TableBlock) =
+    for row in tableBlock.Rows do
+        for cell in row.Cells do
+            for nestedTable in cell.NestedTables do
+                let nestedLayouts =
+                    nestedTable.Rows
+                    |> List.collect (fun r -> r.Cells)
+                    |> List.collect (fun c -> c.Content)
+                    |> List.collect (fun p -> Map.tryFind p.Id layoutsById |> Option.defaultValue [])
+                let segXs =
+                    nestedLayouts
+                    |> List.collect (fun l -> l.Lines)
+                    |> List.collect (fun ln -> ln.Segments)
+                    |> List.choose (function | TextSegment (_, _, x, _, _) -> Some x | _ -> None)
+                match nestedLayouts, segXs with
+                | (_ :: _), (_ :: _) ->
+                    let topY = nestedLayouts |> List.map (fun l -> l.Y) |> List.min
+                    let minX = List.min segXs
+                    let firstRow = nestedTable.Rows |> List.head
+                    let firstCell = firstRow.Cells |> List.head
+                    let padLeft = (WordLayout.Table.cellPaddingForRow WordLayout.canvasScale nestedTable firstRow firstCell).Left
+                    let baseHorizontalOffset = minX - padLeft
+                    let availableWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+                    let cmds, _ = tableBorderCommandsCoreAt styleContext settings measureText measureRange nestedTable topY availableWidth baseHorizontalOffset
+                    commands.AddRange cmds
+                | _ -> ()
+                addNestedTableBorders styleContext settings measureText measureRange layoutsById commands nestedTable
+
 let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
     let layouts = cachedLayouts |> Option.defaultWith (fun () -> layoutDocumentWithRange settings measureText measureRange doc)
     let layoutById = layouts |> List.map (fun layout -> layout.BlockId, layout) |> Map.ofList
@@ -987,6 +1018,7 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
             commands.AddRange(tableCommands)
             if not tableBlock.Floating then currentY <- nextY
             addTableTextCommands settings fontFamily measureText layoutsById commands tableBlock
+            addNestedTableBorders (Some doc) settings measureText measureRange layoutsById commands tableBlock
         | TextBox textBox -> commands.AddRange(textBoxCommands settings fontFamily measureText measureRange textBox)
         | _ ->
             match RedBat.Word.Document.tryGetParagraph block with
