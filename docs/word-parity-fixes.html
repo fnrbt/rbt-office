@@ -153,6 +153,42 @@
     <tbody>
       <tr>
         <td>
+          <strong>Multi-column section layout (w:cols)</strong>
+          <span class="meta">Repro: <code>tests/repros/word/two-column-section.docx</code></span>
+          <span class="meta">Real fixture class: a section with <code>w:cols w:num="2"</code> &mdash; body text flows down column 1 then column 2 (newsletters, articles).</span>
+          <span class="meta">Font check: Calibri in both Word PDF and our PDF rasters; all three columns are 120&nbsp;dpi PDF renders, full page width.</span>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/word/two-column-section-word.png" style="--w:1020px; --x:0px; --y:0px; --s:0.389" alt="Word reference: two-column section">
+          </div>
+          <div class="caption">Word: the body flows in two equal-width columns with a gap, column 1 filling before column 2.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/browser/two-column-section-after.png" style="--w:1020px; --x:0px; --y:0px; --s:0.389" alt="After multi-column layout">
+          </div>
+          <div class="caption">After: two equal-width columns matching Word &mdash; column geometry (col1 x101&ndash;319, col2 x451&ndash;669 at 100&nbsp;dpi), flow, and break point all align.</div>
+        </td>
+        <td>
+          <div class="zoom">
+            <img src="images/baseline/two-column-section-before.png" style="--w:1020px; --x:0px; --y:0px; --s:0.389" alt="Before multi-column layout">
+          </div>
+          <div class="caption">Before: <code>w:cols</code> was ignored &mdash; the body ran as a single full-width column.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> render equal-width newspaper columns.</p>
+          <ul>
+            <li><code>DocxReader.fs</code>: parse <code>w:cols</code> (num/space/sep) into a <code>SectionColumns</code> model; threaded through the native and browser PageSetup paths (<code>Program.fs</code>, <code>Docx.fs</code>).</li>
+            <li><code>src/Word/Layout.fs</code>: lay the body out at one column's width so page-bottom pagination splits it into column-height chunks, then <code>applyColumnTransform</code> remaps layout-page <em>i</em> to column (<em>i</em> mod n) of page (<em>i</em> div n).</li>
+            <li><code>src/Word/Paint.fs</code>: draw the <code>w:sep</code> column separator rule.</li>
+            <li><code>create-focused-repros.py</code>: two-column repros (with and without separator).</li>
+          </ul>
+          <p class="meta">Floating images and tables inside columns, and last-page column balancing, are not handled yet.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Endnote rendering (reference + endnotes at document end)</strong>
           <span class="meta">Repro: <code>tests/repros/word/endnote-placement.docx</code></span>
           <span class="meta">Real fixture class: any document with endnotes &mdash; a superscript reference mark in the body and the notes collected at the end of the document.</span>
