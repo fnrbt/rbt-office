@@ -286,6 +286,13 @@ let private footnotesInLine (line: MeasuredLine) =
         | ImageSegment _ -> None)
     |> List.distinctBy fst
 
+/// BlockId prefix for the synthetic footnote-area paragraphs laid out at the
+/// bottom of each page. Paint recognises these to render them and the separator.
+let footnoteBlockIdPrefix = "__footnote__"
+let private footnoteFontSize = 10.0
+// Gap between the reserved-area top (where the separator sits) and the first note.
+let private footnoteAreaTopGap = 14.0
+
 let private footnoteReserveHeight settings footnotes =
     match footnotes with
     | [] -> 0.0
@@ -2306,6 +2313,24 @@ let private layoutDocumentWithRangeAndInitial
                 y <- advanceToNextPage settings y
                 resetPreviousParagraph ()
             traceSlow (sprintf "block[%d]:paragraph total lines=%d" index layout.Lines.Length) blockStart
+
+    // Lay out each page's footnotes in the reserved area at the bottom of the
+    // page, at a smaller font, tagged with footnoteBlockIdPrefix so Paint can
+    // render them and draw the separator. The note id doubles as Word's mark.
+    let footnoteParagraphMetadata = { defaultMetadata with SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 }
+    let footnoteStride = pageHeight settings + pageGap
+    for KeyValue (pageIndex, notes) in footnotesByPage do
+        if not notes.IsEmpty then
+            let pageTop = float pageIndex * footnoteStride
+            let pageContentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+            let mutable noteY = pageContentBottom - footnoteReserveHeight settings notes + footnoteAreaTopGap
+            notes |> List.iteri (fun noteIndex (id, text) ->
+                let noteString = sprintf "%s %s" id (text.Trim())
+                let buffer = TextBuffer.ofString noteString |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
+                let para = { Id = sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
+                let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth noteY 0.0 para Map.empty
+                layouts <- layouts @ [layout]
+                noteY <- noteY + layout.Height)
 
     layouts, placedFloatingBoxes
 

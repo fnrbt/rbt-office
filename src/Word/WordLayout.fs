@@ -399,7 +399,7 @@ module Text =
         | None, Some color -> color
         | None, None ->
             if style.Hyperlink.IsSome then "#0563C1"
-            elif style.CommentId.IsSome || style.NoteId.IsSome then "#7E22CE"
+            elif style.CommentId.IsSome then "#7E22CE"
             else "#000000"
 
     let printColor (style: TextStyle) =
@@ -407,8 +407,9 @@ module Text =
         | Some color, _, _, _, _ -> Some color
         | None, Some color, _, _, _ -> Some color
         | None, None, Some _, _, _ -> Some "#0563C1"
-        | None, None, _, Some _, _
-        | None, None, _, _, Some _ -> Some "#7E22CE"
+        // Comment marks stay highlighted in print; footnote/endnote reference
+        // marks render in the normal text colour (Word prints them black).
+        | None, None, _, Some _, _ -> Some "#7E22CE"
         | _ -> None
 
     let printDecoration (style: TextStyle) =

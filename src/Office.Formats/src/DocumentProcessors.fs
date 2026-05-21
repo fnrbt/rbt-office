@@ -623,8 +623,19 @@ module EditorProcessor =
                     | Link link -> link.Target
                     | _ -> None
 
+                // A footnote/endnote reference renders as its (superscript) mark
+                // number, not the "[footnote N]" placeholder that extractRunText
+                // produces. Word writes note ids sequentially, so the id doubles
+                // as the display number, and references are always superscript.
+                let noteRefText = note |> Option.map (fun value -> value.Id)
+                let displayText = noteRefText |> Option.defaultValue text
+                let displayVertAlign =
+                    match note with
+                    | Some _ -> Some "superscript"
+                    | None -> finalProps.VertAlign
+
                 Some {
-                    Text = text
+                    Text = displayText
                     Bold = finalProps.Bold
                     Italic = finalProps.Italic
                     Underline = finalProps.Underline
@@ -634,7 +645,7 @@ module EditorProcessor =
                     FontFamily = finalProps.FontFamily
                     Color = finalProps.Color
                     Highlight = run.Properties.Highlight
-                    VertAlign = finalProps.VertAlign
+                    VertAlign = displayVertAlign
                     CommentId = match run.Content with CommentReference id -> Some id | _ -> None
                     CommentText = comment |> Option.map (fun value -> value.Text)
                     CommentAuthor = comment |> Option.bind (fun value -> value.Author)

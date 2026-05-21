@@ -1001,6 +1001,19 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
                         currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
                 | Some [] -> ()
 
+    // Footnote area: paint the synthetic footnote paragraphs appended by layout
+    // at the bottom of each page, and a short separator rule above the topmost
+    // note on each page (Word draws ~2in).
+    let footnoteLayouts = layouts |> List.filter (fun layout -> layout.BlockId.StartsWith footnoteBlockIdPrefix)
+    for layout in footnoteLayouts do
+        commands.AddRange(paragraphCommands settings fontFamily measureText layout)
+    footnoteLayouts
+    |> List.groupBy (fun layout -> int (floor (layout.Y / (settings.PageHeight + pageGap))))
+    |> List.iter (fun (_, pageLayouts) ->
+        let topY = pageLayouts |> List.map (fun layout -> layout.Y) |> List.min
+        let separatorX = settings.PaddingLeft
+        commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 6.0, separatorX + 192.0, topY - 6.0)))
+
     let bottom =
         layouts
         |> List.map (fun layout -> layout.Y + layout.Height)
