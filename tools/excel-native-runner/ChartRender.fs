@@ -27,6 +27,7 @@ type ChartSpec =
       Series: ChartSeries list
       Gridlines: bool
       GapWidth: int
+      DispUnit: float              // value-axis display unit (1000 = "Thousands")
       Palette: string list }       // theme accent1..6
     /// First series' values / colour — convenience for single-series paths.
     member s.Values = match s.Series with x :: _ -> x.Values | [] -> []
@@ -51,6 +52,14 @@ let private points (block: XElement) : string list =
     |> Seq.sortBy (fun p -> match p.Attribute(XName.Get "idx") with null -> 0 | a -> int a.Value)
     |> Seq.choose (fun p -> firstDesc "v" p |> Option.map (fun v -> v.Value))
     |> List.ofSeq
+
+/// Category labels. A multi-level axis (multiLvlStrRef) has several <lvl>
+/// blocks (e.g. months then years); use only the finest (first) level so the
+/// labels don't concatenate.
+let private catPoints (catEl: XElement) : string list =
+    match descendants "lvl" catEl |> Seq.tryHead with
+    | Some lvl -> points lvl
+    | None -> points catEl
 
 let private pf (s: string) = match Double.TryParse(s, Globalization.CultureInfo.InvariantCulture) with true, n -> n | _ -> 0.0
 
@@ -108,7 +117,7 @@ let parseChart (xlsxPath: string) (chartIdx: int) : ChartSpec option =
             let categories =
                 allSer |> List.tryHead
                 |> Option.bind (firstDesc (if kind = "scatter" then "xVal" else "cat"))
-                |> Option.map points |> Option.defaultValue []
+                |> Option.map (if kind = "scatter" then points else catPoints) |> Option.defaultValue []
             let series =
                 allSer |> List.mapi (fun i ser ->
                     let name = firstDesc "tx" ser |> Option.bind (firstDesc "v") |> Option.map (fun v -> v.Value)
@@ -122,8 +131,14 @@ let parseChart (xlsxPath: string) (chartIdx: int) : ChartSpec option =
                 |> Option.map (fun t -> t.Value)
             let gridlines = root |> descendants "valAx" |> Seq.exists (fun ax -> firstDesc "majorGridlines" ax |> Option.isSome)
             let gap = firstDesc "gapWidth" plot |> Option.map (fun e -> int (e.Attribute(XName.Get "val").Value)) |> Option.defaultValue 150
+            let dispUnit =
+                firstDesc "dispUnits" root |> Option.bind (firstDesc "builtInUnit") |> Option.bind (valAttr "val")
+                |> Option.map (function
+                    | "hundreds" -> 100.0 | "thousands" -> 1e3 | "tenThousands" -> 1e4 | "hundredThousands" -> 1e5
+                    | "millions" -> 1e6 | "tenMillions" -> 1e7 | "hundredMillions" -> 1e8 | "billions" -> 1e9 | "trillions" -> 1e12 | _ -> 1.0)
+                |> Option.defaultValue 1.0
             Some { Kind = kind; Title = title; Categories = categories; Series = series
-                   Gridlines = gridlines; GapWidth = gap; Palette = accents }
+                   Gridlines = gridlines; GapWidth = gap; DispUnit = dispUnit; Palette = accents }
 
 /// Chart pixel size from the twoCellAnchor (default 64px cols / 20px rows;
 /// EMU offsets at 9525 EMU/px). Good enough for the synthetic fixture.
@@ -280,6 +295,86 @@ let parseSparklines (xlsxPath: string) (sheetIndex: int) : Sparkline list =
                     | _ -> ()
                 | _ -> () ]
 
+// ---- slicers --------------------------------------------------------------
+
+type SlicerItem = { Label: string; Selected: bool }
+type SlicerSpec =
+    { Caption: string
+      Items: SlicerItem list
+      ColumnCount: int
+      Accent: string               // theme accent1 — selected-button fill
+      FromCol: int; FromColOffPx: float; FromRow: int; FromRowOffPx: float
+      ToCol: int; ToColOffPx: float; ToRow: int; ToRowOffPx: float }
+
+/// pivotCache field name -> ordered shared-item labels (for slicer item text).
+let private pivotSharedItems (zip: ZipArchive) : Map<string, string list> =
+    match readEntry zip "xl/pivotCache/pivotCacheDefinition1.xml" with
+    | None -> Map.empty
+    | Some xml ->
+        descendants "cacheField" (XDocument.Parse xml).Root
+        |> Seq.choose (fun cf ->
+            attr "name" cf
+            |> Option.map (fun nm ->
+                let items =
+                    firstDesc "sharedItems" cf
+                    |> Option.map (fun si -> descendants "s" si |> Seq.choose (attr "v") |> List.ofSeq)
+                    |> Option.defaultValue []
+                nm, items))
+        |> Map.ofSeq
+
+/// Parse slicers on the workbook (slicer1.xml + slicerCaches + drawing anchor).
+let parseSlicers (xlsxPath: string) : SlicerSpec list =
+    use fs = File.OpenRead xlsxPath
+    use zip = new ZipArchive(fs, ZipArchiveMode.Read)
+    let accent = parseTheme zip |> List.tryHead |> Option.defaultValue "#5B9BD5"
+    let shared = pivotSharedItems zip
+    // cache name -> (sourceField, [(itemIndex, selected)])
+    let caches =
+        [ for n in 1 .. 12 do
+            match readEntry zip (sprintf "xl/slicerCaches/slicerCache%d.xml" n) with
+            | Some xml ->
+                let root = (XDocument.Parse xml).Root
+                let items =
+                    descendants "i" root
+                    |> Seq.choose (fun i -> attr "x" i |> Option.map (fun x -> int x, attr "s" i <> Some "0"))
+                    |> List.ofSeq
+                match attr "name" root with
+                | Some c -> yield c, (attr "sourceName" root |> Option.defaultValue "", items)
+                | None -> ()
+            | None -> () ]
+        |> Map.ofList
+    // drawing anchor (cell rect) for a slicer by name
+    let anchorOf (name: string) =
+        match readEntry zip "xl/drawings/drawing1.xml" with
+        | None -> None
+        | Some xml ->
+            descendants "twoCellAnchor" (XDocument.Parse xml).Root
+            |> Seq.tryFind (fun a -> descendants "slicer" a |> Seq.exists (fun sl -> attr "name" sl = Some name))
+            |> Option.map (fun a ->
+                let g tag child = firstDesc tag a |> Option.bind (firstDesc child) |> Option.map (fun e -> float e.Value) |> Option.defaultValue 0.0
+                int (g "from" "col"), g "from" "colOff" / 9525.0, int (g "from" "row"), g "from" "rowOff" / 9525.0,
+                int (g "to" "col"), g "to" "colOff" / 9525.0, int (g "to" "row"), g "to" "rowOff" / 9525.0)
+    match readEntry zip "xl/slicers/slicer1.xml" with
+    | None -> []
+    | Some xml ->
+        [ for sl in descendants "slicer" (XDocument.Parse xml).Root do
+            match attr "name" sl, attr "cache" sl with
+            | Some name, Some cache ->
+                let caption = attr "caption" sl |> Option.defaultValue name
+                let sourceName, idxItems = Map.tryFind cache caches |> Option.defaultValue ("", [])
+                let labels = Map.tryFind sourceName shared |> Option.defaultValue []
+                let items =
+                    idxItems |> List.choose (fun (x, sel) ->
+                        List.tryItem x labels |> Option.map (fun lbl -> { Label = lbl; Selected = sel }))
+                match anchorOf name with
+                | Some (fc, fco, fr, fro, tc, tco, tr, tro) ->
+                    yield { Caption = caption; Items = items; ColumnCount = (attr "columnCount" sl |> Option.map int |> Option.defaultValue 1)
+                            Accent = accent
+                            FromCol = fc; FromColOffPx = fco; FromRow = fr; FromRowOffPx = fro
+                            ToCol = tc; ToColOffPx = tco; ToRow = tr; ToRowOffPx = tro }
+                | None -> ()
+            | _ -> () ]
+
 // ---- layout --------------------------------------------------------------
 
 let private niceStep (dataMax: float) : float =
@@ -336,8 +431,8 @@ let private frame (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
       | Some t -> yield text t { X = 0.0; Y = 15.0; Width = w; Height = titleSize + 4.0 } titleSize "#595959" AlignCenter VAlignTop
       | None -> () ]
 
-let private yAxisLabel (v: float) (y: float) (leftAxisW: float) : PaintItem =
-    text (fmtNum v) { X = 0.0; Y = y - 8.0; Width = leftAxisW - 4.0; Height = 14.0 } 10.0 axisColor AlignRight VAlignMiddle
+let private yAxisLabel (dispUnit: float) (v: float) (y: float) (leftAxisW: float) : PaintItem =
+    text (fmtNum (v / dispUnit)) { X = 0.0; Y = y - 8.0; Width = leftAxisW - 4.0; Height = 14.0 } 10.0 axisColor AlignRight VAlignMiddle
 
 /// Clustered column chart (one bar per series within each category band).
 let buildColumnChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
@@ -358,7 +453,7 @@ let buildColumnChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
           let v = float i * step
           let y = yToPx v
           yield VecPath ([ VMove (plotX, y); VLine (plotX + plotW, y) ], None, Some (gridColor, 1.0))
-          yield yAxisLabel v y leftAxisW
+          yield yAxisLabel spec.DispUnit v y leftAxisW
       if n > 0 then
           let bandW = plotW / float n
           let groupW = bandW / (1.0 + float spec.GapWidth / 100.0)
@@ -396,7 +491,7 @@ let buildBarChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
           let v = float i * step
           let x = xToPx v
           yield VecPath ([ VMove (x, titleH); VLine (x, baselineY) ], None, Some (gridColor, 1.0))
-          yield text (fmtNum v) { X = x - 20.0; Y = baselineY + 2.0; Width = 40.0; Height = 14.0 } 10.0 axisColor AlignCenter VAlignTop
+          yield text (fmtNum (v / spec.DispUnit)) { X = x - 20.0; Y = baselineY + 2.0; Width = 40.0; Height = 14.0 } 10.0 axisColor AlignCenter VAlignTop
       if n > 0 then
           let bandH = plotH / float n
           let groupH = bandH / (1.0 + float spec.GapWidth / 100.0)
@@ -439,7 +534,7 @@ let private valueAxisChrome (edgeMode: bool) (spec: ChartSpec) (w: float) (h: fl
               let v = float i * step
               let y = yToPx v
               yield VecPath ([ VMove (plotX, y); VLine (plotX + plotW, y) ], None, Some (gridColor, 1.0))
-              yield yAxisLabel v y leftAxisW
+              yield yAxisLabel spec.DispUnit v y leftAxisW
           for i in 0 .. n - 1 do
               let cat = spec.Categories |> List.tryItem i |> Option.defaultValue ""
               yield text cat { X = xOf i - bandW / 2.0; Y = baselineY + 2.0; Width = bandW; Height = bandW } 10.0 axisColor AlignCenter VAlignTop ]
@@ -495,13 +590,13 @@ let buildScatterChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
           let v = float i * yStep
           let y = yToPx v
           yield VecPath ([ VMove (plotX, y); VLine (plotX + plotW, y) ], None, Some (gridColor, 1.0))
-          yield yAxisLabel v y leftAxisW
+          yield yAxisLabel spec.DispUnit v y leftAxisW
       for i in 0 .. int (round (xMax / xStep)) do
           let v = float i * xStep
           let x = xToPx v
           // Scatter has both horizontal and vertical gridlines.
           yield VecPath ([ VMove (x, titleH); VLine (x, baselineY) ], None, Some (gridColor, 1.0))
-          yield text (fmtNum v) { X = x - 20.0; Y = baselineY + 2.0; Width = 40.0; Height = 14.0 } 10.0 axisColor AlignCenter VAlignTop
+          yield text (fmtNum (v / spec.DispUnit)) { X = x - 20.0; Y = baselineY + 2.0; Width = 40.0; Height = 14.0 } 10.0 axisColor AlignCenter VAlignTop
       for i in 0 .. List.length ys - 1 do
           let x = xToPx (List.item i xsData)
           let y = yToPx ys.[i]
@@ -555,3 +650,44 @@ let buildSparkline (values: float list) (rect: Rect) (color: string) : PaintItem
         let pt i v = x0 + (float i / float (n - 1)) * w, y0 + h - ((v - lo) / span) * h
         let segs = values |> List.mapi (fun i v -> let x, y = pt i v in if i = 0 then VMove (x, y) else VLine (x, y))
         [ VecPath (segs, None, Some (color, 1.0)) ]
+
+/// Render a slicer: outer box, caption header, and a grid of item buttons
+/// (selected = white, filtered-out = grey).
+let buildSlicer (spec: SlicerSpec) (rect: Rect) : PaintItem list =
+    let border = "#D9D9D9"
+    // Excel's "Light" slicer style tints the accent toward white for selected
+    // buttons; approximate with a 45% lighten.
+    let selFill =
+        let h = spec.Accent.TrimStart('#')
+        if h.Length <> 6 then spec.Accent
+        else
+            let ch i = System.Convert.ToInt32(h.Substring(i, 2), 16)
+            let mix v = int (float v + (255.0 - float v) * 0.45)
+            sprintf "#%02X%02X%02X" (mix (ch 0)) (mix (ch 2)) (mix (ch 4))
+    let headerH = 21.0
+    let pad = 2.0
+    let cols = max 1 spec.ColumnCount
+    let nItems = List.length spec.Items
+    let rows = max 1 ((nItems + cols - 1) / cols)
+    let bodyTop = rect.Y + headerH
+    let cellW = (rect.Width - pad) / float cols
+    let cellH = (rect.Height - headerH) / float rows
+    [ yield FillRect ({ X = rect.X; Y = rect.Y; Width = rect.Width; Height = rect.Height }, "#FFFFFF")
+      yield StrokeRect ({ X = rect.X + 0.5; Y = rect.Y + 0.5; Width = rect.Width - 1.0; Height = rect.Height - 1.0 }, border, 1.0)
+      // Caption (bold) + divider under the header.
+      yield DrawText { Text = spec.Caption; Rect = { X = rect.X + 5.0; Y = rect.Y; Width = rect.Width - 10.0; Height = headerH }
+                       Color = "#595959"; FontSize = 11.0; FontName = Some "Calibri"; Bold = true; Italic = false
+                       Underline = false; UnderlineDouble = false; Strikethrough = false
+                       Align = AlignLeft; VerticalAlign = VAlignMiddle; LineIndex = 0; LineCount = 1; BaselineShift = 0.0; Rotation = 0 }
+      yield VecPath ([ VMove (rect.X, bodyTop); VLine (rect.X + rect.Width, bodyTop) ], None, Some (border, 1.0))
+      for i in 0 .. nItems - 1 do
+          let it = spec.Items.[i]
+          let c = i % cols
+          let r = i / cols
+          let bx = rect.X + pad + float c * cellW
+          let by = bodyTop + float r * cellH
+          let fill = if it.Selected then selFill else "#F2F2F2"
+          let txtColor = if it.Selected then "#000000" else "#A6A6A6"
+          yield FillRect ({ X = bx + 1.0; Y = by + 1.0; Width = cellW - 2.0; Height = cellH - 2.0 }, fill)
+          yield StrokeRect ({ X = bx + 1.0; Y = by + 1.0; Width = cellW - 2.0; Height = cellH - 2.0 }, border, 1.0)
+          yield text it.Label { X = bx + 6.0; Y = by; Width = cellW - 8.0; Height = cellH } 10.0 txtColor AlignLeft VAlignMiddle ]

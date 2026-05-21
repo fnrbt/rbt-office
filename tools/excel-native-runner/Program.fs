@@ -1440,7 +1440,17 @@ let private renderSheetToPath
         |> List.collect (fun sp ->
             let r = RedBat.Spreadsheet.Layout.cellRect model viewport sp.Row sp.Col
             ChartRender.buildSparkline sp.Values r sp.Color)
-    let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float width) (float height) model (chartItems @ sparkItems)
+    let slicerItems =
+        ChartRender.parseSlicers inputPath
+        |> List.collect (fun sl ->
+            let f = RedBat.Spreadsheet.Layout.cellRect model viewport sl.FromRow sl.FromCol
+            let t = RedBat.Spreadsheet.Layout.cellRect model viewport sl.ToRow sl.ToCol
+            let rect : RedBat.Spreadsheet.Layout.Rect =
+                { X = f.X + sl.FromColOffPx; Y = f.Y + sl.FromRowOffPx
+                  Width = (t.X + sl.ToColOffPx) - (f.X + sl.FromColOffPx)
+                  Height = (t.Y + sl.ToRowOffPx) - (f.Y + sl.FromRowOffPx) }
+            ChartRender.buildSlicer sl rect)
+    let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float width) (float height) model (chartItems @ sparkItems @ slicerItems)
     let backend = Raster.create()
     let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend width height widget
     let png = PngEncode.encode framebuffer

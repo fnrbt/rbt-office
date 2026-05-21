@@ -155,6 +155,30 @@
     <tbody>
       <tr>
         <td>
+          <strong>Slicers — filter-control boxes</strong>
+          <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code> — three slicers (Financial Year / State / Category) in column A. Items resolve through slicer → slicerCache → pivotCacheDefinition shared items; position from the drawing's slicer anchor.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:480px; aspect-ratio:0.46 / 1;">
+            <img src="../artifacts/excel/dash-slicers.png" style="--w:220px; --x:0px; --y:0px; --s:1.0" alt="Excel — slicers">
+          </div>
+          <div class="caption">Excel: caption headers + green selected item buttons.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:480px; aspect-ratio:0.46 / 1;">
+            <img src="../artifacts/native/dash-slicers.png" style="--w:220px; --x:0px; --y:0px; --s:1.0" alt="Ours — slicers">
+          </div>
+          <div class="caption">After: boxes, captions, and green (accent-tinted) selected buttons with the right labels. (Header funnel icon + exact button height are minor TODOs.)</div>
+        </td>
+        <td>
+          <div class="placeholder">Before: slicers weren't rendered (blank column).</div>
+        </td>
+        <td>
+          <p><strong>Slicers.</strong> <code>ChartRender.parseSlicers</code> reads <code>slicer1.xml</code> (name/caption/cache), resolves each item index through the <code>slicerCache</code> to the <code>pivotCacheDefinition</code> shared-item labels, and finds the box position from the drawing's slicer anchor (<code>mc:AlternateContent</code>). <code>buildSlicer</code> draws the box, caption header, and item-button grid; selected buttons use the theme accent tinted 45% toward white (Excel's "Light" slicer style). Overlaid via <code>renderSheetToPath</code>.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Charts: multi-series + non-scientific axis labels — dashboard</strong>
           <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code> "Sales By Chain" (2-series line) and the clustered bar charts. Previously only the first series drew; axis labels showed scientific notation (<code>3e+06</code>).</span>
         </td>
@@ -168,7 +192,7 @@
           <div class="zoom" style="min-height:210px; aspect-ratio:2.48 / 1;">
             <img src="../artifacts/native/dash-multiseries.png" style="--w:520px; --x:0px; --y:0px; --s:1.0" alt="Ours — 2-series line">
           </div>
-          <div class="caption">After: both series render with theme colours; axis labels are comma-formatted. (Excel's "Thousands" display unit and the month×year multi-level category axis are still TODO.)</div>
+          <div class="caption">After: both series; value axis now scaled to the &quot;Thousands&quot; display unit; clean month labels (multi-level axis finest level). Remaining: left-aligned title (manualLayout), the rotated &quot;Thousands&quot; title, and the year sub-row.</div>
         </td>
         <td>
           <div class="placeholder">Before: only the first series drew; axis showed 3e+06.</div>
