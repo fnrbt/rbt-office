@@ -292,7 +292,9 @@ let private footnotesInLine (line: MeasuredLine) =
 /// BlockId prefix for the synthetic footnote-area paragraphs laid out at the
 /// bottom of each page. Paint recognises these to render them and the separator.
 let footnoteBlockIdPrefix = "__footnote__"
-let private footnoteFontSize = 10.0
+// Font sizes in the layout/buffer are CSS px (1pt = 96/72 px), as produced by
+// the editor import (11pt body = 14.667px). Word's FootnoteText is 10pt.
+let private footnoteFontSize = 10.0 * 96.0 / 72.0
 // Footnotes inherit the document body font; Calibri is Word's default and the
 // repro/most real docs use it. (A doc-default-font lookup would be more robust.)
 let private footnoteFontFamily = "Calibri"
