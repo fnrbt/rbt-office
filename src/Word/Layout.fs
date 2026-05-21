@@ -254,7 +254,10 @@ let private pageIndexForY settings y =
     int (floor (max 0.0 y / (pageHeight settings + pageGap)))
 
 let noteWrapChars (settings: LayoutSettings) =
-    max 24 (int ((settings.Width - settings.PaddingLeft - settings.MarginRight) / 5.5))
+    // ~6.3 px per char approximates Calibri 10pt so the reserve's line estimate
+    // is not lower than the actual wrapped footnote height (which would let body
+    // content overlap the notes).
+    max 24 (int ((settings.Width - settings.PaddingLeft - settings.MarginRight) / 6.3))
 
 let wrapNoteText settings (text: string) =
     let maxChars = noteWrapChars settings
@@ -290,15 +293,23 @@ let private footnotesInLine (line: MeasuredLine) =
 /// bottom of each page. Paint recognises these to render them and the separator.
 let footnoteBlockIdPrefix = "__footnote__"
 let private footnoteFontSize = 10.0
-// Gap between the reserved-area top (where the separator sits) and the first note.
-let private footnoteAreaTopGap = 14.0
+// Footnotes inherit the document body font; Calibri is Word's default and the
+// repro/most real docs use it. (A doc-default-font lookup would be more robust.)
+let private footnoteFontFamily = "Calibri"
+// Small gap left below the footnote block, above the bottom page margin.
+let private footnoteBottomPad = 6.0
+// Footnote single-line height (10pt body font) and the separator gap above the
+// first note. The reserve must be >= the actual footnote-block height so body
+// content does not overlap the notes (which are positioned by their real height).
+let private footnoteLineHeight = 16.0
+let private footnoteSeparatorGap = 16.0
 
 let private footnoteReserveHeight settings footnotes =
     match footnotes with
     | [] -> 0.0
     | notes ->
         let lineCount = notes |> List.sumBy (fun (id, text) -> noteLineCount settings (sprintf "%s. %s" id text))
-        20.0 + float lineCount * 13.0
+        footnoteSeparatorGap + float lineCount * footnoteLineHeight + footnoteBottomPad
 
 let private addLayoutFootnotes settings (footnotesByPage: Map<int, (string * string) list>) (layout: BlockLayout) =
     layout.Lines
@@ -2323,14 +2334,24 @@ let private layoutDocumentWithRangeAndInitial
         if not notes.IsEmpty then
             let pageTop = float pageIndex * footnoteStride
             let pageContentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-            let mutable noteY = pageContentBottom - footnoteReserveHeight settings notes + footnoteAreaTopGap
-            notes |> List.iteri (fun noteIndex (id, text) ->
-                let noteString = sprintf "%s %s" id (text.Trim())
-                let buffer = TextBuffer.ofString noteString |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
-                let para = { Id = sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
-                let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth noteY 0.0 para Map.empty
-                layouts <- layouts @ [layout]
-                noteY <- noteY + layout.Height)
+            // Lay out the notes at a temporary origin to get their real height
+            // (10pt body font, superscript mark number), then place the block so
+            // it ends just above the bottom margin, the way Word stacks footnotes.
+            let mutable tempY = 0.0
+            let laidOut =
+                notes |> List.mapi (fun noteIndex (id, text) ->
+                    let noteString = sprintf "%s %s" id (text.Trim())
+                    let buffer =
+                        TextBuffer.ofString noteString
+                        |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
+                        |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
+                    let para = { Id = sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
+                    let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth tempY 0.0 para Map.empty
+                    tempY <- tempY + layout.Height
+                    layout)
+            let blockTop = pageContentBottom - footnoteBottomPad - tempY
+            for layout in laidOut do
+                layouts <- layouts @ [moveLayoutToY (blockTop + layout.Y) layout]
 
     layouts, placedFloatingBoxes
 

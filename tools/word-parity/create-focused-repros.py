@@ -428,6 +428,24 @@ def styles(include_heading_spacing=True, include_doc_defaults=True):
     )
 
 
+def footnote_styles():
+    # Defines FootnoteText (10pt, the Word default for footnote bodies) and the
+    # superscript FootnoteReference char style, so Word renders the footnotes at
+    # 10pt like a real document (rather than falling back to the 11pt body size).
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:styles xmlns:w="{WORD_NS}" xmlns:r="{REL_NS}">'
+        "<w:docDefaults>"
+        '<w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>'
+        "</w:docDefaults>"
+        '<w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style>'
+        '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="240"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
+        '<w:style w:type="paragraph" w:styleId="FootnoteText"><w:name w:val="footnote text"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>'
+        '<w:style w:type="character" w:styleId="FootnoteReference"><w:name w:val="footnote reference"/><w:rPr><w:vertAlign w:val="superscript"/></w:rPr></w:style>'
+        "</w:styles>"
+    )
+
+
 def table_grid_styles():
     borders = "".join(
         f'<w:{name} w:val="single" w:sz="4" w:space="0" w:color="000000"/>'
@@ -1421,6 +1439,7 @@ def main():
     write_docx(
         footnote_path,
         footnote_body,
+        styles_xml=footnote_styles(),
         footnotes_xml=footnotes_part([
             (1, "First footnote: Word renders this in a smaller font at the bottom of the page above the body bottom margin."),
             (2, "Second footnote: it sits just below the first, separated from the body by the footnote separator line."),
