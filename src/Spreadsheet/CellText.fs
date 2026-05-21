@@ -541,6 +541,23 @@ let private stripExcelWidthPlaceholders (code: string) : string =
             i <- i + 1
     sb.ToString()
 
+/// Excel scales a number by 1000 for each comma at the END of the format
+/// (after the last digit placeholder) — `#,##0,`→thousands, `0.0,,`→millions.
+/// .NET only honours a scaling comma immediately LEFT of the decimal point, so
+/// a trailing comma after the decimals (`#,##0.0,`) is ignored. Strip the
+/// trailing scaling commas and return the matching divisor so we scale the
+/// value ourselves; the grouping commas inside the digit run are left intact.
+let private trailingScale (section: string) : string * float =
+    let isDigitPh c = c = '0' || c = '#' || c = '?'
+    match section |> Seq.tryFindIndexBack isDigitPh with
+    | None -> section, 1.0
+    | Some idx ->
+        let mutable i = idx + 1
+        while i < section.Length && section.[i] = ',' do i <- i + 1
+        let commas = i - (idx + 1)
+        if commas = 0 then section, 1.0
+        else section.Substring(0, idx + 1) + section.Substring(i), (1000.0 ** float commas)
+
 /// Apply an Excel non-date number-format code (`0.000`, `#,##0.00`, `0%`,
 /// `0.00E+00`, etc.) using .NET's custom-format-string support. Excel's
 /// number-format grammar is largely compatible with .NET's; we strip the
@@ -549,7 +566,7 @@ let private stripExcelWidthPlaceholders (code: string) : string =
 let private formatExcelNumber (code: string) (n: float) : string =
     let inv = System.Globalization.CultureInfo.InvariantCulture
     let sections = splitSections code
-    let pos = sectionForValue code n
+    let pos, scaleDivisor = trailingScale (sectionForValue code n)
     let isConditional = sections |> List.exists (fun s -> (sectionCondition s).IsSome)
     // Excel formats the section against the ABSOLUTE value when the section
     // already accounts for the sign (a dedicated negative/zero section, or any
@@ -557,13 +574,14 @@ let private formatExcelNumber (code: string) (n: float) : string =
     // like `(#,##0.00)`. When a NEGATIVE value falls through to a conditional
     // format's default (unconditioned) section, Excel prepends a `-` itself
     // (e.g. `[>=100]0;[>=50]0;0` renders -10 as `-10`, "Low" as "-Low").
-    let valueForSection, prependMinus =
+    let baseValue, prependMinus =
         if isConditional then
             if (sectionCondition pos).IsSome then System.Math.Abs n, false
             else System.Math.Abs n, (n < 0.0)
         elif (n < 0.0 && sections.Length >= 2) || (n = 0.0 && sections.Length >= 3) then
             System.Math.Abs n, false
         else n, false
+    let valueForSection = baseValue / scaleDivisor
     // Fractions (`# ?/?`, `# ??/??`, `?/??`) have no .NET equivalent and
     // need explicit numerator-denominator search. Try that first.
     match tryFormatFraction pos n with

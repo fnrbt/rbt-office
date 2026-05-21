@@ -371,6 +371,10 @@ Risk:
 
 Checks to add:
 
+- [x] Trailing-comma scaling: `#,##0,` (thousands), `#,##0.0,`, `0.0,,`
+  (millions), `#,##0.0,,"M"`. `synthetic-numfmt-scale.xlsx`. `CellText.fs`
+  `trailingScale` strips end-of-section commas and divides by 1000ⁿ (.NET only
+  scales a comma left of the decimal). 24/24 vs an Excel probe incl. rounding.
 - [x] Custom format with positive/negative/zero/text + CONDITIONAL sections:
   `synthetic-numfmt-sections.xlsx` (built by `build-numfmt-sections-fixture.vbs`),
   ground truth from `probe-numfmt-sections.vbs` (72 pairs). `CellText.fs`

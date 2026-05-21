@@ -155,6 +155,37 @@
     <tbody>
       <tr>
         <td>
+          <strong>Number-format trailing-comma scaling (<code>#,##0.0,</code> thousands, <code>0.0,,</code> millions)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-numfmt-scale.xlsx</code> (built via <code>tools/excel-parity/build-scale-fixture.vbs</code>). Cols <code>#,##0,</code> / <code>#,##0.0,</code> / <code>0.0,,</code> / <code>#,##0.0,,"M"</code> at 1234567 / 2500000 / 12345678.</span>
+          <span class="meta">Ground truth: an Excel <code>cell.Text</code> probe (24 pairs incl. rounding/negatives). Matched 96-dpi screenshot ↔ our native render.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:95px; aspect-ratio:5.7 / 1;">
+            <img src="../artifacts/excel/synthetic-numfmt-scale-crop.png" style="--w:540px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — scaled values">
+          </div>
+          <div class="caption">Excel: each trailing comma divides by 1000 — <code>#,##0.0,</code> → 1,234.6; <code>0.0,,</code> → 1.2; <code>#,##0.0,,"M"</code> → 1.2M.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:95px; aspect-ratio:5.7 / 1;">
+            <img src="../artifacts/native/synthetic-numfmt-scale-after.png" style="--w:540px; --x:0px; --y:0px; --s:1.0" alt="Ours after — matches Excel">
+          </div>
+          <div class="caption">After: matches Excel on all 24 probe pairs, including rounding (1250 → 1.3) and negatives.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:95px; aspect-ratio:5.7 / 1;">
+            <img src="../artifacts/baseline/synthetic-numfmt-scale-before.png" style="--w:540px; --x:0px; --y:0px; --s:1.0" alt="Ours before — trailing-after-decimal commas not scaled">
+          </div>
+          <div class="caption">Before: only <code>#,##0,</code> scaled (.NET handles a comma left of the decimal); <code>#,##0.0,</code> / <code>0.0,,</code> / <code>"M"</code> rendered the full unscaled value (1,234,567.0).</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>src/Spreadsheet/CellText.fs</code> <code>trailingScale</code>. .NET only treats a comma immediately LEFT of the decimal point as a /1000 scaling specifier, so a trailing comma after the decimals (or a second comma) was ignored. We now count the commas at the end of the section (after the last digit placeholder), divide the value by 1000ⁿ ourselves, and strip them so .NET formats the scaled value — grouping commas inside the digit run are untouched.</p>
+          <ul>
+            <li>Regression guard: 78/78 VBA-layout clean, 12/12 print-PDF within MAE, 91/91 smoke render; <code>#,##0,</code> still scales (we do it instead of .NET — same result, no double-scale).</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Number-format conditional &amp; colour sections (<code>[&gt;=100]…</code>, <code>[Red]</code>)</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-numfmt-sections.xlsx</code> (built via <code>tools/excel-parity/build-numfmt-sections-fixture.vbs</code>). Col B <code>[&gt;=100]"High";[&gt;=50]"Mid";"Low"</code>, col C <code>0.0;[Red]-0.0;"zero"</code>, col D <code>[&lt;0][Red]0.0;[Blue]0.0</code> at values 150/70/30/0/−10.</span>
           <span class="meta">Ground truth: <code>tools/excel-parity/probe-numfmt-sections.vbs</code> (72 format×value pairs) + Excel screenshot. Matched 96-dpi screenshot ↔ our native render.</span>
