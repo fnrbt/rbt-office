@@ -444,9 +444,21 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                 match Double.TryParse(s, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
                 | true, n -> Some n
                 | _ -> None
+            // A cellIs threshold can be a numeric constant OR a cell reference
+            // (e.g. `$E$10` — "highlight if greater than the value in E10").
+            // Resolve a bare single-cell ref against the original cell values.
+            let resolveOperand (s: string) : float option =
+                match parseNum s with
+                | Some n -> Some n
+                | None ->
+                    let cleaned = (s.TrimStart('+', '=')).Replace("$", "")
+                    match parseCellRange cleaned with
+                    | Some (r1, c1, r2, c2) when r1 = r2 && c1 = c2 ->
+                        Map.tryFind { Row = r1; Col = c1 } cells |> Option.bind (fun cd -> numericOf cd.Value)
+                    | _ -> None
             let cellIsMatch (op: string) (formulas: string list) (n: float) =
-                let f1 = formulas |> List.tryItem 0 |> Option.bind parseNum
-                let f2 = formulas |> List.tryItem 1 |> Option.bind parseNum
+                let f1 = formulas |> List.tryItem 0 |> Option.bind resolveOperand
+                let f2 = formulas |> List.tryItem 1 |> Option.bind resolveOperand
                 match op, f1, f2 with
                 | "greaterThan", Some a, _ -> n > a
                 | "lessThan", Some a, _ -> n < a

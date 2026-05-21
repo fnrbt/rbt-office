@@ -155,6 +155,33 @@
     <tbody>
       <tr>
         <td>
+          <strong>Conditional formatting: <code>cellIs</code> with a cell-reference threshold (<code>&gt; $C$1</code>)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-cf-cellref.xlsx</code> (built via <code>tools/excel-parity/build-cf-cellref.vbs</code>). A2:A6 = 5/12/8/20/3 with a <code>cellIs greaterThan =$C$1</code> rule (threshold C1 = 10) → pink fill + red font. Found while sweeping <code>saopaulo-condos</code> (whose E11 rule references <code>$E$10</code>).</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:195px; aspect-ratio:1.85 / 1;">
+            <img src="../artifacts/excel/cf-cellref-crop.png" style="--w:360px; --x:0px; --y:0px; --s:1.0" alt="Excel — A3/A5 highlighted">
+          </div>
+          <div class="caption">Excel: 12 and 20 (&gt; the C1 threshold of 10) get pink fill + red text; 5/8/3 stay plain.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:195px; aspect-ratio:1.85 / 1;">
+            <img src="../artifacts/native/cf-cellref-after.png" style="--w:360px; --x:0px; --y:0px; --s:1.0" alt="Ours after — matches">
+          </div>
+          <div class="caption">After: 12 and 20 highlighted — matches Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:195px; aspect-ratio:1.85 / 1;">
+            <img src="../artifacts/baseline/cf-cellref-before.png" style="--w:360px; --x:0px; --y:0px; --s:1.0" alt="Ours before — nothing highlighted">
+          </div>
+          <div class="caption">Before: no highlights — the rule's threshold <code>$C$1</code> couldn't be evaluated.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> the <code>cellIs</code> evaluator (<code>excel-native-runner</code>) parsed the rule's threshold formula as a numeric constant only, so a cell reference like <code>$C$1</code> failed and the rule never matched. Added <code>resolveOperand</code>: parse a number, else resolve a single-cell reference (strip <code>$</code>, look up its value) — so "greater than the value in another cell" works. Gate clean; no change to numeric-threshold CF.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Manual line breaks (<code>\n</code>) are ignored when wrapText is OFF — no row inflation</strong>
           <span class="meta">Target: <code>tests/real-world/jumeirah-hotel.xlsx</code>. Cell G68 = <code>"Uses of \nFunds:"</code> — an embedded break but wrapText OFF. Crops aligned on the row-66 band, gridlines off, MS Calibri.</span>
           <span class="meta">Part of the <code>jumeirah-hotel</code> full-parity goal.</span>

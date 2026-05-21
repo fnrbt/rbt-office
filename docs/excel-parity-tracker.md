@@ -52,6 +52,19 @@ surfaces have actually been checked. It complements
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
 
+## Real-world goal: saopaulo-condos.xlsx
+
+- Both sheets (Assumptions, Monthly-CF) at AA-level parity via the global fixes
+  (gridlines off, indent, centerContinuous, number formats, MS Calibri). Aligned
+  MAE ~10 (sheet 1) / ~14 (sheet 2, denser). No model-specific layout diff.
+- The sheet-2 conditional format (E11 `cellIs greaterThan $E$10`) does NOT fire
+  (E11=3.92 < E10=6), so no visible CF highlight in Excel or ours — but it
+  surfaced a latent bug: our `cellIs` parsed the threshold as a numeric constant
+  only, so a cell reference (`$E$10`) never evaluated. Fixed (`resolveOperand`
+  resolves single-cell refs) + `synthetic-cf-cellref.xlsx` verifies a triggering
+  case (12/20 > C1=10 → pink, matching Excel).
+- Status: at render parity.
+
 ## Real-world goal: jumeirah-hotel.xlsx (full parity)
 
 - One real, model-specific bug found + fixed: a hard line break `\n` in cell
