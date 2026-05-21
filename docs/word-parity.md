@@ -247,26 +247,6 @@ doc	page	paragraph	line	start	end	x	y	lastX	lastY	inTable	table	row	column	style
 
 Word positions are reported in points relative to the page. The comparator converts them to CSS pixels with `96 / 72` before comparing against browser line boxes. `lastX`/`lastY` are the last non-marker character position Word exposes for the line; use them as hints, not as exact line width.
 
-### Known comparator artifact: vertically-aligned table cells
-
-`extract-word-layout.vbs` reads each line's vertical position from Word's VBA
-`Range.Information` API, which returns the cell's **unaligned content origin**
-(top of the cell's text area) regardless of the cell's `w:vAlign`. Our
-`browser-lines.json` instead records the **painted** line position after the
-center/bottom vertical-alignment offset is applied. For a center- or
-bottom-aligned cell the two therefore disagree by the alignment offset, and
-`compare-word-browser-layouts.mjs` reports a large `dy`/`gapDy` even when the
-render is pixel-correct.
-
-Verified example: `docx4j-tables.docx` first table ("Shadings, alignment, row
-height"). Row 1 (`C`/`D`) is bottom-aligned; Word reports `y=205` (row content
-origin) while the browser, PDF, and Word's own painted output all place the
-text at the bottom of the row (~`y=264`). The ~59px delta is an artifact, not a
-layout bug. Before treating an in-table `dy` as a real defect, check the
-rendered PNG/PDF — if the cell is center/bottom aligned, the absolute `dy` is
-expected. (Do not blanket-suppress in-table `dy`: real in-table bugs such as
-nested-table ordering also surface as in-table `dy`.)
-
 Browser line JSON records include:
 
 ```text
