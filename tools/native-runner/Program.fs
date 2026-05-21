@@ -759,7 +759,7 @@ let private pageSetup (doc: DocxReader.WordDocument) =
             FooterDistance = setup.FooterDistance |> Option.defaultValue defaultPageSetup.FooterDistance
             DifferentFirstPage = setup.DifferentFirstPage |> Option.defaultValue defaultPageSetup.DifferentFirstPage
             EvenAndOddHeaders = setup.EvenAndOddHeaders |> Option.defaultValue defaultPageSetup.EvenAndOddHeaders
-            Columns = setup.Columns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator }: RedBat.Word.Document.SectionColumns))
+            Columns = setup.Columns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: RedBat.Word.Document.SectionColumns))
         }
 
 let private headerFooterPart resolver images styleMap comments notes (item: DocxReader.HeaderFooter) =

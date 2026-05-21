@@ -385,6 +385,7 @@ type SectionColumns = {
     Count: int
     Gap: float
     Separator: bool
+    Widths: (float * float) list
 }
 
 type PageSetup = {
@@ -2363,11 +2364,17 @@ let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetu
             Ns.childNs "cols" section
             |> Option.bind (fun cols ->
                 let num = cols |> Docx.attr "num" |> Option.bind (fun v -> match System.Int32.TryParse v with | true, n -> Some n | _ -> None) |> Option.defaultValue 1
-                if num <= 1 then None
-                else
-                    let space = cols |> Docx.attr "space" |> wordTwipsToPixels |> Option.defaultValue 36.0
-                    let sep = Docx.onOff "sep" cols |> Option.defaultValue false
-                    Some { Count = num; Gap = space; Separator = sep })
+                let space = cols |> Docx.attr "space" |> wordTwipsToPixels |> Option.defaultValue 36.0
+                let sep = Docx.onOff "sep" cols |> Option.defaultValue false
+                // Per-column widths (w:col) when equalWidth is off.
+                let colWidths =
+                    Ns.descendantsNs "col" cols
+                    |> List.choose (fun col ->
+                        col |> Docx.attr "w" |> wordTwipsToPixels
+                        |> Option.map (fun w -> w, col |> Docx.attr "space" |> wordTwipsToPixels |> Option.defaultValue 0.0))
+                let count = if colWidths.Length >= 2 then colWidths.Length else num
+                if count <= 1 then None
+                else Some { Count = count; Gap = space; Separator = sep; Widths = (if colWidths.Length >= 2 then colWidths else []) })
         {
             PageWidth = pgSz |> Option.bind (Docx.attr "w") |> wordTwipsToPixels
             PageHeight = pgSz |> Option.bind (Docx.attr "h") |> wordTwipsToPixels
@@ -4242,4 +4249,5 @@ let toEditorPageSetup (doc: WordDocument) : obj =
             "ColumnCount" ==> (setup.Columns |> Option.map (fun c -> c.Count) |> Option.defaultValue 1)
             "ColumnSpace" ==> (setup.Columns |> Option.map (fun c -> c.Gap) |> Option.defaultValue 0.0)
             "ColumnSeparator" ==> (setup.Columns |> Option.map (fun c -> c.Separator) |> Option.defaultValue false)
+            "ColumnWidths" ==> (setup.Columns |> Option.map (fun c -> c.Widths |> List.map (fun (w, s) -> createObj [ "W" ==> w; "S" ==> s ]) |> Array.ofList) |> Option.defaultValue [||])
         ]

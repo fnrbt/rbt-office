@@ -1567,6 +1567,16 @@ def main():
     )
     print(threecol_path)
 
+    # Unequal column widths (equalWidth=0 + w:col widths): narrow column 1, wide
+    # column 2. Content width 9360 twips = 3000 + 360 gap + 6000.
+    uneqcol_path = out_dir / "unequal-columns.docx"
+    write_docx(
+        uneqcol_path,
+        paragraph("Unequal columns repro", "Heading1") + repeated_long_paragraphs(8),
+        page_geometry={"cols": '<w:cols w:num="2" w:equalWidth="0" w:space="360"><w:col w:w="3000" w:space="360"/><w:col w:w="6000"/></w:cols>'},
+    )
+    print(uneqcol_path)
+
     # Manual column break: content after <w:br w:type="column"/> jumps to the
     # next column, leaving column 1 short.
     colbreak_path = out_dir / "column-break.docx"

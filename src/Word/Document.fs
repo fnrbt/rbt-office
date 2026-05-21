@@ -336,8 +336,9 @@ type HeaderFooterPart = {
 /// widths are not modelled yet; columns are treated as equal width.
 type SectionColumns = {
     Count: int
-    Gap: float          // gap between columns, px
+    Gap: float          // gap between columns, px (equal-width case)
     Separator: bool     // draw a rule between columns (w:sep)
+    Widths: (float * float) list  // per-column (width, spaceAfter) px; empty = equal width
 }
 
 type PageSetup = {

@@ -2528,10 +2528,19 @@ let private shiftBlockY dy (layout: BlockLayout) =
 let private columnFlowLayout (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) =
     let n = max 1 columns.Count
     let full = settings.Width - settings.PaddingLeft - settings.MarginRight
-    // Equal widths for now; per-column widths plug into columnWidth/columnDx.
-    let colWidth = (full - float (n - 1) * columns.Gap) / float n
-    let columnWidth (_col: int) = colWidth
-    let columnDx col = float col * (colWidth + columns.Gap)
+    // Per-column widths from w:col when present; otherwise equal columns.
+    let widthsArr =
+        if columns.Widths.Length = n then columns.Widths |> Array.ofList
+        else
+            let colWidth = (full - float (n - 1) * columns.Gap) / float n
+            Array.init n (fun i -> (colWidth, (if i < n - 1 then columns.Gap else 0.0)))
+    let columnWidth col = fst widthsArr.[min col (n - 1)]
+    // X offset of column `col` = sum of (width + space) of the columns before it.
+    let columnDx col =
+        let mutable x = 0.0
+        for i in 0 .. col - 1 do
+            x <- x + fst widthsArr.[i] + snd widthsArr.[i]
+        x
     let stride = pageHeight settings + pageGap
     let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (float page * stride)
     let contentBottomAt page = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (float page * stride)

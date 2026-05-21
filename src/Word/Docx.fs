@@ -21,6 +21,9 @@ let private jsArrayGet (arr: obj) (index: int) : obj = jsNative
 [<Emit("$0 === null || $0 === undefined")>]
 let private isNullOrUndefined (_value: obj) : bool = jsNative
 
+[<Emit("$0.length")>]
+let private jsArrayLength (_arr: obj) : int = jsNative
+
 let private optionalString (value: obj) =
     if isNullOrUndefined value then None
     else
@@ -989,7 +992,11 @@ let private pageSetupFromEditor (value: obj) =
             | Some count when count >= 2.0 ->
                 Some ({ Count = int count
                         Gap = optionalFloat (value?ColumnSpace) |> Option.defaultValue 0.0
-                        Separator = optionalBool (value?ColumnSeparator) |> Option.defaultValue false }: SectionColumns)
+                        Separator = optionalBool (value?ColumnSeparator) |> Option.defaultValue false
+                        Widths =
+                            match value?ColumnWidths with
+                            | w when isNullOrUndefined w -> []
+                            | w -> [ for i in 0 .. jsArrayLength w - 1 -> let o = jsArrayGet w i in (optionalFloat (o?W) |> Option.defaultValue 0.0, optionalFloat (o?S) |> Option.defaultValue 0.0) ] }: SectionColumns)
             | _ -> None
     }
 
