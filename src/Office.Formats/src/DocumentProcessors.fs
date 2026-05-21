@@ -704,6 +704,8 @@ module EditorProcessor =
                 styleMap.TryFind(StyleResolution.documentDefaultsStyleId)
                 |> Option.map fst
                 |> Option.defaultValue StyleResolution.defaultRunProps
+        let baseRunProps =
+            StyleResolution.mergeRunPropsWithTheme theme baseRunProps para.Properties.ParagraphRunProperties
 
         // Convert all runs
         let runs =
@@ -734,7 +736,7 @@ module EditorProcessor =
                 |> List.collect (fun row ->
                     row.Cells
                     |> List.collect (fun cell ->
-                        cell.Paragraphs)))
+                        cell.Paragraphs @ (cell.NestedTables |> List.collect (fun nested -> extractParagraphs [Tbl nested])))))
 
     /// Main entry point: Transform WordDocument to EditorParagraph list
     let extractForEditor (doc: WordDocument) : EditorParagraph list =

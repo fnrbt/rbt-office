@@ -236,6 +236,7 @@ type Table = {
     Rows: TableRow list
     StyleId: string option
     Look: TableLook option
+    Alignment: string option
     Properties: TableStyleProperties option
     Borders: CellBorders option
     Width: string option
@@ -272,6 +273,7 @@ and TableRow = {
 }
 and TableCell = {
     Paragraphs: Paragraph list
+    NestedTables: Table list
     Properties: TableCellProperties option
 }
 
@@ -1411,12 +1413,16 @@ module Docx =
         let paragraphs =
             wChildElems "p" tcNode
             |> List.map paragraph
+        let nestedTables =
+            wChildElems "tbl" tcNode
+            |> List.map table
         {
             Paragraphs = paragraphs
+            NestedTables = nestedTables
             Properties = tableCellProps tcNode
         }
 
-    let tableRow (trNode: XmlNode) : TableRow =
+    and tableRow (trNode: XmlNode) : TableRow =
         let cells =
             wChildElems "tc" trNode
             |> List.map tableCell
@@ -1478,7 +1484,7 @@ module Docx =
             BordersOverride = bordersOverride
         }
 
-    let table (tblNode: XmlNode) : Table =
+    and table (tblNode: XmlNode) : Table =
         let rows =
             wChildElems "tr" tblNode
             |> List.map tableRow
@@ -1517,16 +1523,26 @@ module Docx =
             tblPr
             |> Option.bind (wElem "tblLook")
             |> Option.map (fun look ->
+                let lookValue =
+                    attr "val" look
+                    |> Option.bind (fun value ->
+                        match System.Int32.TryParse(value, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture) with
+                        | true, parsed -> Some parsed
+                        | false, _ -> None)
+                let bit mask fallback =
+                    lookValue
+                    |> Option.map (fun value -> (value &&& mask) <> 0)
+                    |> Option.defaultValue fallback
                 let flag name fallback =
                     attr name look
                     |> Option.map (fun value -> value = "1" || value = "true")
                     |> Option.defaultValue fallback
-                { FirstRow = flag "firstRow" false
-                  LastRow = flag "lastRow" false
-                  FirstColumn = flag "firstColumn" false
-                  LastColumn = flag "lastColumn" false
-                  HorizontalBanding = not (flag "noHBand" false)
-                  VerticalBanding = not (flag "noVBand" false) })
+                { FirstRow = flag "firstRow" (bit 0x0020 false)
+                  LastRow = flag "lastRow" (bit 0x0040 false)
+                  FirstColumn = flag "firstColumn" (bit 0x0080 false)
+                  LastColumn = flag "lastColumn" (bit 0x0100 false)
+                  HorizontalBanding = not (flag "noHBand" (bit 0x0200 false))
+                  VerticalBanding = not (flag "noVBand" (bit 0x0400 false)) })
         let gridColumns =
             wElem "tblGrid" tblNode
             |> Option.map (fun grid -> wChildElems "gridCol" grid |> List.choose (attr "w"))
@@ -1536,6 +1552,7 @@ module Docx =
             Rows = rows
             StyleId = tblPr |> Option.bind (wElem "tblStyle") |> Option.bind (attr "val")
             Look = tableLook
+            Alignment = tblPr |> Option.bind (wElem "jc") |> Option.bind (attr "val")
             Properties = tableProperties
             Borders = borders
             Width = tableWidth |> Option.bind (attr "w")
@@ -1749,17 +1766,35 @@ module Styles =
             let rPr = Ns.childNs "rPr" styleNode |> Option.map parseRunPropsFromStyle
             let pPr = Ns.childNs "pPr" styleNode |> Option.map parseParagraphPropsFromStyle
             let tblPr = Ns.childNs "tblPr" styleNode |> Option.bind tablePropertiesFromTblPr
-            let conditionalChildProperties childName propertyParser condition =
+            let conditionalStyleChild condition =
                 Xml.children styleNode
                 |> List.tryPick (fun child ->
                     if Xml.name child |> Option.exists (fun name -> Ns.stripNs name = "tblStylePr")
                        && Docx.attr "type" child = Some condition then
-                        Ns.childNs childName child |> Option.bind propertyParser
+                        Some child
                     else None)
+            let conditionalChildProperties childName propertyParser condition =
+                conditionalStyleChild condition
+                |> Option.bind (fun child -> Ns.childNs childName child |> Option.bind propertyParser)
             let conditionalTableProperties condition = conditionalChildProperties "tblPr" tablePropertiesFromTblPr condition
             let conditionalRowProperties condition = conditionalChildProperties "trPr" tableRowPropertiesFromTrPr condition
             let conditionalCellProperties condition = conditionalChildProperties "tcPr" (Docx.tableCellPropertiesFromTcPr >> Some) condition
-            let conditionalParagraphProperties condition = conditionalChildProperties "pPr" (parseParagraphPropsFromStyle >> Some) condition
+            let conditionalParagraphProperties condition =
+                conditionalStyleChild condition
+                |> Option.bind (fun child ->
+                    let paragraphProperties =
+                        Ns.childNs "pPr" child
+                        |> Option.map parseParagraphPropsFromStyle
+                    let runProperties =
+                        Ns.childNs "rPr" child
+                        |> Option.map parseRunPropsFromStyle
+                    match paragraphProperties, runProperties with
+                    | None, None -> None
+                    | Some props, None -> Some props
+                    | Some props, Some runProps ->
+                        Some { props with ParagraphRunProperties = Some runProps }
+                    | None, Some runProps ->
+                        Some { Docx.paragraphProps XmlDsl.Empty with ParagraphRunProperties = Some runProps })
 
             {
                 Id = styleId
@@ -2257,14 +2292,18 @@ let resolveHyperlinks (doc: WordDocument) : WordDocument =
     let resolvePara (para: Paragraph) : Paragraph =
         { para with Runs = para.Runs |> List.map resolveRun }
 
+    let rec resolveTable table =
+        let resolveCell (cell: TableCell) =
+            { cell with
+                Paragraphs = cell.Paragraphs |> List.map resolvePara
+                NestedTables = cell.NestedTables |> List.map resolveTable }
+        let resolveRow (row: TableRow) =
+            { row with Cells = row.Cells |> List.map resolveCell }
+        { table with Rows = table.Rows |> List.map resolveRow }
+
     let resolveContent = function
         | Para p -> Para (resolvePara p)
-        | Tbl t ->
-            let resolveCell (cell: TableCell) =
-                { cell with Paragraphs = cell.Paragraphs |> List.map resolvePara }
-            let resolveRow (row: TableRow) =
-                { row with Cells = row.Cells |> List.map resolveCell }
-            Tbl { t with Rows = t.Rows |> List.map resolveRow }
+        | Tbl t -> Tbl (resolveTable t)
 
     { doc with Content = doc.Content |> List.map resolveContent }
 
@@ -3078,6 +3117,18 @@ let private mergeParagraphProperties baseProps props = {
     FooterReferences = props.FooterReferences
 }
 
+let private paragraphPropertiesWithRunProperties runProps props =
+    match runProps, props with
+    | None, value -> value
+    | Some runProps, Some props ->
+        let paragraphRunProperties =
+            match props.ParagraphRunProperties with
+            | Some existing -> Some (mergeRunProperties runProps existing)
+            | None -> Some runProps
+        Some { props with ParagraphRunProperties = paragraphRunProperties }
+    | Some runProps, None ->
+        Some { Docx.paragraphProps XmlDsl.Empty with ParagraphRunProperties = Some runProps }
+
 let private buildStyleMap (styles: StyleDefinition list) : Map<string, StyleDefinition> =
     styles |> List.map (fun style -> (style.Id, style)) |> Map.ofList
 
@@ -3247,8 +3298,11 @@ let private paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effe
             resolvedRunProperties styleMap effectiveParaProps emptyRunProperties
     wordFontSizeToPoints fallbackRunProps.FontSize
 
-let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) : obj array =
+let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) : obj array =
     let styleMap = buildStyleMap styles
+    let _, documentDefaultParagraphProperties = resolveStyle styleMap (Some Styles.defaultStyleId)
+    let documentDefaultMissingSpacingToZero =
+        documentDefaultParagraphProperties |> Option.exists tableStyleParagraphResetsMissingSpacing
     content
     |> List.choose (fun item ->
         match item with
@@ -3493,7 +3547,9 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
 
             let layoutParaProps = { effectiveParaProps with ParagraphBorders = para.Properties.ParagraphBorders }
 
-            let defaultMissingSpacingToZero = directParagraphFormattingResetsMissingSpacing para.Properties
+            let defaultMissingSpacingToZero =
+                documentDefaultMissingSpacingToZero
+                || directParagraphFormattingResetsMissingSpacing para.Properties
 
             Some (createObj ([
                 "Type" ==> itemType
@@ -3823,7 +3879,10 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                 if flags.IsFirstRow then tableStyle |> Option.bind (fun style -> style.FirstRowParagraphProperties) else None
 
             let tableParagraphStyleProperties rowIndex =
-                let baseProperties = tableStyle |> Option.bind (fun style -> style.ParagraphProperties)
+                let baseProperties =
+                    tableStyle
+                    |> Option.bind (fun style -> style.ParagraphProperties)
+                    |> paragraphPropertiesWithRunProperties (tableStyle |> Option.bind (fun style -> style.RunProperties))
                 let conditionalProperties = conditionalParagraphStyleProperties rowIndex
                 match baseProperties, conditionalProperties with
                 | Some baseValue, Some conditionalValue -> Some (mergeParagraphProperties baseValue conditionalValue)
@@ -3853,6 +3912,12 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                         | None -> para)
                     |> List.map (convertCellParagraph defaultMissingSpacingToZero)
                     |> List.toArray
+                let nestedTables =
+                    cell.NestedTables
+                    |> List.choose (fun nested ->
+                        toEditorParagraphsInternal theme styles [Tbl nested] images
+                        |> Array.tryHead)
+                    |> List.toArray
 
                 let backgroundColor =
                     cell.Properties
@@ -3880,6 +3945,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
 
                 createObj [
                     "Paragraphs" ==> cellParagraphs
+                    "NestedTables" ==> nestedTables
                     "ColSpan" ==> (cell.Properties |> Option.bind (fun props -> props.ColSpan) |> Option.defaultValue 1)
                     "BackgroundColor" ==> backgroundColor
                     "Shading" ==> shading
@@ -3945,6 +4011,7 @@ let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefin
                 "Rows" ==> rows
                 "PreferredWidth" ==> table.Width
                 "PreferredWidthType" ==> table.WidthType
+                "TableAlignment" ==> table.Alignment
                 "BackgroundColor" ==> tableBackgroundColor
                 "Shading" ==> tableShading
                 "CellSpacing" ==> intOption table.CellSpacing

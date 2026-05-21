@@ -1582,6 +1582,7 @@ module API =
 
     let private tableCell id text : Doc.TableCell =
         { Content = [paragraphFromText id text]
+          NestedTables = []
           ColSpan = 1
           BackgroundColor = None
           Shading = None
@@ -1601,6 +1602,7 @@ module API =
         { Id = id
           Rows = [{ Cells = [tableCell (id + "-left") left; tableCell (id + "-right") right]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None }]
           PreferredWidth = Some { Kind = Doc.PercentWidth; Value = Some 100.0 }
+          Alignment = None
           LayoutMode = Some Doc.FixedTableLayout
           GridColumns = [{ Kind = Doc.PercentWidth; Value = Some 50.0 }; { Kind = Doc.PercentWidth; Value = Some 50.0 }]
           Borders = None

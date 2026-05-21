@@ -231,6 +231,36 @@ let private mergeParagraphPropertyOptions baseProps props =
     | None, value -> value
     | value, None -> value
 
+let private mergeRunPropertyOptions (baseProps: DocxReader.RunProperties option) (props: DocxReader.RunProperties option) =
+    match baseProps, props with
+    | Some baseValue, Some value -> Some (mergeRunProperties baseValue value)
+    | None, value -> value
+    | value, None -> value
+
+let private paragraphPropertiesWithRunProperties (runProps: DocxReader.RunProperties option) (props: DocxReader.ParagraphProperties option) : DocxReader.ParagraphProperties option =
+    match runProps, props with
+    | None, value -> value
+    | Some runProps, Some props ->
+        let paragraphRunProperties = mergeRunPropertyOptions (Some runProps) props.ParagraphRunProperties
+        Some { props with ParagraphRunProperties = paragraphRunProperties }
+    | Some runProps, None ->
+        Some { DocxReader.Docx.paragraphProps XmlDsl.Empty with ParagraphRunProperties = Some runProps }
+
+let private resolveTableRunProperties selector (styleMap: Map<string, DocxReader.StyleDefinition>) styleId =
+    let rec resolve visited id =
+        if Set.contains id visited then None
+        else
+            match Map.tryFind id styleMap with
+            | None -> None
+            | Some style ->
+                let baseProps =
+                    match style.BasedOn with
+                    | Some basedOn when basedOn <> id -> resolve (Set.add id visited) basedOn
+                    | _ -> None
+                mergeRunPropertyOptions baseProps (selector style)
+
+    styleId |> Option.bind (resolve Set.empty)
+
 let private resolveTableParagraphProperties selector (styleMap: Map<string, DocxReader.StyleDefinition>) styleId =
     let rec resolve visited id =
         if Set.contains id visited then None
@@ -438,6 +468,10 @@ let private documentDefaultRunFontSize (styleMap: Map<string, SR.ResolvedRunProp
     Map.tryFind SR.documentDefaultsStyleId styleMap
     |> Option.map (fun (runProps, _) -> runProps.FontSize)
 
+let private documentDefaultParagraphResetsMissingSpacing (styleMap: Map<string, SR.ResolvedRunProperties * SR.ResolvedParagraphProperties>) =
+    Map.tryFind SR.documentDefaultsStyleId styleMap
+    |> Option.exists (fun (_, props) -> props.LineSpacing.IsSome)
+
 let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMissingSpacingToZero (para: DocxReader.Paragraph) (editorPara: EP.EditorParagraph) =
     let props = para.Properties
     let resolvedParaProps = DocumentProcessors.StyleResolution.resolveParagraphProps styleMap props
@@ -527,7 +561,7 @@ let private mkPara resolver images styleMap comments notes useDocumentMarkForPur
         Metadata = paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMissingSpacingToZero para editorPara
     }
 
-let private tableCell resolver images styleMap comments notes (paragraphProperties: DocxReader.ParagraphProperties option) (cell: DocxReader.TableCell) =
+let rec private tableCell resolver images styleMap tableStyleMap comments notes (paragraphProperties: DocxReader.ParagraphProperties option) (cell: DocxReader.TableCell) =
     let props = cell.Properties
     let applyTableParagraphProperties (para: DocxReader.Paragraph) =
         match paragraphProperties with
@@ -549,6 +583,7 @@ let private tableCell resolver images styleMap comments notes (paragraphProperti
         |> List.map (mkPara resolver images styleMap comments notes false defaultMissingSpacingToZero)
     {
         Content = if content.IsEmpty then [mkPara resolver images styleMap comments notes false defaultMissingSpacingToZero (applyTableParagraphProperties emptyPara)] else content
+        NestedTables = cell.NestedTables |> List.map (tableBlock resolver images styleMap tableStyleMap comments notes)
         ColSpan = props |> Option.bind (fun p -> p.ColSpan) |> Option.defaultValue 1
         BackgroundColor = props |> Option.bind (fun p -> p.Shading) |> Option.bind directShadingBackgroundColor
         Shading = props |> Option.bind (fun p -> p.Shading) |> Option.map shading
@@ -568,10 +603,13 @@ let private tableCell resolver images styleMap comments notes (paragraphProperti
         PaddingLeft = props |> Option.bind (fun p -> twipsToCanvasPixels p.PaddingLeft)
     }
 
-let private tableBlock resolver images styleMap tableStyleMap comments notes (table: DocxReader.Table) =
+and private tableBlock resolver images styleMap tableStyleMap comments notes (table: DocxReader.Table) =
     let styleProperties = resolveTableStyleProperties tableStyleMap table.StyleId
+    let tableRunProperties =
+        resolveTableRunProperties (fun style -> style.RunProperties) tableStyleMap table.StyleId
     let tableParagraphProperties =
         resolveTableParagraphProperties (fun style -> style.ParagraphProperties) tableStyleMap table.StyleId
+        |> paragraphPropertiesWithRunProperties tableRunProperties
     let firstRowParagraphProperties =
         resolveTableParagraphProperties (fun style -> style.FirstRowParagraphProperties) tableStyleMap table.StyleId
     let paragraphPropertiesForRow rowIndex =
@@ -591,28 +629,31 @@ let private tableBlock resolver images styleMap tableStyleMap comments notes (ta
         table.Borders
         |> Option.orElseWith (fun () -> table.Properties |> Option.bind (fun p -> p.Borders))
         |> Option.orElseWith (fun () -> styleProperties |> Option.bind (fun p -> p.Borders))
-    Table {
+    let rows =
+        table.Rows
+        |> List.mapi (fun rowIndex row -> {
+            Cells = row.Cells |> List.map (tableCell resolver images styleMap tableStyleMap comments notes (paragraphPropertiesForRow rowIndex))
+            IsHeader = row.IsHeader
+            Height = parseFloat row.Height
+            HeightRule = row.HeightRule
+            CanSplit = row.CanSplit
+            CellSpacing = twipsToCanvasPixels row.CellSpacing
+            PaddingTop = twipsToCanvasPixels row.PaddingTop
+            PaddingRight = twipsToCanvasPixels row.PaddingRight
+            PaddingBottom = twipsToCanvasPixels row.PaddingBottom
+            PaddingLeft = twipsToCanvasPixels row.PaddingLeft
+            GridBefore = row.GridBefore |> Option.defaultValue 0 |> max 0
+            GridAfter = row.GridAfter |> Option.defaultValue 0 |> max 0
+            WidthBefore = twipsToCanvasPixels row.WidthBefore
+            WidthAfter = twipsToCanvasPixels row.WidthAfter
+            BordersOverride = tableBorders row.BordersOverride
+        })
+        |> WordLayout.Table.distributeVerticalMergeContent
+    {
         Id = Guid.NewGuid().ToString("N")
-        Rows =
-            table.Rows
-            |> List.mapi (fun rowIndex row -> {
-                Cells = row.Cells |> List.map (tableCell resolver images styleMap comments notes (paragraphPropertiesForRow rowIndex))
-                IsHeader = row.IsHeader
-                Height = parseFloat row.Height
-                HeightRule = row.HeightRule
-                CanSplit = row.CanSplit
-                CellSpacing = twipsToCanvasPixels row.CellSpacing
-                PaddingTop = twipsToCanvasPixels row.PaddingTop
-                PaddingRight = twipsToCanvasPixels row.PaddingRight
-                PaddingBottom = twipsToCanvasPixels row.PaddingBottom
-                PaddingLeft = twipsToCanvasPixels row.PaddingLeft
-                GridBefore = row.GridBefore |> Option.defaultValue 0 |> max 0
-                GridAfter = row.GridAfter |> Option.defaultValue 0 |> max 0
-                WidthBefore = twipsToCanvasPixels row.WidthBefore
-                WidthAfter = twipsToCanvasPixels row.WidthAfter
-                BordersOverride = tableBorders row.BordersOverride
-            })
+        Rows = rows
         PreferredWidth = tableWidth table.Width table.WidthType
+        Alignment = table.Alignment
         LayoutMode =
             match table.LayoutMode with
             | Some "fixed" -> Some FixedTableLayout
@@ -742,10 +783,15 @@ let importDoc (doc: DocxReader.WordDocument) =
         |> Map.ofList
 
     let blocks =
+        let documentDefaultMissingSpacingToZero = documentDefaultParagraphResetsMissingSpacing styleMap
         doc.Content
         |> List.map (function
-            | DocxReader.Para para -> Paragraph (mkPara resolver doc.Images styleMap comments notes true (directParagraphFormattingResetsMissingSpacing para.Properties) para)
-            | DocxReader.Tbl table -> tableBlock resolver doc.Images styleMap tableStyleMap comments notes table)
+            | DocxReader.Para para ->
+                let defaultMissingSpacingToZero =
+                    documentDefaultMissingSpacingToZero
+                    || directParagraphFormattingResetsMissingSpacing para.Properties
+                Paragraph (mkPara resolver doc.Images styleMap comments notes true defaultMissingSpacingToZero para)
+            | DocxReader.Tbl table -> Table (tableBlock resolver doc.Images styleMap tableStyleMap comments notes table))
 
     let firstParagraph =
         blocks

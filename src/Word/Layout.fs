@@ -350,6 +350,22 @@ let private paginateTableRowWithFootnotes settings footnotesByPage (row: TableRo
     let remaining = max 0.0 (contentBottom - y)
     if canSplit && y < contentBottom && rowHeight > remaining then y else paginateBlockWithFootnotes settings footnotesByPage y rowHeight
 
+let private tableRowLocalLines (measurement: TableRowMeasurement) =
+    measurement.CellGroups
+    |> List.collect (fun group -> group.Layouts)
+    |> List.collect (fun layout -> layout.Lines)
+
+let private splitTableRowNeedsNextPage settings rowY contentBottom (measurement: TableRowMeasurement) =
+    let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
+    let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
+    let lines = tableRowLocalLines measurement
+    if lines.IsEmpty || rowY <= contentTop + pageFitTolerance then
+        false
+    else
+        lines
+        |> List.exists (fun line -> rowY + line.Y + lineVisibleFitHeight line <= contentBottom + pageFitTolerance)
+        |> not
+
 let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
     let shiftToNextPage (firstY: float) (lines: MeasuredLine list) : MeasuredLine list =
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) firstY
@@ -440,6 +456,7 @@ let private wordTableFollowSingleLineBoxFactor = wordDefaultSpacingSingleLineBox
 let private wordTocEntrySingleLineBoxFactor = 1.266
 let private wordAutoSpacingPoints = 14.0
 let private monospaceLineBoxFactor = 1.18
+let private ubuntuLineBoxFactor = 1.148
 let private tableCellDefaultLineBoxFactor = 1.336
 // Matches Word's visual single-line pitch for explicit 11pt TableGrid cell paragraphs.
 let private tableCellExplicitLineBoxFactor = 1.266
@@ -457,6 +474,7 @@ let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
     | Some "consolas"
     | Some "courier new"
     | Some "courier" -> monospaceLineBoxFactor
+    | Some "ubuntu" -> ubuntuLineBoxFactor
     | _ -> wordLineBoxFactor
 
 let private tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing (style: TextBuffer.TextStyle) =
@@ -1196,9 +1214,17 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
 
     let adjustedLines =
         lines |> List.map (fun line ->
+            let startsAfterWrapObstacle =
+                line.Segments
+                |> List.choose (function
+                    | TextSegment (_, _, x, _, _)
+                    | ImageSegment (_, x, _, _, _, _, _, _, _, _, _, _, _) -> Some x)
+                |> function
+                    | [] -> false
+                    | xs -> (List.min xs) > 0.01
             let lineFirstIndent =
                 if line = (lines |> List.head) then
-                    if isHangingList then 0.0 else firstLineIndent
+                    if isHangingList || startsAfterWrapObstacle then 0.0 else firstLineIndent
                 else 0.0
             let adjustedSegments =
                 line.Segments |> List.map (function
@@ -1260,7 +1286,30 @@ let layoutParagraphAt (settings: LayoutSettings) (measureText: TextMeasurer) (ma
 let layoutParagraphAtWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) =
     layoutParagraphAtWithStyleWithRange settings measureText measureRange maxWidth y xOffset normal effectiveBuffer para numberedCounters
 
-let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (tableMaxWidth: float) (columnWidths: float list) (outerLeft: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
+let private defaultParagraphFirstLineOffsetInDocument doc =
+    let para = { Id = ""; Buffer = TextBuffer.empty; Metadata = defaultMetadata }
+    let paragraphStyle = forBlockInDocument doc (Paragraph para)
+    paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
+
+let private tableLeftOffsetForDocument doc (_tableBlock: TableBlock) =
+    defaultParagraphFirstLineOffsetInDocument doc
+
+let private tableAlignmentOffset (alignment: string option) availableWidth tableWidth =
+    match alignment |> Option.map (fun value -> value.ToLowerInvariant()) with
+    | Some "center" -> max 0.0 ((availableWidth - tableWidth) / 2.0)
+    | Some "right" -> max 0.0 (availableWidth - tableWidth)
+    | _ -> 0.0
+
+let private paragraphIsVisuallyEmpty (para: ParagraphBlock) =
+    System.String.IsNullOrWhiteSpace(TextBuffer.toString para.Buffer)
+
+let private trimTrailingEmptyParagraphs paragraphs =
+    paragraphs
+    |> List.rev
+    |> List.skipWhile paragraphIsVisuallyEmpty
+    |> List.rev
+
+let rec measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (tableMaxWidth: float) (columnWidths: float list) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
     let cellSettings = {
         settings with
             InTableCell = true
@@ -1299,14 +1348,51 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
             else
                 0.0
         let verticalBorderExtent = max (WordLayout.Table.cellVerticalBorderExtent cell) collapsedBorderExtent
-        let cellX = WordLayout.Table.positionedSpacedCellX columnWidths cellSpacing positioned + textPadding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing positioned.StartColumn
+        let cellX = tableLeftOffset + WordLayout.Table.positionedSpacedCellX columnWidths cellSpacing positioned + textPadding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing positioned.StartColumn
         let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth textPadding
         let cellY = rowY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
         let contentStartY = WordLayout.Table.cellContentStartY cellY textPadding
         let mutable paraY = contentStartY
         let mutable cellLayouts = []
 
-        let cellParagraphs = cell.Content |> List.toArray
+        let layoutNestedTable (nestedTable: TableBlock) nestedTableY =
+            let nestedColumnCount = WordLayout.Table.columnCount nestedTable
+            if nestedColumnCount = 0 then
+                [], WordLayout.Table.emptyTableAdvance cellSettings.LineHeight
+            else
+                let nestedOuterLeft, nestedOuterRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale nestedTable
+                let nestedTableMaxWidth = cellMaxWidth + nestedOuterLeft + nestedOuterRight
+                let nestedColumnWidths = tableColumnWidths nestedTableMaxWidth nestedTable
+                let nestedTableWidth = WordLayout.Table.tableWidthWithSpacing nestedColumnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale nestedTable)
+                let nestedHorizontalOffset = cellX + tableAlignmentOffset nestedTable.Alignment cellMaxWidth nestedTableWidth
+                let mutable nestedY = nestedTableY
+                let mutable nestedLayouts = []
+
+                for nestedRow in nestedTable.Rows do
+                    let measurement =
+                        measureTableRowWithStyle cellSettings measureText measureRange nestedTable nestedTableMaxWidth nestedColumnWidths nestedOuterLeft nestedHorizontalOffset nestedRow nestedY 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
+                    for group in measurement.CellGroups do
+                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment measurement.Height group.PaddingTop group.PaddingBottom group.ContentHeight
+                        let adjustedLayouts =
+                            group.Layouts
+                            |> List.map (fun layout ->
+                                { layout with
+                                    Y = layout.Y + offset
+                                    Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + offset }) })
+                        nestedLayouts <- nestedLayouts @ adjustedLayouts
+                    nestedY <- nestedY + measurement.Height
+
+                nestedLayouts, (nestedY - nestedTableY) + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale nestedTable
+
+        for nestedTable in cell.NestedTables do
+            let nestedLayouts, nestedHeight = layoutNestedTable nestedTable paraY
+            cellLayouts <- cellLayouts @ nestedLayouts
+            paraY <- paraY + nestedHeight
+
+        let cellParagraphs =
+            (if cell.NestedTables.IsEmpty then cell.Content
+             else trimTrailingEmptyParagraphs cell.Content)
+            |> List.toArray
         let mutable pendingEmptyHeight = 0.0
         for paraIndex in 0 .. cellParagraphs.Length - 1 do
             let para = tableCellParagraphForLayout cellParagraphs.[paraIndex]
@@ -1338,17 +1424,17 @@ let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasur
 
     { Height = rowHeight; CellGroups = cellGroups; Traces = traces }
 
-let measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft row rowY tableContinuationHeaderHeight =
-    measureTableRowWithStyle settings measureText measureRange tableBlock tableMaxWidth columnWidths outerLeft row rowY tableContinuationHeaderHeight (forTableCellParagraphInDocument doc) (effectiveBufferInDocument doc)
+let measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight =
+    measureTableRowWithStyle settings measureText measureRange tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight (forTableCellParagraphInDocument doc) (effectiveBufferInDocument doc)
 
-let measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft row =
+let measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row =
     let rowLocalSettings = {
         settings with
             PageHeight = 1000000.0
             MarginBottom = 0.0
             TableContinuationHeaderHeight = 0.0
     }
-    measureTableRowForDocument rowLocalSettings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft row 0.0 0.0
+    measureTableRowForDocument rowLocalSettings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row 0.0 0.0
 
 let moveTableRowMeasurementToY rowY (measurement: TableRowMeasurement) =
     { measurement with
@@ -1618,16 +1704,16 @@ let private fragmentPlanForRowTransaction settings firstTablePage headerHeight r
     addFragment currentY rowHeight repeatedHeaderHeight reason |> ignore
     currentY, fragments
 
-let buildTableLayoutPlanForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableY =
+let buildTableLayoutPlanForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY =
     let outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock |> snd
-    let tableX = settings.PaddingLeft - outerLeft
+    let tableX = settings.PaddingLeft + tableHorizontalOffset - outerLeft
     let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
     let headerRows = WordLayout.Table.headerRows tableBlock
     let headerRowCount = headerRows |> List.length
     let measureRow row rowY tableContinuationHeaderHeight =
-        measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft row rowY tableContinuationHeaderHeight
+        measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
     let measureRowLocal row =
-        measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft row
+        measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row
     let headerHeightAt rowY =
         headerRows
         |> List.fold (fun (currentY, totalHeight) headerRow ->
@@ -1645,12 +1731,20 @@ let buildTableLayoutPlanForDocument settings measureText measureRange doc tableB
         let mutable plannedY = rowY
         let mutable rowHeight = rowLocalMeasurement.Height
         let pagedRowY = paginateTableRow settings row rowY rowHeight
+        let contentBottom = contentBottomForY settings rowY
+        let pagedRowY =
+            if pagedRowY = rowY
+               && (row.CanSplit |> Option.defaultValue true)
+               && rowY + rowHeight > contentBottom
+               && splitTableRowNeedsNextPage settings rowY contentBottom rowLocalMeasurement then
+                advanceToNextPage settings rowY
+            else
+                pagedRowY
         let rowContentY =
             if pagedRowY <> rowY && not row.IsHeader && not headerRows.IsEmpty then
                 pagedRowY + headerHeightAt pagedRowY
             else
                 pagedRowY
-        let contentBottom = contentBottomForY settings rowY
         let rowFitsAtCurrentY = rowContentY = rowY && rowY + rowHeight <= contentBottom
         let rowFitsAfterMove = rowContentY <> rowY
         if rowFitsAtCurrentY || rowFitsAfterMove then
@@ -1685,11 +1779,14 @@ let buildTableLayoutPlanForDocument settings measureText measureRange doc tableB
     }
 
 let buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY =
-    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+    let tableLeftOffset = tableLeftOffsetForDocument doc tableBlock
+    let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
     let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
     let tableMaxWidth = maxWidth + outerLeft + outerRight
     let columnWidths = tableColumnWidths tableMaxWidth tableBlock
-    buildTableLayoutPlanForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableY
+    let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
+    let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment maxWidth tableWidth
+    buildTableLayoutPlanForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
 
 /// Layout document blocks. Table cell paragraphs are included so shared hit/cursor logic works inside tables.
 let private layoutDocumentWithRangeAndInitial
@@ -1826,9 +1923,13 @@ let private layoutDocumentWithRangeAndInitial
         let numColumns = WordLayout.Table.columnCount tableBlock
         let result =
             if numColumns > 0 then
+                let tableLeftOffset = tableLeftOffsetForDocument doc tableBlock
+                let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
                 let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
-                let tableMaxWidth = maxWidth + outerLeft + outerRight
+                let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
                 let columnWidths = tableColumnWidths tableMaxWidth tableBlock
+                let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
+                let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
                 let mutable rowY = tableY
                 let headerRows = WordLayout.Table.headerRows tableBlock
                 let traceRows = traceTimingEnabled && tableBlock.Rows.Length >= 10
@@ -1859,10 +1960,10 @@ let private layoutDocumentWithRangeAndInitial
                     traceTableLayout (sprintf "start rows=%d y=%.2f page=%d widths=%s" tableBlock.Rows.Length tableY (pageNumberForY settings tableY) (columnWidths |> List.map (sprintf "%.2f") |> String.concat ","))
 
                 let measureRow (row: TableRow) rowY tableContinuationHeaderHeight =
-                    measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft row rowY tableContinuationHeaderHeight
+                    measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
 
                 let measureRowLocal (row: TableRow) =
-                    measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft row
+                    measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row
 
                 let headerHeightAt rowY =
                     headerRows
@@ -1899,12 +2000,20 @@ let private layoutDocumentWithRangeAndInitial
 
                     let pagedRowY = paginateTableRow settings row rowY rowHeight
                     let pagedRowY = paginateTableRowWithFootnotes settings footnotesByPage row pagedRowY rowHeight
+                    let contentBottom = contentBottomWithFootnotes settings footnotesByPage rowY
+                    let pagedRowY =
+                        if pagedRowY = rowY
+                           && (row.CanSplit |> Option.defaultValue true)
+                           && rowY + rowHeight > contentBottom
+                           && splitTableRowNeedsNextPage settings rowY contentBottom rowLocalMeasurement then
+                            advanceToNextPage settings rowY
+                        else
+                            pagedRowY
                     let rowContentY =
                         if pagedRowY <> rowY && not row.IsHeader && not headerRows.IsEmpty then
                             pagedRowY + headerHeightAt pagedRowY
                         else
                             pagedRowY
-                    let contentBottom = contentBottomWithFootnotes settings footnotesByPage rowY
                     let rowFitsAtCurrentY = rowContentY = rowY && rowY + rowHeight <= contentBottom
                     let rowFitsAfterMove = rowContentY <> rowY
                     if rowFitsAtCurrentY || rowFitsAfterMove then
@@ -1955,7 +2064,7 @@ let private layoutDocumentWithRangeAndInitial
                         footnotesByPage <- adjustedLayouts |> List.fold (addLayoutFootnotes settings) footnotesByPage
                     rowY <- rowY + rowHeight
 
-                rowY + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock, WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
+                rowY + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock, tableWidth
             else
                 tableY + WordLayout.Table.emptyTableAdvance settings.LineHeight, 0.0
         traceSlow (sprintf "table rows=%d" tableBlock.Rows.Length) tableStart
@@ -1973,11 +2082,14 @@ let private layoutDocumentWithRangeAndInitial
             let blockStart = timingStart ()
             let nextY, tableWidth = layoutTableAt tableBlock tableY
             if tableBlock.Floating then
+                let tableLeftOffset = tableLeftOffsetForDocument doc tableBlock
+                let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
+                let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
                 let tableHeight = max 0.0 (nextY - tableY - WordLayout.Table.afterSpacing)
-                floatingObstacles <- (0.0, tableY, tableWidth + 12.0, tableHeight) :: floatingObstacles
+                floatingObstacles <- (tableHorizontalOffset, tableY, tableWidth + 12.0, tableHeight) :: floatingObstacles
                 placedFloatingBoxes <- {
                     Kind = WordLayout.Floating.TableBox tableBlock
-                    X = settings.PaddingLeft
+                    X = tableHorizontalOffset
                     Y = tableY
                     Width = tableWidth
                     Height = tableHeight

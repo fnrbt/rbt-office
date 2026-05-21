@@ -828,6 +828,66 @@ module Table =
             currentColumn <- currentColumn + span
             positioned)
 
+    let private cellContentIsEmpty (content: ParagraphBlock list) =
+        content
+        |> List.forall (fun para -> String.IsNullOrWhiteSpace(TextBuffer.toString para.Buffer))
+
+    let distributeVerticalMergeContent (rows: TableRow list) =
+        let cellRows = rows |> List.map (fun row -> row.Cells |> List.toArray) |> List.toArray
+        let positionedRows =
+            rows
+            |> List.map (positionedCells >> List.indexed >> List.toArray)
+            |> List.toArray
+
+        let setCellContent rowIndex sourceCellIndex content =
+            let cell = cellRows.[rowIndex].[sourceCellIndex]
+            cellRows.[rowIndex].[sourceCellIndex] <- { cell with Content = content }
+
+        for rowIndex in 0 .. positionedRows.Length - 1 do
+            for sourceCellIndex, positioned in positionedRows.[rowIndex] do
+                let cell = cellRows.[rowIndex].[sourceCellIndex]
+                if cell.VerticalMerge = Some RestartMerge && cell.Content.Length > 1 then
+                    let continuationCells =
+                        [rowIndex + 1 .. positionedRows.Length - 1]
+                        |> List.takeWhile (fun nextRowIndex ->
+                            positionedRows.[nextRowIndex]
+                            |> Array.exists (fun (_, nextPositioned) ->
+                                nextPositioned.StartColumn = positioned.StartColumn
+                                && nextPositioned.Cell.VerticalMerge = Some ContinueMerge))
+                        |> List.choose (fun nextRowIndex ->
+                            positionedRows.[nextRowIndex]
+                            |> Array.tryFind (fun (_, nextPositioned) ->
+                                nextPositioned.StartColumn = positioned.StartColumn
+                                && nextPositioned.Cell.VerticalMerge = Some ContinueMerge)
+                            |> Option.map (fun (nextSourceCellIndex, _) -> nextRowIndex, nextSourceCellIndex))
+
+                    match cell.Content with
+                    | first :: rest when not continuationCells.IsEmpty ->
+                        setCellContent rowIndex sourceCellIndex [first]
+                        let mutable remaining = rest
+                        for nextRowIndex, nextSourceCellIndex in continuationCells do
+                            match remaining with
+                            | para :: tail ->
+                                let nextCell = cellRows.[nextRowIndex].[nextSourceCellIndex]
+                                let nextContent =
+                                    if cellContentIsEmpty nextCell.Content then [para]
+                                    else nextCell.Content @ [para]
+                                setCellContent nextRowIndex nextSourceCellIndex nextContent
+                                remaining <- tail
+                            | [] -> ()
+                        match remaining, List.tryLast continuationCells with
+                        | [], _ -> ()
+                        | extra, Some (lastRowIndex, lastSourceCellIndex) ->
+                            let lastCell = cellRows.[lastRowIndex].[lastSourceCellIndex]
+                            setCellContent lastRowIndex lastSourceCellIndex (lastCell.Content @ extra)
+                        | extra, None ->
+                            let currentCell = cellRows.[rowIndex].[sourceCellIndex]
+                            setCellContent rowIndex sourceCellIndex (currentCell.Content @ extra)
+                    | _ -> ()
+
+        rows
+        |> List.mapi (fun rowIndex row -> { row with Cells = cellRows.[rowIndex] |> Array.toList })
+
     let outerCellInsets scale (table: TableBlock) =
         table.Rows
         |> List.tryPick (fun row ->

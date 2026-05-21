@@ -704,8 +704,13 @@ let rec private stylesFromItem (item: obj) =
                 |> unbox<obj array>
                 |> Array.toList
                 |> List.collect (fun cell ->
-                    if isNullOrUndefined cell?Paragraphs then []
-                    else cell?Paragraphs |> unbox<obj array> |> Array.toList |> List.collect stylesFromItem))
+                    let paragraphStyles =
+                        if isNullOrUndefined cell?Paragraphs then []
+                        else cell?Paragraphs |> unbox<obj array> |> Array.toList |> List.collect stylesFromItem
+                    let nestedStyles =
+                        if isNullOrUndefined cell?NestedTables then []
+                        else cell?NestedTables |> unbox<obj array> |> Array.toList |> List.collect stylesFromItem
+                    paragraphStyles @ nestedStyles))
     | _ ->
         let runStyles =
             if isNullOrUndefined item?Runs then []
@@ -811,7 +816,7 @@ let private paragraphsFromEditor (items: obj array) =
         if itemType = "Table" then None else Some (paragraphFromEditor item))
     |> Array.toList
 
-let private blockFromEditor (item: obj) =
+let rec private blockFromEditor (item: obj) =
     let itemType = item?Type |> stringOrDefault "Paragraph"
 
     match itemType with
@@ -844,8 +849,19 @@ let private blockFromEditor (item: obj) =
                     |> Array.map (fun cell ->
                         let paragraphs = cell?Paragraphs |> unbox<obj array>
                         let cellParagraphs = paragraphs |> Array.map paragraphFromEditor |> Array.toList
+                        let nestedTables =
+                            if isNullOrUndefined cell?NestedTables then []
+                            else
+                                cell?NestedTables
+                                |> unbox<obj array>
+                                |> Array.toList
+                                |> List.choose (fun item ->
+                                    match blockFromEditor item with
+                                    | Table table -> Some table
+                                    | _ -> None)
                         {
                             Content = cellParagraphs
+                            NestedTables = nestedTables
                             ColSpan = optionalInt (cell?ColSpan) |> Option.defaultValue 1 |> max 1
                             BackgroundColor = optionalString (cell?BackgroundColor)
                             Shading = shadingFromEditorFields cell
@@ -890,8 +906,9 @@ let private blockFromEditor (item: obj) =
 
         Table {
             Id = nextImportedBlockId ()
-            Rows = tableRows
+            Rows = WordLayout.Table.distributeVerticalMergeContent tableRows
             PreferredWidth = tableWidthFromEditor (item?PreferredWidth) (item?PreferredWidthType)
+            Alignment = optionalString (item?TableAlignment) |> Option.orElse (optionalString (item?Alignment))
             LayoutMode = tableLayoutModeFromString (optionalString (item?LayoutMode))
             GridColumns = gridColumns
             Borders = tableBordersFromEditor (item?Borders)
@@ -1171,6 +1188,7 @@ let rec private blockToEditor block =
                         |> List.map (fun cell ->
                             createObj [
                                 "Paragraphs" ==> (cell.Content |> List.map (paragraphToEditor "Paragraph" 0) |> List.toArray)
+                                "NestedTables" ==> (cell.NestedTables |> List.map (Table >> blockToEditor) |> List.toArray)
                                 "ColSpan" ==> cell.ColSpan
                                 "BackgroundColor" ==> cell.BackgroundColor
                                 "Shading" ==> shadingToEditor cell.Shading
@@ -1208,6 +1226,7 @@ let rec private blockToEditor block =
                 "Rows" ==> rows
                 "PreferredWidth" ==> tableWidthToEditor table.PreferredWidth
                 "PreferredWidthType" ==> tableWidthTypeToEditor table.PreferredWidth
+                "TableAlignment" ==> table.Alignment
                 "LayoutMode" ==> tableLayoutModeToString table.LayoutMode
                 "GridColumns" ==> (table.GridColumns |> List.map (fun width -> width.Value |> Option.defaultValue 0.0) |> List.toArray)
                 "Borders" ==> tableBordersToEditor table.Borders

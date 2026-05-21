@@ -172,6 +172,7 @@ and TableBlock = {
     Id: BlockId
     Rows: TableRow list
     PreferredWidth: TableWidth option
+    Alignment: string option
     LayoutMode: TableLayoutMode option
     GridColumns: TableWidth list
     Borders: TableBorders option
@@ -220,6 +221,7 @@ and TableRow = {
 
 and TableCell = {
     Content: ParagraphBlock list  // Cells can contain multiple paragraphs
+    NestedTables: TableBlock list
     ColSpan: int
     BackgroundColor: string option
     Shading: Shading option
@@ -790,6 +792,7 @@ let private emptyTableCell () =
                 Metadata = defaultMetadata
             }
         ]
+        NestedTables = []
         ColSpan = 1
         BackgroundColor = None
         Shading = None
@@ -1466,6 +1469,7 @@ let insertTable rows columns doc =
         Id = nextBlockId ()
         Rows = [ for _ in 1 .. rowCount -> { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None } ]
         PreferredWidth = None
+        Alignment = None
         LayoutMode = None
         GridColumns = []
         Borders = None

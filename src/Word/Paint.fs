@@ -534,6 +534,21 @@ let paragraphCommands settings fontFamily measureText layout =
 // spaced table cells, whose visual text boxes sit higher than our default paint.
 let private spacedTableCellBaselineOffset = -4.0
 
+let private defaultParagraphFirstLineOffsetInDocument doc =
+    let para = { Id = ""; Buffer = TextBuffer.empty; Metadata = defaultMetadata }
+    let paragraphStyle = forBlockInDocument doc (Paragraph para)
+    paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
+
+let private tableLeftOffsetForStyleContext = function
+    | Some doc -> defaultParagraphFirstLineOffsetInDocument doc
+    | None -> 0.0
+
+let private tableAlignmentOffset (alignment: string option) availableWidth tableWidth =
+    match alignment |> Option.map (fun value -> value.ToLowerInvariant()) with
+    | Some "center" -> max 0.0 ((availableWidth - tableWidth) / 2.0)
+    | Some "right" -> max 0.0 (availableWidth - tableWidth)
+    | _ -> 0.0
+
 let markupMarkerCommands (settings: LayoutSettings) (layouts: BlockLayout list) =
     let mutable commands = []
     for layout in layouts do
@@ -549,8 +564,7 @@ let markupMarkerCommands (settings: LayoutSettings) (layouts: BlockLayout list) 
 
     commands
 
-let private tableBorderCommandsCore (styleContext: Document option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) =
-    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+let rec private tableBorderCommandsCoreAt (styleContext: Document option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) (availableWidth: float) (baseHorizontalOffset: float) =
     let mutable currentY = y
     let mutable commands = []
 
@@ -560,11 +574,13 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
         ([], currentY + WordLayout.Table.emptyTableAdvance settings.LineHeight)
     else
         let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
-        let tableMaxWidth = maxWidth + outerLeft + outerRight
-        let tableX = settings.PaddingLeft - outerLeft - WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock
+        let tableAvailableWidth = max 0.0 availableWidth
+        let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
         let resolvedTable = WordLayout.Table.resolveTable WordLayout.canvasScale (Some tableMaxWidth) tableBlock
         let columnWidths = resolvedTable.ColumnWidths
         let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
+        let tableHorizontalOffset = baseHorizontalOffset + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
+        let tableX = settings.PaddingLeft + tableHorizontalOffset - outerLeft - WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock
 
         let columnX spacing startColumn =
             tableX + WordLayout.Table.spacedStartOffset columnWidths spacing startColumn - WordLayout.Table.spacedCellPaintXOffset spacing startColumn
@@ -594,7 +610,7 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                     MarginBottom = 0.0
                     TableContinuationHeaderHeight = 0.0
             }
-            let measurement = measureTableRowWithStyle rowLocalSettings measureText measureRange tableBlock tableMaxWidth columnWidths outerLeft row.Source 0.0 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
+            let measurement = measureTableRowWithStyle rowLocalSettings measureText measureRange tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row.Source 0.0 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
             measurement.Height
 
         let rowHeights = resolvedTable.BodyRows |> List.map rowHeightAt |> List.toArray
@@ -606,6 +622,7 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
 
         let addRowCommands rowIndex (row: WordLayout.Table.ResolvedRow) currentY rowHeight =
             let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row.Source
+            let outerStartInset = outerLeft + cellSpacing
             for fragmentY, fragmentHeight in rowFragments settings currentY rowHeight do
                 commands <- commands @ tableFillCommands tableBlock.BackgroundColor tableBlock.Shading tableX fragmentY tableWidth fragmentHeight
 
@@ -628,6 +645,22 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
                     let cellHeight = WordLayout.Table.spacedCellPaintHeight spannedRowHeight cellSpacing + paintTopAdjustment
                     for fragmentY, fragmentHeight in rowFragments settings cellY cellHeight do
                         commands <- commands @ tableFillCommands cell.BackgroundColor cell.Shading x fragmentY width fragmentHeight
+
+                    if not cell.NestedTables.IsEmpty then
+                        let contentColWidth = WordLayout.Table.spacedSpannedWidth columnWidths cellSpacing resolved.StartColumn resolved.ColSpan (tableMaxWidth / float numColumns)
+                        let nestedAvailableWidth = WordLayout.Table.cellContentWidth contentColWidth textPadding
+                        let nestedX =
+                            tableHorizontalOffset
+                            + WordLayout.Table.spacedStartOffset columnWidths cellSpacing resolved.StartColumn
+                            + textPadding.Left
+                            - outerStartInset
+                            - WordLayout.Table.internalSpacingTextOffset cellSpacing resolved.StartColumn
+                        let nestedCellY = currentY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
+                        let mutable nestedY = WordLayout.Table.cellContentStartY nestedCellY textPadding
+                        for nestedTable in cell.NestedTables do
+                            let nestedCommands, nextNestedY = tableBorderCommandsCoreAt styleContext settings measureText measureRange nestedTable nestedY nestedAvailableWidth nestedX
+                            commands <- commands @ nestedCommands
+                            nestedY <- nextNestedY
                     ({
                         Row = 0
                         Column = resolved.StartColumn
@@ -733,6 +766,12 @@ let private tableBorderCommandsCore (styleContext: Document option) (settings: L
 
         (commands, currentY + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock)
 
+let private tableBorderCommandsCore (styleContext: Document option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) =
+    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+    let tableLeftOffset = tableLeftOffsetForStyleContext styleContext
+    let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
+    tableBorderCommandsCoreAt styleContext settings measureText measureRange tableBlock y tableAvailableWidth tableLeftOffset
+
 let tableBorderCommandsForDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (tableBlock: TableBlock) (y: float) =
     tableBorderCommandsCore (Some doc) settings measureText measureRange tableBlock y
 
@@ -775,8 +814,8 @@ let private blockWithRunningFields pageNumber pageCount = function
     | Paragraph para -> Paragraph (paragraphWithRunningFields pageNumber pageCount para)
     | Heading (level, para) -> Heading (level, paragraphWithRunningFields pageNumber pageCount para)
     | Table table ->
-        Table {
-            table with
+        let rec tableWithRunningFields (table: TableBlock) =
+            { table with
                 Rows =
                     table.Rows
                     |> List.map (fun row ->
@@ -784,8 +823,10 @@ let private blockWithRunningFields pageNumber pageCount = function
                             Cells =
                                 row.Cells
                                 |> List.map (fun cell ->
-                                    { cell with Content = cell.Content |> List.map (paragraphWithRunningFields pageNumber pageCount) }) })
-        }
+                                    { cell with
+                                        Content = cell.Content |> List.map (paragraphWithRunningFields pageNumber pageCount)
+                                        NestedTables = cell.NestedTables |> List.map tableWithRunningFields }) }) }
+        Table (tableWithRunningFields table)
     | TextBox textBox -> TextBox { textBox with Content = textBox.Content |> List.map (paragraphWithRunningFields pageNumber pageCount) }
 
 let private partForReferences preferredKind refs (parts: HeaderFooterPart list) =
@@ -918,6 +959,18 @@ let private tableFragmentPaintCommandsForDocument settings measureText measureRa
         let plan = buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY
         tableFragmentPaintCommands plan, plan.NextY)
 
+let rec private addTableTextCommands (settings: LayoutSettings) fontFamily measureText layoutsById (commands: ResizeArray<PaintCommand>) (tableBlock: TableBlock) =
+    for row in tableBlock.Rows do
+        let tableCellBaselineOffset =
+            if WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row > 0.0 then spacedTableCellBaselineOffset else 0.0
+        for cell in row.Cells do
+            for para in cell.Content do
+                match Map.tryFind para.Id layoutsById with
+                | Some paraLayouts -> paraLayouts |> List.iter (paragraphCommandsWithBaselineOffset tableCellBaselineOffset settings fontFamily measureText >> commands.AddRange)
+                | None -> ()
+            for nestedTable in cell.NestedTables do
+                addTableTextCommands settings fontFamily measureText layoutsById commands nestedTable
+
 let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
     let layouts = cachedLayouts |> Option.defaultWith (fun () -> layoutDocumentWithRange settings measureText measureRange doc)
     let layoutById = layouts |> List.map (fun layout -> layout.BlockId, layout) |> Map.ofList
@@ -933,14 +986,7 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
                 |> Option.defaultWith (fun () -> tableBorderCommandsForDocumentWithRange settings measureText measureRange doc tableBlock currentY)
             commands.AddRange(tableCommands)
             if not tableBlock.Floating then currentY <- nextY
-            for row in tableBlock.Rows do
-                let tableCellBaselineOffset =
-                    if WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row > 0.0 then spacedTableCellBaselineOffset else 0.0
-                for cell in row.Cells do
-                    for para in cell.Content do
-                        match Map.tryFind para.Id layoutsById with
-                        | Some paraLayouts -> paraLayouts |> List.iter (paragraphCommandsWithBaselineOffset tableCellBaselineOffset settings fontFamily measureText >> commands.AddRange)
-                        | None -> ()
+            addTableTextCommands settings fontFamily measureText layoutsById commands tableBlock
         | TextBox textBox -> commands.AddRange(textBoxCommands settings fontFamily measureText measureRange textBox)
         | _ ->
             match RedBat.Word.Document.tryGetParagraph block with
