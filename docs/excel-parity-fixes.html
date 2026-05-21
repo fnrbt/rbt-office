@@ -155,6 +155,30 @@
     <tbody>
       <tr>
         <td>
+          <strong>Row-level <code>customFormat</code> fill + title-bar overflow</strong>
+          <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code> title. Row 1 is <code>&lt;row s="9" customFormat="1" spans="1:8"&gt;</code> — Excel fills the whole row (A–H) with the style's gray and the white Segoe UI title overflows across it. We filled only A1 and clipped to "Big Fa". (Built on the real-font fix — title needs Segoe UI + the gray bar.)</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:42px; aspect-ratio:11.2 / 1;">
+            <img src="../artifacts/excel/dash-titlebar.png" style="--w:470px; --x:0px; --y:0px; --s:1.0" alt="Excel — gray title bar">
+          </div>
+          <div class="caption">Excel: full-width gray bar, white title across it.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:42px; aspect-ratio:11.2 / 1;">
+            <img src="../artifacts/native/dash-titlebar.png" style="--w:470px; --x:0px; --y:0px; --s:1.0" alt="Ours — gray title bar">
+          </div>
+          <div class="caption">After: gray bar spans A–H and the full title overflows across it — matches.</div>
+        </td>
+        <td>
+          <div class="placeholder">Before: gray only on A1; title clipped to "Big Fa"; white-on-white past it.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>XlsxReader.row</code> now honors <code>customFormat="1"</code> — it synthesizes empty cells carrying the row's style across the row's <code>spans</code>, so the fill renders the full bar; the title text overflows into those (empty-value) cells.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Accounting number format: currency-tag <code>* </code> fill (<code>[$$-409]* #,##0</code>)</strong>
           <span class="meta">Repro: <code>tests/real-world/dashboard-sales-analysis.xlsx</code> "All Chains" column. The accounting format <code>_-[$$-409]* #,##0_</code> uses <code>* </code> to fill space so Excel left-aligns the $ and right-aligns the number. We only expanded the fill when the char before <code>* </code> was a literal <code>$</code>; here it's <code>]</code> (close of the <code>[$$-409]</code> locale-currency tag), so the fill collapsed and the $ sat next to the number.</span>
         </td>

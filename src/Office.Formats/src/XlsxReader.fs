@@ -708,6 +708,16 @@ module Xlsx =
                 InlineRuns = inlineRuns
             })
 
+    /// 1-based column index -> letters ("A", "B", ..., "AA").
+    let private indexToColumnLetters (n: int) : string =
+        let mutable k = n
+        let sb = System.Text.StringBuilder()
+        while k > 0 do
+            let rem = (k - 1) % 26
+            sb.Insert(0, char (int 'A' + rem)) |> ignore
+            k <- (k - 1) / 26
+        sb.ToString()
+
     // Row extraction
     let row (rowNode: XmlNode) : Row option =
         Xml.attr "r" rowNode
@@ -724,11 +734,34 @@ module Xlsx =
             let rawHeight = Xml.attr "ht" rowNode |> Option.map float
             let height = if customHeight then rawHeight else None
             let hidden = Xml.attr "hidden" rowNode |> Option.map (fun h -> h = "1" || h = "true") |> Option.defaultValue false
+            let explicitCells = sElems "c" rowNode |> List.choose cell
+            // A `<row s=… customFormat="1">` applies that style (e.g. a fill
+            // bar) to every cell in the row across its `spans`. Synthesize the
+            // missing span cells (empty value, row style) so the fill renders
+            // — e.g. a full-width title bar where only A1 carries text.
+            let rowStyle = Xml.attr "s" rowNode |> Option.map int
+            let customFormat = Xml.attr "customFormat" rowNode |> Option.map (fun v -> v = "1" || v = "true") |> Option.defaultValue false
+            let cells =
+                match (if customFormat then rowStyle else None), Xml.attr "spans" rowNode with
+                | Some s, Some spans ->
+                    match spans.Split(':') with
+                    | [| a; b |] ->
+                        match System.Int32.TryParse a, System.Int32.TryParse b with
+                        | (true, c1), (true, c2) when c2 >= c1 && c2 - c1 <= 256 ->
+                            let present = explicitCells |> List.map (fun c -> c.Reference.Column) |> Set.ofList
+                            let synth =
+                                [ for col in c1 .. c2 do
+                                    let letters = indexToColumnLetters col
+                                    if not (present.Contains letters) then
+                                        yield { Reference = { Column = letters; Row = int r }
+                                                Value = Empty; StyleIndex = Some s; Style = None; InlineRuns = [] } ]
+                            explicitCells @ synth
+                        | _ -> explicitCells
+                    | _ -> explicitCells
+                | _ -> explicitCells
             {
                 Index = int r
-                Cells =
-                    sElems "c" rowNode
-                    |> List.choose cell
+                Cells = cells
                 Height = height
                 RawHeight = rawHeight
                 CustomHeight = customHeightAttr
