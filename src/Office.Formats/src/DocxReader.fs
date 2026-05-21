@@ -381,6 +381,12 @@ type Shape = {
     BorderWidth: float option
 }
 
+type SectionColumns = {
+    Count: int
+    Gap: float
+    Separator: bool
+}
+
 type PageSetup = {
     PageWidth: float option
     PageHeight: float option
@@ -392,6 +398,7 @@ type PageSetup = {
     FooterDistance: float option
     DifferentFirstPage: bool option
     EvenAndOddHeaders: bool option
+    Columns: SectionColumns option
 }
 
 type NumberingDefinition = {
@@ -2348,6 +2355,15 @@ let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetu
     |> Option.map (fun section ->
         let pgSz = Ns.childNs "pgSz" section
         let pgMar = Ns.childNs "pgMar" section
+        let columns =
+            Ns.childNs "cols" section
+            |> Option.bind (fun cols ->
+                let num = cols |> Docx.attr "num" |> Option.bind (fun v -> match System.Int32.TryParse v with | true, n -> Some n | _ -> None) |> Option.defaultValue 1
+                if num <= 1 then None
+                else
+                    let space = cols |> Docx.attr "space" |> wordTwipsToPixels |> Option.defaultValue 36.0
+                    let sep = Docx.onOff "sep" cols |> Option.defaultValue false
+                    Some { Count = num; Gap = space; Separator = sep })
         {
             PageWidth = pgSz |> Option.bind (Docx.attr "w") |> wordTwipsToPixels
             PageHeight = pgSz |> Option.bind (Docx.attr "h") |> wordTwipsToPixels
@@ -2359,6 +2375,7 @@ let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetu
             FooterDistance = pgMar |> Option.bind (Docx.attr "footer") |> wordTwipsToPixels
             DifferentFirstPage = Some (Docx.onOff "titlePg" section |> Option.defaultValue false)
             EvenAndOddHeaders = Some evenAndOddHeaders
+            Columns = columns
         })
 
 // Extract image as data URL from archive
@@ -4218,4 +4235,7 @@ let toEditorPageSetup (doc: WordDocument) : obj =
             "FooterDistance" ==> setup.FooterDistance
             "DifferentFirstPage" ==> setup.DifferentFirstPage
             "EvenAndOddHeaders" ==> setup.EvenAndOddHeaders
+            "ColumnCount" ==> (setup.Columns |> Option.map (fun c -> c.Count) |> Option.defaultValue 1)
+            "ColumnSpace" ==> (setup.Columns |> Option.map (fun c -> c.Gap) |> Option.defaultValue 0.0)
+            "ColumnSeparator" ==> (setup.Columns |> Option.map (fun c -> c.Separator) |> Option.defaultValue false)
         ]

@@ -1892,7 +1892,15 @@ let private layoutDocumentWithRangeAndInitial
         (doc: Document)
         (initialObstacles: FloatingObstacle list)
         (initialPlacedBoxes: PlacedFloatingBox list) =
-    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+    // For multi-column sections, lay the body out at a single column's width; the
+    // existing page-bottom pagination then splits it into column-height chunks
+    // that applyColumnTransform remaps to (page, column) afterwards.
+    let maxWidth =
+        let full = settings.Width - settings.PaddingLeft - settings.MarginRight
+        match doc.PageSetup.Columns with
+        | Some columns when columns.Count >= 2 ->
+            (full - float (columns.Count - 1) * columns.Gap) / float columns.Count
+        | _ -> full
     let mutable y = settings.PaddingTop
     let mutable layouts = []
     let mutable numberedCounters = Map.empty<string * int, int>
@@ -2501,6 +2509,43 @@ let private computeAnchorExtendedObstacles
                     Some (obstacleX, extendedTop, obstacleWidth, extendedHeight))
     if anyExtended then extended, placed else [], []
 
+let private shiftSegmentX dx segment =
+    match segment with
+    | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + dx, w, off)
+    | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
+        ImageSegment (src, x + dx, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
+
+/// Remap a body laid out at one column's width (paginated into column-height
+/// chunks) onto real (page, column) positions: layout-page i becomes column
+/// (i mod count) of real page (i div count). Note layouts stay full-width.
+let private applyColumnTransform (settings: LayoutSettings) (columns: SectionColumns) (layouts: BlockLayout list) =
+    let stride = pageHeight settings + pageGap
+    let n = max 1 columns.Count
+    let full = settings.Width - settings.PaddingLeft - settings.MarginRight
+    let colWidth = (full - float (n - 1) * columns.Gap) / float n
+    let columnDx col = float col * (colWidth + columns.Gap)
+    let isNote (block: BlockLayout) =
+        block.BlockId.StartsWith footnoteBlockIdPrefix || block.BlockId.StartsWith endnoteBlockIdPrefix
+    layouts
+    |> List.map (fun block ->
+        if isNote block || block.Lines.IsEmpty then block
+        else
+            let remap (line: MeasuredLine) =
+                let layoutPage = int (floor (line.Y / stride))
+                let dy = float (layoutPage / n - layoutPage) * stride
+                let dx = columnDx (layoutPage % n)
+                { line with Y = line.Y + dy; Segments = line.Segments |> List.map (shiftSegmentX dx) }
+            let newLines = block.Lines |> List.map remap
+            let firstCol = (int (floor (block.Lines.Head.Y / stride))) % n
+            let newY = newLines |> List.map (fun line -> line.Y) |> List.min
+            let newBottom = newLines |> List.map (fun line -> line.Y + line.Height) |> List.max
+            { block with Lines = newLines; Y = newY; Height = newBottom - newY; Indent = block.Indent + columnDx firstCol })
+
+let private applyColumnsIfNeeded (settings: LayoutSettings) (doc: Document) layouts =
+    match doc.PageSetup.Columns with
+    | Some columns when columns.Count >= 2 -> applyColumnTransform settings columns layouts
+    | _ -> layouts
+
 let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
     let firstPass, placedAfterFirst =
         layoutDocumentWithRangeAndInitial settings measureText measureRange doc [] []
@@ -2508,11 +2553,11 @@ let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasure
     let extendedObstacles, prePlacedBoxes =
         computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
     if extendedObstacles.IsEmpty then
-        firstPass
+        applyColumnsIfNeeded settings doc firstPass
     else
         let secondPass, _ =
             layoutDocumentWithRangeAndInitial settings measureText measureRange doc extendedObstacles prePlacedBoxes
-        secondPass
+        applyColumnsIfNeeded settings doc secondPass
 
 let layoutDocument (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) =
     layoutDocumentWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) doc

@@ -332,6 +332,14 @@ type HeaderFooterPart = {
     Blocks: Block list
 }
 
+/// Equal-width newspaper columns for a section (w:cols). Custom per-column
+/// widths are not modelled yet; columns are treated as equal width.
+type SectionColumns = {
+    Count: int
+    Gap: float          // gap between columns, px
+    Separator: bool     // draw a rule between columns (w:sep)
+}
+
 type PageSetup = {
     PageWidth: float
     PageHeight: float
@@ -343,6 +351,7 @@ type PageSetup = {
     FooterDistance: float
     DifferentFirstPage: bool
     EvenAndOddHeaders: bool
+    Columns: SectionColumns option
 }
 
 type NamedStyle = {
@@ -393,6 +402,7 @@ let defaultPageSetup = {
     FooterDistance = 48.0
     DifferentFirstPage = false
     EvenAndOddHeaders = false
+    Columns = None
 }
 
 type Document = {

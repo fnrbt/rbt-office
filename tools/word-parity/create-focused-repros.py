@@ -390,7 +390,8 @@ def section_properties(include_header_footer=False, margin_bottom=1440, include_
     header = page_geometry.get("header", 720)
     footer = page_geometry.get("footer", 720)
     doc_grid = page_geometry.get("doc_grid", '<w:docGrid w:type="default" w:linePitch="360" w:charSpace="4294965247"/>') if include_doc_grid else ""
-    return f'<w:sectPr>{refs}<w:pgSz w:w="{page_width}" w:h="{page_height}"/><w:pgMar w:top="{margin_top}" w:right="{margin_right}" w:bottom="{margin_bottom}" w:left="{margin_left}" w:header="{header}" w:footer="{footer}"/>{doc_grid}</w:sectPr>'
+    cols = page_geometry.get("cols", "")
+    return f'<w:sectPr>{refs}<w:pgSz w:w="{page_width}" w:h="{page_height}"/><w:pgMar w:top="{margin_top}" w:right="{margin_right}" w:bottom="{margin_bottom}" w:left="{margin_left}" w:header="{header}" w:footer="{footer}"/>{cols}{doc_grid}</w:sectPr>'
 
 
 def document(body_xml, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_doc_grid=False, page_geometry=None):
@@ -1535,6 +1536,20 @@ def main():
         ]),
     )
     print(endnote_path)
+
+    # Two-column section: body text flows down column 1 then column 2 (Word
+    # balances the last page; here there is enough text to fill both columns).
+    twocol_body = (
+        paragraph("Two column section repro", "Heading1")
+        + repeated_long_paragraphs(10)
+    )
+    twocol_path = out_dir / "two-column-section.docx"
+    write_docx(
+        twocol_path,
+        twocol_body,
+        page_geometry={"cols": '<w:cols w:num="2" w:space="720"/>'},
+    )
+    print(twocol_path)
 
 
 if __name__ == "__main__":

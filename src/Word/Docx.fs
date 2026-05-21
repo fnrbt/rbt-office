@@ -984,6 +984,13 @@ let private pageSetupFromEditor (value: obj) =
         FooterDistance = optionalFloat (value?FooterDistance) |> Option.defaultValue defaultPageSetup.FooterDistance
         DifferentFirstPage = optionalBool (value?DifferentFirstPage) |> Option.defaultValue defaultPageSetup.DifferentFirstPage
         EvenAndOddHeaders = optionalBool (value?EvenAndOddHeaders) |> Option.defaultValue defaultPageSetup.EvenAndOddHeaders
+        Columns =
+            match optionalFloat (value?ColumnCount) with
+            | Some count when count >= 2.0 ->
+                Some ({ Count = int count
+                        Gap = optionalFloat (value?ColumnSpace) |> Option.defaultValue 0.0
+                        Separator = optionalBool (value?ColumnSeparator) |> Option.defaultValue false }: SectionColumns)
+            | _ -> None
     }
 
 /// Import EditorParagraphs from Office.Formats into Word document
