@@ -624,10 +624,15 @@ def cambria_heading_wrap_styles():
     )
 
 
-def content_types(include_numbering=False, include_header_footer=False, include_office_theme=False, include_footnotes=False):
+def content_types(include_numbering=False, include_header_footer=False, include_office_theme=False, include_footnotes=False, include_endnotes=False):
     footnotes_override = (
         '<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>'
         if include_footnotes
+        else ""
+    )
+    endnotes_override = (
+        '<Override PartName="/word/endnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"/>'
+        if include_endnotes
         else ""
     )
     numbering_override = (
@@ -659,6 +664,7 @@ def content_types(include_numbering=False, include_header_footer=False, include_
         f"{running_overrides}"
         f"{theme_overrides}"
         f"{footnotes_override}"
+        f"{endnotes_override}"
         "</Types>"
     )
 
@@ -672,10 +678,15 @@ def root_rels():
     )
 
 
-def document_rels(include_numbering=False, include_header_footer=False, include_office_theme=False, include_footnotes=False):
+def document_rels(include_numbering=False, include_header_footer=False, include_office_theme=False, include_footnotes=False, include_endnotes=False):
     footnotes_rel = (
         '<Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/>'
         if include_footnotes
+        else ""
+    )
+    endnotes_rel = (
+        '<Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"/>'
+        if include_endnotes
         else ""
     )
     numbering_rel = (
@@ -704,6 +715,7 @@ def document_rels(include_numbering=False, include_header_footer=False, include_
         f"{running_rels}"
         f"{theme_rels}"
         f"{footnotes_rel}"
+        f"{endnotes_rel}"
         "</Relationships>"
     )
 
@@ -738,6 +750,56 @@ def footnotes_part(notes):
         f'<w:footnotes xmlns:w="{WORD_NS}">'
         + "".join(body)
         + "</w:footnotes>"
+    )
+
+
+def endnote_paragraph(text_before, note_id, text_after=""):
+    """A body paragraph that drops an endnote reference between two text runs."""
+    ref_run = (
+        '<w:r><w:rPr><w:rStyle w:val="EndnoteReference"/><w:vertAlign w:val="superscript"/></w:rPr>'
+        f'<w:endnoteReference w:id="{note_id}"/></w:r>'
+    )
+    after_run = f'<w:r><w:t xml:space="preserve">{esc(text_after)}</w:t></w:r>' if text_after else ""
+    return (
+        "<w:p><w:r><w:t xml:space=\"preserve\">"
+        f"{esc(text_before)}</w:t></w:r>{ref_run}{after_run}</w:p>"
+    )
+
+
+def endnotes_part(notes):
+    """notes: list of (id, text). Includes the mandatory separator endnotes."""
+    body = [
+        '<w:endnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:endnote>',
+        '<w:endnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:endnote>',
+    ]
+    for note_id, text in notes:
+        body.append(
+            f'<w:endnote w:id="{note_id}"><w:p><w:pPr><w:pStyle w:val="EndnoteText"/></w:pPr>'
+            '<w:r><w:rPr><w:rStyle w:val="EndnoteReference"/><w:vertAlign w:val="superscript"/></w:rPr><w:endnoteRef/></w:r>'
+            f'<w:r><w:t xml:space="preserve"> {esc(text)}</w:t></w:r></w:p></w:endnote>'
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:endnotes xmlns:w="{WORD_NS}">'
+        + "".join(body)
+        + "</w:endnotes>"
+    )
+
+
+def endnote_styles():
+    # Defines EndnoteText (10pt, Word's default for endnote bodies) and the
+    # superscript EndnoteReference char style, mirroring footnote_styles.
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        f'<w:styles xmlns:w="{WORD_NS}" xmlns:r="{REL_NS}">'
+        "<w:docDefaults>"
+        '<w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault>'
+        "</w:docDefaults>"
+        '<w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style>'
+        '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="Heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="240"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
+        '<w:style w:type="paragraph" w:styleId="EndnoteText"><w:name w:val="endnote text"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>'
+        '<w:style w:type="character" w:styleId="EndnoteReference"><w:name w:val="endnote reference"/><w:rPr><w:vertAlign w:val="superscript"/></w:rPr></w:style>'
+        "</w:styles>"
     )
 
 
@@ -887,14 +949,15 @@ def docx4j_theme_xml():
     return office_theme_xml("Arial", "Arial")
 
 
-def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True, styles_xml=None, include_office_theme=False, include_doc_grid=False, page_geometry=None, compatibility_mode=14, settings_xml=None, theme_xml_value=None, footnotes_xml=None):
+def write_docx(path, body_xml, include_numbering=False, leading_section_properties=False, include_header_footer=False, margin_bottom=1440, include_heading_spacing=True, include_doc_defaults=True, styles_xml=None, include_office_theme=False, include_doc_grid=False, page_geometry=None, compatibility_mode=14, settings_xml=None, theme_xml_value=None, footnotes_xml=None, endnotes_xml=None):
     include_footnotes = footnotes_xml is not None
+    include_endnotes = endnotes_xml is not None
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         (root / "_rels").mkdir()
         (root / "word" / "_rels").mkdir(parents=True)
-        (root / "[Content_Types].xml").write_text(content_types(include_numbering, include_header_footer, include_office_theme, include_footnotes), encoding="utf-8")
+        (root / "[Content_Types].xml").write_text(content_types(include_numbering, include_header_footer, include_office_theme, include_footnotes, include_endnotes), encoding="utf-8")
         (root / "_rels" / ".rels").write_text(root_rels(), encoding="utf-8")
         (root / "word" / "document.xml").write_text(document(body_xml, leading_section_properties, include_header_footer, margin_bottom, include_doc_grid, page_geometry), encoding="utf-8")
         (root / "word" / "styles.xml").write_text(styles_xml or styles(include_heading_spacing, include_doc_defaults), encoding="utf-8")
@@ -910,7 +973,9 @@ def write_docx(path, body_xml, include_numbering=False, leading_section_properti
             (root / "word" / "theme" / "theme1.xml").write_text(theme_xml_value or theme_xml(), encoding="utf-8")
         if include_footnotes:
             (root / "word" / "footnotes.xml").write_text(footnotes_xml, encoding="utf-8")
-        (root / "word" / "_rels" / "document.xml.rels").write_text(document_rels(include_numbering, include_header_footer, include_office_theme, include_footnotes), encoding="utf-8")
+        if include_endnotes:
+            (root / "word" / "endnotes.xml").write_text(endnotes_xml, encoding="utf-8")
+        (root / "word" / "_rels" / "document.xml.rels").write_text(document_rels(include_numbering, include_header_footer, include_office_theme, include_footnotes, include_endnotes), encoding="utf-8")
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
             for file in sorted(root.rglob("*")):
                 if file.is_file():
@@ -1446,6 +1511,30 @@ def main():
         ]),
     )
     print(footnote_path)
+
+    # Endnote repro (needs the endnotes.xml part). Endnotes collect at the end of
+    # the document, after all body content, with a separator above them.
+    endnote_body = (
+        paragraph("Endnote placement repro", "Heading1")
+        + endnote_paragraph(
+            "This sentence ends with an endnote reference",
+            1,
+            " and then continues on so the line wraps normally afterward.")
+        + repeated_long_paragraphs(4)
+        + endnote_paragraph("A second reference appears here", 2, " in the body text.")
+        + paragraph("Final body paragraph after the second reference.")
+    )
+    endnote_path = out_dir / "endnote-placement.docx"
+    write_docx(
+        endnote_path,
+        endnote_body,
+        styles_xml=endnote_styles(),
+        endnotes_xml=endnotes_part([
+            (1, "First endnote: Word collects endnotes at the end of the document in a smaller font."),
+            (2, "Second endnote: it sits just below the first, after the endnote separator line."),
+        ]),
+    )
+    print(endnote_path)
 
 
 if __name__ == "__main__":

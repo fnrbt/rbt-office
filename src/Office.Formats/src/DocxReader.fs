@@ -3310,6 +3310,23 @@ let private paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effe
             resolvedRunProperties styleMap effectiveParaProps emptyRunProperties
     wordFontSizeToPoints fallbackRunProps.FontSize
 
+// Word numbers footnotes with arabic (the sequential id) and endnotes with
+// lowercase roman numerals by default.
+let private toLowerRoman (n: int) =
+    let table = [ 1000, "m"; 900, "cm"; 500, "d"; 400, "cd"; 100, "c"; 90, "xc"; 50, "l"; 40, "xl"; 10, "x"; 9, "ix"; 5, "v"; 4, "iv"; 1, "i" ]
+    let rec build rem acc =
+        match table |> List.tryFind (fun (v, _) -> rem >= v) with
+        | Some (v, s) -> build (rem - v) (acc + s)
+        | None -> acc
+    if n <= 0 then string n else build n ""
+
+let private noteMark (noteType: string) (id: string) =
+    if noteType = "endnote" then
+        match System.Int32.TryParse id with
+        | true, n -> toLowerRoman n
+        | _ -> id
+    else id
+
 let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
     let styleMap = buildStyleMap styles
     let _, documentDefaultParagraphProperties = resolveStyle styleMap (Some Styles.defaultStyleId)
@@ -3452,7 +3469,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             // (Word writes note ids sequentially) in the normal
                             // text colour, matching the native/PDF path.
                             Some (createObj [
-                                "Text" ==> note.Id
+                                "Text" ==> noteMark note.NoteType note.Id
                                 "Bold" ==> false
                                 "Italic" ==> false
                                 "Underline" ==> false
@@ -3712,7 +3729,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             // (Word writes note ids sequentially) in the normal
                             // text colour, matching the native/PDF path.
                             Some (createObj [
-                                "Text" ==> note.Id
+                                "Text" ==> noteMark note.NoteType note.Id
                                 "Bold" ==> false
                                 "Italic" ==> false
                                 "Underline" ==> false

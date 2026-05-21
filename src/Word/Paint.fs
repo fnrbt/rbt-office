@@ -1046,6 +1046,18 @@ let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (me
         let separatorX = settings.PaddingLeft
         commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 6.0, separatorX + 192.0, topY - 6.0)))
 
+    // Endnote area: paint the synthetic endnote paragraphs appended after the
+    // body content, with a single separator rule above the first endnote.
+    let endnoteLayouts = layouts |> List.filter (fun layout -> layout.BlockId.StartsWith endnoteBlockIdPrefix)
+    for layout in endnoteLayouts do
+        commands.AddRange(paragraphCommands settings fontFamily measureText layout)
+    match endnoteLayouts with
+    | [] -> ()
+    | _ ->
+        let topY = endnoteLayouts |> List.map (fun layout -> layout.Y) |> List.min
+        let separatorX = settings.PaddingLeft
+        commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 8.0, separatorX + 192.0, topY - 8.0))
+
     let bottom =
         layouts
         |> List.map (fun layout -> layout.Y + layout.Height)

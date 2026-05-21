@@ -428,44 +428,6 @@ let private renderPaintCommand (ctx: RenderContext) = function
         ctx.Ctx.stroke()
         setLineDash ctx.Ctx [||]
 
-let private renderEndnotes (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
-    let anchors = endnoteAnchorsForLayouts layouts
-    if not anchors.IsEmpty then
-        let settings = layoutSettings ctx doc
-        let startY = endnoteStartY settings layouts
-        let x = settings.PaddingLeft
-        let noteStyle = {
-            Bold = false
-            Italic = false
-            Underline = false
-            AllCaps = false
-            SmallCaps = false
-            Strike = false
-            FontSize = 10.0
-            CharacterSpacing = 0.0
-            FontFamily = Some ctx.FontFamily
-            Color = "#4B5563"
-            Highlight = None
-            VertAlign = None
-        }
-
-        ctx.Ctx.strokeStyle <- U3.Case1 "#9CA3AF"
-        ctx.Ctx.lineWidth <- 1.0
-        ctx.Ctx.beginPath()
-        ctx.Ctx.moveTo(x, startY)
-        ctx.Ctx.lineTo(x + 120.0, startY)
-        ctx.Ctx.stroke()
-
-        let mutable lineIndex = 0
-        anchors
-        |> List.iter (fun anchor ->
-            for line in wrapNoteText settings (sprintf "%s. %s" anchor.Id anchor.Text) do
-                let baseline = startY + 14.0 + float lineIndex * 13.0
-                ctx.Ctx.fillStyle <- U3.Case1 noteStyle.Color
-                ctx.Ctx.font <- fontString noteStyle ctx.FontFamily
-                ctx.Ctx.fillText(line, x, baseline)
-                lineIndex <- lineIndex + 1)
-
 let private renderCommentAnchors (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
     commentAnchorsForLayouts ctx doc layouts
     |> List.iter (fun anchor ->
@@ -485,10 +447,8 @@ let render (ctx: RenderContext) (doc: Document) =
     let layouts, commands, _ = collectDocumentCommands settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc
     renderPages ctx doc layouts
     commands |> List.iter (renderPaintCommand ctx)
-    // Footnotes are laid out and painted via the shared Layout/Paint pass (so the
-    // browser canvas and the PDF/native paths match); only endnotes still need the
-    // canvas-specific renderer.
-    renderEndnotes ctx doc layouts
+    // Footnotes and endnotes are laid out and painted via the shared Layout/Paint
+    // pass (so the browser canvas and the PDF/native paths match).
     renderCommentAnchors ctx doc layouts
 
     // Reset style

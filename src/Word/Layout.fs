@@ -289,9 +289,38 @@ let private footnotesInLine (line: MeasuredLine) =
         | ImageSegment _ -> None)
     |> List.distinctBy fst
 
+/// Endnotes (collected at the end of the document) found on a line, in order.
+let private endnotesInLine (line: MeasuredLine) =
+    line.Segments
+    |> List.choose (function
+        | TextSegment (_, style, _, _, _) ->
+            match style.NoteId, style.NoteType, style.NoteText with
+            | Some id, Some "endnote", Some text when text <> "" -> Some (id, text)
+            | _ -> None
+        | ImageSegment _ -> None)
+    |> List.distinctBy fst
+
 /// BlockId prefix for the synthetic footnote-area paragraphs laid out at the
 /// bottom of each page. Paint recognises these to render them and the separator.
 let footnoteBlockIdPrefix = "__footnote__"
+/// BlockId prefix for the synthetic endnote paragraphs laid out at the end of
+/// the document (after all body content), with a separator above the first.
+let endnoteBlockIdPrefix = "__endnote__"
+
+/// Word numbers endnotes with lowercase roman numerals by default (footnotes use
+/// arabic). Convert the (sequential) note id to roman for the endnote mark.
+let private toLowerRoman (n: int) =
+    let table = [ 1000, "m"; 900, "cm"; 500, "d"; 400, "cd"; 100, "c"; 90, "xc"; 50, "l"; 40, "xl"; 10, "x"; 9, "ix"; 5, "v"; 4, "iv"; 1, "i" ]
+    let rec build rem acc =
+        match table |> List.tryFind (fun (v, _) -> rem >= v) with
+        | Some (v, s) -> build (rem - v) (acc + s)
+        | None -> acc
+    if n <= 0 then string n else build n ""
+
+let private endnoteMark (id: string) =
+    match System.Int32.TryParse id with
+    | true, n -> toLowerRoman n
+    | _ -> id
 // Font sizes in the layout/buffer are CSS px (1pt = 96/72 px), as produced by
 // the editor import (11pt body = 14.667px). Word's FootnoteText is 10pt.
 let private footnoteFontSize = 10.0 * 96.0 / 72.0
@@ -305,6 +334,8 @@ let private footnoteBottomPad = 6.0
 // content does not overlap the notes (which are positioned by their real height).
 let private footnoteLineHeight = 16.0
 let private footnoteSeparatorGap = 16.0
+// Gap below the last body line before the endnote separator + first endnote.
+let private endnoteTopGap = 24.0
 
 let private footnoteReserveHeight settings footnotes =
     match footnotes with
@@ -2355,6 +2386,34 @@ let private layoutDocumentWithRangeAndInitial
             let blockTop = pageContentBottom - footnoteBottomPad - tempY
             for layout in laidOut do
                 layouts <- layouts @ [moveLayoutToY (blockTop + layout.Y) layout]
+
+    // Endnotes: collect every endnote in document order and lay them out after
+    // the body content (Word stacks endnotes at the end of the document), with a
+    // separator drawn above the first by Paint.
+    let bodyLayouts = layouts |> List.filter (fun layout -> not (layout.BlockId.StartsWith footnoteBlockIdPrefix))
+    let endnotes =
+        bodyLayouts
+        |> List.sortBy (fun layout -> layout.Y)
+        |> List.collect (fun layout -> layout.Lines |> List.collect endnotesInLine)
+        |> List.distinctBy fst
+    if not endnotes.IsEmpty then
+        let bodyBottom =
+            bodyLayouts
+            |> List.map (fun layout -> layout.Y + layout.Height)
+            |> List.fold max settings.PaddingTop
+        let mutable noteY = bodyBottom + endnoteTopGap
+        endnotes |> List.iteri (fun noteIndex (id, text) ->
+            let mark = endnoteMark id
+            let noteString = sprintf "%s %s" mark (text.Trim())
+            let buffer =
+                TextBuffer.ofString noteString
+                |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
+                |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
+                |> TextBuffer.setVertAlign 0 mark.Length (Some "superscript")
+            let para = { Id = sprintf "%s%d" endnoteBlockIdPrefix noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
+            let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth noteY 0.0 para Map.empty
+            layouts <- layouts @ [layout]
+            noteY <- noteY + layout.Height)
 
     layouts, placedFloatingBoxes
 

@@ -522,6 +522,23 @@ module EditorProcessor =
     let private noteText (notes: Map<string * string, string>) (note: NoteReference) =
         notes |> Map.tryFind (note.NoteType, note.Id)
 
+    let private toLowerRoman (n: int) =
+        let table = [ 1000, "m"; 900, "cm"; 500, "d"; 400, "cd"; 100, "c"; 90, "xc"; 50, "l"; 40, "xl"; 10, "x"; 9, "ix"; 5, "v"; 4, "iv"; 1, "i" ]
+        let rec build rem acc =
+            match table |> List.tryFind (fun (v, _) -> rem >= v) with
+            | Some (v, s) -> build (rem - v) (acc + s)
+            | None -> acc
+        if n <= 0 then string n else build n ""
+
+    /// The displayed mark for a note reference. Word defaults footnotes to arabic
+    /// (the sequential id) and endnotes to lowercase roman numerals.
+    let noteMark (noteType: string) (id: string) =
+        if noteType = "endnote" then
+            match System.Int32.TryParse id with
+            | true, n -> toLowerRoman n
+            | _ -> id
+        else id
+
     /// Convert a run to EditorRun format (without image data)
     let toEditorRun
         (theme: Theme option)
@@ -627,7 +644,7 @@ module EditorProcessor =
                 // number, not the "[footnote N]" placeholder that extractRunText
                 // produces. Word writes note ids sequentially, so the id doubles
                 // as the display number, and references are always superscript.
-                let noteRefText = note |> Option.map (fun value -> value.Id)
+                let noteRefText = note |> Option.map (fun value -> noteMark value.NoteType value.Id)
                 let displayText = noteRefText |> Option.defaultValue text
                 let displayVertAlign =
                     match note with
