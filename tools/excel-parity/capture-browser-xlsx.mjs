@@ -13,6 +13,8 @@ const viewportWidth = Number(process.env.EXCEL_BROWSER_CAPTURE_VIEWPORT_WIDTH ??
 const viewportHeight = Number(process.env.EXCEL_BROWSER_CAPTURE_VIEWPORT_HEIGHT ?? 760);
 const canvasWidth = Number(process.env.EXCEL_BROWSER_CAPTURE_CANVAS_WIDTH ?? 900);
 const canvasHeight = Number(process.env.EXCEL_BROWSER_CAPTURE_CANVAS_HEIGHT ?? 620);
+const captureTmp = process.env.TMPDIR ?? path.join(officeRoot, 'tmp/browser-capture');
+process.env.TMPDIR = captureTmp;
 
 if (!process.argv[2] || !process.argv[3]) {
   console.error('Usage: node tools/excel-parity/capture-browser-xlsx.mjs input.xlsx output.png');
@@ -28,6 +30,7 @@ function run(command, args, options = {}) {
 
 await fs.mkdir(path.dirname(outputPng), { recursive: true });
 await fs.mkdir(path.join(runnerRoot, '.capture-xlsx'), { recursive: true });
+await fs.mkdir(captureTmp, { recursive: true });
 
 if (process.env.EXCEL_BROWSER_CAPTURE_BUILD !== '0') {
   await run('dotnet', ['tool', 'restore'], { cwd: officeRoot });
@@ -61,19 +64,33 @@ await fs.writeFile(htmlPath, `<!doctype html>
   <div id="host"></div>
   <canvas id="snapshot" width="${canvasWidth}" height="${canvasHeight}"></canvas>
   <script type="module">
-    import createSpreadsheet from '/@fs/${modulePath}';
-    const response = await fetch('/@fs/${fixturePath}');
-    if (!response.ok) throw new Error('fixture fetch failed: ' + response.status);
-    const buffer = await response.arrayBuffer();
-    const host = document.getElementById('host');
-    const canvas = document.getElementById('snapshot');
-    const spreadsheet = createSpreadsheet(host);
-    spreadsheet.Mount();
-    spreadsheet.SetReadOnly(true);
-    await spreadsheet.ImportXlsxFromBuffer(buffer, null);
-    spreadsheet.RenderPortableCanvas(canvas);
-    window.rbExcelCapture = spreadsheet;
-    document.body.dataset.ready = '1';
+    function describeError(error) {
+      if (!error) return 'unknown error';
+      if (error.stack) return error.stack;
+      if (error.message) return error.message;
+      try { return JSON.stringify(error); } catch { return String(error); }
+    }
+
+    try {
+      const module = await import('/@fs/${modulePath}');
+      const createSpreadsheet = module.default;
+      const response = await fetch('/@fs/${fixturePath}');
+      if (!response.ok) throw new Error('fixture fetch failed: ' + response.status);
+      const buffer = await response.arrayBuffer();
+      const host = document.getElementById('host');
+      const canvas = document.getElementById('snapshot');
+      const spreadsheet = createSpreadsheet(host);
+      spreadsheet.Mount();
+      spreadsheet.SetReadOnly(true);
+      await spreadsheet.ImportXlsxFromBuffer(buffer, null);
+      spreadsheet.RenderPortableCanvas(canvas);
+      window.rbExcelCapture = spreadsheet;
+      document.body.dataset.ready = '1';
+    } catch (error) {
+      const message = describeError(error);
+      console.error('[capture-error] ' + message);
+      document.body.dataset.error = message;
+    }
   </script>
 </body>
 </html>
@@ -88,10 +105,15 @@ const server = spawn(viteBin, ['--host', '127.0.0.1', '--port', String(port)], {
 });
 
 let serverReady = false;
+let serverOrigin = '';
 server.stdout.on('data', chunk => {
   const text = chunk.toString();
   process.stdout.write(text);
-  if (text.includes('Local:')) serverReady = true;
+  const match = text.match(/Local:\s+(https?:\/\/127\.0\.0\.1:\d+)\//);
+  if (match) {
+    serverOrigin = match[1];
+    serverReady = true;
+  }
 });
 server.stderr.on('data', chunk => process.stderr.write(chunk));
 
@@ -105,27 +127,41 @@ if (!serverReady) {
 
 try {
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight } });
-  page.on('console', msg => {
-    if (msg.type() !== 'debug') console.log(`[browser:${msg.type()}] ${msg.text()}`);
-  });
-  page.on('pageerror', error => console.error(`[browser:pageerror] ${error.stack ?? error.message}`));
-  await page.goto(`http://127.0.0.1:${port}/.capture-xlsx/index.html`);
-  await page.waitForFunction(() => document.body.dataset.ready === '1', null, { timeout: 30000 });
-  const modelInfo = await page.evaluate(() => {
-    const model = window.rbExcelCapture.GetModel();
-    return {
-      rows: model.RowCount,
-      cols: model.ColCount,
-      cells: model.Cells?.size ?? model.Cells?.Count ?? null,
-      richRuns: model.RichRuns?.size ?? model.RichRuns?.Count ?? null,
-      paintItems: window.rbExcelCapture.PortablePaintItemCount(),
-    };
-  });
-  console.log(`browser model: rows=${modelInfo.rows} cols=${modelInfo.cols} cells=${modelInfo.cells} richRuns=${modelInfo.richRuns} paintItems=${modelInfo.paintItems}`);
-  await page.locator('#snapshot').screenshot({ path: outputPng });
-  await browser.close();
-  console.log(`browser xlsx capture ok: ${fixture} -> ${outputPng}`);
+  try {
+    const page = await browser.newPage({ viewport: { width: viewportWidth, height: viewportHeight } });
+    page.on('console', msg => {
+      if (msg.type() !== 'debug') console.log(`[browser:${msg.type()}] ${msg.text()}`);
+    });
+    page.on('pageerror', error => {
+      const message = error?.stack || error?.message || String(error) || 'unknown page error';
+      console.error(`[browser:pageerror] ${message}`);
+    });
+    page.on('requestfailed', request => {
+      console.error(`[browser:requestfailed] ${request.url()} ${request.failure()?.errorText ?? ''}`);
+    });
+    await page.goto(`${serverOrigin}/.capture-xlsx/index.html`);
+    await page.waitForFunction(
+      () => document.body.dataset.ready === '1' || !!document.body.dataset.error,
+      null,
+      { timeout: 30000 });
+    const pageError = await page.evaluate(() => document.body.dataset.error || '');
+    if (pageError) throw new Error(`browser xlsx capture failed: ${pageError}`);
+    const modelInfo = await page.evaluate(() => {
+      const model = window.rbExcelCapture.GetModel();
+      return {
+        rows: model.RowCount,
+        cols: model.ColCount,
+        cells: model.Cells?.size ?? model.Cells?.Count ?? null,
+        richRuns: model.RichRuns?.size ?? model.RichRuns?.Count ?? null,
+        paintItems: window.rbExcelCapture.PortablePaintItemCount(),
+      };
+    });
+    console.log(`browser model: rows=${modelInfo.rows} cols=${modelInfo.cols} cells=${modelInfo.cells} richRuns=${modelInfo.richRuns} paintItems=${modelInfo.paintItems}`);
+    await page.locator('#snapshot').screenshot({ path: outputPng });
+    console.log(`browser xlsx capture ok: ${fixture} -> ${outputPng}`);
+  } finally {
+    await browser.close();
+  }
 } finally {
   server.kill('SIGKILL');
 }

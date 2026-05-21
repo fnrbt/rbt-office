@@ -710,19 +710,15 @@ module Xlsx =
     let row (rowNode: XmlNode) : Row option =
         Xml.attr "r" rowNode
         |> Option.map (fun r ->
-            // `customHeight="false"` means Excel ignores the stored `ht`
-            // attribute and uses its font-derived auto row height. We
-            // mirror that: only honor `ht` when `customHeight` is true
-            // (the default when absent — most files write `ht` only when
-            // intentionally overriding). pandas-export workbooks emit
-            // `<row ht="13.8" customHeight="false">` and Excel renders
-            // those at the default ~15 pt, not 13.8 pt.
             let customHeightAttr =
                 Xml.attr "customHeight" rowNode
                 |> Option.map (fun v -> v = "1" || v = "true")
-            // Default to true when absent — most files write `ht` only when
-            // intentionally overriding.
-            let customHeight = customHeightAttr |> Option.defaultValue true
+            // OOXML §18.3.1.73 default for customHeight is FALSE. When
+            // absent, the row's stored `ht` is just a hint Excel may
+            // override with the font-derived auto height. Only honor `ht`
+            // as the row's final height when customHeight is explicitly
+            // set to true.
+            let customHeight = customHeightAttr |> Option.defaultValue false
             let rawHeight = Xml.attr "ht" rowNode |> Option.map float
             let height = if customHeight then rawHeight else None
             let hidden = Xml.attr "hidden" rowNode |> Option.map (fun h -> h = "1" || h = "true") |> Option.defaultValue false
@@ -2429,17 +2425,26 @@ let resolveValue (wb: Workbook) (value: CellValue) : CellValue =
 
 // Extract sheet as 2D array
 let sheetToArray (wb: Workbook) (sheet: Worksheet) : obj array array =
-    let maxRow = sheet.Rows |> List.map (fun r -> r.Index) |> List.max
-    let maxCol =
+    let columnNumber (letters: string) =
+        letters.ToUpperInvariant().ToCharArray()
+        |> Array.fold (fun acc ch -> acc * 26 + (int ch - int 'A' + 1)) 0
+    let columnLetters (col0: int) =
+        let mutable n = col0 + 1
+        let mutable letters = ""
+        while n > 0 do
+            let r = (n - 1) % 26
+            letters <- string (char (int 'A' + r)) + letters
+            n <- (n - 1) / 26
+        letters
+    let cells = sheet.Rows |> List.collect (fun r -> r.Cells)
+    let maxRow =
         sheet.Rows
-        |> List.collect (fun r -> r.Cells)
-        |> List.map (fun c ->
-            // Simple column letter to number conversion
-            c.Reference.Column.ToCharArray()
-            |> Array.rev
-            |> Array.mapi (fun i ch -> (int ch - int 'A' + 1) * (pown 26 i))
-            |> Array.sum)
-        |> List.max
+        |> List.map (fun r -> r.Index)
+        |> List.fold max 0
+    let maxCol =
+        cells
+        |> List.map (fun c -> columnNumber c.Reference.Column)
+        |> List.fold max 0
 
     Array.init maxRow (fun r ->
         let rowIdx = r + 1
@@ -2452,7 +2457,7 @@ let sheetToArray (wb: Workbook) (sheet: Worksheet) : obj array array =
             |> Map.ofList
 
         Array.init maxCol (fun c ->
-            let colLetter = System.String [| char (c + int 'A') |]
+            let colLetter = columnLetters c
             match Map.tryFind colLetter rowCells with
             | Some (String s) -> box s
             | Some (Number n) -> box n

@@ -2,9 +2,9 @@
 # Excel-parity regression gate. Runs:
 #   1. VBA-layout harness across every fixture with an Excel COM TSV in
 #      /tmp/xfix/vba/ at 0.5 pt tolerance. Fails on any field mismatch.
-#   2. Print-PDF MAE thresholds across the 8 fixtures with a saved Excel
+#   2. Print-PDF MAE thresholds across fixtures with a saved Excel
 #      print PDF reference, fails when body/full MAE exceeds the gate.
-#   3. Print-helper tests + 79-fixture smoke render.
+#   3. Print-helper tests + full fixture smoke render.
 #
 # Designed to be runnable from CI: prints a summary, exits nonzero on any
 # breach.
@@ -22,8 +22,10 @@ echo
 
 # 1. VBA-layout harness.
 TSV_DIR=${VBA_TSV_DIR:-/tmp/xfix/vba}
+OURS_TSV_DIR=${VBA_OURS_TSV_DIR:-tmp/excel-parity-vba}
 if compgen -G "$TSV_DIR/*-excel.tsv" >/dev/null; then
   echo "[1/3] VBA-layout harness ($TSV_DIR)"
+  mkdir -p "$OURS_TSV_DIR"
   layout_fail=0
   layout_pass=0
   while IFS= read -r tsv; do
@@ -31,9 +33,10 @@ if compgen -G "$TSV_DIR/*-excel.tsv" >/dev/null; then
     if [[ ! -f "tests/test-documents-excel/$name.xlsx" ]]; then
       continue
     fi
+    ours_tsv="$OURS_TSV_DIR/$name-ours.tsv"
     if ! tools/excel-parity/spreadsheet-vba-layout-tsv.sh \
         "tests/test-documents-excel/$name.xlsx" \
-        "$TSV_DIR/$name-ours.tsv" >/dev/null 2>&1; then
+        "$ours_tsv" >/dev/null 2>&1; then
       echo "  FAIL: $name (layout tool errored)"
       layout_fail=$((layout_fail+1))
       EXIT_CODE=1
@@ -41,7 +44,7 @@ if compgen -G "$TSV_DIR/*-excel.tsv" >/dev/null; then
     fi
     if python3 tools/excel-parity/compare-vba-layout.py \
         "$TSV_DIR/$name-excel.tsv" \
-        "$TSV_DIR/$name-ours.tsv" \
+        "$ours_tsv" \
         --tol 0.5 >/dev/null 2>&1; then
       layout_pass=$((layout_pass+1))
     else
@@ -104,12 +107,14 @@ else
 fi
 
 if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
+  SMOKE_DIR=${SMOKE_DIR:-tmp/parity-smoke}
+  mkdir -p "$SMOKE_DIR"
   smoke_fail=0
   smoke_ok=0
   for f in tests/test-documents-excel/*.xlsx; do
     name=$(basename "$f" .xlsx)
     if dotnet run --project tools/spreadsheet-pdf-runner --no-build -- \
-        "$f" "/tmp/parity-smoke-$name.pdf" >/dev/null 2>&1; then
+        "$f" "$SMOKE_DIR/$name.pdf" >/dev/null 2>&1; then
       smoke_ok=$((smoke_ok+1))
     else
       echo "  FAIL: smoke render $name"
@@ -117,7 +122,7 @@ if [[ "${SKIP_SMOKE:-0}" != "1" ]]; then
       EXIT_CODE=1
     fi
   done
-  rm -f /tmp/parity-smoke-*.pdf
+  rm -f "$SMOKE_DIR"/*.pdf
   echo "  Smoke render: $smoke_ok/$((smoke_ok + smoke_fail)) fixtures"
 fi
 

@@ -155,6 +155,209 @@
     <tbody>
       <tr>
         <td>
+          <strong>Number-format conditional &amp; colour sections (<code>[&gt;=100]…</code>, <code>[Red]</code>)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-numfmt-sections.xlsx</code> (built via <code>tools/excel-parity/build-numfmt-sections-fixture.vbs</code>). Col B <code>[&gt;=100]"High";[&gt;=50]"Mid";"Low"</code>, col C <code>0.0;[Red]-0.0;"zero"</code>, col D <code>[&lt;0][Red]0.0;[Blue]0.0</code> at values 150/70/30/0/−10.</span>
+          <span class="meta">Ground truth: <code>tools/excel-parity/probe-numfmt-sections.vbs</code> (72 format×value pairs) + Excel screenshot. Matched 96-dpi screenshot ↔ our native render.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:135px; aspect-ratio:3.5 / 1;">
+            <img src="../artifacts/excel/synthetic-numfmt-sections-crop.png" style="--w:480px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — conditional + colour sections">
+          </div>
+          <div class="caption">Excel: col B picks by condition (150→High, 70→Mid, &lt;50→Low, −10→"−Low"); col C neg in red, zero→"zero"; col D conditional blue / negative red.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:135px; aspect-ratio:3.5 / 1;">
+            <img src="../artifacts/native/synthetic-numfmt-sections-after.png" style="--w:480px; --x:0px; --y:0px; --s:1.0" alt="Ours after — matches Excel">
+          </div>
+          <div class="caption">After: every cell matches Excel — section picked by condition, the negative auto-minus on a default section ("−Low"), and the section colours (red/blue) all correct (72/72 text vs the probe).</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:135px; aspect-ratio:3.5 / 1;">
+            <img src="../artifacts/baseline/synthetic-numfmt-sections-before.png" style="--w:480px; --x:0px; --y:0px; --s:1.0" alt="Ours before — conditions ignored, colour formats garbled">
+          </div>
+          <div class="caption">Before: col B ignored the conditions (every value → 1st section, rendered "high" lowercased), and col D's <code>[&lt;0][Red]…</code> collapsed to "0.0" — both because the format mis-routed to the date path.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>src/Spreadsheet/CellText.fs</code>:</p>
+          <ul>
+            <li><strong>Conditional sections:</strong> <code>sectionForValue</code> now detects <code>[op N]</code> conditions and picks the first section whose condition is true, falling back to the last unconditioned (default) section — instead of always splitting by sign.</li>
+            <li><strong>Negative on a default section</strong> gets an auto "−" prepended (Excel: <code>-10</code>→"−10", "Low"→"−Low"); a conditioned/dedicated-negative section formats the absolute value.</li>
+            <li><strong>Colour anywhere:</strong> the colour tag is matched among a section's leading tags, not just at the start, so <code>[&lt;0][Red]</code> / <code>[Red][&gt;100]</code> both colour correctly.</li>
+            <li><strong>Date/time mis-routing:</strong> the sniffer now strips colour/condition/quoted content first — <code>[Red]</code> (→'d') and <code>"High"</code> (→'h') no longer masquerade as date/time tokens.</li>
+            <li>Regression guard: 78/78 VBA-layout clean, 12/12 print-PDF within MAE, 90/90 smoke render; shared <code>CellText.fs</code> so native/canvas/PDF all benefit.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Rotated cell text renders at its angle in the native/interactive grid</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-text-rotation.xlsx</code> — cells with <code>textRotation</code> 45 / 90 / 135 / 180 (Excel: 45° CCW, 90° vertical-up, −45° CW, −90° vertical-down).</span>
+          <span class="meta">Path checked: Excel screenshot via <code>tools/excel-parity/excel-screenshot.sh</code> on <code>wordvm</code> vs our native render (<code>tools/excel-native-runner</code>).</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:4 / 1;">
+            <img src="../artifacts/excel/synthetic-text-rotation-crop.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — text rotated 45/90/-45/-90">
+          </div>
+          <div class="caption">Excel reference: "rot 45" rises, "rot 90" reads bottom-to-top, "rot -45" descends, "rot -90" reads top-to-bottom.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:3.6 / 1;">
+            <img src="../artifacts/native/synthetic-text-rotation-after-crop.png" style="--w:540px; --x:0px; --y:0px; --s:1.0" alt="Ours after — text rotated to match Excel">
+          </div>
+          <div class="caption">After: all four angles match Excel's direction — 45° rise, 90° bottom-to-top, −45° descend, −90° top-to-bottom.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:3.6 / 1;">
+            <img src="../artifacts/baseline/synthetic-text-rotation-before-crop.png" style="--w:540px; --x:0px; --y:0px; --s:1.0" alt="Ours before — all text drawn flat">
+          </div>
+          <div class="caption">Before: the native/interactive grid ignored <code>PaintText.Rotation</code> and drew every cell flat (the PDF path already rotated correctly).</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>spreadsheet-native/SpreadsheetGrid.fs</code> <code>toRendererCommands</code>, lay the glyph stream out horizontally as before, then wrap it in a <code>Cmd.Group</code> rotation about a leading-edge anchor. Screen space is y-down so <code>Matrix3x2.rotate(θ)</code> turns clockwise; Excel's 1..90 is CCW (θ negative) and 91..180 is CW (θ positive). The run is laid out from a leading-edge anchor and rotated about it, matching the PDF path's anchor (left + 4 px; baseline at the cell bottom for CCW, top + ascent for CW).</p>
+          <ul>
+            <li>Focused guard: <code>synthetic-text-rotation.xlsx</code> renders 45 / 90 / 135 / 180 in the correct direction.</li>
+            <li>Vertical placement matches Excel (<code>rot 90</code> at y 88–122 vs 88–121), bottom-aligned.</li>
+            <li>Horizontal placement now matches too. A 13-angle × 3-length Excel sweep (<code>tools/excel-parity/build-rotation-sweep.vbs</code>) revealed the rule: <strong>right-align the rotated bounding box when 90 ≤ textRotation &lt; 180, else left-align</strong> (so CCW-vertical text sits at the column's right, CW-vertical at the left, CCW-angled left, CW-angled right). Implemented by rotating the run then translating its rotated bbox to the L/R + bottom anchor. Verified: rot45/90/−45/−90 land on the same side as Excel (offsets within ~14 px). Applied in all three render paths — native (<code>SpreadsheetGrid.fs</code>), PDF (<code>Pdf.fs</code>, confirmed by pdf↔pdf vs Excel's print PDF, top-crop MAE 4.85), and the web <code>&lt;canvas&gt;</code> (<code>Spreadsheet.fs</code>, which previously didn't rotate at all — now via <code>canvasTextRotated</code>).</li>
+            <li>Regression guard: non-rotated text returns the unchanged command list (<code>Rotation = 0</code> bypasses the <code>Group</code>); 78/78 VBA-layout clean, 88/88 smoke render, 10/10 print-PDF within MAE.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Merged-cell box borders trace the full merge perimeter</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-diagonal-borders.xlsx</code> (built via <code>tools/excel-parity/build-border-fixture.vbs</code>) — diagonal up/down/both, thick &amp; double boxes, and a thick box on the merged range <code>E6:F7</code>.</span>
+          <span class="meta">Path checked: <strong>screenshot ↔ screenshot</strong> — Excel window screenshot (<code>tools/excel-parity/excel-screenshot.sh</code>) vs our native render, both 96 dpi / 64 px-per-column, cropped to the same cell region.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:2.9 / 1;">
+            <img src="../artifacts/excel/synthetic-diagonal-borders-ss-excel.png" style="--w:430px; --x:0px; --y:0px; --s:1.0" alt="Excel screenshot — full thick box around the E6:F7 merge">
+          </div>
+          <div class="caption">Excel reference (screenshot): the thick border encloses the whole <code>E6:F7</code> merge — all four edges at the merge perimeter.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:2.9 / 1;">
+            <img src="../artifacts/native/synthetic-diagonal-borders-ss-after.png" style="--w:430px; --x:0px; --y:0px; --s:1.0" alt="Our screenshot after — complete box around the merge">
+          </div>
+          <div class="caption">After: the box now traces the full merge — top/left from the primary cell, right/bottom gathered from the merge's perimeter cells. Diagonals and thick box already matched.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:2.9 / 1;">
+            <img src="../artifacts/baseline/synthetic-diagonal-borders-ss-before.png" style="--w:430px; --x:0px; --y:0px; --s:1.0" alt="Our screenshot before — only top + partial left edge drawn">
+          </div>
+          <div class="caption">Before: only the primary cell's own left+top edges drew around the merge rect; the right and bottom edges — which Excel stores on the merge's trailing cells — were dropped, leaving an open box.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> in <code>src/Spreadsheet/Paint.fs</code> <code>buildCellPaintItems</code>, border sourcing is now merge-aware. <code>visibleCells</code> yields only the merge primary (with the full merge <code>Rect</code>) and skips the trailing cells, so each edge's style is gathered from the merge's perimeter cells rather than the primary's own format. Excel splits a box across the constituent cells (top-left = left+top, top-right = right, bottom row = bottom), so all four edges are needed.</p>
+          <p><strong>Crisp strokes (pixel-snap):</strong> a stroke centred on an integer coordinate with an odd width spreads half a pixel either side and anti-aliases to ~50% grey edges ("half the line is lighter"). The raster paths now round the width and centre odd widths on a pixel centre (n+0.5), even widths on a boundary (n), so the line covers whole pixels — solid black like Excel's GDI, and the double border's two lines render crisp. The 3 px thick border now reads 3 solid-black rows (was 2 black + two 50%-grey edges). Butt caps + snapping give clean corners (Square caps were tried but their half-width extension AA-blobbed into a corner "ball").</p>
+          <p><strong>Gridlines under borders:</strong> Excel hides the light cell gridline on any edge that has an explicit border. We were drawing a grey <code>#a6a6a6</code> outline around every cell unconditionally, so (a) a neighbour's gridline overdrew the previous cell's border on the shared edge, and (b) the grey bled through a double border's 1 px gap (it read 166-grey instead of white). <code>buildCellPaintItems</code> now emits the gridline as per-edge lines and skips any edge where this cell or its neighbour has a border, so borders own their edges and the double-box gap is white (verified: gap pixel 166 → 245).</p>
+          <ul>
+            <li>Applied across all three render paths via shared <code>Paint.fs</code> + per-path stroking: <code>SpreadsheetGrid.fs</code> (native), <code>Spreadsheet.fs</code> (web <code>&lt;canvas&gt;</code>), and <code>Spreadsheet.Pdf/Pdf.fs</code> (print) — the print filter that dropped the interactive <code>StrokeRect</code> now also drops <code>#a6a6a6</code> <code>GridLine</code>s so the screen grid still doesn't print.</li>
+            <li>Regression guard: 78/78 VBA-layout clean, 11/11 print-PDF within MAE, 88/88 smoke render; Fable build clean.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Print column widths use the non-floored MDW (default columns too)</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-diagonal-borders.xlsx</code> — no <code>&lt;cols&gt;</code>, so every column is the workbook-default 8.43-char width.</span>
+          <span class="meta">Path checked: <strong>pdf ↔ pdf</strong> — Excel print PDF vs our print PDF, both rasterised at 96 dpi (<code>tools/excel-parity/compare-print-pdfs.py</code>).</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:3.1 / 1;">
+            <img src="../artifacts/excel/synthetic-diagonal-borders-matched-excel.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Excel print PDF — default columns ~68.6 px">
+          </div>
+          <div class="caption">Excel print (96 dpi): default columns print at ~68.6 px, so the column-D labels and column-E boxes sit further right than a 64 px column would place them.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:3.1 / 1;">
+            <img src="../artifacts/native/synthetic-diagonal-borders-matched-after.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Our print PDF after — columns aligned with Excel">
+          </div>
+          <div class="caption">After: our print columns scale to the same ~68.6 px, so the column-D label lands within <strong>0.06 pt</strong> of Excel (was 10.2 pt off) and every cell right of column A aligns.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:3.1 / 1;">
+            <img src="../artifacts/baseline/synthetic-diagonal-borders-matched-before.png" style="--w:500px; --x:0px; --y:0px; --s:1.0" alt="Our print PDF before — default columns 64 px, content drifts left">
+          </div>
+          <div class="caption">Before: default columns printed at 64 px while Excel uses ~68.6 px, so each column was ~4.6 px narrow and everything right of column A drifted progressively left (~10 pt by column D). (The open merge box is the separate border bug, fixed above.)</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>src/Spreadsheet.Pdf/Pdf.fs</code> <code>withPrintColumnWidths</code>. Excel's print path lays every column out with the non-floored MDW (~7.5 px vs the 7 px floored screen MDW), i.e. ×15/14 wider — <em>including</em> the workbook-default width. We previously applied that scale only to explicit <code>&lt;col&gt;</code> widths, leaving default columns at the 64 px screen width. Now all positive widths scale.</p>
+          <ul>
+            <li>Screen render is unchanged (this is print-only); on screen both Excel and ours use 64 px columns, which is why the merge-border row above compares cleanly at screenshot scale.</li>
+            <li>Regression guard: <strong>11/11 print-PDF fixtures within MAE</strong> (diagonal-borders improved, none regressed), 78/78 VBA-layout clean, 88/88 smoke render.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Elapsed-time number formats (<code>[h]</code> / <code>[m]</code> / <code>[s]</code>) show running totals</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-elapsed-time.xlsx</code> — ten duration serials × twelve elapsed formats (built in Excel via <code>tools/excel-parity/build-elapsed-fixture.vbs</code>). Excel's elapsed brackets show the <em>total</em> of the leading unit (hours past 24, minutes past 60, unbounded seconds) rather than a wall-clock component.</span>
+          <span class="meta">Ground truth: <code>tools/excel-parity/probe-elapsed.vbs</code> on <code>wordvm</code> read back <code>cell.Text</code> for every pair; columns A–H crop (formats <code>[h]:mm:ss</code> … <code>[mm]:ss</code>).</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:250px; aspect-ratio:2.9 / 1;">
+            <img src="../artifacts/excel/synthetic-elapsed-time-crop.png" style="--w:770px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — elapsed totals like 25:30:00 and [h]=25">
+          </div>
+          <div class="caption">Excel reference: <code>1.0625</code> days renders as <code>25:30:00</code> under <code>[h]:mm:ss</code> (25 elapsed hours, not 1:30:00), <code>[m]</code> shows <code>1530</code> total minutes, <code>[s]</code> shows the total seconds, and <code>[hh]</code> zero-pads to the bracket width.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:250px; aspect-ratio:2.9 / 1;">
+            <img src="../artifacts/native/synthetic-elapsed-time-after-crop.png" style="--w:770px; --x:0px; --y:0px; --s:1.0" alt="Ours after — elapsed totals match Excel">
+          </div>
+          <div class="caption">After: matches Excel on all 120 (serial × format) pairs. Verified directly against the probe TSV via <code>cellDisplayText</code> (120/120) and through the import→render path (<code>spreadsheet-vba-layout</code>): <code>25:30:00</code>, <code>[m]</code>=<code>1530</code>, <code>[hh]:mm:ss</code>=<code>25:30:00</code>, and 32.5 s rounds to <code>0:00:33</code> under <code>[h]:mm:ss</code> but prints <code>32.500</code> under <code>[s].000</code>.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:250px; aspect-ratio:2.9 / 1;">
+            <img src="../artifacts/baseline/synthetic-elapsed-time-before-crop.png" style="--w:770px; --x:0px; --y:0px; --s:1.0" alt="Ours before — hours dropped, bracket emitted as literal text">
+          </div>
+          <div class="caption">Before: the format converter skipped the whole <code>[…]</code> bracket, so <code>[h]:mm:ss</code> lost its hours (<code>25:30:00</code> → <code>:30:00</code>), <code>[m]</code> emitted the literal text <code>[m]</code>, and <code>[h]</code> hash-overflowed (<code>#####</code>). <code>[s]</code>/<code>[ss]</code> weren't even recognised as time formats and fell through to the number path.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> add a dedicated <code>formatElapsedTime</code> in <code>src/Spreadsheet/Paint.fs</code>. It computes total elapsed seconds from the serial, rounds to the format's fractional-second precision (away from zero), then decomposes: the leading <code>[h]</code>/<code>[m]</code>/<code>[s]</code> bracket carries the running total of that unit (padded to the bracket's letter count) and any trailing <code>mm</code>/<code>ss</code> are the remainder within the parent. <code>hasElapsedBracket</code> routes these (including <code>[s]</code>/<code>[ss]</code>, which <code>isTimeFormat</code> missed) into the date/time dispatch. Stock .NET <code>DateTime</code> formats can't express elapsed totals, so this bypasses them entirely.</p>
+          <ul>
+            <li>Bonus fix: the wall-clock <code>h:mm:ss</code> path now rounds to the whole second when seconds are shown (Excel renders <code>59.9999996 s</code> as <code>0:01:00</code>; .NET truncated to <code>0:00:59</code>). Closes the last 5 probe mismatches.</li>
+            <li>Focused guard: all 120 (serial × format) pairs match Excel's <code>cell.Text</code>; covered by the new <code>synthetic-elapsed-time.xlsx</code> fixture.</li>
+            <li>Regression guard: 78/78 VBA-layout fixtures clean, 86/86 smoke render, 10/10 print-PDF within MAE — the whole-second rounding touched the shared date path without disturbing any existing date/time fixture.</li>
+            <li>Authoring guard: pure renderer behavior — no schema or UI changes.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Wrapped cells auto-grow their row to the wrapped line count</strong>
+          <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-wrap-autoheight.xlsx</code> — column A has a long <code>wrapText="1"</code> description in a narrow column with no explicit row height, so Excel auto-sizes the row to however many lines the text wraps into. Column B holds a 3-line note in the same row.</span>
+          <span class="meta">Path checked: Excel screenshot via <code>tools/excel-parity/excel-screenshot.sh</code> on <code>wordvm</code>, our render via <code>tools/excel-native-runner</code>; 600×250 top-left crop. Layer also gated by the VBA-layout harness (<code>rowHeight</code> field at 0.5 pt).</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:250px; aspect-ratio:2.4 / 1;">
+            <img src="../artifacts/excel/synthetic-wrap-autoheight-expected.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — description wraps to 6 lines, row auto-grows">
+          </div>
+          <div class="caption">Excel reference: the description wraps to six lines inside column A and the row auto-grows to hold all six. The Notes column shows <em>line one / line two / line three</em>, and the short row sits cleanly below the tall one.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:250px; aspect-ratio:2.4 / 1;">
+            <img src="../artifacts/native/synthetic-wrap-autoheight-after.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours after — six wrapped lines, row auto-grown to match">
+          </div>
+          <div class="caption">After: matches. The description wraps to the same six-line block, the row auto-grows to fit, and the short row below is no longer overlapped. The wrap break points are within a word of Excel's.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:250px; aspect-ratio:2.4 / 1;">
+            <img src="../artifacts/baseline/synthetic-wrap-autoheight-before.png" style="--w:600px; --x:0px; --y:0px; --s:1.0" alt="Ours before — text overflows on one line, row never grows, content collides">
+          </div>
+          <div class="caption">Before: the row kept its single-line default height, so the wrapped description spilled horizontally across columns instead of stacking, and the Notes lines collided with the short row beneath (<em>line two / also short / line three</em> overprinting each other).</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> two corrections in the auto-height path. (1) In <code>tools/excel-native-runner/Program.fs</code> the wrap line height now derives from <code>autoRowHeightPt</code> (the OS/2 typo-metric row height, 20 px at Calibri 11) instead of <code>fontPx * 1.2</code>, so each wrapped line advances the row by the same pitch Excel uses. (2) In <code>src/Spreadsheet/Paint.fs</code> <code>wrapLines</code> the usable text width is <code>cellWidthPx - 14</code> (4 px text inset each side + 5 px OOXML cell padding), which forces the same break points Excel measures — without it our wider measurement under-counted the lines.</p>
+          <ul>
+            <li>Focused guard: <code>synthetic-wrap-autoheight.xlsx</code> column A now reports the six-line auto-height that Excel does (VBA-layout <code>rowHeight</code> within 0.5 pt); the 8-line synthetic-wrap fixture also breaks on the right word.</li>
+            <li>Regression guard: rows with an explicit <code>customHeight</code> are untouched (literal <code>ht</code> wins); only <code>wrapText</code> rows with no stored height auto-grow.</li>
+            <li>Path guard: 78/78 VBA-layout fixtures clean, 85/85 smoke render, 10/10 print-PDF within MAE.</li>
+            <li>Authoring guard: renderer + layout only — no schema or UI changes.</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Drop the historical −2 px baseline fudge in the PDF text emitter</strong>
           <span class="meta">Repro: any print-PDF fixture. Most visible on <code>synthetic-print.xlsx</code> where 11 data rows sat 2 px above Excel's baseline grid through the body — and on the chrome of <code>synthetic-print-chrome.xlsx</code> where row labels drifted away from cell centers.</span>
           <span class="meta">Path checked: print PDF (<code>tools/spreadsheet-pdf-runner</code>) vs Excel-rendered PDF rasterized at 96 dpi.</span>

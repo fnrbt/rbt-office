@@ -257,27 +257,43 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
                     else -(float (t.Rotation - 90)) * System.Math.PI / 180.0
                 let cosT = if useRotation then System.Math.Cos angleRad else 1.0
                 let sinT = if useRotation then System.Math.Sin angleRad else 0.0
-                // For rotated text, anchor at the cell's leading edge. For
-                // CCW the baseline sits near the cell's bottom so the text
-                // rises within the cell; for CW the baseline sits near
-                // the cell's top + ascent so the text descends within the
-                // cell. Without this split, CW text leaks into the row
-                // below. Horizontal alignment becomes meaningless once
-                // rotated, so we pad from the left.
+                // Rotated-text placement, matching the native renderer + Excel
+                // (rule derived from tools/excel-parity/build-rotation-sweep.vbs):
+                // rotate the run about its baseline start, then position the
+                // rotated bounding box — RIGHT-aligned when 90 ≤ textRotation <
+                // 180, else LEFT-aligned, always BOTTOM-aligned. Computed in
+                // CSS px (y-down) then converted; the glyph loop below extends
+                // the run along the PDF (y-up) rotation from this anchor.
                 let anchorXPt, anchorYPt =
-                    if useRotation then
-                        let cellLeadingPt = rectXPt + sz 4.0
-                        if t.Rotation <= 90 then
-                            // CCW — anchor at bottom-left, text rises.
-                            let cellBottomPx = t.Rect.Y + t.Rect.Height - 2.0
-                            cellLeadingPt, yPdf cellBottomPx
-                        else
-                            // CW — anchor at top-left + ascent so the
-                            // first glyph's top edge stays inside the cell.
-                            let cellTopPx = t.Rect.Y + ascent + 2.0
-                            cellLeadingPt, yPdf cellTopPx
+                    if not useRotation then alignedXPt, yPdf baselineY
                     else
-                        alignedXPt, yPdf baselineY
+                        let thetaS =
+                            if t.Rotation <= 90 then -(float t.Rotation) * System.Math.PI / 180.0
+                            else float (t.Rotation - 90) * System.Math.PI / 180.0
+                        let cosS, sinS = System.Math.Cos thetaS, System.Math.Sin thetaS
+                        let totalWidthPx =
+                            segments
+                            |> List.sumBy (fun (face, s) ->
+                                float (PdfFont.getTextWidth (snd face) s) / float (snd face).UnitsPerEm * fontPx)
+                        let ax0 = t.Rect.X + 4.0
+                        let ay0 = t.Rect.Y + t.Rect.Height - 2.0
+                        let rotPt x y =
+                            let dx, dy = x - ax0, y - ay0
+                            ax0 + dx * cosS - dy * sinS, ay0 + dx * sinS + dy * cosS
+                        let corners =
+                            [ rotPt ax0 (ay0 - ascent)
+                              rotPt (ax0 + totalWidthPx) (ay0 - ascent)
+                              rotPt ax0 (ay0 + descent)
+                              rotPt (ax0 + totalWidthPx) (ay0 + descent) ]
+                        let minX = corners |> List.map fst |> List.min
+                        let maxX = corners |> List.map fst |> List.max
+                        let maxY = corners |> List.map snd |> List.max
+                        let rightAlign = t.Rotation >= 90 && t.Rotation < 180
+                        let shiftX =
+                            if rightAlign then (t.Rect.X + t.Rect.Width - 2.0) - maxX
+                            else (t.Rect.X + 2.0) - minX
+                        let shiftY = (t.Rect.Y + t.Rect.Height - 2.0) - maxY
+                        xPt (ax0 + shiftX), yPdf (ay0 + shiftY)
                 let glyphCmds =
                     [ yield PdfDraw.BeginText
                       yield PdfDraw.SetFillColor textColor
@@ -365,21 +381,18 @@ let private withCommentMarkersForPrint (model: SpreadsheetModel) : SpreadsheetMo
 
 let private withPrintColumnWidths (model: SpreadsheetModel) : SpreadsheetModel =
     if Map.isEmpty model.ColumnWidths then model else
-    let roundWidth (width: float) = Math.Round(width, 3)
-    let defaultWidth =
-        model.ColumnWidths
-        |> Map.toSeq
-        |> Seq.map (fun (_, width) -> roundWidth width)
-        |> Seq.countBy id
-        |> Seq.maxBy snd
-        |> fst
-    let isDefault width = abs (roundWidth width - defaultWidth) < 0.001
+    // Excel's live grid lays columns out with the floored screen MDW (7 px for
+    // Calibri 11), but its PDF print path uses the non-floored width (~7.5 px),
+    // i.e. ~15/14 wider — for EVERY column, including the workbook-default
+    // width. Measured on `synthetic-diagonal-borders.xlsx`: a default 8.43-char
+    // column prints at ~68.8 px vs our 64 px; 64 × 15/14 = 68.6 px. Earlier
+    // this scale was applied only to explicit `<col>` widths, which left the
+    // default columns ~5 px narrow and drifted every cell right of column A
+    // leftward. Scale all positive widths.
     let printScale = 15.0 / 14.0
     let widths =
         model.ColumnWidths
-        |> Map.map (fun _ width ->
-            if width <= 0.0 || isDefault width then width
-            else width * printScale)
+        |> Map.map (fun _ width -> if width <= 0.0 then width else width * printScale)
     { model with ColumnWidths = widths }
 
 /// Excel's print PDF renders Calibri-11 auto-derived rows at 19 px (14.25 pt)
@@ -455,6 +468,12 @@ let private isDefaultPrintCellFill (item: PaintItem) : bool =
 let private isInteractiveCellStroke (item: PaintItem) : bool =
     match item with
     | StrokeRect _ -> true
+    // The interactive light gridline is now emitted as per-edge `GridLine`
+    // items (colour #a6a6a6) rather than a per-cell StrokeRect, so the print
+    // path must drop those too — Excel doesn't print the screen grid. Explicit
+    // cell borders are GridLines in their own (non-#a6a6a6) colour and survive.
+    | GridLine (_, _, _, _, color, _) ->
+        color.Equals("#a6a6a6", StringComparison.OrdinalIgnoreCase)
     | _ -> false
 
 /// Shift every coordinate of a paint item by (dx, dy) CSS px. Used to map

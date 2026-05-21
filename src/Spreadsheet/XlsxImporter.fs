@@ -242,93 +242,106 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
             let mutable columnWidths = Map.empty<int, float>
             let mutable rowHeights = Map.empty<int, float>
 
-            // Import cells with styles
-            for row in 0 .. rowCount - 1 do
-                for col in 0 .. colCount - 1 do
-                    // Convert to Excel reference (A1, B1, etc.)
-                    let colLetter = columnToLetter col
-                    let excelRef = sprintf "%s%d" colLetter (row + 1)
-
-                    let rawValue =
-                        if row < dataArray.Length && col < dataArray.[row].Length then dataArray.[row].[col]
-                        else null
-
-                    // Get cell with style
-                    let cellObj = excel?cellWithStyleAt(excelRef, sheet)
-                    if not (isNullOrUndefined cellObj) || not (isNullOrUndefined rawValue) then
-                        // Helper to extract border from cell object
-                        let extractBorder (borderObj: obj) =
-                            if isNullOrUndefined borderObj then None
-                            else
-                                Some {
-                                    style = optStringProp borderObj "style"
-                                    color = optStringProp borderObj "color"
-                                }
-
-                        let excelCell: ExcelCell =
-                            {
-                                value = if isNullOrUndefined rawValue || string rawValue = "" then None else Some rawValue
-                                formula = optStringProp cellObj "formula"
-                                bold = optBoolProp cellObj "bold"
-                                italic = optBoolProp cellObj "italic"
-                                underline = optBoolProp cellObj "underline"
-                                underlineDouble = optBoolProp cellObj "underlineDouble"
-                                strikethrough = optBoolProp cellObj "strikethrough"
-                                fontName = optStringProp cellObj "fontName"
-                                fontColor = optStringProp cellObj "fontColor"
-                                fillColor = optStringProp cellObj "fillColor"
-                                fontSize = optFloatProp cellObj "fontSize"
-                                numberFormat = optStringProp cellObj "numberFormat"
-                                horizontalAlign = optStringProp cellObj "horizontalAlign"
-                                verticalAlign = optStringProp cellObj "verticalAlign"
-                                wrapText = optBoolProp cellObj "wrapText"
-                                borderTop = extractBorder (getProp cellObj "borderTop")
-                                borderBottom = extractBorder (getProp cellObj "borderBottom")
-                                borderLeft = extractBorder (getProp cellObj "borderLeft")
-                                borderRight = extractBorder (getProp cellObj "borderRight")
-                                borderDiagonal = extractBorder (getProp cellObj "borderDiagonal")
-                                diagonalUp = optBoolProp cellObj "diagonalUp"
-                                diagonalDown = optBoolProp cellObj "diagonalDown"
-                                hasComment = optBoolProp cellObj "hasComment"
-                                hasListDropdown = optBoolProp cellObj "hasListDropdown"
+            let importCell row col excelRef rawValue cellObj directRichRuns =
+                if not (isNullOrUndefined cellObj) || not (isNullOrUndefined rawValue) then
+                    let extractBorder (borderObj: obj) =
+                        if isNullOrUndefined borderObj then None
+                        else
+                            Some {
+                                style = optStringProp borderObj "style"
+                                color = optStringProp borderObj "color"
                             }
 
-                        let cellValue = convertCellValue excelCell
-                        let cellFormat = convertCellFormat excelCell
+                    let excelCell: ExcelCell =
+                        {
+                            value = if isNullOrUndefined rawValue || string rawValue = "" then None else Some rawValue
+                            formula = optStringProp cellObj "formula"
+                            bold = optBoolProp cellObj "bold"
+                            italic = optBoolProp cellObj "italic"
+                            underline = optBoolProp cellObj "underline"
+                            underlineDouble = optBoolProp cellObj "underlineDouble"
+                            strikethrough = optBoolProp cellObj "strikethrough"
+                            fontName = optStringProp cellObj "fontName"
+                            fontColor = optStringProp cellObj "fontColor"
+                            fillColor = optStringProp cellObj "fillColor"
+                            fontSize = optFloatProp cellObj "fontSize"
+                            numberFormat = optStringProp cellObj "numberFormat"
+                            horizontalAlign = optStringProp cellObj "horizontalAlign"
+                            verticalAlign = optStringProp cellObj "verticalAlign"
+                            wrapText = optBoolProp cellObj "wrapText"
+                            borderTop = extractBorder (getProp cellObj "borderTop")
+                            borderBottom = extractBorder (getProp cellObj "borderBottom")
+                            borderLeft = extractBorder (getProp cellObj "borderLeft")
+                            borderRight = extractBorder (getProp cellObj "borderRight")
+                            borderDiagonal = extractBorder (getProp cellObj "borderDiagonal")
+                            diagonalUp = optBoolProp cellObj "diagonalUp"
+                            diagonalDown = optBoolProp cellObj "diagonalDown"
+                            hasComment = optBoolProp cellObj "hasComment"
+                            hasListDropdown = optBoolProp cellObj "hasListDropdown"
+                        }
 
-                        // Read comment if present. Older office-format builds expose comments as a collection only.
-                        let commentObj =
-                            if isFunction excel?commentAt then excel?commentAt(excelRef, sheet)
+                    let cellValue = convertCellValue excelCell
+                    let cellFormat = convertCellFormat excelCell
+
+                    // Read comment if present. Older office-format builds expose comments as a collection only.
+                    let commentObj =
+                        if isFunction excel?commentAt then excel?commentAt(excelRef, sheet)
+                        else null
+                    let comment =
+                        if isNullOrUndefined commentObj then None
+                        else
+                            let text = optStringProp commentObj "text" |> Option.defaultValue ""
+                            let author = optStringProp commentObj "author"
+                            if System.String.IsNullOrWhiteSpace(text) then None
+                            else Some { Text = text; Author = author }
+
+                    let cellFormat =
+                        if comment.IsSome then { cellFormat with HasComment = true }
+                        else cellFormat
+
+                    // Keep style-only cells. Excel renders fills, borders,
+                    // comment markers, and validation dropdowns even when
+                    // the cell has no value.
+                    if cellValue <> CellValue.Empty || cellFormat <> defaultFormat || comment.IsSome then
+                        let addr = { Row = row; Col = col }
+                        cellMap <- Map.add addr { Value = cellValue; Format = cellFormat; Comment = comment } cellMap
+
+                        let richRunObjs =
+                            match directRichRuns with
+                            | Some runs when not (isNullOrUndefined runs) -> runs
+                            | _ ->
+                                if isFunction excel?richRunsAt then excel?richRunsAt(excelRef, workbook, sheet)
+                                else null
+                        if not (isNullOrUndefined richRunObjs) then
+                            let runs =
+                                richRunObjs
+                                |> arrayFrom
+                                |> Array.map convertRichRun
+                                |> Array.toList
+                            if not (List.isEmpty runs) then
+                                richRunsMap <- Map.add addr runs richRunsMap
+
+            // Import actual cells with styles in one pass when the
+            // office-format API supports it. The coordinate fallback is
+            // kept for older browser bundles.
+            if isFunction excel?cellsWithStyle then
+                let cellObjs = excel?cellsWithStyle(workbook, sheet) |> arrayFrom
+                for cellObj in cellObjs do
+                    let excelRef = optStringProp cellObj "ref" |> Option.defaultValue ""
+                    match parseCellRef excelRef with
+                    | Some (row, col) ->
+                        importCell row col excelRef (getProp cellObj "value") cellObj (Some (getProp cellObj "richRuns"))
+                    | None -> ()
+            else
+                for row in 0 .. rowCount - 1 do
+                    for col in 0 .. colCount - 1 do
+                        let colLetter = columnToLetter col
+                        let excelRef = sprintf "%s%d" colLetter (row + 1)
+                        let rawValue =
+                            if row < dataArray.Length && col < dataArray.[row].Length then dataArray.[row].[col]
                             else null
-                        let comment =
-                            if isNullOrUndefined commentObj then None
-                            else
-                                let text = optStringProp commentObj "text" |> Option.defaultValue ""
-                                let author = optStringProp commentObj "author"
-                                if System.String.IsNullOrWhiteSpace(text) then None
-                                else Some { Text = text; Author = author }
-
-                        let cellFormat =
-                            if comment.IsSome then { cellFormat with HasComment = true }
-                            else cellFormat
-
-                        // Keep style-only cells. Excel renders fills,
-                        // borders, comment markers, and validation dropdowns
-                        // even when the cell has no value.
-                        if cellValue <> CellValue.Empty || cellFormat <> defaultFormat || comment.IsSome then
-                            let addr = { Row = row; Col = col }
-                            cellMap <- Map.add addr { Value = cellValue; Format = cellFormat; Comment = comment } cellMap
-
-                            if isFunction excel?richRunsAt then
-                                let richRunObjs = excel?richRunsAt(excelRef, workbook, sheet)
-                                if not (isNullOrUndefined richRunObjs) then
-                                    let runs =
-                                        richRunObjs
-                                        |> arrayFrom
-                                        |> Array.map convertRichRun
-                                        |> Array.toList
-                                    if not (List.isEmpty runs) then
-                                        richRunsMap <- Map.add addr runs richRunsMap
+                        let cellObj = excel?cellWithStyleAt(excelRef, sheet)
+                        importCell row col excelRef rawValue cellObj None
 
             // Import column widths (office-format provides in Excel units)
             for col in 0 .. colCount - 1 do

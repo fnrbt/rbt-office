@@ -44,6 +44,21 @@ let private familyKey (name: string option) =
         elif lower.StartsWith "cambria" then "cambria"
         elif lower.StartsWith "times" then "times"
         elif lower.StartsWith "verdana" then "verdana"
+        // Localized "Body Text Font" names from non-English Excel installs.
+        // OOXML stores the localized display name verbatim; Windows resolves
+        // it through the OS locale. For our purposes Arial is the closest
+        // Excel substitute on a system that doesn't have the localized
+        // font (verified against pandas-testdateoverflow's Polish
+        // "Czcionka tekstu podstawowego" — column widths and row heights
+        // match Excel's reported values with Arial metrics, not Calibri's).
+        elif lower = "czcionka tekstu podstawowego" then "arial"     // Polish
+        elif lower = "schrift des textkörpers" then "arial"          // German
+        elif lower = "police du corps" then "arial"                  // French
+        elif lower = "carattere del corpo" then "arial"              // Italian
+        elif lower = "fuente del cuerpo" then "arial"                // Spanish
+        elif lower = "本文のフォント" then "arial"                    // Japanese
+        elif lower = "正文字体" then "arial"                          // Chinese (Simplified)
+        elif lower = "본문 글꼴" then "arial"                         // Korean
         else "calibri"
 
 let private fontFiles family bold italic =
@@ -262,11 +277,22 @@ let private toRendererCommands (text: PaintText) =
             let w = Renderer.Text.measureWidth f pxSize s
             f, l, w)
     let totalWidth = segmentLayouts |> List.sumBy (fun (_, _, w) -> w)
+    // Cell-text rotation (Excel `<alignment textRotation>`): 1..90 = degrees
+    // CCW, 91..180 = (value-90) degrees CW, 255 = stacked (handled as flat
+    // here). The PDF renderer already rotates; the native/interactive path
+    // laid every cell flat. We lay the text out horizontally from a leading-
+    // edge anchor, then rotate the whole glyph stream around that anchor via
+    // a Cmd.Group transform — mirroring the (Excel-validated) PDF path: anchor
+    // at left + 4 px, baseline at the cell bottom for CCW (text rises) or at
+    // the cell top + ascent for CW (text descends, staying inside the cell).
+    let isRotated = text.Rotation > 0 && text.Rotation <> 255
     let alignedX =
-        match text.Align with
-        | AlignLeft -> text.Rect.X
-        | AlignCenter -> text.Rect.X + (text.Rect.Width - totalWidth) / 2.0
-        | AlignRight -> text.Rect.X + text.Rect.Width - totalWidth
+        if isRotated then text.Rect.X + 4.0
+        else
+            match text.Align with
+            | AlignLeft -> text.Rect.X
+            | AlignCenter -> text.Rect.X + (text.Rect.Width - totalWidth) / 2.0
+            | AlignRight -> text.Rect.X + text.Rect.Width - totalWidth
     // Baseline from OS/2 winAscent/winDescent of the PRIMARY font. Mixing
     // ascents across fallback fonts would jitter the baseline; sticking to
     // the primary's ascent matches Excel/GDI's font-linking behavior, which
@@ -294,10 +320,15 @@ let private toRendererCommands (text: PaintText) =
     // baseline. PaintText.BaselineShift is in pt at the cell's base size;
     // convert to px the same way pt → px conversion happens elsewhere.
     let baselineShiftPx = text.BaselineShift * 96.0 / 72.0
-    let baseline = blockTopY + float text.LineIndex * lineHeight + ascent + baselineShiftPx
+    // Rotated text is laid out at a provisional bottom-left position; the
+    // Group transform below rotates it and then aligns its rotated bounding
+    // box within the cell, so this exact baseline only needs to be consistent.
+    let baseline =
+        if isRotated then text.Rect.Y + text.Rect.Height - 2.0
+        else blockTopY + float text.LineIndex * lineHeight + ascent + baselineShiftPx
     let color = Solid (parseHexColor text.Color)
     let mutable cursor = alignedX
-    [
+    let inner = [
         for (_, layout, width) in segmentLayouts do
             yield Cmd.DrawGlyphs(vec2 cursor baseline, layout, color)
             cursor <- cursor + width
@@ -338,6 +369,43 @@ let private toRendererCommands (text: PaintText) =
                   LineTo (vec2 (alignedX + totalWidth) strikeY) ],
                 lineStyle)
     ]
+    if not isRotated then inner
+    else
+        // Screen space is y-down so Matrix3x2.rotate(θ) turns clockwise;
+        // Excel's 1..90 is CCW (θ negative) and 91..180 is CW (θ positive).
+        let theta =
+            if text.Rotation <= 90 then -(float text.Rotation) * System.Math.PI / 180.0
+            else float (text.Rotation - 90) * System.Math.PI / 180.0
+        // Rotate about the run's anchor, then translate so the rotated bounding
+        // box is aligned within the cell the way Excel does (derived from a
+        // 13-angle × 3-length sweep, tools/excel-parity/build-rotation-sweep.vbs):
+        // RIGHT-align the box when 90 ≤ textRotation < 180 (CCW-vertical and
+        // CW-angled), LEFT-align otherwise; always bottom-align. Bottom-align
+        // also keeps vertical placement matching (rot 90 at y 88–122 vs 88–121).
+        let descent = winDescent primary pxSize
+        let cosT, sinT = cos theta, sin theta
+        let rotPt x y =
+            let dx, dy = x - alignedX, y - baseline
+            alignedX + dx * cosT - dy * sinT, baseline + dx * sinT + dy * cosT
+        let corners =
+            [ rotPt alignedX (baseline - ascent)
+              rotPt (alignedX + totalWidth) (baseline - ascent)
+              rotPt alignedX (baseline + descent)
+              rotPt (alignedX + totalWidth) (baseline + descent) ]
+        let minX = corners |> List.map fst |> List.min
+        let maxX = corners |> List.map fst |> List.max
+        let maxY = corners |> List.map snd |> List.max
+        let rightAlign = text.Rotation >= 90 && text.Rotation < 180
+        let shiftX =
+            if rightAlign then (text.Rect.X + text.Rect.Width - 2.0) - maxX
+            else (text.Rect.X + 2.0) - minX
+        let shiftY = (text.Rect.Y + text.Rect.Height - 2.0) - maxY
+        let rot =
+            Matrix3x2.multiply
+                (Matrix3x2.multiply (Matrix3x2.translate -alignedX -baseline) (Matrix3x2.rotate theta))
+                (Matrix3x2.translate alignedX baseline)
+        let xform = Matrix3x2.multiply rot (Matrix3x2.translate shiftX shiftY)
+        [ Cmd.Group(xform, 1.0, inner) ]
 
 let private renderPaintItem = function
     | FillRect (rect, color) ->
@@ -346,8 +414,26 @@ let private renderPaintItem = function
         [ Cmd.StrokeRect(Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color, px width) ]
     | DrawText text -> toRendererCommands text
     | GridLine (x1, y1, x2, y2, color, width) ->
+        // Pixel-snap axis-aligned strokes so they cover WHOLE pixels — like
+        // Excel's GDI — instead of straddling the grid. A stroke centred on an
+        // integer coordinate with an odd width spreads half a pixel either
+        // side, so its edges anti-alias to ~50% grey (the "half the line is
+        // lighter" artefact). Rounding the width and centring odd widths on a
+        // pixel centre (n+0.5), even widths on a boundary (n), keeps the line
+        // crisp. Diagonals (neither axis constant) are left unsnapped.
+        let w = max 1.0 (System.Math.Round width)
+        let snap (c: float) =
+            if int w % 2 = 1 then floor c + 0.5 else System.Math.Round c
+        let sx1, sy1, sx2, sy2 =
+            if abs (y1 - y2) < 0.01 then let sy = snap y1 in x1, sy, x2, sy
+            elif abs (x1 - x2) < 0.01 then let sx = snap x1 in sx, y1, sx, y2
+            else x1, y1, x2, y2
         let style = {
-            Width = px width
+            // Butt caps: with pixel-snapped strokes the box sides meet crisply
+            // at the shared corner pixel. Square caps were tried but their
+            // half-width extension lands off the pixel grid and anti-aliases to
+            // a grey blob at the corner ("sticks out like a ball").
+            Width = px w
             Cap = Butt
             Join = Miter
             Paint = Solid (parseHexColor color)
@@ -355,7 +441,7 @@ let private renderPaintItem = function
             DashOffset = px 0.0
             MiterLimit = 4.0
         }
-        [ Cmd.StrokePath([MoveTo (vec2 x1 y1); LineTo (vec2 x2 y2)], style) ]
+        [ Cmd.StrokePath([MoveTo (vec2 sx1 sy1); LineTo (vec2 sx2 sy2)], style) ]
 
 /// Measure a text run in pixels using the real loaded font. Plugged into
 /// Viewport.Measurer so Paint.wrapLines can break lines on actual glyph

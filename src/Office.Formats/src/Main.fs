@@ -533,6 +533,15 @@ module Excel =
         | XlsxReader.Formula f -> f
         | _ -> null
 
+    let private cellValueObj (workbook: XlsxReader.Workbook) (cell: XlsxReader.Cell) : obj =
+        match XlsxReader.resolveValue workbook cell.Value with
+        | XlsxReader.String s -> box s
+        | XlsxReader.Number n -> box n
+        | XlsxReader.Boolean b -> box b
+        | XlsxReader.Date d -> box d
+        | XlsxReader.Formula f -> box f
+        | _ -> null
+
     let private listDropdownAt row col (sheet: XlsxReader.Worksheet) =
         sheet.DataValidations
         |> List.exists (fun dv ->
@@ -544,6 +553,45 @@ module Excel =
         |> List.tryFind (fun c ->
             c.CellRef.Row - 1 = row
             && columnIndex c.CellRef.Column = col)
+
+    let private cellWithStyleObj (workbook: XlsxReader.Workbook option) (sheet: XlsxReader.Worksheet) (c: XlsxReader.Cell) : obj =
+        let row = c.Reference.Row - 1
+        let col = columnIndex c.Reference.Column
+        let style = c.Style
+        createObj [
+            "ref" ==> cellRefText c.Reference
+            "value" ==>
+                (match workbook with
+                 | Some wb -> cellValueObj wb c
+                 | None -> null)
+            "formula" ==> cellFormula c
+            "bold" ==> (style |> Option.map (fun s -> s.Bold) |> Option.defaultValue false)
+            "italic" ==> (style |> Option.map (fun s -> s.Italic) |> Option.defaultValue false)
+            "underline" ==> (style |> Option.map (fun s -> s.Underline) |> Option.defaultValue false)
+            "underlineDouble" ==> (style |> Option.map (fun s -> s.UnderlineDouble) |> Option.defaultValue false)
+            "strikethrough" ==> (style |> Option.map (fun s -> s.Strikethrough) |> Option.defaultValue false)
+            "fontName" ==> (style |> Option.bind (fun s -> s.FontName) |> optString)
+            "fontColor" ==> (style |> Option.bind (fun s -> s.FontColor) |> optString)
+            "fillColor" ==> (style |> Option.bind (fun s -> s.FillColor) |> optString)
+            "fontSize" ==> (style |> Option.bind (fun s -> s.FontSize) |> optFloat)
+            "numberFormat" ==> (style |> Option.bind (fun s -> s.NumberFormat) |> optString)
+            "horizontalAlign" ==> (style |> Option.bind (fun s -> s.HorizontalAlign) |> optString)
+            "verticalAlign" ==> (style |> Option.bind (fun s -> s.VerticalAlign) |> optString)
+            "wrapText" ==> (style |> Option.map (fun s -> s.WrapText) |> Option.defaultValue false)
+            "borderTop" ==> (style |> Option.bind (fun s -> s.BorderTop) |> borderObj)
+            "borderBottom" ==> (style |> Option.bind (fun s -> s.BorderBottom) |> borderObj)
+            "borderLeft" ==> (style |> Option.bind (fun s -> s.BorderLeft) |> borderObj)
+            "borderRight" ==> (style |> Option.bind (fun s -> s.BorderRight) |> borderObj)
+            "borderDiagonal" ==> (style |> Option.bind (fun s -> s.BorderDiagonal) |> borderObj)
+            "diagonalUp" ==> (style |> Option.map (fun s -> s.DiagonalUp) |> Option.defaultValue false)
+            "diagonalDown" ==> (style |> Option.map (fun s -> s.DiagonalDown) |> Option.defaultValue false)
+            "hasComment" ==> (commentAtCoord row col sheet |> Option.isSome)
+            "hasListDropdown" ==> listDropdownAt row col sheet
+            "richRuns" ==>
+                (match workbook with
+                 | Some wb -> richRunsForCell wb c
+                 | None -> [||])
+        ]
 
     /// Load an XLSX file from array buffer or blob
     let load = XlsxReader.load
@@ -573,36 +621,17 @@ module Excel =
         sheet.Rows
         |> List.collect (fun r -> r.Cells)
         |> List.tryFind (fun c -> c.Reference = cellRef)
-        |> Option.map (fun c ->
-            let row = c.Reference.Row - 1
-            let col = columnIndex c.Reference.Column
-            let style = c.Style
-            createObj [
-                "formula" ==> cellFormula c
-                "bold" ==> (style |> Option.map (fun s -> s.Bold) |> Option.defaultValue false)
-                "italic" ==> (style |> Option.map (fun s -> s.Italic) |> Option.defaultValue false)
-                "underline" ==> (style |> Option.map (fun s -> s.Underline) |> Option.defaultValue false)
-                "underlineDouble" ==> (style |> Option.map (fun s -> s.UnderlineDouble) |> Option.defaultValue false)
-                "strikethrough" ==> (style |> Option.map (fun s -> s.Strikethrough) |> Option.defaultValue false)
-                "fontName" ==> (style |> Option.bind (fun s -> s.FontName) |> optString)
-                "fontColor" ==> (style |> Option.bind (fun s -> s.FontColor) |> optString)
-                "fillColor" ==> (style |> Option.bind (fun s -> s.FillColor) |> optString)
-                "fontSize" ==> (style |> Option.bind (fun s -> s.FontSize) |> optFloat)
-                "numberFormat" ==> (style |> Option.bind (fun s -> s.NumberFormat) |> optString)
-                "horizontalAlign" ==> (style |> Option.bind (fun s -> s.HorizontalAlign) |> optString)
-                "verticalAlign" ==> (style |> Option.bind (fun s -> s.VerticalAlign) |> optString)
-                "wrapText" ==> (style |> Option.map (fun s -> s.WrapText) |> Option.defaultValue false)
-                "borderTop" ==> (style |> Option.bind (fun s -> s.BorderTop) |> borderObj)
-                "borderBottom" ==> (style |> Option.bind (fun s -> s.BorderBottom) |> borderObj)
-                "borderLeft" ==> (style |> Option.bind (fun s -> s.BorderLeft) |> borderObj)
-                "borderRight" ==> (style |> Option.bind (fun s -> s.BorderRight) |> borderObj)
-                "borderDiagonal" ==> (style |> Option.bind (fun s -> s.BorderDiagonal) |> borderObj)
-                "diagonalUp" ==> (style |> Option.map (fun s -> s.DiagonalUp) |> Option.defaultValue false)
-                "diagonalDown" ==> (style |> Option.map (fun s -> s.DiagonalDown) |> Option.defaultValue false)
-                "hasComment" ==> (commentAtCoord row col sheet |> Option.isSome)
-                "hasListDropdown" ==> listDropdownAt row col sheet
-            ])
+        |> Option.map (cellWithStyleObj None sheet)
         |> Option.defaultValue null
+
+    /// Stream actual worksheet cells with values/styles in document order.
+    /// This avoids the browser importer's old coordinate-by-coordinate scan,
+    /// which is pathological for wide style-only sheets.
+    let cellsWithStyle (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
+        sheet.Rows
+        |> List.collect (fun r -> r.Cells)
+        |> List.map (cellWithStyleObj (Some workbook) sheet)
+        |> List.toArray
 
     /// Get per-run rich text for a cell. Returns an empty JS array for plain cells.
     let richRunsAt (ref: string) (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
@@ -729,6 +758,7 @@ let api () = {|
         toArray = Excel.toArray
         cellAt = Excel.cellAt
         cellWithStyleAt = Excel.cellWithStyleAt
+        cellsWithStyle = Excel.cellsWithStyle
         richRunsAt = Excel.richRunsAt
         commentAt = Excel.commentAt
         columnWidth = Excel.columnWidth

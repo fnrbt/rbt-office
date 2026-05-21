@@ -6,6 +6,7 @@ open System.Globalization
 open RedBat.Spreadsheet.Model
 open RedBat.Spreadsheet.Layout
 open RedBat.Spreadsheet.Paint
+open RedBat.Spreadsheet.CellText
 module Xlsx = XlsxReader
 
 /// Tool that loads an XLSX and dumps a Spreadsheet-side per-cell layout

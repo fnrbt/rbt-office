@@ -1,6 +1,6 @@
 # Excel Parity Tracker
 
-Last updated: 2026-05-19 UTC.
+Last updated: 2026-05-20 UTC.
 
 This tracker is for deciding what to fix next and recording which parity
 surfaces have actually been checked. It complements
@@ -10,7 +10,7 @@ surfaces have actually been checked. It complements
 
 - [x] Gallery image references: `docs/excel-parity-fixes.html` has 167 image
   references and 0 missing targets.
-- [x] Fixture inventory: 84 `.xlsx` files currently exist under
+- [x] Fixture inventory: 85 `.xlsx` files currently exist under
   `tests/test-documents-excel/`.
 - [x] Print helper tests: `dotnet fsi tests/print/helpers.fsx` passes
   16/16.
@@ -18,6 +18,13 @@ surfaces have actually been checked. It complements
   `dotnet build tools/spreadsheet-pdf-runner/SpreadsheetPdfRunner.fsproj --no-restore`
   succeeds.
 - [x] Whitespace/syntax diff check: `git diff --check` passes.
+- [x] VBA-layout corpus gate:
+  `SKIP_SMOKE=1 tools/excel-parity/check-parity.sh` passes with cached
+  Excel COM TSVs (`78/78` layout fixtures clean, 10 print-PDF references
+  within thresholds, print helpers passed).
+- [x] Full PDF smoke render: 85/85 XLSX fixtures render through
+  `tools/spreadsheet-pdf-runner` with outputs written under
+  `tmp/parity-smoke`.
 - [x] Native screenshot smoke diffs:
   `pandas-dimension_large` and `pandas-test1` are pixel-identical to the
   saved native baselines (`mae=0.0000`, `bbox=None`).
@@ -35,9 +42,14 @@ surfaces have actually been checked. It complements
 - [x] Focused browser/Fable rich-text screenshot pass:
   `tools/excel-parity/capture-browser-xlsx.mjs` captures
   `synthetic-inline-rich.xlsx` with 3 cells and 2 rich-run entries.
+- [x] Small browser/Fable imported-XLSX corpus pass:
+  `synthetic-browser-styles`, `pandas-test_converters`, `poi-47813`,
+  `synthetic-inline-rich`, and `synthetic-fmt5` capture successfully through
+  `tools/excel-parity/capture-browser-xlsx.mjs`.
 - [ ] Full native corpus screenshot pass against saved baselines.
 - [ ] Full PDF-to-PDF comparison pass for all print fixtures.
-- [ ] Browser/Fable screenshot pass for imported XLSX fixtures.
+- [x] Browser/Fable screenshot pass for imported XLSX fixtures: 85/85
+  workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
 ## P0: Print/PDF Fidelity
 
@@ -101,14 +113,25 @@ Current evidence:
   top-crop MAE improved from `12.4314` to `11.6033`.
 - `&D` / `&T` header-footer fields now use Excel-like default Windows output
   (`M/d/yyyy`, `h:mm AM/PM`) instead of ISO strings.
-- Excel PDF text extraction on `synthetic-print-chrome.xlsx` page 4 shows
-  Excel's printed body-row pitch is about `14.52 pt`, while the current PDF
-  path emits the model's `15 pt` row pitch. A PDF-only default-row-height
-  scale plus baseline retune improved page-4 body MAE (`9.4584 -> 7.4085`)
-  but worsened the visible top crops (`11.6033 -> 14.8661` on page 1), so it
-  was rejected as a screenshot-parity fix.
-- Remaining chrome visual diff is mostly grid/text rasterization weight and
-  small body geometry offsets.
+- RESOLVED (2026-05-20): the body-row pitch now matches Excel. PDF text
+  extraction (`pdftotext -bbox`) shows Excel and ours both emit a `14.52 pt`
+  body-row pitch on pages 1 and 4; every data-row text baseline aligns within
+  `0.094 pt` and the row-boundary gridlines within `1 px` (both ~`19.4 px`/row
+  at 96 dpi). Page-4 body MAE is now `8.51` (was `9.4584`) and the
+  column/row-heading chrome band is pixel-identical (`MAE 0.0`). The earlier
+  `15 pt` discrepancy was closed by the Phase 8 print-row-pitch work; the
+  rejected global-scale retune is no longer relevant. (The original note,
+  measuring a `15 pt` emit, is kept here for history.)
+- Remaining chrome diff is dominated by cross-renderer text rasterization
+  weight: in the contrast diff every glyph reads as a ghosted/doubled stroke
+  (Excel's PDF text engine vs ours), which is not a layout bug and is the
+  reason dense data-row crops carry the highest residual MAE.
+- FIXED (2026-05-20): the cumulative column-width drift (our rendered columns
+  ~2 pt narrower, every cell right of col A creeping left). Root cause was
+  `Pdf.fs withPrintColumnWidths` scaling only explicit `<col>` widths by the
+  print MDW (15/14); the workbook-default width was left at the floored screen
+  MDW. Now all positive widths scale. Verified on `synthetic-diagonal-borders`
+  (col-D label 10.2 pt → 0.06 pt) with 11/11 print fixtures still within MAE.
 
 Checks to add:
 
@@ -280,10 +303,33 @@ Risk:
 
 Checks to add:
 
-- [ ] Merged header cell with centered text and explicit borders.
-- [ ] Empty merged cells with borders on all sides.
-- [ ] Diagonal borders inside merged and unmerged cells.
-- [ ] Native PNG and PDF parity crops.
+- [x] Merged header cell with centered text and explicit borders:
+  `synthetic-merged-text.xlsx`. VERIFIED PASSING (no fix needed) — horizontal
+  centering across the full merge and top/center/bottom vertical alignment over
+  the merge height already match Excel, since the merge primary carries the full
+  merge rect. Kept as a regression fixture.
+- [x] Empty merged cells with borders on all sides: `synthetic-diagonal-borders.xlsx`
+  `E6:F7`. Fixed merge-perimeter border sourcing in `Paint.fs buildCellPaintItems`
+  (the box now traces the full merge instead of only the primary cell's edges).
+- [x] Diagonal borders inside merged and unmerged cells: `synthetic-diagonal-borders.xlsx`
+  diagonal down / up / both render correctly (native PNG + PDF).
+- [x] Border stroke crispness + gridlines-under-borders. Three coupled fixes,
+  verified vs Excel screenshot on `synthetic-diagonal-borders.xlsx`:
+  1. **Pixel-snap** (`GridLine` rendering, native + canvas): round width; centre
+     odd widths on n+0.5, even on n. A 3 px border centred on an integer
+     straddled the grid → 2 black rows + two 50%-grey edges ("half the line is
+     lighter"); now 3 solid-black rows. Butt caps (Square AA-blobbed corners).
+  2. **Gridline z-order + suppression** (shared `Paint.fs buildCellPaintItems`):
+     the always-on grey `#a6a6a6` cell outline is now per-edge `GridLine`s drawn
+     before borders, and skipped on any edge where this cell or its neighbour
+     has an explicit border. Fixes (a) neighbour gridline overdrawing a border,
+     and (b) grey bleeding through a `double` border's 1 px gap (gap pixel
+     166-grey → 245-white). `double` now reads as two crisp lines with a white
+     gap.
+  3. **Print filter** (`Pdf.fs isInteractiveCellStroke`): now also drops
+     `#a6a6a6` `GridLine`s (not just `StrokeRect`) so the screen grid still
+     doesn't print. 11/11 print-PDF within MAE. Fable build clean.
+- [x] Native PNG and PDF parity crops for the border fixture.
 
 Likely files:
 
@@ -325,9 +371,23 @@ Risk:
 
 Checks to add:
 
-- [ ] Custom format fixture with positive/negative/zero/text sections.
-- [ ] Color section fixture.
-- [ ] Elapsed time fixture (`[h]:mm:ss`, `[m]`, `[s]`).
+- [x] Custom format with positive/negative/zero/text + CONDITIONAL sections:
+  `synthetic-numfmt-sections.xlsx` (built by `build-numfmt-sections-fixture.vbs`),
+  ground truth from `probe-numfmt-sections.vbs` (72 pairs). `CellText.fs`
+  `sectionForValue` now evaluates `[op N]` conditions (first match wins, else the
+  last unconditioned default); a negative on a default section gets an auto "−";
+  the date/time sniffer strips colour/condition/quoted content so `[Red]`(→d) /
+  `"High"`(→h) no longer mis-route to the date path. 72/72 text vs Excel.
+- [x] Color section fixture: covered by the same `synthetic-numfmt-sections.xlsx`
+  (`[Red]`/`[Blue]` by sign and by condition). Colour tag is now matched anywhere
+  among a section's leading tags (`[<0][Red]`, `[Red][>100]`). Verified vs the
+  Excel screenshot (red negatives, blue conditionals, including value 0 → blue).
+- [x] Elapsed time fixture (`[h]:mm:ss`, `[m]`, `[s]`): `synthetic-elapsed-time.xlsx`
+  (built by `tools/excel-parity/build-elapsed-fixture.vbs`). All 120
+  (serial × format) pairs match Excel's `cell.Text` per
+  `tools/excel-parity/probe-elapsed.vbs`; implemented as `formatElapsedTime`
+  in `src/Spreadsheet/Paint.fs`. Whole-second rounding for plain `h:mm:ss`
+  fixed alongside.
 - [ ] Accounting and locale code fixture.
 
 Likely files:
@@ -364,8 +424,8 @@ Status: partially fixed.
 
 Known gaps:
 
-- Some older fixes are native PNG only; the focused browser import harness now
-  covers one style-heavy XLSX path.
+- Some older fixes are native PNG only; the browser import harness now covers
+  the full 85-workbook XLSX fixture corpus as a smoke pass.
 - Fable/web currently does not load per-family font files the same way native
   rendering does.
 - Layout-cell export for browser parity is planned but not wired.
@@ -376,8 +436,9 @@ Checks to add:
   `synthetic-browser-styles.xlsx`.
 - [x] Browser/Fable capture for inline rich text:
   `synthetic-inline-rich.xlsx`.
-- [ ] Browser/Fable capture for imported `pandas-test_converters.xlsx`.
-- [ ] Browser/Fable capture for a non-Calibri fixture.
+- [x] Browser/Fable capture for imported `pandas-test_converters.xlsx`.
+- [x] Browser/Fable capture for a non-Calibri fixture (`poi-47813.xlsx`,
+  Verdana 10).
 - [ ] Layout-cell JSON parity for representative fixtures.
 
 Likely files:
@@ -386,13 +447,55 @@ Likely files:
 - `src/Spreadsheet/Paint.fs`
 - Browser runner tooling.
 
+## Render fixes landed (2026-05-20)
+
+- Elapsed-time number formats (`[h]`/`[m]`/`[s]`): `formatElapsedTime` in
+  `CellText.fs`; `synthetic-elapsed-time.xlsx`; 120/120 vs Excel.
+- Number-format engine extracted from `Paint.fs` into `CellText.fs`
+  (behaviour-preserving; paint now only paints resolved elements).
+- Merged-cell box borders trace the full merge perimeter
+  (`Paint.fs buildCellPaintItems`, merge-aware edge sourcing);
+  `synthetic-diagonal-borders.xlsx`.
+- Print column width: `Pdf.fs withPrintColumnWidths` now scales ALL columns by
+  15/14 (the non-floored print MDW), not just explicit `<col>` widths. Default
+  columns were left at 64 px while Excel prints ~68.6 px, drifting every cell
+  right of column A leftward (column-D label was 10.2 pt off on
+  `synthetic-diagonal-borders.xlsx`; now 0.06 pt). 11/11 print fixtures within
+  MAE — no regression. This is the column drift previously flagged as the open
+  residual in "Print Geometry And Chrome".
+- Cell-text rotation in the native/interactive grid (`SpreadsheetGrid.fs`).
+  Direction + vertical match Excel (CCW rises, CW descends; `rot 90` at y 88–122
+  vs Excel 88–121; row height honours `ht=80 customHeight`).
+- Rotated-text HORIZONTAL anchor — RULE DERIVED + IMPLEMENTED (native). Built
+  `tools/excel-parity/build-rotation-sweep.vbs`: 13 angles (orientation −90..90
+  step 15) × 3 text lengths → `synthetic-rotation-sweep.xlsx`, screenshotted and
+  measured. Pattern (offset of text centre from the 89 px column centre, "Hi"):
+  CCW angled 15..75 ≈ −30 (left); CCW vertical 90 ≈ +32 (right); CW angled
+  105..165 ≈ +30 (right); CW vertical 180 ≈ −34 (left); flat 0 left (General).
+  → **Rule: right-align the rotated bounding box when 90 ≤ textRotation < 180,
+  else left-align; always bottom-align.** Implemented in `SpreadsheetGrid.fs`
+  (rotate about the run anchor, then translate so the rotated bbox is L/R + bottom
+  aligned). Verified on `synthetic-text-rotation.xlsx`: rot45 −24/Excel −10 (L),
+  rot90 +34/+37 (R), rot−45 +22/+10 (R), rot−90 −35/−39 (L) — all four sides now
+  match (magnitudes within ~14 px; small diff = bbox metrics vs Excel).
+- Rotation placement now applied in ALL THREE render paths:
+  - native (`SpreadsheetGrid.fs`) — verified vs Excel screenshot.
+  - PDF (`Pdf.fs`) — anchor computed in CSS px then converted; verified by
+    pdf↔pdf vs Excel's print PDF (`synthetic-text-rotation.xlsx` top-crop
+    MAE 4.85, the four rotated runs overlay Excel's).
+  - web `<canvas>` (`Spreadsheet.fs`) — previously did NOT rotate at all; now
+    rotates via a new `canvasTextRotated` (save/translate/rotate/fillText) with
+    the same L/R-bbox + bottom rule. Fable build clean. (Browser-pixel
+    verification still TODO, but it shares the derived rule with native/PDF.)
+
 ## Next Suggested Work
 
-1. Investigate the remaining `synthetic-print-chrome.xlsx` diff: page 4 body
-   still has the largest residual (`body mae=9.4584`). A future fix should
-   reconcile Excel's `14.52 pt` printed row pitch without regressing the top
-   screenshot crops, likely by handling PDF gridline/text placement separately
-   rather than scaling the whole model row-height map.
+1. DONE (2026-05-20): the `synthetic-print-chrome.xlsx` row-pitch diff is
+   resolved — body pitch now matches Excel at `14.52 pt` and page-4 body MAE
+   dropped to `8.51`. See "Print Geometry And Chrome" above. The column-width
+   drift flagged here is now also FIXED (`withPrintColumnWidths` scales all
+   columns, 2026-05-20); the remaining print residual is cross-renderer text
+   rasterization weight, which is not a layout bug.
 2. Expand the browser/Fable capture pass from `synthetic-browser-styles.xlsx`
    to a small imported-XLSX corpus now that the loader path is working.
 3. Turn `tools/excel-parity/compare-print-pdfs.py` output into enforced

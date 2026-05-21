@@ -9,6 +9,7 @@ open RedBat.Spreadsheet.Workbook
 open RedBat.Spreadsheet.XlsxImporter
 module SpreadsheetLayout = RedBat.Spreadsheet.Layout
 module SpreadsheetPaint = RedBat.Spreadsheet.Paint
+module SpreadsheetCellText = RedBat.Spreadsheet.CellText
 
 // Additional helpers
 [<Emit("$0.scrollLeft")>]
@@ -58,6 +59,13 @@ let private browserTextWidth (text: string) (fontSize: float) (fontName: string)
 
 [<Emit("$0.fillStyle = $5; $0.font = ($6 ? 'bold ' : '') + ($7 ? 'italic ' : '') + $4 + 'px ' + $9 + ', sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = $8; $0.fillText($1, $2, $3)")>]
 let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize: float) (color: string) (bold: bool) (italic: bool) (align: string) (fontName: string): unit = jsNative
+
+// Draw text rotated `angle` radians about an anchor (tx,ty): translate to the
+// anchor, rotate (canvas rotate is clockwise for +angle, matching screen
+// y-down), draw left-aligned at the origin, restore. Used for cell-text
+// rotation; the caller positions the anchor so the rotated bbox aligns.
+[<Emit("$0.save(); $0.translate($3, $4); $0.rotate($5); $0.fillStyle = $6; $0.font = ($7 ? 'bold ' : '') + ($8 ? 'italic ' : '') + $2 + 'px ' + $9 + ', sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = 'left'; $0.fillText($1, 0, 0); $0.restore()")>]
+let private canvasTextRotated (ctx: obj) (text: string) (fontSize: float) (tx: float) (ty: float) (angle: float) (color: string) (bold: bool) (italic: bool) (fontName: string): unit = jsNative
 
 /// Spreadsheet component — interactively edits a Workbook (a collection
 /// of sheets sharing strings, styles, theme, defined names). The class
@@ -122,7 +130,16 @@ type Spreadsheet(container: Element) =
             | SpreadsheetPaint.StrokeRect (rect, color, width) ->
                 canvasStrokeRect ctx rect.X rect.Y rect.Width rect.Height color width
             | SpreadsheetPaint.GridLine (x1, y1, x2, y2, color, width) ->
-                canvasLine ctx x1 y1 x2 y2 color width
+                // Pixel-snap axis-aligned strokes (mirrors the native
+                // SpreadsheetGrid path): an odd-width line centred on an
+                // integer straddles the canvas pixel grid and anti-aliases to
+                // ~50% grey edges. Round the width and centre odd widths on
+                // n+0.5, even widths on n, so the stroke covers whole pixels.
+                let w = max 1.0 (System.Math.Round width)
+                let snap c = if int w % 2 = 1 then floor c + 0.5 else System.Math.Round c
+                if abs (y1 - y2) < 0.01 then canvasLine ctx x1 (snap y1) x2 (snap y1) color w
+                elif abs (x1 - x2) < 0.01 then canvasLine ctx (snap x1) y1 (snap x1) y2 color w
+                else canvasLine ctx x1 y1 x2 y2 color w
             | SpreadsheetPaint.DrawText text ->
                 let align =
                     match text.Align with
@@ -148,8 +165,39 @@ type Spreadsheet(container: Element) =
                     | SpreadsheetPaint.VAlignBottom -> text.Rect.Y + text.Rect.Height - blockHeight
                 let baseline = blockTopY + float text.LineIndex * lineHeight + ascent + text.BaselineShift
                 let fontName = text.FontName |> Option.defaultValue "Arial"
+                let isRotated = text.Rotation > 0 && text.Rotation <> 255
+                if isRotated then
+                    // Same rule as the native + PDF paths (derived from
+                    // build-rotation-sweep.vbs): rotate the run about its anchor,
+                    // then place the rotated bbox right-aligned when
+                    // 90 ≤ textRotation < 180 else left-aligned, always
+                    // bottom-aligned. Screen is y-down so a negative angle is CCW.
+                    let theta =
+                        if text.Rotation <= 90 then -(float text.Rotation) * System.Math.PI / 180.0
+                        else float (text.Rotation - 90) * System.Math.PI / 180.0
+                    let totalWidth = browserTextWidth text.Text text.FontSize fontName text.Bold text.Italic
+                    let descent = text.FontSize * 0.266
+                    let ax0 = text.Rect.X + 4.0
+                    let ay0 = text.Rect.Y + text.Rect.Height - 2.0
+                    let cosS, sinS = cos theta, sin theta
+                    let rotPt px py =
+                        let dx, dy = px - ax0, py - ay0
+                        ax0 + dx * cosS - dy * sinS, ay0 + dx * sinS + dy * cosS
+                    let corners =
+                        [ rotPt ax0 (ay0 - ascent); rotPt (ax0 + totalWidth) (ay0 - ascent)
+                          rotPt ax0 (ay0 + descent); rotPt (ax0 + totalWidth) (ay0 + descent) ]
+                    let minX = corners |> List.map fst |> List.min
+                    let maxX = corners |> List.map fst |> List.max
+                    let maxY = corners |> List.map snd |> List.max
+                    let rightAlign = text.Rotation >= 90 && text.Rotation < 180
+                    let shiftX =
+                        if rightAlign then (text.Rect.X + text.Rect.Width - 2.0) - maxX
+                        else (text.Rect.X + 2.0) - minX
+                    let shiftY = (text.Rect.Y + text.Rect.Height - 2.0) - maxY
+                    canvasTextRotated ctx text.Text text.FontSize (ax0 + shiftX) (ay0 + shiftY) theta text.Color text.Bold text.Italic fontName
+                else
                 canvasText ctx text.Text x baseline text.FontSize text.Color text.Bold text.Italic align fontName
-                if text.Underline || text.UnderlineDouble || text.Strikethrough then
+                if not isRotated && (text.Underline || text.UnderlineDouble || text.Strikethrough) then
                     let textWidth = browserTextWidth text.Text text.FontSize fontName text.Bold text.Italic
                     let startX =
                         match text.Align with
@@ -2212,7 +2260,7 @@ type Spreadsheet(container: Element) =
             let measure =
                 viewport.Measurer
                 |> Option.map (fun m -> fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
-            let displayText = SpreadsheetPaint.cellDisplayText measure rect.Width format value
+            let displayText = SpreadsheetCellText.cellDisplayText measure rect.Width format value
             let valueRepr =
                 match value with
                 | CellValue.Empty -> ""
@@ -2225,14 +2273,7 @@ type Spreadsheet(container: Element) =
                 match value with
                 | CellValue.Formula (expr, _) -> "=" + expr
                 | _ -> ""
-            let addrA1 =
-                let mutable n = addr.Col + 1
-                let sb = System.Text.StringBuilder()
-                while n > 0 do
-                    let r = (n - 1) % 26
-                    sb.Insert(0, char (int 'A' + r)) |> ignore
-                    n <- (n - 1) / 26
-                sb.ToString() + string (addr.Row + 1)
+            let addrA1 = columnToLetter addr.Col + string (addr.Row + 1)
             let mergeFor =
                 model.MergedCells
                 |> List.tryFind (fun m ->

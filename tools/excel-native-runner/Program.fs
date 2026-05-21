@@ -769,16 +769,21 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             // chars-to-pixels column-width math at 96 DPI. Empirically:
             //   Calibri 11 = 7  (measured 7.43)
             //   Calibri 12 = 8  (measured 8.11)
+            //   Calibri 14 = 10 (measured 9.46) — synthetic-vertalign
+            //   Calibri 18 = 14 (measured 12.16, Microsoft table value)
             //   Arial   10 = 7  (measured 7.42)
             //   Verdana 10 = 8  (measured 8.48)
-            // Floor matches every case in the table — ceil over-allocates
-            // Calibri 11 to 8 px/char, which inflates default-width columns
-            // by ~22 px per column and lets General-format numbers show
-            // more sig digits than Excel does in the same workbook
-            // (pandas-test1 B2 was 0.9802685138 vs Excel's 0.98026851).
-            // The 7-px floor stays as a safety net for very small fonts.
+            // Floor alone matches Calibri 11/12 (where measured truncates
+            // cleanly) but falls short at 14+ because Excel's GDI hinting
+            // bumps the glyph advance past the raw font-table value. The
+            // observation `Excel_MDW = pt - 4` lines up across all known
+            // Calibri sizes ≥ 11; `max(floor(measured), pt-4)` therefore
+            // covers both the small-size (floor wins, e.g. Verdana 10 = 8)
+            // and large-size (pt-4 wins, e.g. Calibri 14 = 10) regimes.
             let zero = Renderer.Text.measureWidth font pxSize "0"
-            max 7.0 (System.Math.Floor zero)
+            let measured = System.Math.Floor zero
+            let ptBased = defaultFontSize - 4.0
+            max 7.0 (max measured ptBased)
         with _ ->
             // Renderer unavailable (font cache miss, etc.) — fall back to
             // the original Calibri-anchored linear estimate.
@@ -850,6 +855,22 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
     //   - Calibri 18: ceil(18.0)+ceil(6.0) +ceil(5.30)+1  = 18+6+6+1 = 31
     //   - Arial 11:   ceil(10.68)+ceil(3.09)+ceil(2.20)+1 = 11+4+3+1 = 19
     let autoRowHeightPt (familyName: string option) (fontPt: float) : float =
+        // Fonts we don't ship a TTF for: hard-code the auto-height ratio.
+        // Arial Black has heavier metrics than Arial Regular (typoAscender
+        // ~2050 vs Arial's 1854). We don't have ariblk.ttf so we can't
+        // derive from the font; the 1.7× ratio matches Excel's reported
+        // 18.75 pt at 11 pt and 24 pt at 14 pt.
+        let unshippedFontRatio =
+            match familyName with
+            | Some n when n.Trim().Equals("Arial Black", System.StringComparison.OrdinalIgnoreCase) ->
+                Some 1.7
+            | _ -> None
+        match unshippedFontRatio with
+        | Some ratio ->
+            // Round to the 0.75-pt grid Excel snaps row heights to.
+            let raw = fontPt * ratio
+            System.Math.Round(raw * 4.0 / 3.0) * 3.0 / 4.0
+        | None ->
         try
             let font = Composit.Ui.SpreadsheetGrid.rendererFontFor familyName false false
             let em = float font.OtFont.Head.UnitsPerEm
@@ -939,22 +960,32 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             if Map.containsKey c explicitColumns then acc
             else Map.add c defaultColWidthPx acc) explicitColumns
 
-    // Rows fall into three height-resolution buckets:
-    //   1. IMPLICIT  — no <row> XML entry. Use sheetFormatPr.defaultRowHeight
-    //      directly (or workbook-default-font auto when defaultRowHeight is
-    //      absent). pandas-dimension_large row 2 is the canonical case.
+    // Rows fall into four height-resolution buckets:
+    //   1. IMPLICIT  — no <row> XML entry. Use max(defaultRowHeight, fontAuto).
+    //      pandas-dimension_large row 2 is the canonical case.
     //   2. EXPLICIT customHeight=true — landed in explicitRows above, the
-    //      stored `ht` wins.
-    //   3. EXPLICIT customHeight=false (or absent) — use max(
-    //      defaultRowHeight_px, fontAuto_px). Excel honors whichever is
-    //      larger: defaultRowHeight when it's tall enough to fit the
-    //      font (pandas-multiindex_no_index_names), font-derived auto when
-    //      the default is smaller than the row's actual font needs
-    //      (pandas-test_converters, pandas-df_empty body).
-    let rowsWithEntry =
+    //      stored `ht` wins literally (the user manually shrank/grew the row,
+    //      so even sub-font-height is respected).
+    //   3. EXPLICIT `ht` present, customHeight absent OR false — Excel uses
+    //      max(stored ht, fontAuto). The stored `ht` is a hint that gets
+    //      raised to fit the font. phpsp-26template row 1 (`ht=27`, TNR 22
+    //      → 27) and phpsp-27template row 2 (`ht=17`, Arial Black 11 →
+    //      18.75) are the two sides of this rule.
+    //   4. EXPLICIT customHeight=true but no ht (rare) — falls through to
+    //      max(defaultRowHeight, fontAuto) like bucket 1.
+    // Rows with a stored `ht` attribute but `customHeight` not explicitly
+    // true. Excel raises these to fit the font (max(ht, fontAuto)) instead
+    // of either honoring the stored value literally (the customHeight=true
+    // case in `explicitRows`) or ignoring it entirely.
+    let rawHeightOnly =
         sheet.Rows
-        |> List.map (fun r -> r.Index - 1)
-        |> Set.ofList
+        |> List.choose (fun row ->
+            let isCustom = row.CustomHeight = Some true
+            if row.Hidden || isCustom then None
+            else row.RawHeight |> Option.map (fun h ->
+                let px = System.Math.Floor (h * (96.0 / 72.0))
+                row.Index - 1, px))
+        |> Map.ofList
 
     let rowHeights =
         // When `<sheetFormatPr customHeight="1"/>` is set, Excel treats
@@ -1017,23 +1048,32 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         // synthetic-vertalign: super → +2.25 pt, sub → +1.5 pt for
         // Calibri 14. Scale linearly with the row's max-font pt size.
         let rowVertAlign =
-            // 0 = none, 1 = sub only, 2 = super (overrides sub when both)
+            // 0 = none, 1 = sub only, 2 = super (overrides sub when both).
+            // Earlier versions wrote `Some Superscript` / `Some Subscript`
+            // which bound the names as fresh variables (FS0049) instead of
+            // matching the cases — every run ended up as kind=2, so sub-only
+            // rows got the larger super bump.
             let acc = System.Collections.Generic.Dictionary<int, int>()
             for KeyValue(addr, runs) in richRunsMap do
                 for (_, ovr) in runs do
                     let kind =
                         match ovr.VertAlign with
-                        | Some Superscript -> 2
-                        | Some Subscript -> 1
+                        | Some VertAlignSuperscript -> 2
+                        | Some VertAlignSubscript -> 1
                         | _ -> 0
                     if kind > 0 then
                         let cur = match acc.TryGetValue addr.Row with true, v -> v | _ -> 0
                         acc.[addr.Row] <- max cur kind
             acc
         let vertAlignBumpPt (kind: int) (fontPt: float) =
+            // Excel bumps the row to fit a super/subscript run's raised /
+            // lowered glyph. Empirical bumps from synthetic-vertalign at
+            // Calibri 14: super → +2.25 pt (21.0 = 18.75 base + 2.25),
+            // sub → +1.5 pt (20.25 = 18.75 base + 1.5). Scale linearly
+            // with the row's max-font pt size.
             match kind with
-            | 2 -> fontPt * 2.25 / 14.0
-            | 1 -> fontPt * 1.5 / 14.0
+            | 2 -> fontPt * 2.25 / 14.0  // super
+            | 1 -> fontPt * 1.5 / 14.0   // sub
             | _ -> 0.0
         // The workbook-default-font auto-height that floors every row
         // (per-row max font lands here when smaller).
@@ -1047,29 +1087,28 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         |> List.fold (fun acc r ->
             if Map.containsKey r explicitRows then acc
             else
+                // Take the larger of defaultRowHeight (floored to pixel
+                // grid) and the row's font-derived auto-height. Then, if a
+                // raw `ht` was stored without customHeight=true (bucket 3
+                // above), raise to at least the stored value — Excel
+                // honors any explicit `ht` as a floor unless the font is
+                // even taller.
+                let fontPx =
+                    match maxFontByRow.TryGetValue r with
+                    | true, (name, pt) ->
+                        let basePt = autoRowHeightPt name pt
+                        let vaKind = match rowVertAlign.TryGetValue r with true, v -> v | _ -> 0
+                        let bump = vertAlignBumpPt vaKind pt
+                        max defAutoPx ((basePt + bump) * 96.0 / 72.0)
+                    | _ -> defAutoPx
+                let baseAuto =
+                    match defaultRowPx with
+                    | Some d -> max d fontPx
+                    | None -> fontPx
                 let px =
-                    if not (rowsWithEntry.Contains r) then
-                        // IMPLICIT — no <row> entry at all. Use the
-                        // sheet's defaultRowHeight directly; fall back
-                        // to workbook-default-font auto when absent.
-                        defaultRowPx |> Option.defaultValue defAutoPx
-                    else
-                        // EXPLICIT customHeight=false (or absent). Use
-                        // max(defaultRowHeight, fontAuto) so the larger
-                        // wins — fontAuto pushes the row taller when
-                        // cells need it, defaultRowHeight floors when it
-                        // exceeds the font's natural line height.
-                        let fontPx =
-                            match maxFontByRow.TryGetValue r with
-                            | true, (name, pt) ->
-                                let basePt = autoRowHeightPt name pt
-                                let vaKind = match rowVertAlign.TryGetValue r with true, v -> v | _ -> 0
-                                let bump = vertAlignBumpPt vaKind pt
-                                max defAutoPx ((basePt + bump) * 96.0 / 72.0)
-                            | _ -> defAutoPx
-                        match defaultRowPx with
-                        | Some d -> max d fontPx
-                        | None -> fontPx
+                    match Map.tryFind r rawHeightOnly with
+                    | Some stored -> max baseAuto stored
+                    | None -> baseAuto
                 Map.add r px acc) explicitRows
 
     // Auto-grow rows for wrapText cells. Excel auto-sizes the row to
@@ -1121,14 +1160,17 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                 let lineCount =
                     if cd.Format.WrapText then
                         let measure = fun (s: string) -> measureCell cd.Format.FontName cd.Format.Bold cd.Format.Italic fontPx s
-                        let lines = RedBat.Spreadsheet.Paint.wrapLines (Some measure) colWidth fontPt text
+                        let lines = RedBat.Spreadsheet.CellText.wrapLines (Some measure) colWidth fontPt text
                         lines.Length
                     else
                         // Hard-break only: split on \n without word-wrap.
                         text.Split('\n').Length
-                // 1.2x leading is Excel's default for wrapped text (close
-                // enough for our row-height budget).
-                let lineHeightPx = fontPx * 1.2
+                // Excel's wrapped-line height matches the font's auto row
+                // height (OS/2 typo-metric-derived). Calibri 11 → 15 pt =
+                // 20 px / line, NOT fontPx*1.2 = 17.6 px which under-counted
+                // synthetic-wrap-autoheight A2's 8-line block at 123 px vs
+                // Excel's 160 px (= 8 * 20).
+                let lineHeightPx = autoRowHeightPt cd.Format.FontName fontPt * 96.0 / 72.0
                 let needed = float lineCount * lineHeightPx
                 let current =
                     Map.tryFind addr.Row result
