@@ -2525,17 +2525,20 @@ let private shiftBlockY dy (layout: BlockLayout) =
 /// (so columns of differing widths wrap independently). After `count` columns
 /// the flow wraps to the next page. This drives the doc-aware paragraph layout,
 /// so styles/numbering/spacing are the engine's, not a re-implementation.
-let private columnFlowLayout (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) =
+/// Flow `doc`'s blocks into `columns` starting at (startPage, startY). When
+/// `balanced`, the section's columns are made roughly equal height (Word
+/// balances a column section that ends with a section break); otherwise each
+/// column fills to the page bottom and the flow wraps to the next page after
+/// `count` columns. Returns the placed layouts.
+let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (startPage: int) (startY: float) (balanced: bool) =
     let n = max 1 columns.Count
     let full = settings.Width - settings.PaddingLeft - settings.MarginRight
-    // Per-column widths from w:col when present; otherwise equal columns.
     let widthsArr =
         if columns.Widths.Length = n then columns.Widths |> Array.ofList
         else
             let colWidth = (full - float (n - 1) * columns.Gap) / float n
             Array.init n (fun i -> (colWidth, (if i < n - 1 then columns.Gap else 0.0)))
     let columnWidth col = fst widthsArr.[min col (n - 1)]
-    // X offset of column `col` = sum of (width + space) of the columns before it.
     let columnDx col =
         let mutable x = 0.0
         for i in 0 .. col - 1 do
@@ -2544,29 +2547,51 @@ let private columnFlowLayout (settings: LayoutSettings) (measureText: TextMeasur
     let stride = pageHeight settings + pageGap
     let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (float page * stride)
     let contentBottomAt page = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (float page * stride)
+    // Balanced target height: lay the section out once at column width to get its
+    // total height H, then each column targets H/n (on the start page).
+    let balancedHeight =
+        if balanced then
+            let w = columnWidth 0
+            let sub, _ = layoutDocumentWithRangeAndInitial { settings with Width = settings.PaddingLeft + w + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange doc [] []
+            let bottom = sub |> List.collect (fun l -> l.Lines) |> List.map (fun l -> l.Y + l.Height) |> (function [] -> settings.PaddingTop | ys -> List.max ys)
+            Some ((bottom - settings.PaddingTop) / float n + 2.0)
+        else None
 
     let results = ResizeArray<BlockLayout>()
     let mutable col = 0
-    let mutable page = 0
-    let mutable y = contentTopAt 0
+    let mutable page = startPage
+    let mutable y = startY
     let mutable counters : Map<string * int, int> = Map.empty
-    let atColumnTop () = abs (y - contentTopAt page) < 0.5
+    // First column-row starts at startY; later pages start at their content top.
+    let columnTop () =
+        match balancedHeight with
+        | Some _ -> startY
+        | None -> if page = startPage then startY else contentTopAt page
+    let columnBottom () =
+        match balancedHeight with
+        // The last balanced column has no limit so a small snapping overflow stays
+        // in it rather than wrapping back over column 0.
+        | Some _ when col >= n - 1 -> System.Double.MaxValue
+        | Some bh -> startY + bh
+        | None -> contentBottomAt page
+    let atColumnTop () = abs (y - columnTop ()) < 0.5
     let advanceColumn () =
         col <- col + 1
-        if col >= n then col <- 0; page <- page + 1
-        y <- contentTopAt page
+        if col >= n then
+            col <- 0
+            if balancedHeight.IsNone then page <- page + 1
+        y <- columnTop ()
 
     for block in doc.Blocks do
         match tryGetParagraph block with
         | Some para0 ->
-            // A page/column break before this paragraph moves to the next column.
             if (para0.Metadata.PageBreakBefore || para0.Metadata.RenderedPageBreakBefore.IsSome) && not (atColumnTop ()) then
                 advanceColumn ()
             let style = forBlockInDocument doc block
             let mutable remaining = para0
             let mutable placed = false
             while not placed do
-                let colBottom = contentBottomAt page
+                let colBottom = columnBottom ()
                 let layout, newCounters, _, _ =
                     layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInDocument doc) remaining counters [] []
                 let fitCount = layout.Lines |> List.filter (fun line -> line.Y + line.Height <= colBottom + 0.5) |> List.length
@@ -2577,8 +2602,6 @@ let private columnFlowLayout (settings: LayoutSettings) (measureText: TextMeasur
                     placed <- true
                 elif fitCount = 0 then
                     if atColumnTop () then
-                        // Paragraph taller than a whole column: place it and move on
-                        // (avoids an infinite loop).
                         results.Add(shiftBlockX (columnDx col) layout)
                         counters <- newCounters
                         y <- layout.Y + layout.Height
@@ -2592,9 +2615,6 @@ let private columnFlowLayout (settings: LayoutSettings) (measureText: TextMeasur
                     advanceColumn ()
             if para0.Metadata.PageBreakAfter && not (atColumnTop ()) then advanceColumn ()
         | None ->
-            // Non-paragraph block (table / text box): lay it out atomically at the
-            // current column width and place it, advancing the column if it would
-            // overflow. (Splitting tables across columns is not handled.)
             let sub = { doc with Blocks = [block] }
             let subLayouts, _ =
                 layoutDocumentWithRangeAndInitial { settings with Width = settings.PaddingLeft + columnWidth col + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange sub [] []
@@ -2604,29 +2624,80 @@ let private columnFlowLayout (settings: LayoutSettings) (measureText: TextMeasur
                 let subTop = subLayouts |> List.map (fun l -> l.Y) |> List.min
                 let subBottom = subLayouts |> List.map (fun l -> l.Y + l.Height) |> List.max
                 let height = subBottom - subTop
-                if not (atColumnTop ()) && y + height > contentBottomAt page + 0.5 then advanceColumn ()
+                if not (atColumnTop ()) && y + height > columnBottom () + 0.5 then advanceColumn ()
                 let dy = y - subTop
                 for sl in subLayouts do
                     results.Add(sl |> shiftBlockY dy |> shiftBlockX (columnDx col))
                 y <- y + height
     List.ofSeq results
 
+/// Split the document into sections at paragraphs carrying a section break;
+/// the final section uses the body PageSetup. Each entry is
+/// (blocks, columns, breakType, isFinal).
+let private splitIntoSections (doc: Document) =
+    let result = ResizeArray<Block list * SectionColumns option * string option * bool>()
+    let mutable current = ResizeArray<Block>()
+    for block in doc.Blocks do
+        current.Add block
+        match tryGetParagraph block with
+        | Some para when para.Metadata.SectionBreak.IsSome ->
+            result.Add(List.ofSeq current, para.Metadata.SectionColumns, para.Metadata.SectionBreak, false)
+            current <- ResizeArray<Block>()
+        | _ -> ()
+    result.Add(List.ofSeq current, doc.PageSetup.Columns, None, true)
+    List.ofSeq result
+
+let private columnsOrSingle (columns: SectionColumns option) =
+    match columns with
+    | Some c when c.Count >= 2 -> c
+    | _ -> { Count = 1; Gap = 0.0; Separator = false; Widths = [] }
+
+/// Lay out a multi-section document section by section: a continuous break
+/// continues on the same page below the previous section; otherwise the next
+/// section starts on a new page. Multi-column non-final sections are balanced.
+let private layoutSections (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) sections =
+    let stride = pageHeight settings + pageGap
+    let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (float page * stride)
+    let results = ResizeArray<BlockLayout>()
+    let mutable page = 0
+    let mutable y = contentTopAt 0
+    sections
+    |> List.iter (fun (blocks, columns, breakType, isFinal) ->
+        let secColumns = columnsOrSingle columns
+        let secDoc = { doc with Blocks = blocks; PageSetup = { doc.PageSetup with Columns = columns } }
+        let balanced = (not isFinal) && secColumns.Count >= 2
+        let secLayouts = flowColumns settings measureText measureRange secDoc secColumns page y balanced
+        results.AddRange secLayouts
+        if not isFinal then
+            let bottom = secLayouts |> List.collect (fun l -> l.Lines) |> List.map (fun l -> l.Y + l.Height) |> (function [] -> y | ys -> List.max ys)
+            match breakType with
+            | Some "continuous" ->
+                page <- int (floor (bottom / stride))
+                y <- bottom
+            | _ ->
+                page <- int (floor (bottom / stride)) + 1
+                y <- contentTopAt page)
+    List.ofSeq results
+
 let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
-    match doc.PageSetup.Columns with
-    | Some columns when columns.Count >= 2 ->
-        columnFlowLayout settings measureText measureRange doc columns
-    | _ ->
-        let firstPass, placedAfterFirst =
-            layoutDocumentWithRangeAndInitial settings measureText measureRange doc [] []
-        let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-        let extendedObstacles, prePlacedBoxes =
-            computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
-        if extendedObstacles.IsEmpty then
-            firstPass
-        else
-            let secondPass, _ =
-                layoutDocumentWithRangeAndInitial settings measureText measureRange doc extendedObstacles prePlacedBoxes
-            secondPass
+    match splitIntoSections doc with
+    | [ (_, columns, _, _) ] ->
+        // Single section: keep the existing path.
+        match columns with
+        | Some c when c.Count >= 2 -> flowColumns settings measureText measureRange doc c 0 (WordLayout.Page.contentTop settings.PaddingTop 0.0) false
+        | _ ->
+            let firstPass, placedAfterFirst =
+                layoutDocumentWithRangeAndInitial settings measureText measureRange doc [] []
+            let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+            let extendedObstacles, prePlacedBoxes =
+                computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
+            if extendedObstacles.IsEmpty then firstPass
+            else
+                let secondPass, _ =
+                    layoutDocumentWithRangeAndInitial settings measureText measureRange doc extendedObstacles prePlacedBoxes
+                secondPass
+    | sections ->
+        layoutSections settings measureText measureRange doc sections
 
 let layoutDocument (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) =
     layoutDocumentWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) doc
