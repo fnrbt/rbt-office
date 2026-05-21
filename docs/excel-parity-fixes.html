@@ -155,6 +155,67 @@
     <tbody>
       <tr>
         <td>
+          <strong>Date-format quoted literals keep their case (<code>"FY"yy</code> → "FY18", not "fy18")</strong>
+          <span class="meta">Target: <code>tests/real-world/lyric-multifamily.xlsx</code> "Lyric-PF-DCF" sheet, Operating Assumptions year headers (<code>"FY"yy</code> over a date). Matched 96-dpi Excel screenshot (scrolled to row 50) ↔ our native render.</span>
+          <span class="meta">Part of the <code>lyric-multifamily</code> full-parity goal.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:48px; aspect-ratio:12.5 / 1;">
+            <img src="../artifacts/excel/lyric-fy-crop.png" style="--w:700px; --x:0px; --y:0px; --s:1.0" alt="Excel — FY18 FY19 uppercase">
+          </div>
+          <div class="caption">Excel: FY18 / FY19 / FY20 … (the <code>"FY"</code> literal is uppercase as authored).</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:48px; aspect-ratio:12.5 / 1;">
+            <img src="../artifacts/native/lyric-fy-after.png" style="--w:700px; --x:0px; --y:0px; --s:1.0" alt="Ours after — uppercase FY">
+          </div>
+          <div class="caption">After: FY18 / FY19 … — matches Excel.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:48px; aspect-ratio:12.5 / 1;">
+            <img src="../artifacts/baseline/lyric-fy-before.png" style="--w:700px; --x:0px; --y:0px; --s:1.0" alt="Ours before — lowercase fy">
+          </div>
+          <div class="caption">Before: fy18 / fy19 … — the literal was lowercased.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> <code>CellText.fs</code> <code>excelToNetFormat</code> lowercased the entire date-format code to match the case-insensitive <code>y/m/d/h/s</code> tokens — which also lowercased quoted (<code>"FY"</code>) and <code>\</code>-escaped literals. It now matches tokens against the lowercased copy but emits literal content from the original (case-preserved) string. Applies to every date format with literal text.</p>
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <strong>Hidden columns: don't paint their text or grow rows (real-world: The Lyric multifamily model)</strong>
+          <span class="meta">Target: <code>tests/real-world/lyric-multifamily.xlsx</code> "Comp-Sales" sheet. Columns D (Address) and E (Neighborhood) are <code>hidden="1"</code> (outline-collapsed). Matched 96-dpi Excel screenshot ↔ our native render (sheet reordered so the screenshot tool captures Comp-Sales).</span>
+          <span class="meta">Part of the <code>lyric-multifamily</code> full-parity goal.</span>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:3.07 / 1;">
+            <img src="../artifacts/excel/lyric-comp-sales-crop.png" style="--w:920px; --x:0px; --y:0px; --s:1.0" alt="Excel reference — Comp-Sales table">
+          </div>
+          <div class="caption">Excel: hidden columns D/E are absent; the table reads Property Name → # Units → … and every row (incl. "Summit", row 15) is normal height.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:3.07 / 1;">
+            <img src="../artifacts/native/lyric-comp-sales-after.png" style="--w:920px; --x:0px; --y:0px; --s:1.0" alt="Ours after — matches Excel">
+          </div>
+          <div class="caption">After: matches Excel — no hidden-column text, all rows normal height.</div>
+        </td>
+        <td>
+          <div class="zoom" style="min-height:150px; aspect-ratio:3.07 / 1;">
+            <img src="../artifacts/baseline/lyric-comp-sales-before.png" style="--w:920px; --x:0px; --y:0px; --s:1.0" alt="Ours before — hidden-column text overflows + row inflated">
+          </div>
+          <div class="caption">Before: the hidden cells' text was still painted — the Address/Neighborhood values overflowed onto the visible columns, and the hidden "733 Summit Avenue" wrapped to one glyph per line in its 0-width cell, inflating row 15 and pushing the rest of the table down.</div>
+        </td>
+        <td>
+          <p><strong>Fix:</strong> the column-width model already collapses <code>hidden="1"</code> columns to 0&nbsp;px (layout was correct). The remaining issue was that 0-width cells still <em>painted</em> and contributed height:</p>
+          <ul>
+            <li><code>Paint.fs</code>: skip text emission for any cell whose rect width or height is 0 (hidden column/row) — Excel paints nothing there.</li>
+            <li><code>excel-native-runner</code> auto-grow: a hidden (0-width) column no longer wraps its text or grows the row height.</li>
+            <li>Verified vs the Excel Comp-Sales screenshot; gate clean (78/78 VBA-layout, print-PDF within MAE, smoke render).</li>
+          </ul>
+        </td>
+      </tr>
+      <tr>
+        <td>
           <strong>Hidden sections (<code>0.00;;</code>) and the <code>@</code> text format on numbers</strong>
           <span class="meta">Repro: <code>tests/test-documents-excel/synthetic-numfmt-hide.xlsx</code> (built via <code>tools/excel-parity/build-numfmt-hide-fixture.vbs</code>). Col B <code>0.00;;</code>, col C <code>0;;</code>, col D <code>@</code> at 5 / 0 / −5 / 3.5.</span>
           <span class="meta">Ground truth: Excel <code>cell.Text</code> probe + screenshot; matched 96-dpi screenshot ↔ our native render.</span>

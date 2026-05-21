@@ -164,7 +164,11 @@ let private excelSerialToDate (serial: float) : System.DateTime =
 /// literals are emitted unchanged. Unrecognized tokens are wrapped in single
 /// quotes so .NET treats them as literals rather than throwing.
 let private excelToNetFormat (code: string) : string =
-    let lower = (firstSection code).ToLowerInvariant()
+    // `lower` drives case-insensitive date/time TOKEN matching (y/m/d/h/s), but
+    // quoted/escaped LITERALS must keep their original case — Excel's `"FY"yy`
+    // renders "FY18", not "fy18". `orig` and `lower` share indices.
+    let orig = firstSection code
+    let lower = orig.ToLowerInvariant()
     let sb = System.Text.StringBuilder()
     let mutable i = 0
     // mInTimeContext is true after we just emitted h/H or are about to emit
@@ -237,14 +241,14 @@ let private excelToNetFormat (code: string) : string =
             i <- i + 1 + n
         | '\\' when i + 1 < lower.Length ->
             // Escaped literal char.
-            sb.Append('\'').Append(lower.[i + 1]).Append('\'') |> ignore
+            sb.Append('\'').Append(orig.[i + 1]).Append('\'') |> ignore
             i <- i + 2
         | '"' ->
             // Quoted literal.
             let endQuote = lower.IndexOf('"', i + 1)
             if endQuote < 0 then i <- lower.Length
             else
-                sb.Append('\'').Append(lower.Substring(i + 1, endQuote - i - 1)).Append('\'') |> ignore
+                sb.Append('\'').Append(orig.Substring(i + 1, endQuote - i - 1)).Append('\'') |> ignore
                 i <- endQuote + 1
         | '[' ->
             // Elapsed-time bracket [h]/[m]/[s] — .NET can't express elapsed

@@ -476,7 +476,11 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 |> Option.map (fun m ->
                     fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
             let displayText = cellDisplayText measure cell.Rect.Width format value
-            if displayText <> "" then
+            // Cells in a hidden column (0 width) or hidden row (0 height) paint
+            // nothing — Excel renders no text there, and without this guard the
+            // hidden cell's text overflows into the next visible column (and a
+            // 0-width cell wraps its text to one glyph per line).
+            if displayText <> "" && cell.Rect.Width > 0.0 && cell.Rect.Height > 0.0 then
                 // Indent past the conditional-formatting icon when present
                 // so the icon and the cell text don't overlap (Excel does
                 // the same — the icon occupies a ~16 px gutter).

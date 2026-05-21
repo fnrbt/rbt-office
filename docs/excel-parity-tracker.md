@@ -51,6 +51,20 @@ surfaces have actually been checked. It complements
 - [x] Browser/Fable screenshot pass for imported XLSX fixtures: 85/85
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
+
+## Real-world goal: lyric-multifamily.xlsx (full parity)
+
+- Sheet 1 (Lyric-PF-DCF) visible region: ~94% match (MAE ~6%), dominated by
+  ClearType-vs-grayscale text AA; navy bands, yellow inputs, gray sub-headers,
+  number formats, borders all match.
+- [x] Comp-Sales: hidden columns (D/E `hidden="1"`) no longer paint their text
+  (was overflowing onto visible columns) and no longer inflate row auto-height
+  (the hidden "733 Summit Avenue" was wrapping to 1 glyph/line). `Paint.fs`
+  skips 0-width/height cells; native-runner auto-grow skips 0-width columns.
+  Verified vs Excel Comp-Sales screenshot.
+- [ ] Remaining: Apt-Comps + Replacement-Cost sheets, lower regions of sheets
+  1/2, and the irreducible text-AA difference.
+
 ## P0: Print/PDF Fidelity
 
 ### Header/Footer Runs
