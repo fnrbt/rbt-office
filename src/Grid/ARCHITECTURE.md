@@ -316,11 +316,13 @@ const tabs = createTabs(workbook, {
 });
 tabs.Mount(tabsContainer);
 
-// 4. Optional toolbar
-const toolbar = createFormatToolbar((action) => {
-    grid.ApplyFormat(action);
-});
-toolbar.Mount(toolbarContainer);
+// 4. Optional shell (menubar + toolbar). See TOOLBAR-USAGE.md.
+const shell = createSpreadsheetShell(
+    (action) => grid.ApplyFormat(action),
+    (query) => grid.StartSearch?.(query, false),
+    ([find, repl]) => grid.ReplaceAll?.(find, repl, false)
+);
+shell.Mount(shellContainer);
 ```
 
 ## Testing

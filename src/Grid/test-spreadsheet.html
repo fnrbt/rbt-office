@@ -94,7 +94,7 @@
     <script type="module">
         // Import the compiled Fable modules
         import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
-        import { createFormatToolbar, createAlignmentToolbar, createNumberFormatToolbar } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
+        import { createSpreadsheetShell } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
 
         // Get the container elements
         const toolbarContainer = document.getElementById('toolbar-container');
@@ -104,38 +104,25 @@
         const spreadsheet = createSpreadsheet(spreadsheetContainer);
         spreadsheet.Mount();
 
-        // Create toolbars
-        const formatToolbar = createFormatToolbar((action) => {
-            console.log('Format action:', action);
-            if (action === 'textColor') {
-                spreadsheet.ApplyTextColor('#ff0000');
-            } else if (action === 'bgColor') {
-                spreadsheet.ApplyBgColor('#ffff00');
-            } else {
-                spreadsheet.ApplyFormat(action);
+        // Unified shell: one menubar + one toolbar row, action callback
+        // dispatches by string. Find/replace is also wired through here.
+        const dispatchAction = (action) => {
+            console.log('Action:', action);
+            switch (action) {
+                case 'textColor': spreadsheet.ApplyTextColor('#ff0000'); break;
+                case 'bgColor':   spreadsheet.ApplyBgColor('#ffff00'); break;
+                case 'formatNumber':   spreadsheet.ApplyNumberFormat('number'); break;
+                case 'formatCurrency': spreadsheet.ApplyNumberFormat('currency'); break;
+                case 'formatPercent':  spreadsheet.ApplyNumberFormat('percent'); break;
+                default: spreadsheet.ApplyFormat(action);
             }
-        });
-
-        const alignmentToolbar = createAlignmentToolbar((action) => {
-            console.log('Alignment action:', action);
-            spreadsheet.ApplyFormat(action);
-        });
-
-        const numberToolbar = createNumberFormatToolbar((action) => {
-            console.log('Number format action:', action);
-            if (action === 'formatNumber') {
-                spreadsheet.ApplyNumberFormat('number');
-            } else if (action === 'formatCurrency') {
-                spreadsheet.ApplyNumberFormat('currency');
-            } else if (action === 'formatPercent') {
-                spreadsheet.ApplyNumberFormat('percent');
-            }
-        });
-
-        // Mount toolbars
-        formatToolbar.Mount(toolbarContainer);
-        alignmentToolbar.Mount(toolbarContainer);
-        numberToolbar.Mount(toolbarContainer);
+        };
+        const shell = createSpreadsheetShell(
+            dispatchAction,
+            (query) => spreadsheet.StartSearch?.(query, false),
+            ([find, replace]) => spreadsheet.ReplaceAll?.(find, replace, false)
+        );
+        shell.Mount(toolbarContainer);
 
         // Pre-populate some example data
         spreadsheet.SetCell(0, 0, "10");      // A1 = 10

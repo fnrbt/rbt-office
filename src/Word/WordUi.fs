@@ -75,15 +75,6 @@ module Ui =
         "--word-text", chrome.Text
     ]
 
-    let menuLeft testId =
-        match testId with
-        | "word-file-menu" -> 3.0
-        | "word-edit-menu" -> 36.0
-        | "word-insert-menu" -> 72.0
-        | "word-format-menu" -> 116.0
-        | "word-table-menu" -> 169.0
-        | _ -> 3.0
-
     let toolbarGlyph testId =
         match testId with
         | "word-find-replace" -> "search"

@@ -587,7 +587,6 @@ let private handleInput (state: AppState) (ev: InputEvent) =
         match state.LayoutRoot with
         | Some root when button = 0 ->
             if pressed then
-                state.RenderState.LastClickPos.Value <- (x, y)
                 let (onClick, _) = hitTestAll root x y
                 onClick |> Option.iter (fun f -> f())
                 match pointerHitTestAll root x y with
@@ -724,10 +723,10 @@ let main argv =
         sprintf "%sRedBat Calc - %s" prefix file
 
     let chrome = XlUi.chrome
-    // Chrome bands: title 32 + menu 32 + toolbar (32 * 3 rows) + formula bar 26
-    // + sheet tabs 30 + status 22. The grid itself is `expanded` so this is
-    // only the hint used to size scroll content.
-    let bodyOverhead = 32.0 + 32.0 + 96.0 + 26.0 + 30.0 + 22.0
+    // Chrome bands: menu 32 + toolbar (32 * 3 rows) + formula bar 26 + sheet
+    // tabs 30 + status 22. The grid itself is `expanded` so this is only the
+    // hint used to size scroll content.
+    let bodyOverhead = 32.0 + 96.0 + 26.0 + 30.0 + 22.0
 
     let initialWidth = int chrome.WindowWidth
     let initialHeight = 800

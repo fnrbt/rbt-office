@@ -68,7 +68,6 @@ let viewWith (renderState: ShellRenderState)
         Menus = WordUi.menus state actions @ extraMenus
         ToolbarRows = WordUi.toolbarRows state actions
         ToolbarGlyph = WordUi.toolbarGlyph
-        MenuLeft = WordUi.menuLeft
         ShowToolbarPressed = WordUi.showToolbarPressed
         Workspace = column [ ruler; workspace ]
     }

@@ -4,284 +4,534 @@ open Fable.Core
 open Fable.Core.JsInterop
 open RedBat.Grid.Dom
 
-/// Toolbar button
-type ToolbarButton = {
+// ── Spec types ──────────────────────────────────────────────
+
+type MenuItem = {
     Id: string
     Label: string
-    Icon: string option
+    Shortcut: string option
     Action: unit -> unit
 }
 
-/// Toolbar separator
-type ToolbarItem =
-    | Button of ToolbarButton
-    | Separator
+type MenuRow =
+    | MItem of MenuItem
+    | MSep
 
-/// Toolbar configuration
-type ToolbarConfig = {
-    Items: ToolbarItem list
-    OnAction: string -> unit
+type Menu = {
+    Id: string
+    Label: string
+    Rows: MenuRow list
 }
 
-/// Create a toolbar button element
-let private createButton (btn: ToolbarButton): Element =
-    let button = createElement "button"
-    setClassName button "toolbar-button"
-    setStyles button [
-        "padding", "6px 12px"
-        "border", "1px solid #d0d0d0"
-        "background", "linear-gradient(180deg, #fefefe 0%, #f0f0f0 100%)"
+type ToolbarItem =
+    | TButton of id: string * label: string * action: (unit -> unit)
+    | TSep
+
+// ── Flat chrome palette ─────────────────────────────────────
+// Mirrors the Word web shell's Google-Docs-flat look: white surfaces,
+// hairline borders, soft hover/pressed tints. Variables are also exposed
+// as CSS custom properties on the root so downstream stylesheets can
+// override individual tokens without forking the F#.
+
+module private Palette =
+    let chromeBg = "#ffffff"
+    let hover = "#f1f3f4"
+    let pressed = "#e8f0fe"
+    let border = "#dadce0"
+    let separator = "#e1e5ea"
+    let text = "#202124"
+    let mutedText = "#5f6368"
+    let menuPanelShadow = "0 1px 3px rgba(60,64,67,0.16), 0 4px 8px rgba(60,64,67,0.08)"
+
+// ── Document-level menu state ───────────────────────────────
+// Only one menu panel can be open at a time; clicking outside closes it.
+
+let mutable private openTrigger: Element option = None
+let mutable private openPanel: Element option = None
+let mutable private docHandlerInstalled = false
+
+let private closeOpenMenu () =
+    match openPanel with
+    | Some panel -> setStyle panel "display" "none"
+    | None -> ()
+    match openTrigger with
+    | Some trigger ->
+        setStyle trigger "background" "transparent"
+        setAttribute trigger "aria-expanded" "false"
+    | None -> ()
+    openPanel <- None
+    openTrigger <- None
+
+let private installDocCloseHandler () =
+    if not docHandlerInstalled then
+        let doc = getDocument ()
+        addEventListener doc "click" (fun _ -> closeOpenMenu ())
+        docHandlerInstalled <- true
+
+// ── Toolbar primitives ──────────────────────────────────────
+
+let private toolbarButton id label action =
+    let btn = createElement "button"
+    setClassName btn "sheet-tool-button"
+    setAttribute btn "data-sheet-icon" id
+    setAttribute btn "type" "button"
+    setStyles btn [
+        "padding", "0 8px"
+        "border", "1px solid transparent"
+        "background", "transparent"
         "font-family", "Arial, sans-serif"
         "font-size", "11px"
+        "color", Palette.text
         "cursor", "pointer"
-        "margin-right", "2px"
-        "border-radius", "2px"
-        "color", "#444"
+        "border-radius", "3px"
         "user-select", "none"
+        "min-width", "24px"
+        "height", "24px"
+        "margin", "0 1px"
     ]
+    setTextContent btn label
+    addEventListener btn "mouseenter" (fun _ -> setStyle btn "background" Palette.hover)
+    addEventListener btn "mouseleave" (fun _ -> setStyle btn "background" "transparent")
+    addEventListener btn "mousedown" (fun e -> preventDefault e)
+    addEventListener btn "click" (fun _ -> action ())
+    btn
 
-    match btn.Icon with
-    | Some icon -> setTextContent button icon
-    | None -> setTextContent button btn.Label
-
-    addEventListener button "mousedown" (fun e ->
-        preventDefault e
-    )
-
-    addEventListener button "click" (fun _ ->
-        btn.Action()
-    )
-
-    // Hover effect
-    addEventListener button "mouseenter" (fun _ ->
-        setStyle button "background" "linear-gradient(180deg, #ffffff 0%, #e8e8e8 100%)"
-        setStyle button "border-color" "#b0b0b0"
-    )
-
-    addEventListener button "mouseleave" (fun _ ->
-        setStyle button "background" "linear-gradient(180deg, #fefefe 0%, #f0f0f0 100%)"
-        setStyle button "border-color" "#d0d0d0"
-    )
-
-    button
-
-/// Create a toolbar separator
-let private createSeparator (): Element =
+let private toolbarSeparator () =
     let sep = createElement "div"
-    setClassName sep "toolbar-separator"
     setStyles sep [
         "width", "1px"
-        "height", "24px"
-        "background", "#d0d0d0"
-        "margin", "0 4px"
-        "display", "inline-block"
-        "vertical-align", "middle"
+        "height", "16px"
+        "background", Palette.separator
+        "margin", "0 6px"
+        "flex", "0 0 auto"
     ]
     sep
 
-/// Create toolbar container
-let createToolbar (items: ToolbarItem list): Element =
-    let toolbar = createElement "div"
-    setClassName toolbar "toolbar"
-    setStyles toolbar [
+// ── Menu rendering ──────────────────────────────────────────
+
+let private renderMenuItem (item: MenuItem) (onClose: unit -> unit) =
+    let row = createElement "button"
+    setClassName row "sheet-menu-item"
+    setAttribute row "data-sheet-menu-item" item.Id
+    setAttribute row "type" "button"
+    setStyles row [
         "display", "flex"
         "align-items", "center"
-        "padding", "4px"
-        "background", "#f8f8f8"
-        "border-bottom", "1px solid #d0d0d0"
-        "user-select", "none"
+        "justify-content", "space-between"
+        "width", "100%"
+        "padding", "6px 16px"
+        "border", "none"
+        "background", "transparent"
+        "font-family", "Arial, sans-serif"
+        "font-size", "12px"
+        "color", Palette.text
+        "cursor", "pointer"
+        "text-align", "left"
+        "white-space", "nowrap"
+    ]
+    let labelSpan = createElement "span"
+    setTextContent labelSpan item.Label
+    appendChild row labelSpan
+    match item.Shortcut with
+    | Some shortcut ->
+        let sh = createElement "span"
+        setStyles sh [
+            "color", Palette.mutedText
+            "margin-left", "32px"
+            "font-size", "11px"
+        ]
+        setTextContent sh shortcut
+        appendChild row sh
+    | None -> ()
+    addEventListener row "mouseenter" (fun _ -> setStyle row "background" Palette.hover)
+    addEventListener row "mouseleave" (fun _ -> setStyle row "background" "transparent")
+    addEventListener row "click" (fun _ ->
+        onClose ()
+        item.Action ())
+    row
+
+let private renderMenuSeparator () =
+    let sep = createElement "div"
+    setStyles sep [
+        "height", "1px"
+        "background", Palette.separator
+        "margin", "4px 0"
+    ]
+    sep
+
+let private renderMenu (menu: Menu) =
+    let wrap = createElement "div"
+    setStyles wrap [
+        "position", "relative"
+        "display", "inline-block"
     ]
 
-    for item in items do
-        match item with
-        | Button btn ->
-            let button = createButton btn
-            appendChild toolbar button
-        | Separator ->
-            let sep = createSeparator()
-            appendChild toolbar sep
+    let trigger = createElement "button"
+    setClassName trigger "sheet-menu-button"
+    setAttribute trigger "data-sheet-menu" menu.Id
+    setAttribute trigger "type" "button"
+    setAttribute trigger "aria-haspopup" "true"
+    setAttribute trigger "aria-expanded" "false"
+    setStyles trigger [
+        "padding", "0 12px"
+        "border", "1px solid transparent"
+        "background", "transparent"
+        "font-family", "Arial, sans-serif"
+        "font-size", "13px"
+        "color", Palette.text
+        "cursor", "pointer"
+        "border-radius", "3px"
+        "user-select", "none"
+        "height", "26px"
+    ]
+    setTextContent trigger menu.Label
 
-    toolbar
+    let panel = createElement "div"
+    setClassName panel "sheet-menu-panel"
+    setAttribute panel "data-sheet-menu-panel" menu.Id
+    setStyles panel [
+        "position", "absolute"
+        "top", "100%"
+        "left", "0"
+        "min-width", "220px"
+        "background", Palette.chromeBg
+        "border", sprintf "1px solid %s" Palette.border
+        "border-radius", "4px"
+        "box-shadow", Palette.menuPanelShadow
+        "padding", "4px 0"
+        "z-index", "100"
+        "display", "none"
+    ]
+    // Clicks inside the panel must not bubble to the document-level handler
+    // that closes the menu. The item-click handler closes it explicitly.
+    addEventListener panel "click" (fun e -> stopPropagation e)
 
-/// Format toolbar for spreadsheet
+    for row in menu.Rows do
+        match row with
+        | MItem item -> appendChild panel (renderMenuItem item closeOpenMenu)
+        | MSep -> appendChild panel (renderMenuSeparator ())
+
+    addEventListener trigger "mouseenter" (fun _ ->
+        if openTrigger <> Some trigger then
+            setStyle trigger "background" Palette.hover)
+    addEventListener trigger "mouseleave" (fun _ ->
+        if openTrigger <> Some trigger then
+            setStyle trigger "background" "transparent")
+    addEventListener trigger "mousedown" (fun e -> preventDefault e)
+    addEventListener trigger "click" (fun e ->
+        stopPropagation e
+        let wasOpen = openTrigger = Some trigger
+        closeOpenMenu ()
+        if not wasOpen then
+            setStyle panel "display" "block"
+            setStyle trigger "background" Palette.pressed
+            setAttribute trigger "aria-expanded" "true"
+            openTrigger <- Some trigger
+            openPanel <- Some panel)
+
+    appendChild wrap trigger
+    appendChild wrap panel
+    wrap
+
+// ── Unified spreadsheet shell ───────────────────────────────
+// Replaces the per-category toolbar classes (FormatToolbar,
+// AlignmentToolbar, NumberFormatToolbar, InsertDeleteToolbar,
+// DataToolbar, ClipboardToolbar, FindReplaceToolbar) with one shell
+// that renders a menubar, a single focused toolbar row, and an
+// inline find/replace bar that toggles via Edit > Find.
+
 [<AttachMembers>]
-type FormatToolbar(onAction: string -> unit) =
-    let mutable toolbarElement: Element option = None
+type SpreadsheetShell
+        (onAction: string -> unit,
+         onFind: string -> unit,
+         onReplace: string * string -> unit) =
 
-    let createFormatToolbar () =
-        let items = [
-            Button {
-                Id = "bold"
-                Label = "B"
-                Icon = Some "B"
-                Action = fun () -> onAction "bold"
-            }
-            Button {
-                Id = "italic"
-                Label = "I"
-                Icon = Some "I"
-                Action = fun () -> onAction "italic"
-            }
-            Button {
-                Id = "underline"
-                Label = "U"
-                Icon = Some "U"
-                Action = fun () -> onAction "underline"
-            }
-            Separator
-            Button {
-                Id = "font-increase"
-                Label = "A+"
-                Icon = Some "A+"
-                Action = fun () -> onAction "fontIncrease"
-            }
-            Button {
-                Id = "font-decrease"
-                Label = "A-"
-                Icon = Some "A-"
-                Action = fun () -> onAction "fontDecrease"
-            }
-            Separator
-            Button {
-                Id = "text-color"
-                Label = "Color"
-                Icon = Some "🎨"
-                Action = fun () -> onAction "textColor"
-            }
-            Button {
-                Id = "bg-color"
-                Label = "Fill"
-                Icon = Some "⬛"
-                Action = fun () -> onAction "bgColor"
-            }
+    let mutable rootElement: Element option = None
+    let mutable findBar: Element option = None
+    let mutable findInputEl: Element option = None
+    let mutable replaceInputEl: Element option = None
+
+    let toggleFindBar () =
+        match findBar with
+        | Some bar ->
+            let isHidden = getAttribute bar "data-hidden" = "true"
+            if isHidden then
+                setStyle bar "display" "flex"
+                setAttribute bar "data-hidden" "false"
+                findInputEl |> Option.iter (fun el -> (unbox<obj> el)?focus())
+            else
+                setStyle bar "display" "none"
+                setAttribute bar "data-hidden" "true"
+        | None -> ()
+
+    let menus () = [
+        {
+            Id = "file"
+            Label = "File"
+            Rows = [
+                MItem { Id = "open"; Label = "Open..."; Shortcut = Some "Ctrl+O"; Action = fun () -> onAction "open" }
+                MItem { Id = "save"; Label = "Save"; Shortcut = Some "Ctrl+S"; Action = fun () -> onAction "save" }
+                MSep
+                MItem { Id = "print-pdf"; Label = "Print PDF"; Shortcut = None; Action = fun () -> onAction "printPdf" }
+            ]
+        }
+        {
+            Id = "edit"
+            Label = "Edit"
+            Rows = [
+                MItem { Id = "undo"; Label = "Undo"; Shortcut = Some "Ctrl+Z"; Action = fun () -> onAction "undo" }
+                MItem { Id = "redo"; Label = "Redo"; Shortcut = Some "Ctrl+Y"; Action = fun () -> onAction "redo" }
+                MSep
+                MItem { Id = "cut"; Label = "Cut"; Shortcut = Some "Ctrl+X"; Action = fun () -> onAction "cut" }
+                MItem { Id = "copy"; Label = "Copy"; Shortcut = Some "Ctrl+C"; Action = fun () -> onAction "copy" }
+                MItem { Id = "paste"; Label = "Paste"; Shortcut = Some "Ctrl+V"; Action = fun () -> onAction "paste" }
+                MSep
+                MItem { Id = "find-replace"; Label = "Find and replace..."; Shortcut = Some "Ctrl+F"; Action = toggleFindBar }
+            ]
+        }
+        {
+            Id = "insert"
+            Label = "Insert"
+            Rows = [
+                MItem { Id = "insert-row"; Label = "Insert row"; Shortcut = None; Action = fun () -> onAction "insertRow" }
+                MItem { Id = "insert-column"; Label = "Insert column"; Shortcut = None; Action = fun () -> onAction "insertColumn" }
+                MSep
+                MItem { Id = "delete-row"; Label = "Delete row"; Shortcut = None; Action = fun () -> onAction "deleteRow" }
+                MItem { Id = "delete-column"; Label = "Delete column"; Shortcut = None; Action = fun () -> onAction "deleteColumn" }
+            ]
+        }
+        {
+            Id = "format"
+            Label = "Format"
+            Rows = [
+                MItem { Id = "bold"; Label = "Bold"; Shortcut = Some "Ctrl+B"; Action = fun () -> onAction "bold" }
+                MItem { Id = "italic"; Label = "Italic"; Shortcut = Some "Ctrl+I"; Action = fun () -> onAction "italic" }
+                MItem { Id = "underline"; Label = "Underline"; Shortcut = Some "Ctrl+U"; Action = fun () -> onAction "underline" }
+                MSep
+                MItem { Id = "format-number"; Label = "Number"; Shortcut = None; Action = fun () -> onAction "formatNumber" }
+                MItem { Id = "format-currency"; Label = "Currency"; Shortcut = None; Action = fun () -> onAction "formatCurrency" }
+                MItem { Id = "format-percent"; Label = "Percentage"; Shortcut = None; Action = fun () -> onAction "formatPercent" }
+                MSep
+                MItem { Id = "align-left"; Label = "Align left"; Shortcut = None; Action = fun () -> onAction "alignLeft" }
+                MItem { Id = "align-center"; Label = "Align center"; Shortcut = None; Action = fun () -> onAction "alignCenter" }
+                MItem { Id = "align-right"; Label = "Align right"; Shortcut = None; Action = fun () -> onAction "alignRight" }
+            ]
+        }
+        {
+            Id = "data"
+            Label = "Data"
+            Rows = [
+                MItem { Id = "sort-asc"; Label = "Sort A to Z"; Shortcut = None; Action = fun () -> onAction "sortAsc" }
+                MItem { Id = "sort-desc"; Label = "Sort Z to A"; Shortcut = None; Action = fun () -> onAction "sortDesc" }
+                MSep
+                MItem { Id = "filter"; Label = "Filter"; Shortcut = None; Action = fun () -> onAction "filter" }
+                MItem { Id = "clear-filter"; Label = "Clear filters"; Shortcut = None; Action = fun () -> onAction "clearFilter" }
+            ]
+        }
+    ]
+
+    // Single, focused toolbar row. Niche actions (insert/delete row/col,
+    // sort, filter, find) live in the menus.
+    let toolbarItems () = [
+        TButton ("bold", "B", fun () -> onAction "bold")
+        TButton ("italic", "I", fun () -> onAction "italic")
+        TButton ("underline", "U", fun () -> onAction "underline")
+        TSep
+        TButton ("font-increase", "A+", fun () -> onAction "fontIncrease")
+        TButton ("font-decrease", "A-", fun () -> onAction "fontDecrease")
+        TSep
+        TButton ("text-color", "A", fun () -> onAction "textColor")
+        TButton ("bg-color", "Fill", fun () -> onAction "bgColor")
+        TSep
+        TButton ("align-left", "L", fun () -> onAction "alignLeft")
+        TButton ("align-center", "C", fun () -> onAction "alignCenter")
+        TButton ("align-right", "R", fun () -> onAction "alignRight")
+        TSep
+        TButton ("format-currency", "$", fun () -> onAction "formatCurrency")
+        TButton ("format-percent", "%", fun () -> onAction "formatPercent")
+        TButton ("decimal-increase", ".0+", fun () -> onAction "decimalIncrease")
+        TButton ("decimal-decrease", ".0-", fun () -> onAction "decimalDecrease")
+        TSep
+        TButton ("cut", "Cut", fun () -> onAction "cut")
+        TButton ("copy", "Copy", fun () -> onAction "copy")
+        TButton ("paste", "Paste", fun () -> onAction "paste")
+        TSep
+        TButton ("undo", "Undo", fun () -> onAction "undo")
+        TButton ("redo", "Redo", fun () -> onAction "redo")
+    ]
+
+    let buildMenubar () =
+        let bar = createElement "div"
+        setClassName bar "sheet-menubar"
+        setStyles bar [
+            "display", "flex"
+            "align-items", "center"
+            "padding", "2px 6px"
+            "background", Palette.chromeBg
+            "border-bottom", sprintf "1px solid %s" Palette.separator
+            "gap", "2px"
+        ]
+        for menu in menus () do appendChild bar (renderMenu menu)
+        bar
+
+    let buildToolbar () =
+        let bar = createElement "div"
+        setClassName bar "sheet-toolbar"
+        setStyles bar [
+            "display", "flex"
+            "align-items", "center"
+            "padding", "4px 6px"
+            "background", Palette.chromeBg
+            "border-bottom", sprintf "1px solid %s" Palette.separator
+            "user-select", "none"
+            "flex-wrap", "wrap"
+        ]
+        for item in toolbarItems () do
+            match item with
+            | TButton (id, label, action) -> appendChild bar (toolbarButton id label action)
+            | TSep -> appendChild bar (toolbarSeparator ())
+        bar
+
+    let buildFindBar () =
+        let bar = createElement "div"
+        setClassName bar "sheet-find-bar"
+        setAttribute bar "data-hidden" "true"
+        setStyles bar [
+            "display", "none"
+            "align-items", "center"
+            "padding", "6px 8px"
+            "background", Palette.chromeBg
+            "border-bottom", sprintf "1px solid %s" Palette.separator
+            "gap", "8px"
         ]
 
-        // Update bold button style
-        let toolbar = createToolbar items
-        let boldBtn = querySelector toolbar ".toolbar-button"
-        if boldBtn.IsSome then
-            setStyle boldBtn.Value "font-weight" "bold"
-
-        toolbar
-
-    member _.Mount(container: Element) =
-        let toolbar = createFormatToolbar()
-        appendChild container toolbar
-        toolbarElement <- Some toolbar
-
-    member _.GetElement() = toolbarElement
-
-/// Alignment toolbar
-[<AttachMembers>]
-type AlignmentToolbar(onAction: string -> unit) =
-    let mutable toolbarElement: Element option = None
-
-    let createAlignmentToolbar () =
-        let items = [
-            Button {
-                Id = "align-left"
-                Label = "Left"
-                Icon = Some "⬅"
-                Action = fun () -> onAction "alignLeft"
-            }
-            Button {
-                Id = "align-center"
-                Label = "Center"
-                Icon = Some "↔"
-                Action = fun () -> onAction "alignCenter"
-            }
-            Button {
-                Id = "align-right"
-                Label = "Right"
-                Icon = Some "➡"
-                Action = fun () -> onAction "alignRight"
-            }
+        let findLabel = createElement "span"
+        setStyles findLabel [
+            "font-family", "Arial, sans-serif"
+            "font-size", "11px"
+            "color", Palette.mutedText
         ]
-        createToolbar items
+        setTextContent findLabel "Find"
+        appendChild bar findLabel
 
-    member _.Mount(container: Element) =
-        let toolbar = createAlignmentToolbar()
-        appendChild container toolbar
-        toolbarElement <- Some toolbar
-
-    member _.GetElement() = toolbarElement
-
-/// Number format toolbar
-[<AttachMembers>]
-type NumberFormatToolbar(onAction: string -> unit) =
-    let mutable toolbarElement: Element option = None
-
-    let createNumberToolbar () =
-        let items = [
-            Button {
-                Id = "format-number"
-                Label = "1,234.56"
-                Icon = None
-                Action = fun () -> onAction "formatNumber"
-            }
-            Button {
-                Id = "format-currency"
-                Label = "$"
-                Icon = Some "$"
-                Action = fun () -> onAction "formatCurrency"
-            }
-            Button {
-                Id = "format-percent"
-                Label = "%"
-                Icon = Some "%"
-                Action = fun () -> onAction "formatPercent"
-            }
-            Separator
-            Button {
-                Id = "decimal-increase"
-                Label = ".0+"
-                Icon = None
-                Action = fun () -> onAction "decimalIncrease"
-            }
-            Button {
-                Id = "decimal-decrease"
-                Label = ".0-"
-                Icon = None
-                Action = fun () -> onAction "decimalDecrease"
-            }
+        let findInput = createElement "input"
+        setAttribute findInput "type" "text"
+        setAttribute findInput "placeholder" "Search..."
+        setClassName findInput "sheet-find-input"
+        setStyles findInput [
+            "width", "180px"
+            "padding", "4px 8px"
+            "border", sprintf "1px solid %s" Palette.border
+            "border-radius", "3px"
+            "font-family", "Arial, sans-serif"
+            "font-size", "12px"
         ]
-        createToolbar items
+        appendChild bar findInput
+        findInputEl <- Some findInput
+
+        let findBtn = toolbarButton "find-run" "Find" (fun () ->
+            findInputEl |> Option.iter (fun el ->
+                let value = getValue el
+                onFind value))
+        appendChild bar findBtn
+
+        let replaceLabel = createElement "span"
+        setStyles replaceLabel [
+            "font-family", "Arial, sans-serif"
+            "font-size", "11px"
+            "color", Palette.mutedText
+            "margin-left", "12px"
+        ]
+        setTextContent replaceLabel "Replace"
+        appendChild bar replaceLabel
+
+        let replaceInput = createElement "input"
+        setAttribute replaceInput "type" "text"
+        setAttribute replaceInput "placeholder" "Replace with..."
+        setClassName replaceInput "sheet-replace-input"
+        setStyles replaceInput [
+            "width", "180px"
+            "padding", "4px 8px"
+            "border", sprintf "1px solid %s" Palette.border
+            "border-radius", "3px"
+            "font-family", "Arial, sans-serif"
+            "font-size", "12px"
+        ]
+        appendChild bar replaceInput
+        replaceInputEl <- Some replaceInput
+
+        let replaceBtn = toolbarButton "replace-run" "Replace all" (fun () ->
+            match findInputEl, replaceInputEl with
+            | Some f, Some r -> onReplace (getValue f, getValue r)
+            | _ -> ())
+        appendChild bar replaceBtn
+
+        let closeBtn = toolbarButton "find-close" "Close" (fun () ->
+            setStyle bar "display" "none"
+            setAttribute bar "data-hidden" "true")
+        // Push the close button to the right edge.
+        let spacer = createElement "div"
+        setStyle spacer "flex" "1"
+        appendChild bar spacer
+        appendChild bar closeBtn
+
+        bar
+
+    let build () =
+        installDocCloseHandler ()
+        let shell = createElement "div"
+        setClassName shell "sheet-shell"
+        setStyles shell [
+            "background", Palette.chromeBg
+            "color", Palette.text
+            "border-bottom", sprintf "1px solid %s" Palette.border
+        ]
+        appendChild shell (buildMenubar ())
+        appendChild shell (buildToolbar ())
+        let fb = buildFindBar ()
+        appendChild shell fb
+        findBar <- Some fb
+        shell
 
     member _.Mount(container: Element) =
-        let toolbar = createNumberToolbar()
-        appendChild container toolbar
-        toolbarElement <- Some toolbar
+        let shell = build ()
+        appendChild container shell
+        rootElement <- Some shell
 
-    member _.GetElement() = toolbarElement
+    member _.GetElement() = rootElement
 
-/// Formula bar for cell editing
+    member _.ShowFindReplace() = toggleFindBar ()
+
+// ── Formula bar (unchanged behavior, flat chrome) ───────────
+
 [<AttachMembers>]
-type FormulaBar(onCellRefChange: string -> unit, onFormulaChange: string -> unit, onFormulaSubmit: unit -> unit) =
+type FormulaBar
+        (onCellRefChange: string -> unit,
+         onFormulaChange: string -> unit,
+         onFormulaSubmit: unit -> unit) =
     let mutable formulaBarElement: Element option = None
     let mutable cellRefInput: Element option = None
     let mutable formulaInput: Element option = None
 
     let createFormulaBar () =
         let container = createElement "div"
-        setClassName container "formula-bar"
+        setClassName container "sheet-formula-bar"
         setStyles container [
             "display", "flex"
             "align-items", "center"
-            "padding", "4px"
-            "background", "#ffffff"
-            "border-bottom", "1px solid #d0d0d0"
+            "padding", "4px 6px"
+            "background", Palette.chromeBg
+            "border-bottom", sprintf "1px solid %s" Palette.separator
             "gap", "8px"
         ]
 
-        // Cell reference display/input (e.g., "A1")
-        let cellRefLabel = createElement "div"
+        let cellRefLabel = createElement "span"
         setStyles cellRefLabel [
             "font-family", "Arial, sans-serif"
             "font-size", "11px"
-            "color", "#666"
-            "white-space", "nowrap"
+            "color", Palette.mutedText
         ]
-        setTextContent cellRefLabel "Cell:"
+        setTextContent cellRefLabel "Cell"
         appendChild container cellRefLabel
 
         let cellRef = createElement "input"
@@ -291,24 +541,23 @@ type FormulaBar(onCellRefChange: string -> unit, onFormulaChange: string -> unit
         setAttribute cellRef "value" "A1"
         setStyles cellRef [
             "width", "60px"
-            "padding", "4px 8px"
-            "border", "1px solid #d0d0d0"
+            "padding", "4px 6px"
+            "border", sprintf "1px solid %s" Palette.border
+            "border-radius", "3px"
             "font-family", "Arial, sans-serif"
             "font-size", "11px"
             "text-align", "center"
-            "background", "#f8f8f8"
+            "background", Palette.chromeBg
         ]
         appendChild container cellRef
         cellRefInput <- Some cellRef
 
-        // Formula input (shows/edits cell content)
-        let fxLabel = createElement "div"
+        let fxLabel = createElement "span"
         setStyles fxLabel [
             "font-family", "Arial, sans-serif"
             "font-size", "11px"
             "font-weight", "bold"
-            "color", "#444"
-            "white-space", "nowrap"
+            "color", Palette.mutedText
         ]
         setTextContent fxLabel "fx"
         appendChild container fxLabel
@@ -320,31 +569,27 @@ type FormulaBar(onCellRefChange: string -> unit, onFormulaChange: string -> unit
         setStyles formula [
             "flex", "1"
             "padding", "4px 8px"
-            "border", "1px solid #d0d0d0"
+            "border", sprintf "1px solid %s" Palette.border
+            "border-radius", "3px"
             "font-family", "Consolas, 'Courier New', monospace"
             "font-size", "11px"
         ]
-
         addEventListener formula "input" (fun e ->
             let target = getEventTarget e
             let value = getProp target "value"
-            onFormulaChange (unbox value)
-        )
-
+            onFormulaChange (unbox value))
         addEventListener formula "keydown" (fun e ->
             let key = getProp e "key"
             if key = box "Enter" then
                 preventDefault e
-                onFormulaSubmit()
-        )
-
+                onFormulaSubmit ())
         appendChild container formula
         formulaInput <- Some formula
 
         container
 
     member _.Mount(container: Element) =
-        let formulaBar = createFormulaBar()
+        let formulaBar = createFormulaBar ()
         appendChild container formulaBar
         formulaBarElement <- Some formulaBar
 
@@ -360,284 +605,17 @@ type FormulaBar(onCellRefChange: string -> unit, onFormulaChange: string -> unit
 
     member _.GetElement() = formulaBarElement
 
-/// Insert/Delete toolbar
-[<AttachMembers>]
-type InsertDeleteToolbar(onAction: string -> unit) =
-    let mutable toolbarElement: Element option = None
+// ── Exports ─────────────────────────────────────────────────
 
-    let createInsertDeleteToolbar () =
-        let items = [
-            Button {
-                Id = "insert-row"
-                Label = "Insert Row"
-                Icon = Some "⬇+"
-                Action = fun () -> onAction "insertRow"
-            }
-            Button {
-                Id = "delete-row"
-                Label = "Delete Row"
-                Icon = Some "⬇−"
-                Action = fun () -> onAction "deleteRow"
-            }
-            Separator
-            Button {
-                Id = "insert-column"
-                Label = "Insert Column"
-                Icon = Some "➡+"
-                Action = fun () -> onAction "insertColumn"
-            }
-            Button {
-                Id = "delete-column"
-                Label = "Delete Column"
-                Icon = Some "➡−"
-                Action = fun () -> onAction "deleteColumn"
-            }
-        ]
-        createToolbar items
-
-    member _.Mount(container: Element) =
-        let toolbar = createInsertDeleteToolbar()
-        appendChild container toolbar
-        toolbarElement <- Some toolbar
-
-    member _.GetElement() = toolbarElement
-
-/// Data operations toolbar (sort, filter)
-[<AttachMembers>]
-type DataToolbar(onAction: string -> unit) =
-    let mutable toolbarElement: Element option = None
-
-    let createDataToolbar () =
-        let items = [
-            Button {
-                Id = "sort-asc"
-                Label = "Sort A→Z"
-                Icon = Some "↓A"
-                Action = fun () -> onAction "sortAsc"
-            }
-            Button {
-                Id = "sort-desc"
-                Label = "Sort Z→A"
-                Icon = Some "↓Z"
-                Action = fun () -> onAction "sortDesc"
-            }
-            Separator
-            Button {
-                Id = "filter"
-                Label = "Filter"
-                Icon = Some "⚲"
-                Action = fun () -> onAction "filter"
-            }
-            Button {
-                Id = "clear-filter"
-                Label = "Clear Filters"
-                Icon = Some "✕"
-                Action = fun () -> onAction "clearFilter"
-            }
-        ]
-        createToolbar items
-
-    member _.Mount(container: Element) =
-        let toolbar = createDataToolbar()
-        appendChild container toolbar
-        toolbarElement <- Some toolbar
-
-    member _.GetElement() = toolbarElement
-
-/// Find/Replace toolbar
-[<AttachMembers>]
-type FindReplaceToolbar(onFind: string -> unit, onReplace: string * string -> unit) =
-    let mutable toolbarElement: Element option = None
-    let mutable findInput: Element option = None
-    let mutable replaceInput: Element option = None
-
-    let createFindReplaceToolbar () =
-        let container = createElement "div"
-        setClassName container "find-replace-toolbar"
-        setStyles container [
-            "display", "flex"
-            "align-items", "center"
-            "padding", "4px"
-            "background", "#ffffff"
-            "border-bottom", "1px solid #d0d0d0"
-            "gap", "8px"
-        ]
-
-        // Find input
-        let findLabel = createElement "div"
-        setStyles findLabel [
-            "font-family", "Arial, sans-serif"
-            "font-size", "11px"
-            "color", "#666"
-            "white-space", "nowrap"
-        ]
-        setTextContent findLabel "Find:"
-        appendChild container findLabel
-
-        let find = createElement "input"
-        setClassName find "find-input"
-        setAttribute find "type" "text"
-        setAttribute find "placeholder" "Search..."
-        setStyles find [
-            "width", "150px"
-            "padding", "4px 8px"
-            "border", "1px solid #d0d0d0"
-            "font-family", "Arial, sans-serif"
-            "font-size", "11px"
-        ]
-        appendChild container find
-        findInput <- Some find
-
-        // Find button
-        let findBtn = createElement "button"
-        setClassName findBtn "toolbar-button"
-        setTextContent findBtn "Find"
-        setStyles findBtn [
-            "padding", "4px 12px"
-            "border", "1px solid #d0d0d0"
-            "background", "linear-gradient(180deg, #fefefe 0%, #f0f0f0 100%)"
-            "font-family", "Arial, sans-serif"
-            "font-size", "11px"
-            "cursor", "pointer"
-            "border-radius", "2px"
-        ]
-        addEventListener findBtn "click" (fun _ ->
-            match findInput with
-            | Some input ->
-                let value = getProp input "value"
-                onFind (unbox value)
-            | None -> ()
-        )
-        appendChild container findBtn
-
-        // Replace input
-        let replaceLabel = createElement "div"
-        setStyles replaceLabel [
-            "font-family", "Arial, sans-serif"
-            "font-size", "11px"
-            "color", "#666"
-            "white-space", "nowrap"
-            "margin-left", "16px"
-        ]
-        setTextContent replaceLabel "Replace:"
-        appendChild container replaceLabel
-
-        let replace = createElement "input"
-        setClassName replace "replace-input"
-        setAttribute replace "type" "text"
-        setAttribute replace "placeholder" "Replace with..."
-        setStyles replace [
-            "width", "150px"
-            "padding", "4px 8px"
-            "border", "1px solid #d0d0d0"
-            "font-family", "Arial, sans-serif"
-            "font-size", "11px"
-        ]
-        appendChild container replace
-        replaceInput <- Some replace
-
-        // Replace button
-        let replaceBtn = createElement "button"
-        setClassName replaceBtn "toolbar-button"
-        setTextContent replaceBtn "Replace"
-        setStyles replaceBtn [
-            "padding", "4px 12px"
-            "border", "1px solid #d0d0d0"
-            "background", "linear-gradient(180deg, #fefefe 0%, #f0f0f0 100%)"
-            "font-family", "Arial, sans-serif"
-            "font-size", "11px"
-            "cursor", "pointer"
-            "border-radius", "2px"
-        ]
-        addEventListener replaceBtn "click" (fun _ ->
-            match findInput, replaceInput with
-            | Some findInp, Some replInp ->
-                let findVal = getProp findInp "value"
-                let replVal = getProp replInp "value"
-                onReplace (unbox findVal, unbox replVal)
-            | _ -> ()
-        )
-        appendChild container replaceBtn
-
-        container
-
-    member _.Mount(container: Element) =
-        let toolbar = createFindReplaceToolbar()
-        appendChild container toolbar
-        toolbarElement <- Some toolbar
-
-    member _.GetElement() = toolbarElement
-
-/// Clipboard operations toolbar
-[<AttachMembers>]
-type ClipboardToolbar(onAction: string -> unit) =
-    let mutable toolbarElement: Element option = None
-
-    let createClipboardToolbar () =
-        let items = [
-            Button {
-                Id = "cut"
-                Label = "Cut"
-                Icon = Some "✂"
-                Action = fun () -> onAction "cut"
-            }
-            Button {
-                Id = "copy"
-                Label = "Copy"
-                Icon = Some "📋"
-                Action = fun () -> onAction "copy"
-            }
-            Button {
-                Id = "paste"
-                Label = "Paste"
-                Icon = Some "📄"
-                Action = fun () -> onAction "paste"
-            }
-            Separator
-            Button {
-                Id = "undo"
-                Label = "Undo"
-                Icon = Some "↶"
-                Action = fun () -> onAction "undo"
-            }
-            Button {
-                Id = "redo"
-                Label = "Redo"
-                Icon = Some "↷"
-                Action = fun () -> onAction "redo"
-            }
-        ]
-        createToolbar items
-
-    member _.Mount(container: Element) =
-        let toolbar = createClipboardToolbar()
-        appendChild container toolbar
-        toolbarElement <- Some toolbar
-
-    member _.GetElement() = toolbarElement
-
-/// Export for JavaScript
 [<ExportDefault>]
-let createFormatToolbar (onAction: string -> unit): FormatToolbar =
-    new FormatToolbar(onAction)
+let createSpreadsheetShell
+        (onAction: string -> unit)
+        (onFind: string -> unit)
+        (onReplace: string * string -> unit) : SpreadsheetShell =
+    new SpreadsheetShell(onAction, onFind, onReplace)
 
-let createAlignmentToolbar (onAction: string -> unit): AlignmentToolbar =
-    new AlignmentToolbar(onAction)
-
-let createNumberFormatToolbar (onAction: string -> unit): NumberFormatToolbar =
-    new NumberFormatToolbar(onAction)
-
-let createInsertDeleteToolbar (onAction: string -> unit): InsertDeleteToolbar =
-    new InsertDeleteToolbar(onAction)
-
-let createDataToolbar (onAction: string -> unit): DataToolbar =
-    new DataToolbar(onAction)
-
-let createClipboardToolbar (onAction: string -> unit): ClipboardToolbar =
-    new ClipboardToolbar(onAction)
-
-let createFormulaBar (onCellRefChange: string -> unit) (onFormulaChange: string -> unit) (onFormulaSubmit: unit -> unit): FormulaBar =
+let createFormulaBar
+        (onCellRefChange: string -> unit)
+        (onFormulaChange: string -> unit)
+        (onFormulaSubmit: unit -> unit) : FormulaBar =
     new FormulaBar(onCellRefChange, onFormulaChange, onFormulaSubmit)
-
-let createFindReplaceToolbar (onFind: string -> unit) (onReplace: string * string -> unit): FindReplaceToolbar =
-    new FindReplaceToolbar(onFind, onReplace)

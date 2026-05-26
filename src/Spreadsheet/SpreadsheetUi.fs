@@ -84,18 +84,6 @@ module Ui =
         "--xl-selection-stroke", "#217346"
     ]
 
-    /// Per-menu x offsets for the native shell, mirroring WordUi.menuLeft.
-    let menuLeft testId =
-        match testId with
-        | "xl-file-menu" -> 3.0
-        | "xl-edit-menu" -> 36.0
-        | "xl-view-menu" -> 72.0
-        | "xl-insert-menu" -> 108.0
-        | "xl-format-menu" -> 152.0
-        | "xl-data-menu" -> 205.0
-        | "xl-table-menu" -> 244.0
-        | _ -> 3.0
-
     /// Map test ids to abstract glyph names so backends can pick icons.
     let toolbarGlyph testId =
         match testId with

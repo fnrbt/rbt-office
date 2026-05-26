@@ -562,9 +562,6 @@ let private handleInput (state: AppState) (ev: InputEvent) =
         match state.LayoutRoot with
         | Some root when button = 0 ->
             if pressed then
-                // Surface the click position so chrome popups (combo
-                // dropdowns, color pickers) can anchor next to the cursor.
-                state.RenderState.LastClickPos.Value <- (x, y)
                 let (onClick, _) = hitTestAll root x y
                 onClick |> Option.iter (fun f -> f())
                 match pointerHitTestAll root x y with
@@ -729,8 +726,8 @@ let main argv =
 
     let chrome = WordUi.chrome
     let workspaceWidth = chrome.DocumentTrackWidth
-    // Chrome bands: title 32 + menu 32 + toolbar (32 per row * 2) + ruler 22 + status 22, plus desk padding 48.
-    let bodyOverhead = 32.0 + 32.0 + 64.0 + 22.0 + 22.0 + 48.0
+    // Chrome bands: menu 32 + toolbar (32 per row * 2) + ruler 22 + status 22, plus desk padding 48.
+    let bodyOverhead = 32.0 + 64.0 + 22.0 + 22.0 + 48.0
 
     let initialWidth = int chrome.WindowWidth
     let initialHeight = 1000

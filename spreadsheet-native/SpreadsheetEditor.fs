@@ -26,6 +26,11 @@ type SpreadsheetEditorState = {
     ActiveSheet: Signal<int>
     ScrollX: Signal<float>
     ScrollY: Signal<float>
+    /// Visible viewport size in CSS pixels — written by `scrollWidget` on
+    /// every layout pass so key handlers (PageUp/PageDown, ensure-visible
+    /// after arrow moves) know how big the visible window is.
+    VisibleWidth: Signal<float>
+    VisibleHeight: Signal<float>
     /// (row, col) of the cell currently being edited. None when no cell
     /// is in edit mode. Set by double-click, F2, or a printable key.
     EditingCell: Signal<(int * int) option>
@@ -48,6 +53,8 @@ let createState (sheets: SpreadsheetModel array) (names: string array) (activeIn
         ActiveSheet = signal idx
         ScrollX = signal 0.0
         ScrollY = signal 0.0
+        VisibleWidth = signal 800.0
+        VisibleHeight = signal 600.0
         EditingCell = signal None
         EditBuffer = signal ""
         DragAnchor = signal None
@@ -146,11 +153,77 @@ let focusCell (model: SpreadsheetModel) =
     | SingleCell (r, c) -> r, c
     | Range (_, _, er, ec) -> er, ec
 
+/// Snap a navigation target to the next valid landing cell, honoring
+/// merged ranges. The merge primary (top-left) "owns" the whole range
+/// visually; landing on a secondary cell would hide focus behind the
+/// merge's fill, so arrow keys jump:
+///   • forward (dr/dc > 0) → past the merge end
+///   • backward (dr/dc < 0) → to the merge start
+/// Excel does the same — once a range is merged, the merge acts as a
+/// single logical cell during keyboard navigation.
+let private resolveNavTarget (model: SpreadsheetModel) (row: int) (col: int) (dr: int) (dc: int) =
+    match findMergedCell { Row = row; Col = col } model with
+    | None -> row, col
+    | Some merge ->
+        let r =
+            if dr > 0 then merge.EndRow + 1
+            elif dr < 0 then merge.StartRow
+            elif row = merge.StartRow then row
+            else merge.StartRow
+        let c =
+            if dc > 0 then merge.EndCol + 1
+            elif dc < 0 then merge.StartCol
+            elif col = merge.StartCol then col
+            else merge.StartCol
+        r, c
+
+/// Adjust ScrollX/Y so cell (row, col) sits inside the visible viewport.
+/// Header strip (20 px tall) and row-header strip (28 px wide) stay
+/// painted at the top/left of the canvas — we offset the visible band by
+/// those amounts when checking whether the cell needs to be scrolled
+/// into view. No-op when VisibleHeight/Width haven't been written yet
+/// (first frame before scrollWidget runs).
+let ensureCellVisible (state: SpreadsheetEditorState) (row: int) (col: int) =
+    let model = activeModel state
+    let viewW = state.VisibleWidth.Peek()
+    let viewH = state.VisibleHeight.Peek()
+    if viewW <= 0.0 || viewH <= 0.0 then () else
+    let headerH = 20.0
+    let rowHeaderW = 28.0
+    let cellY = [ 0 .. row - 1 ] |> List.sumBy (fun r -> getRowHeight r model)
+    let cellH = getRowHeight row model
+    let cellX = [ 0 .. col - 1 ] |> List.sumBy (fun c -> getColumnWidth c model)
+    let cellW = getColumnWidth col model
+    let cellTopCanvas = headerH + cellY
+    let cellBottomCanvas = cellTopCanvas + cellH
+    let cellLeftCanvas = rowHeaderW + cellX
+    let cellRightCanvas = cellLeftCanvas + cellW
+    let sy = state.ScrollY.Peek()
+    let sx = state.ScrollX.Peek()
+    let newSy =
+        if cellTopCanvas < sy + headerH then max 0.0 (cellTopCanvas - headerH)
+        elif cellBottomCanvas > sy + viewH then cellBottomCanvas - viewH
+        else sy
+    let newSx =
+        if cellLeftCanvas < sx + rowHeaderW then max 0.0 (cellLeftCanvas - rowHeaderW)
+        elif cellRightCanvas > sx + viewW then cellRightCanvas - viewW
+        else sx
+    if newSy <> sy then state.ScrollY.Value <- newSy
+    if newSx <> sx then state.ScrollX.Value <- newSx
+
 let private setFocus (state: SpreadsheetEditorState) (row: int) (col: int) =
     let model = activeModel state
-    let r = clampRow model row
-    let c = clampCol model col
+    let r0 = clampRow model row
+    let c0 = clampCol model col
+    // Snap to the merge primary when the target lands inside a merged range.
+    // Arrow-key callers already route through `resolveNavTarget` so they
+    // pass a non-secondary cell; this handles click/Home/End/etc.
+    let r, c =
+        match findMergedCell { Row = r0; Col = c0 } model with
+        | Some merge -> merge.StartRow, merge.StartCol
+        | None -> r0, c0
     applyChangeNoHistory state (fun m -> { m with Selection = SingleCell (r, c) }) |> ignore
+    ensureCellVisible state r c
 
 let private extendFocus (state: SpreadsheetEditorState) (row: int) (col: int) =
     let model = activeModel state
@@ -165,6 +238,23 @@ let private extendFocus (state: SpreadsheetEditorState) (row: int) (col: int) =
         if ar = r && ac = c then SingleCell (r, c)
         else Range (min ar r, min ac c, max ar r, max ac c)
     applyChangeNoHistory state (fun m -> { m with Selection = sel }) |> ignore
+    ensureCellVisible state r c
+
+/// Number of rows that fit in the current visible viewport — used by
+/// PageUp/PageDown. Walks heights from the current focus row outward
+/// until cumulative height reaches the viewport.
+let private pageRowJump (state: SpreadsheetEditorState) (fromRow: int) (direction: int) : int =
+    let model = activeModel state
+    let usableH = max 60.0 (state.VisibleHeight.Peek() - 20.0)
+    let mutable rows = 0
+    let mutable acc = 0.0
+    let mutable r = fromRow
+    while acc < usableH && r >= 0 && r < model.RowCount do
+        acc <- acc + getRowHeight r model
+        if acc < usableH then
+            rows <- rows + 1
+            r <- r + direction
+    max 1 rows
 
 // ── Cell content helpers ───────────────────────────────────
 
@@ -360,37 +450,98 @@ let private handleKey (state: SpreadsheetEditorState) (ev: KeyEvent) : bool =
     | { Ctrl = true; Key = "Home" } ->
         setFocus state 0 0
         true
-    | { Key = "ArrowLeft"; Shift = false } ->
+    | { Ctrl = true; Key = "End" } ->
+        let model = activeModel state
+        let maxRow, maxCol =
+            if Map.isEmpty model.Cells then 0, 0
+            else
+                let addrs = model.Cells |> Map.toSeq |> Seq.map fst
+                let r = addrs |> Seq.map (fun a -> a.Row) |> Seq.max
+                let c = addrs |> Seq.map (fun a -> a.Col) |> Seq.max
+                r, c
+        setFocus state maxRow maxCol
+        true
+    | { Key = "Home"; Shift = false } ->
+        let r, _ = focusCell (activeModel state)
+        setFocus state r 0
+        true
+    | { Key = "End"; Shift = false } ->
+        let model = activeModel state
+        let r, _ = focusCell model
+        let lastCol =
+            model.Cells
+            |> Map.toSeq
+            |> Seq.choose (fun (a, _) -> if a.Row = r then Some a.Col else None)
+            |> fun s -> if Seq.isEmpty s then 0 else Seq.max s
+        setFocus state r lastCol
+        true
+    | { Key = "PageDown"; Shift = false } ->
         let r, c = focusCell (activeModel state)
-        setFocus state r (c - 1)
+        let jump = pageRowJump state r 1
+        setFocus state (r + jump) c
+        true
+    | { Key = "PageUp"; Shift = false } ->
+        let r, c = focusCell (activeModel state)
+        let jump = pageRowJump state r -1
+        setFocus state (r - jump) c
+        true
+    | { Key = "PageDown"; Shift = true } ->
+        let r, c = focusCell (activeModel state)
+        let jump = pageRowJump state r 1
+        extendFocus state (r + jump) c
+        true
+    | { Key = "PageUp"; Shift = true } ->
+        let r, c = focusCell (activeModel state)
+        let jump = pageRowJump state r -1
+        extendFocus state (r - jump) c
+        true
+    | { Key = "ArrowLeft"; Shift = false } ->
+        let model = activeModel state
+        let r, c = focusCell model
+        let nr, nc = resolveNavTarget model r (c - 1) 0 -1
+        setFocus state nr nc
         true
     | { Key = "ArrowRight"; Shift = false } ->
-        let r, c = focusCell (activeModel state)
-        setFocus state r (c + 1)
+        let model = activeModel state
+        let r, c = focusCell model
+        let nr, nc = resolveNavTarget model r (c + 1) 0 1
+        setFocus state nr nc
         true
     | { Key = "ArrowUp"; Shift = false } ->
-        let r, c = focusCell (activeModel state)
-        setFocus state (r - 1) c
+        let model = activeModel state
+        let r, c = focusCell model
+        let nr, nc = resolveNavTarget model (r - 1) c -1 0
+        setFocus state nr nc
         true
     | { Key = "ArrowDown"; Shift = false } ->
-        let r, c = focusCell (activeModel state)
-        setFocus state (r + 1) c
+        let model = activeModel state
+        let r, c = focusCell model
+        let nr, nc = resolveNavTarget model (r + 1) c 1 0
+        setFocus state nr nc
         true
     | { Key = "ArrowLeft"; Shift = true } ->
-        let r, c = focusCell (activeModel state)
-        extendFocus state r (c - 1)
+        let model = activeModel state
+        let r, c = focusCell model
+        let nr, nc = resolveNavTarget model r (c - 1) 0 -1
+        extendFocus state nr nc
         true
     | { Key = "ArrowRight"; Shift = true } ->
-        let r, c = focusCell (activeModel state)
-        extendFocus state r (c + 1)
+        let model = activeModel state
+        let r, c = focusCell model
+        let nr, nc = resolveNavTarget model r (c + 1) 0 1
+        extendFocus state nr nc
         true
     | { Key = "ArrowUp"; Shift = true } ->
-        let r, c = focusCell (activeModel state)
-        extendFocus state (r - 1) c
+        let model = activeModel state
+        let r, c = focusCell model
+        let nr, nc = resolveNavTarget model (r - 1) c -1 0
+        extendFocus state nr nc
         true
     | { Key = "ArrowDown"; Shift = true } ->
-        let r, c = focusCell (activeModel state)
-        extendFocus state (r + 1) c
+        let model = activeModel state
+        let r, c = focusCell model
+        let nr, nc = resolveNavTarget model (r + 1) c 1 0
+        extendFocus state nr nc
         true
     | { Key = "Enter" } ->
         let r, c = focusCell (activeModel state)
@@ -468,14 +619,33 @@ let widget (width: float) (height: float) (state: SpreadsheetEditorState) =
 /// Wrap the editor in a horizontal+vertical scroll view that tracks
 /// state.ScrollX/Y.
 let scrollWidget (width: float) (height: float) (state: SpreadsheetEditorState) =
+    // Stash the visible viewport dimensions so key handlers (PageUp/Down,
+    // ensureCellVisible after arrow keys) can read them. Done outside the
+    // `dynamic` builder because the builder may re-run for other reasons
+    // and we want the geometry to follow the actual passed dims.
+    if state.VisibleWidth.Peek() <> width then state.VisibleWidth.Value <- width
+    if state.VisibleHeight.Peek() <> height then state.VisibleHeight.Value <- height
     dynamic (fun () ->
         let model = activeModel state
+        // Size the scrollable canvas to the data range plus a viewport-covering
+        // margin, not the full 1,048,576 × 16,384 virtual grid. The model is
+        // sized to Excel's real bounds so visibleRange can virtualize, but
+        // summing every row/col here on each frame freezes the first paint.
+        let dataMaxRow, dataMaxCol =
+            if Map.isEmpty model.Cells then -1, -1
+            else
+                let addrs = model.Cells |> Map.toSeq |> Seq.map fst
+                let maxR = addrs |> Seq.map (fun a -> a.Row) |> Seq.max
+                let maxC = addrs |> Seq.map (fun a -> a.Col) |> Seq.max
+                maxR, maxC
+        let rowBudget = min (dataMaxRow + 200) (model.RowCount - 1)
+        let colBudget = min (dataMaxCol + 50) (model.ColCount - 1)
         let contentWidth =
-            [ 0 .. model.ColCount - 1 ]
+            [ 0 .. colBudget ]
             |> List.sumBy (fun c -> getColumnWidth c model)
             |> (+) 28.0
         let contentHeight =
-            [ 0 .. model.RowCount - 1 ]
+            [ 0 .. rowBudget ]
             |> List.sumBy (fun r -> getRowHeight r model)
             |> (+) 20.0
         let inner = widget (max width contentWidth) (max height contentHeight) state

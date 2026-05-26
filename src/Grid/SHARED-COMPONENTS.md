@@ -119,12 +119,16 @@ type TextRun = {
 
 **Opportunity:** Format toolbar already exists in Grid. Word processor can reuse it.
 
-**Current Grid Toolbar:**
+**Current Grid Shell:**
 ```fsharp
 // Spreadsheet/Toolbar.fs
-type FormatToolbar(onAction: string -> unit)
-    // Bold, Italic, Underline, Font size, Colors
+type SpreadsheetShell(onAction, onFind, onReplace)
+    // Menubar (File / Edit / Insert / Format / Data) +
+    // one focused toolbar row (B I U | A+ A- | A Fill | L C R | $ % .0+ .0- | Cut Copy Paste | Undo Redo)
+    // + inline find/replace bar
 ```
+
+(Earlier revisions of this doc described a `FormatToolbar` per concern; those classes were consolidated into the single shell above. See `TOOLBAR-USAGE.md`.)
 
 **Make Generic:**
 ```fsharp

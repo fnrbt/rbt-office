@@ -1,178 +1,91 @@
-# Toolbar Usage Guide
+# Spreadsheet Shell Usage
 
-The spreadsheet component provides toolbar components that apps can place, configure, and connect as needed.
+The spreadsheet ships with a unified shell component that combines a menubar, a single focused toolbar row, and an inline find/replace bar. Apps mount it once and route every command through one action dispatcher.
 
 ## Overview
 
-Toolbars are provided by the Fable module but apps control:
-- **Placement**: Where toolbars appear in the UI
-- **Configuration**: Which actions are enabled
-- **Connection**: How toolbar actions affect the spreadsheet
+`createSpreadsheetShell(onAction, onFind, onReplace)` returns an object with a `Mount(container)` method. The shell renders:
 
-## Available Toolbars
+- **Menubar**: File, Edit, Insert, Format, Data
+- **Toolbar row** (compact, ASCII glyphs): B, I, U | A+, A- | A (text color), Fill | L, C, R (alignment) | $, %, .0+, .0- (number formats) | Cut, Copy, Paste | Undo, Redo
+- **Find/replace bar**: hidden by default; revealed via Edit > Find and replace, the `ShowFindReplace()` method, or a Ctrl+F handler your app installs
 
-### FormatToolbar
-Text formatting controls:
-- Bold (B)
-- Italic (I)
-- Underline (U)
-- Font increase (A+)
-- Font decrease (A-)
-- Text color (🎨)
-- Background color (⬛)
+Niche actions (insert/delete row/col, sort, filter, find/replace) live in the menus only — the toolbar stays focused on the common ones.
 
-### AlignmentToolbar
-Text alignment controls:
-- Align left (⬅)
-- Align center (↔)
-- Align right (➡)
+## Callbacks
 
-### NumberFormatToolbar
-Number formatting controls:
-- Number format (1,234.56)
-- Currency ($)
-- Percent (%)
-- Increase decimals (.0+)
-- Decrease decimals (.0-)
+```ts
+createSpreadsheetShell(
+  onAction: (action: string) => void,
+  onFind: (query: string) => void,
+  onReplace: (pair: [string, string]) => void
+): { Mount(container): void; GetElement(): Element; ShowFindReplace(): void }
+```
 
-## Basic Usage
+`onAction` receives one of:
+- Format: `bold`, `italic`, `underline`, `fontIncrease`, `fontDecrease`, `textColor`, `bgColor`
+- Alignment: `alignLeft`, `alignCenter`, `alignRight`
+- Number: `formatNumber`, `formatCurrency`, `formatPercent`, `decimalIncrease`, `decimalDecrease`
+- Clipboard / history: `cut`, `copy`, `paste`, `undo`, `redo`
+- Structure: `insertRow`, `deleteRow`, `insertColumn`, `deleteColumn`
+- Data: `sortAsc`, `sortDesc`, `filter`, `clearFilter`
+- File: `open`, `save`, `printPdf`
 
-```javascript
+## Wiring example
+
+```js
 import createSpreadsheet from './Spreadsheet.js';
-import { createFormatToolbar, createAlignmentToolbar, createNumberFormatToolbar } from './Toolbar.js';
+import { createSpreadsheetShell, createFormulaBar } from './Toolbar.js';
 
-// Create spreadsheet
-const spreadsheet = createSpreadsheet(container);
+const spreadsheet = createSpreadsheet(document.getElementById('spreadsheet-root'));
 spreadsheet.Mount();
 
-// Create toolbar with action handler
-const formatToolbar = createFormatToolbar((action) => {
-    console.log('Format action:', action);
+const dispatchAction = (action) => {
+  switch (action) {
+    case 'textColor':      spreadsheet.ApplyTextColor('#ff0000'); break;
+    case 'bgColor':        spreadsheet.ApplyBgColor('#ffff00'); break;
+    case 'formatNumber':   spreadsheet.ApplyNumberFormat('number'); break;
+    case 'formatCurrency': spreadsheet.ApplyNumberFormat('currency'); break;
+    case 'formatPercent':  spreadsheet.ApplyNumberFormat('percentage'); break;
+    case 'cut':            spreadsheet.Cut(); break;
+    case 'copy':           spreadsheet.Copy(); break;
+    case 'paste':          spreadsheet.Paste(); break;
+    case 'undo':           spreadsheet.Undo(); break;
+    case 'redo':           spreadsheet.Redo(); break;
+    case 'sortAsc':        spreadsheet.SortCurrentColumnAsc(); break;
+    case 'sortDesc':       spreadsheet.SortCurrentColumnDesc(); break;
+    case 'insertRow':      spreadsheet.InsertRow(promptIndex()); break;
+    // ...
+    default:               spreadsheet.ApplyFormat(action);
+  }
+};
 
-    // Handle color actions specially
-    if (action === 'textColor') {
-        spreadsheet.ApplyTextColor('#ff0000');
-    } else if (action === 'bgColor') {
-        spreadsheet.ApplyBgColor('#ffff00');
-    } else {
-        // Other actions pass through to ApplyFormat
-        spreadsheet.ApplyFormat(action);
-    }
-});
+const shell = createSpreadsheetShell(
+  dispatchAction,
+  (query)         => spreadsheet.StartSearch(query, false),
+  ([find, repl])  => spreadsheet.ReplaceAll(find, repl, false)
+);
+shell.Mount(document.getElementById('shell-container'));
 
-// Mount toolbar to container
-formatToolbar.Mount(toolbarContainer);
-```
-
-## Spreadsheet Format Methods
-
-### ApplyFormat(formatType: string)
-Apply text formatting to selected cell:
-- `"bold"` - Toggle bold
-- `"italic"` - Toggle italic
-- `"underline"` - Toggle underline
-- `"fontIncrease"` - Increase font size by 2px
-- `"fontDecrease"` - Decrease font size by 2px
-- `"alignLeft"` - Align left
-- `"alignCenter"` - Align center
-- `"alignRight"` - Align right
-
-### ApplyTextColor(color: string)
-Set text color (CSS color value):
-```javascript
-spreadsheet.ApplyTextColor('#ff0000');  // Red
-spreadsheet.ApplyTextColor('rgb(255, 0, 0)');  // Also red
-```
-
-### ApplyBgColor(color: string)
-Set background color (CSS color value):
-```javascript
-spreadsheet.ApplyBgColor('#ffff00');  // Yellow
-```
-
-### ApplyNumberFormat(format: string)
-Set number format:
-- `"number"` - Number format (1,234.56)
-- `"currency"` - Currency format ($1,234.56)
-- `"percent"` - Percent format (50%)
-
-## Placement Examples
-
-### Horizontal Toolbar (Default)
-```javascript
-const toolbar = createFormatToolbar(handleAction);
-toolbar.Mount(document.getElementById('top-toolbar'));
-```
-
-### Sidebar (Vertical)
-```javascript
-// Override toolbar styles for vertical layout
-const style = document.createElement('style');
-style.textContent = `
-    .sidebar .toolbar {
-        flex-direction: column;
-        align-items: stretch;
-    }
-    .sidebar .toolbar-button {
-        margin: 4px 0;
-    }
-`;
-document.head.appendChild(style);
-
-const toolbar = createFormatToolbar(handleAction);
-toolbar.Mount(document.getElementById('sidebar'));
-```
-
-### Multiple Toolbars
-```javascript
-// Place different toolbars in different locations
-const formatToolbar = createFormatToolbar(handleFormat);
-formatToolbar.Mount(sidebarElement);
-
-const numberToolbar = createNumberFormatToolbar(handleNumber);
-numberToolbar.Mount(topBarElement);
-
-const alignmentToolbar = createAlignmentToolbar(handleAlign);
-alignmentToolbar.Mount(bottomBarElement);
-```
-
-## Custom Action Handlers
-
-Apps can customize how toolbar actions work:
-
-```javascript
-const formatToolbar = createFormatToolbar((action) => {
-    // Custom color picker
-    if (action === 'textColor') {
-        const color = showColorPicker();  // Your custom UI
-        spreadsheet.ApplyTextColor(color);
-        return;
-    }
-
-    // Custom confirmation
-    if (action === 'bold') {
-        if (confirm('Make text bold?')) {
-            spreadsheet.ApplyFormat('bold');
-        }
-        return;
-    }
-
-    // Default handling
-    spreadsheet.ApplyFormat(action);
+// Optional: bind Ctrl+F to the find bar.
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key === 'f') { e.preventDefault(); shell.ShowFindReplace(); }
 });
 ```
 
-## Test Examples
+## Formula bar
 
-See the test files for complete examples:
+The formula bar is still a separate concern, mounted next to the shell:
 
-- **test-spreadsheet.html**: Simple layout with all three toolbars in one row
-- **test-custom-toolbar.html**: Custom layout with toolbars in sidebar and top bar
+```js
+const formulaBar = createFormulaBar(onCellRefChange, onFormulaChange, onFormulaSubmit);
+formulaBar.Mount(document.getElementById('formula-bar-container'));
+formulaBar.SetCellRef('A1');
+formulaBar.SetFormula('=A1+B1');
+```
 
-## Notes
+## Styling
 
-- Toolbars operate on the **currently selected cell**
-- If no cell is selected, format actions have no effect
-- Format state is stored per-cell in the spreadsheet model
-- Toolbars do not show active state (apps can implement if needed)
-- Button styles can be overridden with CSS
+Buttons carry a `data-sheet-icon="<id>"` attribute so downstream CSS can upgrade the ASCII labels (`B`, `+R`, `A-Z`, `Cut`, etc.) to icon-font or SVG renderings without touching the F#. Menu triggers carry `data-sheet-menu="<id>"`; menu items carry `data-sheet-menu-item="<id>"`.
+
+The shell uses a flat, white-first palette with hairline borders, matching the Word web shell.

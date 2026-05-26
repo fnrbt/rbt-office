@@ -24,44 +24,17 @@
         }
 
         .title-bar {
-            background: linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%);
+            background: #ffffff;
             padding: 8px 12px;
-            border-bottom: 1px solid #ccc;
+            border-bottom: 1px solid #dadce0;
             font-size: 14px;
             font-weight: 600;
-            color: #333;
-        }
-
-        .ribbon {
-            background: #f0f0f0;
-            border-bottom: 1px solid #d0d0d0;
-        }
-
-        .ribbon-row {
-            display: flex;
-            align-items: center;
-            padding: 0;
-            border-bottom: 1px solid #e0e0e0;
-        }
-
-        .ribbon-row:last-child {
-            border-bottom: none;
-        }
-
-        .toolbar-section {
-            display: flex;
-            align-items: center;
-            border-right: 1px solid #e0e0e0;
-            padding: 0;
-        }
-
-        .toolbar-section:last-child {
-            border-right: none;
+            color: #202124;
         }
 
         .formula-bar-container {
             background: #ffffff;
-            border-bottom: 1px solid #d0d0d0;
+            border-bottom: 1px solid #dadce0;
         }
 
         .content {
@@ -78,11 +51,11 @@
         }
 
         .status-bar {
-            background: #f0f0f0;
-            border-top: 1px solid #d0d0d0;
+            background: #ffffff;
+            border-top: 1px solid #dadce0;
             padding: 4px 12px;
             font-size: 11px;
-            color: #666;
+            color: #5f6368;
             display: flex;
             justify-content: space-between;
         }
@@ -93,42 +66,8 @@
             gap: 8px;
         }
 
-        /* Excel-like styling for toolbars */
-        .toolbar {
-            background: #f0f0f0 !important;
-            border-bottom: none !important;
-        }
-
-        .toolbar-button {
-            transition: all 0.1s;
-        }
-
-        .toolbar-button:active {
-            box-shadow: inset 0 1px 3px rgba(0,0,0,0.2);
-        }
-
-        /* Find/Replace toolbar (initially hidden) */
-        #find-replace-container {
-            display: none;
-            border-bottom: 1px solid #d0d0d0;
-        }
-
-        #find-replace-container.visible {
-            display: block;
-        }
-
-        .find-replace-close {
-            padding: 4px 8px;
-            background: transparent;
-            border: none;
-            cursor: pointer;
-            font-size: 14px;
-            color: #666;
-        }
-
-        .find-replace-close:hover {
-            color: #000;
-            background: #e8e8e8;
+        .sheet-tool-button:active {
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.12);
         }
     </style>
 </head>
@@ -136,34 +75,14 @@
     <div class="app-container">
         <!-- Title Bar -->
         <div class="title-bar">
-            📊 RedBat.Grid - Full Excel Interface Demo
+            RedBat.Grid - Full Excel Interface Demo
         </div>
 
-        <!-- Ribbon (Toolbars) -->
-        <div class="ribbon">
-            <!-- Row 1: Clipboard + Format + Alignment -->
-            <div class="ribbon-row">
-                <div class="toolbar-section" id="clipboard-toolbar"></div>
-                <div class="toolbar-section" id="format-toolbar"></div>
-                <div class="toolbar-section" id="alignment-toolbar"></div>
-                <div class="toolbar-section" id="number-format-toolbar"></div>
-            </div>
-
-            <!-- Row 2: Insert/Delete + Data Operations -->
-            <div class="ribbon-row">
-                <div class="toolbar-section" id="insert-delete-toolbar"></div>
-                <div class="toolbar-section" id="data-toolbar"></div>
-            </div>
-        </div>
+        <!-- Shell (menubar + unified toolbar + inline find/replace) -->
+        <div id="shell-container"></div>
 
         <!-- Formula Bar -->
         <div class="formula-bar-container" id="formula-bar-container"></div>
-
-        <!-- Find/Replace Toolbar (collapsible) -->
-        <div id="find-replace-container" class="find-replace-container">
-            <button class="find-replace-close" id="close-find-replace">✕</button>
-            <div id="find-replace-toolbar"></div>
-        </div>
 
         <!-- Spreadsheet Content -->
         <div class="content">
@@ -187,14 +106,8 @@
         // Import the compiled Fable modules
         import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
         import {
-            createFormatToolbar,
-            createAlignmentToolbar,
-            createNumberFormatToolbar,
-            createInsertDeleteToolbar,
-            createDataToolbar,
-            createClipboardToolbar,
-            createFormulaBar,
-            createFindReplaceToolbar
+            createSpreadsheetShell,
+            createFormulaBar
         } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
 
         // Create spreadsheet
@@ -206,15 +119,8 @@
 
         const formulaBarContainer = document.getElementById('formula-bar-container');
         const formulaBar = createFormulaBar(
-            // onCellRefChange
-            (ref) => {
-                console.log('Cell ref changed:', ref);
-            },
-            // onFormulaChange
-            (formula) => {
-                console.log('Formula changed:', formula);
-            },
-            // onFormulaSubmit
+            (ref) => { console.log('Cell ref changed:', ref); },
+            (formula) => { console.log('Formula changed:', formula); },
             () => {
                 const formula = document.querySelector('.formula-input').value;
                 spreadsheet.SetCurrentCellFromFormula(formula);
@@ -223,185 +129,95 @@
         );
         formulaBar.Mount(formulaBarContainer);
 
-        // Update formula bar when selection changes
         function updateFormulaBar() {
             const cellRef = spreadsheet.GetSelectionRef();
             const formula = spreadsheet.GetCurrentCellFormula();
             formulaBar.SetCellRef(cellRef);
             formulaBar.SetFormula(formula);
-
-            // Update status bar
             document.getElementById('selection-info').textContent = `Selection: ${cellRef}`;
         }
 
-        // Call initially
         updateFormulaBar();
-
-        // Periodically check for selection changes (in real app, spreadsheet would emit events)
         setInterval(updateFormulaBar, 100);
 
-        // ===== CLIPBOARD TOOLBAR =====
+        // ===== UNIFIED SHELL =====
+        // One menubar + one toolbar row. All actions flow through a single
+        // dispatch function; find/replace is owned by the shell and toggled
+        // via Edit > Find or Ctrl+F.
 
-        const clipboardToolbar = createClipboardToolbar((action) => {
-            console.log('Clipboard action:', action);
+        const promptIndex = (verb, kind) => {
+            const value = prompt(`${verb} ${kind} at index (0-based):`);
+            return value === null ? null : parseInt(value);
+        };
+
+        const dispatchAction = (action) => {
+            console.log('Action:', action);
             switch (action) {
-                case 'cut':
-                    spreadsheet.Cut();
-                    updateStatus('Cut to clipboard');
+                case 'textColor':      spreadsheet.ApplyTextColor('#ff0000'); updateStatus('Applied text color'); break;
+                case 'bgColor':        spreadsheet.ApplyBgColor('#ffff00'); updateStatus('Applied background color'); break;
+                case 'formatNumber':   spreadsheet.ApplyNumberFormat('number'); updateStatus('Applied number format'); break;
+                case 'formatCurrency': spreadsheet.ApplyNumberFormat('currency'); updateStatus('Applied currency format'); break;
+                case 'formatPercent':  spreadsheet.ApplyNumberFormat('percentage'); updateStatus('Applied percentage format'); break;
+                case 'cut':            spreadsheet.Cut(); updateStatus('Cut to clipboard'); break;
+                case 'copy':           spreadsheet.Copy(); updateStatus('Copied to clipboard'); break;
+                case 'paste':          spreadsheet.Paste(); updateStatus('Pasted from clipboard'); break;
+                case 'undo':           spreadsheet.Undo(); updateStatus('Undo'); break;
+                case 'redo':           spreadsheet.Redo(); updateStatus('Redo'); break;
+                case 'sortAsc':        spreadsheet.SortCurrentColumnAsc(); updateStatus('Sorted ascending'); break;
+                case 'sortDesc':       spreadsheet.SortCurrentColumnDesc(); updateStatus('Sorted descending'); break;
+                case 'filter':         updateStatus('Filter not yet implemented'); break;
+                case 'clearFilter':    updateStatus('Clear filter not yet implemented'); break;
+                case 'insertRow': {
+                    const idx = promptIndex('Insert', 'row');
+                    if (idx !== null) { spreadsheet.InsertRow(idx); updateStatus(`Inserted row at ${idx}`); }
                     break;
-                case 'copy':
-                    spreadsheet.Copy();
-                    updateStatus('Copied to clipboard');
+                }
+                case 'deleteRow': {
+                    const idx = promptIndex('Delete', 'row');
+                    if (idx !== null) { spreadsheet.DeleteRow(idx); updateStatus(`Deleted row ${idx}`); }
                     break;
-                case 'paste':
-                    spreadsheet.Paste();
-                    updateStatus('Pasted from clipboard');
+                }
+                case 'insertColumn': {
+                    const idx = promptIndex('Insert', 'column');
+                    if (idx !== null) { spreadsheet.InsertColumn(idx); updateStatus(`Inserted column at ${idx}`); }
                     break;
-                case 'undo':
-                    spreadsheet.Undo();
-                    updateStatus('Undo');
+                }
+                case 'deleteColumn': {
+                    const idx = promptIndex('Delete', 'column');
+                    if (idx !== null) { spreadsheet.DeleteColumn(idx); updateStatus(`Deleted column ${idx}`); }
                     break;
-                case 'redo':
-                    spreadsheet.Redo();
-                    updateStatus('Redo');
+                }
+                case 'open':
+                case 'save':
+                case 'printPdf':
+                    updateStatus(`${action} not yet implemented`);
                     break;
+                default:
+                    spreadsheet.ApplyFormat(action);
+                    updateStatus(`Applied format: ${action}`);
             }
-        });
-        clipboardToolbar.Mount(document.getElementById('clipboard-toolbar'));
+        };
 
-        // ===== FORMAT TOOLBAR =====
-
-        const formatToolbar = createFormatToolbar((action) => {
-            console.log('Format action:', action);
-            if (action === 'textColor') {
-                spreadsheet.ApplyTextColor('#ff0000');
-                updateStatus('Applied text color');
-            } else if (action === 'bgColor') {
-                spreadsheet.ApplyBgColor('#ffff00');
-                updateStatus('Applied background color');
-            } else {
-                spreadsheet.ApplyFormat(action);
-                updateStatus(`Applied format: ${action}`);
-            }
-        });
-        formatToolbar.Mount(document.getElementById('format-toolbar'));
-
-        // ===== ALIGNMENT TOOLBAR =====
-
-        const alignmentToolbar = createAlignmentToolbar((action) => {
-            console.log('Alignment action:', action);
-            spreadsheet.ApplyFormat(action);
-            updateStatus(`Applied alignment: ${action}`);
-        });
-        alignmentToolbar.Mount(document.getElementById('alignment-toolbar'));
-
-        // ===== NUMBER FORMAT TOOLBAR =====
-
-        const numberToolbar = createNumberFormatToolbar((action) => {
-            console.log('Number format action:', action);
-            if (action === 'formatNumber') {
-                spreadsheet.ApplyNumberFormat('number');
-                updateStatus('Applied number format');
-            } else if (action === 'formatCurrency') {
-                spreadsheet.ApplyNumberFormat('currency');
-                updateStatus('Applied currency format');
-            } else if (action === 'formatPercent') {
-                spreadsheet.ApplyNumberFormat('percentage');
-                updateStatus('Applied percentage format');
-            }
-        });
-        numberToolbar.Mount(document.getElementById('number-format-toolbar'));
-
-        // ===== INSERT/DELETE TOOLBAR =====
-
-        const insertDeleteToolbar = createInsertDeleteToolbar((action) => {
-            console.log('Insert/Delete action:', action);
-            switch (action) {
-                case 'insertRow':
-                    const insertRowIdx = parseInt(prompt('Insert row at index (0-based):') || '0');
-                    spreadsheet.InsertRow(insertRowIdx);
-                    updateStatus(`Inserted row at ${insertRowIdx}`);
-                    break;
-                case 'deleteRow':
-                    const deleteRowIdx = parseInt(prompt('Delete row at index (0-based):') || '0');
-                    spreadsheet.DeleteRow(deleteRowIdx);
-                    updateStatus(`Deleted row ${deleteRowIdx}`);
-                    break;
-                case 'insertColumn':
-                    const insertColIdx = parseInt(prompt('Insert column at index (0-based):') || '0');
-                    spreadsheet.InsertColumn(insertColIdx);
-                    updateStatus(`Inserted column at ${insertColIdx}`);
-                    break;
-                case 'deleteColumn':
-                    const deleteColIdx = parseInt(prompt('Delete column at index (0-based):') || '0');
-                    spreadsheet.DeleteColumn(deleteColIdx);
-                    updateStatus(`Deleted column ${deleteColIdx}`);
-                    break;
-            }
-        });
-        insertDeleteToolbar.Mount(document.getElementById('insert-delete-toolbar'));
-
-        // ===== DATA TOOLBAR =====
-
-        const dataToolbar = createDataToolbar((action) => {
-            console.log('Data action:', action);
-            switch (action) {
-                case 'sortAsc':
-                    spreadsheet.SortCurrentColumnAsc();
-                    updateStatus('Sorted ascending');
-                    break;
-                case 'sortDesc':
-                    spreadsheet.SortCurrentColumnDesc();
-                    updateStatus('Sorted descending');
-                    break;
-                case 'filter':
-                    updateStatus('Filter not yet implemented');
-                    break;
-                case 'clearFilter':
-                    updateStatus('Clear filter not yet implemented');
-                    break;
-            }
-        });
-        dataToolbar.Mount(document.getElementById('data-toolbar'));
-
-        // ===== FIND/REPLACE TOOLBAR =====
-
-        const findReplaceContainer = document.getElementById('find-replace-container');
-        const findReplaceToolbar = createFindReplaceToolbar(
-            // onFind
+        const shell = createSpreadsheetShell(
+            dispatchAction,
             (query) => {
-                console.log('Find:', query);
                 spreadsheet.StartSearch(query, false);
                 const count = spreadsheet.GetSearchResultsCount();
                 updateStatus(`Found ${count} result(s)`);
-                if (count > 0) {
-                    spreadsheet.FindNext();
-                }
+                if (count > 0) spreadsheet.FindNext();
             },
-            // onReplace
-            (findText, replaceText) => {
-                console.log('Replace:', findText, '=>', replaceText);
-                spreadsheet.ReplaceAll(findText, replaceText, false);
-                updateStatus(`Replaced all "${findText}" with "${replaceText}"`);
+            ([find, replace]) => {
+                spreadsheet.ReplaceAll(find, replace, false);
+                updateStatus(`Replaced all "${find}" with "${replace}"`);
             }
         );
-        findReplaceToolbar.Mount(document.getElementById('find-replace-toolbar'));
+        shell.Mount(document.getElementById('shell-container'));
 
-        // Close find/replace
-        document.getElementById('close-find-replace').addEventListener('click', () => {
-            findReplaceContainer.classList.remove('visible');
-        });
-
-        // Show find/replace with Ctrl+F
+        // Ctrl+F opens the find/replace bar.
         document.addEventListener('keydown', (e) => {
             if (e.ctrlKey && e.key === 'f') {
                 e.preventDefault();
-                findReplaceContainer.classList.add('visible');
-                // Focus find input
-                setTimeout(() => {
-                    const findInput = document.querySelector('.find-input');
-                    if (findInput) findInput.focus();
-                }, 100);
+                shell.ShowFindReplace();
             }
         });
 
@@ -463,16 +279,16 @@
         spreadsheet.ApplyFormat('bold');
         spreadsheet.ApplyNumberFormat('currency');
 
-        console.log('✅ Full Excel interface loaded!');
+        console.log('Full Excel interface loaded!');
         console.log('');
         console.log('Try these features:');
         console.log('1. Click on cells and edit in formula bar');
         console.log('2. Use toolbar buttons for formatting');
-        console.log('3. Cut/Copy/Paste with clipboard toolbar');
-        console.log('4. Sort columns with data toolbar');
+        console.log('3. Cut/Copy/Paste from the toolbar or Edit menu');
+        console.log('4. Sort columns from the Data menu');
         console.log('5. Press Ctrl+F to open Find/Replace');
-        console.log('6. Insert/Delete rows and columns');
-        console.log('7. Use Undo/Redo buttons');
+        console.log('6. Insert/Delete rows and columns from the Insert menu');
+        console.log('7. Undo/Redo from the toolbar or Edit menu');
     </script>
 </body>
 </html>

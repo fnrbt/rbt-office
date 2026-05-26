@@ -35,25 +35,36 @@ type OpenContextMenuState(x: float, y: float, items: MenuItemSpec list) =
     member _.Y = y
     member _.Items = items
 
+/// Captures an open toolbar/dialog dropdown anchored to a sibling widget
+/// (combobox trigger, color swatch). The anchor's bounds determine where
+/// the panel renders — no caller-supplied (x, y).
+type OpenAnchoredDropdownState(anchor: AnchorRef, items: MenuItemSpec list) =
+    member _.Anchor = anchor
+    member _.Items = items
+
 /// Mutable, signal-backed state owned by the chrome itself. Apps construct
 /// one with `createState ()` and pass it to `view`; the chrome reads and
 /// writes these signals in response to user input.
 type ShellRenderState = {
     OpenMenu: Signal<string option>
+    /// Anchor refs per widget testId. Menu buttons, combo triggers, and
+    /// color swatches wrap themselves in an `anchorRegion` keyed by
+    /// testId; their popovers (dropdowns, panels) read the anchor's
+    /// recorded bounds via `popoverBelow`. No hand-computed offsets.
+    Anchors: System.Collections.Generic.Dictionary<string, AnchorRef>
     /// Currently-open dialog, if any. Apps set this with `openDialog`.
     OpenDialog: Signal<OpenDialogState option>
-    /// Currently-open right-click menu (anchor + items). Apps set this
+    /// Currently-open right-click menu (cursor-anchored). Apps set this
     /// with `openContextMenu`.
     OpenContextMenu: Signal<OpenContextMenuState option>
+    /// Currently-open toolbar/dialog dropdown (widget-anchored). Opened
+    /// by `openAnchoredDropdown` from combo/color controls.
+    OpenAnchoredDropdown: Signal<OpenAnchoredDropdownState option>
     /// The testId of the toolbar control whose dropdown (combo or color
     /// swatches) is currently open. Mirrors `OpenMenu`'s role for menu
     /// buttons: `comboControl`/`colorControl` render the trigger in its
     /// "Pressed" highlight while their dropdown is up.
     OpenDropdownTrigger: Signal<string option>
-    /// Screen-space coordinates of the most recent primary click. Apps
-    /// should update this from their handleInput so that combobox / color
-    /// dropdowns know where to anchor.
-    LastClickPos: Signal<float * float>
     /// Identifier of the cell currently under the cursor (toolbar button,
     /// menu item, etc). Cells stamp this when their hoverable fires; the
     /// chrome reads it to render a hover background.
@@ -68,10 +79,11 @@ type ShellRenderState = {
 
 let createState () : ShellRenderState =
     { OpenMenu = signal None
+      Anchors = System.Collections.Generic.Dictionary<string, AnchorRef>()
       OpenDialog = signal None
       OpenContextMenu = signal None
+      OpenAnchoredDropdown = signal None
       OpenDropdownTrigger = signal None
-      LastClickPos = signal (0.0, 0.0)
       HoveredId = signal None
       HoverStart = signal None }
 
@@ -100,6 +112,17 @@ let private withHover (renderState: ShellRenderState) (id: string) (child: Widge
             renderState.HoverStart.Value <- None)
         child
 
+/// Get-or-create the anchor ref for a widget keyed by testId. Refs live
+/// on the render state so they persist across re-renders; the layout
+/// pass writes resolved bounds into them and popovers read them back.
+let anchorFor (state: ShellRenderState) (testId: string) : AnchorRef =
+    match state.Anchors.TryGetValue testId with
+    | true, a -> a
+    | _ ->
+        let a = anchorRef ()
+        state.Anchors.[testId] <- a
+        a
+
 let openContextMenu (state: ShellRenderState) (x: float) (y: float) (items: MenuItemSpec list) =
     state.OpenMenu.Value <- None
     state.OpenContextMenu.Value <- Some (OpenContextMenuState(x, y, items))
@@ -108,12 +131,20 @@ let closeContextMenu (state: ShellRenderState) =
     state.OpenContextMenu.Value <- None
     state.OpenDropdownTrigger.Value <- None
 
-/// Open a context menu and remember which toolbar control triggered it, so
-/// `comboControl`/`colorControl` can render the trigger in its "open"
-/// highlight while the menu is up.
-let openTriggeredContextMenu (state: ShellRenderState) (triggerId: string) (x: float) (y: float) (items: MenuItemSpec list) =
+/// Open a dropdown anchored to the trigger widget's recorded bounds. The
+/// trigger widget must have wrapped itself in `anchorRegion (anchorFor
+/// state triggerId) …`. The `triggerId` is also stored on
+/// `OpenDropdownTrigger` so the trigger can render its "open" highlight
+/// while the dropdown is up.
+let openAnchoredDropdown (state: ShellRenderState) (triggerId: string) (items: MenuItemSpec list) =
+    state.OpenMenu.Value <- None
+    state.OpenContextMenu.Value <- None
     state.OpenDropdownTrigger.Value <- Some triggerId
-    openContextMenu state x y items
+    state.OpenAnchoredDropdown.Value <- Some (OpenAnchoredDropdownState(anchorFor state triggerId, items))
+
+let closeAnchoredDropdown (state: ShellRenderState) =
+    state.OpenAnchoredDropdown.Value <- None
+    state.OpenDropdownTrigger.Value <- None
 
 let openDialog (state: ShellRenderState) (spec: DialogSpec) =
     let values = System.Collections.Generic.Dictionary<string, Signal<string>>()
@@ -359,6 +390,115 @@ let private mergeIcon (p: ChromePalette) =
           FillRect(Renderer.Types.rect 13.0 4.0 1.0 8.0, p.Border)
           FillRect(Renderer.Types.rect 7.0 6.0 2.0 4.0, p.Text) ])
 
+let private unmergeIcon (p: ChromePalette) =
+    // Two cells side by side with a divider running between them.
+    miniIcon (fun _ _ ->
+        [ FillRect(Renderer.Types.rect 2.0 4.0 12.0 8.0, p.Input)
+          FillRect(Renderer.Types.rect 2.0 4.0 12.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 2.0 11.0 12.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 2.0 4.0 1.0 8.0, p.Border)
+          FillRect(Renderer.Types.rect 13.0 4.0 1.0 8.0, p.Border)
+          FillRect(Renderer.Types.rect 7.0 4.0 1.0 8.0, p.Border) ])
+
+let private cutIcon (p: ChromePalette) =
+    // Two circular handles (drawn as 2x2 squares) with crossing blades.
+    miniIcon (fun _ _ ->
+        [ FillRect(Renderer.Types.rect 3.0 3.0 2.0 2.0, p.Text)
+          FillRect(Renderer.Types.rect 3.0 11.0 2.0 2.0, p.Text)
+          FillRect(Renderer.Types.rect 5.0 5.0 1.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 6.0 6.0 1.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 7.0 7.0 1.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 8.0 8.0 2.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 10.0 9.0 4.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 5.0 10.0 1.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 6.0 9.0 1.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 7.0 8.0 1.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 10.0 7.0 4.0 1.0, p.Text) ])
+
+let private copyIcon (p: ChromePalette) =
+    // Two overlapping document rectangles.
+    miniIcon (fun _ _ ->
+        [ FillRect(Renderer.Types.rect 3.0 3.0 7.0 9.0, p.Input)
+          FillRect(Renderer.Types.rect 3.0 3.0 7.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 3.0 11.0 7.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 3.0 3.0 1.0 9.0, p.Border)
+          FillRect(Renderer.Types.rect 9.0 3.0 1.0 9.0, p.Border)
+          FillRect(Renderer.Types.rect 6.0 5.0 7.0 9.0, p.Input)
+          FillRect(Renderer.Types.rect 6.0 5.0 7.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 6.0 13.0 7.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 6.0 5.0 1.0 9.0, p.Border)
+          FillRect(Renderer.Types.rect 12.0 5.0 1.0 9.0, p.Border) ])
+
+let private pasteIcon (p: ChromePalette) =
+    // Clipboard outline with a tab at top and a sheet inside.
+    miniIcon (fun _ _ ->
+        [ FillRect(Renderer.Types.rect 3.0 4.0 10.0 10.0, p.Input)
+          FillRect(Renderer.Types.rect 3.0 4.0 10.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 3.0 13.0 10.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 3.0 4.0 1.0 10.0, p.Border)
+          FillRect(Renderer.Types.rect 12.0 4.0 1.0 10.0, p.Border)
+          FillRect(Renderer.Types.rect 6.0 2.0 4.0 3.0, p.Text)
+          FillRect(Renderer.Types.rect 5.0 7.0 6.0 1.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 5.0 9.0 6.0 1.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 5.0 11.0 4.0 1.0, p.ChromeDark) ])
+
+let private borderIcon (p: ChromePalette) =
+    // 2x2 grid of cells.
+    miniIcon (fun _ _ ->
+        [ FillRect(Renderer.Types.rect 2.0 2.0 12.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 2.0 13.0 12.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 2.0 2.0 1.0 12.0, p.Text)
+          FillRect(Renderer.Types.rect 13.0 2.0 1.0 12.0, p.Text)
+          FillRect(Renderer.Types.rect 2.0 7.0 12.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 7.0 2.0 1.0 12.0, p.Text) ])
+
+let private freezeIcon (p: ChromePalette) =
+    // Cell grid with a thicker dividing line marking the frozen split.
+    miniIcon (fun _ _ ->
+        [ FillRect(Renderer.Types.rect 2.0 2.0 12.0 1.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 2.0 13.0 12.0 1.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 2.0 2.0 1.0 12.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 13.0 2.0 1.0 12.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 2.0 8.0 1.0 6.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 13.0 8.0 1.0 6.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 8.0 2.0 1.0 1.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 8.0 13.0 1.0 1.0, p.ChromeDark)
+          FillRect(Renderer.Types.rect 2.0 7.0 12.0 2.0, p.Text)
+          FillRect(Renderer.Types.rect 7.0 2.0 2.0 6.0, p.Text) ])
+
+let private splitIcon (p: ChromePalette) =
+    // Four panes with a cross divider through the middle.
+    miniIcon (fun _ _ ->
+        [ FillRect(Renderer.Types.rect 2.0 2.0 12.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 2.0 13.0 12.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 2.0 2.0 1.0 12.0, p.Text)
+          FillRect(Renderer.Types.rect 13.0 2.0 1.0 12.0, p.Text)
+          FillRect(Renderer.Types.rect 7.0 2.0 2.0 12.0, p.Text)
+          FillRect(Renderer.Types.rect 2.0 7.0 12.0 2.0, p.Text) ])
+
+let private highlightIcon (p: ChromePalette) =
+    // Solid yellow swipe under a baseline.
+    let yellow = Color.rgb 250uy 215uy 75uy
+    miniIcon (fun _ _ ->
+        [ FillRect(Renderer.Types.rect 2.0 9.0 12.0 3.0, yellow)
+          FillRect(Renderer.Types.rect 2.0 12.0 12.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 4.0 4.0 8.0 4.0, p.Input)
+          FillRect(Renderer.Types.rect 4.0 4.0 8.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 4.0 8.0 8.0 1.0, p.Border)
+          FillRect(Renderer.Types.rect 4.0 4.0 1.0 4.0, p.Border)
+          FillRect(Renderer.Types.rect 11.0 4.0 1.0 4.0, p.Border) ])
+
+let private filterClearIcon (p: ChromePalette) =
+    // Funnel shape crossed by a diagonal X.
+    let red = Color.rgb 200uy 65uy 65uy
+    miniIcon (fun _ _ ->
+        [ FillRect(Renderer.Types.rect 3.0 3.0 10.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 5.0 6.0 6.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 7.0 9.0 2.0 1.0, p.Text)
+          FillRect(Renderer.Types.rect 7.0 11.0 2.0 1.0, p.Text)
+          for i in 0..6 do FillRect(Renderer.Types.rect (3.0 + float i) (4.0 + float i) 1.0 1.0, red)
+          for i in 0..6 do FillRect(Renderer.Types.rect (9.0 - float i) (4.0 + float i) 1.0 1.0, red) ])
+
 /// Built-in glyph table. Apps return glyph names from their own testId map;
 /// new icons can be added here once and reused everywhere.
 let private renderGlyph (p: ChromePalette) (label: string) (glyph: string) =
@@ -399,32 +539,32 @@ let private renderGlyph (p: ChromePalette) (label: string) (glyph: string) =
     | "column-delete" -> toolbarTextIcon p "-C"
     | "paragraph" -> paragraphIcon p
     | "filter" -> filterIcon p
-    | "filter-clear" -> toolbarTextIcon p "⌀"
+    | "filter-clear" -> filterClearIcon p
     | "chart" -> chartIcon p
     | "pivot" -> pivotIcon p
     | "merge" -> mergeIcon p
-    | "unmerge" -> toolbarTextIcon p "↔"
-    | "sort-asc" -> toolbarTextIcon p "A↓"
-    | "sort-desc" -> toolbarTextIcon p "Z↓"
+    | "unmerge" -> unmergeIcon p
+    | "sort-asc" -> toolbarTextIcon p "A-Z"
+    | "sort-desc" -> toolbarTextIcon p "Z-A"
     | "format-number" -> toolbarTextIcon p "1.2"
     | "format-currency" -> toolbarTextIcon p "$"
     | "format-percent" -> toolbarTextIcon p "%"
     | "format-date" -> toolbarTextIcon p "Dt"
     | "decimal-plus" -> toolbarTextIcon p ".0+"
     | "decimal-minus" -> toolbarTextIcon p ".0-"
-    | "cut" -> toolbarTextIcon p "✂"
-    | "copy" -> toolbarTextIcon p "⎘"
-    | "paste" -> toolbarTextIcon p "⎗"
+    | "cut" -> cutIcon p
+    | "copy" -> copyIcon p
+    | "paste" -> pasteIcon p
     | "undo" -> Icon.arrowLeft 13.0 p.Text
     | "redo" -> Icon.arrowRight 13.0 p.Text
-    | "border" -> toolbarTextIcon p "▦"
-    | "freeze" -> toolbarTextIcon p "❄"
-    | "split" -> toolbarTextIcon p "⊟"
+    | "border" -> borderIcon p
+    | "freeze" -> freezeIcon p
+    | "split" -> splitIcon p
     | "sheet-add" -> toolbarTextIcon p "+S"
     | "sheet-delete" -> toolbarTextIcon p "-S"
     | "sheet-rename" -> toolbarTextIcon p "Sr"
     | "text-color" -> toolbarTextIcon p "A"
-    | "highlight-color" -> toolbarTextIcon p "▮"
+    | "highlight-color" -> highlightIcon p
     | "all-caps" -> toolbarTextIcon p "AA"
     | "small-caps" -> toolbarTextIcon p "Aa"
     | _ -> toolbarTextIcon p label
@@ -518,7 +658,6 @@ type ShellConfig = {
     Menus: MenuSpec list
     ToolbarRows: ToolbarRowSpec list
     ToolbarGlyph: string -> string
-    MenuLeft: string -> float
     ShowToolbarPressed: string -> bool -> bool
     /// Vertical workspace widget — the document canvas, grid, etc. Sized by
     /// the caller to fit within the window body.
@@ -542,12 +681,11 @@ let private renderToolbarControl (p: ChromePalette) (renderState: ShellRenderSta
             |> List.tryFind (fun option -> option.Value = spec.Value())
             |> Option.map _.Label
             |> Option.defaultValue (spec.Value())
-        // Click opens a dropdown menu of the available choices anchored at
-        // the most recent click position. Routed through
-        // `openTriggeredContextMenu` so the trigger combo gets its
-        // "Pressed" highlight while the dropdown is up.
+        // Open a dropdown of the available choices anchored to this combo
+        // trigger's recorded bounds. `popoverBelow` (in the shell-wide
+        // dropdown overlay) reads the anchor that `anchorRegion` writes
+        // below — no manual coordinate math.
         let openDropdown () =
-            let x, y = renderState.LastClickPos.Value
             let items =
                 spec.Options()
                 |> List.map (fun choice ->
@@ -556,15 +694,15 @@ let private renderToolbarControl (p: ChromePalette) (renderState: ShellRenderSta
                         choice.Label
                         (Some (fun () -> choice.Value = spec.Value()))
                         (fun () -> spec.Action(choice.Value)))
-            openTriggeredContextMenu renderState spec.TestId x y items
-        comboControl p renderState spec.TestId label openDropdown
+            openAnchoredDropdown renderState spec.TestId items
+        anchorRegion (anchorFor renderState spec.TestId)
+            (comboControl p renderState spec.TestId label openDropdown)
     | ToolbarInput spec ->
         match spec.Kind with
         | NumberInput ->
             comboControl p renderState spec.TestId (spec.Value()) (fun () -> spec.Action(spec.Value()))
         | ColorInput ->
             let openSwatches () =
-                let x, y = renderState.LastClickPos.Value
                 let items =
                     standardColors
                     |> List.map (fun (name, hex) ->
@@ -573,8 +711,9 @@ let private renderToolbarControl (p: ChromePalette) (renderState: ShellRenderSta
                             (sprintf "● %s" name)
                             (Some (fun () -> spec.Value() = hex))
                             (fun () -> spec.Action(hex)))
-                openTriggeredContextMenu renderState spec.TestId x y items
-            colorControl p renderState spec.TestId (spec.Value()) openSwatches
+                openAnchoredDropdown renderState spec.TestId items
+            anchorRegion (anchorFor renderState spec.TestId)
+                (colorControl p renderState spec.TestId (spec.Value()) openSwatches)
         | TextInput ->
             comboControl p renderState spec.TestId (spec.Value()) (fun () -> spec.Action(spec.Value()))
     | ToolbarSeparator -> padXY 4.0 0.0 (toolbarSeparator p)
@@ -589,7 +728,10 @@ let private renderMenuButton (p: ChromePalette) (renderState: ShellRenderState) 
     let toggle () =
         if isOpen then renderState.OpenMenu.Value <- None
         else renderState.OpenMenu.Value <- Some spec.TestId
-    menuButton p renderState spec.TestId spec.Label isOpen toggle
+    // The anchor records this button's resolved bounds so the dropdown
+    // panel can attach to it via `popoverBelow` — no manual x math.
+    anchorRegion (anchorFor renderState spec.TestId)
+        (menuButton p renderState spec.TestId spec.Label isOpen toggle)
 
 let private renderMenuPanel (p: ChromePalette) (renderState: ShellRenderState) (spec: MenuSpec) =
     let gutterWidth = p.MenuGutterWidth
@@ -729,10 +871,8 @@ let private renderDialogField (p: ChromePalette) (renderState: ShellRenderState)
                 ])
         | DialogColorField ->
             // Color swatch: 28×28 chip with a hairline border. Clicking
-            // opens the standard 16-color picker; the picked hex is
-            // written back into the field's value signal.
+            // opens the standard 16-color picker anchored to the swatch.
             let openPicker () =
-                let x, y = renderState.LastClickPos.Value
                 let items =
                     standardColors
                     |> List.map (fun (name, hex) ->
@@ -741,19 +881,20 @@ let private renderDialogField (p: ChromePalette) (renderState: ShellRenderState)
                             (sprintf "● %s" name)
                             (Some (fun () -> valueSignal.Value = hex))
                             (fun () -> valueSignal.Value <- hex))
-                openTriggeredContextMenu renderState field.Id x y items
-            withHover renderState field.Id (
-                clickable openPicker (
-                    sizedH inputHeight (
-                        rowAlign MStart CCenter 12.0 [
-                            dynamic (fun () ->
-                                sized 28.0 28.0 (
-                                    stack [
-                                        rounded 4.0 (parseHexColor valueSignal.Value) empty
-                                        border p.Border 1.0 4.0 empty
-                                    ]))
-                            dynamic (fun () -> textStyled Font.sm labelColor valueSignal.Value)
-                        ])))
+                openAnchoredDropdown renderState field.Id items
+            anchorRegion (anchorFor renderState field.Id) (
+                withHover renderState field.Id (
+                    clickable openPicker (
+                        sizedH inputHeight (
+                            rowAlign MStart CCenter 12.0 [
+                                dynamic (fun () ->
+                                    sized 28.0 28.0 (
+                                        stack [
+                                            rounded 4.0 (parseHexColor valueSignal.Value) empty
+                                            border p.Border 1.0 4.0 empty
+                                        ]))
+                                dynamic (fun () -> textStyled Font.sm labelColor valueSignal.Value)
+                            ]))))
         | DialogSliderField(minV, maxV) ->
             // Click-anywhere-on-the-track to step through the range. The
             // step is (max-min)/10 and wraps to min when it would
@@ -924,16 +1065,9 @@ let private renderDialog (p: ChromePalette) (renderState: ShellRenderState) (sta
                         pad 28.0 body))))
     center panel
 
-let private dialogScrim () =
-    // Half-transparent dark layer over the whole window; clicking it does
-    // nothing (force the user to use Cancel / OK to dismiss).
-    sized 4000.0 4000.0 (box (Color.rgba 0uy 0uy 0uy 64uy) empty)
-
 /// Assemble the chrome around the caller's workspace widget. Layout:
 ///
 ///   ┌─────────────────────────────────┐
-///   │  Title bar         (32, white)  │
-///   ├─────────────────────────────────┤  ← hairline
 ///   │  Menu bar          (32, white)  │
 ///   ├─────────────────────────────────┤  ← hairline
 ///   │  Toolbar (n rows)  (32 each)    │
@@ -942,13 +1076,14 @@ let private dialogScrim () =
 ///   ├─────────────────────────────────┤  ← hairline
 ///   │  Status bar        (22, white)  │
 ///   └─────────────────────────────────┘
+///
+/// The OS window decoration carries the document title; there's no
+/// in-app title strip.
 let view (renderState: ShellRenderState) (config: ShellConfig) =
     let p = palette config.Chrome
-    let titleHeight = 32.0
     let menuHeight  = 32.0
     let toolbarRowHeight = 32.0
     let statusHeight = 22.0
-    let menuBarTop = titleHeight
 
     let openMenu () =
         renderState.OpenMenu.Value
@@ -956,36 +1091,14 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
 
     let closeMenu () = renderState.OpenMenu.Value <- None
 
-    // Compute the actual left x of each menu button by measuring labels.
-    // Mirrors the layout used by the menu bar: padXY 6 0 (rowAlign 2 [..]).
-    // Each button is `menuButton` = padXY 12 6 around the label, so the
-    // button width is labelWidth + 24.
-    let menuLeftMap : Map<string, float> =
-        let font = Composit.Ui.Layout.font ()
-        let menuBarLeftPad = 6.0
-        let menuGap = 2.0
-        let mutable x = menuBarLeftPad
-        let mutable acc = Map.empty
-        for m in config.Menus do
-            acc <- Map.add m.TestId x acc
-            let labelW = Text.measureWidth font Font.sm m.Label
-            x <- x + labelW + 24.0 + menuGap
-        acc
-
-    let menuLeftFor testId =
-        match Map.tryFind testId menuLeftMap with
-        | Some v -> v
-        | None -> config.MenuLeft testId
-
     let menuOverlay =
         dynamic (fun () ->
             match openMenu () with
             | Some menu ->
                 stack [
-                    // Click-anywhere-outside catcher (drawn behind the panel).
-                    overlay (clickable closeMenu (sized p.WindowWidth 2000.0 empty))
-                    // The actual menu panel, positioned under the menu button.
-                    overlay (offset (menuLeftFor menu.TestId) (menuBarTop + menuHeight) (sizedW p.MenuWidth (renderMenuPanel p renderState menu)))
+                    modalScrim None (Some closeMenu)
+                    popoverBelow (anchorFor renderState menu.TestId)
+                        (sizedW p.MenuWidth (renderMenuPanel p renderState menu))
                 ]
             | None -> empty)
 
@@ -994,24 +1107,24 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
             match renderState.OpenDialog.Value with
             | Some state ->
                 stack [
-                    overlay (dialogScrim ())
+                    // Half-transparent dark backdrop; absorbs clicks so the
+                    // workspace doesn't react while a dialog is up. The
+                    // user dismisses via Cancel/OK only.
+                    modalScrim (Some (Color.rgba 0uy 0uy 0uy 64uy)) None
                     overlay (renderDialog p renderState state)
                 ]
             | None -> empty)
 
-    // Right-click menu close clears the toolbar-trigger highlight too, so
-    // closing a combo dropdown leaves the trigger's open-state.
     let closeCtxMenu () =
         renderState.OpenContextMenu.Value <- None
-        renderState.OpenDropdownTrigger.Value <- None
 
-    let renderContextMenuItem (item: MenuItemSpec) =
+    let renderPanelItem (closeFn: unit -> unit) (item: MenuItemSpec) =
         let isChecked = item.IsChecked |> Option.map (fun check -> check()) |> Option.defaultValue false
         let isEnabled = item.IsEnabled |> Option.map (fun en -> en()) |> Option.defaultValue true
         let activate () =
             if isEnabled then
                 item.Action ()
-                closeCtxMenu ()
+                closeFn ()
         let bg =
             dynamic (fun () ->
                 if not isEnabled then box p.MenuPanel empty
@@ -1034,22 +1147,38 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
         else
             row
 
-    let renderContextMenuPanel (state: OpenContextMenuState) =
+    let panelFrame (items: Widget list) =
         filtered [DropShadow(0.0, 4.0, 12, p.Shadow)] (
             rounded 4.0 p.MenuPanel (
                 border p.Border 1.0 4.0 (
-                    pad 4.0 (
-                        columnSpaced 0.0 (state.Items |> List.map renderContextMenuItem)))))
+                    pad 4.0 (columnSpaced 0.0 items))))
+
+    let renderContextMenuPanel (state: OpenContextMenuState) =
+        panelFrame (state.Items |> List.map (renderPanelItem closeCtxMenu))
 
     let contextMenuOverlay =
         dynamic (fun () ->
             match renderState.OpenContextMenu.Value with
             | Some state ->
                 stack [
-                    overlay (clickable closeCtxMenu (sized 4000.0 4000.0 empty))
-                    overlay (
-                        offset state.X state.Y (
-                            sizedW p.MenuWidth (renderContextMenuPanel state)))
+                    modalScrim None (Some closeCtxMenu)
+                    popoverAt state.X state.Y
+                        (sizedW p.MenuWidth (renderContextMenuPanel state))
+                ]
+            | None -> empty)
+
+    // Combo / color-picker dropdowns reuse the same panel rendering as
+    // right-click context menus, but anchor to a sibling widget's bounds
+    // via `popoverBelow` rather than the cursor position.
+    let anchoredDropdownOverlay =
+        dynamic (fun () ->
+            match renderState.OpenAnchoredDropdown.Value with
+            | Some state ->
+                let dismiss () = closeAnchoredDropdown renderState
+                let panel = panelFrame (state.Items |> List.map (renderPanelItem dismiss))
+                stack [
+                    modalScrim None (Some dismiss)
+                    popoverBelow state.Anchor (sizedW p.MenuWidth panel)
                 ]
             | None -> empty)
 
@@ -1060,11 +1189,6 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
                     padXY 6.0 0.0 (
                         rowAlign MStart CCenter 2.0 (config.Menus |> List.map (renderMenuButton p renderState))))))
 
-    let titleBar =
-        chromeBandWithBorder p p.ChromeTop titleHeight (
-            sizedH titleHeight (
-                padXY 14.0 0.0 (
-                    rowAlign MStart CCenter 0.0 [ textBoldStyled Font.lg p.Text config.Title ])))
     let toolbarRowCount = max 1 (List.length config.ToolbarRows)
     let toolbarHeight = float toolbarRowCount * toolbarRowHeight
     let toolbarBand =
@@ -1100,7 +1224,6 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
                     padXY 12.0 4.0 (textStyled Font.sm p.Text label))))
     let windowBody =
         column [
-            titleBar
             menuBar
             toolbarBand
             expanded config.Workspace
@@ -1111,6 +1234,7 @@ let view (renderState: ShellRenderState) (config: ShellConfig) =
         stack [
             windowBody
             menuOverlay
+            anchoredDropdownOverlay
             contextMenuOverlay
             dialogOverlay
         ])

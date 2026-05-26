@@ -134,7 +134,6 @@ let viewWith
         Menus = SpreadsheetUi.menus state actions @ extraMenus
         ToolbarRows = SpreadsheetUi.toolbarRows state actions
         ToolbarGlyph = SpreadsheetUi.toolbarGlyph
-        MenuLeft = SpreadsheetUi.menuLeft
         ShowToolbarPressed = SpreadsheetUi.showToolbarPressed
         Workspace = workspace
     }

@@ -12,15 +12,9 @@
 - ✅ Copy/Paste (Ctrl+C, Ctrl+V)
 - ✅ Virtual scrolling for large datasets
 
-### Toolbars (All 8 Working)
+### Chrome (unified shell)
 - ✅ **FormulaBar** - Cell reference and formula editing
-- ✅ **ClipboardToolbar** - Cut/Copy/Paste/Undo/Redo
-- ✅ **FormatToolbar** - Bold/Italic/Underline/Colors
-- ✅ **AlignmentToolbar** - Left/Center/Right/Justify
-- ✅ **NumberFormatToolbar** - Currency/Percentage/Decimals
-- ✅ **InsertDeleteToolbar** - Add/remove rows/columns
-- ✅ **DataToolbar** - Sort/Filter operations
-- ✅ **FindReplaceToolbar** - Search and replace
+- ✅ **SpreadsheetShell** - Menubar (File / Edit / Insert / Format / Data) + single focused toolbar row + inline find/replace bar. Mirrors the Word web shell's flat chrome. Replaces the older per-category toolbars (FormatToolbar / AlignmentToolbar / NumberFormatToolbar / InsertDeleteToolbar / DataToolbar / ClipboardToolbar / FindReplaceToolbar) — see `TOOLBAR-USAGE.md`.
 
 ### Data Features
 - ✅ Number formatting (currency, percentage, decimal)

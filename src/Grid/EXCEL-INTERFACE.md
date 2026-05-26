@@ -1,5 +1,7 @@
 # Excel-Like Interface Components
 
+> **Heads up:** The per-category toolbar classes documented below (`FormatToolbar`, `AlignmentToolbar`, `NumberFormatToolbar`, `InsertDeleteToolbar`, `DataToolbar`, `ClipboardToolbar`, `FindReplaceToolbar`) have been consolidated into a single `SpreadsheetShell` that renders a menubar + one focused toolbar row + an inline find/replace bar — matching the Word web shell's chrome. See `TOOLBAR-USAGE.md` for the current API. The component descriptions below remain as a reference for which actions live where in the new shell.
+
 ## Overview
 
 RedBat.Grid now provides a comprehensive set of Excel-like interface components that host applications can compose as needed. This document describes all available toolbars and UI components.
