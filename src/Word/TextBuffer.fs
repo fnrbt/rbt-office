@@ -8,6 +8,10 @@ type TextStyle = {
     Bold: bool
     Italic: bool
     Underline: bool
+    /// w:u@val — single|double|thick|dotted|dash|dotDash|dotDotDash|wave|wavyDouble|… (None = single).
+    UnderlineStyle: string option
+    /// w:u@color — distinct underline colour (None = text colour).
+    UnderlineColor: string option
     AllCaps: bool
     SmallCaps: bool
     Strike: bool
@@ -44,6 +48,8 @@ let defaultStyle = {
     Bold = false
     Italic = false
     Underline = false
+    UnderlineStyle = None
+    UnderlineColor = None
     AllCaps = false
     SmallCaps = false
     Strike = false

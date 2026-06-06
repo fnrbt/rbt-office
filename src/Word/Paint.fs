@@ -22,7 +22,7 @@ type TextPaintStyle = {
 
 type PaintCommand =
     | DrawText of text: string * style: TextPaintStyle * x: float * baseline: float * width: float
-    | DrawUnderline of color: string * x: float * y: float * width: float
+    | DrawUnderline of color: string * lineStyle: string * x: float * y: float * width: float
     | DrawImage of src: string * x: float * y: float * width: float * height: float * cropLeft: string option * cropTop: string option * cropRight: string option * cropBottom: string option
     | FillRect of color: string * x: float * y: float * width: float * height: float
     | StrokeRect of color: string * lineWidth: float * x: float * y: float * width: float * height: float
@@ -516,9 +516,14 @@ let private paragraphCommandsWithBaselineOffset baselineOffset (settings: Layout
                         let measured = measureText prefix style
                         if measured > 0.0 then measured else width
                 if style.Underline && inkWidth > 0.0 then
-                    commands <- commands @ [DrawUnderline (paintStyle.Color, textX, textBaseline + WordLayout.Text.canvasUnderlineOffset, inkWidth)]
+                    let ulColor =
+                        match style.UnderlineColor with
+                        | Some c when c <> "" && c.ToLowerInvariant() <> "auto" -> if c.StartsWith("#") then c else "#" + c
+                        | _ -> paintStyle.Color
+                    let ulStyle = style.UnderlineStyle |> Option.defaultValue "single"
+                    commands <- commands @ [DrawUnderline (ulColor, ulStyle, textX, textBaseline + WordLayout.Text.canvasUnderlineOffset, inkWidth)]
                 if style.Strike && inkWidth > 0.0 then
-                    commands <- commands @ [DrawUnderline (paintStyle.Color, textX, textBaseline - WordLayout.Text.canvasStrikethroughOffset style, inkWidth)]
+                    commands <- commands @ [DrawUnderline (paintStyle.Color, "single", textX, textBaseline - WordLayout.Text.canvasStrikethroughOffset style, inkWidth)]
 
             | ImageSegment (src, x, yOffset, width, height, _, _, _, _, cropLeft, cropTop, cropRight, cropBottom) ->
                 let imageX = settings.PaddingLeft + x + lineAlignmentOffset
@@ -956,7 +961,7 @@ let private canonicalTableYFromLayouts settings measureText measureRange doc (la
 let private shiftCommandX dx command =
     match command with
     | DrawText (t, s, x, b, w) -> DrawText (t, s, x + dx, b, w)
-    | DrawUnderline (c, x, y, w) -> DrawUnderline (c, x + dx, y, w)
+    | DrawUnderline (c, s, x, y, w) -> DrawUnderline (c, s, x + dx, y, w)
     | DrawImage (s, x, y, w, h, cl, ct, cr, cb) -> DrawImage (s, x + dx, y, w, h, cl, ct, cr, cb)
     | FillRect (c, x, y, w, h) -> FillRect (c, x + dx, y, w, h)
     | StrokeRect (c, lw, x, y, w, h) -> StrokeRect (c, lw, x + dx, y, w, h)

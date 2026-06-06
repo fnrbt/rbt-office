@@ -668,10 +668,74 @@ let segmentWidth = function
 
 let alignmentOffset (layout: BlockLayout) (line: MeasuredLine) =
     match layout.Metadata.Alignment with
-    | Left -> 0.0
+    // An RTL paragraph's default ("start") alignment is the right margin.
+    | Left -> if layout.Metadata.Rtl then max 0.0 (layout.AvailableWidth - line.Width) else 0.0
     | Center -> max 0.0 ((layout.AvailableWidth - line.Width) / 2.0)
-    | Right -> max 0.0 (layout.AvailableWidth - line.Width)
+    | Right -> if layout.Metadata.Rtl then 0.0 else max 0.0 (layout.AvailableWidth - line.Width)
+    // Justify stretches inter-word space so the visible content reaches the
+    // right margin (baked into segment x by justifyLineToEdge), so no extra
+    // whole-line shift is needed here — the line already starts at the margin.
     | Justify -> 0.0
+
+/// Reposition a line's segments into right-to-left visual order (for w:bidi
+/// paragraphs). The list stays in logical order (so offset→x mapping is intact);
+/// each segment's x is reassigned so the first logical token is rightmost. The
+/// browser/shaper already renders each token's glyphs in correct script order,
+/// so reversing the token positions yields correct RTL reading order. Combined
+/// with right alignment via alignmentOffset.
+let private repositionRtl (line: MeasuredLine) : MeasuredLine =
+    match line.Segments with
+    | [] -> line
+    | segs ->
+        let baseX = segs |> List.map segmentX |> List.min
+        let totalW = segs |> List.sumBy segmentWidth
+        let mutable cursor = baseX + totalW
+        let newSegs =
+            segs |> List.map (fun s ->
+                let w = segmentWidth s
+                cursor <- cursor - w
+                match s with
+                | TextSegment (t, st, _, ww, off) -> TextSegment (t, st, cursor, ww, off)
+                | ImageSegment (src, _, yOff, ww, h, off, fl, wr, rh, cl, ct, cr, cb) -> ImageSegment (src, cursor, yOff, ww, h, off, fl, wr, rh, cl, ct, cr, cb))
+        { line with Segments = newSegs }
+
+/// Distribute the slack between a line's visible right edge and `rightEdge`
+/// across its inter-word gaps, returning the line with stretched segment x.
+/// `rightEdge` is in the same (post-indent) coordinate frame as the line's
+/// segment x. A "gap" is a non-final segment whose token ends in a regular
+/// space; tabs, nbsp, and images are not stretched. Caller excludes the
+/// paragraph's last line (Word never justifies it).
+let private justifyLineToEdge (rightEdge: float) (line: MeasuredLine) : MeasuredLine =
+    let segs = line.Segments
+    let segCount = List.length segs
+    let endsInStretchSpace = function
+        | TextSegment (t, _, _, _, _) when t.Length > 0 -> t.[t.Length - 1] = ' '
+        | _ -> false
+    // A tab advances to a fixed stop and an image is atomic — neither stretches,
+    // and a line containing one is left ragged (Word stretches only the spaces,
+    // which this simple model doesn't isolate around the fixed element).
+    let hasTabOrImage =
+        segs |> List.exists (function
+            | ImageSegment _ -> true
+            | TextSegment (t, _, _, _, _) -> t.Contains("\t"))
+    let gapCount =
+        segs |> List.mapi (fun i s -> if i < segCount - 1 && endsInStretchSpace s then 1 else 0) |> List.sum
+    let baseX = match segs with [] -> 0.0 | _ -> segs |> List.map segmentX |> List.min
+    let extra = rightEdge - (baseX + line.Width)
+    if hasTabOrImage || gapCount = 0 || extra <= 0.5 then line
+    else
+        let perGap = extra / float gapCount
+        let mutable shift = 0.0
+        let newSegs =
+            segs |> List.mapi (fun i s ->
+                let shifted =
+                    match s with
+                    | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + shift, w, off)
+                    | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
+                        ImageSegment (src, x + shift, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
+                if i < segCount - 1 && endsInStretchSpace s then shift <- shift + perGap
+                shifted)
+        { line with Segments = newSegs }
 
 let emptyLine y height : MeasuredLine = {
     Segments = []
@@ -895,7 +959,7 @@ let private wordWrapTokens (text: string) =
     tokens
 
 /// Layout buffer into lines with styled runs and images.
-let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (rightTabPosition: float option) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     let mutable lines = []
     let mutable currentSegments: Segment list = []
     let mutable currentX = 0.0
@@ -1046,12 +1110,34 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             index <- index + 1
         width
 
+    // Next non-bar tab stop strictly to the right of x.
+    let nextTabStop x =
+        tabStops
+        |> List.filter (fun t -> t.Alignment <> "bar" && t.Position > x + 0.01)
+        |> List.sortBy (fun t -> t.Position)
+        |> List.tryHead
+
+    // Width of the immediate following text up to its decimal separator (for
+    // decimal tabs) — that prefix's right edge lands on the tab stop.
+    let followingWidthToDecimal currentTextStart (currentDisplayText: string) currentDisplayStyle =
+        let text = if currentTextStart < currentDisplayText.Length then currentDisplayText.Substring(currentTextStart) else ""
+        let breakIdx = text |> Seq.tryFindIndex (fun c -> c = '\t' || c = '\r' || c = '\n') |> Option.defaultValue text.Length
+        let seg = text.Substring(0, breakIdx)
+        let dotIdx = seg.IndexOf('.')
+        let upto = if dotIdx >= 0 then dotIdx else seg.Length
+        if upto > 0 then measureRange currentDisplayText currentDisplayStyle currentTextStart upto else 0.0
+
     let tabWidth runIndex currentTextStart (currentDisplayText: string) currentDisplayStyle =
         let defaultTab = (floor (currentX / 48.0) + 1.0) * 48.0
-        match rightTabPosition with
-        | Some rightTab ->
-            let target = min rightTab currentLineEnd
-            max 0.0 (target - currentX - followingTextWidth runIndex currentTextStart currentDisplayText currentDisplayStyle)
+        match nextTabStop currentX with
+        | Some stop ->
+            let target = min stop.Position currentLineEnd
+            let following () = followingTextWidth runIndex currentTextStart currentDisplayText currentDisplayStyle
+            match stop.Alignment with
+            | "right" -> max 0.0 (target - currentX - following ())
+            | "center" -> max 0.0 (target - currentX - following () / 2.0)
+            | "decimal" -> max 0.0 (target - currentX - followingWidthToDecimal currentTextStart currentDisplayText currentDisplayStyle)
+            | _ -> max 0.0 (target - currentX)   // left (default)
         | None ->
             max 12.0 (min defaultTab currentLineEnd - currentX)
 
@@ -1203,11 +1289,11 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
     flushLine ()
     lines, floatObstacles, placedBoxes
 
-let layoutLinesStyledWithObstacles (settings: LayoutSettings) (measureText: TextMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (rightTabPosition: float option) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
-    layoutLinesStyledWithObstaclesWithRange settings (rangeMeasurerFromTextMeasurer measureText) buffer maxWidth contentY rightTabPosition initialObstacles initialPlacedBoxes
+let layoutLinesStyledWithObstacles (settings: LayoutSettings) (measureText: TextMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+    layoutLinesStyledWithObstaclesWithRange settings (rangeMeasurerFromTextMeasurer measureText) buffer maxWidth contentY tabStops initialObstacles initialPlacedBoxes
 
 let layoutLinesStyled (settings: LayoutSettings) (measureText: TextMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) =
-    let lines, _, _ = layoutLinesStyledWithObstacles settings measureText buffer maxWidth 0.0 None [] []
+    let lines, _, _ = layoutLinesStyledWithObstacles settings measureText buffer maxWidth 0.0 [] [] []
     lines
 
 let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
@@ -1265,7 +1351,7 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         |> List.tryHead
         |> Option.defaultValue paragraphStyle.Text
     let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox }
-    let lines, updatedObstacles, updatedPlacedBoxes = layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.RightTabPosition initialObstacles initialPlacedBoxes
+    let lines, updatedObstacles, updatedPlacedBoxes = layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.TabStops initialObstacles initialPlacedBoxes
 
     let adjustedLines =
         lines |> List.map (fun line ->
@@ -1300,6 +1386,28 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let adjustedLines =
         adjustedLines
         |> List.map (fun line -> { line with Height = lineHeightWithMarker line })
+
+    // Justified text: stretch inter-word space on every line except the
+    // paragraph's last. Skip entirely when floats are involved (updatedObstacles
+    // non-empty ⟹ a float strip narrows some line and our flush-right target
+    // wouldn't apply). The common right margin is the first line's reach, so
+    // body lines must also stretch past their wrap width by the first-line
+    // indent to end flush with it.
+    let adjustedLines =
+        if metadata.Alignment <> Justify || not (List.isEmpty updatedObstacles) then adjustedLines
+        else
+            let rightContentEdge = xOffset + indent + markerReserve + availableWidth + max 0.0 firstLineIndent
+            let lineCount = List.length adjustedLines
+            adjustedLines
+            |> List.mapi (fun i line ->
+                if i = lineCount - 1 then line
+                else justifyLineToEdge rightContentEdge line)
+
+    // RTL paragraphs: reposition each line's tokens right-to-left (guarded by
+    // the w:bidi flag, so LTR layout is untouched).
+    let adjustedLines =
+        if metadata.Rtl then adjustedLines |> List.map repositionRtl
+        else adjustedLines
 
     let hasRenderedPageBreak = adjustedLines |> List.exists lineHasRenderedPageBreakBefore
     let pagedLines =

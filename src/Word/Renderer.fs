@@ -394,13 +394,44 @@ let private renderPaintCommand (ctx: RenderContext) = function
             ctx.Ctx.font <- fontString style ctx.FontFamily
             ctx.Ctx.fillStyle <- U3.Case1 style.Color
             fillTextFitted ctx style text x baseline width
-    | DrawUnderline (color, x, y, width) ->
+    | DrawUnderline (color, lineStyle, x, y, width) ->
         ctx.Ctx.strokeStyle <- U3.Case1 color
-        ctx.Ctx.lineWidth <- 1.0
-        ctx.Ctx.beginPath()
-        ctx.Ctx.moveTo(x, y)
-        ctx.Ctx.lineTo(x + width, y)
-        ctx.Ctx.stroke()
+        let ls = lineStyle.ToLowerInvariant()
+        let heavy = ls.Contains("heavy") || ls = "thick"
+        ctx.Ctx.lineWidth <- if heavy then 2.0 else 1.0
+        let flat dy =
+            ctx.Ctx.beginPath()
+            ctx.Ctx.moveTo(x, y + dy)
+            ctx.Ctx.lineTo(x + width, y + dy)
+            ctx.Ctx.stroke()
+        let dashed pattern =
+            setLineDash ctx.Ctx pattern
+            flat 0.0
+            setLineDash ctx.Ctx [||]
+        let wavy dy =
+            // triangular (zigzag) wave — only needs lineTo, looks wavy at text scale
+            ctx.Ctx.beginPath()
+            ctx.Ctx.moveTo(x, y + dy)
+            let mutable cx = x
+            let mutable up = true
+            while cx < x + width do
+                let nx = min (x + width) (cx + 2.0)
+                ctx.Ctx.lineTo(nx, y + dy + (if up then -1.3 else 1.3))
+                cx <- nx
+                up <- not up
+            ctx.Ctx.stroke()
+        if ls.Contains("wav") then
+            wavy 0.0
+            if ls.Contains("double") then wavy 2.6
+        elif ls.Contains("dotdotdash") || ls.Contains("dashdotdot") then dashed [|4.0;2.0;1.0;2.0;1.0;2.0|]
+        elif ls.Contains("dotdash") || ls.Contains("dashdot") then dashed [|4.0;2.0;1.0;2.0|]
+        elif ls.Contains("dash") then dashed [|4.0;2.0|]
+        elif ls.Contains("dot") then dashed [|1.0;2.0|]
+        elif ls = "double" then
+            flat 0.0
+            flat 2.0
+        else
+            flat 0.0
     | DrawImage (src, x, y, width, height, cropLeft, cropTop, cropRight, cropBottom) ->
         drawImageWithCrop ctx src x y width height cropLeft cropTop cropRight cropBottom
     | FillRect (color, x, y, width, height) ->

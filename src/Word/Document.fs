@@ -87,6 +87,14 @@ type SectionColumns = {
     Widths: (float * float) list  // per-column (width, spaceAfter) px; empty = equal width
 }
 
+/// A w:tab stop. Position is px from the left text margin; Alignment is
+/// left|center|right|decimal|bar; Leader is the optional fill (dot|hyphen|…).
+type TabStop = {
+    Position: float
+    Alignment: string
+    Leader: string option
+}
+
 type BlockMetadata = {
     Style: string option
     ContentControlId: string option
@@ -104,6 +112,8 @@ type BlockMetadata = {
     FirstLineIndent: float option
     RightTabPosition: float option
     RightTabLeader: string option
+    TabStops: TabStop list
+    Rtl: bool   // w:bidi — right-to-left paragraph
     SpacingBefore: float option
     SpacingAfter: float option
     ParagraphMarkFontSize: float option
@@ -144,6 +154,8 @@ let defaultMetadata = {
     FirstLineIndent = None
     RightTabPosition = None
     RightTabLeader = None
+    TabStops = []
+    Rtl = false
     SpacingBefore = None
     SpacingAfter = None
     ParagraphMarkFontSize = None

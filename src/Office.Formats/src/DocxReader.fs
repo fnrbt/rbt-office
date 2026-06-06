@@ -12,6 +12,8 @@ type RunProperties = {
     Bold: bool option
     Italic: bool option
     Underline: bool option
+    UnderlineStyle: string option  // w:u@val
+    UnderlineColor: string option  // w:u@color
     AllCaps: bool option
     SmallCaps: bool option
     FontSize: string option
@@ -170,6 +172,8 @@ type ParagraphProperties = {
     HangingIndent: string option
     RightTabPosition: string option
     RightTabLeader: string option
+    TabStops: (string * string * string option) list  // (pos-twips, alignment, leader)
+    Rtl: bool option  // w:bidi
     SpacingBefore: string option
     SpacingBeforeAuto: bool option
     SpacingAfter: string option
@@ -544,6 +548,8 @@ module Docx =
                 Bold = onOff "b" props
                 Italic = onOff "i" props
                 Underline = onOff "u" props
+                UnderlineStyle = getPropVal "u" "val" props
+                UnderlineColor = getPropVal "u" "color" props
                 AllCaps = onOff "caps" props
                 SmallCaps = onOff "smallCaps" props
                 FontSize = getPropVal "sz" "val" props
@@ -564,6 +570,8 @@ module Docx =
                 Bold = None
                 Italic = None
                 Underline = None
+                UnderlineStyle = None
+                UnderlineColor = None
                 AllCaps = None
                 SmallCaps = None
                 FontSize = None
@@ -617,6 +625,19 @@ module Docx =
                 else
                     None))
 
+    /// All real tab stops (pos-twips, alignment, leader). Skips val="clear".
+    let allTabStops props : (string * string * string option) list =
+        wElem "tabs" props
+        |> Option.map (fun tabs ->
+            Xml.children tabs
+            |> List.choose (fun tab ->
+                let isTab = Xml.name tab |> Option.exists (fun name -> Ns.stripNs name = "tab")
+                let align = attr "val" tab |> Option.defaultValue "left"
+                match (if isTab && align <> "clear" then attr "pos" tab else None) with
+                | Some pos -> Some (pos, align, attr "leader" tab)
+                | None -> None))
+        |> Option.defaultValue []
+
     let paragraphProps node =
         let pPr = wElem "pPr" node
         match pPr with
@@ -656,6 +677,8 @@ module Docx =
                 HangingIndent = getPropVal "ind" "hanging" props
                 RightTabPosition = rightTab |> Option.bind fst
                 RightTabLeader = rightTab |> Option.bind snd
+                TabStops = allTabStops props
+                Rtl = onOff "bidi" props
                 SpacingBefore = getPropVal "spacing" "before" props
                 SpacingBeforeAuto = getPropVal "spacing" "beforeAutospacing" props |> Option.map (fun value -> value = "1" || value.ToLowerInvariant() = "true")
                 SpacingAfter = getPropVal "spacing" "after" props
@@ -693,6 +716,8 @@ module Docx =
                 HangingIndent = None
                 RightTabPosition = None
                 RightTabLeader = None
+                TabStops = []
+                Rtl = None
                 SpacingBefore = None
                 SpacingBeforeAuto = None
                 SpacingAfter = None
@@ -1292,7 +1317,7 @@ module Docx =
                 |> Option.map (fun r -> hyperlinkRunProps r.Properties)
                 |> Option.defaultValue {
                     Style = Some "Hyperlink"
-                    Bold = None; Italic = None; Underline = None
+                    Bold = None; Italic = None; Underline = None; UnderlineStyle = None; UnderlineColor = None
                     AllCaps = None; SmallCaps = None
                     FontSize = None; CharacterSpacing = None; FontFamily = None; ThemeFont = None; Color = None
                     ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None; VertAlign = None
@@ -1719,6 +1744,8 @@ module Styles =
             Bold = Docx.onOff "b" rPr
             Italic = Docx.onOff "i" rPr
             Underline = Docx.onOff "u" rPr
+            UnderlineStyle = Ns.childNs "u" rPr |> Option.bind (Docx.attr "val")
+            UnderlineColor = Ns.childNs "u" rPr |> Option.bind (Docx.attr "color")
             AllCaps = Docx.onOff "caps" rPr
             SmallCaps = Docx.onOff "smallCaps" rPr
             FontSize = Ns.childNs "sz" rPr |> Option.bind (Docx.attr "val")
@@ -1760,6 +1787,8 @@ module Styles =
             HangingIndent = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "hanging")
             RightTabPosition = rightTab |> Option.bind fst
             RightTabLeader = rightTab |> Option.bind snd
+            TabStops = Docx.allTabStops pPr
+            Rtl = Docx.onOff "bidi" pPr
             SpacingBefore = Ns.childNs "spacing" pPr |> Option.bind (Docx.attr "before")
             SpacingBeforeAuto = Ns.childNs "spacing" pPr |> Option.bind (Docx.attr "beforeAutospacing") |> Option.map (fun value -> value = "1" || value.ToLowerInvariant() = "true")
             SpacingAfter = Ns.childNs "spacing" pPr |> Option.bind (Docx.attr "after")
@@ -3038,6 +3067,11 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
         "FirstLineIndent" ==> firstLineIndent
         "RightTabPosition" ==> wordTwipsToPoints props.RightTabPosition
         "RightTabLeader" ==> props.RightTabLeader
+        "TabStops" ==> (props.TabStops
+                        |> List.map (fun (pos, align, leader) ->
+                            createObj [ "Position" ==> wordTwipsToPoints (Some pos); "Alignment" ==> align; "Leader" ==> leader ])
+                        |> List.toArray)
+        "Rtl" ==> (props.Rtl |> Option.defaultValue false)
         "SpacingBefore" ==> (if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore |> Option.orElse missingSpacingFallback)
         "SpacingAfter" ==> spacingAfter
         "LineSpacing" ==> wordLineSpacingToMultiple fontSize props.LineSpacing props.LineRule
@@ -3108,6 +3142,8 @@ let private emptyRunProperties = {
     Bold = None
     Italic = None
     Underline = None
+    UnderlineStyle = None
+    UnderlineColor = None
     AllCaps = None
     SmallCaps = None
     FontSize = None
@@ -3128,6 +3164,8 @@ let private mergeRunProperties (baseProps: RunProperties) (props: RunProperties)
     Bold = props.Bold |> Option.orElse baseProps.Bold
     Italic = props.Italic |> Option.orElse baseProps.Italic
     Underline = props.Underline |> Option.orElse baseProps.Underline
+    UnderlineStyle = props.UnderlineStyle |> Option.orElse baseProps.UnderlineStyle
+    UnderlineColor = props.UnderlineColor |> Option.orElse baseProps.UnderlineColor
     AllCaps = props.AllCaps |> Option.orElse baseProps.AllCaps
     SmallCaps = props.SmallCaps |> Option.orElse baseProps.SmallCaps
     Strike = props.Strike |> Option.orElse baseProps.Strike
@@ -3165,6 +3203,8 @@ let private mergeParagraphProperties baseProps props = {
     HangingIndent = props.HangingIndent |> Option.orElse baseProps.HangingIndent
     RightTabPosition = props.RightTabPosition |> Option.orElse baseProps.RightTabPosition
     RightTabLeader = props.RightTabLeader |> Option.orElse baseProps.RightTabLeader
+    TabStops = (if List.isEmpty props.TabStops then baseProps.TabStops else props.TabStops)
+    Rtl = props.Rtl |> Option.orElse baseProps.Rtl
     SpacingBefore = props.SpacingBefore |> Option.orElse baseProps.SpacingBefore
     SpacingBeforeAuto = props.SpacingBeforeAuto |> Option.orElse baseProps.SpacingBeforeAuto
     SpacingAfter = props.SpacingAfter |> Option.orElse baseProps.SpacingAfter
@@ -3440,6 +3480,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "Bold" ==> effectiveOnOff effectiveRunProps.Bold
                             "Italic" ==> effectiveOnOff effectiveRunProps.Italic
                             "Underline" ==> effectiveOnOff effectiveRunProps.Underline
+                            "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
+                            "UnderlineColor" ==> effectiveRunProps.UnderlineColor
                             "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                             "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
@@ -3501,6 +3543,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "Bold" ==> effectiveOnOff effectiveRunProps.Bold
                             "Italic" ==> effectiveOnOff effectiveRunProps.Italic
                             "Underline" ==> effectiveOnOff effectiveRunProps.Underline
+                            "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
+                            "UnderlineColor" ==> effectiveRunProps.UnderlineColor
                             "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                             "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
@@ -3587,6 +3631,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
                                 "Italic" ==> effectiveOnOff effectiveRunProps.Italic
                                 "Underline" ==> effectiveOnOff effectiveRunProps.Underline
+                                "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
+                                "UnderlineColor" ==> effectiveRunProps.UnderlineColor
                                 "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
@@ -3702,6 +3748,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
                                 "Italic" ==> effectiveOnOff effectiveRunProps.Italic
                                 "Underline" ==> effectiveOnOff effectiveRunProps.Underline
+                                "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
+                                "UnderlineColor" ==> effectiveRunProps.UnderlineColor
                                 "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
@@ -3761,6 +3809,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Bold" ==> effectiveOnOff effectiveLinkProps.Bold
                                 "Italic" ==> effectiveOnOff effectiveLinkProps.Italic
                                 "Underline" ==> effectiveOnOff effectiveLinkProps.Underline
+                                "UnderlineStyle" ==> effectiveLinkProps.UnderlineStyle
+                                "UnderlineColor" ==> effectiveLinkProps.UnderlineColor
                                 "AllCaps" ==> effectiveOnOff effectiveLinkProps.AllCaps
                                 "SmallCaps" ==> effectiveOnOff effectiveLinkProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveLinkProps.Strike
@@ -3847,6 +3897,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
                                 "Italic" ==> effectiveOnOff effectiveRunProps.Italic
                                 "Underline" ==> effectiveOnOff effectiveRunProps.Underline
+                                "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
+                                "UnderlineColor" ==> effectiveRunProps.UnderlineColor
                                 "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike

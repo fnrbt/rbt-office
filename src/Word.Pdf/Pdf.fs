@@ -440,7 +440,7 @@ let private embeddedTextOps (textContext: TextContext) pageTop pageHeight text (
 
 let private commandBounds = function
     | WordPaint.DrawText (_, _, x, baseline, width) -> Some (x, baseline - 24.0, x + max 1.0 width, baseline + 4.0)
-    | WordPaint.DrawUnderline (_, x, y, width) -> Some (x, y - 1.0, x + width, y + 1.0)
+    | WordPaint.DrawUnderline (_, _, x, y, width) -> Some (x, y - 2.0, x + width, y + 3.0)
     | WordPaint.DrawImage (_, x, y, width, height, _, _, _, _) -> Some (x, y, x + width, y + height)
     | WordPaint.FillRect (_, x, y, width, height)
     | WordPaint.StrokeRect (_, _, x, y, width, height) -> Some (x, y, x + width, y + height)
@@ -512,13 +512,32 @@ let private pdfOpsForCommand (textContext: TextContext) (imageNames: Map<string,
     function
     | WordPaint.DrawText (text, style, x, baseline, width) ->
         embeddedTextOps textContext pageTop pageHeight text style x baseline width
-    | WordPaint.DrawUnderline (color, x, y, width) ->
+    | WordPaint.DrawUnderline (color, lineStyle, x, y, width) ->
+        let ls = (lineStyle: string).ToLowerInvariant()
+        let heavy = ls.Contains("heavy") || ls = "thick"
+        let flat dy = [ PdfDraw.MoveTo (x, yPdf (y + dy)); PdfDraw.LineTo (x + width, yPdf (y + dy)); PdfDraw.Stroke ]
+        let dashed pattern = PdfDraw.SetDash (pattern, 0.0) :: flat 0.0 @ [ PdfDraw.SetDash ([], 0.0) ]
+        let wavy dy =
+            let mutable ops = [ PdfDraw.MoveTo (x, yPdf (y + dy)) ]
+            let mutable cx = x
+            let mutable up = true
+            while cx < x + width do
+                let nx = min (x + width) (cx + 2.0)
+                ops <- ops @ [ PdfDraw.LineTo (nx, yPdf (y + dy + (if up then -1.3 else 1.3))) ]
+                cx <- nx
+                up <- not up
+            ops @ [ PdfDraw.Stroke ]
+        let body =
+            if ls.Contains("wav") then wavy 0.0 @ (if ls.Contains("double") then wavy 2.6 else [])
+            elif ls.Contains("dotdotdash") || ls.Contains("dashdotdot") then dashed [4.0;2.0;1.0;2.0;1.0;2.0]
+            elif ls.Contains("dotdash") || ls.Contains("dashdot") then dashed [4.0;2.0;1.0;2.0]
+            elif ls.Contains("dash") then dashed [4.0;2.0]
+            elif ls.Contains("dot") then dashed [1.0;2.0]
+            elif ls = "double" then flat 0.0 @ flat 2.0
+            else flat 0.0
         [ PdfDraw.SetStrokeColor (pdfColor color)
-          PdfDraw.SetLineWidth 1.0
-          PdfDraw.SetDash ([], 0.0)
-          PdfDraw.MoveTo (x, yPdf y)
-          PdfDraw.LineTo (x + width, yPdf y)
-          PdfDraw.Stroke ]
+          PdfDraw.SetLineWidth (if heavy then 2.0 else 1.0)
+          PdfDraw.SetDash ([], 0.0) ] @ body
     | WordPaint.FillRect (color, x, y, width, height) ->
         [ PdfDraw.SetFillColor (pdfColor color)
           PdfDraw.Rect (x, yPdf (y + height), width, height)
