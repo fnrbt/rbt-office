@@ -1192,6 +1192,9 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                 currentX <- currentX + imgWidth
             if imgRun.Floating && not alreadyPlaced then placedBoxes <- floatingBox :: placedBoxes
 
+        | TextBuffer.Text textRun when textRun.Style.Hidden ->
+            // w:vanish — hidden text is not laid out and takes no space.
+            ()
         | TextBuffer.Text textRun ->
             if textRun.Style.RenderedPageBreakBefore && not currentSegments.IsEmpty then
                 flushLine ()

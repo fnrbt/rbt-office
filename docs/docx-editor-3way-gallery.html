@@ -123,6 +123,32 @@
   fix is wiring <code>../text/bidi</code> into the PDF/native glyph-positioning path.</p>
 <figure><img src="images/docx-editor-compare/fix-rtl-bidi.png" /></figure>
 
+<h3>⑥ Gaps where docx-editor leads (our to-do)</h3>
+<p class="note">Source comparison (their <code>runParser</code>/<code>sdtProperties</code>/<code>fieldParser</code>/<code>shapeParser</code>)
+  surfaced features docx-editor renders that we don't. Left = ours, right = docx-editor. Fixtures in
+  <code>tests/repros/word-gaps/</code>.</p>
+
+<h2>Hidden text (<code>w:vanish</code>) &nbsp;<span class="verdict ours">FIXED — now hidden</span></h2>
+<p class="cap">Vanish text must be invisible. <b>We render it as normal black text</b>; docx-editor recognizes it
+  (faint/hidden). A correctness bug, not just a missing feature.</p>
+<figure><img src="images/docx-editor-compare/gaps/hidden-text-2way.png" /></figure>
+
+<h2>Run effects: dstrike / position / emphasis &nbsp;<span class="verdict ours">FIXED</span></h2>
+<p class="cap"><b>We render "struck twice" as plain text</b> (no <code>w:dstrike</code>) and ignore <code>w:position</code>
+  (no raised/lowered baseline) and <code>w:em</code> (no emphasis dots). docx-editor renders all three (and
+  <code>w:sym</code>/<code>w:kern</code>/<code>w:effect</code>, source-confirmed).</p>
+<figure><img src="images/docx-editor-compare/gaps/run-effects-2way.png" /></figure>
+
+<h2>Math (OMML) &nbsp;<span class="verdict them">we show a placeholder</span></h2>
+<p class="cap">We preserve the OMML XML but render the literal <code>[Equation]</code>. docx-editor renders the
+  equation content (its <code>MathExtension</code>).</p>
+<figure><img src="images/docx-editor-compare/gaps/math-omml-2way.png" /></figure>
+
+<h2>Content controls (SDT) &nbsp;<span class="verdict tie">static render ties</span></h2>
+<p class="cap">Both render the control's content (☒, "Green"). docx-editor distinguishes the SDT *types*
+  (checkbox/dropdown/date + dataBinding) and makes them interactive — a model/UX gap, not a static-render one.</p>
+<figure><img src="images/docx-editor-compare/gaps/sdt-controls-2way.png" /></figure>
+
 <hr />
 <p class="note">Reproduce one: <code>node tools/docx-editor-compare/capture-ours.mjs &lt;in.docx&gt; out-ours.png</code>,
   <code>… capture-docx-editor.mjs &lt;in.docx&gt; out-de.png</code>, <code>… align-3way.sh &lt;name&gt;</code>.

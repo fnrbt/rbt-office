@@ -26,6 +26,10 @@ type RunProperties = {
     ThemeShade: string option
     Highlight: string option
     Strike: bool option
+    DoubleStrike: bool option   // w:dstrike
+    Hidden: bool option         // w:vanish
+    Position: string option     // w:position@val (half-points, signed)
+    EmphasisMark: string option // w:em@val
     VertAlign: string option  // superscript/subscript
 }
 
@@ -562,6 +566,10 @@ module Docx =
                 ThemeShade = getPropVal "color" "themeShade" props
                 Highlight = getPropVal "highlight" "val" props
                 Strike = onOff "strike" props
+                DoubleStrike = onOff "dstrike" props
+                Hidden = onOff "vanish" props
+                Position = getPropVal "position" "val" props
+                EmphasisMark = getPropVal "em" "val" props
                 VertAlign = getPropVal "vertAlign" "val" props
             }
         | None ->
@@ -584,6 +592,10 @@ module Docx =
                 ThemeShade = None
                 Highlight = None
                 Strike = None
+                DoubleStrike = None
+                Hidden = None
+                Position = None
+                EmphasisMark = None
                 VertAlign = None
             }
 
@@ -1320,7 +1332,8 @@ module Docx =
                     Bold = None; Italic = None; Underline = None; UnderlineStyle = None; UnderlineColor = None
                     AllCaps = None; SmallCaps = None
                     FontSize = None; CharacterSpacing = None; FontFamily = None; ThemeFont = None; Color = None
-                    ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None; VertAlign = None
+                    ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None
+                    DoubleStrike = None; Hidden = None; Position = None; EmphasisMark = None; VertAlign = None
                 }
 
             [RunToken {
@@ -1758,6 +1771,10 @@ module Styles =
             ThemeShade = Ns.childNs "color" rPr |> Option.bind (Docx.attr "themeShade")
             Highlight = Ns.childNs "highlight" rPr |> Option.bind (Docx.attr "val")
             Strike = Docx.onOff "strike" rPr
+            DoubleStrike = Docx.onOff "dstrike" rPr
+            Hidden = Docx.onOff "vanish" rPr
+            Position = Ns.childNs "position" rPr |> Option.bind (Docx.attr "val")
+            EmphasisMark = Ns.childNs "em" rPr |> Option.bind (Docx.attr "val")
             VertAlign = Ns.childNs "vertAlign" rPr |> Option.bind (Docx.attr "val")
         }
 
@@ -3156,6 +3173,10 @@ let private emptyRunProperties = {
     ThemeShade = None
     Highlight = None
     Strike = None
+    DoubleStrike = None
+    Hidden = None
+    Position = None
+    EmphasisMark = None
     VertAlign = None
 }
 
@@ -3169,6 +3190,10 @@ let private mergeRunProperties (baseProps: RunProperties) (props: RunProperties)
     AllCaps = props.AllCaps |> Option.orElse baseProps.AllCaps
     SmallCaps = props.SmallCaps |> Option.orElse baseProps.SmallCaps
     Strike = props.Strike |> Option.orElse baseProps.Strike
+    DoubleStrike = props.DoubleStrike |> Option.orElse baseProps.DoubleStrike
+    Hidden = props.Hidden |> Option.orElse baseProps.Hidden
+    Position = props.Position |> Option.orElse baseProps.Position
+    EmphasisMark = props.EmphasisMark |> Option.orElse baseProps.EmphasisMark
     FontSize = props.FontSize |> Option.orElse baseProps.FontSize
     CharacterSpacing = props.CharacterSpacing |> Option.orElse baseProps.CharacterSpacing
     FontFamily =
@@ -3485,6 +3510,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                             "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
+                            "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
+                            "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
+                            "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                            "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                             "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                             "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
                             "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
@@ -3548,6 +3577,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                             "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
+                            "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
+                            "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
+                            "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                            "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                             "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                             "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
                             "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
@@ -3636,6 +3669,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
+                                "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
+                                "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
+                                "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                                "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                                 "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
                                 "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
@@ -3753,6 +3790,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
+                                "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
+                                "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
+                                "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                                "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                                 "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                                 "Color" ==> wordColorToCss effectiveRunProps.Color
@@ -3814,6 +3855,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "AllCaps" ==> effectiveOnOff effectiveLinkProps.AllCaps
                                 "SmallCaps" ==> effectiveOnOff effectiveLinkProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveLinkProps.Strike
+                                "DoubleStrike" ==> effectiveOnOff effectiveLinkProps.DoubleStrike
+                                "Hidden" ==> effectiveOnOff effectiveLinkProps.Hidden
+                                "Position" ==> wordFontSizeToPoints effectiveLinkProps.Position
+                                "EmphasisMark" ==> effectiveLinkProps.EmphasisMark
                                 "FontSize" ==> wordFontSizeToPoints effectiveLinkProps.FontSize
                                 "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveLinkProps.CharacterSpacing |> Option.defaultValue 0.0)
                                 "FontFamily" ==> wordFontFamilyToCss theme effectiveLinkProps
@@ -3902,6 +3947,10 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
                                 "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
+                                "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
+                                "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
+                                "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                                "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                                 "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
                                 "Color" ==> wordColorToCss effectiveRunProps.Color

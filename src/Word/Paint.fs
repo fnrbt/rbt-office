@@ -474,10 +474,13 @@ let private paragraphCommandsWithBaselineOffset baselineOffset (settings: Layout
                 | Some color -> commands <- commands @ [FillRect (color, textX, line.Y, width, line.Height)]
                 | None -> ()
                 let textBaseline =
-                    match paintStyle.VertAlign with
-                    | Some "superscript" -> baseline - paintStyle.FontSize * 0.5
-                    | Some "subscript" -> baseline + paintStyle.FontSize * 0.25
-                    | _ -> baseline
+                    let b =
+                        match paintStyle.VertAlign with
+                        | Some "superscript" -> baseline - paintStyle.FontSize * 0.5
+                        | Some "subscript" -> baseline + paintStyle.FontSize * 0.25
+                        | _ -> baseline
+                    // w:position raises(+)/lowers(-) the baseline by N points.
+                    b - style.Position * 96.0 / 72.0
                 let displayText = WordLayout.Text.displayText style text
                 if isTabOnlySegment displayText then
                     match tabLeaderText measureText style width layout.Metadata.RightTabLeader with
@@ -524,6 +527,24 @@ let private paragraphCommandsWithBaselineOffset baselineOffset (settings: Layout
                     commands <- commands @ [DrawUnderline (ulColor, ulStyle, textX, textBaseline + WordLayout.Text.canvasUnderlineOffset, inkWidth)]
                 if style.Strike && inkWidth > 0.0 then
                     commands <- commands @ [DrawUnderline (paintStyle.Color, "single", textX, textBaseline - WordLayout.Text.canvasStrikethroughOffset style, inkWidth)]
+                if style.DoubleStrike && inkWidth > 0.0 then
+                    let sy = textBaseline - WordLayout.Text.canvasStrikethroughOffset style
+                    commands <- commands @ [
+                        DrawUnderline (paintStyle.Color, "single", textX, sy - 1.0, inkWidth)
+                        DrawUnderline (paintStyle.Color, "single", textX, sy + 1.5, inkWidth) ]
+                match style.EmphasisMark with
+                | Some mark when not (System.String.IsNullOrWhiteSpace displayText) ->
+                    // A small mark above (or below for underDot) each non-space char.
+                    let below = mark.ToLowerInvariant() = "underdot"
+                    let markY = if below then textBaseline + 3.0 else textBaseline - paintStyle.FontSize * 0.95
+                    let mutable acc = 0.0
+                    for i in 0 .. displayText.Length - 1 do
+                        let ch = displayText.[i]
+                        let cw = measureText (string ch) style
+                        if not (System.Char.IsWhiteSpace ch) then
+                            commands <- commands @ [FillRect (paintStyle.Color, textX + acc + cw / 2.0 - 1.0, markY, 2.0, 2.0)]
+                        acc <- acc + cw
+                | _ -> ()
 
             | ImageSegment (src, x, yOffset, width, height, _, _, _, _, cropLeft, cropTop, cropRight, cropBottom) ->
                 let imageX = settings.PaddingLeft + x + lineAlignmentOffset

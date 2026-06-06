@@ -39,6 +39,10 @@ let private mergeTextStyle (baseStyle: TextStyle) (overrideStyle: TextStyle) =
             AllCaps = baseStyle.AllCaps || overrideStyle.AllCaps
             SmallCaps = baseStyle.SmallCaps || overrideStyle.SmallCaps
             Strike = baseStyle.Strike || overrideStyle.Strike
+            DoubleStrike = baseStyle.DoubleStrike || overrideStyle.DoubleStrike
+            Hidden = baseStyle.Hidden || overrideStyle.Hidden
+            Position = if abs overrideStyle.Position < 0.001 then baseStyle.Position else overrideStyle.Position
+            EmphasisMark = overrideStyle.EmphasisMark |> Option.orElse baseStyle.EmphasisMark
             FontSize = if overrideStyle.FontSize = TextBuffer.defaultStyle.FontSize then baseStyle.FontSize else overrideStyle.FontSize
             CharacterSpacing = if abs overrideStyle.CharacterSpacing < 0.001 then baseStyle.CharacterSpacing else overrideStyle.CharacterSpacing
             FontFamily = overrideStyle.FontFamily |> Option.orElse baseStyle.FontFamily

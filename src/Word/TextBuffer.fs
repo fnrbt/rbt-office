@@ -15,6 +15,10 @@ type TextStyle = {
     AllCaps: bool
     SmallCaps: bool
     Strike: bool
+    DoubleStrike: bool          // w:dstrike
+    Hidden: bool                // w:vanish — not rendered, takes no space
+    Position: float             // w:position — baseline raise(+)/lower(-) in points
+    EmphasisMark: string option // w:em@val — dot|comma|circle|underDot
     FontSize: float  // in points
     CharacterSpacing: float
     FontFamily: string option
@@ -53,6 +57,10 @@ let defaultStyle = {
     AllCaps = false
     SmallCaps = false
     Strike = false
+    DoubleStrike = false
+    Hidden = false
+    Position = 0.0
+    EmphasisMark = None
     FontSize = 11.0  // 11pt default (like Word)
     CharacterSpacing = 0.0
     FontFamily = None

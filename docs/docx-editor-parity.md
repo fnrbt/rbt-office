@@ -42,6 +42,12 @@ Re-clone with `git clone --depth 1 https://github.com/eigenpal/docx-editor`.
 | **Floating image wrap** (square / top-bottom) | 🟢 | 3-way: top-bottom **matches Word**; square competitive | float-zone pipeline (`measureBlocksWithFloats`), but **mispositions** float on `float-image-wrap-top-bottom` | Revised from earlier 🔴 — rendered evidence shows ours ≥ docx-editor on these repros. Re-audit tight/through. |
 | Tab stops (left/center/right/decimal/multiple) | 🟢 | **FIXED** — all stop types + decimal alignment (`Layout.tabWidth`) | yes | verified `tab-stops.docx`. |
 | Underline styles (double/dotted/dash/wavy/thick + colour) | 🟢 | **FIXED** — distinct styles + colour (canvas+PDF) | yes (CSS text-decoration) | verified `underline-styles.docx`. |
+| Hidden text (`w:vanish`) | 🟢 | **FIXED** — hidden text not laid out/rendered (Layout skip) | shows it grayed | `hidden-text.docx`. |
+| Run effects (`w:dstrike`/`w:position`/`w:em`) | 🟢 | **FIXED** — double-strike, baseline raise/lower, emphasis dots (canvas+PDF) | rendered | `run-effects.docx`. `w:sym` deferred (needs symbol font); `w:kern`/`w:effect` low-value. |
+| Math (OMML) render | 🔴 | shows literal `[Equation]` | renders equation (`MathExtension`) | `math-omml.docx`. |
+| Fields (TOC/STYLEREF/SEQ/PAGEREF/AUTHOR/FILENAME) | 🔴 | only PAGE/NUMPAGES computed | their `fieldParser` handles | source-confirmed. |
+| SDT control types + dataBinding | 🟡 | id/tag/alias only; static content renders | full types + interactive | `sdt-controls.docx` — static render ties. |
+| Preset-geometry shapes (`prstGeom` fill/gradient/stroke) | 🔴 | VML images + basic textbox only | `shapeParser` | source-confirmed. |
 | RTL / bidi paragraphs | 🟡 | **canvas FIXED** — `w:bidi` → right-align + token reorder (browser handles in-token glyph order). PDF/native glyph path still needs `../text/bidi` wired. | right-aligns | engine `../text/bidi` exists; canvas done, PDF follow-up. |
 | Paragraph/table borders + shading | 🟡 | borders + pct-shading | active `openspec/changes/paragraph-border-rendering`, `table-rendering-fidelity` | Verify edge cases head-to-head. |
 | Watermarks (VML) | 🔴 | ✗ | `docx/vmlWatermarkParser.ts` + `serializer/vmlWatermarkSerializer.ts` + `watermarkApi.ts` | |
@@ -105,6 +111,34 @@ Re-clone with `git clone --depth 1 https://github.com/eigenpal/docx-editor`.
 
 ## Verified findings log
 Newest first. Each entry: what, evidence both sides, date.
+
+- **2026-06-06** — ✅ **FIXED 4 run-formatting gaps** (TextStyle gains `Hidden`/`DoubleStrike`/`Position`/
+  `EmphasisMark`, threaded `DocxReader → Docx → Paint`; canvas+PDF): `w:vanish` (hidden text now omitted
+  from layout), `w:dstrike` (two strike lines), `w:position` (baseline raise/lower in pt), `w:em` (dot above
+  each char). Verified 2-way on `hidden-text.docx`/`run-effects.docx` — now matches docx-editor.
+  Deferred: `w:sym` (parsed shape exists but needs a symbol font like Wingdings to render),
+  `w:kern`/`w:effect` (low value). Larger remaining: fields beyond PAGE/NUMPAGES (TOC/STYLEREF/SEQ/PAGEREF
+  need doc-wide counters + bookmark/heading→page maps) and non-rect preset-geometry shapes + gradients.
+
+- **2026-06-06** — 🔻 **Source comparison: gaps where docx-editor leads (fixtures in
+  `tests/repros/word-gaps/`, rendered 2-way).** Confirmed by reading their parsers (`runParser.ts`,
+  `sdtProperties.ts`, `fieldParser.ts`, `shapeParser.ts`) that docx-editor handles and we **don't**:
+  - **`w:vanish` (hidden text)** 🔴 — we render it as normal black text (a correctness bug — should be
+    invisible); docx-editor recognizes it (faint/hidden). `hidden-text.docx`.
+  - **`w:dstrike`** 🔴 — we render plain (no strike at all); docx-editor strikes through. `run-effects.docx`.
+  - **`w:position` (baseline raise/lower)** 🔴 — we ignore; docx-editor raises/lowers. `run-effects.docx`.
+  - **`w:em` (emphasis marks)** 🔴 — we ignore; docx-editor draws the dots. `run-effects.docx`.
+  - **`w:sym` / `w:kern` / `w:effect`** 🔴 — in their `runParser`, not in ours (source-confirmed).
+  - **OMML math rendering** 🔴 — we show the literal `[Equation]`; docx-editor renders the equation
+    content (`MathExtension`). `math-omml.docx`.
+  - **Fields**: TOC / STYLEREF / SEQ / PAGEREF / AUTHOR / FILENAME — their `fieldParser` handles; we
+    compute only PAGE/NUMPAGES (source-confirmed).
+  - **SDT types + dataBinding** (checkbox/dropdown/date/picture) — their `sdtProperties` distinguishes
+    types; we keep only id/tag/alias. Note: *static render* of `sdt-controls.docx` is a tie (both show the
+    sdtContent); their edge is making them interactive.
+  - **Preset-geometry shapes** (`prstGeom` + solidFill/gradient/stroke) — their `shapeParser`; we do VML
+    images + basic textboxes only.
+  - Inconclusive: VML **watermark** in-page render (neither shows it; their parser feeds a watermark API).
 
 - **2026-06-06** — 🚀 **PERF BUG FIXED → `../text`-measure on canvas IS viable (conclusion reversed).**
   The 80ms/word was a Fable bug, not shaping cost: `RuntimeHelpers.GetHashCode(font)` (cache key in
