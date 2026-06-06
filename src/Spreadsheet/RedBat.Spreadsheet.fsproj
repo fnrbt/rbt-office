@@ -15,6 +15,7 @@
     <Compile Include="XlsxImporter.fs" />
     <Compile Include="Tabs.fs" />
     <Compile Include="Spreadsheet.fs" />
+    <Compile Include="SpreadsheetVba.fs" />
     <Compile Include="Toolbar.fs" />
     <Compile Include="SpreadsheetUi.fs" />
   </ItemGroup>
@@ -22,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="../Grid/RedBat.Grid.fsproj" />
     <ProjectReference Include="../OfficeUi/RedBat.OfficeUi.fsproj" />
+    <ProjectReference Include="../../../fsvb/VBScriptParser.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

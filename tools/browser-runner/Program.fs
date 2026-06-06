@@ -7,6 +7,7 @@ open Browser.Types
 open ZipInterop
 
 module WordApi = RedBat.Word.API
+module WordVba = RedBat.Word.Vba
 module Formats = Main
 
 type RunnerState = {
@@ -96,6 +97,55 @@ let private getLayoutSegments (state: RunnerState) =
 let private getLayoutLines (state: RunnerState) =
     let editor = ensureEditor state
     WordApi.getLayoutLines editor
+
+let rec private vbValueToObj = function
+    | Values.VInteger i -> box i
+    | Values.VDouble d -> box d
+    | Values.VString s -> box s
+    | Values.VBoolean b -> box b
+    | Values.VArray values -> values |> Array.map vbValueToObj |> box
+    | Values.VRef (values, idx) when idx >= 0 && idx < values.Length -> vbValueToObj values.[idx]
+    | Values.VRef _ -> null
+    | Values.VEmpty
+    | Values.VNull
+    | Values.VNothing
+    | Values.VUndefined -> null
+    | Values.VObject o -> box o.ClassName
+    | Values.VHostObject o -> box o.TypeName
+
+let private runVba (state: RunnerState) (source: string) (resultName: string) =
+    let editor = ensureEditor state
+    match WordVba.run editor source with
+    | Ok result ->
+        let value =
+            if isNull (box resultName) || resultName = "" then null
+            else FsVb.tryGetGlobal resultName result.State |> Option.map vbValueToObj |> Option.defaultValue null
+        createObj [
+            "ok" ==> true
+            "result" ==> value
+        ]
+    | Error err ->
+        createObj [
+            "ok" ==> false
+            "error" ==> (sprintf "%A" err)
+        ]
+
+let private runVbs (state: RunnerState) (source: string) (resultName: string) =
+    let editor = ensureEditor state
+    match WordVba.runVbs editor source with
+    | Ok result ->
+        let value =
+            if isNull (box resultName) || resultName = "" then null
+            else FsVb.tryGetGlobal resultName result.State |> Option.map vbValueToObj |> Option.defaultValue null
+        createObj [
+            "ok" ==> true
+            "result" ==> value
+        ]
+    | Error err ->
+        createObj [
+            "ok" ==> false
+            "error" ==> (sprintf "%A" err)
+        ]
 
 let private download name text mimeType =
     let blob = createBlob text mimeType
@@ -244,6 +294,8 @@ let private boot () =
         "getSelectionInformation" ==> fun () -> ensureEditor state |> WordApi.getSelectionInformation
         "getRangeBounds" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.getRangeBounds editor blockId startOffset endOffset
         "computeRangeStatistics" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.computeRangeStatistics editor blockId startOffset endOffset
+        "runVba" ==> fun (source: string) (resultName: string) -> runVba state source resultName
+        "runVbs" ==> fun (source: string) (resultName: string) -> runVbs state source resultName
         "getLayoutJson" ==> fun () -> stringify (box (getLayoutSegments state))
         "getLayoutLinesJson" ==> fun () -> stringify (box (getLayoutLines state))
         "clearSelection" ==> fun () -> ensureEditor state |> WordApi.clearSelection

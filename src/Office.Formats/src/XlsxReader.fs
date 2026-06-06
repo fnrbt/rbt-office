@@ -711,12 +711,12 @@ module Xlsx =
     /// 1-based column index -> letters ("A", "B", ..., "AA").
     let private indexToColumnLetters (n: int) : string =
         let mutable k = n
-        let sb = System.Text.StringBuilder()
+        let mutable letters = ""
         while k > 0 do
             let rem = (k - 1) % 26
-            sb.Insert(0, char (int 'A' + rem)) |> ignore
+            letters <- string (char (int 'A' + rem)) + letters
             k <- (k - 1) / 26
-        sb.ToString()
+        letters
 
     // Row extraction
     let row (rowNode: XmlNode) : Row option =

@@ -47,6 +47,7 @@ try {
 
 const htmlPath = path.join(runnerRoot, '.capture-xlsx', 'index.html');
 const modulePath = `${officeRoot}/dist/spreadsheet/Spreadsheet.js`;
+const vbaModulePath = `${officeRoot}/dist/spreadsheet/SpreadsheetVba.js`;
 const fixturePath = fixture;
 
 await fs.writeFile(htmlPath, `<!doctype html>
@@ -73,6 +74,7 @@ await fs.writeFile(htmlPath, `<!doctype html>
 
     try {
       const module = await import('/@fs/${modulePath}');
+      const vbaModule = await import('/@fs/${vbaModulePath}');
       const createSpreadsheet = module.default;
       const response = await fetch('/@fs/${fixturePath}');
       if (!response.ok) throw new Error('fixture fetch failed: ' + response.status);
@@ -84,7 +86,13 @@ await fs.writeFile(htmlPath, `<!doctype html>
       spreadsheet.SetReadOnly(true);
       await spreadsheet.ImportXlsxFromBuffer(buffer, null);
       spreadsheet.RenderPortableCanvas(canvas);
+      const runVba = (source, resultName = '') => vbaModule.runForJs(spreadsheet, source, resultName || '');
+      const runVbs = (source, resultName = '') => vbaModule.runVbsForJs(spreadsheet, source, resultName || '');
+      spreadsheet.RunVba = runVba;
+      spreadsheet.RunVbs = runVbs;
       window.rbExcelCapture = spreadsheet;
+      window.rbExcelCaptureRunVba = runVba;
+      window.rbExcelCaptureRunVbs = runVbs;
       document.body.dataset.ready = '1';
     } catch (error) {
       const message = describeError(error);
@@ -157,6 +165,25 @@ try {
       };
     });
     console.log(`browser model: rows=${modelInfo.rows} cols=${modelInfo.cols} cells=${modelInfo.cells} richRuns=${modelInfo.richRuns} paintItems=${modelInfo.paintItems}`);
+    const vbaInfo = await page.evaluate(() =>
+      window.rbExcelCaptureRunVba(
+        'Dim Result\nResult = ActiveSheet.Range("A1").Address & "|" & ActiveSheet.Range("A1").Address(False, False) & "|" & ActiveSheet.Range("A1").Offset(1, 1).Address(False, False) & "|" & ActiveSheet.UsedRange.Rows.Count & "|" & ActiveSheet.Range("A1:B2").Columns.Count',
+        'Result'
+      )
+    );
+    const vbaParts = String(vbaInfo?.result ?? '').split('|');
+    if (!vbaInfo?.ok || vbaParts[0] !== '$A$1' || vbaParts[1] !== 'A1' || vbaParts[2] !== 'B2' || Number(vbaParts[3]) < 1 || vbaParts[4] !== '2') {
+      throw new Error(`Excel VBA bridge returned an invalid result: ${JSON.stringify(vbaInfo)}`);
+    }
+    const vbsInfo = await page.evaluate(() =>
+      window.rbExcelCaptureRunVbs(
+        'Dim app, Result\nSet app = CreateObject("Excel.Application")\nResult = Range("A1").Address(False, False) & "|" & Cells(1, 1).Address(False, False) & "|" & app.ActiveSheet.Range("A1").Offset(1, 1).Address(False, False)',
+        'Result'
+      )
+    );
+    if (!vbsInfo?.ok || vbsInfo.result !== 'A1|A1|B2') {
+      throw new Error(`Excel VBS bridge returned an invalid result: ${JSON.stringify(vbsInfo)}`);
+    }
     await page.locator('#snapshot').screenshot({ path: outputPng });
     console.log(`browser xlsx capture ok: ${fixture} -> ${outputPng}`);
   } finally {

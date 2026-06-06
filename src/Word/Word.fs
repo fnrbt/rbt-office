@@ -1518,6 +1518,8 @@ module API =
             FooterDistance = max 0.0 footerDistance
             DifferentFirstPage = editor.Doc.PageSetup.DifferentFirstPage
             EvenAndOddHeaders = editor.Doc.PageSetup.EvenAndOddHeaders
+            Columns = editor.Doc.PageSetup.Columns
+            SectionStart = editor.Doc.PageSetup.SectionStart
         }
         let newDoc = { editor.Doc with PageSetup = setup }
         Inp.updateDocument editor.Handler newDoc
@@ -1535,6 +1537,8 @@ module API =
             FooterDistance = max 0.0 footerDistance
             DifferentFirstPage = differentFirstPage
             EvenAndOddHeaders = evenAndOddHeaders
+            Columns = editor.Doc.PageSetup.Columns
+            SectionStart = editor.Doc.PageSetup.SectionStart
         }
         let newDoc = { editor.Doc with PageSetup = setup }
         Inp.updateDocument editor.Handler newDoc
