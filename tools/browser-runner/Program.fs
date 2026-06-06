@@ -9,6 +9,7 @@ open ZipInterop
 module WordApi = RedBat.Word.API
 module WordVba = RedBat.Word.Vba
 module Formats = Main
+module Shaper = RedBat.Word.ShaperText
 
 type RunnerState = {
     Canvas: HTMLCanvasElement
@@ -24,6 +25,12 @@ let private stringify (_value: obj) : string = jsNative
 
 [<Emit("Array.from($0)")>]
 let private arrayFrom (_value: obj) : obj array = jsNative
+
+[<Emit("new Uint8Array($0)")>]
+let private bufToBytes (_ab: obj) : byte[] = jsNative
+
+[<Emit("performance.now()")>]
+let private perfNow () : float = jsNative
 
 [<Emit("window[$0] = $1")>]
 let private setWindowValue (_name: string) (_value: obj) : unit = jsNative
@@ -183,6 +190,31 @@ let private loadFile (state: RunnerState) (file: File) =
         return! loadArrayBuffer state file.name buffer
     }
 
+// Optional: replace the browser-measureText layout measurer with the ../text
+// shaping engine (so canvas layout matches the PDF/print path exactly). Loads
+// the Unicode UCD blob + the core Windows faces as bytes, builds a shaper font
+// set, and installs it on the editor's render context.
+let private fetchFace (fontRoot: string) family bold italic file : JS.Promise<Shaper.FontFace> =
+    promise {
+        let! buf = fetchArrayBuffer (fontRoot + "/" + file)
+        return ({ Family = family; Bold = bold; Italic = italic; Data = bufToBytes buf } : Shaper.FontFace)
+    }
+
+let private setupTextMeasurer (state: RunnerState) (fontRoot: string) (ucdUrl: string) : JS.Promise<unit> =
+    promise {
+        let! ucd = fetchArrayBuffer ucdUrl
+        Unicode.Ucd.loadData (bufToBytes ucd)
+        let! cal = fetchFace fontRoot "Calibri" false false "calibri.ttf"
+        let! calB = fetchFace fontRoot "Calibri" true false "calibrib.ttf"
+        let! calI = fetchFace fontRoot "Calibri" false true "calibrii.ttf"
+        let! calZ = fetchFace fontRoot "Calibri" true true "calibriz.ttf"
+        let! tim = fetchFace fontRoot "Times New Roman" false false "times.ttf"
+        let! ari = fetchFace fontRoot "Arial" false false "arial.ttf"
+        let fontSet = Shaper.createFontSet "Calibri" [ cal; calB; calI; calZ; tim; ari ]
+        let editor = ensureEditor state
+        WordApi.setTextMeasurers editor (Shaper.createMeasurer fontSet) (Shaper.createRangeMeasurer fontSet)
+    }
+
 let private selectedFile (input: HTMLInputElement) =
     if input.files.length > 0 then Some input.files.[0] else None
 
@@ -307,7 +339,15 @@ let private boot () =
     match queryParam "doc" with
     | Some url ->
         urlInput.value <- url
-        promiseCatch (loadDocxUrl state url) (fun err ->
+        let flow =
+            match queryParam "measure", queryParam "ucd", queryParam "fontRoot" with
+            | Some "text", Some ucd, Some fontRoot ->
+                promise {
+                    do! setupTextMeasurer state fontRoot ucd
+                    return! loadDocxUrl state url
+                }
+            | _ -> loadDocxUrl state url
+        promiseCatch flow (fun err ->
             status state (sprintf "Load failed: %A" err)
             null)
         |> ignore

@@ -3,7 +3,9 @@ module XmlDsl
 open Fable.Core
 open Fable.Core.JsInterop
 open Browser.Types
+#if !FABLE_COMPILER
 open System.Xml.Linq
+#endif
 
 // XML DSL for succinct navigation and querying
 type XmlNode =

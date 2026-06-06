@@ -3,8 +3,10 @@ module ZipInterop
 open Fable.Core
 open Fable.Core.JsInterop
 open System
+#if !FABLE_COMPILER
 open System.IO
 open System.IO.Compression
+#endif
 
 // JSZip interop for Fable
 [<Import("default", "jszip")>]
