@@ -1710,6 +1710,28 @@ let private fieldSwitchValue (switchName: string) (code: string) =
             if secondQuote <= firstQuote then None
             else Some (code.Substring(firstQuote + 1, secondQuote - firstQuote - 1))
 
+let private timeFieldFormat (code: string) =
+    // TIME shares DATE's "\@ \"fmt\"" switch; default to a clock format when absent.
+    if code.IndexOf("\\@") < 0 then "h:mm tt" else dateFieldFormat code
+
+let private normalizeStyleKey (s: string) =
+    s.Replace(" ", "").Replace("-", "").ToLowerInvariant()
+
+/// Extract the style name a STYLEREF field points at: the first quoted string,
+/// else the first non-switch token after the field name (e.g. STYLEREF Heading1,
+/// STYLEREF "Heading 1", STYLEREF 1).
+let private styleRefStyleName (code: string) =
+    let q1 = code.IndexOf('"')
+    if q1 >= 0 then
+        let q2 = code.IndexOf('"', q1 + 1)
+        if q2 > q1 then Some (code.Substring(q1 + 1, q2 - q1 - 1)) else None
+    else
+        code.Trim().Split([| ' '; '\t'; '\r'; '\n' |], System.StringSplitOptions.RemoveEmptyEntries)
+        |> Array.toList
+        |> function
+           | _ :: rest -> rest |> List.tryFind (fun t -> not (t.StartsWith("\\")))
+           | [] -> None
+
 let private paragraphText para = Rope.toString para.Buffer.Rope
 
 let private tocHeadingRange (code: string) =
@@ -1826,9 +1848,34 @@ let refreshFieldsWithPageMap pageMap doc =
                 | Image _ -> ()))
         results
 
+    // Ordered (blockId, styleKey, text) for STYLEREF: it shows the text of the
+    // nearest paragraph of the referenced style — search backward from the field,
+    // then forward (matches Word for inline/body STYLEREF use).
+    let orderedBodyParas =
+        editableParagraphsInOrder doc
+        |> List.map (fun p -> p.Id, normalizeStyleKey (p.Metadata.Style |> Option.defaultValue ""), paragraphText p)
+
+    let styleRefResult blockId styleName =
+        let wanted =
+            match System.Int32.TryParse(styleName: string) with
+            | true, n -> "heading" + string n
+            | false, _ -> normalizeStyleKey styleName
+        let pick = List.tryPick (fun (_, key, t) -> if key = wanted && t <> "" then Some t else None)
+        match orderedBodyParas |> List.tryFindIndex (fun (id, _, _) -> id = blockId) with
+        | None -> pick orderedBodyParas
+        | Some i ->
+            let before = orderedBodyParas |> List.take i |> List.rev
+            let after = orderedBodyParas |> List.skip i
+            pick before |> Option.orElseWith (fun () -> pick after)
+
     let resultForField blockId startOffset style text =
         match style.FieldCode |> Option.map (fun code -> code, fieldCodeParts code) with
         | Some (code, "DATE" :: _) -> System.DateTime.Now.ToString(dateFieldFormat code)
+        | Some (code, "TIME" :: _) -> System.DateTime.Now.ToString(timeFieldFormat code)
+        | Some (code, "STYLEREF" :: _) ->
+            match styleRefStyleName code with
+            | Some name -> styleRefResult blockId name |> Option.defaultValue text
+            | None -> text
         | Some (code, "TOC" :: _) ->
             match fieldSwitchValue "\\c" code with
             | Some label -> sequencePageResults |> Map.tryFind label |> Option.defaultValue [] |> String.concat "\n"

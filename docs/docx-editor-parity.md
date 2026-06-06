@@ -45,7 +45,7 @@ Re-clone with `git clone --depth 1 https://github.com/eigenpal/docx-editor`.
 | Hidden text (`w:vanish`) | 🟢 | **FIXED** — hidden text not laid out/rendered (Layout skip) | shows it grayed | `hidden-text.docx`. |
 | Run effects (`w:dstrike`/`w:position`/`w:em`) | 🟢 | **FIXED** — double-strike, baseline raise/lower, emphasis dots (canvas+PDF) | rendered | `run-effects.docx`. `w:sym` deferred (needs symbol font); `w:kern`/`w:effect` low-value. |
 | Math (OMML) render | 🔴 | shows literal `[Equation]` | renders equation (`MathExtension`) | `math-omml.docx`. |
-| Fields (TOC/STYLEREF/SEQ/PAGEREF/AUTHOR/FILENAME) | 🔴 | only PAGE/NUMPAGES computed | their `fieldParser` handles | source-confirmed. |
+| Fields (PAGE/NUMPAGES/DATE/TIME/TOC/SEQ/REF/PAGEREF/STYLEREF) | 🟢 | **computed** in `resultForField` (body) + `runningFieldResult` (header/footer); STYLEREF = nearest-heading text, DATE/TIME with `\@` picture | their `fieldParser` handles | `fields-styleref-date-time.docx`. Remaining 🔴: AUTHOR/FILENAME (need core.xml→editor-Document plumbing; `Creator` is parsed in DocxReader but not threaded); header STYLEREF (needs per-page heading context). |
 | SDT control types + dataBinding | 🟡 | id/tag/alias only; static content renders | full types + interactive | `sdt-controls.docx` — static render ties. |
 | Preset-geometry shapes (`prstGeom` fill/gradient/stroke) | 🔴 | VML images + basic textbox only | `shapeParser` | source-confirmed. |
 | RTL / bidi paragraphs | 🟡 | **canvas FIXED** — `w:bidi` → right-align + token reorder (browser handles in-token glyph order). PDF/native glyph path still needs `../text/bidi` wired. | right-aligns | engine `../text/bidi` exists; canvas done, PDF follow-up. |

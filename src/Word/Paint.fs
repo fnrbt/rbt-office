@@ -811,10 +811,23 @@ let private fieldCodeParts (code: string) =
     code.Trim().Split([| ' '; '\t'; '\r'; '\n' |], System.StringSplitOptions.RemoveEmptyEntries)
     |> Array.toList
 
+let private fieldAtFormat (code: string) =
+    // Read a "\@ \"fmt\"" date/time picture switch if present.
+    let i = code.IndexOf("\\@")
+    if i < 0 then None
+    else
+        let q1 = code.IndexOf('"', i)
+        if q1 < 0 then None
+        else
+            let q2 = code.IndexOf('"', q1 + 1)
+            if q2 <= q1 then None else Some (code.Substring(q1 + 1, q2 - q1 - 1))
+
 let private runningFieldResult pageNumber pageCount code currentText =
     match fieldCodeParts code with
     | "PAGE" :: _ -> string pageNumber
     | "NUMPAGES" :: _ -> string pageCount
+    | "DATE" :: _ -> System.DateTime.Now.ToString(fieldAtFormat code |> Option.defaultValue "yyyy-MM-dd")
+    | "TIME" :: _ -> System.DateTime.Now.ToString(fieldAtFormat code |> Option.defaultValue "h:mm tt")
     | _ -> currentText
 
 let private paragraphWithRunningFields pageNumber pageCount (para: ParagraphBlock) =
