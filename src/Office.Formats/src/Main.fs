@@ -246,6 +246,63 @@ module Processors =
             "LineSpacing" ==> para.LineSpacing
         ]
 
+    /// Build editor "TextBox" objects (incl. preset/custom geometry + gradient)
+    /// for every drawing shape in the document.
+    let private shapeObjectsFor (doc: DocxReader.WordDocument) : obj array =
+        let styleMap = DocumentProcessors.StyleResolution.buildStyleMapWithTheme doc.Theme doc.Styles
+        let comments = doc.Comments |> List.map (fun comment -> comment.Id, comment) |> Map.ofList
+        let noteText (note: DocxReader.Note) =
+            note.Content
+            |> List.collect (fun para -> para.Runs)
+            |> List.map (fun run -> DocumentProcessors.EditorProcessor.extractRunText Map.empty run.Content)
+            |> String.concat ""
+        let notes =
+            (doc.Footnotes |> List.map (fun note -> ("footnote", note.Id), noteText note)) @
+            (doc.Endnotes |> List.map (fun note -> ("endnote", note.Id), noteText note))
+            |> Map.ofList
+        doc.Shapes
+        |> List.filter (fun shape -> not shape.Content.IsEmpty || shape.Preset.IsSome || not shape.CustomPath.IsEmpty)
+        |> List.map (fun shape ->
+            let paragraphs =
+                shape.Content
+                |> List.map (DocumentProcessors.EditorProcessor.toEditorParagraph doc.Theme styleMap comments notes >> editorParagraphToObj)
+                |> List.toArray
+            let geometry =
+                if not shape.CustomPath.IsEmpty then "custom"
+                else shape.Preset |> Option.defaultValue "rect"
+            let customPath =
+                shape.CustomPath
+                |> List.map (fun seg -> createObj [ "Op" ==> seg.Op; "P" ==> (seg.Pts |> List.toArray) ])
+                |> List.toArray
+            let gradient =
+                shape.Gradient
+                |> Option.map (fun g ->
+                    createObj [
+                        "Stops" ==> (g.Stops |> List.map (fun s -> createObj [ "Offset" ==> s.Offset; "Color" ==> s.Color ]) |> List.toArray)
+                        "Angle" ==> g.Angle
+                        "Radial" ==> g.Radial ])
+                |> Option.toObj
+            createObj [
+                "Type" ==> "TextBox"
+                "ShapeId" ==> shape.Id
+                "ShapeKind" ==> shape.Type
+                "Width" ==> shape.Width
+                "Height" ==> shape.Height
+                "X" ==> (shape.Position |> Option.map fst)
+                "Y" ==> (shape.Position |> Option.map snd)
+                "FillColor" ==> shape.FillColor
+                "BorderColor" ==> shape.BorderColor
+                "BorderWidth" ==> shape.BorderWidth
+                "Geometry" ==> geometry
+                "CustomPath" ==> customPath
+                "CustomW" ==> (shape.CustomW |> Option.defaultValue 0.0)
+                "CustomH" ==> (shape.CustomH |> Option.defaultValue 0.0)
+                "Gradient" ==> gradient
+                "Rotation" ==> shape.Rotation
+                "Paragraphs" ==> paragraphs
+            ])
+        |> List.toArray
+
     /// Transform Word file data to editor-friendly format with embedded resources (images) resolved
     /// Takes raw file data and returns paragraphs with fully resolved styles and embedded images
     let forEditor (fileData: obj) : Fable.Core.JS.Promise<obj array> =
@@ -290,39 +347,7 @@ module Processors =
                     |> Array.ofList
                     |> ZipInterop.Promise.all
 
-                let styleMap = DocumentProcessors.StyleResolution.buildStyleMapWithTheme doc.Theme doc.Styles
-                let comments = doc.Comments |> List.map (fun comment -> comment.Id, comment) |> Map.ofList
-                let noteText (note: DocxReader.Note) =
-                    note.Content
-                    |> List.collect (fun para -> para.Runs)
-                    |> List.map (fun run -> DocumentProcessors.EditorProcessor.extractRunText Map.empty run.Content)
-                    |> String.concat ""
-                let notes =
-                    (doc.Footnotes |> List.map (fun note -> ("footnote", note.Id), noteText note)) @
-                    (doc.Endnotes |> List.map (fun note -> ("endnote", note.Id), noteText note))
-                    |> Map.ofList
-                let shapeObjects =
-                    doc.Shapes
-                    |> List.filter (fun shape -> not shape.Content.IsEmpty)
-                    |> List.map (fun shape ->
-                        let paragraphs =
-                            shape.Content
-                            |> List.map (DocumentProcessors.EditorProcessor.toEditorParagraph doc.Theme styleMap comments notes >> editorParagraphToObj)
-                            |> List.toArray
-                        createObj [
-                            "Type" ==> "TextBox"
-                            "ShapeId" ==> shape.Id
-                            "ShapeKind" ==> shape.Type
-                            "Width" ==> shape.Width
-                            "Height" ==> shape.Height
-                            "X" ==> (shape.Position |> Option.map fst)
-                            "Y" ==> (shape.Position |> Option.map snd)
-                            "FillColor" ==> shape.FillColor
-                            "BorderColor" ==> shape.BorderColor
-                            "BorderWidth" ==> shape.BorderWidth
-                            "Paragraphs" ==> paragraphs
-                        ])
-                    |> List.toArray
+                let shapeObjects = shapeObjectsFor doc
 
                 return Array.append resolvedParagraphs shapeObjects
             | None ->
@@ -338,6 +363,7 @@ module Processors =
             | Some doc ->
                 let paragraphs =
                     DocxReader.toEditorParagraphsWithStylesThemeAndNumbering doc.Theme doc.Content doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes doc.Endnotes
+                let paragraphs = Array.append paragraphs (shapeObjectsFor doc)
                 return createObj [
                     "Paragraphs" ==> paragraphs
                     "Styles" ==> (doc.Styles |> List.map (styleToObj doc.Theme) |> List.toArray)

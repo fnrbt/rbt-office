@@ -178,6 +178,35 @@ let defaultMetadata = {
     FooterReferences = []
 }
 
+/// One segment of a vector path. Coordinates are in the path's own coordinate
+/// space (see ShapeGeometry); the painter scales them to the shape's box.
+type PathSeg =
+    | PMove of x: float * y: float
+    | PLine of x: float * y: float
+    | PCubic of c1x: float * c1y: float * c2x: float * c2y: float * x: float * y: float
+    | PQuad of cx: float * cy: float * x: float * y: float
+    | PClose
+
+/// A gradient colour stop (offset 0..1).
+type GradientStop = { Offset: float; Color: string }
+
+/// Linear (angle in degrees) or radial gradient fill.
+type GradientSpec = {
+    Stops: GradientStop list
+    Angle: float
+    Radial: bool
+}
+
+/// Vector geometry of a drawing shape / text box.
+type ShapeGeometry =
+    /// Plain rectangle — the legacy text-box shape.
+    | GeoRect
+    /// An OOXML preset (a:prstGeom@prst, e.g. "ellipse", "roundRect"). Resolved
+    /// to a path at paint time by Shapes.presetPath against the shape's w×h.
+    | GeoPreset of preset: string
+    /// A freeform a:custGeom path in its own coordinate space (coordW × coordH).
+    | GeoCustom of segs: PathSeg list * coordW: float * coordH: float
+
 /// Block types
 type Block =
     | Paragraph of ParagraphBlock
@@ -222,6 +251,9 @@ and TextBoxBlock = {
     BorderColor: string option
     BorderWidth: float option
     RelativeHeight: string option
+    Geometry: ShapeGeometry
+    Gradient: GradientSpec option
+    Rotation: float
 }
 
 and TableRow = {
@@ -1575,6 +1607,9 @@ let insertTextBox text doc =
         BorderColor = Some "#808080"
         BorderWidth = Some 1.0
         RelativeHeight = None
+        Geometry = GeoRect
+        Gradient = None
+        Rotation = 0.0
     }
     insertTopLevelBlockAfterSelection textBox doc
 

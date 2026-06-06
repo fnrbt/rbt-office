@@ -386,6 +386,33 @@ let private fillTextFitted (ctx: RenderContext) (style: TextPaintStyle) text x b
             paintCharacterSpacedText ctx text style.CharacterSpacing
             ctx.Ctx.restore()
 
+let private tracePath (ctx: RenderContext) (segs: PathSeg list) =
+    ctx.Ctx.beginPath()
+    segs
+    |> List.iter (function
+        | PMove(x, y) -> ctx.Ctx.moveTo(x, y)
+        | PLine(x, y) -> ctx.Ctx.lineTo(x, y)
+        | PQuad(cx, cy, x, y) -> ctx.Ctx.quadraticCurveTo(cx, cy, x, y)
+        | PCubic(c1x, c1y, c2x, c2y, x, y) -> ctx.Ctx.bezierCurveTo(c1x, c1y, c2x, c2y, x, y)
+        | PClose -> ctx.Ctx.closePath())
+
+let private shapeFillStyle (ctx: RenderContext) (fill: ShapeFill) (bx, by, bw, bh) =
+    match fill with
+    | FillNone -> None
+    | FillSolid color -> Some (U3.Case1 color)
+    | FillGradient g ->
+        let grad =
+            if g.Radial then
+                let cx, cy = bx + bw / 2.0, by + bh / 2.0
+                ctx.Ctx.createRadialGradient(cx, cy, 0.0, cx, cy, (max bw bh) / 2.0)
+            else
+                let rad = g.Angle * System.Math.PI / 180.0
+                let cx, cy = bx + bw / 2.0, by + bh / 2.0
+                let dx, dy = cos rad * bw / 2.0, sin rad * bh / 2.0
+                ctx.Ctx.createLinearGradient(cx - dx, cy - dy, cx + dx, cy + dy)
+        g.Stops |> List.iter (fun s -> grad.addColorStop(max 0.0 (min 1.0 s.Offset), s.Color))
+        Some (U3.Case2 grad)
+
 let private renderPaintCommand (ctx: RenderContext) = function
     | DrawText (text, style, x, baseline, width) ->
         match ctx.TextPathPainter with
@@ -458,6 +485,18 @@ let private renderPaintCommand (ctx: RenderContext) = function
         ctx.Ctx.lineTo(x2, y2)
         ctx.Ctx.stroke()
         setLineDash ctx.Ctx [||]
+    | DrawShape (fill, stroke, strokeWidth, bbox, segs) ->
+        tracePath ctx segs
+        match shapeFillStyle ctx fill bbox with
+        | Some style -> ctx.Ctx.fillStyle <- style; ctx.Ctx.fill()
+        | None -> ()
+        match stroke with
+        | Some color ->
+            ctx.Ctx.strokeStyle <- U3.Case1 color
+            ctx.Ctx.lineWidth <- strokeWidth
+            setLineDash ctx.Ctx [||]
+            ctx.Ctx.stroke()
+        | None -> ()
 
 let private renderCommentAnchors (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
     commentAnchorsForLayouts ctx doc layouts

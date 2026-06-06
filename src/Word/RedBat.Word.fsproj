@@ -8,6 +8,7 @@
     <Compile Include="Rope.fs" />
     <Compile Include="TextBuffer.fs" />
     <Compile Include="Document.fs" />
+    <Compile Include="Shapes.fs" />
     <Compile Include="WordStyles.fs" />
     <Compile Include="BorderGrid.fs" />
     <Compile Include="WordLayout.fs" />

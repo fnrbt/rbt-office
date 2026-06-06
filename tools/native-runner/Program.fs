@@ -144,6 +144,8 @@ let private mergeRunProperties (baseProps: DocxReader.RunProperties) (props: Doc
     Bold = props.Bold |> Option.orElse baseProps.Bold
     Italic = props.Italic |> Option.orElse baseProps.Italic
     Underline = props.Underline |> Option.orElse baseProps.Underline
+    UnderlineStyle = props.UnderlineStyle |> Option.orElse baseProps.UnderlineStyle
+    UnderlineColor = props.UnderlineColor |> Option.orElse baseProps.UnderlineColor
     AllCaps = props.AllCaps |> Option.orElse baseProps.AllCaps
     SmallCaps = props.SmallCaps |> Option.orElse baseProps.SmallCaps
     FontSize = props.FontSize |> Option.orElse baseProps.FontSize
@@ -164,6 +166,10 @@ let private mergeRunProperties (baseProps: DocxReader.RunProperties) (props: Doc
     ThemeShade = props.ThemeShade |> Option.orElse baseProps.ThemeShade
     Highlight = props.Highlight |> Option.orElse baseProps.Highlight
     Strike = props.Strike |> Option.orElse baseProps.Strike
+    DoubleStrike = props.DoubleStrike |> Option.orElse baseProps.DoubleStrike
+    Hidden = props.Hidden |> Option.orElse baseProps.Hidden
+    Position = props.Position |> Option.orElse baseProps.Position
+    EmphasisMark = props.EmphasisMark |> Option.orElse baseProps.EmphasisMark
     VertAlign = props.VertAlign |> Option.orElse baseProps.VertAlign
 }
 
@@ -179,6 +185,8 @@ let private mergeParagraphProperties (baseProps: DocxReader.ParagraphProperties)
     HangingIndent = props.HangingIndent |> Option.orElse baseProps.HangingIndent
     RightTabPosition = props.RightTabPosition |> Option.orElse baseProps.RightTabPosition
     RightTabLeader = props.RightTabLeader |> Option.orElse baseProps.RightTabLeader
+    TabStops = (if List.isEmpty props.TabStops then baseProps.TabStops else props.TabStops)
+    Rtl = props.Rtl |> Option.orElse baseProps.Rtl
     SpacingBefore = props.SpacingBefore |> Option.orElse baseProps.SpacingBefore
     SpacingBeforeAuto = props.SpacingBeforeAuto |> Option.orElse baseProps.SpacingBeforeAuto
     SpacingAfter = props.SpacingAfter |> Option.orElse baseProps.SpacingAfter
@@ -799,6 +807,55 @@ let importDoc (doc: DocxReader.WordDocument) =
                     || directParagraphFormattingResetsMissingSpacing para.Properties
                 Paragraph (mkPara resolver doc.Images styleMap comments notes true defaultMissingSpacingToZero para)
             | DocxReader.Tbl table -> Table (tableBlock resolver doc.Images styleMap tableStyleMap comments notes table))
+
+    // Drawing shapes / autoshapes -> floating TextBox blocks (preset/custom
+    // geometry + gradient), mirroring the Fable bridge in Office.Formats Main.
+    let shapeBlocks =
+        doc.Shapes
+        |> List.filter (fun s -> not s.Content.IsEmpty || s.Preset.IsSome || not s.CustomPath.IsEmpty)
+        |> List.mapi (fun i (shape: DocxReader.Shape) ->
+            let content = shape.Content |> List.map (mkPara resolver doc.Images styleMap comments notes true false)
+            let geometry =
+                if not shape.CustomPath.IsEmpty then
+                    let segs =
+                        shape.CustomPath
+                        |> List.choose (fun seg ->
+                            let p k = seg.Pts |> List.tryItem k |> Option.defaultValue 0.0
+                            match seg.Op with
+                            | "M" -> Some (PMove(p 0, p 1))
+                            | "L" -> Some (PLine(p 0, p 1))
+                            | "C" -> Some (PCubic(p 0, p 1, p 2, p 3, p 4, p 5))
+                            | "Q" -> Some (PQuad(p 0, p 1, p 2, p 3))
+                            | "Z" -> Some PClose
+                            | _ -> None)
+                    GeoCustom(segs, shape.CustomW |> Option.defaultValue 0.0, shape.CustomH |> Option.defaultValue 0.0)
+                else
+                    match shape.Preset with
+                    | Some preset -> GeoPreset preset
+                    | None -> GeoRect
+            let gradient =
+                shape.Gradient
+                |> Option.map (fun g ->
+                    { Stops = g.Stops |> List.map (fun s -> { Offset = s.Offset; Color = s.Color }); Angle = g.Angle; Radial = g.Radial })
+            TextBox {
+                Id = sprintf "shape-%d" i
+                Content = content
+                X = shape.Position |> Option.map fst
+                Y = shape.Position |> Option.map snd
+                PositionHRelativeFrom = None
+                PositionVRelativeFrom = None
+                Width = shape.Width |> Option.defaultValue 220.0
+                Height = shape.Height |> Option.defaultValue 72.0
+                FillColor = shape.FillColor |> Option.orElse (Some "#FFFFFF")
+                BorderColor = shape.BorderColor |> Option.orElse (Some "#808080")
+                BorderWidth = shape.BorderWidth |> Option.orElse (Some 1.0)
+                RelativeHeight = None
+                Geometry = geometry
+                Gradient = gradient
+                Rotation = shape.Rotation
+            })
+
+    let blocks = blocks @ shapeBlocks
 
     let firstParagraph =
         blocks

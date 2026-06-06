@@ -368,6 +368,31 @@ let private pdfColor (value: string) =
         else PdfColor.black
     else PdfColor.black
 
+/// Build PDF path-construction ops for a shape path. `yPdf` flips to PDF space.
+/// Quadratics are promoted to cubics (PDF has no quad operator).
+let private pdfShapeOps (yPdf: float -> float) (segs: PathSeg list) =
+    let ops = ResizeArray<PdfDraw.DrawOp>()
+    let mutable cx = 0.0
+    let mutable cy = 0.0
+    for seg in segs do
+        match seg with
+        | PMove(x, y) -> ops.Add(PdfDraw.MoveTo(x, yPdf y)); cx <- x; cy <- y
+        | PLine(x, y) -> ops.Add(PdfDraw.LineTo(x, yPdf y)); cx <- x; cy <- y
+        | PCubic(a, b, c, d, x, y) -> ops.Add(PdfDraw.CurveTo(a, yPdf b, c, yPdf d, x, yPdf y)); cx <- x; cy <- y
+        | PQuad(qx, qy, x, y) ->
+            let c1x = cx + 2.0 / 3.0 * (qx - cx)
+            let c1y = cy + 2.0 / 3.0 * (qy - cy)
+            let c2x = x + 2.0 / 3.0 * (qx - x)
+            let c2y = y + 2.0 / 3.0 * (qy - y)
+            ops.Add(PdfDraw.CurveTo(c1x, yPdf c1y, c2x, yPdf c2y, x, yPdf y)); cx <- x; cy <- y
+        | PClose -> ops.Add(PdfDraw.ClosePath)
+    List.ofSeq ops
+
+/// FsPdf has no axial-shading op exposed here, so a gradient is approximated by
+/// the stop nearest the midpoint (a solid). True gradients are a PDF follow-up.
+let private gradientSolid (g: GradientSpec) =
+    g.Stops |> List.sortBy (fun s -> abs (s.Offset - 0.5)) |> List.tryHead |> Option.map (fun s -> s.Color)
+
 let private pdfFontName (style: WordPaint.TextPaintStyle) =
     match style.Bold, style.Italic with
     | true, true -> "Helvetica-BoldOblique"
@@ -446,6 +471,7 @@ let private commandBounds = function
     | WordPaint.StrokeRect (_, _, x, y, width, height) -> Some (x, y, x + width, y + height)
     | WordPaint.StrokeLine (_, lineWidth, _, _, x1, y1, x2, y2) ->
         Some (min x1 x2 - lineWidth, min y1 y2 - lineWidth, max x1 x2 + lineWidth, max y1 y2 + lineWidth)
+    | WordPaint.DrawShape (_, _, sw, (x, y, w, h), _) -> Some (x - sw, y - sw, x + w + sw, y + h + sw)
 
 let private intersectsPage pageTop pageHeight command =
     match commandBounds command with
@@ -556,6 +582,22 @@ let private pdfOpsForCommand (textContext: TextContext) (imageNames: Map<string,
           PdfDraw.LineTo (x2, yPdf y2)
           PdfDraw.Stroke
           PdfDraw.SetDash ([], 0.0) ]
+    | WordPaint.DrawShape (fill, stroke, strokeWidth, _, segs) ->
+        let fillColor =
+            match fill with
+            | WordPaint.FillNone -> None
+            | WordPaint.FillSolid c -> Some c
+            | WordPaint.FillGradient g -> gradientSolid g
+        let colorOps =
+            (fillColor |> Option.map (fun c -> [ PdfDraw.SetFillColor (pdfColor c) ]) |> Option.defaultValue [])
+            @ (stroke |> Option.map (fun c -> [ PdfDraw.SetStrokeColor (pdfColor c); PdfDraw.SetLineWidth strokeWidth; PdfDraw.SetDash ([], 0.0) ]) |> Option.defaultValue [])
+        let paintOp =
+            match fillColor.IsSome, stroke.IsSome with
+            | true, true -> [ PdfDraw.FillAndStroke ]
+            | true, false -> [ PdfDraw.Fill ]
+            | false, true -> [ PdfDraw.Stroke ]
+            | false, false -> [ PdfDraw.EndPath ]
+        colorOps @ pdfShapeOps yPdf segs @ paintOp
     | WordPaint.DrawImage (src, x, y, width, height, cropLeft, cropTop, cropRight, cropBottom) ->
         match Map.tryFind src imageNames with
         | None -> []

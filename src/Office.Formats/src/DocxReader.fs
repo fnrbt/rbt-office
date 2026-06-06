@@ -395,6 +395,13 @@ type Note = {
     Content: Paragraph list
 }
 
+/// One segment of a custom (a:custGeom) path. Op is M/L/C/Q/Z; Pts are the flat
+/// coordinate list in the path's own w×h space.
+type ShapePathSeg = { Op: string; Pts: float list }
+
+type ShapeGradientStop = { Offset: float; Color: string }
+type ShapeGradient = { Stops: ShapeGradientStop list; Angle: float; Radial: bool }
+
 type Shape = {
     Id: string option
     Type: string option  // "textBox", "rectangle", "ellipse", etc.
@@ -405,6 +412,15 @@ type Shape = {
     FillColor: string option
     BorderColor: string option
     BorderWidth: float option
+    /// a:prstGeom@prst preset name (e.g. "ellipse", "roundRect").
+    Preset: string option
+    /// a:custGeom path segments + their coordinate-space size (EMU).
+    CustomPath: ShapePathSeg list
+    CustomW: float option
+    CustomH: float option
+    Gradient: ShapeGradient option
+    /// Shape rotation in degrees (a:xfrm@rot, 60000ths -> degrees).
+    Rotation: float
 }
 
 type PageSetup = {
@@ -2339,6 +2355,88 @@ module Shapes =
             elif text.EndsWith("px") then text.Substring(0, text.Length - 2) |> parseFloat
             else parseFloat text)
 
+    // --- DrawingML geometry/fill parsing (a:prstGeom / a:custGeom / a:gradFill) ---
+
+    let private srgbOf (node: XmlNode) : string option =
+        Ns.descendantsNs "srgbClr" node |> List.tryHead
+        |> Option.bind (Xml.attr "val")
+        |> Option.map (fun v -> if v.StartsWith("#") then v else "#" + v)
+
+    let private parsePreset (shapeNode: XmlNode) : string option =
+        Ns.descendantsNs "prstGeom" shapeNode |> List.tryHead
+        |> Option.bind (Xml.attr "prst")
+
+    /// Parse an a:custGeom path into (segments, coordW, coordH).
+    let private parseCustom (shapeNode: XmlNode) : (ShapePathSeg list * float * float) option =
+        Ns.descendantsNs "custGeom" shapeNode |> List.tryHead
+        |> Option.bind (fun cg -> Ns.descendantsNs "path" cg |> List.tryHead)
+        |> Option.bind (fun path ->
+            let w = Xml.attr "w" path |> Option.bind parseFloat |> Option.defaultValue 0.0
+            let h = Xml.attr "h" path |> Option.bind parseFloat |> Option.defaultValue 0.0
+            let segs =
+                Xml.children path
+                |> List.choose (fun child ->
+                    let name = Xml.name child |> Option.map Ns.stripNs
+                    let pts =
+                        Ns.descendantsNs "pt" child
+                        |> List.collect (fun p ->
+                            [ Xml.attr "x" p |> Option.bind parseFloat |> Option.defaultValue 0.0
+                              Xml.attr "y" p |> Option.bind parseFloat |> Option.defaultValue 0.0 ])
+                    match name with
+                    | Some "moveTo" -> Some { Op = "M"; Pts = pts }
+                    | Some "lnTo" -> Some { Op = "L"; Pts = pts }
+                    | Some "cubicBezTo" -> Some { Op = "C"; Pts = pts }
+                    | Some "quadBezTo" -> Some { Op = "Q"; Pts = pts }
+                    | Some "close" -> Some { Op = "Z"; Pts = [] }
+                    | _ -> None)   // arcTo unsupported -> dropped (path approximates)
+            if segs.IsEmpty || w <= 0.0 || h <= 0.0 then None else Some (segs, w, h))
+
+    let private parseGradient (shapeNode: XmlNode) : ShapeGradient option =
+        Ns.descendantsNs "gradFill" shapeNode |> List.tryHead
+        |> Option.bind (fun gf ->
+            let stops =
+                Ns.descendantsNs "gs" gf
+                |> List.choose (fun gs ->
+                    match srgbOf gs with
+                    | Some color ->
+                        let pos = Xml.attr "pos" gs |> Option.bind parseFloat |> Option.defaultValue 0.0
+                        Some { Offset = pos / 100000.0; Color = color }
+                    | None -> None)
+            if stops.IsEmpty then None
+            else
+                let angle =
+                    Ns.descendantsNs "lin" gf |> List.tryHead
+                    |> Option.bind (Xml.attr "ang")
+                    |> Option.bind parseFloat
+                    |> Option.map (fun a -> a / 60000.0)
+                    |> Option.defaultValue 0.0
+                let radial = Ns.descendantsNs "path" gf |> List.isEmpty |> not
+                Some { Stops = stops; Angle = angle; Radial = radial })
+
+    /// DrawingML shape fill colour: the spPr's own solidFill (not the line's).
+    let private parseDmlFill (shapeNode: XmlNode) : string option =
+        Ns.descendantsNs "spPr" shapeNode |> List.tryHead
+        |> Option.bind (fun spPr ->
+            Xml.children spPr
+            |> List.tryPick (fun child ->
+                match Xml.name child |> Option.map Ns.stripNs with
+                | Some "solidFill" -> srgbOf child
+                | _ -> None))
+
+    /// DrawingML line colour from spPr > a:ln > solidFill.
+    let private parseDmlLine (shapeNode: XmlNode) : string option =
+        Ns.descendantsNs "spPr" shapeNode |> List.tryHead
+        |> Option.bind (fun spPr ->
+            Xml.children spPr |> List.tryPick (fun c -> if Xml.name c |> Option.map Ns.stripNs = Some "ln" then Some c else None))
+        |> Option.bind srgbOf
+
+    let private parseRotation (shapeNode: XmlNode) : float =
+        Ns.descendantsNs "xfrm" shapeNode |> List.tryHead
+        |> Option.bind (Xml.attr "rot")
+        |> Option.bind parseFloat
+        |> Option.map (fun r -> r / 60000.0)
+        |> Option.defaultValue 0.0
+
     let parseShape (shapeNode: XmlNode) : Shape option =
         let id = Xml.attr "id" shapeNode
         let shapeType = Xml.attr "type" shapeNode
@@ -2369,9 +2467,21 @@ module Shapes =
             posV |> Option.bind (Ns.childNs "posOffset") |> Option.bind Xml.text |> Option.bind parseFloat |> Option.map emuToPixels
             |> Option.orElseWith (fun () -> style |> Option.bind (shapeNumberFromStyle "margin-top"))
         let position = Option.map2 (fun x y -> (x, y)) x y
-        let fillColor = Xml.attr "fillcolor" shapeNode |> normalizeColor
-        let borderColor = Xml.attr "strokecolor" shapeNode |> normalizeColor
+        // DrawingML xfrm fallback for size/offset (a:ext / a:off) when the wp:
+        // anchor extent/position is absent (bare wsp shapes).
+        let xfrm = Ns.descendantsNs "xfrm" shapeNode |> List.tryHead
+        let extOf node tag = xfrm |> Option.bind (Ns.childNs node) |> Option.bind (Xml.attr tag) |> Option.bind parseFloat |> Option.map emuToPixels
+        let width = width |> Option.orElseWith (fun () -> extOf "ext" "cx")
+        let height = height |> Option.orElseWith (fun () -> extOf "ext" "cy")
+        let fillColor =
+            (Xml.attr "fillcolor" shapeNode |> normalizeColor) |> Option.orElseWith (fun () -> parseDmlFill shapeNode)
+        let borderColor =
+            (Xml.attr "strokecolor" shapeNode |> normalizeColor) |> Option.orElseWith (fun () -> parseDmlLine shapeNode)
         let borderWidth = Xml.attr "strokeweight" shapeNode |> strokeWeightFromAttr
+        let custom = parseCustom shapeNode
+        // VML shapes use a "#_x0000_t202"-style type ref; only surface a clean
+        // DrawingML preset name as the geometry hint.
+        let preset = parsePreset shapeNode
 
         Some {
             Id = id
@@ -2383,11 +2493,28 @@ module Shapes =
             FillColor = fillColor
             BorderColor = borderColor
             BorderWidth = borderWidth
+            Preset = preset
+            CustomPath = custom |> Option.map (fun (s, _, _) -> s) |> Option.defaultValue []
+            CustomW = custom |> Option.map (fun (_, w, _) -> w)
+            CustomH = custom |> Option.map (fun (_, _, h) -> h)
+            Gradient = parseGradient shapeNode
+            Rotation = parseRotation shapeNode
         }
 
     let parseShapes (doc: XmlNode) : Shape list =
-        (Ns.descendantsNs "wsp" doc) @ (Ns.descendantsNs "shape" doc)
-        |> List.filter (fun node -> Ns.descendantsNs "txbxContent" node |> List.isEmpty |> not)
+        // Import a node if it carries text (txbxContent) OR a real geometry
+        // (prstGeom/custGeom) — so autoshapes with no text still render.
+        let hasContent node =
+            (Ns.descendantsNs "txbxContent" node |> List.isEmpty |> not)
+            || (Ns.descendantsNs "prstGeom" node |> List.isEmpty |> not)
+            || (Ns.descendantsNs "custGeom" node |> List.isEmpty |> not)
+        // For DrawingML, parse from the wp:anchor / wp:inline wrapper — position
+        // (wp:positionH/V) and display size (wp:extent) live there, while the
+        // geometry/fill live in the nested wsp. parseShape reads everything via
+        // descendant lookups, so passing the whole wrapper picks up both. VML
+        // shapes carry their attrs on the v:shape node itself, so pass those.
+        (Ns.descendantsNs "anchor" doc) @ (Ns.descendantsNs "inline" doc) @ (Ns.descendantsNs "shape" doc)
+        |> List.filter hasContent
         |> List.choose parseShape
 
 // Resolve hyperlink targets from relationships

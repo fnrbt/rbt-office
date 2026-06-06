@@ -835,7 +835,7 @@ let private toRendererCommand (resolveImage: string -> Framebuffer option) = fun
         let font = textFont style
         [ Cmd.DrawGlyphs(vec2 x baseline, Renderer.Text.layout font (pointsToPixels style.FontSize) text, Solid (parseHexColor style.Color)) ]
 
-    | WordPaint.DrawUnderline (color, x, y, width) ->
+    | WordPaint.DrawUnderline (color, _lineStyle, x, y, width) ->
         [ Cmd.Line(vec2 x y, vec2 (x + width) y, parseHexColor color, px 1.0) ]
 
     | WordPaint.DrawImage (src, x, y, width, height, _, _, _, _) ->
@@ -869,6 +869,36 @@ let private toRendererCommand (resolveImage: string -> Framebuffer option) = fun
             MiterLimit = 4.0
         }
         [ Cmd.StrokePath([MoveTo (vec2 x1 y1); LineTo (vec2 x2 y2)], style) ]
+
+    | WordPaint.DrawShape (fill, stroke, strokeWidth, (bx, by, bw, bh), segs) ->
+        let rpath =
+            segs |> List.map (function
+                | PMove (x, y) -> MoveTo (vec2 x y)
+                | PLine (x, y) -> LineTo (vec2 x y)
+                | PQuad (cx, cy, x, y) -> QuadTo (vec2 cx cy, vec2 x y)
+                | PCubic (a, b, c, d, x, y) -> CubicTo (vec2 a b, vec2 c d, vec2 x y)
+                | PClose -> Close)
+        let fillCmds =
+            match fill with
+            | WordPaint.FillNone -> []
+            | WordPaint.FillSolid c -> [ Cmd.FillPath(rpath, Solid (parseHexColor c), NonZero) ]
+            | WordPaint.FillGradient g ->
+                let stops = g.Stops |> List.map (fun s -> { Offset = s.Offset; StopColor = parseHexColor s.Color })
+                let cx, cy = bx + bw / 2.0, by + bh / 2.0
+                let paint =
+                    if g.Radial then RadialGradient(vec2 cx cy, px (max bw bh / 2.0), stops, Pad)
+                    else
+                        let rad = g.Angle * System.Math.PI / 180.0
+                        let dx, dy = cos rad * bw / 2.0, sin rad * bh / 2.0
+                        LinearGradient(vec2 (cx - dx) (cy - dy), vec2 (cx + dx) (cy + dy), stops, Pad)
+                [ Cmd.FillPath(rpath, paint, NonZero) ]
+        let strokeCmds =
+            match stroke with
+            | Some c ->
+                let style = { Width = px strokeWidth; Cap = Butt; Join = Miter; Paint = Solid (parseHexColor c); DashArray = []; DashOffset = px 0.0; MiterLimit = 4.0 }
+                [ Cmd.StrokePath(rpath, style) ]
+            | None -> []
+        fillCmds @ strokeCmds
 
 let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) (doc: Document) =
     let settings = layoutSettings width doc

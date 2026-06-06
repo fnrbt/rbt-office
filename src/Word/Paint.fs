@@ -20,6 +20,12 @@ type TextPaintStyle = {
     VertAlign: string option
 }
 
+/// Fill of a vector shape: solid colour, gradient, or none.
+type ShapeFill =
+    | FillNone
+    | FillSolid of color: string
+    | FillGradient of GradientSpec
+
 type PaintCommand =
     | DrawText of text: string * style: TextPaintStyle * x: float * baseline: float * width: float
     | DrawUnderline of color: string * lineStyle: string * x: float * y: float * width: float
@@ -27,6 +33,9 @@ type PaintCommand =
     | FillRect of color: string * x: float * y: float * width: float * height: float
     | StrokeRect of color: string * lineWidth: float * x: float * y: float * width: float * height: float
     | StrokeLine of color: string * lineWidth: float * dashStyle: int * dashOffset: float * x1: float * y1: float * x2: float * y2: float
+    /// A vector shape (preset/custom geometry) with absolute page-coordinate path
+    /// segments, an optional stroke, and a gradient bounding box (for gradient fills).
+    | DrawShape of fill: ShapeFill * stroke: string option * strokeWidth: float * bbox: (float * float * float * float) * segs: PathSeg list
 
 let private styleFromTextStyle (style: TextStyle) = {
     Bold = style.Bold
@@ -958,8 +967,24 @@ let private textBoxCommands (settings: LayoutSettings) fontFamily measureText me
     let mutable paraY = floatingBox.Y + padding
     let commands = ResizeArray<PaintCommand>()
 
-    textBox.FillColor |> Option.iter (fun color -> commands.Add(FillRect (color, floatingBox.X, floatingBox.Y, textBox.Width, textBox.Height)))
-    textBox.BorderColor |> Option.iter (fun color -> commands.Add(StrokeRect (color, textBox.BorderWidth |> Option.defaultValue 1.0, floatingBox.X, floatingBox.Y, textBox.Width, textBox.Height)))
+    let useShape = (match textBox.Geometry with GeoRect -> false | _ -> true) || textBox.Gradient.IsSome
+    if useShape then
+        let placed =
+            Shapes.geometryPath textBox.Geometry textBox.Width textBox.Height
+            |> Shapes.translatePath floatingBox.X floatingBox.Y
+        let segs =
+            if abs textBox.Rotation < 0.01 then placed
+            else placed |> Shapes.rotatePath (floatingBox.X + textBox.Width / 2.0) (floatingBox.Y + textBox.Height / 2.0) textBox.Rotation
+        let fill =
+            match textBox.Gradient with
+            | Some g -> FillGradient g
+            | None -> match textBox.FillColor with Some c -> FillSolid c | None -> FillNone
+        let stroke = textBox.BorderColor
+        commands.Add(DrawShape(fill, stroke, textBox.BorderWidth |> Option.defaultValue 1.0,
+                               (floatingBox.X, floatingBox.Y, textBox.Width, textBox.Height), segs))
+    else
+        textBox.FillColor |> Option.iter (fun color -> commands.Add(FillRect (color, floatingBox.X, floatingBox.Y, textBox.Width, textBox.Height)))
+        textBox.BorderColor |> Option.iter (fun color -> commands.Add(StrokeRect (color, textBox.BorderWidth |> Option.defaultValue 1.0, floatingBox.X, floatingBox.Y, textBox.Width, textBox.Height)))
 
     for para in textBox.Content do
         let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth paraY (floatingBox.X + padding - settings.PaddingLeft) para Map.empty
@@ -1000,6 +1025,8 @@ let private shiftCommandX dx command =
     | FillRect (c, x, y, w, h) -> FillRect (c, x + dx, y, w, h)
     | StrokeRect (c, lw, x, y, w, h) -> StrokeRect (c, lw, x + dx, y, w, h)
     | StrokeLine (c, lw, ds, doff, x1, y1, x2, y2) -> StrokeLine (c, lw, ds, doff, x1 + dx, y1, x2 + dx, y2)
+    | DrawShape (fill, stroke, sw, (bx, by, bw, bh), segs) ->
+        DrawShape (fill, stroke, sw, (bx + dx, by, bw, bh), Shapes.translatePath dx 0.0 segs)
 
 /// When a table sits in a multi-column section its cell layouts were shifted by
 /// the column offset (their Indent gained columnDx); the freshly built plan is

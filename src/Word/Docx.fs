@@ -86,6 +86,49 @@ let private intOrDefault defaultValue (value: obj) =
     if isNullOrUndefined value then defaultValue
     else unbox<int> value
 
+// --- Shape geometry bridge (Office.Formats emits these on a TextBox/shape item) ---
+
+/// Reads a CustomPath array of { Op: "M"|"L"|"C"|"Q"|"Z", P: number[] } segments.
+let private pathSegsFromEditor (value: obj) : PathSeg list =
+    if isNullOrUndefined value then []
+    else
+        [ for i in 0 .. jsArrayLength value - 1 ->
+            let seg = jsArrayGet value i
+            let op = stringOrDefault "" (seg?Op)
+            let p = seg?P
+            let n k = if isNullOrUndefined p then 0.0 else floatOrDefault 0.0 (jsArrayGet p k)
+            match op with
+            | "M" -> Some (PMove (n 0, n 1))
+            | "L" -> Some (PLine (n 0, n 1))
+            | "C" -> Some (PCubic (n 0, n 1, n 2, n 3, n 4, n 5))
+            | "Q" -> Some (PQuad (n 0, n 1, n 2, n 3))
+            | "Z" -> Some PClose
+            | _ -> None ]
+        |> List.choose id
+
+let private geometryFromEditor (item: obj) : ShapeGeometry =
+    match optionalString (item?Geometry) with
+    | Some "custom" ->
+        let segs = pathSegsFromEditor (item?CustomPath)
+        let cw = optionalNumberAsFloat (item?CustomW) |> Option.defaultValue 0.0
+        let ch = optionalNumberAsFloat (item?CustomH) |> Option.defaultValue 0.0
+        if segs.IsEmpty || cw <= 0.0 || ch <= 0.0 then GeoRect else GeoCustom (segs, cw, ch)
+    | Some "rect" | Some "" | None -> GeoRect
+    | Some preset -> GeoPreset preset
+
+let private gradientFromEditor (value: obj) : GradientSpec option =
+    if isNullOrUndefined value then None
+    else
+        let stopsRaw = value?Stops
+        let stops =
+            if isNullOrUndefined stopsRaw then []
+            else
+                [ for i in 0 .. jsArrayLength stopsRaw - 1 ->
+                    let s = jsArrayGet stopsRaw i
+                    { Offset = floatOrDefault 0.0 (s?Offset); Color = stringOrDefault "#000000" (s?Color) } ]
+        if stops.IsEmpty then None
+        else Some { Stops = stops; Angle = floatOrDefault 0.0 (value?Angle); Radial = boolOrDefault false (value?Radial) }
+
 let private sectionPageSetupFromEditor (value: obj) : SectionPageSetup option =
     if isNullOrUndefined value then None
     else
@@ -869,6 +912,9 @@ let rec private blockFromEditor (item: obj) =
             BorderColor = optionalString (item?BorderColor) |> Option.orElse (Some "#808080")
             BorderWidth = optionalNumberAsFloat (item?BorderWidth) |> Option.orElse (Some 1.0)
             RelativeHeight = optionalString (item?RelativeHeight) |> Option.orElse (optionalString (item?TextBoxRelativeHeight))
+            Geometry = geometryFromEditor item
+            Gradient = gradientFromEditor (item?Gradient)
+            Rotation = optionalNumberAsFloat (item?Rotation) |> Option.defaultValue 0.0
         }
 
     | "Table" ->
