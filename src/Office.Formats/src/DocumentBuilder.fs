@@ -65,6 +65,7 @@ type DocumentBuilder(state: DocumentBuilderState) =
             BookmarkEndId = None
             FieldCode = None
             FieldResult = None
+            EquationXml = None
             RenderedPageBreakBefore = false
             IsImage = false
             ImageSrc = None
@@ -195,6 +196,7 @@ let createRun (text: string) (bold: bool) (italic: bool) (fontSize: float) (font
         BookmarkEndId = None
         FieldCode = None
         FieldResult = None
+        EquationXml = None
         RenderedPageBreakBefore = false
         IsImage = false
         ImageSrc = None

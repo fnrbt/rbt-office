@@ -189,7 +189,8 @@ let private pageMapFromLayouts (doc: Doc.Document) (pages: WordLayout.PageInfo l
                                 PageFieldCode = code
                                 PageNumber = displayPageNumberForY line.Y
                             }: Doc.PageFieldAnchor))
-                    | WordLayout.ImageSegment _ -> None)))
+                    | WordLayout.ImageSegment _ -> None
+                    | WordLayout.MathSegment _ -> None)))
 
     let bookmarkAnchors =
         layouts
@@ -207,7 +208,8 @@ let private pageMapFromLayouts (doc: Doc.Document) (pages: WordLayout.PageInfo l
                                 PageBookmarkStartOffset = startOffset
                                 PageNumber = displayPageNumberForY line.Y
                             }: Doc.PageBookmarkAnchor))
-                    | WordLayout.ImageSegment _ -> None)))
+                    | WordLayout.ImageSegment _ -> None
+                    | WordLayout.MathSegment _ -> None)))
         |> List.distinctBy (fun anchor -> anchor.PageBookmarkName)
 
     let blockAnchors =

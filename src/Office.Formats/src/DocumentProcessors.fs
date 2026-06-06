@@ -437,6 +437,7 @@ module EditorProcessor =
         BookmarkEndId: string option
         FieldCode: string option
         FieldResult: string option
+        EquationXml: string option
         RenderedPageBreakBefore: bool
         // Image support
         IsImage: bool
@@ -577,6 +578,7 @@ module EditorProcessor =
                 BookmarkEndId = None
                 FieldCode = None
                 FieldResult = None
+                EquationXml = None
                 RenderedPageBreakBefore = run.RenderedPageBreakBefore
                 IsImage = true
                 ImageSrc = None  // Will be populated when we have archive access
@@ -676,6 +678,7 @@ module EditorProcessor =
                     BookmarkEndId = run.BookmarkEnd
                     FieldCode = field |> Option.map (fun value -> value.Code)
                     FieldResult = field |> Option.bind (fun value -> value.Result)
+                    EquationXml = (match run.Content with EquationXml xml -> Some xml | _ -> None)
                     RenderedPageBreakBefore = run.RenderedPageBreakBefore
                     IsImage = false
                     ImageSrc = None

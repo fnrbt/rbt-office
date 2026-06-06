@@ -37,10 +37,15 @@ let private snippet (text: string) =
     let clean = text.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim()
     if clean.Length > 48 then clean.Substring(0, 48) else clean
 
-/// Segment can be text or image.
+module Eq = RedBat.Word.Math
+
+/// Segment can be text, image, or a laid-out math equation (OMML).
 type Segment =
     | TextSegment of text: string * style: TextBuffer.TextStyle * x: float * width: float * startOffset: int
     | ImageSegment of src: string * x: float * yOffset: float * width: float * height: float * startOffset: int * floating: bool * wrap: string option * relativeHeight: string option * cropLeft: string option * cropTop: string option * cropRight: string option * cropBottom: string option
+    /// A rendered equation: pre-laid-out primitives (relative to x and the line
+    /// baseline), the run style (colour/font), box metrics, and the run's offset span.
+    | MathSegment of prims: Eq.MathPrim list * style: TextBuffer.TextStyle * x: float * width: float * ascent: float * descent: float * startOffset: int * length: int
 
 /// Measured line for layout.
 type MeasuredLine = {
@@ -286,7 +291,8 @@ let private footnotesInLine (line: MeasuredLine) =
             match style.NoteId, style.NoteType, style.NoteText with
             | Some id, noteType, Some text when noteType |> Option.defaultValue "footnote" = "footnote" && text <> "" -> Some (id, text)
             | _ -> None
-        | ImageSegment _ -> None)
+        | ImageSegment _ -> None
+        | MathSegment _ -> None)
     |> List.distinctBy fst
 
 /// Endnotes (collected at the end of the document) found on a line, in order.
@@ -297,7 +303,8 @@ let private endnotesInLine (line: MeasuredLine) =
             match style.NoteId, style.NoteType, style.NoteText with
             | Some id, Some "endnote", Some text when text <> "" -> Some (id, text)
             | _ -> None
-        | ImageSegment _ -> None)
+        | ImageSegment _ -> None
+        | MathSegment _ -> None)
     |> List.distinctBy fst
 
 /// BlockId prefix for the synthetic footnote-area paragraphs laid out at the
@@ -369,7 +376,8 @@ let private lineVisibleFitHeight line =
     line.Segments
     |> List.choose (function
         | TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.printFontSize style)
-        | ImageSegment (_, _, yOffset, _, height, _, floating, _, _, _, _, _, _) -> if floating then None else Some (height + max 0.0 yOffset))
+        | ImageSegment (_, _, yOffset, _, height, _, floating, _, _, _, _, _, _) -> if floating then None else Some (height + max 0.0 yOffset)
+        | MathSegment (_, _, _, _, ascent, descent, _, _) -> Some (ascent + descent))
     |> function
         | [] -> line.Height
         | sizes -> List.max sizes
@@ -448,7 +456,8 @@ let private lineHasRenderedPageBreakBefore (line: MeasuredLine) =
     line.Segments
     |> List.exists (function
         | TextSegment (_, style, _, _, _) -> style.RenderedPageBreakBefore
-        | ImageSegment _ -> false)
+        | ImageSegment _ -> false
+        | MathSegment _ -> false)
 
 let private paginateLines settings widowControl (lines: MeasuredLine list) =
     let mutable delta = 0.0
@@ -594,7 +603,8 @@ let private lineMaxTextFontSize fallback (line: MeasuredLine) =
     line.Segments
     |> List.choose (function
         | TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.displayFontSize style)
-        | ImageSegment _ -> None)
+        | ImageSegment _ -> None
+        | MathSegment _ -> None)
     |> function
         | [] -> fallback
         | sizes -> List.max sizes
@@ -649,22 +659,27 @@ let segmentHeight lineHeightFactor = function
     | TextSegment (_, style, _, _, _) -> WordLayout.Text.displayFontSize style * lineHeightFactor
     | ImageSegment (_, _, yOffset, _, height, _, floating, _, _, _, _, _, _) ->
         if floating then 0.0 else height + max 0.0 yOffset
+    | MathSegment (_, _, _, _, ascent, descent, _, _) -> ascent + descent
 
 let segmentStart = function
     | TextSegment (_, _, _, _, startOffset) -> startOffset
     | ImageSegment (_, _, _, _, _, startOffset, _, _, _, _, _, _, _) -> startOffset
+    | MathSegment (_, _, _, _, _, _, startOffset, _) -> startOffset
 
 let segmentEnd = function
     | TextSegment (text, _, _, _, startOffset) -> startOffset + text.Length
     | ImageSegment (_, _, _, _, _, startOffset, _, _, _, _, _, _, _) -> startOffset + 1
+    | MathSegment (_, _, _, _, _, _, startOffset, length) -> startOffset + length
 
 let segmentX = function
     | TextSegment (_, _, x, _, _) -> x
     | ImageSegment (_, x, _, _, _, _, _, _, _, _, _, _, _) -> x
+    | MathSegment (_, _, x, _, _, _, _, _) -> x
 
 let segmentWidth = function
     | TextSegment (_, _, _, width, _) -> width
     | ImageSegment (_, _, _, width, _, _, _, _, _, _, _, _, _) -> width
+    | MathSegment (_, _, _, width, _, _, _, _) -> width
 
 let alignmentOffset (layout: BlockLayout) (line: MeasuredLine) =
     match layout.Metadata.Alignment with
@@ -696,7 +711,8 @@ let private repositionRtl (line: MeasuredLine) : MeasuredLine =
                 cursor <- cursor - w
                 match s with
                 | TextSegment (t, st, _, ww, off) -> TextSegment (t, st, cursor, ww, off)
-                | ImageSegment (src, _, yOff, ww, h, off, fl, wr, rh, cl, ct, cr, cb) -> ImageSegment (src, cursor, yOff, ww, h, off, fl, wr, rh, cl, ct, cr, cb))
+                | ImageSegment (src, _, yOff, ww, h, off, fl, wr, rh, cl, ct, cr, cb) -> ImageSegment (src, cursor, yOff, ww, h, off, fl, wr, rh, cl, ct, cr, cb)
+                | MathSegment (p, st, _, ww, asc, desc, off, len) -> MathSegment (p, st, cursor, ww, asc, desc, off, len))
         { line with Segments = newSegs }
 
 /// Distribute the slack between a line's visible right edge and `rightEdge`
@@ -717,6 +733,7 @@ let private justifyLineToEdge (rightEdge: float) (line: MeasuredLine) : Measured
     let hasTabOrImage =
         segs |> List.exists (function
             | ImageSegment _ -> true
+            | MathSegment _ -> true
             | TextSegment (t, _, _, _, _) -> t.Contains("\t"))
     let gapCount =
         segs |> List.mapi (fun i s -> if i < segCount - 1 && endsInStretchSpace s then 1 else 0) |> List.sum
@@ -733,6 +750,7 @@ let private justifyLineToEdge (rightEdge: float) (line: MeasuredLine) : Measured
                     | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + shift, w, off)
                     | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
                         ImageSegment (src, x + shift, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
+                    | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + shift, w, asc, desc, off, len)
                 if i < segCount - 1 && endsInStretchSpace s then shift <- shift + perGap
                 shifted)
         { line with Segments = newSegs }
@@ -781,6 +799,8 @@ let xForOffsetWithRange (measureRange: TextRangeMeasurer) (line: MeasuredLine) (
                     let charCount = max 0 (min text.Length (offset - startOffset))
                     x <- segX + measureRange (WordLayout.Text.displayText style text) (WordLayout.Text.displayStyle style) 0 charCount
                 | ImageSegment (_, segX, _, width, _, startOffset, _, _, _, _, _, _, _) ->
+                    x <- if offset <= startOffset then segX else segX + width
+                | MathSegment (_, _, segX, width, _, _, startOffset, _) ->
                     x <- if offset <= startOffset then segX else segX + width
                 found <- true
             else
@@ -839,6 +859,14 @@ let hitTestLayoutsWithRange (measureRange: TextRangeMeasurer) (paddingLeft: floa
                         else
                             offset <- startOffset + 1
 
+                    | MathSegment (_, _, x, width, _, _, startOffset, length) ->
+                        if relativeX <= x + width then
+                            let midpoint = x + width / 2.0
+                            offset <- if relativeX < midpoint then startOffset else startOffset + length
+                            found <- true
+                        else
+                            offset <- startOffset + length
+
             Some (layout.BlockId, offset)
 
 let hitTestLayouts (measureText: TextMeasurer) (paddingLeft: float) (layouts: BlockLayout list) (mouseX: float) (mouseY: float) =
@@ -860,6 +888,7 @@ let hitTestForImageLayouts (paddingLeft: float) (layouts: BlockLayout list) (mou
                                 if mouseY >= imageY && mouseY <= imageY + height && relativeX >= x && relativeX <= x + width then
                                     result <- Some (layout.BlockId, startOffset, width, height, paddingLeft + x + lineAlignmentOffset, imageY)
                             | TextSegment _ -> ()
+                            | MathSegment _ -> ()
     result
 
 let imageBoxForOffset (paddingLeft: float) (layouts: BlockLayout list) (blockId: BlockId) (offset: int) : (float * float * float * float) option =
@@ -904,6 +933,7 @@ let private lineAlignmentWidth (measureRange: TextRangeMeasurer) (segments: Segm
     let rec visibleEnd = function
         | [] -> 0.0
         | ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) :: _ -> x + width
+        | MathSegment (_, _, x, width, _, _, _, _) :: _ -> x + width
         | TextSegment (text, style, x, width, _) :: rest ->
             let visibleLength = visibleTokenLength text
             if visibleLength = text.Length then
@@ -922,7 +952,8 @@ let private hasMixedTextMetrics (segments: Segment list) =
         segments
         |> List.choose (function
             | TextSegment (_, style, _, _, _) -> Some (style.FontFamily, style.FontSize, style.Bold, style.Italic, style.VertAlign, style.SmallCaps)
-            | ImageSegment _ -> None)
+            | ImageSegment _ -> None
+            | MathSegment _ -> None)
         |> List.distinct
     keys.Length > 1
 
@@ -1051,7 +1082,8 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                 segments
                 |> List.exists (function
                     | ImageSegment (_, _, _, _, _, _, floating, _, _, _, _, _, _) -> not floating
-                    | TextSegment _ -> false)
+                    | TextSegment _ -> false
+                    | MathSegment _ -> false)
             let inlineImageDescent = if hasInlineImage then settings.FontSize * 0.27 else 0.0
             let lineHeight =
                 (segments |> List.map (segmentHeight (settings.LineHeight / settings.FontSize)) |> List.max) + inlineImageDescent
@@ -1195,6 +1227,27 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
         | TextBuffer.Text textRun when textRun.Style.Hidden ->
             // w:vanish — hidden text is not laid out and takes no space.
             ()
+        | TextBuffer.Text textRun when textRun.Style.EquationXml.IsSome ->
+            // OMML equation: lay the math out into an atomic box (like an image).
+            let basePx = WordLayout.Text.displayFontSize textRun.Style
+            let measure : Eq.Measure = fun s px -> measureRange s { textRun.Style with FontSize = px; EquationXml = None } 0 s.Length
+            let boxResult =
+                try Ok (Eq.layoutEquation measure basePx textRun.Style.EquationXml.Value)
+                with ex -> Error ex.Message
+            let fallbackText (txt: string) =
+                let dispStyle = WordLayout.Text.displayStyle textRun.Style
+                let w = measureRange txt dispStyle 0 txt.Length
+                if currentX + w > currentLineEnd && not currentSegments.IsEmpty then flushLine ()
+                currentSegments <- TextSegment (txt, dispStyle, currentX, w, textRun.Start) :: currentSegments
+                currentX <- currentX + w
+            match boxResult with
+            | Ok (Some box) when not box.Prims.IsEmpty ->
+                if currentX + box.Width > currentLineEnd && not currentSegments.IsEmpty then flushLine ()
+                currentSegments <- MathSegment (box.Prims, textRun.Style, currentX, box.Width, box.Ascent, box.Descent, textRun.Start, textRun.Length) :: currentSegments
+                currentX <- currentX + box.Width
+            | Ok _ | Error _ ->
+                // Unparseable equation — fall back to the literal run text.
+                fallbackText (WordLayout.Text.displayText textRun.Style (TextBuffer.slice textRun.Start textRun.Length buffer))
         | TextBuffer.Text textRun ->
             if textRun.Style.RenderedPageBreakBefore && not currentSegments.IsEmpty then
                 flushLine ()
@@ -1362,7 +1415,8 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
                 line.Segments
                 |> List.choose (function
                     | TextSegment (_, _, x, _, _)
-                    | ImageSegment (_, x, _, _, _, _, _, _, _, _, _, _, _) -> Some x)
+                    | ImageSegment (_, x, _, _, _, _, _, _, _, _, _, _, _)
+                    | MathSegment (_, _, x, _, _, _, _, _) -> Some x)
                 |> function
                     | [] -> false
                     | xs -> (List.min xs) > 0.01
@@ -1375,7 +1429,9 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
                     | TextSegment (text, style, x, width, startOffset) ->
                         TextSegment (text, style, x + xOffset + indent + markerReserve + lineFirstIndent, width, startOffset)
                     | ImageSegment (src, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom) ->
-                        ImageSegment (src, x + xOffset + indent + markerReserve + lineFirstIndent, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom))
+                        ImageSegment (src, x + xOffset + indent + markerReserve + lineFirstIndent, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom)
+                    | MathSegment (prims, style, x, width, ascent, descent, startOffset, length) ->
+                        MathSegment (prims, style, x + xOffset + indent + markerReserve + lineFirstIndent, width, ascent, descent, startOffset, length))
             { line with
                 Y = contentY + (line.Y - settings.PaddingTop)
                 Segments = adjustedSegments })
@@ -2619,6 +2675,7 @@ let private shiftSegmentX dx segment =
     | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + dx, w, off)
     | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
         ImageSegment (src, x + dx, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
+    | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + dx, w, asc, desc, off, len)
 
 let private shiftBlockX dx (layout: BlockLayout) =
     { layout with

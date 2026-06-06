@@ -382,6 +382,7 @@ let private textStyle (run: EP.EditorRun) : RedBat.Word.TextBuffer.TextStyle =
             BookmarkEndId = run.BookmarkEndId
             FieldCode = run.FieldCode
             FieldResult = run.FieldResult
+            EquationXml = run.EquationXml
             RenderedPageBreakBefore = run.RenderedPageBreakBefore
             VertAlign = run.VertAlign
     }

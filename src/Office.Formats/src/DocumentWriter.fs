@@ -769,6 +769,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
                         BookmarkEndId = optionalString (runObj?BookmarkEndId)
                         FieldCode = optionalString (runObj?FieldCode)
                         FieldResult = optionalString (runObj?FieldResult)
+                        EquationXml = optionalString (runObj?EquationXml)
                         RenderedPageBreakBefore = boolOrDefault false (runObj?RenderedPageBreakBefore)
                         IsImage = false
                         ImageSrc = None

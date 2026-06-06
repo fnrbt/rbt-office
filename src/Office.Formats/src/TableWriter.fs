@@ -240,6 +240,7 @@ let createSimpleTable (data: string list list) : Table =
                             BookmarkEndId = None
                             FieldCode = None
                             FieldResult = None
+                            EquationXml = None
                             RenderedPageBreakBefore = false
                             IsImage = false
                             ImageSrc = None

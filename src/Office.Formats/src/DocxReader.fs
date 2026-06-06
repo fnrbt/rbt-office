@@ -1445,9 +1445,24 @@ module Docx =
                         | RunToken run -> RunToken { run with RevisionId = revisionId; RevisionType = Some revisionType; RevisionAuthor = author; RevisionDate = date }
                         | token -> token)
                 | Some name when Ns.stripNs name = "sdt" ->
-                    Ns.childNs "sdtContent" child
-                    |> Option.map tokensFromNode
-                    |> Option.defaultValue []
+                    // A w14:checkbox content control renders as a real checkbox
+                    // glyph from its checked state (the stored glyph is often a
+                    // symbol-font char that won't render); other controls just
+                    // surface their inner content.
+                    let checkbox = Ns.childNs "sdtPr" child |> Option.bind (fun pr -> Ns.descendantsNs "checkbox" pr |> List.tryHead)
+                    match checkbox with
+                    | Some cb ->
+                        let isChecked =
+                            Ns.descendantsNs "checked" cb |> List.tryHead
+                            |> Option.bind (attrByLocalName "val")   // w14:val
+                            |> Option.map (fun v -> v = "1" || v = "true")
+                            |> Option.defaultValue false
+                        let glyph = if isChecked then "☒" else "☐"   // ☒ / ☐
+                        [RunToken { Content = Text glyph; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None }]
+                    | None ->
+                        Ns.childNs "sdtContent" child
+                        |> Option.map tokensFromNode
+                        |> Option.defaultValue []
                 | _ -> [])
 
         // Extract runs and hyperlinks

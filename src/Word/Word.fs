@@ -206,6 +206,18 @@ module API =
                             "Floating" ==> floating
                             "Wrap" ==> wrap
                             "RelativeHeight" ==> relativeHeight
+                        ]
+                    | Layout.MathSegment (_, style, x, width, ascent, descent, startOffset, _) ->
+                        createObj [
+                            "Kind" ==> "math"
+                            "BlockId" ==> layout.BlockId
+                            "StartOffset" ==> startOffset
+                            "X" ==> (x + alignOffset)
+                            "Y" ==> line.Y
+                            "Width" ==> width
+                            "Height" ==> (ascent + descent)
+                            "FontFamily" ==> style.FontFamily
+                            "FontSize" ==> style.FontSize
                         ])) )
         |> List.toArray
 
@@ -483,20 +495,23 @@ module API =
         line.Segments
         |> List.exists (function
             | Layout.TextSegment (_, style, _, _, _) -> style.FieldCode.IsSome
-            | Layout.ImageSegment _ -> false)
+            | Layout.ImageSegment _ -> false
+            | Layout.MathSegment _ -> false)
 
     let private lineHasFieldResult (line: Layout.MeasuredLine) =
         line.Segments
         |> List.exists (function
             | Layout.TextSegment (_, style, _, _, _) -> style.FieldResult.IsSome
-            | Layout.ImageSegment _ -> false)
+            | Layout.ImageSegment _ -> false
+            | Layout.MathSegment _ -> false)
 
     let private lineLeft pageLeft (layout: Layout.BlockLayout) (line: Layout.MeasuredLine) =
         let alignOffset = Layout.alignmentOffset layout line
         line.Segments
         |> List.choose (function
             | Layout.TextSegment (_, _, x, width, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width)
-            | Layout.ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width))
+            | Layout.ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width)
+            | Layout.MathSegment (_, _, x, width, _, _, _, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width))
         |> function
             | [] -> pageLeft + alignOffset, line.Width
             | bounds ->
@@ -678,7 +693,8 @@ module API =
             line.Segments
             |> List.choose (function
                 | Layout.TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.printFontSize style)
-                | Layout.ImageSegment _ -> None)
+                | Layout.ImageSegment _ -> None
+                | Layout.MathSegment (_, style, _, _, _, _, _, _) -> Some (WordLayout.Text.printFontSize style))
             |> function
                 | [] -> 0.0
                 | sizes -> List.max sizes
@@ -809,13 +825,22 @@ module API =
                                 "Floating" ==> floating
                                 "Wrap" ==> wrap
                                 "RelativeHeight" ==> relativeHeight
+                            ]
+                        | Layout.MathSegment (_, _, x, width, _, _, startOffset, _) ->
+                            createObj [
+                                "Kind" ==> "math"
+                                "Text" ==> "\uFFFC"
+                                "StartOffset" ==> startOffset
+                                "X" ==> (pageLeft + x + alignOffset)
+                                "Width" ==> width
                             ])
 
                 let text =
                     line.Segments
                     |> List.map (function
                         | Layout.TextSegment (text, _, _, _, _) -> text
-                        | Layout.ImageSegment _ -> "\uFFFC")
+                        | Layout.ImageSegment _ -> "\uFFFC"
+                        | Layout.MathSegment _ -> "\uFFFC")
                     |> String.concat ""
 
                 let x, width =
@@ -995,7 +1020,8 @@ module API =
                                     PageFieldCode = code
                                     PageNumber = displayPageNumberForY line.Y
                                 }: Doc.PageFieldAnchor))
-                        | Layout.ImageSegment _ -> None)))
+                        | Layout.ImageSegment _ -> None
+                        | Layout.MathSegment _ -> None)))
         let bookmarkAnchors =
             layouts
             |> List.collect (fun layout ->
@@ -1012,7 +1038,8 @@ module API =
                                     PageBookmarkStartOffset = startOffset
                                     PageNumber = displayPageNumberForY line.Y
                                 }: Doc.PageBookmarkAnchor))
-                        | Layout.ImageSegment _ -> None)))
+                        | Layout.ImageSegment _ -> None
+                        | Layout.MathSegment _ -> None)))
             |> List.distinctBy (fun anchor -> anchor.PageBookmarkName)
         let blockAnchors =
             layouts

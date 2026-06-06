@@ -12,6 +12,7 @@
     <Compile Include="WordStyles.fs" />
     <Compile Include="BorderGrid.fs" />
     <Compile Include="WordLayout.fs" />
+    <Compile Include="Math.fs" />
     <Compile Include="Layout.fs" />
     <Compile Include="Paint.fs" />
     <Compile Include="Commands.fs" />

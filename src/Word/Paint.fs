@@ -5,6 +5,8 @@ open RedBat.Word.Document
 open RedBat.Word.TextBuffer
 open RedBat.Word.WordStyles
 
+module Eq = RedBat.Word.Math
+
 type TextPaintStyle = {
     Bold: bool
     Italic: bool
@@ -87,7 +89,10 @@ let private lineBaselineWithOffset baselineOffset (fallbackFontSize: float) (lin
         line.Segments
         |> List.choose (function
             | TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.printFontSize style)
-            | ImageSegment _ -> None)
+            | ImageSegment _ -> None
+            // Use the equation's box ascent so its top fits within the line and
+            // its baseline aligns with surrounding text (math extends upward).
+            | MathSegment (_, _, _, _, ascent, _, _, _) -> Some ascent)
         |> function
             | [] -> fallbackFontSize
             | sizes -> List.max sizes
@@ -559,6 +564,20 @@ let private paragraphCommandsWithBaselineOffset baselineOffset (settings: Layout
                 let imageX = settings.PaddingLeft + x + lineAlignmentOffset
                 let imageY = line.Y + yOffset
                 commands <- commands @ [DrawImage (src, imageX, imageY, width, height, cropLeft, cropTop, cropRight, cropBottom)]
+
+            | MathSegment (prims, style, x, _, _, _, _, _) ->
+                // Emit the pre-laid-out equation primitives relative to the math
+                // box origin (mathX) and the line's text baseline.
+                let mathBase = styleFromTextStyle style
+                let mathX = settings.PaddingLeft + x + lineAlignmentOffset
+                for prim in prims do
+                    match prim with
+                    | Eq.MGlyph (text, gx, gb, fontPx, italic) ->
+                        let glyphStyle = { mathBase with FontSize = fontPx; Italic = italic; FontFamily = mathBase.FontFamily |> Option.orElse (Some "Cambria Math") }
+                        let gw = measureText text { style with FontSize = fontPx; Italic = italic }
+                        commands <- commands @ [DrawText (text, glyphStyle, mathX + gx, baseline + gb, gw)]
+                    | Eq.MRule (rx, top, w, h) ->
+                        commands <- commands @ [FillRect (mathBase.Color, mathX + rx, baseline + top, w, h)]
 
     commands
 

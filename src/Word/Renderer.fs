@@ -229,7 +229,8 @@ let private endnoteAnchorsForLayouts (layouts: BlockLayout list) =
                     match style.NoteId, style.NoteType, style.NoteText with
                     | Some id, Some "endnote", Some text when text <> "" -> Some { Id = id; Text = text }
                     | _ -> None
-                | ImageSegment _ -> None)))
+                | ImageSegment _ -> None
+                | MathSegment _ -> None)))
     |> List.distinctBy _.Id
 
 let private footnoteAnchorsForLayouts (settings: LayoutSettings) (layouts: BlockLayout list) =
@@ -244,7 +245,8 @@ let private footnoteAnchorsForLayouts (settings: LayoutSettings) (layouts: Block
                     | Some id, noteType, Some text when noteType |> Option.defaultValue "footnote" = "footnote" && text <> "" ->
                         Some { Id = id; Text = text; PageIndex = pageIndexForY settings line.Y }
                     | _ -> None
-                | ImageSegment _ -> None)))
+                | ImageSegment _ -> None
+                | MathSegment _ -> None)))
     |> List.distinctBy (fun anchor -> anchor.PageIndex, anchor.Id)
 
 let private bodyBottom (settings: LayoutSettings) (layouts: BlockLayout list) =
