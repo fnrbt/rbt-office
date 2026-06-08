@@ -15,6 +15,7 @@
     <ProjectReference Include="../../src/Office.Formats/OfficeFormat.fsproj" />
     <ProjectReference Include="../../src/Spreadsheet/RedBat.Spreadsheet.fsproj" />
     <ProjectReference Include="../../spreadsheet-native/SpreadsheetWidgets.fsproj" />
+    <ProjectReference Include="../../office-native/OfficeShell.fsproj" />
     <ProjectReference Include="../../../widgets/Widgets.fsproj" />
     <ProjectReference Include="../../../renderer/Renderer.fsproj" />
   </ItemGroup>

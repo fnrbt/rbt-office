@@ -67,6 +67,22 @@ check "multi header"      pn2.[0] [| S "Region"; S "Product"; S "Sum of Sales"; 
 check "multi east-A"      pn2.[1] [| S "East"; S "A"; N 150.0; N 2.0 |]
 check "multi grand"       pn2.[7] [| S "Grand Total"; CellValue.Empty; N 750.0; N 5.0 |]
 
+// ── dialog resolution: pivotFromNames (the Insert-Pivot apply core) ──
+// Header names → indices, agg parsing, nested vs cross-tab, error messages.
+check "parseAgg sum"     (parseAgg "Sum") (Some Sum)
+check "parseAgg avg"     (parseAgg "average") (Some Average)
+check "parseAgg bad"     (parseAgg "median") None
+let okGrid r = match r with Result.Ok (g: CellValue[][]) -> g | Result.Error e -> failwithf "pivot error: %s" e
+let g1 = okGrid (pivotFromNames source [ "Region" ] None "Sales" Sum)
+check "byNames grand"    g1.[g1.Length - 1] [| S "Grand Total"; N 750.0 |]
+let g2 = okGrid (pivotFromNames source [ "Region"; "Product" ] None "Sales" Sum)
+check "byNames nested rows" g2.Length 8
+let g3 = okGrid (pivotFromNames source [ "Region" ] (Some "Product") "Sales" Sum)
+check "byNames crosstab"  g3.[0] [| S "Row Labels"; S "A"; S "B"; S "Grand Total" |]
+let errMsg r = match r with Result.Error (m: string) -> m | Result.Ok _ -> ""
+check "byNames bad row"   ((errMsg (pivotFromNames source [ "Nope" ] None "Sales" Sum)).StartsWith "Row field not found") true
+check "byNames bad value" ((errMsg (pivotFromNames source [ "Region" ] None "Nope" Sum)).StartsWith "Value field not found") true
+
 printfn ""
 printfn "Stage 13 pivot tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

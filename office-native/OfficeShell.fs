@@ -1077,6 +1077,16 @@ let private renderDialog (p: ChromePalette) (renderState: ShellRenderState) (sta
 ///   │  Status bar        (22, white)  │
 ///   └─────────────────────────────────┘
 ///
+/// Render a dialog spec on its own (no surrounding shell) — for headless
+/// preview / screenshot testing of a `DialogSpec`. Opens it on a fresh state
+/// and returns just the dialog widget.
+let dialogPreview (chromeSpec: ChromeSpec) (spec: DialogSpec) : Widget =
+    let state = createState ()
+    openDialog state spec
+    match state.OpenDialog.Value with
+    | Some ds -> renderDialog (palette chromeSpec) state ds
+    | None -> empty
+
 /// The OS window decoration carries the document title; there's no
 /// in-app title strip.
 let view (renderState: ShellRenderState) (config: ShellConfig) =

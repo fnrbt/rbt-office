@@ -142,10 +142,19 @@ round-trip. ~160 functions total now.
 - **Render ✅** — native runner `--pivottest` renders a nested Region→Product
   pivot with Sum + Count measures, bold subtotals (East 470/4, West 700/3) and
   Grand Total (1170/7), verified visually.
+- **UI ✅** — Insert-Pivot dialog (`SpreadsheetUi.pivotTableDialog`, a backend-
+  agnostic `RedBat.Office.Ui.DialogSpec`): source range, row fields, optional
+  column field, value field, Summarize-by dropdown, destination cell. Wired in
+  the native app (`spreadsheet-editor` `InsertPivot → openInsertPivotDialog`):
+  reads the source range from the model, resolves field names
+  (`Pivot.pivotFromNames`), computes, and places the grid; bad range/field keeps
+  the dialog open with a status. Resolution core unit-tested
+  (`stage13-pivot.fsx`, now 33 assertions). Dialog rendered headlessly via the
+  new `OfficeShell.dialogPreview` + runner `--dialogtest` (screenshot-verified:
+  full dialog with all fields + Create/Cancel).
 - Still owed: parse `pivotTableDefinition`/`pivotCacheRecords` from real xlsx to
-  recompute imported pivots (cached values currently render as plain cells);
-  nested **column** fields; report filters / page fields; interactive
-  Insert-Pivot UI (`SpreadsheetUi.InsertPivot` is still a stub); pivot styles.
+  recompute imported pivots; nested **column** fields; report filters / page
+  fields; a live field-list drag-drop pane; pivot styles.
 
 ## 5. Sparklines 🟡 (native runner)
 In-cell mini-charts, parsed from the x14 `sparklineGroups` extLst and drawn as

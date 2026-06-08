@@ -557,6 +557,56 @@ module Ui =
         ]
     }
 
+    /// What the Insert-Pivot dialog collects; the app resolves field names
+    /// against the source headers and places the computed grid.
+    type PivotUiRequest = {
+        Source: string
+        RowFields: string
+        ColField: string
+        ValueField: string
+        Agg: string
+        Dest: string
+    }
+
+    let private pivotAggChoices = [
+        choice "sum" "Sum"
+        choice "count" "Count"
+        choice "average" "Average"
+        choice "max" "Max"
+        choice "min" "Min"
+    ]
+
+    /// Insert a pivot table. The app's `apply` reads the source range from the
+    /// model, resolves field names, computes the pivot (Pivot.pivotFromNames),
+    /// and places it; it returns false (keeping the dialog open) on a bad range
+    /// or unknown field.
+    let pivotTableDialog (apply: PivotUiRequest -> bool) : DialogSpec = {
+        TestId = "xl-dlg-pivot"
+        Title = "Insert pivot table"
+        Subtitle = Some "Summarize a source range by row fields and one value."
+        Fields = [
+            dialogText "source" "Source range" "A1:C100" ""
+            dialogText "rows" "Row fields (comma-separated)" "Region, Product" ""
+            dialogText "cols" "Column field (optional)" "" ""
+            dialogText "value" "Value field" "Sales" ""
+            dialogSelect "agg" "Summarize by" pivotAggChoices "sum"
+            dialogText "dest" "Place at cell" "F1" ""
+        ]
+        Tabs = []
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-pivot-ok" "Create" true (fun values ->
+                apply {
+                    Source = (Map.find "source" values).Trim()
+                    RowFields = Map.find "rows" values
+                    ColField = (Map.find "cols" values).Trim()
+                    ValueField = (Map.find "value" values).Trim()
+                    Agg = Map.find "agg" values
+                    Dest = (Map.find "dest" values).Trim()
+                })
+        ]
+    }
+
     /// Format the selection's number / font / fills in one go. v1 only
     /// covers number format + a foreground/background hex pair; richer
     /// controls (borders, alignment) live on the toolbar already.

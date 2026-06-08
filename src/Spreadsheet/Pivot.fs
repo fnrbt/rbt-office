@@ -22,6 +22,16 @@ let aggLabel =
     | Max -> "Max"
     | Min -> "Min"
 
+/// Parse an aggregation name (from the pivot dialog's dropdown).
+let parseAgg (s: string) : Agg option =
+    match s.Trim().ToLowerInvariant() with
+    | "sum" -> Some Sum
+    | "count" -> Some Count
+    | "average" | "avg" -> Some Average
+    | "max" -> Some Max
+    | "min" -> Some Min
+    | _ -> None
+
 let rec private textOf (v: CellValue) : string =
     match v with
     | String s -> s
@@ -147,3 +157,34 @@ let computePivotN (source: CellValue[][]) (rowFields: int list) (values: (int * 
         (header :: build 0 data [] @ [ grand ])
         |> List.map Array.ofList
         |> Array.ofList
+
+/// Find a field's 0-based column by matching the header row (case-insensitive).
+let fieldIndex (headers: CellValue[]) (name: string) : int option =
+    let t = name.Trim().ToLowerInvariant()
+    headers |> Array.tryFindIndex (fun h -> (textOf h).Trim().ToLowerInvariant() = t)
+
+/// Resolve field NAMES against the source's header row and compute the pivot —
+/// the entry point for the Insert-Pivot dialog. Nested row fields use
+/// `computePivotN`; a column field uses the single-row cross-tab
+/// `computePivot`. Returns the pivot grid or a human-readable error.
+let pivotFromNames (source: CellValue[][]) (rowFieldNames: string list) (colFieldName: string option) (valueFieldName: string) (agg: Agg) : Result<CellValue[][], string> =
+    if source.Length < 1 then Result.Error "Source range has no header row."
+    else
+        let headers = source.[0]
+        let rowNames = rowFieldNames |> List.map (fun s -> s.Trim()) |> List.filter (fun s -> s <> "")
+        if List.isEmpty rowNames then Result.Error "Choose at least one row field."
+        else
+            let rowIdxs = rowNames |> List.map (fun n -> n, fieldIndex headers n)
+            match rowIdxs |> List.tryFind (snd >> Option.isNone) with
+            | Some (missing, _) -> Result.Error(sprintf "Row field not found: %s" missing)
+            | None ->
+                let rows = rowIdxs |> List.map (snd >> Option.get)
+                match fieldIndex headers valueFieldName with
+                | None -> Result.Error(sprintf "Value field not found: %s" valueFieldName)
+                | Some vi ->
+                    match colFieldName |> Option.map (fun s -> s.Trim()) |> Option.filter (fun s -> s <> "") with
+                    | Some cn ->
+                        match fieldIndex headers cn with
+                        | None -> Result.Error(sprintf "Column field not found: %s" cn)
+                        | Some ci -> Result.Ok(computePivot source (List.head rows) (Some ci) vi agg)
+                    | None -> Result.Ok(computePivotN source rows [ (vi, agg) ])

@@ -373,6 +373,36 @@ let private shellActions
             status.Value <- sprintf "Inserted %dx%d table headers" rows cols)
         |> Composit.Ui.OfficeShell.openDialog renderState
 
+    let openInsertPivotDialog () =
+        XlUi.pivotTableDialog (fun req ->
+            let parseRange (s: string) =
+                match s.Split(':') with
+                | [| a; b |] ->
+                    match parseCellRef (a.Trim()), parseCellRef (b.Trim()) with
+                    | Some (r1, c1), Some (r2, c2) -> Some(min r1 r2, min c1 c2, max r1 r2, max c1 c2)
+                    | _ -> None
+                | [| a |] -> parseCellRef (a.Trim()) |> Option.map (fun (r, c) -> r, c, r, c)
+                | _ -> None
+            let model = Editor.activeModel state
+            match parseRange req.Source, RedBat.Spreadsheet.Pivot.parseAgg req.Agg, parseCellRef req.Dest with
+            | Some (sr, sc, er, ec), Some agg, Some (dr, dc) ->
+                let grid = [| for r in sr .. er -> [| for c in sc .. ec -> getCellValue { Row = r; Col = c } model |] |]
+                let rowFields = req.RowFields.Split(',') |> Array.map (fun s -> s.Trim()) |> Array.filter (fun s -> s <> "") |> Array.toList
+                let colOpt = if req.ColField = "" then None else Some req.ColField
+                match RedBat.Spreadsheet.Pivot.pivotFromNames grid rowFields colOpt req.ValueField agg with
+                | Result.Ok pivot ->
+                    Editor.applyChange state (fun m ->
+                        let mutable acc = m
+                        for r in 0 .. pivot.Length - 1 do
+                            for c in 0 .. pivot.[r].Length - 1 do
+                                acc <- setCell { Row = dr + r; Col = dc + c } { Value = pivot.[r].[c]; Format = defaultFormat; Comment = None } acc
+                        acc) |> ignore
+                    status.Value <- sprintf "Inserted pivot at %s" (formatCellRef dr dc)
+                    true
+                | Result.Error msg -> status.Value <- "Pivot: " + msg; false
+            | _ -> status.Value <- "Pivot: invalid source range, aggregation, or destination cell."; false)
+        |> Composit.Ui.OfficeShell.openDialog renderState
+
     let openInsertSheetDialog () =
         XlUi.insertSheetDialog (fun name ->
             let sheets = state.Sheets.Value
@@ -488,7 +518,7 @@ let private shellActions
                     { m with FrozenRows = r; FrozenCols = c }) |> ignore
         SplitPanes = say "Split panes not wired"
         InsertChart = say "Insert chart not wired"
-        InsertPivot = say "Insert pivot not wired"
+        InsertPivot = openInsertPivotDialog
         InsertTable = openInsertTableDialog
         InsertSheet = openInsertSheetDialog
         DeleteSheet = fun () ->

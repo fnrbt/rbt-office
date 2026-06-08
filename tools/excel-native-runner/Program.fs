@@ -1590,6 +1590,16 @@ let main argv =
             let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
             File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
             0
+        | [| "--dialogtest"; output |] ->
+            // Render the Insert-Pivot dialog standalone (headless) — proves the
+            // pivot UI's DialogSpec paints through the native shell.
+            let spec = RedBat.Spreadsheet.Ui.pivotTableDialog (fun _ -> true)
+            let widget = Composit.Ui.OfficeShell.dialogPreview RedBat.Spreadsheet.Ui.chrome spec
+            let w, h = 560, 620
+            let backend = Raster.create()
+            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
+            0
         | [| "--vectortest"; output |] ->
             // Render the hand-built vector scene (VecPath/VecGroup) through the
             // native rasterizer — proves the new paint primitives end-to-end.
