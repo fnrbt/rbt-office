@@ -1602,6 +1602,28 @@ let main argv =
             let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
             File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
             0
+        | [| "--cftest"; output |] ->
+            // Conditional-format visuals: data bars / color scale / icon set,
+            // computed over real numbers and rendered.
+            let N = CellValue.Number
+            let bold = { defaultFormat with Bold = true }
+            let vals = [ 10.; 45.; 30.; 80.; 55.; 20.; 95.; 65.; 5.; 70. ]
+            let putCol col (vs: float list) m =
+                vs |> List.mapi (fun i v -> i, v)
+                |> List.fold (fun acc (i, v) -> setCell { Row = i + 1; Col = col } { Value = N v; Format = defaultFormat; Comment = None } acc) m
+            let header col t m = setCell { Row = 0; Col = col } { Value = CellValue.String t; Format = bold; Comment = None } m
+            let lastRow = List.length vals
+            let model =
+                createEmpty 20 8
+                |> header 0 "Data bars" |> putCol 0 vals |> applyDataBars 1 0 lastRow 0 "#638EC6"
+                |> header 2 "Color scale" |> putCol 2 vals |> applyColorScale 1 2 lastRow 2 "#F8696B" (Some "#FFEB84") "#63BE7B"
+                |> header 4 "Icon set" |> putCol 4 vals |> applyIconSet 1 4 lastRow 4 3
+            let w, h = 560, 320
+            let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) model []
+            let backend = Raster.create()
+            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
+            0
         | [| "--vectortest"; output |] ->
             // Render the hand-built vector scene (VecPath/VecGroup) through the
             // native rasterizer — proves the new paint primitives end-to-end.

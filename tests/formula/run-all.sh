@@ -29,6 +29,7 @@ stages=(
     stage11-stats
     stage12-financial
     stage13-pivot
+    stage14-cf
 )
 
 failed=0

@@ -1246,6 +1246,90 @@ let addConditionalFormat (addr: CellAddress) (format: ConditionalFormat) (model:
 let removeConditionalFormats (addr: CellAddress) (model: SpreadsheetModel): SpreadsheetModel =
     { model with ConditionalFormats = Map.remove addr model.ConditionalFormats }
 
+// --- Conditional-format VISUALS: data bars / color scales / icon sets -------
+// These compute over a range and bake the result into each cell's CellFormat
+// (DataBar / IconSet / BgColor), which the renderers already paint. Applying
+// them is a range operation (from the CF dialog or programmatically).
+
+let rec private unwrapVal (v: CellValue) : CellValue =
+    match v with Formula (_, cached) -> unwrapVal cached | x -> x
+
+let private cellNumber (model: SpreadsheetModel) (addr: CellAddress) : float option =
+    match getCellValue addr model |> unwrapVal with
+    | Number n -> Some n
+    | Boolean b -> Some(if b then 1.0 else 0.0)
+    | _ -> None
+
+let private rangeNumbers sr sc er ec (model: SpreadsheetModel) : (CellAddress * float) list =
+    [ for r in sr .. er do
+        for c in sc .. ec do
+            match cellNumber model { Row = r; Col = c } with
+            | Some n -> yield { Row = r; Col = c }, n
+            | None -> () ]
+
+let private updateFormat (addr: CellAddress) (f: CellFormat -> CellFormat) (model: SpreadsheetModel) : SpreadsheetModel =
+    match getCell addr model with
+    | Some cd -> setCell addr { cd with Format = f cd.Format } model
+    | None -> model
+
+let private hexToRgb (s: string) =
+    let h = (if s.StartsWith "#" then s.Substring 1 else s)
+    if h.Length = 6 then
+        try (Convert.ToInt32(h.Substring(0, 2), 16), Convert.ToInt32(h.Substring(2, 2), 16), Convert.ToInt32(h.Substring(4, 2), 16))
+        with _ -> (255, 255, 255)
+    else (255, 255, 255)
+
+let private lerpHex (a: string) (b: string) (t: float) : string =
+    let (ar, ag, ab), (br, bg, bb) = hexToRgb a, hexToRgb b
+    let m x y = int (float x + (float y - float x) * t)
+    sprintf "#%02X%02X%02X" (m ar br) (m ag bg) (m ab bb)
+
+/// Data bars over a range, baselined at 0 when all values are ≥ 0 (Excel's
+/// automatic behaviour), else min→max.
+let applyDataBars (sr: int) (sc: int) (er: int) (ec: int) (color: string) (model: SpreadsheetModel) : SpreadsheetModel =
+    match rangeNumbers sr sc er ec model with
+    | [] -> model
+    | cells ->
+        let vals = cells |> List.map snd
+        let lo = min 0.0 (List.min vals)
+        let hi = max 0.0 (List.max vals)
+        let span = if hi - lo < 1e-12 then 1.0 else hi - lo
+        cells
+        |> List.fold (fun m (addr, v) ->
+            updateFormat addr (fun f -> { f with DataBar = Some(max 0.0 (min 1.0 ((v - lo) / span)), color) }) m) model
+
+/// 2- or 3-color scale (pass `mid = None` for 2-color) → per-cell BgColor.
+let applyColorScale (sr: int) (sc: int) (er: int) (ec: int) (loColor: string) (mid: string option) (hiColor: string) (model: SpreadsheetModel) : SpreadsheetModel =
+    match rangeNumbers sr sc er ec model with
+    | [] -> model
+    | cells ->
+        let vals = cells |> List.map snd
+        let lo, hi = List.min vals, List.max vals
+        let span = if hi - lo < 1e-12 then 1.0 else hi - lo
+        cells
+        |> List.fold (fun m (addr, v) ->
+            let t = (v - lo) / span
+            let color =
+                match mid with
+                | None -> lerpHex loColor hiColor t
+                | Some mc -> if t <= 0.5 then lerpHex loColor mc (t * 2.0) else lerpHex mc hiColor ((t - 0.5) * 2.0)
+            updateFormat addr (fun f -> { f with BgColor = Some color }) m) model
+
+/// Icon set over a range: `count` buckets by value (Excel's percent
+/// thresholds), each cell tagged with its bucket index for the renderer.
+let applyIconSet (sr: int) (sc: int) (er: int) (ec: int) (count: int) (model: SpreadsheetModel) : SpreadsheetModel =
+    match rangeNumbers sr sc er ec model with
+    | [] -> model
+    | cells when count > 1 ->
+        let vals = cells |> List.map snd
+        let lo, hi = List.min vals, List.max vals
+        let span = if hi - lo < 1e-12 then 1.0 else hi - lo
+        cells
+        |> List.fold (fun m (addr, v) ->
+            let bucket = min (count - 1) (int ((v - lo) / span * float count))
+            updateFormat addr (fun f -> { f with IconSet = Some(bucket, count) }) m) model
+    | _ -> model
+
 /// Parse CSV string to list of rows
 let parseCSV (csvText: string): string list list =
     let rows = ResizeArray<string list>()
