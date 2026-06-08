@@ -51,6 +51,22 @@ check "xtab grand"       p2.[3] [| S "Grand Total"; N 300.0; N 450.0; N 750.0 |]
 let pm = computePivot source 0 (Some 1) 2 Max
 check "max east A"       pm.[1].[1] (N 100.0)   // max(100,50)
 
+// ── nested rows (Region → Product) with subtotals, Sum of Sales ──
+let pn = computePivotN source [0; 1] [ (2, Sum) ]
+check "nested rows count" pn.Length 8           // hdr + 2 East + East Total + 2 West + West Total + Grand
+check "nested header"     pn.[0] [| S "Region"; S "Product"; S "Sum of Sales" |]
+check "nested east-A"     pn.[1] [| S "East"; S "A"; N 150.0 |]
+check "nested east-B"     pn.[2] [| S "East"; S "B"; N 200.0 |]
+check "nested east-total" pn.[3] [| S "East Total"; CellValue.Empty; N 350.0 |]
+check "nested west-total" pn.[6] [| S "West Total"; CellValue.Empty; N 400.0 |]
+check "nested grand"      pn.[7] [| S "Grand Total"; CellValue.Empty; N 750.0 |]
+
+// ── nested rows + multiple value fields (Sum + Count) ──
+let pn2 = computePivotN source [0; 1] [ (2, Sum); (2, Count) ]
+check "multi header"      pn2.[0] [| S "Region"; S "Product"; S "Sum of Sales"; S "Count of Sales" |]
+check "multi east-A"      pn2.[1] [| S "East"; S "A"; N 150.0; N 2.0 |]
+check "multi grand"       pn2.[7] [| S "Grand Total"; CellValue.Empty; N 750.0; N 5.0 |]
+
 printfn ""
 printfn "Stage 13 pivot tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -100,3 +100,50 @@ let computePivot (source: CellValue[][]) (rowField: int) (colField: int option) 
                     |> List.map (fun ck -> aggregate agg (valuesWhere (fun r -> key (at r cf) = key ck)))
                 Array.concat [ [| grandLabel |]; Array.ofList cells; [| aggregate agg (valuesWhere (fun _ -> true)) |] ]
             Array.ofList (header :: body @ [ totalRow ])
+
+/// A richer pivot: NESTED row fields (tabular layout, one column per level)
+/// with a subtotal row after each non-innermost group, plus MULTIPLE value
+/// fields (one measure column each), and a Grand Total row. This is the common
+/// "grouped list with subtotals" pivot. (`rowFields` outer→inner.)
+let computePivotN (source: CellValue[][]) (rowFields: int list) (values: (int * Agg) list) : CellValue[][] =
+    if source.Length < 1 || List.isEmpty rowFields || List.isEmpty values then [||]
+    else
+        let headers = source.[0]
+        let data = if source.Length > 1 then source.[1..] else [||]
+        let at (row: CellValue[]) i = if i >= 0 && i < row.Length then row.[i] else CellValue.Empty
+        let hdr i = at headers i
+        let nf = List.length rowFields
+        let measures (rows: CellValue[][]) =
+            values |> List.map (fun (v, a) -> aggregate a (rows |> Array.toList |> List.map (fun r -> at r v)))
+        let distinctSorted (rows: CellValue[][]) field =
+            rows
+            |> Array.map (fun r -> at r field)
+            |> Array.toList
+            |> List.distinctBy key
+            |> List.sortWith compareCellValues
+        // Build body rows recursively: leaf level emits a data row per value;
+        // each non-leaf level emits its children then a "<value> Total" subtotal.
+        let rec build (level: int) (rows: CellValue[][]) (labels: CellValue list) : CellValue list list =
+            let field = List.item level rowFields
+            [ for kv in distinctSorted rows field do
+                let subset = rows |> Array.filter (fun r -> key (at r field) = key kv)
+                let labels' = labels @ [ kv ]
+                if level = nf - 1 then
+                    let rowCells = [ for i in 0 .. nf - 1 -> if i < labels'.Length then labels'.[i] else CellValue.Empty ]
+                    yield rowCells @ measures subset
+                else
+                    yield! build (level + 1) subset labels'
+                    let subCells =
+                        [ for i in 0 .. nf - 1 ->
+                            if i < level then labels'.[i]
+                            elif i = level then CellValue.String(textOf kv + " Total")
+                            else CellValue.Empty ]
+                    yield subCells @ measures subset ]
+        let header =
+            (rowFields |> List.map hdr)
+            @ (values |> List.map (fun (v, a) -> CellValue.String(aggLabel a + " of " + textOf (hdr v))))
+        let grand =
+            (CellValue.String "Grand Total" :: List.replicate (nf - 1) CellValue.Empty) @ measures data
+        (header :: build 0 data [] @ [ grand ])
+        |> List.map Array.ofList
+        |> Array.ofList

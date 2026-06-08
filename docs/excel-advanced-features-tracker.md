@@ -130,18 +130,22 @@ round-trip. ~160 functions total now.
   on data entry, the AutoFilter dropdown picker, structured-ref autocomplete.
 
 ## 4. Pivot tables 🟡 (engine landed)
-- **Engine ✅** — `src/Spreadsheet/Pivot.fs` `computePivot`: groups source rows
-  by a row field, optionally cross-tabs by a column field, aggregates a value
-  field (Sum/Count/Average/Max/Min), with Grand-Total row/column. Pure +
-  unit-tested (`tests/formula/stage13-pivot.fsx`, 15 assertions: group-by,
-  cross-tab, count/avg/max, grand totals).
-- **Render ✅** — native runner `--pivottest` builds a model (sample source +
-  computed cross-tab) and renders it headlessly (Region × Product, Sum of
-  Sales, verified visually).
-- Still owed: parse `pivotTableDefinition`/`pivotCacheRecords` from real xlsx
-  to recompute imported pivots (cached values currently render as plain cells);
-  interactive Insert-Pivot UI (`SpreadsheetUi.InsertPivot` is still a stub);
-  multiple row/col/value fields; filters; pivot styles.
+- **Engine ✅** — `src/Spreadsheet/Pivot.fs`:
+  - `computePivot` — single row field, optional **column field** (cross-tab),
+    one value field, Sum/Count/Average/Max/Min, Grand-Total row + column.
+  - `computePivotN` — **nested row fields** (tabular, one column per level) with
+    a **subtotal row per non-leaf group**, **multiple value fields** (one measure
+    column each), and a Grand Total row — the "grouped list with subtotals" pivot.
+  - Pure + unit-tested (`tests/formula/stage13-pivot.fsx`, 25 assertions:
+    group-by, cross-tab, count/avg/max, nested subtotals, multi-measure, grand
+    totals).
+- **Render ✅** — native runner `--pivottest` renders a nested Region→Product
+  pivot with Sum + Count measures, bold subtotals (East 470/4, West 700/3) and
+  Grand Total (1170/7), verified visually.
+- Still owed: parse `pivotTableDefinition`/`pivotCacheRecords` from real xlsx to
+  recompute imported pivots (cached values currently render as plain cells);
+  nested **column** fields; report filters / page fields; interactive
+  Insert-Pivot UI (`SpreadsheetUi.InsertPivot` is still a stub); pivot styles.
 
 ## 5. Sparklines 🟡 (native runner)
 In-cell mini-charts, parsed from the x14 `sparklineGroups` extLst and drawn as
