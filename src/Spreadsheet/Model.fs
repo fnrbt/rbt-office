@@ -995,6 +995,28 @@ let getVisibleRows (model: SpreadsheetModel): Set<int> =
             )
         )
 
+/// Render-time model for active AutoFilters: filtered-out data rows get
+/// height 0 so the grid collapses them, exactly like Excel's hidden rows —
+/// the surviving rows keep their original numbers and draw contiguously
+/// because rowY/visibleRange accumulate getRowHeight. The first row of the
+/// data block is treated as the header (AutoFilter range convention) and is
+/// never hidden. A strict no-op when no filters are active, so unfiltered
+/// sheets (the whole parity corpus) are untouched.
+let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
+    if Map.isEmpty model.Filters then model
+    else
+        let dataRows =
+            model.Cells |> Map.toList |> List.map (fun (addr, _) -> addr.Row) |> Set.ofList
+        if Set.isEmpty dataRows then model
+        else
+            let headerRow = Set.minElement dataRows
+            let visible = getVisibleRows model
+            let hidden = Set.difference dataRows visible |> Set.remove headerRow
+            if Set.isEmpty hidden then model
+            else
+                let heights = hidden |> Set.fold (fun m r -> Map.add r 0.0 m) model.RowHeights
+                { model with RowHeights = heights }
+
 /// Distinct, sorted display strings in a column — the AutoFilter checklist's
 /// values. Blanks excluded; uses the same `displayValue` as the filter test.
 let columnUniqueValues (col: int) (model: SpreadsheetModel) : string list =

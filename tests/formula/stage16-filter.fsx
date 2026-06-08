@@ -42,6 +42,18 @@ check "filter AND two cols" (getVisibleRows fAnd) (Set.ofList [ 2 ])
 // remove filter restores
 check "remove filter"     (getVisibleRows (removeFilter 0 fEast) |> Set.count) 5
 
+// render-side row collapsing: filtered-out rows get height 0, header (row 0)
+// and visible rows keep their height. Filter {East}: row 0 (header, East) and
+// row 2 (East) stay; rows 1,3,4 collapse to 0.
+let collapsed = applyFilterRowHeights fEast
+check "header row kept"   (getRowHeight 0 collapsed) 25.0
+check "visible row kept"  (getRowHeight 2 collapsed) 25.0
+check "hidden row1 zero"  (getRowHeight 1 collapsed) 0.0
+check "hidden row3 zero"  (getRowHeight 3 collapsed) 0.0
+check "hidden row4 zero"  (getRowHeight 4 collapsed) 0.0
+// no filters → untouched (no-op): all rows keep default height
+check "no-filter no-op"   (getRowHeight 1 (applyFilterRowHeights model)) 25.0
+
 printfn ""
 printfn "Stage 16 filter tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

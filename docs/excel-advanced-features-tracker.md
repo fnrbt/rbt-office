@@ -211,9 +211,16 @@ Model + `cellIs`/`containsText`/comparison rules; `resolveOperand` handles cell
 references; imported and rendered. Missing ⛔: data bars, color scales, icon
 sets, top/bottom & duplicate rules, and any rule-builder UI.
 
-## 9. AutoFilter / filtering 🟡
-Model (`ColumnFilter`, `getVisibleRows`) + native filter-button render exist;
-no dropdown UI; PDF/web ignore the buttons. Sorting is fully wired.
+## 9. AutoFilter / filtering ✅
+Model (`ColumnFilter`, `getVisibleRows`), checklist dropdown UI
+(`Ui.filterDialog` — a checkbox per value + live "N of M values" preview),
+and **render-side row collapsing** (`Model.applyFilterRowHeights` sets
+filtered-out data rows to height 0 in `buildPaintItems`/`buildViewportPaintItems`,
+so all three render paths collapse hidden rows while survivors keep their
+original row numbers — strict no-op when no filter is active). Header row of
+the data block is never hidden. Sorting is fully wired. Tests: `stage16-filter`
+(13 assertions). Render proof: runner `--autofiltertest` (before/after).
+Deferred: blue hidden-row boundary glyph; per-value numeric/date filters.
 
 ## 10. Freeze panes 🟡
 Status unconfirmed in the interactive grid (import may carry pane state). Needs

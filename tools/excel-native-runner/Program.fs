@@ -1624,6 +1624,41 @@ let main argv =
             // chosen number format through the real cell renderer.
             let spec = RedBat.Spreadsheet.Ui.formatCellsDialog "currency" "#000000" "#FFFFFF" (fun _ -> ())
             renderDialogPng (fullPath output) spec 560 520
+        | [| "--autofiltertest"; outputBefore; outputAfter |] ->
+            // AutoFilter end-to-end: render the same sheet unfiltered, then with
+            // Region filtered to {East, West} — proves filtered-out rows collapse
+            // (height 0) while survivors keep their original row numbers.
+            let S = CellValue.String
+            let N = CellValue.Number
+            let bold = { defaultFormat with Bold = true }
+            let rows =
+                [ [ S "Region"; S "Product"; S "Sales" ]
+                  [ S "East"; S "Apples"; N 100.0 ]
+                  [ S "North"; S "Bananas"; N 200.0 ]
+                  [ S "West"; S "Apples"; N 150.0 ]
+                  [ S "South"; S "Cherries"; N 250.0 ]
+                  [ S "East"; S "Bananas"; N 50.0 ]
+                  [ S "North"; S "Cherries"; N 300.0 ]
+                  [ S "West"; S "Apples"; N 120.0 ]
+                  [ S "South"; S "Bananas"; N 90.0 ] ]
+            let baseModel =
+                rows
+                |> List.mapi (fun r cols -> r, cols)
+                |> List.fold (fun m (r, cols) ->
+                    cols |> List.mapi (fun c v -> c, v)
+                    |> List.fold (fun acc (c, v) ->
+                        setCell { Row = r; Col = c } { Value = v; Format = (if r = 0 then bold else defaultFormat); Comment = None } acc) m)
+                    (createEmpty 20 8)
+            let filtered = applyFilter 0 (Set.ofList [ "East"; "West" ]) baseModel
+            let w, h = 360, 280
+            let renderTo path model =
+                let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) model []
+                let backend = Raster.create()
+                let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+                File.WriteAllBytes(fullPath path, PngEncode.encode framebuffer)
+            renderTo outputBefore baseModel
+            renderTo outputAfter filtered
+            0
         | [| "--cftest"; output |] ->
             // Conditional-format visuals: data bars / color scale / icon set,
             // computed over real numbers and rendered.

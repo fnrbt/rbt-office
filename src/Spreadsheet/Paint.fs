@@ -860,6 +860,7 @@ let private buildFreezeDividerItems (model: SpreadsheetModel) (viewport: Viewpor
     ]
 
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
+    let model = applyFilterRowHeights model
     [
         yield FillRect ({ X = 0.0; Y = 0.0; Width = viewport.Width; Height = viewport.Height }, "#ffffff")
         yield! buildHeaderPaintItems model viewport
@@ -906,6 +907,7 @@ let private translatePaintItem viewport zone item =
         VecGroup ((a, b, c, d, e + o.X, f + o.Y), children)
 
 let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): ViewportPaintItem list =
+    let model = applyFilterRowHeights model
     [
         yield { Zone = CornerZone
                 Item = FillRect ({ X = 0.0; Y = 0.0; Width = viewport.Width; Height = viewport.Height }, "#ffffff") }
