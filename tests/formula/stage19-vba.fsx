@@ -64,6 +64,33 @@ match V.compileCached "Range(\"A1\").Value = 1", V.compileCached "Range(\"A1\").
 | Result.Ok a, Result.Ok b -> check "compile cache hit (same instance)" (System.Object.ReferenceEquals(a, b)) true
 | _ -> fail <- fail + 1; printfn "FAIL compile cache compile error"
 
+// --- bytecode persistence: compile→serialize→deserialize→run == direct run ---
+let bcSrc =
+    String.concat "\n"
+        [ "Dim i"
+          "For i = 1 To 3"
+          "  Cells(i + 2, 2).Value = i * i"
+          "Next i"
+          "Range(\"B1\").Value = \"done\"" ]
+match V.compileToBytes bcSrc with
+| Result.Error e -> fail <- fail + 1; printfn "FAIL compileToBytes: %s" e
+| Result.Ok blob ->
+    check "bytecode blob non-empty" (blob.Length > 8) true
+    match V.runBytesOnModel model blob with
+    | Result.Error e -> fail <- fail + 1; printfn "FAIL runBytesOnModel: %s" e
+    | Result.Ok m ->
+        // squares in B3:B5, "done" in B1 — same as running the source directly
+        check "bc B3 = 1"  (disp m 2 1) "1"
+        check "bc B4 = 4"  (disp m 3 1) "4"
+        check "bc B5 = 9"  (disp m 4 1) "9"
+        check "bc B1 done" (disp m 0 1) "done"
+        // identical to the source path
+        match V.runOnModel model bcSrc with
+        | Result.Ok m2 ->
+            check "bytecode == source path"
+                [ for r in 2..4 -> disp m r 1 ] [ for r in 2..4 -> disp m2 r 1 ]
+        | Result.Error e -> fail <- fail + 1; printfn "FAIL source path: %s" e
+
 printfn ""
 printfn "Stage 19 VBA tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

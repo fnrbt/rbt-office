@@ -764,13 +764,10 @@ let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
         | Result.Ok (_, bc) -> bytecodeCache.[source] <- bc; Result.Ok bc
         | Result.Error e -> Result.Error (sprintf "%A" e)
 
-/// Run a macro against a model with read+write host objects, fold the writes
-/// back in (a `=…` value becomes a formula), and recompute. Cross-platform.
-/// Reuses the cached compiled bytecode (recompiles only on first sight).
-let runOnModelWithSheetName (sheetName: string) (model: SpreadsheetModel) (source: string) : Result<SpreadsheetModel, string> =
-    match compileCached source with
-    | Result.Error e -> Result.Error e
-    | Result.Ok bytecode ->
+/// Execute an already-compiled program against a model with read+write host
+/// objects, fold the writes back in (a `=…` value becomes a formula), and
+/// recompute. Shared by the compile path and the run-from-bytecode path.
+let private runProgramOnModel (sheetName: string) (model: SpreadsheetModel) (bytecode: Bytecode.BytecodeProgram) : Result<SpreadsheetModel, string> =
     let cells = ModelCells(model)
     let runErr =
         try FsVb.executeWithHostGlobals (hostGlobalsRW cells sheetName |> Map.toSeq) bytecode |> ignore; None
@@ -792,8 +789,32 @@ let runOnModelWithSheetName (sheetName: string) (model: SpreadsheetModel) (sourc
             m <- setCell { Row = r; Col = c } { Value = cv; Format = fmt; Comment = None } m
         Result.Ok (RedBat.Spreadsheet.Formula.recalcAndSpill None (Some sheetName) m)
 
+/// Run a macro against a model with read+write host objects, fold the writes
+/// back in (a `=…` value becomes a formula), and recompute. Cross-platform.
+/// Reuses the cached compiled bytecode (recompiles only on first sight).
+let runOnModelWithSheetName (sheetName: string) (model: SpreadsheetModel) (source: string) : Result<SpreadsheetModel, string> =
+    match compileCached source with
+    | Result.Error e -> Result.Error e
+    | Result.Ok bytecode -> runProgramOnModel sheetName model bytecode
+
 let runOnModel (model: SpreadsheetModel) (source: string) : Result<SpreadsheetModel, string> =
     runOnModelWithSheetName "Sheet1" model source
+
+/// Compile a macro module to a portable bytecode blob (our "p-code"): save it,
+/// then re-run later with `runBytesOnModel` without re-parsing the source.
+/// Native-only (serialization uses System.IO).
+let compileToBytes (source: string) : Result<byte[], string> =
+    compileCached source |> Result.map BytecodeIO.serialize
+
+/// Run a previously-serialized bytecode blob against a model — skips lex/parse/
+/// compile entirely. Mirrors how Office runs persisted p-code.
+let runBytesOnModelWithSheetName (sheetName: string) (model: SpreadsheetModel) (blob: byte[]) : Result<SpreadsheetModel, string> =
+    match (try Result.Ok (BytecodeIO.deserialize blob) with ex -> Result.Error ex.Message) with
+    | Result.Error e -> Result.Error e
+    | Result.Ok bytecode -> runProgramOnModel sheetName model bytecode
+
+let runBytesOnModel (model: SpreadsheetModel) (blob: byte[]) : Result<SpreadsheetModel, string> =
+    runBytesOnModelWithSheetName "Sheet1" model blob
 
 /// Does the module source define a `Sub name` (optionally Private/Public)?
 let hasSub (name: string) (source: string) : bool =
