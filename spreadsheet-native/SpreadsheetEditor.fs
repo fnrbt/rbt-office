@@ -286,10 +286,15 @@ let private parseCellInput (text: string) : CellValue =
 let private writeCell (row: int) (col: int) (text: string) (model: SpreadsheetModel) =
     let value = parseCellInput text
     let addr = { Row = row; Col = col }
-    match value, getCell addr model with
-    | Empty, _ -> clearCell addr model
-    | v, Some existing -> setCell addr { existing with Value = v } model
-    | v, None -> setCell addr { Value = v; Format = defaultFormat; Comment = None } model
+    let edited =
+        match value, getCell addr model with
+        | Empty, _ -> clearCell addr model
+        | v, Some existing -> setCell addr { existing with Value = v } model
+        | v, None -> setCell addr { Value = v; Format = defaultFormat; Comment = None } model
+    // Recompute formulas and (re)materialize dynamic-array spills so the edit
+    // is live — a spilling formula (FILTER/SORT/GROUPBY/PIVOTBY) refreshes when
+    // its source changes. (Same-sheet scope; cross-sheet recalc is separate.)
+    RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
 
 /// Active cell reference like "B7" for the status bar / cell-ref box.
 let activeCellRef (state: SpreadsheetEditorState) =

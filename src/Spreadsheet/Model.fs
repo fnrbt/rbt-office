@@ -506,6 +506,12 @@ type SpreadsheetModel = {
     /// workbooks turn this off (`showGridLines="0"`) and rely on explicit
     /// cell borders, so the renderer must suppress the always-on grid.
     ShowGridLines: bool
+
+    /// Dynamic-array spill ownership: each spilled (ghost) cell mapped to its
+    /// anchor formula cell. Maintained by the recalc+spill pass so stale
+    /// spilled cells are cleared before a re-spill. Empty for non-spilling
+    /// workbooks.
+    Spill: Map<CellAddress, CellAddress>
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -555,6 +561,7 @@ let createEmpty rowCount colCount = {
     Tables = []
     CfBoldCells = Set.empty
     ShowGridLines = true
+    Spill = Map.empty
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")

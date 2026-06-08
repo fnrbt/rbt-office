@@ -2649,9 +2649,16 @@ let rec containsArrayFunction (e: Expr) : bool =
 let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                 (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
                 (model: SpreadsheetModel) : SpreadsheetModel =
-    let ctx = { Model = model; Workbook = workbook; Sheet = currentSheet }
+    // Clear the previous spill's ghost cells first (those still plain values),
+    // so a re-spill that shrank doesn't leave stale cells behind.
+    let cleared =
+        model.Spill
+        |> Map.fold (fun (m: SpreadsheetModel) addr _ ->
+            match getCell addr m with
+            | Some cd -> (match cd.Value with CellValue.Formula _ -> m | _ -> clearCell addr m)
+            | None -> m) { model with Spill = Map.empty }
     let anchors =
-        model.Cells
+        cleared.Cells
         |> Map.toList
         |> List.choose (fun (addr, cell) ->
             match cell.Value with
@@ -2660,9 +2667,10 @@ let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                 | Ok expr when containsArrayFunction expr -> Some (addr, cell, formula, expr)
                 | _ -> None
             | _ -> None)
-    let mutable updated = model
+    let mutable updated = cleared
+    let mutable spillMap = Map.empty
     for (addr, cell, formula, expr) in anchors do
-        let arr = evalArray expr ctx
+        let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet }
         let nr = arr.Length
         let nc = if nr > 0 then arr.[0].Length else 0
         if nr * nc <= 1 then
@@ -2672,7 +2680,7 @@ let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
             let occupied r c =
                 if r = 0 && c = 0 then false
                 else
-                    match Map.tryFind { Row = addr.Row + r; Col = addr.Col + c } model.Cells with
+                    match Map.tryFind { Row = addr.Row + r; Col = addr.Col + c } updated.Cells with
                     | Some cd -> (match cd.Value with CellValue.Empty -> false | _ -> true)
                     | None -> false
             let collides =
@@ -2685,7 +2693,20 @@ let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                 for r in 0 .. nr - 1 do
                     for c in 0 .. nc - 1 do
                         if not (r = 0 && c = 0) then
-                            updated <-
-                                setCell { Row = addr.Row + r; Col = addr.Col + c }
-                                    { Value = arr.[r].[c]; Format = cell.Format; Comment = None } updated
-    updated
+                            let sa = { Row = addr.Row + r; Col = addr.Col + c }
+                            updated <- setCell sa { Value = arr.[r].[c]; Format = cell.Format; Comment = None } updated
+                            spillMap <- Map.add sa addr spillMap
+    { updated with Spill = spillMap }
+
+/// Recalculate every formula and (re)materialize dynamic-array spills,
+/// clearing the previous spill's ghost cells. This is the interactive
+/// edit→recompute step: a spilling formula (FILTER/SORT/GROUPBY/…) updates and
+/// re-spills automatically when its source changes. Two recalc passes bracket
+/// the spill so formulas that *read* spilled cells also settle.
+let recalcAndSpill (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                   (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                   (model: SpreadsheetModel) : SpreadsheetModel =
+    model
+    |> recalculateAllFormulas workbook currentSheet
+    |> spillArrays workbook currentSheet
+    |> recalculateAllFormulas workbook currentSheet

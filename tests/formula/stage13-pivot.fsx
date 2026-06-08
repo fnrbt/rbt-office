@@ -136,6 +136,26 @@ check "spilled east"  (match getCell { Row=0; Col=4 } spilled with Some c -> (ma
 check "spilled sum"   (getCellValue { Row=0; Col=5 } spilled) (N 350.0)   // East sum spilled to F1
 check "spilled grand" (getCellValue { Row=2; Col=5 } spilled) (N 750.0)   // Grand Total
 
+// ── interactive spill: edit source → auto-refresh + clear stale cells ──
+let baseCells =
+    ([ "East";"East";"West";"West";"East" ] |> List.mapi (fun i v -> ({ Row=i; Col=0 }, cell (S v))))
+    @ ([ 100.;200.;150.;250.;50. ] |> List.mapi (fun i v -> ({ Row=i; Col=2 }, cell (N v))))
+    @ [ { Row=0; Col=4 }, cell (CellValue.Formula("=GROUPBY(A1:A5,C1:C5,\"sum\")", CellValue.Empty)) ]
+let m0 = { createEmpty 100 26 with Cells = Map.ofList baseCells } |> recalcAndSpill None None
+let valAt r c (m: SpreadsheetModel) = match getCellValue { Row=r; Col=c } m with CellValue.Formula(_, v) -> v | v -> v
+check "ispill anchor"   (valAt 0 4 m0) (S "East")        // E1 anchor (formula) shows top-left
+check "ispill spilled"  (getCellValue { Row=0; Col=5 } m0) (N 350.0)  // F1 = East sum
+check "ispill grand"    (getCellValue { Row=2; Col=5 } m0) (N 750.0)  // F3 = Grand Total
+check "ispill tracked"  (Map.containsKey { Row=2; Col=5 } m0.Spill) true
+// edit a source value → the pivot refreshes (no Refresh needed)
+let m1 = m0 |> setCell { Row=0; Col=2 } (cell (N 1100.0)) |> recalcAndSpill None None
+check "ispill live F1"   (getCellValue { Row=0; Col=5 } m1) (N 1350.0) // East now 1100+200+50
+check "ispill live grand" (getCellValue { Row=2; Col=5 } m1) (N 1750.0)
+// shrink the result (all rows → East): the old 3rd row must be cleared
+let m2 = m0 |> setCell { Row=2; Col=0 } (cell (S "East")) |> setCell { Row=3; Col=0 } (cell (S "East")) |> recalcAndSpill None None
+check "ispill shrink stale-cleared" (getCellValue { Row=2; Col=4 } m2) CellValue.Empty // old E3 gone
+check "ispill shrink grand"        (getCellValue { Row=1; Col=5 } m2) (N 750.0)        // Grand now at row 2
+
 printfn ""
 printfn "Stage 13 pivot tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
