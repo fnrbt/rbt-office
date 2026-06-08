@@ -219,15 +219,21 @@ group `type` parsed, negatives drawn in `colorNegative`). Render-verified:
 win-loss). Gaps: high/low/first/last **markers**, axis options, and wiring into
 the canvas/PDF paths (currently native-runner only, like charts).
 
-## 6. Charts 🟡
+## 6. Charts 🟡 (native + PDF)
 - Vector paint foundation `VecPath`/`VecGroup` (`Paint.fs` ~74) renders in all
   three paths (native/canvas/PDF), proven on a hand-built scene.
 - `tools/excel-native-runner/ChartRender.fs` parses chart XML and renders
   column/bar/line/pie/area/scatter at parity (native); wired into the native
   import pipeline as anchored overlays (`renderXlsx` + `parseAllCharts`).
-- Missing ⛔: canvas/web + PDF chart wiring (only native runner wires them),
-  interactive chart insertion, legends/multi-series/secondary-axis polish,
-  chart sizing from anchor extents (uses default col/row px).
+- **PDF ✅** — `Render.toBytesWith` takes anchored overlays (cell anchor + px
+  offset + local paint items) and places each on the page whose vertical slice
+  spans its anchor row (fallback page 0), positioned with the print model's own
+  widths so charts paginate with the grid. The PDF runner reuses ChartRender
+  (`parseAllCharts`/`buildChart`) to build them. Verified: chart-column and
+  chart-zoo render through `pdftoppm` (column/line+markers/area).
+- Missing ⛔: **canvas/web** chart wiring — blocked on a Fable-safe chart-XML
+  parser (ChartRender uses `System.IO.Compression`/`Xml.Linq`, not Fable);
+  interactive chart insertion; legends/multi-series/secondary-axis polish.
 
 ## 7. Data validation 🟡
 Model carries a list-dropdown flag; `Paint.fs` (~782) draws the dropdown

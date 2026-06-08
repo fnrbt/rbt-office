@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <Compile Include="../../../widgets/x11-viewer/PngEncode.fs" />
+    <Compile Include="../excel-native-runner/ChartRender.fs" />
     <Compile Include="../excel-native-runner/Program.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>

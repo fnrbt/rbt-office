@@ -824,7 +824,15 @@ let private sectionOps
 /// pull in ~14 MB of YuGothR / YuGothB / MS Gothic per CJK font and the
 /// resulting PDF balloons past 100 MB. The subset path produces ~30 KB
 /// embeds for the same content.
-let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
+/// Render to PDF with anchored vector overlays (charts/sparklines). Each
+/// overlay is `(fromRow, fromCol, fromColOffPx, fromRowOffPx, items)`: a cell
+/// anchor + pixel offset within that cell, and the overlay's paint items in
+/// local (0,0)-origin space. The overlay is placed on the page whose slice
+/// contains the anchor, offset into that page's content band — so it paginates
+/// with the grid. Positions use the print model's own widths, keeping them
+/// consistent with the cell content around them.
+let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
+                (overlays: (int * int * float * float * PaintItem list) list) : byte[] =
     let model = model |> withCommentMarkersForPrint |> withPrintColumnWidths |> withPrintRowHeights
     let builder = PdfDoc.create ()
 
@@ -928,6 +936,39 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
             let headings =
                 if printHeadings then headingItems model slice pagination else []
             body @ repeatRows @ repeatCols @ repeatCorner @ headings)
+
+    // Inject anchored overlays (charts/sparklines) onto the page whose slice
+    // contains each anchor cell, offset into that page's content band. Done
+    // before GID collection so overlay text fonts get subset too.
+    let pageItems =
+        if List.isEmpty overlays then pageItems
+        else
+            let pages = pagination.Pages |> List.toArray
+            let baseX = headingsColPx + repeatColsWidthPx
+            let baseY = headingsRowPx + repeatRowsHeightPx
+            // An overlay anchored beyond the data's print range (charts usually
+            // sit beside/below it) still belongs to the page whose vertical
+            // slice spans its anchor row; if none does, the first page.
+            let pageOf (fr: int) =
+                pages |> Array.tryFindIndex (fun s -> fr >= s.RowStart && fr <= s.RowEnd)
+                |> Option.defaultValue 0
+            pageItems
+            |> Array.mapi (fun i items ->
+                if i >= pages.Length then items
+                else
+                    let slice = pages.[i]
+                    let colStartPx = colSumPx model 0 (slice.ColStart - 1)
+                    let rowStartPx = rowSumPx model 0 (slice.RowStart - 1)
+                    let added =
+                        overlays |> List.choose (fun (fr, fc, fox, foy, locItems) ->
+                            if pageOf fr = i then
+                                let gx = colSumPx model 0 (fc - 1) + fox
+                                let gy = rowSumPx model 0 (fr - 1) + foy
+                                let tx = baseX + (gx - colStartPx)
+                                let ty = baseY + (gy - rowStartPx)
+                                Some (VecGroup ((1.0, 0.0, 0.0, 1.0, tx, ty), locItems))
+                            else None)
+                    items @ added)
 
     // Collect used GIDs across every page's items, plus header / footer
     // sections (so their glyphs land in the subset too).
@@ -1148,6 +1189,10 @@ let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
         PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames [] ops |> ignore
 
     PdfDoc.toBytes builder
+
+/// Render to PDF with no overlays (the common case).
+let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
+    toBytesWith options model []
 
 /// Render a standalone vector PaintItem scene (no model/text) to a one-page
 /// PDF — proves the VecPath/VecGroup primitives through the PDF path.

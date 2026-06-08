@@ -113,7 +113,21 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
     // on Windows; match that so our footer reads "synthetic-print" rather
     // than "synthetic-print.xlsx".
     let opts = pdfOptions sheet.Name (Path.GetFileNameWithoutExtension inputPath)
-    let pdfBytes = RedBat.Spreadsheet.Pdf.Render.toBytes opts model
+    // Anchored chart overlays: parse the sheet's charts, render each to local
+    // (0,0) paint items sized to its anchor span (same default col/row px the
+    // PDF positioner uses), and hand them to the PDF render as overlays.
+    let overlays =
+        ChartRender.parseAllCharts inputPath
+        |> List.map (fun pl ->
+            let colW c = Map.tryFind c model.ColumnWidths |> Option.defaultValue 100.0
+            let rowH r = Map.tryFind r model.RowHeights |> Option.defaultValue 25.0
+            let mutable w = pl.ToColOffPx - pl.FromColOffPx
+            for c in pl.FromCol .. pl.ToCol - 1 do w <- w + colW c
+            let mutable h = pl.ToRowOffPx - pl.FromRowOffPx
+            for r in pl.FromRow .. pl.ToRow - 1 do h <- h + rowH r
+            let items = ChartRender.buildChart pl.Spec w h
+            (pl.FromRow, pl.FromCol, pl.FromColOffPx, pl.FromRowOffPx, items))
+    let pdfBytes = RedBat.Spreadsheet.Pdf.Render.toBytesWith opts model overlays
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, pdfBytes)
     printfn "spreadsheet pdf runner ok: %s [sheet=%s cells=%d] -> %s (%d bytes)"
