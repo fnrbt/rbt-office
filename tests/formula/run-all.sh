@@ -33,6 +33,7 @@ stages=(
     stage15-validation
     stage16-filter
     stage17-tables
+    stage18-arrays2
 )
 
 failed=0

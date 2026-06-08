@@ -72,6 +72,10 @@ type Expr =
     | CellRef of RefAst
     | RangeRef of RefAst * RefAst
     | TableRef of TableSel
+    /// An inline materialized array (rows × cols of already-computed values).
+    /// Not produced by the parser — used internally to feed a row/column to a
+    /// lambda (BYROW/BYCOL) as a single array argument.
+    | ArrayLit of CellValue[][]
     /// Named range / defined name — resolved at eval time against the
     /// workbook's NamedRanges (S3); for now evaluates to #NAME?.
     | NameRef of string
@@ -367,7 +371,23 @@ let rec private parsePrimary (p: Parser) : Expr =
             p.Pos <- p.Pos + 1
             let args = parseArgs p
             expectP p TRParen
-            Function(ident, args)
+            // Direct LAMBDA application (IIFE): LAMBDA(p1,…,pn, body)(a1,…,an).
+            // Desugar to LET(p1,a1,…,pn,an, body) — same beta-reduction, no new
+            // node. (LET inlines each value into the body, left to right.)
+            if ident.ToUpperInvariant() = "LAMBDA" && peekP p = TLParen then
+                p.Pos <- p.Pos + 1
+                let callArgs = parseArgs p
+                expectP p TRParen
+                match List.rev args with
+                | body :: revParams ->
+                    let prms = List.rev revParams
+                    let n = min (List.length prms) (List.length callArgs)
+                    let letArgs =
+                        (List.zip (List.truncate n prms) (List.truncate n callArgs)
+                         |> List.collect (fun (pn, a) -> [ pn; a ])) @ [ body ]
+                    Function("LET", letArgs)
+                | [] -> Function(ident, args)
+            else Function(ident, args)
         | TTableSpec raw ->
             // Structured table reference: Table[Column] / Table[[#Totals],[A]] etc.
             p.Pos <- p.Pos + 1
@@ -618,7 +638,7 @@ let referencesInExpr (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                      (expr: Expr) : Set<CellAddress> =
     let rec go (seen: Set<string>) (e: Expr) : Set<CellAddress> =
         match e with
-        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ -> Set.empty
+        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ -> Set.empty
         | NameRef name ->
             let key = name.ToUpperInvariant()
             if Set.contains key seen then Set.empty
@@ -654,7 +674,7 @@ let referencesQualified (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
         | Some n -> workbook |> Option.bind (RedBat.Spreadsheet.Workbook.resolveSheetName n)
     let rec go (seen: Set<string>) (e: Expr) : Set<RedBat.Spreadsheet.Workbook.SheetCell> =
         match e with
-        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ -> Set.empty
+        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ -> Set.empty
         | NameRef name ->
             let key = name.ToUpperInvariant()
             if Set.contains key seen then Set.empty
@@ -718,7 +738,7 @@ let referencesRanged (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
     let rects = ResizeArray<DepRect>()
     let rec go (seen: Set<string>) (e: Expr) =
         match e with
-        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ -> ()
+        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ -> ()
         | NameRef name ->
             let key = name.ToUpperInvariant()
             if not (Set.contains key seen) then
@@ -757,7 +777,7 @@ let rec shiftExpr (dr: int) (dc: int) (expr: Expr) : Expr =
             Row = if r.RowAbs then r.Row else r.Row + dr
             Col = if r.ColAbs then r.Col else r.Col + dc }
     match expr with
-    | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ -> expr
+    | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ | ArrayLit _ -> expr
     | CellRef r -> CellRef (shiftRef r)
     | RangeRef (a, b) -> RangeRef (shiftRef a, shiftRef b)
     | UnaryOp (op, e) -> UnaryOp (op, shiftExpr dr dc e)
@@ -775,7 +795,7 @@ let rec substituteNames (subst: Map<string, Expr>) (expr: Expr) : Expr =
         match Map.tryFind (n.ToUpperInvariant()) subst with
         | Some e -> e
         | None -> expr
-    | Number _ | Str _ | Bool _ | ErrorLit _ | CellRef _ | RangeRef _ | TableRef _ -> expr
+    | Number _ | Str _ | Bool _ | ErrorLit _ | CellRef _ | RangeRef _ | TableRef _ | ArrayLit _ -> expr
     | UnaryOp (op, e) -> UnaryOp (op, substituteNames subst e)
     | BinOp (l, op, r) -> BinOp (substituteNames subst l, op, substituteNames subst r)
     | Function (nm, fa) ->
@@ -1203,7 +1223,8 @@ type ArrVal = CellValue[][]
 /// evaluator can collapse them and aggregates can consume the whole array.
 let private arrayFunctionSet =
     set [ "SEQUENCE"; "RANDARRAY"; "UNIQUE"; "SORT"; "SORTBY"; "FILTER"; "TRANSPOSE"
-          "MAP"; "REDUCE"; "SCAN"; "MAKEARRAY"; "TEXTSPLIT"; "GROUPBY"; "PIVOTBY" ]
+          "MAP"; "REDUCE"; "SCAN"; "MAKEARRAY"; "TEXTSPLIT"; "GROUPBY"; "PIVOTBY"
+          "BYROW"; "BYCOL" ]
 let isArrayFunction (name: string) = arrayFunctionSet.Contains(name.ToUpperInvariant())
 
 /// Does this expression evaluate to an array (a spill)? An array function, or
@@ -1215,7 +1236,7 @@ let rec isArrayExpr (e: Expr) : bool =
     // A range/table inside an operator broadcasts element-wise (`A1:A8+B1:B8`).
     // A *bare* range arg never reaches this test — aggregates match RangeRef
     // first and stream it — so this only fires inside Unary/BinOp/array funcs.
-    | RangeRef _ | TableRef _ -> true
+    | RangeRef _ | TableRef _ | ArrayLit _ -> true
     | UnaryOp (_, x) -> isArrayExpr x
     | BinOp (l, _, r) -> isArrayExpr l || isArrayExpr r
     | _ -> false
@@ -1306,6 +1327,7 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
         match expandTableSel sel workbook ctx.Sheet ctx.CurrentCell model with
         | v :: _ -> v
         | [] -> err Err.ref
+    | ArrayLit a -> if a.Length > 0 && a.[0].Length > 0 then a.[0].[0] else err Err.value
     | UnaryOp (op, operand) -> applyUnary op (eval operand ctx)
     | BinOp (left, op, right) -> applyBin op (eval left ctx) (eval right ctx)
     | Function (name, args) ->
@@ -1351,6 +1373,7 @@ and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
             [| for r in sr .. er -> [| for c in sc .. ec -> getCellValue { Row = r; Col = c } m |> unwrapValue |] |]
         | None -> scalar (err Err.ref)
     | TableRef sel -> [| for v in expandTableSel sel ctx.Workbook ctx.Sheet ctx.CurrentCell ctx.Model -> [| v |] |]
+    | ArrayLit a -> a
     | NameRef name ->
         match ctx.Workbook |> Option.bind (resolveNameExpr name ctx.Sheet) with
         | Some (RangeRef (a, b)) -> evalArray (RangeRef (a, b)) ctx
@@ -1385,6 +1408,10 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
     let errArr e : ArrVal = [| [| err e |] |]
     let firstCol (a: ArrVal) = a |> Array.map (fun row -> if row.Length > 0 then row.[0] else CellValue.Empty)
     let cmpVal a b = match compareValues a b with Ok c -> c | _ -> 0
+    let transposeArr (a: ArrVal) : ArrVal =
+        let nr = a.Length
+        let nc = if nr > 0 then a.[0].Length else 0
+        [| for c in 0 .. nc - 1 -> [| for r in 0 .. nr - 1 -> a.[r].[c] |] |]
     match name with
     | "SEQUENCE" ->
         if nargs < 1 then errArr Err.value else
@@ -1406,7 +1433,9 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
             Array.init rows (fun _ -> Array.init cols (fun _ -> CellValue.Number (gen ())))
     | "UNIQUE" ->
         if nargs < 1 then errArr Err.value else
-        let arr = evalArray (List.item 0 args) ctx
+        let arr0 = evalArray (List.item 0 args) ctx
+        let byCol = nargs >= 2 && boolAt 1
+        let arr = if byCol then transposeArr arr0 else arr0
         // Distinct rows, first occurrence kept; case-insensitive (engine-wide).
         let keyOf (row: CellValue[]) =
             row
@@ -1421,27 +1450,45 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
         let seen = System.Collections.Generic.HashSet<string>()
         let outRows = ResizeArray<CellValue[]>()
         for row in arr do if seen.Add(keyOf row) then outRows.Add row
-        if outRows.Count = 0 then errArr Err.calc else outRows.ToArray()
+        if outRows.Count = 0 then errArr Err.calc
+        else let res = outRows.ToArray() in (if byCol then transposeArr res else res)
     | "SORT" ->
         if nargs < 1 then errArr Err.value else
-        let arr = evalArray (List.item 0 args) ctx
-        let col = (if nargs >= 2 then int (num 1) else 1) - 1
+        let arr0 = evalArray (List.item 0 args) ctx
+        let idx = (if nargs >= 2 then int (num 1) else 1) - 1
         let order = if nargs >= 3 then int (num 2) else 1
-        arr
-        |> Array.sortWith (fun r1 r2 ->
-            let a = if col >= 0 && col < r1.Length then r1.[col] else CellValue.Empty
-            let b = if col >= 0 && col < r2.Length then r2.[col] else CellValue.Empty
-            let c = cmpVal a b in if order < 0 then -c else c)
+        let byCol = nargs >= 4 && boolAt 3
+        // by_col → sort columns by row `idx` (transpose, sort rows, transpose back).
+        let arr = if byCol then transposeArr arr0 else arr0
+        let sorted =
+            arr
+            |> Array.sortWith (fun r1 r2 ->
+                let a = if idx >= 0 && idx < r1.Length then r1.[idx] else CellValue.Empty
+                let b = if idx >= 0 && idx < r2.Length then r2.[idx] else CellValue.Empty
+                let c = cmpVal a b in if order < 0 then -c else c)
+        if byCol then transposeArr sorted else sorted
     | "SORTBY" ->
+        // SORTBY(array, by1, [order1], [by2, order2], …) — stable multi-key sort.
         if nargs < 2 then errArr Err.value else
         let arr = evalArray (List.item 0 args) ctx
-        let key = firstCol (evalArray (List.item 1 args) ctx)
-        let order = if nargs >= 3 then int (num 2) else 1
+        let keys =
+            [ let mutable i = 1
+              while i < nargs do
+                  let key = firstCol (evalArray (List.item i args) ctx)
+                  let order = if i + 1 < nargs then int (num (i + 1)) else 1
+                  yield key, order
+                  i <- i + 2 ]
         Array.init arr.Length id
         |> Array.sortWith (fun i j ->
-            let a = if i < key.Length then key.[i] else CellValue.Empty
-            let b = if j < key.Length then key.[j] else CellValue.Empty
-            let c = cmpVal a b in if order < 0 then -c else c)
+            let rec go ks =
+                match ks with
+                | (key: CellValue[], order) :: rest ->
+                    let a = if i < key.Length then key.[i] else CellValue.Empty
+                    let b = if j < key.Length then key.[j] else CellValue.Empty
+                    let c = cmpVal a b
+                    if c <> 0 then (if order < 0 then -c else c) else go rest
+                | [] -> compare i j
+            go keys)
         |> Array.map (fun i -> arr.[i])
     | "FILTER" ->
         if nargs < 2 then errArr Err.value else
@@ -1512,6 +1559,26 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
             if rows < 1 || cols < 1 then errArr Err.value
             else Array.init rows (fun r -> Array.init cols (fun c ->
                     eval (applyLambdaExpr parts [ Number (float (r + 1)); Number (float (c + 1)) ]) ctx))
+    | "BYROW" ->
+        // BYROW(array, lambda(row)) → one value per row (single column). The
+        // whole row is handed to the lambda as one array argument.
+        if nargs < 2 then errArr Err.value else
+        match lambdaPartsOf (List.item 1 args) with
+        | None -> errArr Err.value
+        | Some parts ->
+            evalArray (List.item 0 args) ctx
+            |> Array.map (fun row -> [| eval (applyLambdaExpr parts [ ArrayLit [| row |] ]) ctx |])
+    | "BYCOL" ->
+        // BYCOL(array, lambda(col)) → one value per column (single row).
+        if nargs < 2 then errArr Err.value else
+        match lambdaPartsOf (List.item 1 args) with
+        | None -> errArr Err.value
+        | Some parts ->
+            let arr = evalArray (List.item 0 args) ctx
+            let nc = if arr.Length > 0 then arr.[0].Length else 0
+            [| [| for c in 0 .. nc - 1 ->
+                    let col = [| for r in 0 .. arr.Length - 1 -> [| arr.[r].[c] |] |]
+                    eval (applyLambdaExpr parts [ ArrayLit col ]) ctx |] |]
     | "GROUPBY" ->
         // GROUPBY(row_range, value_range, [agg]) — a LIVE spilling pivot:
         // groups the row range (1+ columns, nested) and aggregates the value
