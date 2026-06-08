@@ -34,6 +34,7 @@ stages=(
     stage16-filter
     stage17-tables
     stage18-arrays2
+    stage19-vba
 )
 
 failed=0

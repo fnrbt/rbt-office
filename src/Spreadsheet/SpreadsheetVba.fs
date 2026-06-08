@@ -622,6 +622,177 @@ let hostGlobalsForSnapshotVbs sheetName snapshot =
     hostGlobalsForSnapshot sheetName snapshot
     |> Map.add "CreateObject" (createObjectFunctionForSnapshot sheetName snapshot)
 
+// ---- Writable model-backed host (cross-platform: native + web) -------------
+// `runOnModel` runs a macro with READ+WRITE Range/Cells/Worksheet/Application
+// over a SpreadsheetModel. Reads fall through to the model; writes are tracked
+// and folded back after the run, then recomputed. Unlike the read-only
+// snapshot host this lets a macro change cells — and it needs no DOM, so it
+// works in the native editor as well as the web shell. Covers the common
+// surface: Range/Cells .Value/.Value2/.Formula (get + set), .Address/.Row/
+// .Column/.Count/.Cells/.Offset/.Resize, Worksheet.Range/.Cells/.Name.
+
+let private hostRW typeName getMember setMember callMethod =
+    VHostObject (HostObject(typeName, getMember, setMember, callMethod) :> IHostObject)
+
+/// Mutable cell view over a model: reads prefer pending writes, then the model;
+/// writes accumulate (0-indexed row/col → raw value string).
+type private ModelCells(model: SpreadsheetModel) =
+    let writes = System.Collections.Generic.Dictionary<struct (int * int), string>()
+    member _.Read (r: int) (c: int) : string =
+        match writes.TryGetValue(struct (r, c)) with
+        | true, v -> v
+        | _ -> displayValue (getCellValue { Row = r; Col = c } model)
+    member _.Write (r: int) (c: int) (v: string) = writes.[struct (r, c)] <- v
+    member _.Writes = writes
+
+let rec private rangeRW (cells: ModelCells) (sheetName: string) r0 c0 r1 c1 =
+    let formatAddr ra ca =
+        let f = formatCellAddress (r0 + 1) (c0 + 1) ra ca
+        let l = formatCellAddress (r1 + 1) (c1 + 1) ra ca
+        if r0 = r1 && c0 = c1 then f else sprintf "%s:%s" f l
+    let setAll (v: string) = for r in r0 .. r1 do for c in c0 .. c1 do cells.Write r c v
+    hostRW "Excel.Range"
+        (fun name ->
+            if eq name "Value" || eq name "Value2" || eq name "Text" || eq name "Formula" then Some (VString (cells.Read r0 c0))
+            elif eq name "Address" then Some (VString (formatAddr true true))
+            elif eq name "Row" then Some (VInteger (r0 + 1))
+            elif eq name "Column" then Some (VInteger (c0 + 1))
+            elif eq name "Count" then Some (VInteger ((r1 - r0 + 1) * (c1 - c0 + 1)))
+            elif eq name "Worksheet" then Some (worksheetRW cells sheetName)
+            elif eq name "Cells" then Some (rangeRW cells sheetName r0 c0 r1 c1)
+            else None)
+        (fun name value ->
+            if eq name "Value" || eq name "Value2" || eq name "Formula" then setAll (valueToString value); true
+            else false)
+        (fun name args ->
+            if (eq name "Cells" || eq name "Item") && args.Length >= 2 then
+                let r = r0 + valueToInt args.[0] - 1
+                let c = c0 + valueToInt args.[1] - 1
+                Some (rangeRW cells sheetName r c r c)
+            elif eq name "Offset" then
+                let ro = if args.Length >= 1 then valueToInt args.[0] else 0
+                let co = if args.Length >= 2 then valueToInt args.[1] else 0
+                Some (rangeRW cells sheetName (r0 + ro) (c0 + co) (r1 + ro) (c1 + co))
+            elif eq name "Resize" then
+                let rs = if args.Length >= 1 then max 1 (valueToInt args.[0]) else r1 - r0 + 1
+                let cs = if args.Length >= 2 then max 1 (valueToInt args.[1]) else c1 - c0 + 1
+                Some (rangeRW cells sheetName r0 c0 (r0 + rs - 1) (c0 + cs - 1))
+            elif eq name "Address" then Some (VString (formatAddr true true))
+            else None)
+
+and private worksheetRW (cells: ModelCells) (sheetName: string) =
+    hostRW "Excel.Worksheet"
+        (fun name ->
+            if eq name "Name" then Some (VString sheetName)
+            elif eq name "Cells" then Some (rangeRW cells sheetName 0 0 1048575 16383)
+            else None)
+        (fun _ _ -> false)
+        (fun name args ->
+            if eq name "Range" && args.Length >= 1 then
+                match parseRangeRef (valueToString args.[0]) with
+                | Some (a, b, c, d) -> Some (rangeRW cells sheetName a b c d)
+                | None -> Some VEmpty
+            elif eq name "Cells" && args.Length >= 2 then
+                let r = valueToInt args.[0] - 1
+                let c = valueToInt args.[1] - 1
+                Some (rangeRW cells sheetName r c r c)
+            else None)
+
+let private workbookRW cells sheetName =
+    hostRW "Excel.Workbook"
+        (fun name -> if eq name "ActiveSheet" then Some (worksheetRW cells sheetName) else None)
+        (fun _ _ -> false)
+        (fun _ _ -> None)
+
+let private applicationRW cells sheetName =
+    hostRW "Excel.Application"
+        (fun name ->
+            if eq name "ActiveWorkbook" then Some (workbookRW cells sheetName)
+            elif eq name "ActiveSheet" then Some (worksheetRW cells sheetName)
+            elif eq name "Version" then Some (VString "15.0")
+            else None)
+        (fun _ _ -> false)
+        (fun name args ->
+            if eq name "Range" && args.Length >= 1 then
+                match parseRangeRef (valueToString args.[0]) with
+                | Some (a, b, c, d) -> Some (rangeRW cells sheetName a b c d)
+                | None -> Some VEmpty
+            elif eq name "Cells" && args.Length >= 2 then
+                Some (rangeRW cells sheetName (valueToInt args.[0] - 1) (valueToInt args.[1] - 1) (valueToInt args.[0] - 1) (valueToInt args.[1] - 1))
+            else None)
+
+let private rangeFnRW cells sheetName =
+    hostRW "Excel.RangeFunction" (fun _ -> None) (fun _ _ -> false)
+        (fun name args ->
+            if isDefaultMemberName name && args.Length >= 1 then
+                match parseRangeRef (valueToString args.[0]) with
+                | Some (a, b, c, d) -> Some (rangeRW cells sheetName a b c d)
+                | None -> Some VEmpty
+            else None)
+
+let private cellsFnRW cells sheetName =
+    hostRW "Excel.CellsFunction" (fun _ -> None) (fun _ _ -> false)
+        (fun name args ->
+            if isDefaultMemberName name && args.Length >= 2 then
+                Some (rangeRW cells sheetName (valueToInt args.[0] - 1) (valueToInt args.[1] - 1) (valueToInt args.[0] - 1) (valueToInt args.[1] - 1))
+            else None)
+
+let private hostGlobalsRW cells sheetName =
+    Map.ofList [
+        "Application", applicationRW cells sheetName
+        "ActiveWorkbook", workbookRW cells sheetName
+        "ActiveSheet", worksheetRW cells sheetName
+        "Range", rangeFnRW cells sheetName
+        "Cells", cellsFnRW cells sheetName
+    ]
+
+/// Run a macro against a model with read+write host objects, fold the writes
+/// back in (a `=…` value becomes a formula), and recompute. Cross-platform.
+let runOnModelWithSheetName (sheetName: string) (model: SpreadsheetModel) (source: string) : Result<SpreadsheetModel, string> =
+    let cells = ModelCells(model)
+    let options = FsVb.RunOptions.vba |> FsVb.RunOptions.withHostGlobals (hostGlobalsRW cells sheetName)
+    match FsVb.runSource options source with
+    | Result.Error e -> Result.Error (sprintf "%A" e)
+    | Result.Ok _ ->
+        let mutable m = model
+        for kv in cells.Writes do
+            let struct (r, c) = kv.Key
+            let text = kv.Value
+            let cv =
+                if text.StartsWith "=" then CellValue.Formula (text.Substring 1, CellValue.Empty)
+                else
+                    match System.Double.TryParse(text, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture) with
+                    | true, n -> CellValue.Number n
+                    | _ -> CellValue.String text
+            let fmt = match getCell { Row = r; Col = c } m with Some cd -> cd.Format | None -> defaultFormat
+            m <- setCell { Row = r; Col = c } { Value = cv; Format = fmt; Comment = None } m
+        Result.Ok (RedBat.Spreadsheet.Formula.recalcAndSpill None (Some sheetName) m)
+
+let runOnModel (model: SpreadsheetModel) (source: string) : Result<SpreadsheetModel, string> =
+    runOnModelWithSheetName "Sheet1" model source
+
+/// Does the module source define a `Sub name` (optionally Private/Public)?
+let hasSub (name: string) (source: string) : bool =
+    not (System.String.IsNullOrWhiteSpace source)
+    && System.Text.RegularExpressions.Regex.IsMatch(
+        source,
+        @"(?im)^\s*(Private\s+|Public\s+)?Sub\s+" + System.Text.RegularExpressions.Regex.Escape(name) + @"\b")
+
+/// Fire a workbook/worksheet event: if `model.Macros` defines `Sub eventName`,
+/// run the module plus a top-level call to it (with optional VBA argument text,
+/// e.g. `Range("B2")` for Worksheet_Change), and return the updated model.
+/// A missing sub or a run error leaves the model unchanged. Writes are applied
+/// directly (not through the editor), so firing on a cell edit can't recurse.
+let fireEvent (eventName: string) (callArgs: string) (model: SpreadsheetModel) : SpreadsheetModel =
+    if not (hasSub eventName model.Macros) then model
+    else
+        // A bare `Foo` parses as an expression, not a call; `Foo()` / `Foo arg`
+        // invoke the sub.
+        let call = if System.String.IsNullOrEmpty callArgs then eventName + "()" else eventName + " " + callArgs
+        match runOnModel model (model.Macros + "\n" + call) with
+        | Result.Ok m -> m
+        | Result.Error _ -> model
+
 let runSnapshot sheetName snapshot source =
     let options =
         FsVb.RunOptions.vba

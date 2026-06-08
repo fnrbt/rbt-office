@@ -545,6 +545,12 @@ type SpreadsheetModel = {
 
     /// Data-validation rules keyed by cell.
     Validations: Map<CellAddress, DataValidation>
+
+    /// VBA/VBScript module source attached to the workbook (the "VBA project").
+    /// Empty when there are no macros. Event subs (Worksheet_Change /
+    /// Workbook_Open) and user-run macros live here; `Vba.runOnModel` executes
+    /// it. Persisted/round-tripped separately from cell data.
+    Macros: string
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -596,6 +602,7 @@ let createEmpty rowCount colCount = {
     ShowGridLines = true
     Spill = Map.empty
     Validations = Map.empty
+    Macros = ""
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")
