@@ -27,6 +27,7 @@ stages=(
     stage9-lambda
     stage10-extended
     stage11-stats
+    stage12-financial
 )
 
 failed=0

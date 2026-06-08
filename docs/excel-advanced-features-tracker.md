@@ -91,8 +91,13 @@ QUARTILE(.INC), DEVSQ, AVEDEV, GEOMEAN, HARMEAN, VAR.S/VAR.P/VARP, STDEV.S/.P.
 Date: WEEKNUM, DATEDIF, NETWORKDAYS, WORKDAY. Lookup: LOOKUP (vector). Text:
 NUMBERVALUE, **TEXTSPLIT** (array). ~150 functions total now.
 
-- Still nice-to-have: MEDIAN-via-PERCENTILE.EXC, YEARFRAC, DAYS360, FORMULATEXT,
-  AGGREGATE, SUBTOTAL, the *IFS error variants.
+### Financial batch — landed ✅ (`tests/formula/stage12-financial.fsx`, 9)
+Time-value-of-money: PMT, FV, PV, NPER, RATE (Newton-iterated), NPV, IRR
+(Newton-iterated), SLN. Excel sign convention; verified incl. a PMT↔PV
+round-trip. ~160 functions total now.
+
+- Still nice-to-have: IPMT/PPMT, XNPV/XIRR, depreciation (SYD/DB/DDB),
+  YEARFRAC, DAYS360, FORMULATEXT, AGGREGATE, SUBTOTAL.
 
 ## 2. Dynamic arrays / spill 🟡 (engine + render-side spill landed)
 - **Step 1 — array engine ✅** (`Formula.fs`, `tests/formula/stage8-arrays.fsx`,

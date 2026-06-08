@@ -1950,6 +1950,100 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 let dow = (serialToDate (float cur)).DayOfWeek
                 if dow <> DayOfWeek.Saturday && dow <> DayOfWeek.Sunday && not (Set.contains (float cur) holidays) then remaining <- remaining - 1
             CellValue.Number (float cur)
+    // ----- financial (time value of money) ----------------------------------
+    // Sign convention: cash you receive is +, cash you pay is −.
+    | "PMT" ->
+        if nargs < 3 then err Err.value else
+        match argNum 0, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok r, Ok np, Ok pv ->
+            let fv = if nargs >= 4 then (match argNum 3 with Ok v -> v | _ -> 0.0) else 0.0
+            let ty = if nargs >= 5 then (match argNum 4 with Ok v -> v | _ -> 0.0) else 0.0
+            if np = 0.0 then err Err.num
+            elif r = 0.0 then CellValue.Number (-(pv + fv) / np)
+            else (let p = (1.0 + r) ** np in CellValue.Number (-(pv * p + fv) * r / ((1.0 + r * ty) * (p - 1.0))))
+    | "FV" ->
+        if nargs < 3 then err Err.value else
+        match argNum 0, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok r, Ok np, Ok pmt ->
+            let pv = if nargs >= 4 then (match argNum 3 with Ok v -> v | _ -> 0.0) else 0.0
+            let ty = if nargs >= 5 then (match argNum 4 with Ok v -> v | _ -> 0.0) else 0.0
+            if r = 0.0 then CellValue.Number (-(pv + pmt * np))
+            else (let p = (1.0 + r) ** np in CellValue.Number (-(pv * p + pmt * (1.0 + r * ty) * (p - 1.0) / r)))
+    | "PV" ->
+        if nargs < 3 then err Err.value else
+        match argNum 0, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok r, Ok np, Ok pmt ->
+            let fv = if nargs >= 4 then (match argNum 3 with Ok v -> v | _ -> 0.0) else 0.0
+            let ty = if nargs >= 5 then (match argNum 4 with Ok v -> v | _ -> 0.0) else 0.0
+            if r = 0.0 then CellValue.Number (-(fv + pmt * np))
+            else (let p = (1.0 + r) ** np in CellValue.Number (-(fv + pmt * (1.0 + r * ty) * (p - 1.0) / r) / p))
+    | "NPER" ->
+        if nargs < 3 then err Err.value else
+        match argNum 0, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok r, Ok pmt, Ok pv ->
+            let fv = if nargs >= 4 then (match argNum 3 with Ok v -> v | _ -> 0.0) else 0.0
+            let ty = if nargs >= 5 then (match argNum 4 with Ok v -> v | _ -> 0.0) else 0.0
+            if r = 0.0 then (if pmt = 0.0 then err Err.num else CellValue.Number (-(pv + fv) / pmt))
+            else
+                let a = pmt * (1.0 + r * ty)
+                let num1 = a - fv * r
+                let den1 = a + pv * r
+                if num1 / den1 <= 0.0 then err Err.num else CellValue.Number (log (num1 / den1) / log (1.0 + r))
+    | "RATE" ->
+        if nargs < 3 then err Err.value else
+        match argNum 0, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok np, Ok pmt, Ok pv ->
+            let fv = if nargs >= 4 then (match argNum 3 with Ok v -> v | _ -> 0.0) else 0.0
+            let ty = if nargs >= 5 then (match argNum 4 with Ok v -> v | _ -> 0.0) else 0.0
+            let guess = if nargs >= 6 then (match argNum 5 with Ok v -> v | _ -> 0.1) else 0.1
+            let tvm r = if abs r < 1e-12 then pv + pmt * np + fv else (let p = (1.0 + r) ** np in pv * p + pmt * (1.0 + r * ty) * (p - 1.0) / r + fv)
+            let mutable r = guess
+            let mutable result = None
+            let mutable i = 0
+            while result.IsNone && i < 80 do
+                let f = tvm r
+                if abs f < 1e-8 then result <- Some r
+                else
+                    let d = (tvm (r + 1e-6) - f) / 1e-6
+                    if abs d < 1e-14 then i <- 80 else r <- r - f / d
+                i <- i + 1
+            match result with Some r -> CellValue.Number r | None -> err Err.num
+    | "NPV" ->
+        if nargs < 2 then err Err.value else
+        match argNum 0 with
+        | Result.Error e -> err e
+        | Ok r ->
+            match numbersOf (flattenArgs (List.tail args) ctx) with
+            | Result.Error e -> err e
+            | Ok vs -> CellValue.Number (vs |> List.mapi (fun i v -> v / ((1.0 + r) ** float (i + 1))) |> List.sum)
+    | "IRR" ->
+        if nargs < 1 then err Err.value else
+        match numbersOf (flattenArgs [ List.item 0 args ] ctx) with
+        | Result.Error e -> err e
+        | Ok vs when List.length vs >= 2 ->
+            let guess = if nargs >= 2 then (match argNum 1 with Ok v -> v | _ -> 0.1) else 0.1
+            let npv r = vs |> List.mapi (fun i v -> v / ((1.0 + r) ** float i)) |> List.sum
+            let mutable r = guess
+            let mutable result = None
+            let mutable i = 0
+            while result.IsNone && i < 80 do
+                let f = npv r
+                if abs f < 1e-8 then result <- Some r
+                else
+                    let d = (npv (r + 1e-6) - f) / 1e-6
+                    if abs d < 1e-14 then i <- 80 else r <- r - f / d
+                i <- i + 1
+            match result with Some r when not (Double.IsNaN r || Double.IsInfinity r) -> CellValue.Number r | _ -> err Err.num
+        | Ok _ -> err Err.num
+    | "SLN" ->
+        match argNum 0, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok cost, Ok salvage, Ok life -> if life = 0.0 then err Err.div0 else CellValue.Number ((cost - salvage) / life)
     // ----- extended info ----------------------------------------------------
     | "ISEVEN" -> (match argNum 0 with Result.Error e -> err e | Ok x -> CellValue.Boolean (int64 (Math.Truncate x) % 2L = 0L))
     | "ISODD" -> (match argNum 0 with Result.Error e -> err e | Ok x -> CellValue.Boolean (int64 (Math.Truncate x) % 2L <> 0L))
