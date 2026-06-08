@@ -1432,8 +1432,21 @@ let private renderSheetToPath
         | Some s -> s.Model
         | None -> createEmpty 1048576 16384
     let model =
-        RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) (Some sheetId) baseModel
-        |> RedBat.Spreadsheet.Formula.spillArrays (Some wbContext) (Some sheetId)
+        let m =
+            RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) (Some sheetId) baseModel
+            |> RedBat.Spreadsheet.Formula.spillArrays (Some wbContext) (Some sheetId)
+        // Opt-in: recompute pivot tables from their cache and place the live
+        // result (cached pivot cells already render, so this is off by default
+        // to leave the parity corpus untouched).
+        if Environment.GetEnvironmentVariable("EXCEL_RECOMPUTE_PIVOTS") = "1" && sheetIndex = 0 then
+            ChartRender.parsePivots inputPath
+            |> List.fold (fun acc (p: ChartRender.PivotPlacement) ->
+                let mutable a = acc
+                for r in 0 .. p.Grid.Length - 1 do
+                    for c in 0 .. p.Grid.[r].Length - 1 do
+                        a <- setCell { Row = p.Row + r; Col = p.Col + c } { Value = p.Grid.[r].[c]; Format = defaultFormat; Comment = None } a
+                a) m
+        else m
 
     // Overlay charts and sparklines at their anchor / cell rects.
     let viewport = Composit.Ui.SpreadsheetGrid.viewportOf model (float width) (float height)

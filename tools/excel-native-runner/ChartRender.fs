@@ -338,6 +338,76 @@ let parseSparklines (xlsxPath: string) (sheetIndex: int) : Sparkline list =
                     | _ -> ()
                 | _ -> () ]
 
+// ---- pivot tables (recompute from the cache) ------------------------------
+
+type PivotPlacement = { Row: int; Col: int; Grid: CellValue[] [] }
+
+/// Parse the workbook's pivot tables and RECOMPUTE each from its cache via the
+/// Pivot engine (so imported pivots are live, not just cached cells). Reads the
+/// single pivotCache (definition + records), resolves shared items, then for
+/// each pivotTableN.xml reads the row/col/data field indices + location and
+/// calls Pivot.fromCache. (Convention naming: pivotCacheDefinition1/Records1.)
+let parsePivots (xlsxPath: string) : PivotPlacement list =
+    use fs = File.OpenRead xlsxPath
+    use zip = new ZipArchive(fs, ZipArchiveMode.Read)
+    let cacheFields =
+        match readEntry zip "xl/pivotCache/pivotCacheDefinition1.xml" with
+        | None -> [||]
+        | Some xml ->
+            descendants "cacheField" (XDocument.Parse xml).Root
+            |> Seq.map (fun cf ->
+                let name = attr "name" cf |> Option.defaultValue ""
+                let shared =
+                    match firstDesc "sharedItems" cf with
+                    | Some si ->
+                        si.Elements()
+                        |> Seq.choose (fun it ->
+                            match it.Name.LocalName, attr "v" it with
+                            | "s", Some v -> Some(CellValue.String v)
+                            | "n", Some v -> Some(CellValue.Number(pf v))
+                            | "b", Some v -> Some(CellValue.Boolean(v = "1"))
+                            | "d", Some v -> Some(CellValue.String v)
+                            | _ -> None)
+                        |> Array.ofSeq
+                    | None -> [||]
+                name, shared)
+            |> Array.ofSeq
+    let headers = cacheFields |> Array.map fst
+    let sharedOf fi = if fi < cacheFields.Length then snd cacheFields.[fi] else [||]
+    let records =
+        match readEntry zip "xl/pivotCache/pivotCacheRecords1.xml" with
+        | None -> [||]
+        | Some xml ->
+            descendants "r" (XDocument.Parse xml).Root
+            |> Seq.map (fun r ->
+                r.Elements()
+                |> Seq.mapi (fun fi it ->
+                    match it.Name.LocalName, attr "v" it with
+                    | "x", Some i -> (let a = sharedOf fi in if int i >= 0 && int i < a.Length then a.[int i] else CellValue.Empty)
+                    | "n", Some v -> CellValue.Number(pf v)
+                    | "s", Some v -> CellValue.String v
+                    | "b", Some v -> CellValue.Boolean(v = "1")
+                    | _ -> CellValue.Empty)
+                |> Array.ofSeq)
+            |> Array.ofSeq
+    [ for n in 1 .. 16 do
+        match readEntry zip (sprintf "xl/pivotTables/pivotTable%d.xml" n) with
+        | None -> ()
+        | Some xml ->
+            let root = (XDocument.Parse xml).Root
+            let loc = firstDesc "location" root |> Option.bind (attr "ref") |> Option.defaultValue "A1"
+            let r0, c0 = parseRef ((loc.Split(':')).[0])
+            let fieldsOf tag =
+                firstDesc tag root
+                |> Option.map (fun e -> descendants "field" e |> Seq.choose (attr "x") |> Seq.map int |> Seq.filter (fun i -> i >= 0) |> List.ofSeq)
+                |> Option.defaultValue []
+            let dataF = firstDesc "dataFields" root |> Option.bind (firstDesc "dataField")
+            let dataIdx = dataF |> Option.bind (attr "fld") |> Option.map int |> Option.defaultValue 0
+            let agg = dataF |> Option.bind (attr "subtotal") |> Option.bind RedBat.Spreadsheet.Pivot.parseAgg |> Option.defaultValue RedBat.Spreadsheet.Pivot.Sum
+            let rowIdxs = fieldsOf "rowFields"
+            if not (List.isEmpty rowIdxs) && records.Length > 0 then
+                yield { Row = r0; Col = c0; Grid = RedBat.Spreadsheet.Pivot.fromCache headers records rowIdxs (fieldsOf "colFields") dataIdx agg } ]
+
 // ---- slicers --------------------------------------------------------------
 
 type SlicerItem = { Label: string; Selected: bool }

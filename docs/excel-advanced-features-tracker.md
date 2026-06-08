@@ -166,13 +166,19 @@ round-trip. ~160 functions total now.
   `SpreadsheetEditor.writeCell` recalcs + re-spills on every edit, so a
   GROUPBY/PIVOTBY (or any spilling formula) refreshes live in the editor and
   clears stale cells on shrink (verified: `stage13-pivot.fsx` "ispill *").
-- Still owed: **recompute imported pivots** — real files carry
-  `pivotTableDefinition` (row/col/data field indices, location) +
-  `pivotCacheDefinition`/`pivotCacheRecords` (can be 10+ MB). The recompute
-  core would reuse `computePivotN`/`pivotBy`; the work is the cache-records
-  parser (shared-item resolution) + reproducing Excel's exact item ordering/
-  subtotal layout. Cached pivot output already renders on import. Also:
-  report filters / page fields, pivot styles, a drag-drop field-list pane.
+- **OOXML import-recompute ✅ (common case)** — `Pivot.fromCache` rebuilds a
+  pivot from parsed cache rows + field layout (nested rows via `computePivotN`,
+  cross-tab via `pivotBy`). The runner's `ChartRender.parsePivots` reads
+  `pivotCacheDefinition`/`pivotCacheRecords` (shared-item resolution) +
+  `pivotTableDefinition` (row/col/data field indices, subtotal, location) and
+  places the recomputed grid (opt-in `EXCEL_RECOMPUTE_PIVOTS=1`, off by default
+  so the cached-render corpus is untouched). Verified:
+  `synthetic-pivot-import.xlsx` → Region/Sum of Sales recomputed from 5 cache
+  records (East 350 / West 400 / Grand 750). Owed: multiple data fields, exact
+  match of Excel's item ordering/subtotals on large multi-cache workbooks,
+  following rels (currently convention-named cache1).
+- Still owed: report filters / page fields, pivot styles, a drag-drop
+  field-list pane.
 
 ## 5. Sparklines 🟡 (native runner)
 In-cell mini-charts, parsed from the x14 `sparklineGroups` extLst and drawn as

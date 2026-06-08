@@ -166,6 +166,17 @@ check "ncol header lvl1" ncx.[1] [| CellValue.Empty; S "A"; S "B"; S "A"; S "B";
 check "ncol east row"    ncx.[2] [| S "East"; N 10.; N 20.; N 30.; N 0.; N 60. |]
 check "ncol grand row"   ncx.[ncx.Length - 1] [| S "Grand Total"; N 50.; N 20.; N 30.; N 50.; N 150. |]
 
+// ── fromCache: recompute from parsed cache (the OOXML import core) ──
+let cacheHeaders = [| "Region"; "Product"; "Sales" |]
+let cacheRecords =
+    [| [| S "East"; S "A"; N 100. |]; [| S "East"; S "B"; N 200. |]
+       [| S "West"; S "A"; N 150. |]; [| S "West"; S "B"; N 250. |]; [| S "East"; S "A"; N 50. |] |]
+let fc1 = fromCache cacheHeaders cacheRecords [ 0 ] [] 2 Sum
+check "fromCache nested grand" fc1.[fc1.Length - 1] [| S "Grand Total"; N 750. |]
+let fc2 = fromCache cacheHeaders cacheRecords [ 0 ] [ 1 ] 2 Sum
+check "fromCache crosstab hdr" fc2.[0] [| S "Row Labels"; S "A"; S "B"; S "Grand Total" |]
+check "fromCache crosstab east" fc2.[1] [| S "East"; N 150.; N 200.; N 350. |]
+
 printfn ""
 printfn "Stage 13 pivot tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

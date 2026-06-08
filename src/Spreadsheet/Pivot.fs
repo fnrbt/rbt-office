@@ -211,6 +211,25 @@ let pivotBy (rowM: CellValue[][]) (colM: CellValue[][]) (valueM: CellValue[][]) 
             Array.concat [ [| CellValue.String "Grand Total" |]; Array.ofList cells; [| aggWhere (fun _ -> true) |] ]
         Array.ofList (headers @ body @ [ totalRow ])
 
+/// Recompute a pivot from a parsed cache: `headers` are the cache field names,
+/// `records` the resolved data rows (shared items already dereferenced), and
+/// the field indices + aggregation come from the pivotTableDefinition. No
+/// column fields → nested-row pivot (`computePivotN`); with column fields →
+/// cross-tab (`pivotBy`, single row field). This is the import-recompute entry.
+let fromCache (headers: string[]) (records: CellValue[][]) (rowIdxs: int list) (colIdxs: int list) (dataIdx: int) (agg: Agg) : CellValue[][] =
+    if List.isEmpty rowIdxs || records.Length = 0 then [||]
+    else
+        let pick (r: CellValue[]) i = if i >= 0 && i < r.Length then r.[i] else CellValue.Empty
+        match colIdxs with
+        | [] ->
+            let source = Array.append [| headers |> Array.map CellValue.String |] records
+            computePivotN source rowIdxs [ (dataIdx, agg) ]
+        | _ ->
+            let rowM = records |> Array.map (fun r -> rowIdxs |> List.map (pick r) |> Array.ofList)
+            let colM = records |> Array.map (fun r -> colIdxs |> List.map (pick r) |> Array.ofList)
+            let valM = records |> Array.map (fun r -> [| pick r dataIdx |])
+            pivotBy rowM colM valM agg
+
 /// Find a field's 0-based column by matching the header row (case-insensitive).
 let fieldIndex (headers: CellValue[]) (name: string) : int option =
     let t = name.Trim().ToLowerInvariant()
