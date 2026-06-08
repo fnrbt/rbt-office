@@ -232,6 +232,11 @@ let private loadXlsx (path: string) : (SpreadsheetModel array * string array) op
                         RowCount = max model.RowCount 200
                         ColCount = max model.ColCount 40 })
                 |> List.toArray
+            // Pull the workbook's VBA module source (xl/vbaProject.bin) onto each
+            // sheet model so macros can run and Workbook_Open/Worksheet_Change
+            // events fire. Empty when the file has no VBA project.
+            let macros = VbaProject.extractFromXlsx bytes |> Option.defaultValue ""
+            let sheets = if macros = "" then sheets else sheets |> Array.map (fun m -> { m with Macros = macros })
             let names =
                 workbook.Sheets
                 |> List.map (fun sheet -> sheet.Name)

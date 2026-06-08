@@ -470,3 +470,64 @@ let writeProject (moduleName: string) (source: string) : byte[] =
               CStream(moduleName, moduleData) ])
           CStream("PROJECT", latin1Bytes projectText)
           CStream("PROJECTwm", projectwm) ]
+
+// ===========================================================================
+// xlsx/xlsm zip integration (native)
+// ===========================================================================
+
+#if !FABLE_COMPILER
+open System.IO
+open System.IO.Compression
+
+let private readZipEntries (bytes: byte[]) : (string * byte[]) list =
+    use ms = new MemoryStream(bytes)
+    use za = new ZipArchive(ms, ZipArchiveMode.Read)
+    [ for e in za.Entries do
+        use s = e.Open()
+        use o = new MemoryStream()
+        s.CopyTo o
+        yield e.FullName.Replace("\\", "/"), o.ToArray() ]
+
+let private writeZip (entries: (string * byte[]) list) : byte[] =
+    use ms = new MemoryStream()
+    (
+        use za = new ZipArchive(ms, ZipArchiveMode.Create, true)
+        for (name, data) in entries do
+            let e = za.CreateEntry(name, CompressionLevel.Optimal)
+            use s = e.Open()
+            s.Write(data, 0, data.Length)
+    )
+    ms.ToArray()
+
+/// Read `xl/vbaProject.bin` from an xlsx/xlsm and return its macro source
+/// (None when the workbook has no VBA project).
+let extractFromXlsx (xlsxBytes: byte[]) : string option =
+    readZipEntries xlsxBytes
+    |> List.tryFind (fun (n, _) -> n.ToLowerInvariant() = "xl/vbaproject.bin")
+    |> Option.map (fun (_, data) -> readMacroSource data)
+
+/// Add a source-only vbaProject.bin (one module) to an xlsx, returning .xlsm
+/// bytes — injects the part, the `bin` content-type, the macro-enabled
+/// workbook content-type, and the workbook→vbaProject relationship.
+let injectIntoXlsx (xlsxBytes: byte[]) (moduleName: string) (source: string) : byte[] =
+    let bin = writeProject moduleName source
+    let utf8 = Text.Encoding.UTF8
+    let patch name (f: string -> string) (lst: (string * byte[]) list) =
+        lst |> List.map (fun (n, data) -> if n = name then n, utf8.GetBytes(f (utf8.GetString data)) else n, data)
+    let ct (s: string) =
+        let s =
+            if s.Contains "Extension=\"bin\"" then s
+            else s.Replace("</Types>", "<Default Extension=\"bin\" ContentType=\"application/vnd.ms-office.vbaProject\"/></Types>")
+        s.Replace("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+                  "application/vnd.ms-excel.sheet.macroEnabled.main+xml")
+    let rels (s: string) =
+        if s.Contains "vbaProject" then s
+        else s.Replace("</Relationships>",
+                       "<Relationship Id=\"rIdVBA\" Type=\"http://schemas.microsoft.com/office/2006/relationships/vbaProject\" Target=\"vbaProject.bin\"/></Relationships>")
+    let entries =
+        readZipEntries xlsxBytes
+        |> List.filter (fun (n, _) -> n <> "xl/vbaProject.bin")
+        |> patch "[Content_Types].xml" ct
+        |> patch "xl/_rels/workbook.xml.rels" rels
+    writeZip (("xl/vbaProject.bin", bin) :: entries)
+#endif

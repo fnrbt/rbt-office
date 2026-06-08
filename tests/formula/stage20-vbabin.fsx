@@ -45,6 +45,17 @@ let big = String.concat "\n" [ for i in 1..400 -> sprintf "' comment line %d pad
 let bigBin = VbaProject.writeProject "M" big
 check "big source round-trips" (VbaProject.readMacroSource bigBin) big
 
+// 5. full xlsm path: inject vbaProject.bin into a real xlsx, extract, run
+let xlsx = System.IO.File.ReadAllBytes "tests/test-documents-excel/pandas-test_decimal.xlsx"
+let xlsm = VbaProject.injectIntoXlsx xlsx "Module1" "Sub Main()\n  Range(\"H1\").Value = 123\nEnd Sub\nMain()"
+match VbaProject.extractFromXlsx xlsm with
+| None -> fail <- fail + 1; printfn "FAIL no vba in injected xlsm"
+| Some recov ->
+    check "xlsm extract" (recov.Contains "Range(\"H1\").Value = 123") true
+    match V.runOnModel (createEmpty 10 10) recov with
+    | Result.Ok m -> check "xlsm macro ran" (disp m 0 7) "123"
+    | Result.Error e -> fail <- fail + 1; printfn "FAIL xlsm run: %s" e
+
 printfn ""
 printfn "Stage 20 vbaProject.bin tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

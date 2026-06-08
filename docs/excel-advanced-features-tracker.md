@@ -284,9 +284,21 @@ first-class formula operands not confirmed. Later batch.
   `Workbook_Open` on load (`loadFromPath`). No-op without the sub; writes apply
   directly so they can't recurse.
 - `SpreadsheetModel.Macros` stores the workbook's module source.
-- Missing ⛔: the VBA project on import/export (`xl/vbaProject.bin` — so macros
-  don't round-trip to disk yet), UserForms, and a broader host API (Charts,
-  ListObjects, PivotTables, Names, Selection).
+- **`xl/vbaProject.bin` read + write ✅** (`Office.Formats/VbaProject.fs`): an
+  [MS-CFB] compound-file reader/writer + [MS-OVBA] codec. `readMacroSource` /
+  `extractFromXlsx` recover module source from real files (anchored on the
+  `Attribute VB_Name` prefix, skipping any p-code); `writeProject` /
+  `injectIntoXlsx` emit a **source-only** vbaProject.bin (Office recompiles from
+  source). The editor loads macros from an opened `.xlsm` onto `model.Macros`.
+  Tested by self round-trip + full `.xlsm` inject→extract→run (`stage20-vbabin`,
+  9 assertions). Real-Excel validation harness staged (`tools/vba/`:
+  `gen-macro-xlsm.vbs` + `validate-real-xlsm.sh`) — pending the parity VM.
+- **Compile cache + bytecode persistence ✅** — `Vba.compileCached` (reuse the
+  BytecodeProgram), `compileToBytes`/`runBytesOnModel` (our serialized p-code),
+  builtin-name lowercasing hoisted to compile time.
+- Missing ⛔: UserForms, broader host API (Charts/ListObjects/PivotTables/
+  Names/Selection), and emitting a `.xlsm` from the editor's Save (the
+  `injectIntoXlsx` capability exists; the Save button isn't wired to it yet).
 
 ## 13. Slicers ⛔ / Images & shapes 🟡
 Slicers: none. Images: anchored picture rendering is partial (flagged in the
