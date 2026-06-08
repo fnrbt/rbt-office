@@ -1352,6 +1352,22 @@ let private buildWorkbookContext (xlsxWb: Xlsx.Workbook) : RedBat.Spreadsheet.Wo
             let s : RedBat.Spreadsheet.Workbook.Sheet =
                 { Id = id; Name = ws.Name; Model = toModel ws xlsxWb; Visible = true }
             id, s)
+    // Bridge each sheet's XLSX table definitions into structured-reference
+    // tables so `Table1[Amount]`-style formulas resolve on recompute. Keyed by
+    // table name (Excel table names are workbook-unique).
+    let tables =
+        sheets
+        |> List.collect (fun (id, s) ->
+            let ws = xlsxWb.Sheets |> List.find (fun w -> w.Name = s.Name)
+            ws.Tables
+            |> List.filter (fun t -> t.Name <> "")
+            |> List.map (fun t ->
+                let tbl =
+                    RedBat.Spreadsheet.Workbook.makeTableFromRegion
+                        id t.Name t.StartRow t.StartCol t.EndRow t.EndCol
+                        t.HeaderRowCount t.TotalsRowCount t.Columns s.Model
+                t.Name, tbl))
+        |> Map.ofList
     // A definedName's localSheetId (when present) is a 0-based sheet index
     // — map it to the positional sheet id so the name resolves at the right
     // scope; absent localSheetId means a workbook-global name.
@@ -1367,7 +1383,7 @@ let private buildWorkbookContext (xlsxWb: Xlsx.Workbook) : RedBat.Spreadsheet.Wo
     { Sheets = Map.ofList sheets
       SheetOrder = sheets |> List.map fst
       ActiveSheet = (match sheets with (id, _) :: _ -> id | [] -> "sheet1")
-      Tables = Map.empty
+      Tables = tables
       Names = names }
 
 let private escapeJson (value: string) =
@@ -1659,6 +1675,43 @@ let main argv =
             renderTo outputBefore baseModel
             renderTo outputAfter filtered
             0
+        | [| "--tabletest"; input |] ->
+            // Import a table-bearing xlsx, bridge its tables into the workbook
+            // context, recompute sheet1, then prove a structured reference
+            // resolves to the same cells as the equivalent A1 range.
+            let bytes = File.ReadAllBytes (fullPath input)
+            match Xlsx.loadBytesNative bytes with
+            | None -> eprintfn "parse failed"; 2
+            | Some wb ->
+                let ctx = buildWorkbookContext wb
+                printfn "Bridged tables: %d" (Map.count ctx.Tables)
+                ctx.Tables
+                |> Map.iter (fun name (t: RedBat.Spreadsheet.Workbook.Table) ->
+                    printfn "  %s  rows %d..%d cols %d..%d  headers=%b totals=%b  cols=[%s]"
+                        name t.StartRow t.EndRow t.StartCol t.EndCol t.HasHeaders t.HasTotals (String.concat "," t.Columns))
+                let sheetId = "sheet1"
+                let model0 = (Map.find sheetId ctx.Sheets).Model
+                let model = RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some ctx) (Some sheetId) model0
+                let ev (s: string) = RedBat.Spreadsheet.Formula.evaluateFormula s model (Some ctx)
+                match ctx.Tables |> Map.toList with
+                | (name, t) :: _ when not (List.isEmpty t.Columns) ->
+                    let col0 = List.head t.Columns
+                    let colLetter = RedBat.Spreadsheet.Model.columnToLetter t.StartCol
+                    let r0 = t.StartRow + (if t.HasHeaders then 1 else 0) + 1
+                    let r1 = t.EndRow + 1
+                    // COUNTA over the data column (non-zero, regardless of text
+                    // vs number) and the header cell value, each via the
+                    // structured ref and the equivalent A1 range.
+                    let structured = ev (sprintf "COUNTA(%s[%s])" name col0)
+                    let plain = ev (sprintf "COUNTA(%s%d:%s%d)" colLetter r0 colLetter r1)
+                    let hdrStructured = ev (sprintf "%s[[#Headers],[%s]]" name col0)
+                    let hdrPlain = ev (sprintf "%s%d" colLetter (t.StartRow + 1))
+                    printfn "COUNTA(%s[%s])  = %A   COUNTA range = %A" name col0 structured plain
+                    printfn "%s[[#Headers],[%s]] = %A   header cell = %A" name col0 hdrStructured hdrPlain
+                    if structured = plain && structured <> CellValue.Number 0.0 && hdrStructured = hdrPlain
+                    then (printfn "MATCH (structured refs resolve to the same cells)"; 0)
+                    else (printfn "MISMATCH"; 1)
+                | _ -> printfn "no bridged table with columns"; 1
         | [| "--cftest"; output |] ->
             // Conditional-format visuals: data bars / color scale / icon set,
             // computed over real numbers and rendered.

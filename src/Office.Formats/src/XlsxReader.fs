@@ -339,11 +339,18 @@ type TableStyleInfo = {
 /// XLSX table definition (`xl/tables/tableN.xml`). Range coordinates are
 /// 1-indexed to match the rest of the reader.
 type TableDefinition = {
+    /// `displayName` (fallback `name`) of the `<table>` element — the identifier
+    /// structured references use (`Table1[Amount]`).
+    Name: string
+    /// Column names in left→right order, from `<tableColumns><tableColumn name>`.
+    Columns: string list
     StartRow: int
     StartCol: int
     EndRow: int
     EndCol: int
     HeaderRowCount: int
+    /// `totalsRowCount` — number of totals rows at the bottom (0 or 1 in practice).
+    TotalsRowCount: int
     Style: TableStyleInfo option
     /// (startCol, endCol) span of `<autoFilter ref="…">`, 1-indexed. None when
     /// the table has no autoFilter child. Excel renders a dropdown button on
@@ -1138,12 +1145,26 @@ module Xlsx =
                         |> Option.bind (fun node -> Xml.attr "ref" node)
                         |> Option.bind parseRange
                         |> Option.map (fun (_, fc1, _, fc2) -> (fc1, fc2))
+                    let tableName =
+                        Xml.attr "displayName" doc
+                        |> Option.orElse (Xml.attr "name" doc)
+                        |> Option.defaultValue ""
+                    let columns =
+                        Xml.descendants "tableColumn" doc
+                        |> List.choose (Xml.attr "name")
+                    let totalsRowCount =
+                        Xml.attr "totalsRowCount" doc
+                        |> Option.bind (fun v -> try Some (int v) with _ -> None)
+                        |> Option.defaultValue 0
                     Some {
+                        Name = tableName
+                        Columns = columns
                         StartRow = r1
                         StartCol = c1
                         EndRow = r2
                         EndCol = c2
                         HeaderRowCount = headerCount
+                        TotalsRowCount = totalsRowCount
                         Style = style
                         AutoFilter = autoFilter
                     }

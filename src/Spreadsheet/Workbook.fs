@@ -209,6 +209,32 @@ let findTableContaining (sheet: SheetId option) (cell: CellAddress) (workbook: W
            && cell.Col >= t.StartCol && cell.Col <= t.EndCol then Some t
         else None)
 
+/// Build a structured-reference `Table` from a 1-indexed XLSX table region
+/// (rows and cols 1-based, A=1 — the form `Xlsx.TableDefinition`/`Model.Table`
+/// use) by shifting to the 0-indexed model coordinates this module stores.
+/// `columns` are the declared `<tableColumn>` names; when empty they're read
+/// left→right from the header row of `model`.
+let makeTableFromRegion (sheetId: SheetId) (name: string)
+                        (startRow1: int) (startCol1: int) (endRow1: int) (endCol1: int)
+                        (headerRowCount: int) (totalsRowCount: int)
+                        (columns: string list) (model: SpreadsheetModel): Table =
+    let sr = startRow1 - 1
+    let sc = startCol1 - 1
+    let er = endRow1 - 1
+    let ec = endCol1 - 1
+    let cols =
+        if not (List.isEmpty columns) then columns
+        else [ for c in sc .. ec -> displayValue (getCellValue { Row = sr; Col = c } model) ]
+    { Name = name
+      SheetId = sheetId
+      StartRow = sr
+      StartCol = sc
+      EndRow = er
+      EndCol = ec
+      Columns = cols
+      HasHeaders = headerRowCount > 0
+      HasTotals = totalsRowCount > 0 }
+
 /// Resolve table column reference: Table1[Amount]
 let parseTableReference (ref: string): (string * string) option =
     if ref.Contains("[") && ref.Contains("]") then

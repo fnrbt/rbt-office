@@ -96,6 +96,19 @@ check "AGGREGATE 9 opt6 ignores errors" (num (evalIn withErr None "AGGREGATE(9,6
 check "AGGREGATE 9 opt4 sees error"     (evalIn withErr None "AGGREGATE(9,4,B2:B5)") (CellValue.Error "DIV/0!")
 check "AGGREGATE 1 average"             (num (evalS "AGGREGATE(1,0,B2:B5)")) 25.0
 
+// --- bridge helper: makeTableFromRegion (1-indexed XLSX region → 0-indexed) ---
+// Columns omitted → read from the header row of the model.
+let bridged = WB.makeTableFromRegion "sheet1" "Sales" 1 1 6 3 1 0 [] model
+check "bridge name"       bridged.Name "Sales"
+check "bridge 0-indexed start" (bridged.StartRow, bridged.StartCol) (0, 0)
+check "bridge 0-indexed end"   (bridged.EndRow, bridged.EndCol) (5, 2)
+check "bridge hasHeaders"  bridged.HasHeaders true
+check "bridge cols from header" bridged.Columns [ "Region"; "Amount"; "Sales Amount" ]
+// Explicit column names win over header cells.
+let bridged2 = WB.makeTableFromRegion "sheet1" "T" 1 1 6 3 1 1 [ "A"; "B"; "C" ] model
+check "bridge explicit cols" bridged2.Columns [ "A"; "B"; "C" ]
+check "bridge hasTotals"   bridged2.HasTotals true
+
 printfn ""
 printfn "Stage 17 table tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
