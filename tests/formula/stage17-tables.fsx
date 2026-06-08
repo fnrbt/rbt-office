@@ -109,6 +109,29 @@ let bridged2 = WB.makeTableFromRegion "sheet1" "T" 1 1 6 3 1 1 [ "A"; "B"; "C" ]
 check "bridge explicit cols" bridged2.Columns [ "A"; "B"; "C" ]
 check "bridge hasTotals"   bridged2.HasTotals true
 
+// --- createTable: register a real table + SUBTOTAL totals row ---
+// Fresh data block: header A1:C1, data rows 2-4.
+let dataModel =
+    { createEmpty 20 8 with
+        Cells =
+            [ { Row=0; Col=0 }, cell (S "Region"); { Row=0; Col=1 }, cell (S "Q1"); { Row=0; Col=2 }, cell (S "Q2")
+              { Row=1; Col=0 }, cell (S "East");   { Row=1; Col=1 }, cell (N 100.); { Row=1; Col=2 }, cell (N 200.)
+              { Row=2; Col=0 }, cell (S "West");   { Row=2; Col=1 }, cell (N 150.); { Row=2; Col=2 }, cell (N 250.) ]
+            |> Map.ofList }
+let created = createTable "Sales" 0 0 2 2 true dataModel
+let ct = List.exactlyOne created.Tables
+check "createTable name"      ct.Name "Sales"
+check "createTable 1-indexed"  (ct.StartRow, ct.StartCol, ct.EndCol) (1, 1, 3)
+check "createTable totals grows range" ct.EndRow 4   // header(1)+data(2,3)+totals(4)
+check "createTable hasTotals"  ct.HasTotals true
+check "createTable autofilter" ct.AutoFilter (Some (1, 3))
+check "createTable style"      (ct.Style |> Option.map (fun s -> s.Name)) (Some "TableStyleMedium2")
+check "createTable totals label" (str (getCellValue { Row=3; Col=0 } created)) "Total"
+// totals cells hold SUBTOTAL formulas
+let totalsFormula =
+    match getCellValue { Row=3; Col=1 } created with CellValue.Formula (t, _) -> t | _ -> ""
+check "createTable totals formula" totalsFormula "SUBTOTAL(109,B2:B3)"
+
 printfn ""
 printfn "Stage 17 table tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

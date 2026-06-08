@@ -357,20 +357,16 @@ let private shellActions
 
     let openInsertTableDialog () =
         XlUi.insertTableDialog (fun rows cols ->
-            // Drop a header row of "Column N" plus blank data rows at the
-            // active cell. v1 doesn't register an actual <table> with the
-            // workbook — just lays cells down. ToolbarTable can later be
-            // upgraded to attach a TableStyleMedium.
+            // Register a real table at the active cell: header row ("Column N"
+            // for blanks) + `rows` data rows + a SUBTOTAL totals row, styled
+            // and autofiltered. Model.createTable also adds it to model.Tables
+            // so it can be bridged for structured references.
             let model = Editor.activeModel state
             let r, c = Editor.focusCell model
+            let name = sprintf "Table%d" (List.length model.Tables + 1)
             Editor.applyChange state (fun m ->
-                let mutable acc = m
-                for col in 0 .. cols - 1 do
-                    let addr = { Row = r; Col = c + col }
-                    let header = sprintf "Column %d" (col + 1)
-                    acc <- setCell addr { Value = String header; Format = defaultFormat; Comment = None } acc
-                acc) |> ignore
-            status.Value <- sprintf "Inserted %dx%d table headers" rows cols)
+                createTable name r c (r + rows) (c + cols - 1) true m) |> ignore
+            status.Value <- sprintf "Inserted table %s (%d×%d) with totals row" name rows cols)
         |> Composit.Ui.OfficeShell.openDialog renderState
 
     let openInsertPivotDialog () =
@@ -637,6 +633,9 @@ let private handleInput (state: AppState) (ev: InputEvent) =
                     state.Window.RequestRedraw()
                 elif state.CtrlDown && (key = "f" || key = "F") then
                     state.Actions.OpenFindReplace ()
+                    state.Window.RequestRedraw()
+                elif state.CtrlDown && (key = "t" || key = "T") then
+                    state.Actions.InsertTable ()
                     state.Window.RequestRedraw()
                 else
                     let ke : KeyEvent = { Key = key; Shift = state.ShiftDown; Ctrl = state.CtrlDown; Alt = state.AltDown }

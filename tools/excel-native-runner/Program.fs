@@ -1307,7 +1307,9 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
     let modelTables : Table list =
         sheet.Tables
         |> List.map (fun t ->
-            { StartRow = t.StartRow
+            { Name = t.Name
+              HasTotals = t.TotalsRowCount > 0
+              StartRow = t.StartRow
               StartCol = t.StartCol
               EndRow = t.EndRow
               EndCol = t.EndCol
@@ -1712,6 +1714,53 @@ let main argv =
                     then (printfn "MATCH (structured refs resolve to the same cells)"; 0)
                     else (printfn "MISMATCH"; 1)
                 | _ -> printfn "no bridged table with columns"; 1
+        | [| "--tablecreatetest"; output |] ->
+            // Build plain data, register a table with a SUBTOTAL totals row via
+            // Model.createTable, bridge it, recompute, and render — proving the
+            // totals row computes and a structured ref over the new table works.
+            let S = CellValue.String
+            let N = CellValue.Number
+            let bold = { defaultFormat with Bold = true }
+            let rows =
+                [ [ S "Region"; S "Q1"; S "Q2" ]
+                  [ S "East"; N 100.; N 200. ]
+                  [ S "West"; N 150.; N 250. ]
+                  [ S "North"; N 120.; N 180. ] ]
+            let m0 =
+                rows
+                |> List.mapi (fun r cols -> r, cols)
+                |> List.fold (fun m (r, cols) ->
+                    cols |> List.mapi (fun c v -> c, v)
+                    |> List.fold (fun acc (c, v) ->
+                        setCell { Row = r; Col = c } { Value = v; Format = (if r = 0 then bold else defaultFormat); Comment = None } acc) m)
+                    (createEmpty 20 8)
+            // Register the table (header row 0, data rows 1..3) + totals row.
+            let withTable = RedBat.Spreadsheet.Model.createTable "Sales" 0 0 3 2 true m0
+            // A structured-ref demo cell below the table.
+            let withDemo =
+                setCell { Row = 6; Col = 0 } { Value = S "SUM(Sales[Q1]) ="; Format = defaultFormat; Comment = None } withTable
+                |> setCell { Row = 6; Col = 1 } { Value = CellValue.Formula ("SUM(Sales[Q1])", N 0.); Format = bold; Comment = None }
+            // Bridge the model table into a workbook so structured refs resolve.
+            let mt = List.last withDemo.Tables
+            let wtable =
+                RedBat.Spreadsheet.Workbook.makeTableFromRegion
+                    "sheet1" mt.Name mt.StartRow mt.StartCol mt.EndRow mt.EndCol
+                    mt.HeaderRowCount (if mt.HasTotals then 1 else 0) [] withDemo
+            let wb : RedBat.Spreadsheet.Workbook.Workbook =
+                { Sheets = Map.ofList [ "sheet1", ({ Id="sheet1"; Name="Sheet1"; Model=withDemo; Visible=true }: RedBat.Spreadsheet.Workbook.Sheet) ]
+                  SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"
+                  Tables = Map.ofList [ mt.Name, wtable ]; Names = Map.empty }
+            let recomputed = RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wb) (Some "sheet1") withDemo
+            let w, h = 360, 260
+            let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) recomputed []
+            let backend = Raster.create()
+            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
+            // Also echo the computed values for a textual check.
+            let v (r:int) (c:int) = RedBat.Spreadsheet.Model.displayValue (getCellValue { Row=r; Col=c } recomputed)
+            printfn "totals row: %s | %s | %s" (v 4 0) (v 4 1) (v 4 2)
+            printfn "SUM(Sales[Q1]) = %s" (v 6 1)
+            0
         | [| "--cftest"; output |] ->
             // Conditional-format visuals: data bars / color scale / icon set,
             // computed over real numbers and rendered.

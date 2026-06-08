@@ -322,8 +322,10 @@ type TableStyle = {
 /// that consume this. `HeaderRowCount` is 0 when the table has no header
 /// row (rare); otherwise 1 (effectively always 1 for the corpus we
 /// handle). `AutoFilter` is the 1-indexed (startCol, endCol) range that
-/// gets dropdown buttons on its header cells.
+/// gets dropdown buttons on its header cells. `Name` is the structured-ref
+/// identifier; `HasTotals` marks a totals row occupying the last row.
 type Table = {
+    Name: string
     StartRow: int
     StartCol: int
     EndRow: int
@@ -331,6 +333,7 @@ type Table = {
     HeaderRowCount: int
     Style: TableStyle option
     AutoFilter: (int * int) option
+    HasTotals: bool
 }
 
 /// Per-sheet page setup. All fields have sensible defaults so a model
@@ -1030,6 +1033,48 @@ let columnUniqueValues (col: int) (model: SpreadsheetModel) : string list =
         else None)
     |> List.distinct
     |> List.sort
+
+/// Create / register an Excel table over a 0-indexed region (header row r0,
+/// data rows r0+1..r1). Blank header cells are filled with "Column N";
+/// the table is registered in `model.Tables` (1-indexed) with a
+/// TableStyleMedium2 style + an autofilter across every column. When
+/// `withTotals`, a totals row is appended below the data: a "Total" label in
+/// the first column and `=SUBTOTAL(109,<col>)` in the rest, and the table
+/// range grows to include it. Returns the updated model. Structured refs over
+/// the result work once it's bridged into the workbook (Workbook.makeTable…).
+let createTable (name: string) (r0: int) (c0: int) (r1: int) (c1: int)
+                (withTotals: bool) (model: SpreadsheetModel): SpreadsheetModel =
+    // Fill any blank header cell with a default column name.
+    let mutable m = model
+    for c in c0 .. c1 do
+        let addr = { Row = r0; Col = c }
+        match getCellValue addr m with
+        | Empty | String "" ->
+            m <- setCell addr { Value = String (sprintf "Column %d" (c - c0 + 1)); Format = defaultFormat; Comment = None } m
+        | _ -> ()
+    // Optional totals row of SUBTOTAL(109,…) formulas, just below the data.
+    let totalsRow = r1 + 1
+    if withTotals then
+        for c in c0 .. c1 do
+            let addr = { Row = totalsRow; Col = c }
+            if c = c0 then
+                m <- setCell addr { Value = String "Total"; Format = defaultFormat; Comment = None } m
+            else
+                let col = columnToLetter c
+                let formula = sprintf "SUBTOTAL(109,%s%d:%s%d)" col (r0 + 2) col (r1 + 1)
+                m <- setCell addr { Value = Formula (formula, Number 0.0); Comment = None; Format = defaultFormat } m
+    let endRow0 = if withTotals then totalsRow else r1
+    let table : Table =
+        { Name = name
+          StartRow = r0 + 1
+          StartCol = c0 + 1
+          EndRow = endRow0 + 1
+          EndCol = c1 + 1
+          HeaderRowCount = 1
+          Style = Some { Name = "TableStyleMedium2"; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false }
+          AutoFilter = Some (c0 + 1, c1 + 1)
+          HasTotals = withTotals }
+    { m with Tables = m.Tables @ [ table ] }
 
 /// Insert a row at the specified index (shifts rows down)
 let insertRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
