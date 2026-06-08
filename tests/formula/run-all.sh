@@ -26,6 +26,7 @@ stages=(
     stage8-arrays
     stage9-lambda
     stage10-extended
+    stage11-stats
 )
 
 failed=0

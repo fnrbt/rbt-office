@@ -85,8 +85,14 @@ Text: VALUE, EXACT, CHAR, CODE, UNICHAR, UNICODE, CLEAN, TEXTBEFORE, TEXTAFTER,
 FIXED, T. Date/time: TIME, HOUR, MINUTE, SECOND, EDATE, DAYS, DATEVALUE,
 ISOWEEKNUM. Info: ISEVEN, ISODD, ISNONTEXT, N, ISFORMULA.
 
-- Still nice-to-have: NUMBERVALUE, TEXTSPLIT, AVERAGEA/MAXA/MINA, MODE, RANK,
-  PERCENTILE/QUARTILE, NETWORKDAYS/WORKDAY, WEEKNUM, DATEDIF.
+### Stats/date/lookup batch — landed ✅ (`tests/formula/stage11-stats.fsx`, 31)
+Stats: AVERAGEA, MAXA, MINA, MODE/MODE.SNGL, RANK/RANK.EQ, PERCENTILE(.INC),
+QUARTILE(.INC), DEVSQ, AVEDEV, GEOMEAN, HARMEAN, VAR.S/VAR.P/VARP, STDEV.S/.P.
+Date: WEEKNUM, DATEDIF, NETWORKDAYS, WORKDAY. Lookup: LOOKUP (vector). Text:
+NUMBERVALUE, **TEXTSPLIT** (array). ~150 functions total now.
+
+- Still nice-to-have: MEDIAN-via-PERCENTILE.EXC, YEARFRAC, DAYS360, FORMULATEXT,
+  AGGREGATE, SUBTOTAL, the *IFS error variants.
 
 ## 2. Dynamic arrays / spill 🟡 (engine + render-side spill landed)
 - **Step 1 — array engine ✅** (`Formula.fs`, `tests/formula/stage8-arrays.fsx`,

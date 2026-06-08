@@ -1045,7 +1045,7 @@ type ArrVal = CellValue[][]
 /// evaluator can collapse them and aggregates can consume the whole array.
 let private arrayFunctionSet =
     set [ "SEQUENCE"; "RANDARRAY"; "UNIQUE"; "SORT"; "SORTBY"; "FILTER"; "TRANSPOSE"
-          "MAP"; "REDUCE"; "SCAN"; "MAKEARRAY" ]
+          "MAP"; "REDUCE"; "SCAN"; "MAKEARRAY"; "TEXTSPLIT" ]
 let isArrayFunction (name: string) = arrayFunctionSet.Contains(name.ToUpperInvariant())
 
 /// Does this expression evaluate to an array (a spill)? An array function, or
@@ -1297,6 +1297,18 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
         let nr = arr.Length
         let nc = if nr > 0 then arr.[0].Length else 0
         [| for c in 0 .. nc - 1 -> [| for r in 0 .. nr - 1 -> arr.[r].[c] |] |]
+    | "TEXTSPLIT" ->
+        // TEXTSPLIT(text, col_delim, [row_delim]) → 2-D array.
+        if nargs < 2 then errArr Err.value else
+        let textOf i = match coerceText (eval (List.item i args) ctx) with Ok t -> t | _ -> ""
+        let text = textOf 0
+        let colD = textOf 1
+        let rowD = if nargs >= 3 then textOf 2 else ""
+        let rowsOf = if rowD <> "" then text.Split([| rowD |], StringSplitOptions.None) else [| text |]
+        rowsOf
+        |> Array.map (fun r ->
+            (if colD <> "" then r.Split([| colD |], StringSplitOptions.None) else [| r |])
+            |> Array.map CellValue.String)
     | "MAP" ->
         // MAP(array, lambda) — apply the lambda to each element. (Excel allows
         // several parallel arrays; v1 supports one.)
@@ -1470,22 +1482,23 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
     | "COUNTA" -> foldArgs (countFold false (fun v -> match v with CellValue.Empty -> false | _ -> true)) args ctx
     | "COUNTBLANK" ->
         foldArgs (countFold false (fun v -> match v with CellValue.Empty | CellValue.String "" -> true | _ -> false)) args ctx
-    | "STDEV" | "STDEVP" ->
+    | "STDEV" | "STDEV.S" | "STDEVP" | "STDEV.P" ->
+        let sample = let u = name.ToUpperInvariant() in u = "STDEV" || u = "STDEV.S"
         reduceNums (err Err.div0) (fun ns ->
             let n = List.length ns
-            if (name.ToUpperInvariant() = "STDEV" && n < 2) then err Err.div0
+            if (sample && n < 2) || n < 1 then err Err.div0
             else
                 let mean = List.average ns
                 let ss = ns |> List.sumBy (fun x -> (x - mean) ** 2.0)
-                let denom = if name.ToUpperInvariant() = "STDEV" then float (n - 1) else float n
-                CellValue.Number (sqrt (ss / denom)))
-    | "VAR" ->
+                CellValue.Number (sqrt (ss / (if sample then float (n - 1) else float n))))
+    | "VAR" | "VAR.S" | "VARP" | "VAR.P" ->
+        let sample = let u = name.ToUpperInvariant() in u = "VAR" || u = "VAR.S"
         reduceNums (err Err.div0) (fun ns ->
             let n = List.length ns
-            if n < 2 then err Err.div0
+            if (sample && n < 2) || n < 1 then err Err.div0
             else
                 let mean = List.average ns
-                CellValue.Number ((ns |> List.sumBy (fun x -> (x - mean) ** 2.0)) / float (n - 1)))
+                CellValue.Number ((ns |> List.sumBy (fun x -> (x - mean) ** 2.0)) / (if sample then float (n - 1) else float n)))
     | "LARGE" | "SMALL" ->
         if nargs <> 2 then err Err.value else
         match numbersOf (flattenArgs [ List.item 0 args ] ctx), argNum 1 with
@@ -1704,6 +1717,79 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let rec gcd2 a b = if b = 0L then a else gcd2 b (a % b)
             if name.ToUpperInvariant() = "GCD" then CellValue.Number (float (List.fold gcd2 0L ints))
             else CellValue.Number (float (ints |> List.fold (fun acc x -> if acc = 0L || x = 0L then 0L else acc / gcd2 acc x * x) 1L))
+    // ----- extended stats ---------------------------------------------------
+    | "AVERAGEA" | "MAXA" | "MINA" ->
+        // A-variants count text as 0 and booleans as 1/0; blanks are ignored.
+        let fn = name.ToUpperInvariant()
+        let vals =
+            flattenArgs args ctx
+            |> List.choose (fun v ->
+                match unwrapValue v with
+                | CellValue.Number n -> Some n
+                | CellValue.Boolean b -> Some (if b then 1.0 else 0.0)
+                | CellValue.String _ -> Some 0.0
+                | _ -> None)
+        if List.isEmpty vals then (if fn = "AVERAGEA" then err Err.div0 else CellValue.Number 0.0)
+        else
+            match fn with
+            | "AVERAGEA" -> CellValue.Number (List.average vals)
+            | "MAXA" -> CellValue.Number (List.max vals)
+            | _ -> CellValue.Number (List.min vals)
+    | "MODE" | "MODE.SNGL" ->
+        match numbersOf (flattenArgs args ctx) with
+        | Result.Error e -> err e
+        | Ok ns ->
+            let grouped = ns |> List.groupBy id |> List.map (fun (k, g) -> k, List.length g) |> List.filter (fun (_, c) -> c > 1)
+            match grouped with
+            | [] -> err Err.na
+            | _ ->
+                let maxc = grouped |> List.map snd |> List.max
+                let firstIdx v = List.findIndex ((=) v) ns
+                grouped |> List.filter (fun (_, c) -> c = maxc) |> List.minBy (fst >> firstIdx) |> fst |> CellValue.Number
+    | "DEVSQ" ->
+        match numbersOf (flattenArgs args ctx) with
+        | Result.Error e -> err e
+        | Ok [] -> err Err.num
+        | Ok ns -> let m = List.average ns in CellValue.Number (ns |> List.sumBy (fun x -> (x - m) ** 2.0))
+    | "AVEDEV" ->
+        match numbersOf (flattenArgs args ctx) with
+        | Result.Error e -> err e
+        | Ok [] -> err Err.num
+        | Ok ns -> let m = List.average ns in CellValue.Number (ns |> List.averageBy (fun x -> abs (x - m)))
+    | "GEOMEAN" ->
+        match numbersOf (flattenArgs args ctx) with
+        | Result.Error e -> err e
+        | Ok ns -> if List.isEmpty ns || List.exists (fun x -> x <= 0.0) ns then err Err.num else CellValue.Number (exp ((ns |> List.sumBy log) / float (List.length ns)))
+    | "HARMEAN" ->
+        match numbersOf (flattenArgs args ctx) with
+        | Result.Error e -> err e
+        | Ok ns -> if List.isEmpty ns || List.exists (fun x -> x <= 0.0) ns then err Err.num else CellValue.Number (float (List.length ns) / (ns |> List.sumBy (fun x -> 1.0 / x)))
+    | "RANK" | "RANK.EQ" ->
+        if nargs < 2 then err Err.value else
+        match argNum 0, numbersOf (flattenArgs [ List.item 1 args ] ctx) with
+        | Result.Error e, _ -> err e
+        | _, Result.Error e -> err e
+        | Ok x, Ok ns ->
+            if not (List.exists (fun v -> abs (v - x) < 1e-12) ns) then err Err.na
+            else
+                let order = if nargs >= 3 then (match argNum 2 with Ok o -> int o | _ -> 0) else 0
+                let better = if order = 0 then (fun v -> v > x) else (fun v -> v < x)
+                CellValue.Number (float (1 + (ns |> List.filter better |> List.length)))
+    | "PERCENTILE" | "PERCENTILE.INC" | "QUARTILE" | "QUARTILE.INC" ->
+        let isQ = name.ToUpperInvariant().StartsWith "QUARTILE"
+        if nargs < 2 then err Err.value else
+        match numbersOf (flattenArgs [ List.item 0 args ] ctx), argNum 1 with
+        | Result.Error e, _ -> err e
+        | _, Result.Error e -> err e
+        | Ok ns, Ok p ->
+            let k = if isQ then p / 4.0 else p
+            if List.isEmpty ns || k < 0.0 || k > 1.0 then err Err.num
+            else
+                let a = ns |> List.sort |> Array.ofList
+                let pos = k * float (a.Length - 1)
+                let lo = int (floor pos)
+                let frac = pos - float lo
+                CellValue.Number (if lo + 1 < a.Length then a.[lo] + frac * (a.[lo + 1] - a.[lo]) else a.[lo])
     // ----- extended text ----------------------------------------------------
     | "VALUE" ->
         match argText 0 with
@@ -1721,6 +1807,19 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     match DateTime.TryParse(t, CultureInfo.InvariantCulture, DateTimeStyles.None) with
                     | true, d -> CellValue.Number (dateToSerial d)
                     | _ -> err Err.value
+    | "NUMBERVALUE" ->
+        // NUMBERVALUE(text, [decimal_sep], [group_sep]) — parse with custom
+        // separators (e.g. "1.234,56" with dec="," grp=".").
+        match argText 0 with
+        | Result.Error e -> err e
+        | Ok s ->
+            let dec = if nargs >= 2 then (match argText 1 with Ok d when d.Length > 0 -> d.[0] | _ -> '.') else '.'
+            let grp = if nargs >= 3 then (match argText 2 with Ok g when g.Length > 0 -> g.[0] | _ -> ',') else ','
+            let cleaned = (s.Replace(string grp, "").Replace(dec, '.')).Replace(" ", "")
+            let isPct = cleaned.EndsWith "%"
+            match Double.TryParse(cleaned.TrimEnd('%'), NumberStyles.Any, CultureInfo.InvariantCulture) with
+            | true, n -> CellValue.Number (if isPct then n / 100.0 else n)
+            | _ -> err Err.value
     | "EXACT" ->
         match argText 0, argText 1 with
         | Result.Error e, _ | _, Result.Error e -> err e
@@ -1783,6 +1882,74 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let dow = if d.DayOfWeek = DayOfWeek.Sunday then 7 else int d.DayOfWeek
             let thursday = d.AddDays(float (4 - dow))
             CellValue.Number (float ((thursday.DayOfYear - 1) / 7 + 1)))
+    | "WEEKNUM" ->
+        match argNum 0 with
+        | Result.Error e -> err e
+        | Ok s ->
+            let d = serialToDate s
+            let jan1 = DateTime(d.Year, 1, 1)
+            let returnType = if nargs >= 2 then (match argNum 1 with Ok t -> int t | _ -> 1) else 1
+            let startDow = if returnType = 2 then int DayOfWeek.Monday else int DayOfWeek.Sunday
+            let jan1Dow = (int jan1.DayOfWeek - startDow + 7) % 7
+            CellValue.Number (float (((d - jan1).Days + jan1Dow) / 7 + 1))
+    | "DATEDIF" ->
+        if nargs <> 3 then err Err.value else
+        match argNum 0, argNum 1, argText 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok s1, Ok s2, Ok unit ->
+            let d1, d2 = serialToDate s1, serialToDate s2
+            if d2 < d1 then err Err.num else
+            let monthsDiff = (d2.Year - d1.Year) * 12 + d2.Month - d1.Month - (if d2.Day < d1.Day then 1 else 0)
+            let res =
+                match unit.ToUpperInvariant() with
+                | "Y" -> float ((d2.Year - d1.Year) - (if (d2.Month, d2.Day) < (d1.Month, d1.Day) then 1 else 0))
+                | "M" -> float monthsDiff
+                | "D" -> floor s2 - floor s1
+                | "YM" -> float (((monthsDiff % 12) + 12) % 12)
+                | "YD" ->
+                    let anniv = d1.AddYears(d2.Year - d1.Year - (if (d2.Month, d2.Day) < (d1.Month, d1.Day) then 1 else 0))
+                    float (d2 - anniv).Days
+                | "MD" ->
+                    if d2.Day >= d1.Day then float (d2.Day - d1.Day)
+                    else (let pm = d2.AddMonths(-1) in float (DateTime.DaysInMonth(pm.Year, pm.Month) - d1.Day + d2.Day))
+                | _ -> nan
+            if Double.IsNaN res then err Err.num else CellValue.Number res
+    | "NETWORKDAYS" ->
+        if nargs < 2 then err Err.value else
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok s1, Ok s2 ->
+            let holidays =
+                if nargs >= 3 then
+                    match numbersOf (flattenArgs [ List.item 2 args ] ctx) with
+                    | Ok hs -> hs |> List.map floor |> Set.ofList
+                    | _ -> Set.empty
+                else Set.empty
+            let a, b = int (floor (min s1 s2)), int (floor (max s1 s2))
+            let mutable count = 0
+            for day in a .. b do
+                let dow = (serialToDate (float day)).DayOfWeek
+                if dow <> DayOfWeek.Saturday && dow <> DayOfWeek.Sunday && not (Set.contains (float day) holidays) then count <- count + 1
+            CellValue.Number ((if s2 < s1 then -1.0 else 1.0) * float count)
+    | "WORKDAY" ->
+        if nargs < 2 then err Err.value else
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok s, Ok daysN ->
+            let holidays =
+                if nargs >= 3 then
+                    match numbersOf (flattenArgs [ List.item 2 args ] ctx) with
+                    | Ok hs -> hs |> List.map floor |> Set.ofList
+                    | _ -> Set.empty
+                else Set.empty
+            let step = if daysN < 0.0 then -1 else 1
+            let mutable remaining = int (abs daysN)
+            let mutable cur = int (floor s)
+            while remaining > 0 do
+                cur <- cur + step
+                let dow = (serialToDate (float cur)).DayOfWeek
+                if dow <> DayOfWeek.Saturday && dow <> DayOfWeek.Sunday && not (Set.contains (float cur) holidays) then remaining <- remaining - 1
+            CellValue.Number (float cur)
     // ----- extended info ----------------------------------------------------
     | "ISEVEN" -> (match argNum 0 with Result.Error e -> err e | Ok x -> CellValue.Boolean (int64 (Math.Truncate x) % 2L = 0L))
     | "ISODD" -> (match argNum 0 with Result.Error e -> err e | Ok x -> CellValue.Boolean (int64 (Math.Truncate x) % 2L <> 0L))
@@ -2166,6 +2333,24 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             | Some k -> CellValue.Number (float (k + 1))
             | None -> err Err.na
         | None -> err Err.value
+    | "LOOKUP" ->
+        // Vector form: LOOKUP(value, lookup_vector, [result_vector]). Finds the
+        // largest lookup value ≤ target (assumes ascending) and returns the
+        // aligned result-vector element.
+        if nargs < 2 then err Err.value else
+        match rangeAccessOf model workbook (List.item 1 args) with
+        | None -> err Err.na
+        | Some lv ->
+            let target = argRaw 0
+            let resv = if nargs >= 3 then rangeAccessOf model workbook (List.item 2 args) else Some lv
+            let mutable hit = None
+            for k in 0 .. lv.Count - 1 do
+                match compareValues (rangeRead lv k) target with
+                | Ok c when c <= 0 -> hit <- Some k
+                | _ -> ()
+            match hit, resv with
+            | Some k, Some rv -> if k < rv.Count then rangeRead rv k else err Err.na
+            | _ -> err Err.na
     // ----- date -------------------------------------------------------------
     | "TODAY" -> CellValue.Number (dateToSerial DateTime.Today)
     | "NOW" -> CellValue.Number (dateToSerial DateTime.Now)
