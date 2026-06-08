@@ -65,6 +65,20 @@ check "SORTBY multi-key" (strs (arr "SORTBY(I1:I3,G1:G3,1,H1:H3,1)")) [| [|"x1"|
 // single-key still works: SORTBY(I, H desc) → y5(5), x2(2), x1(1)
 check "SORTBY single desc" (strs (arr "SORTBY(I1:I3,H1:H3,-1)")) [| [|"y5"|]; [|"x2"|]; [|"x1"|] |]
 
+// --- A1# spill-range operator ---
+// K1 = SEQUENCE(3) spills down to K1:K3 = 1,2,3; K1# references the spill.
+let spillModel =
+    { createEmpty 20 12 with
+        Cells = Map.ofList [ { Row=0; Col=10 }, cell (CellValue.Formula ("SEQUENCE(3)", N 1.)) ] }
+let spilled = F.recalcAndSpill None None spillModel
+let evS (s: string) = match F.parseFormula s with Ok e -> F.eval e { ctx with Model = spilled } | Result.Error m -> CellValue.Error m
+let arrS (s: string) = match F.parseFormula s with Ok e -> F.evalArray e { ctx with Model = spilled } | Result.Error m -> [| [| CellValue.Error m |] |]
+check "spill materialized K3" (getCellValue { Row=2; Col=10 } spilled) (N 3.0)
+check "A1# sum"    (evS "SUM(K1#)") (N 6.0)
+check "A1# count"  (evS "COUNT(K1#)") (N 3.0)
+check "A1# array"  (nums (arrS "K1#")) [| [|1.|]; [|2.|]; [|3.|] |]
+check "A1# in expr" (evS "SUM(K1#)*2") (N 12.0)
+
 printfn ""
 printfn "Stage 18 array2 tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

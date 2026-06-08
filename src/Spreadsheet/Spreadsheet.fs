@@ -258,7 +258,14 @@ type Spreadsheet(container: Element) =
 
     let recalculateFormulas () =
         let currentSheet = workbook |> Option.map (fun w -> w.ActiveSheet)
-        model <- recalculateAllFormulas workbook currentSheet model
+        // Recalc, then materialize dynamic-array spills (writes spilled values +
+        // #SPILL! on collision into model.Cells), then recalc again so formulas
+        // reading spilled cells / A1# settle. spillArrays is a no-op when no
+        // formula uses a spilling function, so non-array sheets are untouched.
+        model <-
+            recalculateAllFormulas workbook currentSheet model
+            |> spillArrays workbook currentSheet
+            |> recalculateAllFormulas workbook currentSheet
 
     let hitTestEvent (e: obj) =
         match gridContainer with
@@ -2814,8 +2821,11 @@ type Spreadsheet(container: Element) =
         let command = {
             Undo = fun m -> { m with Cells = oldCells }
             Redo = fun m ->
+                let sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
                 importCSV csvText startRow startCol m
-                |> recalculateAllFormulas workbook (workbook |> Option.map (fun w -> w.ActiveSheet))
+                |> recalculateAllFormulas workbook sheet
+                |> spillArrays workbook sheet
+                |> recalculateAllFormulas workbook sheet
             Description = "Import CSV"
         }
         model <- pushCommand command model

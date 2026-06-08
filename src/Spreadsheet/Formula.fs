@@ -72,6 +72,9 @@ type Expr =
     | CellRef of RefAst
     | RangeRef of RefAst * RefAst
     | TableRef of TableSel
+    /// Spill-range operator `A1#` — the dynamic array that spilled from anchor
+    /// A1. Resolved at eval time to the rectangle of A1 plus its spill members.
+    | SpillRef of RefAst
     /// An inline materialized array (rows × cols of already-computed values).
     /// Not produced by the parser — used internally to feed a row/column to a
     /// lambda (BYROW/BYCOL) as a single array argument.
@@ -108,6 +111,9 @@ type Token =
     | TEq | TNe | TLt | TGt | TLe | TGe
     | TLParen | TRParen
     | TLBracket | TRBracket
+    /// A bare `#` that isn't part of an error literal — the spill operator
+    /// suffix in `A1#`.
+    | THash
     | TComma | TColon | TBang
     | TEnd
 
@@ -180,7 +186,8 @@ let tokenize (input: string) : Token list =
                 tokens.Add(TError (lit.Substring 1))
                 i <- i + lit.Length
             | None ->
-                i <- i + 1  // stray '#', skip
+                tokens.Add(THash)  // bare '#': spill operator (A1#)
+                i <- i + 1
         elif c = '$' || Char.IsLetter c || c = '_' then
             // Reference / name / function name. Allow '$', letters, digits,
             // '_', '.' so "$A$1", "Sheet_2", "_xlfn.FOO" all lex as one token.
@@ -403,7 +410,10 @@ let rec private parsePrimary (p: Parser) : Expr =
             | "FALSE" -> Bool false
             | _ ->
                 match parseRefToken ident with
-                | Some refAst -> CellRef refAst
+                | Some refAst ->
+                    // `A1#` — spill-range operator on a cell ref.
+                    if peekP p = THash then (p.Pos <- p.Pos + 1; SpillRef refAst)
+                    else CellRef refAst
                 | None -> NameRef ident
     | other -> failwithf "Unexpected token %A" other
 
@@ -648,6 +658,7 @@ let referencesInExpr (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                 | None -> Set.empty
         | CellRef r when r.Sheet.IsSome -> Set.empty
         | CellRef r -> Set.singleton { Row = r.Row; Col = r.Col }
+        | SpillRef r -> Set.singleton { Row = r.Row; Col = r.Col }
         | RangeRef (a, _) when a.Sheet.IsSome -> Set.empty
         | RangeRef (a, b) ->
             let sr, sc, er, ec = normalizeRange a b
@@ -682,7 +693,7 @@ let referencesQualified (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                 match workbook |> Option.bind (resolveNameExpr name (Some homeSheet)) with
                 | Some resolved -> go (Set.add key seen) resolved
                 | None -> Set.empty
-        | CellRef r ->
+        | CellRef r | SpillRef r ->
             match sheetIdOf r.Sheet with
             | Some sid ->
                 Set.singleton
@@ -745,7 +756,7 @@ let referencesRanged (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                 match workbook |> Option.bind (resolveNameExpr name (Some homeSheet)) with
                 | Some resolved -> go (Set.add key seen) resolved
                 | None -> ()
-        | CellRef r ->
+        | CellRef r | SpillRef r ->
             match sheetIdOf r.Sheet with
             | Some sid -> cells.Add { Sheet = sid; Cell = { Row = r.Row; Col = r.Col } } |> ignore
             | None -> ()
@@ -779,6 +790,7 @@ let rec shiftExpr (dr: int) (dc: int) (expr: Expr) : Expr =
     match expr with
     | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ | ArrayLit _ -> expr
     | CellRef r -> CellRef (shiftRef r)
+    | SpillRef r -> SpillRef (shiftRef r)
     | RangeRef (a, b) -> RangeRef (shiftRef a, shiftRef b)
     | UnaryOp (op, e) -> UnaryOp (op, shiftExpr dr dc e)
     | BinOp (l, op, r) -> BinOp (shiftExpr dr dc l, op, shiftExpr dr dc r)
@@ -795,7 +807,7 @@ let rec substituteNames (subst: Map<string, Expr>) (expr: Expr) : Expr =
         match Map.tryFind (n.ToUpperInvariant()) subst with
         | Some e -> e
         | None -> expr
-    | Number _ | Str _ | Bool _ | ErrorLit _ | CellRef _ | RangeRef _ | TableRef _ | ArrayLit _ -> expr
+    | Number _ | Str _ | Bool _ | ErrorLit _ | CellRef _ | RangeRef _ | TableRef _ | ArrayLit _ | SpillRef _ -> expr
     | UnaryOp (op, e) -> UnaryOp (op, substituteNames subst e)
     | BinOp (l, op, r) -> BinOp (substituteNames subst l, op, substituteNames subst r)
     | Function (nm, fa) ->
@@ -874,6 +886,21 @@ let private readCell (r: RefAst) (model: SpreadsheetModel)
     match resolveModel r.Sheet model workbook with
     | Some m -> getCellValue { Row = r.Row; Col = r.Col } m |> unwrapValue
     | None -> err Err.ref
+
+/// Resolve a spill-range operator `A1#` to its (top-left, bottom-right) RefAst
+/// pair: the bounding rectangle of the anchor plus every cell that spilled from
+/// it (`model.Spill` maps spilled cell → anchor). A formula anchor that didn't
+/// spill resolves to the single anchor cell.
+let spillRangeOf (anchor: RefAst) (model: SpreadsheetModel) : RefAst * RefAst =
+    let aAddr = { Row = anchor.Row; Col = anchor.Col }
+    let members =
+        model.Spill |> Map.toList |> List.choose (fun (cell, anc) -> if anc = aAddr then Some cell else None)
+    let all = aAddr :: members
+    let r0 = all |> List.map (fun a -> a.Row) |> List.min
+    let c0 = all |> List.map (fun a -> a.Col) |> List.min
+    let r1 = all |> List.map (fun a -> a.Row) |> List.max
+    let c1 = all |> List.map (fun a -> a.Col) |> List.max
+    { anchor with Row = r0; Col = c0 }, { anchor with Row = r1; Col = c1 }
 
 /// Expand a RangeRef to the flat list of unwrapped cell values, row-major.
 /// The sheet qualifier on the start ref selects the target sheet.
@@ -1236,7 +1263,7 @@ let rec isArrayExpr (e: Expr) : bool =
     // A range/table inside an operator broadcasts element-wise (`A1:A8+B1:B8`).
     // A *bare* range arg never reaches this test — aggregates match RangeRef
     // first and stream it — so this only fires inside Unary/BinOp/array funcs.
-    | RangeRef _ | TableRef _ | ArrayLit _ -> true
+    | RangeRef _ | TableRef _ | ArrayLit _ | SpillRef _ -> true
     | UnaryOp (_, x) -> isArrayExpr x
     | BinOp (l, _, r) -> isArrayExpr l || isArrayExpr r
     | _ -> false
@@ -1328,6 +1355,7 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
         | v :: _ -> v
         | [] -> err Err.ref
     | ArrayLit a -> if a.Length > 0 && a.[0].Length > 0 then a.[0].[0] else err Err.value
+    | SpillRef anchor -> let a, b = spillRangeOf anchor model in eval (RangeRef (a, b)) ctx
     | UnaryOp (op, operand) -> applyUnary op (eval operand ctx)
     | BinOp (left, op, right) -> applyBin op (eval left ctx) (eval right ctx)
     | Function (name, args) ->
@@ -1346,6 +1374,7 @@ and flattenArgs (args: Expr list) (ctx: EvalContext) : CellValue list =
     args |> List.collect (fun arg ->
         match arg with
         | RangeRef (a, b) -> expandRangeRef a b model workbook
+        | SpillRef anchor -> let a, b = spillRangeOf anchor model in expandRangeRef a b model workbook
         | TableRef sel -> expandTableSel sel workbook ctx.Sheet ctx.CurrentCell model
         | _ when isArrayExpr arg ->
             [ for row in evalArray arg ctx do for v in row -> unwrapValue v ]
@@ -1374,6 +1403,7 @@ and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
         | None -> scalar (err Err.ref)
     | TableRef sel -> [| for v in expandTableSel sel ctx.Workbook ctx.Sheet ctx.CurrentCell ctx.Model -> [| v |] |]
     | ArrayLit a -> a
+    | SpillRef anchor -> let a, b = spillRangeOf anchor ctx.Model in evalArray (RangeRef (a, b)) ctx
     | NameRef name ->
         match ctx.Workbook |> Option.bind (resolveNameExpr name ctx.Sheet) with
         | Some (RangeRef (a, b)) -> evalArray (RangeRef (a, b)) ctx
@@ -1617,6 +1647,7 @@ and foldArgs (f: Fold<CellValue, 'S, 'R>) (args: Expr list) (ctx: EvalContext) :
     for arg in args do
         match arg with
         | RangeRef (a, b) -> iterRange a b
+        | SpillRef anchor -> let a, b = spillRangeOf anchor model in iterRange a b
         | TableRef sel -> for v in expandTableSel sel workbook ctx.Sheet ctx.CurrentCell model do s <- f.Step s v
         | _ when isArrayExpr arg ->
             for row in evalArray arg ctx do
