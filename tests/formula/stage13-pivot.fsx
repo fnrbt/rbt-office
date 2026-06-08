@@ -156,6 +156,16 @@ let m2 = m0 |> setCell { Row=2; Col=0 } (cell (S "East")) |> setCell { Row=3; Co
 check "ispill shrink stale-cleared" (getCellValue { Row=2; Col=4 } m2) CellValue.Empty // old E3 gone
 check "ispill shrink grand"        (getCellValue { Row=1; Col=5 } m2) (N 750.0)        // Grand now at row 2
 
+// ── nested COLUMN fields (multi-level column header) ──
+let nrow = [| [| S "East" |]; [| S "East" |]; [| S "East" |]; [| S "West" |]; [| S "West" |] |]
+let ncol = [| [| S "Q1"; S "A" |]; [| S "Q1"; S "B" |]; [| S "Q2"; S "A" |]; [| S "Q1"; S "A" |]; [| S "Q2"; S "B" |] |]
+let nval = [| [| N 10. |]; [| N 20. |]; [| N 30. |]; [| N 40. |]; [| N 50. |] |]
+let ncx = pivotBy nrow ncol nval Sum
+check "ncol header lvl0" ncx.[0] [| S "Row Labels"; S "Q1"; S "Q1"; S "Q2"; S "Q2"; S "Grand Total" |]
+check "ncol header lvl1" ncx.[1] [| CellValue.Empty; S "A"; S "B"; S "A"; S "B"; CellValue.Empty |]
+check "ncol east row"    ncx.[2] [| S "East"; N 10.; N 20.; N 30.; N 0.; N 60. |]
+check "ncol grand row"   ncx.[ncx.Length - 1] [| S "Grand Total"; N 50.; N 20.; N 30.; N 50.; N 150. |]
+
 printfn ""
 printfn "Stage 13 pivot tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

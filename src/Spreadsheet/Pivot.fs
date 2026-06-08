@@ -175,16 +175,41 @@ let groupBy (rowM: CellValue[][]) (valueM: CellValue[][]) (agg: Agg) : CellValue
         if grid.Length > 1 then grid.[1..] else grid
 
 /// PIVOTBY as a spilling function over data-only parallel ranges: single row
-/// field × single column field, one measure. Keeps the column-key header row
-/// (those are the cross-tab's column labels).
+/// field × one or more (NESTED) column fields, one measure. `colM` may have
+/// several columns — each becomes a column level, producing a multi-row column
+/// header. Keeps per-row and grand totals.
 let pivotBy (rowM: CellValue[][]) (colM: CellValue[][]) (valueM: CellValue[][]) (agg: Agg) : CellValue[][] =
     let n = [ rowM.Length; colM.Length; valueM.Length ] |> List.min
-    if n = 0 then [||]
+    let levels = if colM.Length > 0 then colM.[0].Length else 0
+    if n = 0 || levels = 0 then [||]
     else
-        let col0 (m: CellValue[][]) i = if i < m.Length && m.[i].Length > 0 then m.[i].[0] else CellValue.Empty
-        let header = [| CellValue.String "_r"; CellValue.String "_c"; CellValue.String "_v" |]
-        let body = [| for i in 0 .. n - 1 -> [| col0 rowM i; col0 colM i; col0 valueM i |] |]
-        computePivot (Array.append [| header |] body) 0 (Some 1) 2 agg
+        let rowOf i = if rowM.[i].Length > 0 then rowM.[i].[0] else CellValue.Empty
+        let valOf i = if valueM.[i].Length > 0 then valueM.[i].[0] else CellValue.Empty
+        let comboOf i = colM.[i]
+        let rkey (v: CellValue) = (textOf v).ToLowerInvariant()
+        let ckey (a: CellValue[]) = a |> Array.map (fun v -> (textOf v).ToLowerInvariant()) |> String.concat ""
+        let idx = [ 0 .. n - 1 ]
+        let rowKeys = idx |> List.map rowOf |> List.distinctBy rkey |> List.sortWith compareCellValues
+        let colCombos =
+            idx |> List.map comboOf |> List.distinctBy ckey
+            |> List.sortWith (fun a b ->
+                let rec cmp k = if k >= levels then 0 else (match compareCellValues a.[k] b.[k] with 0 -> cmp (k + 1) | c -> c)
+                cmp 0)
+        let aggWhere pred = idx |> List.filter pred |> List.map valOf |> aggregate agg
+        let headers =
+            [ for lvl in 0 .. levels - 1 ->
+                let corner = if lvl = 0 then CellValue.String "Row Labels" else CellValue.Empty
+                let grand = if lvl = 0 then CellValue.String "Grand Total" else CellValue.Empty
+                Array.concat [ [| corner |]; (colCombos |> List.map (fun c -> c.[lvl]) |> Array.ofList); [| grand |] ] ]
+        let body =
+            rowKeys
+            |> List.map (fun rk ->
+                let cells = colCombos |> List.map (fun combo -> aggWhere (fun i -> rkey (rowOf i) = rkey rk && ckey (comboOf i) = ckey combo))
+                Array.concat [ [| rk |]; Array.ofList cells; [| aggWhere (fun i -> rkey (rowOf i) = rkey rk) |] ])
+        let totalRow =
+            let cells = colCombos |> List.map (fun combo -> aggWhere (fun i -> ckey (comboOf i) = ckey combo))
+            Array.concat [ [| CellValue.String "Grand Total" |]; Array.ofList cells; [| aggWhere (fun _ -> true) |] ]
+        Array.ofList (headers @ body @ [ totalRow ])
 
 /// Find a field's 0-based column by matching the header row (case-insensitive).
 let fieldIndex (headers: CellValue[]) (name: string) : int option =

@@ -159,10 +159,20 @@ round-trip. ~160 functions total now.
   dialog→formula→spill pipeline). Screenshot-verified via
   `OfficeShell.dialogPreview` + runner `--dialogtest` (full dialog incl. live
   preview pane).
-- Still owed: parse `pivotTableDefinition`/`pivotCacheRecords` from real xlsx to
-  recompute imported pivots; nested column fields in PIVOTBY; report filters;
-  interactive spill auto-refresh in the editor (engine spill is render-side);
-  pivot styles.
+- **Nested column fields ✅** — `PIVOTBY` / `Pivot.pivotBy` now accept a
+  multi-column column range → a multi-level column header (verified:
+  `stage13-pivot.fsx` "ncol *").
+- **Interactive spill auto-refresh ✅** — `Model.Spill` + `Formula.recalcAndSpill`;
+  `SpreadsheetEditor.writeCell` recalcs + re-spills on every edit, so a
+  GROUPBY/PIVOTBY (or any spilling formula) refreshes live in the editor and
+  clears stale cells on shrink (verified: `stage13-pivot.fsx` "ispill *").
+- Still owed: **recompute imported pivots** — real files carry
+  `pivotTableDefinition` (row/col/data field indices, location) +
+  `pivotCacheDefinition`/`pivotCacheRecords` (can be 10+ MB). The recompute
+  core would reuse `computePivotN`/`pivotBy`; the work is the cache-records
+  parser (shared-item resolution) + reproducing Excel's exact item ordering/
+  subtotal layout. Cached pivot output already renders on import. Also:
+  report filters / page fields, pivot styles, a drag-drop field-list pane.
 
 ## 5. Sparklines 🟡 (native runner)
 In-cell mini-charts, parsed from the x14 `sparklineGroups` extLst and drawn as
