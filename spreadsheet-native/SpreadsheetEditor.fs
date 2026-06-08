@@ -298,7 +298,12 @@ let private writeCell (row: int) (col: int) (text: string) (model: SpreadsheetMo
     // Recompute formulas and (re)materialize dynamic-array spills so the edit
     // is live — a spilling formula (FILTER/SORT/GROUPBY/PIVOTBY) refreshes when
     // its source changes. (Same-sheet scope; cross-sheet recalc is separate.)
-    RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
+    let recomputed = RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
+    // Fire the workbook's Worksheet_Change handler (if any), passing the edited
+    // cell as Target. A no-op unless the macro module defines the sub; its
+    // writes apply directly, so this can't recurse back through writeCell.
+    let target = sprintf "Range(\"%s%d\")" (columnToLetter col) (row + 1)
+    RedBat.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
 
 /// Active cell reference like "B7" for the status bar / cell-ref box.
 let activeCellRef (state: SpreadsheetEditorState) =

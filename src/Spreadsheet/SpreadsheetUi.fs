@@ -213,6 +213,7 @@ module Ui =
         InsertChart: unit -> unit
         InsertPivot: unit -> unit
         InsertTable: unit -> unit
+        RunMacro: unit -> unit
         InsertSheet: unit -> unit
         DeleteSheet: unit -> unit
         RenameSheet: unit -> unit
@@ -315,6 +316,7 @@ module Ui =
                 item "xl-menu-insert-pivot" "Pivot table..." None actions.InsertPivot
                 item "xl-menu-insert-table" "Table..." None actions.InsertTable
                 item "xl-menu-insert-sheet" "Worksheet" None actions.InsertSheet
+                item "xl-menu-run-macro" "Run macro..." None actions.RunMacro
             ]
         }
         {
@@ -554,6 +556,25 @@ module Ui =
                     true
                 else
                     false)
+        ]
+    }
+
+    /// Run / edit a VBA macro. The textarea is seeded with the workbook's
+    /// stored module source; on Run the app executes it (Vba.runOnModel) and
+    /// keeps the edited source.
+    let macroDialog (initialSource: string) (apply: string -> unit) : DialogSpec = {
+        TestId = "xl-dlg-macro"
+        Title = "Run macro (VBA)"
+        Subtitle = Some "Edits are saved to the workbook's macro module."
+        Fields = [
+            dialogTextArea "source" "Macro source" "Sub Main()\n  Range(\"A1\").Value = 42\nEnd Sub\nMain()" 12 initialSource
+        ]
+        Tabs = []
+        Buttons = [
+            dialogCancel
+            dialogButton "dlg-macro-run" "Run" true (fun values ->
+                apply (Map.tryFind "source" values |> Option.defaultValue "")
+                true)
         ]
     }
 

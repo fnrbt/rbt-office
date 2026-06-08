@@ -369,6 +369,20 @@ let private shellActions
             status.Value <- sprintf "Inserted table %s (%d×%d) with totals row" name rows cols)
         |> Composit.Ui.OfficeShell.openDialog renderState
 
+    let openRunMacroDialog () =
+        // Edit + run the workbook's VBA module. The macro reads/writes cells
+        // (Vba.runOnModel, cross-platform); the edited source is kept on the
+        // model so events (Worksheet_Change / Workbook_Open) can use it too.
+        let model = Editor.activeModel state
+        XlUi.macroDialog model.Macros (fun source ->
+            let mutable msg = "Macro ran"
+            Editor.applyChange state (fun m ->
+                match RedBat.Spreadsheet.Vba.runOnModel { m with Macros = source } source with
+                | Result.Ok m2 -> m2
+                | Result.Error e -> msg <- sprintf "Macro error: %s" e; { m with Macros = source }) |> ignore
+            status.Value <- msg)
+        |> Composit.Ui.OfficeShell.openDialog renderState
+
     let openInsertPivotDialog () =
         let parseRange (s: string) =
             match s.Split(':') with
@@ -566,6 +580,7 @@ let private shellActions
         InsertChart = say "Insert chart not wired"
         InsertPivot = openInsertPivotDialog
         InsertTable = openInsertTableDialog
+        RunMacro = openRunMacroDialog
         InsertSheet = openInsertSheetDialog
         DeleteSheet = fun () ->
             let sheets = state.Sheets.Value
@@ -773,6 +788,13 @@ let main argv =
     let loadFromPath path =
         match loadXlsx path with
         | Some (s, n) ->
+            // Fire the workbook's Workbook_Open handler on the active sheet
+            // (a no-op unless its macro module defines the sub).
+            let s =
+                if s.Length > 0 then
+                    let opened = RedBat.Spreadsheet.Vba.fireEvent "Workbook_Open" "" s.[0]
+                    s |> Array.mapi (fun i m -> if i = 0 then opened else m)
+                else s
             editor.Sheets.Value <- s
             editor.SheetNames.Value <- n
             editor.ActiveSheet.Value <- 0

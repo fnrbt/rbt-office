@@ -271,10 +271,22 @@ first-class formula operands not confirmed. Later batch.
   (`run`/`runVbs`, plus snapshot/model variants).
 - Host object model: Range (+ `.Value`/`.Formula`/`.Address`/resize), Cells,
   Worksheet, Workbook, Application, CreateObject.
-- Missing ⛔: a way to **run a macro from the UI**, the VBA project on
-  import/export (`xl/vbaProject.bin`), workbook/worksheet **events**
-  (`Worksheet_Change`, `Workbook_Open`), UserForms, and a broader host API
-  (Charts, ListObjects, PivotTables, Names, Selection).
+- **Cross-platform write-capable runner ✅** — `Vba.runOnModel : model → source
+  → Result<model,_>` runs a macro with read+write host objects over a
+  `SpreadsheetModel` (no DOM), folding writes back + recomputing. Runs natively
+  *and* in the web build (FsVb is plain F#). Tested via `stage19-vba` (12
+  assertions, native `dotnet fsi`).
+- **Run-from-UI ✅** — native editor's Insert→"Run macro..." opens a textarea
+  dialog (`Ui.macroDialog`), runs `runOnModel`, keeps the source on
+  `model.Macros`. Render proof: runner `--macrodialogtest`.
+- **Events ✅** — `Vba.fireEvent`/`hasSub`; `Worksheet_Change` fires on each
+  cell edit (`SpreadsheetEditor.writeCell`, passing the cell as Target),
+  `Workbook_Open` on load (`loadFromPath`). No-op without the sub; writes apply
+  directly so they can't recurse.
+- `SpreadsheetModel.Macros` stores the workbook's module source.
+- Missing ⛔: the VBA project on import/export (`xl/vbaProject.bin` — so macros
+  don't round-trip to disk yet), UserForms, and a broader host API (Charts,
+  ListObjects, PivotTables, Names, Selection).
 
 ## 13. Slicers ⛔ / Images & shapes 🟡
 Slicers: none. Images: anchored picture rendering is partial (flagged in the

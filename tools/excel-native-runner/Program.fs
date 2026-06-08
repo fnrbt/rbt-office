@@ -1640,6 +1640,12 @@ let main argv =
         | [| "--filterdialogtest"; output |] ->
             let spec = RedBat.Spreadsheet.Ui.filterDialog "Region" [ "East"; "North"; "South"; "West" ] (fun _ -> ())
             renderDialogPng (fullPath output) spec 480 460
+        | [| "--macrodialogtest"; output |] ->
+            let spec =
+                RedBat.Spreadsheet.Ui.macroDialog
+                    "Sub Main()\n  Range(\"A1\").Value = 42\nEnd Sub\nMain()"
+                    (fun _ -> ())
+            renderDialogPng (fullPath output) spec 560 520
         | [| "--formatdialogtest"; output |] ->
             // Format-cells dialog with a live "Sample" preview that re-renders the
             // chosen number format through the real cell renderer.
