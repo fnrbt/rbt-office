@@ -995,6 +995,20 @@ let getVisibleRows (model: SpreadsheetModel): Set<int> =
             )
         )
 
+/// Distinct, sorted display strings in a column — the AutoFilter checklist's
+/// values. Blanks excluded; uses the same `displayValue` as the filter test.
+let columnUniqueValues (col: int) (model: SpreadsheetModel) : string list =
+    model.Cells
+    |> Map.toList
+    |> List.choose (fun (addr, _) ->
+        if addr.Col = col then
+            match displayValue (getCellValue addr model) with
+            | "" -> None
+            | s -> Some s
+        else None)
+    |> List.distinct
+    |> List.sort
+
 /// Insert a row at the specified index (shifts rows down)
 let insertRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
     // Shift all rows >= atRow down by 1

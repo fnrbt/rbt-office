@@ -1556,6 +1556,12 @@ let main argv =
             | false, _ -> fallback
         let jsonEnv = Environment.GetEnvironmentVariable("EXCEL_NATIVE_JSON")
         let jsonOpt = if String.IsNullOrWhiteSpace jsonEnv then None else Some (fullPath jsonEnv)
+        let renderDialogPng (path: string) (spec: RedBat.Office.Ui.DialogSpec) (w: int) (h: int) : int =
+            let widget = Composit.Ui.OfficeShell.dialogPreview RedBat.Spreadsheet.Ui.chrome spec
+            let backend = Raster.create()
+            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            File.WriteAllBytes(path, PngEncode.encode framebuffer)
+            0
         match argv with
         | [| "--charttest"; input; idx; output |] ->
             // Parse the workbook's Nth chart and render it through the vector
@@ -1609,12 +1615,10 @@ let main argv =
             let samplePreview (_: RedBat.Spreadsheet.Ui.PivotUiRequest) =
                 "=GROUPBY(A2:A8,C2:C8,\"sum\")\nEast    470\nWest    700\nGrand Total    1170"
             let spec = RedBat.Spreadsheet.Ui.pivotTableDialog samplePreview (fun _ -> true)
-            let widget = Composit.Ui.OfficeShell.dialogPreview RedBat.Spreadsheet.Ui.chrome spec
-            let w, h = 560, 780
-            let backend = Raster.create()
-            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
-            File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
-            0
+            renderDialogPng (fullPath output) spec 560 780
+        | [| "--filterdialogtest"; output |] ->
+            let spec = RedBat.Spreadsheet.Ui.filterDialog "Region" [ "East"; "North"; "South"; "West" ] (fun _ -> ())
+            renderDialogPng (fullPath output) spec 480 460
         | [| "--cftest"; output |] ->
             // Conditional-format visuals: data bars / color scale / icon set,
             // computed over real numbers and rendered.

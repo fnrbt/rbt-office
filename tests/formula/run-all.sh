@@ -31,6 +31,7 @@ stages=(
     stage13-pivot
     stage14-cf
     stage15-validation
+    stage16-filter
 )
 
 failed=0

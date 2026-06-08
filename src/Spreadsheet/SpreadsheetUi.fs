@@ -611,6 +611,35 @@ module Ui =
         ]
     }
 
+    /// AutoFilter checklist: one checkbox per distinct column value (all
+    /// checked = no filter). `apply` receives the set of values to keep
+    /// visible. A live preview shows how many values are selected.
+    let filterDialog (columnLabel: string) (uniqueValues: string list) (apply: Set<string> -> unit) : DialogSpec =
+        let total = List.length uniqueValues
+        let idOf i = sprintf "v%d" i
+        let checkedCount (values: Map<string, string>) =
+            [ 0 .. total - 1 ] |> List.filter (fun i -> Map.tryFind (idOf i) values = Some "true") |> List.length
+        {
+            TestId = "xl-dlg-filter"
+            Title = sprintf "Filter: %s" columnLabel
+            Subtitle = Some "Uncheck values to hide their rows."
+            Fields =
+                (uniqueValues |> List.mapi (fun i v -> dialogCheckbox (idOf i) v true))
+                @ [ dialogComputed "preview" "Selected" (fun values -> sprintf "%d of %d values" (checkedCount values) total) ]
+            Tabs = []
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-filter-ok" "Apply" true (fun values ->
+                    uniqueValues
+                    |> List.mapi (fun i v -> i, v)
+                    |> List.filter (fun (i, _) -> Map.tryFind (idOf i) values = Some "true")
+                    |> List.map snd
+                    |> Set.ofList
+                    |> apply
+                    true)
+            ]
+        }
+
     /// Format the selection's number / font / fills in one go. v1 only
     /// covers number format + a foreground/background hex pair; richer
     /// controls (borders, alignment) live on the toolbar already.

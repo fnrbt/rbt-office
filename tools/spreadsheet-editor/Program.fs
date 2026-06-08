@@ -431,6 +431,19 @@ let private shellActions
             | _ -> status.Value <- "Pivot: invalid source range or destination cell."; false)
         |> Composit.Ui.OfficeShell.openDialog renderState
 
+    let openFilterDialog () =
+        let model = Editor.activeModel state
+        let _, c = Editor.focusCell model
+        match columnUniqueValues c model with
+        | [] -> status.Value <- "No values to filter in this column."
+        | uniques ->
+            XlUi.filterDialog (columnToLetter c) uniques (fun visible ->
+                Editor.applyChange state (fun m ->
+                    if Set.count visible = List.length uniques then removeFilter c m else applyFilter c visible m)
+                |> ignore
+                status.Value <- sprintf "Filter on %s: %d of %d shown" (columnToLetter c) (Set.count visible) (List.length uniques))
+            |> Composit.Ui.OfficeShell.openDialog renderState
+
     let openInsertSheetDialog () =
         XlUi.insertSheetDialog (fun name ->
             let sheets = state.Sheets.Value
@@ -535,8 +548,10 @@ let private shellActions
         SortDescending = fun () ->
             let _, c = Editor.focusCell (Editor.activeModel state)
             Editor.applyChange state (sortByColumn c false) |> ignore
-        ToggleFilter = say "Filter not wired"
-        ClearFilter = say "Clear filter not wired"
+        ToggleFilter = openFilterDialog
+        ClearFilter = fun () ->
+            Editor.applyChange state (fun m -> { m with Filters = Map.empty }) |> ignore
+            status.Value <- "Filters cleared"
         ToggleFreezePanes = fun () ->
             Editor.applyChange state (fun m ->
                 if m.FrozenRows > 0 || m.FrozenCols > 0 then
