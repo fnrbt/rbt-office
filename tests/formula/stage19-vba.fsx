@@ -1,3 +1,4 @@
+#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/VBScriptParser.dll"
 #r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
 
 // VBA runs natively (cross-platform) AND writes cells back via runOnModel.
@@ -57,6 +58,11 @@ check "no-sub no-op"        (disp (V.fireEvent "Workbook_Open" "" model) 0 0) "1
 // Worksheet_Change receiving the changed cell as Target.
 let wcModel = { model with Macros = "Sub Worksheet_Change(ByVal Target As Range)\n  Range(\"Z1\").Value = Target.Address\nEnd Sub" }
 check "Worksheet_Change Target" (disp (V.fireEvent "Worksheet_Change" "Range(\"B2\")" wcModel) 0 25) "$B$2"
+
+// --- compile cache: same source compiles once, reused thereafter ---
+match V.compileCached "Range(\"A1\").Value = 1", V.compileCached "Range(\"A1\").Value = 1" with
+| Result.Ok a, Result.Ok b -> check "compile cache hit (same instance)" (System.Object.ReferenceEquals(a, b)) true
+| _ -> fail <- fail + 1; printfn "FAIL compile cache compile error"
 
 printfn ""
 printfn "Stage 19 VBA tests: %d passed, %d failed" pass fail

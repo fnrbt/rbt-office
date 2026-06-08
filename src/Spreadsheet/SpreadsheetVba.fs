@@ -746,14 +746,38 @@ let private hostGlobalsRW cells sheetName =
         "Cells", cellsFnRW cells sheetName
     ]
 
+// The model-backed host always binds the same global NAMES, so a module
+// compiles to the same bytecode regardless of which model it runs against —
+// only the bound host VALUES change per run. We therefore compile once and
+// cache the BytecodeProgram (keyed by source), our analogue of VBA's p-code
+// performance cache, so events firing on every edit don't re-lex/parse/compile.
+let private vbaHostNames = [ "Application"; "ActiveWorkbook"; "ActiveSheet"; "Range"; "Cells" ]
+let private vbaParseOpts = FsVb.ParseOptions.withHostGlobals vbaHostNames FsVb.ParseOptions.vba
+let private bytecodeCache = System.Collections.Generic.Dictionary<string, Bytecode.BytecodeProgram>()
+
+/// Compile a macro module to bytecode, caching the result by source text.
+let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
+    match bytecodeCache.TryGetValue source with
+    | true, bc -> Result.Ok bc
+    | _ ->
+        match FsVb.compileSource vbaParseOpts source with
+        | Result.Ok (_, bc) -> bytecodeCache.[source] <- bc; Result.Ok bc
+        | Result.Error e -> Result.Error (sprintf "%A" e)
+
 /// Run a macro against a model with read+write host objects, fold the writes
 /// back in (a `=…` value becomes a formula), and recompute. Cross-platform.
+/// Reuses the cached compiled bytecode (recompiles only on first sight).
 let runOnModelWithSheetName (sheetName: string) (model: SpreadsheetModel) (source: string) : Result<SpreadsheetModel, string> =
+    match compileCached source with
+    | Result.Error e -> Result.Error e
+    | Result.Ok bytecode ->
     let cells = ModelCells(model)
-    let options = FsVb.RunOptions.vba |> FsVb.RunOptions.withHostGlobals (hostGlobalsRW cells sheetName)
-    match FsVb.runSource options source with
-    | Result.Error e -> Result.Error (sprintf "%A" e)
-    | Result.Ok _ ->
+    let runErr =
+        try FsVb.executeWithHostGlobals (hostGlobalsRW cells sheetName |> Map.toSeq) bytecode |> ignore; None
+        with ex -> Some ex.Message
+    match runErr with
+    | Some e -> Result.Error e
+    | None ->
         let mutable m = model
         for kv in cells.Writes do
             let struct (r, c) = kv.Key
