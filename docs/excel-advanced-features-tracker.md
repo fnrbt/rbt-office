@@ -129,11 +129,19 @@ round-trip. ~160 functions total now.
 - Missing ⛔: interactive **Ctrl+T / Insert→Table**, totals row, table resize
   on data entry, the AutoFilter dropdown picker, structured-ref autocomplete.
 
-## 4. Pivot tables ⛔
-Only UI stubs: `SpreadsheetUi.fs` wires an "Insert Pivot" button/menu to
-`InsertPivot` which is a no-op. On import, cached pivot output renders as plain
-cell values (acceptable for display, but no live pivot). No pivot cache model,
-no field/area model, no recompute. Large, self-contained feature.
+## 4. Pivot tables 🟡 (engine landed)
+- **Engine ✅** — `src/Spreadsheet/Pivot.fs` `computePivot`: groups source rows
+  by a row field, optionally cross-tabs by a column field, aggregates a value
+  field (Sum/Count/Average/Max/Min), with Grand-Total row/column. Pure +
+  unit-tested (`tests/formula/stage13-pivot.fsx`, 15 assertions: group-by,
+  cross-tab, count/avg/max, grand totals).
+- **Render ✅** — native runner `--pivottest` builds a model (sample source +
+  computed cross-tab) and renders it headlessly (Region × Product, Sum of
+  Sales, verified visually).
+- Still owed: parse `pivotTableDefinition`/`pivotCacheRecords` from real xlsx
+  to recompute imported pivots (cached values currently render as plain cells);
+  interactive Insert-Pivot UI (`SpreadsheetUi.InsertPivot` is still a stub);
+  multiple row/col/value fields; filters; pivot styles.
 
 ## 5. Sparklines 🟡 (native runner)
 In-cell mini-charts, parsed from the x14 `sparklineGroups` extLst and drawn as

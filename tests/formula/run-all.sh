@@ -28,6 +28,7 @@ stages=(
     stage10-extended
     stage11-stats
     stage12-financial
+    stage13-pivot
 )
 
 failed=0

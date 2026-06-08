@@ -1558,6 +1558,36 @@ let main argv =
                 let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend (int (ceil w)) (int (ceil h)) widget
                 File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
                 0
+        | [| "--pivottest"; output |] ->
+            // Self-contained pivot demo: sample sales data (left) → computed
+            // Region × Product cross-tab with Grand Totals (right), rendered.
+            let S = CellValue.String
+            let N = CellValue.Number
+            let source =
+                [| [| S "Region"; S "Product"; S "Sales" |]
+                   [| S "East"; S "Apples"; N 100.0 |]
+                   [| S "East"; S "Bananas"; N 200.0 |]
+                   [| S "West"; S "Apples"; N 150.0 |]
+                   [| S "West"; S "Bananas"; N 250.0 |]
+                   [| S "East"; S "Apples"; N 50.0 |]
+                   [| S "West"; S "Cherries"; N 300.0 |]
+                   [| S "East"; S "Cherries"; N 120.0 |] |]
+            let pivot = RedBat.Spreadsheet.Pivot.computePivot source 0 (Some 1) 2 RedBat.Spreadsheet.Pivot.Sum
+            let bold = { defaultFormat with Bold = true }
+            let place (grid: CellValue[][]) r0 c0 boldLast (model: SpreadsheetModel) =
+                let mutable m = model
+                for r in 0 .. grid.Length - 1 do
+                    for c in 0 .. grid.[r].Length - 1 do
+                        let isHdr = r = 0 || (boldLast && r = grid.Length - 1)
+                        m <- setCell { Row = r0 + r; Col = c0 + c } { Value = grid.[r].[c]; Format = (if isHdr then bold else defaultFormat); Comment = None } m
+                m
+            let model = createEmpty 40 16 |> place source 0 0 false |> place pivot 0 5 true
+            let w, h = 1000, 260
+            let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) model []
+            let backend = Raster.create()
+            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
+            0
         | [| "--vectortest"; output |] ->
             // Render the hand-built vector scene (VecPath/VecGroup) through the
             // native rasterizer — proves the new paint primitives end-to-end.
