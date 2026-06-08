@@ -2632,6 +2632,7 @@ type Spreadsheet(container: Element) =
                 EndCol = endCol
                 Columns = columns
                 HasHeaders = hasHeaders
+                HasTotals = false
             }
             let newWb = RedBat.Spreadsheet.Workbook.defineTable table wb
             workbook <- Some newWb

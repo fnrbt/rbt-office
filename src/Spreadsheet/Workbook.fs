@@ -21,7 +21,9 @@ type Sheet = {
     Visible: bool
 }
 
-/// Table definition (structured reference)
+/// Table definition (structured reference). Coordinates are 0-indexed model
+/// rows/cols (the form `getTableColumn`/`expandTableSel` read directly).
+/// `HasTotals` marks a totals row occupying `EndRow` (Excel's `totalsRowCount`).
 type Table = {
     Name: string
     SheetId: SheetId
@@ -29,8 +31,9 @@ type Table = {
     StartCol: int
     EndRow: int
     EndCol: int
-    Columns: string list  // Column names
+    Columns: string list  // Column names (header order, left → right)
     HasHeaders: bool
+    HasTotals: bool
 }
 
 /// Workbook containing multiple sheets
@@ -182,9 +185,29 @@ let defineTable (table: Table) (workbook: Workbook): Workbook =
 let deleteTable (name: string) (workbook: Workbook): Workbook =
     { workbook with Tables = Map.remove name workbook.Tables }
 
-/// Get table by name
+/// Get table by name (case-insensitive — Excel table names are).
 let getTable (name: string) (workbook: Workbook): Table option =
-    Map.tryFind name workbook.Tables
+    match Map.tryFind name workbook.Tables with
+    | Some t -> Some t
+    | None ->
+        workbook.Tables
+        |> Map.tryPick (fun k t ->
+            if System.String.Equals(k, name, System.StringComparison.OrdinalIgnoreCase) then Some t else None)
+
+/// Index of a column within a table by name (case-insensitive). None if absent.
+let tableColumnIndex (table: Table) (columnName: string): int option =
+    table.Columns
+    |> List.tryFindIndex (fun c -> System.String.Equals(c, columnName, System.StringComparison.OrdinalIgnoreCase))
+
+/// The table on `sheet` whose body region contains `cell`, if any — used to
+/// resolve unqualified structured refs (`[@Col]`) from the evaluating cell.
+let findTableContaining (sheet: SheetId option) (cell: CellAddress) (workbook: Workbook): Table option =
+    workbook.Tables
+    |> Map.tryPick (fun _ t ->
+        let sheetOk = match sheet with Some s -> s = t.SheetId | None -> true
+        if sheetOk && cell.Row >= t.StartRow && cell.Row <= t.EndRow
+           && cell.Col >= t.StartCol && cell.Col <= t.EndCol then Some t
+        else None)
 
 /// Resolve table column reference: Table1[Amount]
 let parseTableReference (ref: string): (string * string) option =

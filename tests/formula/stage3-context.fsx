@@ -105,7 +105,7 @@ check "name-unknown"  "=NoSuchName"              (e "NAME?")
 check "name-scoped-local"  "=Shared"             (n 30.0)         // sheet1-local Shared → B3
 // resolving with a different (or no) sheet scope falls back to the global.
 let sharedExpr = match parseFormula "=Shared" with Ok x -> x | _ -> Number 0.0
-match eval sharedExpr { Model = model; Workbook = wb; Sheet = Some "sheet2" } with
+match eval sharedExpr { Model = model; Workbook = wb; Sheet = Some "sheet2"; CurrentCell = None } with
 | CellValue.Number 10.0 -> pass <- pass + 1
 | got -> fail <- fail + 1; printfn "FAIL name-scoped-global  expected 10  got %A" got
 

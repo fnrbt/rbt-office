@@ -41,6 +41,27 @@ type RefAst = {
     ColAbs: bool
 }
 
+/// Which rows of a table a structured reference selects.
+/// `[#Data]` (default), `[#All]`, `[#Headers]`, `[#Totals]`, `[@]`/`[#This Row]`.
+type TableItemSpec =
+    | TblData
+    | TblAll
+    | TblHeaders
+    | TblTotals
+    | TblThisRow
+
+/// A structured (table) reference, e.g. `Sales[[#Totals],[Amount]]`.
+/// `Table = ""` means an unqualified ref (`[@Col]` inside a table cell) that
+/// resolves against whichever table contains the evaluating cell. `ColStart`
+/// is None for a whole-row reference (all columns); `ColEnd` is Some only for
+/// a column span `Table[[A]:[B]]`. Column names are matched case-insensitively.
+type TableSel = {
+    Table: string
+    Item: TableItemSpec
+    ColStart: string option
+    ColEnd: string option
+}
+
 type Expr =
     | Number of float
     | Str of string
@@ -50,7 +71,7 @@ type Expr =
     | ErrorLit of string
     | CellRef of RefAst
     | RangeRef of RefAst * RefAst
-    | TableRef of tableName: string * columnName: string
+    | TableRef of TableSel
     /// Named range / defined name — resolved at eval time against the
     /// workbook's NamedRanges (S3); for now evaluates to #NAME?.
     | NameRef of string
@@ -73,6 +94,12 @@ type Token =
     | TSheet of string
     /// Error literal, bare code (no '#').
     | TError of string
+    /// The raw inner text of a structured-reference bracket group, e.g. for
+    /// `Sales[[#Totals],[Amount]]` the token carries `[#Totals],[Amount]`.
+    /// The parser hands this to `parseTableSpec`. `[` only ever begins a
+    /// structured ref in our grammar (no array constants / R1C1 use it), so
+    /// the lexer can greedily consume a balanced group.
+    | TTableSpec of string
     | TPlus | TMinus | TStar | TSlash | TCaret | TPercent | TAmp
     | TEq | TNe | TLt | TGt | TLe | TGe
     | TLParen | TRParen
@@ -178,7 +205,21 @@ let tokenize (input: string) : Token list =
                 | '>' -> tokens.Add(TGt); i <- i + 1
                 | '(' -> tokens.Add(TLParen); i <- i + 1
                 | ')' -> tokens.Add(TRParen); i <- i + 1
-                | '[' -> tokens.Add(TLBracket); i <- i + 1
+                | '[' ->
+                    // Structured-reference bracket group: consume a balanced
+                    // [...] (nests one level, e.g. [[#Data],[Amount]]) and emit
+                    // its inner text as a single TTableSpec for the parser.
+                    let start = i + 1
+                    let mutable depth = 1
+                    let mutable j = i + 1
+                    while j < n && depth > 0 do
+                        match chars.[j] with
+                        | '[' -> depth <- depth + 1; j <- j + 1
+                        | ']' -> depth <- depth - 1; (if depth > 0 then j <- j + 1)
+                        | _ -> j <- j + 1
+                    let inner = System.String(chars, start, (min j n) - start)
+                    tokens.Add(TTableSpec inner)
+                    i <- (if j < n then j + 1 else n)
                 | ']' -> tokens.Add(TRBracket); i <- i + 1
                 | ',' -> tokens.Add(TComma); i <- i + 1
                 | ':' -> tokens.Add(TColon); i <- i + 1
@@ -220,6 +261,60 @@ let parseRefToken (token: string) : RefAst option =
             }
         | _ -> None
 
+/// Parse the inner text of a structured-reference bracket group into a
+/// `TableSel`. Handles the column shorthand (`Amount`), bracketed and
+/// multi-word column names (`[Sales Amount]`), item specifiers
+/// (`#All`/`#Data`/`#Headers`/`#Totals`/`#This Row`), the `@` this-row
+/// shorthand, column spans (`[A]:[B]`), and combinations
+/// (`[#Totals],[Amount]`). `table` is the qualifying table name ("" for an
+/// unqualified `[@Col]` resolved against the containing table at eval time).
+let parseTableSpec (table: string) (raw: string) : TableSel =
+    // Split a string on a delimiter char that sits at bracket depth 0.
+    let splitTop (delim: char) (s: string) : string list =
+        let parts = System.Collections.Generic.List<string>()
+        let sb = System.Text.StringBuilder()
+        let mutable depth = 0
+        for ch in s do
+            if ch = '[' then depth <- depth + 1; sb.Append ch |> ignore
+            elif ch = ']' then depth <- max 0 (depth - 1); sb.Append ch |> ignore
+            elif ch = delim && depth = 0 then parts.Add(sb.ToString()); sb.Clear() |> ignore
+            else sb.Append ch |> ignore
+        parts.Add(sb.ToString())
+        List.ofSeq parts
+    let unbracket (s: string) =
+        let t = s.Trim()
+        if t.StartsWith "[" && t.EndsWith "]" && t.Length >= 2 then t.Substring(1, t.Length - 2).Trim()
+        else t
+    let mutable item = TblData
+    let mutable colStart = None
+    let mutable colEnd = None
+    let setItemKw (kw: string) =
+        match kw.Trim().TrimStart('#').ToLowerInvariant() with
+        | "all" -> item <- TblAll
+        | "data" -> item <- TblData
+        | "headers" -> item <- TblHeaders
+        | "totals" -> item <- TblTotals
+        | "this row" | "thisrow" -> item <- TblThisRow
+        | _ -> ()
+    let setCols (part: string) =
+        match splitTop ':' part with
+        | [ a; b ] -> colStart <- Some (unbracket a); colEnd <- Some (unbracket b)
+        | _ -> let c = unbracket part in (if c <> "" then colStart <- Some c)
+    // A leading '@' (outside any inner bracket) is the this-row shorthand.
+    let s = raw.Trim()
+    let s =
+        if s.StartsWith "@" then item <- TblThisRow; s.Substring(1).Trim()
+        else s
+    for seg in splitTop ',' s do
+        let t = seg.Trim()
+        if t = "" then ()
+        else
+            let inner = unbracket t
+            if inner.StartsWith "#" then setItemKw inner
+            elif t.StartsWith "@" then item <- TblThisRow; setCols (t.Substring(1))
+            else setCols t
+    { Table = table; Item = item; ColStart = colStart; ColEnd = colEnd }
+
 // ---------------------------------------------------------------------------
 // Parser — recursive descent, Excel operator precedence.
 //   loosest → tightest:
@@ -259,6 +354,11 @@ let rec private parsePrimary (p: Parser) : Expr =
         p.Pos <- p.Pos + 1
         expectP p TBang
         parseSheetQualified p (Some sheetName)
+    | TTableSpec raw ->
+        // Unqualified structured ref (`[@Col]` / `[Amount]`) inside a table
+        // cell — resolves against whichever table contains the formula.
+        p.Pos <- p.Pos + 1
+        TableRef(parseTableSpec "" raw)
     | TIdent ident ->
         p.Pos <- p.Pos + 1
         match peekP p with
@@ -268,14 +368,10 @@ let rec private parsePrimary (p: Parser) : Expr =
             let args = parseArgs p
             expectP p TRParen
             Function(ident, args)
-        | TLBracket ->
-            // Structured table reference: Table[Column].
+        | TTableSpec raw ->
+            // Structured table reference: Table[Column] / Table[[#Totals],[A]] etc.
             p.Pos <- p.Pos + 1
-            match nextP p with
-            | TIdent col ->
-                expectP p TRBracket
-                TableRef(ident, col)
-            | other -> failwithf "Expected column name in table ref, got %A" other
+            TableRef(parseTableSpec ident raw)
         | TBang ->
             // Unquoted sheet-qualified ref: Sheet1!A1.
             p.Pos <- p.Pos + 1
@@ -772,17 +868,68 @@ let expandRangeRef (a: RefAst) (b: RefAst) (model: SpreadsheetModel)
     | None -> [ err Err.ref ]
 
 /// Expand a structured table reference to its column's values.
-let expandTableRef (tableName: string) (columnName: string)
-                   (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                   (model: SpreadsheetModel) : CellValue list =
+/// Resolve a structured reference to its absolute model area `(r0,c0,r1,c1)`,
+/// or an error code when the table / column / item can't be resolved. Rows ×
+/// columns are always contiguous for the specifiers we support. `Ok` with
+/// `r0 > r1` denotes a valid-but-empty body (a table with no data rows).
+let tableSelArea (sel: TableSel)
+                 (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                 (sheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                 (currentCell: CellAddress option) : Result<int * int * int * int, string> =
     match workbook with
+    | None -> Result.Error Err.ref
     | Some wb ->
-        match RedBat.Spreadsheet.Workbook.getTableColumn tableName columnName wb with
-        | Some (_, startAddr, endAddr) ->
-            [ for row in startAddr.Row .. endAddr.Row ->
-                getCellValue { Row = row; Col = startAddr.Col } model |> unwrapValue ]
-        | None -> [ err Err.ref ]
-    | None -> [ err Err.ref ]
+        let tableOpt =
+            if sel.Table <> "" then RedBat.Spreadsheet.Workbook.getTable sel.Table wb
+            else currentCell |> Option.bind (fun c -> RedBat.Spreadsheet.Workbook.findTableContaining sheet c wb)
+        match tableOpt with
+        | None -> Result.Error Err.ref
+        | Some t ->
+            let headerRows = if t.HasHeaders then 1 else 0
+            let totalsRows = if t.HasTotals then 1 else 0
+            let dataStart = t.StartRow + headerRows
+            let dataEnd = t.EndRow - totalsRows
+            let colRange =
+                match sel.ColStart with
+                | None -> Some (t.StartCol, t.StartCol + t.Columns.Length - 1)
+                | Some cs ->
+                    match RedBat.Spreadsheet.Workbook.tableColumnIndex t cs with
+                    | None -> None
+                    | Some ci ->
+                        match sel.ColEnd with
+                        | None -> Some (t.StartCol + ci, t.StartCol + ci)
+                        | Some ce ->
+                            RedBat.Spreadsheet.Workbook.tableColumnIndex t ce
+                            |> Option.map (fun cj -> t.StartCol + min ci cj, t.StartCol + max ci cj)
+            let rowRange =
+                match sel.Item with
+                | TblData -> Some (dataStart, dataEnd)   // r0>r1 ⇒ empty body
+                | TblAll -> Some (t.StartRow, t.EndRow)
+                | TblHeaders -> if t.HasHeaders then Some (t.StartRow, t.StartRow) else None
+                | TblTotals -> if t.HasTotals then Some (t.EndRow, t.EndRow) else None
+                | TblThisRow ->
+                    match currentCell with
+                    | Some c when c.Row >= dataStart && c.Row <= dataEnd -> Some (c.Row, c.Row)
+                    | _ -> None
+            match colRange, rowRange with
+            | Some (c0, c1), Some (r0, r1) -> Result.Ok (r0, c0, r1, c1)
+            | Some _, None -> Result.Error (match sel.Item with TblThisRow -> Err.value | _ -> Err.ref)
+            | None, _ -> Result.Error Err.ref
+
+/// Resolve a structured reference (`Table[[#Totals],[Amount]]` etc.) to the
+/// flat list of cell values it covers (row-major over the selected rows ×
+/// columns). `sheet`/`currentCell` resolve this-row and unqualified refs.
+let expandTableSel (sel: TableSel)
+                   (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                   (sheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                   (currentCell: CellAddress option)
+                   (model: SpreadsheetModel) : CellValue list =
+    match tableSelArea sel workbook sheet currentCell with
+    | Result.Error e -> [ err e ]
+    | Result.Ok (r0, c0, r1, c1) ->
+        [ for row in r0 .. r1 do
+            for col in c0 .. c1 ->
+                getCellValue { Row = row; Col = col } model |> unwrapValue ]
 
 // --- Date helpers -----------------------------------------------------------
 // Excel serial dates: serial 1 = 1900-01-01. Excel's phantom 1900-02-29 (the
@@ -877,6 +1024,17 @@ let private rangeBounds (e: Expr) : (int * int * int * int) option =
     | RangeRef (a, b) -> Some (min a.Row b.Row, min a.Col b.Col, max a.Row b.Row, max a.Col b.Col)
     | CellRef r -> Some (r.Row, r.Col, r.Row, r.Col)
     | _ -> None
+
+/// True if the expression tree contains a SUBTOTAL/AGGREGATE call — those
+/// cells are skipped when an outer SUBTOTAL/AGGREGATE ranges over them, so
+/// nested subtotals aren't double-counted (Excel's documented behaviour).
+let rec exprUsesSubtotal (e: Expr) : bool =
+    match e with
+    | Function (n, _) when (let u = n.ToUpperInvariant() in u = "SUBTOTAL" || u = "AGGREGATE") -> true
+    | Function (_, args) -> List.exists exprUsesSubtotal args
+    | UnaryOp (_, x) -> exprUsesSubtotal x
+    | BinOp (l, _, r) -> exprUsesSubtotal l || exprUsesSubtotal r
+    | _ -> false
 
 /// Compare two scalar values for the comparison operators. Excel orders
 /// number < text < FALSE < TRUE; numbers compare numerically, text
@@ -1110,12 +1268,16 @@ type EvalContext = {
     Model: SpreadsheetModel
     Workbook: RedBat.Spreadsheet.Workbook.Workbook option
     Sheet: RedBat.Spreadsheet.Workbook.SheetId option
+    /// Address of the cell being evaluated, when known. Needed to resolve
+    /// this-row structured refs (`Table[@Col]` / `[@Col]`) and to find the
+    /// containing table for unqualified refs. None for ad-hoc evaluation.
+    CurrentCell: CellAddress option
 }
 
 /// Build a context with no workbook — same-sheet formulas only, no defined
 /// names. Convenient for callers that just have a bare model.
 let contextOf (model: SpreadsheetModel) : EvalContext =
-    { Model = model; Workbook = None; Sheet = None }
+    { Model = model; Workbook = None; Sheet = None; CurrentCell = None }
 
 /// Evaluate an expression to a scalar CellValue.
 let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
@@ -1140,8 +1302,8 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
         match expandRangeRef a b model workbook with
         | v :: _ -> v
         | [] -> err Err.ref
-    | TableRef (t, c) ->
-        match expandTableRef t c workbook model with
+    | TableRef sel ->
+        match expandTableSel sel workbook ctx.Sheet ctx.CurrentCell model with
         | v :: _ -> v
         | [] -> err Err.ref
     | UnaryOp (op, operand) -> applyUnary op (eval operand ctx)
@@ -1162,7 +1324,7 @@ and flattenArgs (args: Expr list) (ctx: EvalContext) : CellValue list =
     args |> List.collect (fun arg ->
         match arg with
         | RangeRef (a, b) -> expandRangeRef a b model workbook
-        | TableRef (t, c) -> expandTableRef t c workbook model
+        | TableRef sel -> expandTableSel sel workbook ctx.Sheet ctx.CurrentCell model
         | _ when isArrayExpr arg ->
             [ for row in evalArray arg ctx do for v in row -> unwrapValue v ]
         | NameRef name ->
@@ -1170,7 +1332,7 @@ and flattenArgs (args: Expr list) (ctx: EvalContext) : CellValue list =
             // would — otherwise SUM(MyRange) would see only its first cell.
             match workbook |> Option.bind (resolveNameExpr name ctx.Sheet) with
             | Some (RangeRef (a, b)) -> expandRangeRef a b model workbook
-            | Some (TableRef (t, c)) -> expandTableRef t c workbook model
+            | Some (TableRef sel) -> expandTableSel sel workbook ctx.Sheet ctx.CurrentCell model
             | Some e -> [ eval e ctx ]
             | None -> [ err Err.name ]
         | _ -> [ eval arg ctx ])
@@ -1188,11 +1350,11 @@ and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
             let sr, sc, er, ec = normalizeRange a b
             [| for r in sr .. er -> [| for c in sc .. ec -> getCellValue { Row = r; Col = c } m |> unwrapValue |] |]
         | None -> scalar (err Err.ref)
-    | TableRef (t, c) -> [| for v in expandTableRef t c ctx.Workbook ctx.Model -> [| v |] |]
+    | TableRef sel -> [| for v in expandTableSel sel ctx.Workbook ctx.Sheet ctx.CurrentCell ctx.Model -> [| v |] |]
     | NameRef name ->
         match ctx.Workbook |> Option.bind (resolveNameExpr name ctx.Sheet) with
         | Some (RangeRef (a, b)) -> evalArray (RangeRef (a, b)) ctx
-        | Some (TableRef (t, c)) -> evalArray (TableRef (t, c)) ctx
+        | Some (TableRef sel) -> evalArray (TableRef sel) ctx
         | Some e -> scalar (eval e ctx)
         | None -> scalar (err Err.name)
     | UnaryOp (op, inner) -> evalArray inner ctx |> Array.map (Array.map (applyUnary op))
@@ -1388,14 +1550,14 @@ and foldArgs (f: Fold<CellValue, 'S, 'R>) (args: Expr list) (ctx: EvalContext) :
     for arg in args do
         match arg with
         | RangeRef (a, b) -> iterRange a b
-        | TableRef (t, c) -> for v in expandTableRef t c workbook model do s <- f.Step s v
+        | TableRef sel -> for v in expandTableSel sel workbook ctx.Sheet ctx.CurrentCell model do s <- f.Step s v
         | _ when isArrayExpr arg ->
             for row in evalArray arg ctx do
                 for v in row do s <- f.Step s (unwrapValue v)
         | NameRef n ->
             match workbook |> Option.bind (resolveNameExpr n ctx.Sheet) with
             | Some (RangeRef (a, b)) -> iterRange a b
-            | Some (TableRef (t, c)) -> for v in expandTableRef t c workbook model do s <- f.Step s v
+            | Some (TableRef sel) -> for v in expandTableSel sel workbook ctx.Sheet ctx.CurrentCell model do s <- f.Step s v
             | Some inner -> s <- f.Step s (unwrapValue (eval inner ctx))
             | None -> s <- f.Step s (err Err.name)
         | _ -> s <- f.Step s (unwrapValue (eval arg ctx))
@@ -1516,6 +1678,83 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             else
                 let mean = List.average ns
                 CellValue.Number ((ns |> List.sumBy (fun x -> (x - mean) ** 2.0)) / (if sample then float (n - 1) else float n)))
+    | "SUBTOTAL" | "AGGREGATE" ->
+        // SUBTOTAL(fnum, ref…) / AGGREGATE(fnum, options, ref…). Aggregate
+        // over the refs while (a) skipping rows hidden by a filter — and, for
+        // SUBTOTAL 101–111 or AGGREGATE options 1/3/5/7, manually-hidden rows —
+        // and (b) skipping cells that are themselves SUBTOTAL/AGGREGATE so
+        // nested subtotals aren't double-counted. AGGREGATE additionally drops
+        // error cells under options 2/3/6/7.
+        let isAggregate = name.ToUpperInvariant() = "AGGREGATE"
+        let refStart = if isAggregate then 2 else 1
+        match argNum 0 with
+        | Result.Error e -> err e
+        | Ok fnf ->
+            let fnRaw = int fnf
+            let baseFn = if fnRaw >= 101 then fnRaw - 100 else fnRaw
+            let opts = if isAggregate then (match argNum 1 with Ok o -> int o | _ -> 0) else 0
+            let ignoreHidden =
+                if isAggregate then (opts = 1 || opts = 3 || opts = 5 || opts = 7)
+                else fnRaw >= 101
+            let ignoreErrors = isAggregate && (opts = 2 || opts = 3 || opts = 6 || opts = 7)
+            let skipNested = not isAggregate || opts <= 3
+            let visible = if Map.isEmpty model.Filters then None else Some (getVisibleRows model)
+            let rowOk (r: int) =
+                (match visible with Some vs -> Set.contains r vs | None -> true)
+                && (not ignoreHidden || getRowHeight r model > 0.0)
+            let nested (r: int) (c: int) =
+                skipNested &&
+                (match getCell { Row = r; Col = c } model with
+                 | Some cd ->
+                     match cd.Value with
+                     | CellValue.Formula (ftext, _) -> (match parseFormula ftext with Ok e -> exprUsesSubtotal e | _ -> false)
+                     | _ -> false
+                 | None -> false)
+            // Cell coordinates covered by one reference argument.
+            let argArea (a: Expr) : (int * int * int * int) option =
+                match rangeBounds a with
+                | Some b -> Some b
+                | None ->
+                    match a with
+                    | TableRef sel ->
+                        match tableSelArea sel workbook ctx.Sheet ctx.CurrentCell with
+                        | Result.Ok (r0, c0, r1, c1) -> Some (r0, c0, r1, c1)
+                        | Result.Error _ -> None
+                    | _ -> None
+            let refArgs = if nargs > refStart then List.skip refStart args else []
+            let vals =
+                [ for a in refArgs do
+                    match argArea a with
+                    | Some (r0, c0, r1, c1) ->
+                        for r in r0 .. r1 do
+                            if rowOk r then
+                                for c in c0 .. c1 do
+                                    if not (nested r c) then yield gridCell model r c
+                    | None -> yield eval a ctx ]
+            let vals = if ignoreErrors then vals |> List.filter (fun v -> match unwrapValue v with CellValue.Error _ -> false | _ -> true) else vals
+            let nums () = numbersOf vals
+            let withNums empty f = match nums () with Result.Error e -> err e | Ok [] -> empty | Ok ns -> f ns
+            let variance sample (ns: float list) =
+                let n = List.length ns
+                if (sample && n < 2) || n < 1 then err Err.div0
+                else
+                    let mean = List.average ns
+                    let ss = ns |> List.sumBy (fun x -> (x - mean) ** 2.0)
+                    CellValue.Number (ss / (if sample then float (n - 1) else float n))
+            match baseFn with
+            | 1 -> withNums (err Err.div0) (fun ns -> CellValue.Number (List.average ns))
+            | 2 -> CellValue.Number (vals |> List.filter (fun v -> match unwrapValue v with CellValue.Number _ -> true | _ -> false) |> List.length |> float)
+            | 3 -> CellValue.Number (vals |> List.filter (fun v -> match unwrapValue v with CellValue.Empty -> false | _ -> true) |> List.length |> float)
+            | 4 -> withNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.max ns))
+            | 5 -> withNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.min ns))
+            | 6 -> withNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.fold ( * ) 1.0 ns))
+            | 7 -> withNums (err Err.div0) (fun ns -> match variance true ns with CellValue.Number v -> CellValue.Number (sqrt v) | e -> e)
+            | 8 -> withNums (err Err.div0) (fun ns -> match variance false ns with CellValue.Number v -> CellValue.Number (sqrt v) | e -> e)
+            | 9 -> withNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.sum ns))
+            | 10 -> withNums (err Err.div0) (variance true)
+            | 11 -> withNums (err Err.div0) (variance false)
+            | 12 -> withNums (err Err.num) (fun ns -> CellValue.Number (median ns))
+            | _ -> err Err.value   // AGGREGATE 13–19 (MODE/LARGE/SMALL/PERCENTILE/QUARTILE) — later
     | "LARGE" | "SMALL" ->
         if nargs <> 2 then err Err.value else
         match numbersOf (flattenArgs [ List.item 0 args ] ctx), argNum 1 with
@@ -2548,7 +2787,8 @@ let evaluateFormula (formula: string) (model: SpreadsheetModel)
         let ctx =
             { Model = model
               Workbook = workbook
-              Sheet = workbook |> Option.map (fun w -> w.ActiveSheet) }
+              Sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
+              CurrentCell = None }
         eval expr ctx
     | Result.Error msg -> CellValue.Error msg
 
@@ -2622,7 +2862,7 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
         | Some (cell, formula, _, None) when Set.contains addr cyclic ->
             updated <- setCell addr { cell with Value = CellValue.Formula (formula, CellValue.Error Err.cycle) } updated
         | Some (cell, formula, expr, None) ->
-            let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet }
+            let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
             let result = eval expr ctx
             updated <- setCell addr { cell with Value = CellValue.Formula (formula, result) } updated
         | None -> ()
@@ -2670,7 +2910,7 @@ let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
     let mutable updated = cleared
     let mutable spillMap = Map.empty
     for (addr, cell, formula, expr) in anchors do
-        let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet }
+        let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
         let nr = arr.Length
         let nc = if nr > 0 then arr.[0].Length else 0
         if nr * nc <= 1 then
