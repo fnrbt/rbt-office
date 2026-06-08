@@ -1761,6 +1761,29 @@ let main argv =
             printfn "totals row: %s | %s | %s" (v 4 0) (v 4 1) (v 4 2)
             printfn "SUM(Sales[Q1]) = %s" (v 6 1)
             0
+        | [| "--tablefiltertest"; input; outBefore; outAfter |] ->
+            // Imported table + an applied column filter → filtered rows collapse
+            // while the styled header and its filter buttons stay put (Excel's
+            // table-filter behaviour). Proves the table filter button's model
+            // path (applyFilter → applyFilterRowHeights) end to end.
+            let bytes = File.ReadAllBytes (fullPath input)
+            match Xlsx.loadBytesNative bytes with
+            | None -> eprintfn "parse failed"; 2
+            | Some wb ->
+                let ctx = buildWorkbookContext wb
+                let model = (Map.find "sheet1" ctx.Sheets).Model
+                // Keep only column-0 values "1" and "3" (collapses the others).
+                let filtered = applyFilter 0 (Set.ofList [ "1"; "3" ]) model
+                let w, h = 700, 280
+                let renderTo path m =
+                    let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) m []
+                    let backend = Raster.create()
+                    let fb = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+                    File.WriteAllBytes(fullPath path, PngEncode.encode fb)
+                renderTo outBefore model
+                renderTo outAfter filtered
+                printfn "visible rows after filter: %A" (getVisibleRows filtered |> Set.toList |> List.sort)
+                0
         | [| "--cftest"; output |] ->
             // Conditional-format visuals: data bars / color scale / icon set,
             // computed over real numbers and rendered.

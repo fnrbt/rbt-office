@@ -119,15 +119,39 @@ round-trip. ~160 functions total now.
   multi-key SORTBY, BYROW/BYCOL, direct LAMBDA IIFE. The streaming foundation
   underneath is in `docs/calc-streaming-fusion-design.md`.
 
-## 3. Excel Tables / ListObjects 🟡
-- Model `Table` + `TableStyle` (`Model.fs` ~289) carry region, header count,
-  style, autofilter range. Imported from `xl/tables/tableN.xml`.
-- Structured references `Table[Column]` parse + evaluate (`Formula.fs` ~268,
-  `Workbook.fs` ~192).
-- TableStyleMedium overlay renders (native PNG). TableStyleLight/Dark not
-  overlaid; filter buttons are native-PNG-only (PDF + web ignore them).
-- Missing ⛔: interactive **Ctrl+T / Insert→Table**, totals row, table resize
-  on data entry, the AutoFilter dropdown picker, structured-ref autocomplete.
+## 3. Excel Tables / ListObjects ✅ (core complete)
+- Model `Table` (+ `Name`, `HasTotals`) + `TableStyle` carry region, header
+  count, style, autofilter range. Imported from `xl/tables/tableN.xml`
+  (`XlsxReader` now also reads `displayName`, `<tableColumn>` names, and
+  `totalsRowCount`).
+- **Structured references — full grammar** (`Formula.fs`): item specifiers
+  `[#All]`/`[#Data]`/`[#Headers]`/`[#Totals]`, this-row `[@Col]` (qualified +
+  unqualified, via `EvalContext.CurrentCell`), column spans `Table[[A]:[B]]`,
+  and multi-word column names. Lexer consumes a balanced `[...]` into one
+  `TTableSpec`; `parseTableSpec` → `TableSel` AST; `expandTableSel`/
+  `tableSelArea` resolve it.
+- **Imported tables feed structured refs** (`Workbook.makeTableFromRegion` +
+  the native runner's `buildWorkbookContext`): `Table1[Amount]` formulas
+  resolve on recompute of real workbooks (was `#REF!`). Proof: runner
+  `--tabletest`.
+- **`SUBTOTAL` / `AGGREGATE`** (fn 1–12): filter-hidden + manually-hidden row
+  exclusion (101–111 / opts 1/3/5/7), nested-subtotal skip, error skip
+  (AGGREGATE opts 2/3/6/7).
+- **Insert Table / Ctrl+T** (`Model.createTable`): registers a real styled +
+  autofiltered table with an optional `SUBTOTAL(109,…)` **totals row**; editor
+  binds Ctrl+T. Proof: runner `--tablecreatetest` (totals row + structured ref
+  both compute).
+- **Table filtering**: filter buttons render (native PNG); applying a filter
+  collapses the filtered rows via `applyFilterRowHeights` while the styled
+  header + buttons stay (proof: runner `--tablefiltertest`). Editor's filter
+  dialog is table-aware (`tableAt` / `tableColumnUniqueValues` scope the
+  checklist to the table's data rows).
+- Tests: `stage17-tables` (43 assertions).
+- Deferred ⛔: TableStyleLight/Dark overlays; table styling rendered from
+  `model.Tables` in the **interactive grid + PDF** (currently overlay reads
+  the XLSX table list, so editor-created tables aren't styled there); table
+  auto-extend on adjacent data entry; structured-ref autocomplete; AGGREGATE
+  13–19 (MODE/LARGE/SMALL/PERCENTILE/QUARTILE).
 
 ## 4. Pivot tables 🟡 (engine landed)
 - **Engine ✅** — `src/Spreadsheet/Pivot.fs`:

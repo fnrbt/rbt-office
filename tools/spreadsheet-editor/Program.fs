@@ -429,15 +429,22 @@ let private shellActions
 
     let openFilterDialog () =
         let model = Editor.activeModel state
-        let _, c = Editor.focusCell model
-        match columnUniqueValues c model with
+        let r, c = Editor.focusCell model
+        // Table-aware: when the focused cell is inside a table, scope the
+        // checklist to that table's data rows for the column (this is what a
+        // table header filter button does); otherwise filter the whole column.
+        let uniques, label =
+            match tableAt r c model with
+            | Some t -> tableColumnUniqueValues t c model, sprintf "%s (table %s)" (columnToLetter c) t.Name
+            | None -> columnUniqueValues c model, columnToLetter c
+        match uniques with
         | [] -> status.Value <- "No values to filter in this column."
         | uniques ->
-            XlUi.filterDialog (columnToLetter c) uniques (fun visible ->
+            XlUi.filterDialog label uniques (fun visible ->
                 Editor.applyChange state (fun m ->
                     if Set.count visible = List.length uniques then removeFilter c m else applyFilter c visible m)
                 |> ignore
-                status.Value <- sprintf "Filter on %s: %d of %d shown" (columnToLetter c) (Set.count visible) (List.length uniques))
+                status.Value <- sprintf "Filter on %s: %d of %d shown" label (Set.count visible) (List.length uniques))
             |> Composit.Ui.OfficeShell.openDialog renderState
 
     let openInsertSheetDialog () =

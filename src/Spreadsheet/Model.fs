@@ -1076,6 +1076,23 @@ let createTable (name: string) (r0: int) (c0: int) (r1: int) (c1: int)
           HasTotals = withTotals }
     { m with Tables = m.Tables @ [ table ] }
 
+/// The table whose region contains the 0-indexed cell, if any. Table
+/// coordinates are 1-indexed, so they're shifted for the comparison.
+let tableAt (row: int) (col: int) (model: SpreadsheetModel): Table option =
+    model.Tables
+    |> List.tryFind (fun t ->
+        row >= t.StartRow - 1 && row <= t.EndRow - 1 && col >= t.StartCol - 1 && col <= t.EndCol - 1)
+
+/// Distinct, sorted display values in one column of a table — data rows only
+/// (header and totals excluded). The checklist for a table's filter button.
+let tableColumnUniqueValues (table: Table) (col: int) (model: SpreadsheetModel): string list =
+    let dataStart = (table.StartRow - 1) + table.HeaderRowCount
+    let dataEnd = (table.EndRow - 1) - (if table.HasTotals then 1 else 0)
+    [ for r in dataStart .. dataEnd -> displayValue (getCellValue { Row = r; Col = col } model) ]
+    |> List.filter (fun s -> s <> "")
+    |> List.distinct
+    |> List.sort
+
 /// Insert a row at the specified index (shifts rows down)
 let insertRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
     // Shift all rows >= atRow down by 1

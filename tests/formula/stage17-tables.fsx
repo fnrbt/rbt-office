@@ -132,6 +132,13 @@ let totalsFormula =
     match getCellValue { Row=3; Col=1 } created with CellValue.Formula (t, _) -> t | _ -> ""
 check "createTable totals formula" totalsFormula "SUBTOTAL(109,B2:B3)"
 
+// --- table-aware filtering (filter-button scope) ---
+check "tableAt header cell" (tableAt 0 0 created |> Option.isSome) true
+check "tableAt data cell"   (tableAt 2 1 created |> Option.isSome) true
+check "tableAt outside"     (tableAt 12 12 created |> Option.isSome) false
+check "tableColUnique col0" (tableColumnUniqueValues ct 0 created) [ "East"; "West" ]
+check "tableColUnique excludes totals" (tableColumnUniqueValues ct 1 created) [ "100"; "150" ]
+
 printfn ""
 printfn "Stage 17 table tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
