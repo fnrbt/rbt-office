@@ -139,6 +139,24 @@ check "tableAt outside"     (tableAt 12 12 created |> Option.isSome) false
 check "tableColUnique col0" (tableColumnUniqueValues ct 0 created) [ "East"; "West" ]
 check "tableColUnique excludes totals" (tableColumnUniqueValues ct 1 created) [ "100"; "150" ]
 
+// --- applyTableStyles: bakes header/stripe styling for created tables only ---
+let fmtAt (m: SpreadsheetModel) r c = (getCell { Row=r; Col=c } m |> Option.get).Format
+let styledM = applyTableStyles created
+let hdr = fmtAt styledM 0 0
+check "style header fill"   hdr.BgColor (Some "#4472C4")
+check "style header white"  hdr.TextColor (Some "#FFFFFF")
+check "style header bold"    hdr.Bold true
+check "style header filter btn" hdr.FilterButton true
+check "style stripe row0"   (fmtAt styledM 1 0).BgColor (Some "#D9E1F2")   // East, even data idx
+check "style no stripe row1" (fmtAt styledM 2 0).BgColor None               // West, odd data idx
+// Imported-style table (HeaderFill None) is left untouched.
+let importedStyleModel =
+    { dataModel with
+        Tables = [ { Name="T"; StartRow=1; StartCol=1; EndRow=3; EndCol=3; HeaderRowCount=1
+                     Style = Some { Name="TableStyleMedium7"; ShowFirstColumn=false; ShowLastColumn=false; ShowRowStripes=true; ShowColumnStripes=false; HeaderFill=None; StripeFill=None }
+                     AutoFilter = Some (1,3); HasTotals=false } ] }
+check "style no-op when HeaderFill None" (fmtAt (applyTableStyles importedStyleModel) 0 0).BgColor None
+
 printfn ""
 printfn "Stage 17 table tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -146,12 +146,17 @@ round-trip. ~160 functions total now.
   header + buttons stay (proof: runner `--tablefiltertest`). Editor's filter
   dialog is table-aware (`tableAt` / `tableColumnUniqueValues` scope the
   checklist to the table's data rows).
-- Tests: `stage17-tables` (43 assertions).
-- Deferred ⛔: TableStyleLight/Dark overlays; table styling rendered from
-  `model.Tables` in the **interactive grid + PDF** (currently overlay reads
-  the XLSX table list, so editor-created tables aren't styled there); table
-  auto-extend on adjacent data entry; structured-ref autocomplete; AGGREGATE
-  13–19 (MODE/LARGE/SMALL/PERCENTILE/QUARTILE).
+- **Table styling rendered from `model.Tables`** (`Model.applyTableStyles`, run
+  in `Paint.fs` `buildPaintItems`/`buildViewportPaintItems`): app-created tables
+  render styled (header accent fill + white bold + filter buttons + banded rows)
+  in the interactive grid + PDF + runner. Gated on `TableStyle.HeaderFill` being
+  set, so it's a strict no-op for imported tables (whose runner bakes
+  theme-accent styling into cells) — corpus renders byte-for-byte identical
+  (md5-verified). Proof: runner `--tablecreatetest`.
+- Tests: `stage17-tables` (50 assertions).
+- Deferred ⛔: TableStyleLight/Dark overlays; table auto-extend on adjacent data
+  entry; structured-ref autocomplete; AGGREGATE 13–19 (MODE/LARGE/SMALL/
+  PERCENTILE/QUARTILE).
 
 ## 4. Pivot tables 🟡 (engine landed)
 - **Engine ✅** — `src/Spreadsheet/Pivot.fs`:

@@ -315,6 +315,13 @@ type TableStyle = {
     ShowLastColumn: bool
     ShowRowStripes: bool
     ShowColumnStripes: bool
+    /// Pre-resolved header fill / banded-row fill (hex). Set for tables whose
+    /// styling is applied at render time from `model.Tables` (e.g. tables made
+    /// by `createTable`); left None for imported tables whose runner bakes the
+    /// theme-accent styling straight into each cell's format. `applyTableStyles`
+    /// only acts when `HeaderFill` is set, so it never double-styles the corpus.
+    HeaderFill: string option
+    StripeFill: string option
 }
 
 /// One table region on a sheet (i.e., `xl/tables/tableN.xml`). Coordinates
@@ -1071,7 +1078,8 @@ let createTable (name: string) (r0: int) (c0: int) (r1: int) (c1: int)
           EndRow = endRow0 + 1
           EndCol = c1 + 1
           HeaderRowCount = 1
-          Style = Some { Name = "TableStyleMedium2"; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false }
+          Style = Some { Name = "TableStyleMedium2"; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false
+                         HeaderFill = Some "#4472C4"; StripeFill = Some "#D9E1F2" }
           AutoFilter = Some (c0 + 1, c1 + 1)
           HasTotals = withTotals }
     { m with Tables = m.Tables @ [ table ] }
@@ -1092,6 +1100,44 @@ let tableColumnUniqueValues (table: Table) (col: int) (model: SpreadsheetModel):
     |> List.filter (fun s -> s <> "")
     |> List.distinct
     |> List.sort
+
+/// Render-time: bake table styling (header accent fill + white bold text +
+/// filter buttons, and banded data rows) into cell formats from `model.Tables`.
+/// Acts ONLY on tables whose `Style.HeaderFill` is set — i.e. tables created in
+/// the app (`createTable`); imported tables leave it None because the importer
+/// already bakes theme-accent styling into each cell, so this never
+/// double-styles or disturbs the parity corpus. Uses orElse/|| merges so a
+/// cell's own explicit colors still win. Empty cells in the region are created
+/// styled so the band/header spans the full width.
+let applyTableStyles (model: SpreadsheetModel): SpreadsheetModel =
+    let styleTable (m: SpreadsheetModel) (t: Table) : SpreadsheetModel =
+        match t.Style with
+        | Some s when s.HeaderFill.IsSome ->
+            let r0, c0, r1, c1 = t.StartRow - 1, t.StartCol - 1, t.EndRow - 1, t.EndCol - 1
+            let mutable acc = m
+            for r in r0 .. r1 do
+                let isHeader = r < r0 + t.HeaderRowCount
+                let dataIdx = r - r0 - t.HeaderRowCount
+                for c in c0 .. c1 do
+                    let addr = { Row = r; Col = c }
+                    let baseData = getCell addr acc |> Option.defaultValue { Value = Empty; Format = defaultFormat; Comment = None }
+                    let fmt = baseData.Format
+                    let hasFilter =
+                        match t.AutoFilter with Some (fc1, fc2) -> (c + 1) >= fc1 && (c + 1) <= fc2 | None -> false
+                    let newFmt =
+                        if isHeader then
+                            { fmt with
+                                BgColor = fmt.BgColor |> Option.orElse s.HeaderFill
+                                TextColor = fmt.TextColor |> Option.orElse (Some "#FFFFFF")
+                                Bold = true
+                                FilterButton = fmt.FilterButton || hasFilter }
+                        elif s.ShowRowStripes && dataIdx >= 0 && dataIdx % 2 = 0 then
+                            { fmt with BgColor = fmt.BgColor |> Option.orElse s.StripeFill }
+                        else fmt
+                    if newFmt <> fmt then acc <- setCell addr { baseData with Format = newFmt } acc
+            acc
+        | _ -> m
+    model.Tables |> List.fold styleTable model
 
 /// Insert a row at the specified index (shifts rows down)
 let insertRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
