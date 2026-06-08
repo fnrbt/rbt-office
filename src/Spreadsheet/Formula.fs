@@ -18,6 +18,10 @@ module Err =
     let na = "N/A"
     let nul = "NULL!"
     let cycle = "CYCLE"
+    /// Dynamic-array result errors: an empty FILTER/UNIQUE result, and a spill
+    /// blocked by an occupied target cell.
+    let calc = "CALC!"
+    let spill = "SPILL!"
     /// Every recognized error literal, for the lexer.
     let all = [ "#DIV/0!"; "#VALUE!"; "#REF!"; "#NAME?"; "#NUM!"; "#N/A"; "#NULL!" ]
 
@@ -584,6 +588,68 @@ let referencesQualified (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
         | Function (_, args) -> args |> List.fold (fun acc a -> Set.union acc (go seen a)) Set.empty
     go Set.empty expr
 
+/// A rectangular cell region on a sheet (inclusive bounds), for range-granular
+/// dependencies — a *large* range reference is tracked as one rectangle rather
+/// than one graph edge per cell (a single `SUM(A1:A100000)` would otherwise
+/// reify 100k edges + ~29 MB). Membership is tested by containment on edit.
+type DepRect =
+    { Sheet: RedBat.Spreadsheet.Workbook.SheetId; R0: int; C0: int; R1: int; C1: int }
+
+let rectContainsCell (rect: DepRect) (sc: RedBat.Spreadsheet.Workbook.SheetCell) =
+    sc.Sheet = rect.Sheet
+    && sc.Cell.Row >= rect.R0 && sc.Cell.Row <= rect.R1
+    && sc.Cell.Col >= rect.C0 && sc.Cell.Col <= rect.C1
+
+/// Ranges with more than this many cells become a rectangle dependency rather
+/// than per-cell edges. Below it, the explicit-edge path is kept (cheaper for
+/// the common small range, and preserves the per-cell dependent sets the calc
+/// engine + its tests rely on).
+[<Literal>]
+let rangeDepThreshold = 2048
+
+/// Like `referencesQualified`, but a range larger than `rangeDepThreshold` is
+/// returned as a `DepRect` (second component) instead of being expanded into
+/// the cell set. Small ranges and single cells still land in the cell set, so
+/// existing dependency behavior is unchanged for them.
+let referencesRanged (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                     (homeSheet: RedBat.Spreadsheet.Workbook.SheetId)
+                     (expr: Expr) : Set<RedBat.Spreadsheet.Workbook.SheetCell> * DepRect list =
+    let sheetIdOf (name: string option) =
+        match name with
+        | None -> Some homeSheet
+        | Some n -> workbook |> Option.bind (RedBat.Spreadsheet.Workbook.resolveSheetName n)
+    let cells = System.Collections.Generic.HashSet<RedBat.Spreadsheet.Workbook.SheetCell>()
+    let rects = ResizeArray<DepRect>()
+    let rec go (seen: Set<string>) (e: Expr) =
+        match e with
+        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ -> ()
+        | NameRef name ->
+            let key = name.ToUpperInvariant()
+            if not (Set.contains key seen) then
+                match workbook |> Option.bind (resolveNameExpr name (Some homeSheet)) with
+                | Some resolved -> go (Set.add key seen) resolved
+                | None -> ()
+        | CellRef r ->
+            match sheetIdOf r.Sheet with
+            | Some sid -> cells.Add { Sheet = sid; Cell = { Row = r.Row; Col = r.Col } } |> ignore
+            | None -> ()
+        | RangeRef (a, b) ->
+            match sheetIdOf a.Sheet with
+            | Some sid ->
+                let sr, sc, er, ec = normalizeRange a b
+                if (er - sr + 1) * (ec - sc + 1) > rangeDepThreshold then
+                    rects.Add { Sheet = sid; R0 = sr; C0 = sc; R1 = er; C1 = ec }
+                else
+                    for row in sr .. er do
+                        for col in sc .. ec do
+                            cells.Add { Sheet = sid; Cell = { Row = row; Col = col } } |> ignore
+            | None -> ()
+        | UnaryOp (_, inner) -> go seen inner
+        | BinOp (l, _, r) -> go seen l; go seen r
+        | Function (_, args) -> for a in args do go seen a
+    go Set.empty expr
+    (Set.ofSeq cells, List.ofSeq rects)
+
 /// Shift every *relative* reference in an expression by (dr, dc). Absolute
 /// components (`$`-locked row/col) are left untouched. This is how a
 /// formula written for one anchor cell is re-pointed for another — used by
@@ -601,6 +667,60 @@ let rec shiftExpr (dr: int) (dc: int) (expr: Expr) : Expr =
     | UnaryOp (op, e) -> UnaryOp (op, shiftExpr dr dc e)
     | BinOp (l, op, r) -> BinOp (shiftExpr dr dc l, op, shiftExpr dr dc r)
     | Function (name, args) -> Function (name, args |> List.map (shiftExpr dr dc))
+
+/// Replace every `NameRef` whose (case-insensitive) name is bound in `subst`
+/// with its bound expression. This is how LET inlines its names: a LET value
+/// expression is substituted as-is (not pre-evaluated), so a name bound to a
+/// range stays a range for the structural functions (SUM/SUMIFS/INDEX/…) and
+/// so dependency extraction still sees the real cell references.
+let rec substituteNames (subst: Map<string, Expr>) (expr: Expr) : Expr =
+    match expr with
+    | NameRef n ->
+        match Map.tryFind (n.ToUpperInvariant()) subst with
+        | Some e -> e
+        | None -> expr
+    | Number _ | Str _ | Bool _ | ErrorLit _ | CellRef _ | RangeRef _ | TableRef _ -> expr
+    | UnaryOp (op, e) -> UnaryOp (op, substituteNames subst e)
+    | BinOp (l, op, r) -> BinOp (substituteNames subst l, op, substituteNames subst r)
+    | Function (nm, fa) ->
+        let fa' = fa |> List.map (substituteNames subst)
+        // A call whose name is bound (via LET) to a LAMBDA is beta-reduced
+        // here: `LET(f, LAMBDA(x,x*2), f(5))` → `5*2`. Other calls just
+        // substitute their arguments.
+        match Map.tryFind (nm.ToUpperInvariant()) subst with
+        | Some (Function (ln, lparts)) when ln.ToUpperInvariant() = "LAMBDA" -> applyLambdaExpr lparts fa'
+        | _ -> Function (nm, fa')
+
+/// Beta-reduce a LAMBDA: `parts` is `[param1; …; paramN; body]` (params are
+/// `NameRef`s). Bind each param to the matching argument expression and
+/// substitute into the body, returning the reduced expression (then eval'd).
+and applyLambdaExpr (parts: Expr list) (args: Expr list) : Expr =
+    match List.rev parts with
+    | body :: revParams ->
+        let prms = List.rev revParams
+        let subst =
+            List.zip (prms |> List.truncate (List.length args)) (args |> List.truncate (List.length prms))
+            |> List.choose (fun (p, a) -> match p with NameRef n -> Some (n.ToUpperInvariant(), a) | _ -> None)
+            |> Map.ofList
+        substituteNames subst body
+    | [] -> ErrorLit Err.value
+
+/// The body of a LAMBDA, if `e` is one (`Function("LAMBDA", parts)`).
+let lambdaPartsOf (e: Expr) : Expr list option =
+    match e with
+    | Function (n, parts) when n.ToUpperInvariant() = "LAMBDA" && not (List.isEmpty parts) -> Some parts
+    | _ -> None
+
+/// Wrap a computed value back as a literal expression, so it can be passed as
+/// a LAMBDA argument (MAP/REDUCE/SCAN/MAKEARRAY feed values into lambdas).
+let rec valueToExpr (v: CellValue) : Expr =
+    match v with
+    | CellValue.Number n -> Number n
+    | CellValue.String s -> Str s
+    | CellValue.Boolean b -> Bool b
+    | CellValue.Error e -> ErrorLit e
+    | CellValue.Empty -> Number 0.0
+    | CellValue.Formula (_, inner) -> valueToExpr inner
 
 /// True if the expression contains a volatile function (RAND/RANDBETWEEN/
 /// NOW/TODAY/OFFSET/INDIRECT) anywhere in its tree. Such cells must be
@@ -787,6 +907,202 @@ let private compareValues (l: CellValue) (r: CellValue) : Result<int, string> =
         // Cross-type: order by rank.
         | _ -> Ok (compare (rank a) (rank b))
 
+// ---------------------------------------------------------------------------
+// Streaming aggregation — lazy pull `RangeView` + one-pass applicative folds.
+//
+// Aggregates used to materialize a `CellValue list` for every range on every
+// eval (`SUM(A1:A100000)` built a 100k-element list). Instead a `RangeView` is
+// a lazy rectangular window iterated by a STRUCT enumerator (no per-element
+// IEnumerable boxing, no intermediate list), and a `Fold` is a one-pass
+// reducer. `both` runs two folds over a single traversal — so AVERAGE is SUM
+// and COUNT fused into one pass, and so are user pipelines like
+// `SUM(r)+AVERAGE(r)`. Design + citations: docs/calc-streaming-fusion-design.md.
+// ---------------------------------------------------------------------------
+
+/// A lazy rectangular window over a sheet's sparse cell map. Iterating it
+/// yields unwrapped `CellValue`s row-major (blanks as `CellValue.Empty`)
+/// without building a list. Both the view and its enumerator are structs, so
+/// `for v in view` and `run`/`foldArgs` allocate nothing per element.
+[<Struct>]
+type RangeView =
+    { Model: SpreadsheetModel; SR: int; SC: int; ER: int; EC: int }
+    member v.GetEnumerator() = RangeEnumerator(v)
+
+and [<Struct>] RangeEnumerator =
+    val mutable private R: int
+    val mutable private C: int
+    val mutable private Cur: CellValue
+    val private View: RangeView
+    new(v: RangeView) = { View = v; R = v.SR; C = v.SC - 1; Cur = CellValue.Empty }
+    member e.Current = e.Cur
+    member e.MoveNext() =
+        if e.R > e.View.ER then false
+        else
+            e.C <- e.C + 1
+            if e.C > e.View.EC then
+                e.C <- e.View.SC
+                e.R <- e.R + 1
+            if e.R > e.View.ER then false
+            else
+                e.Cur <- getCellValue { Row = e.R; Col = e.C } e.View.Model |> unwrapValue
+                true
+
+/// A single-pass fold: thread `'S` through each element, then project to `'R`.
+/// (init state, step, extract) — the applicative-fold shape from Control.Foldl.
+[<Struct>]
+type Fold<'T, 'S, 'R> = { Init: 'S; Step: 'S -> 'T -> 'S; Extract: 'S -> 'R }
+
+/// Run a fold over a range view in one pass.
+let inline run (view: RangeView) (f: Fold<CellValue, 'S, 'R>) : 'R =
+    let mutable s = f.Init
+    let mutable e = view.GetEnumerator()
+    while e.MoveNext() do s <- f.Step s e.Current
+    f.Extract s
+
+/// Combine two folds so they run over a SINGLE traversal, sharing the walk.
+/// State stays a struct tuple → no boxing. `both sumF countF` gives AVERAGE.
+let inline both (a: Fold<'T, 'SA, 'RA>) (b: Fold<'T, 'SB, 'RB>) : Fold<'T, struct ('SA * 'SB), struct ('RA * 'RB)> =
+    { Init = struct (a.Init, b.Init)
+      Step = fun (struct (x, y)) t -> struct (a.Step x t, b.Step y t)
+      Extract = fun (struct (x, y)) -> struct (a.Extract x, b.Extract y) }
+
+/// Random-access view of a range: read the k-th cell (row-major) without
+/// materializing a list. This is what the criteria/lookup family iterates so
+/// `SUMIFS`/`MATCH`/`VLOOKUP` walk parallel ranges (and zip them) by index
+/// rather than building a `CellValue list` per range. `Count` = rows × cols.
+[<Struct>]
+type RangeAccess = { M: SpreadsheetModel; SR: int; SC: int; W: int; Count: int }
+
+/// Resolve a range-shaped expression (RangeRef or single CellRef) to a
+/// `RangeAccess`, honoring a sheet qualifier. None for non-range expressions.
+let rangeAccessOf (model: SpreadsheetModel) (workbook: RedBat.Spreadsheet.Workbook.Workbook option) (e: Expr) : RangeAccess option =
+    let mk sheet sr sc er ec =
+        match resolveModel sheet model workbook with
+        | Some m -> Some { M = m; SR = sr; SC = sc; W = ec - sc + 1; Count = (er - sr + 1) * (ec - sc + 1) }
+        | None -> None
+    match e with
+    | RangeRef (a, b) -> let sr, sc, er, ec = normalizeRange a b in mk a.Sheet sr sc er ec
+    | CellRef r -> mk r.Sheet r.Row r.Col r.Row r.Col
+    | _ -> None
+
+/// Read the k-th cell of a range (row-major, 0-based), unwrapped.
+let inline rangeRead (a: RangeAccess) (k: int) : CellValue =
+    getCellValue { Row = a.SR + k / a.W; Col = a.SC + k % a.W } a.M |> unwrapValue
+
+/// Numeric reducer over already-unwrapped values: numbers and booleans fold
+/// via `(z, op)`; text/blanks are skipped; the first `Error` short-circuits
+/// and propagates. `project count acc` finishes — `count` is the number of
+/// numeric values seen, so it can special-case the empty range or divide for
+/// an average. State is `(first-error?, count, accumulator)` as a struct.
+let numAggFold (z: float) (op: float -> float -> float) (project: int -> float -> CellValue)
+               : Fold<CellValue, struct (string voption * int * float), CellValue> =
+    { Init = struct (ValueNone, 0, z)
+      Step = fun (struct (e, n, a)) v ->
+        match e with
+        | ValueSome _ -> struct (e, n, a)
+        | ValueNone ->
+            match v with
+            | CellValue.Error code -> struct (ValueSome code, n, a)
+            | CellValue.Number x -> struct (ValueNone, n + 1, op a x)
+            | CellValue.Boolean b -> struct (ValueNone, n + 1, op a (if b then 1.0 else 0.0))
+            | _ -> struct (e, n, a)
+      Extract = fun (struct (e, n, a)) ->
+        match e with
+        | ValueSome code -> CellValue.Error code
+        | ValueNone -> project n a }
+
+/// Counting reducer. `pred` selects which (unwrapped) values count;
+/// `propagateErr` returns the first `Error` instead of a count (COUNT's
+/// behavior — COUNTA/COUNTBLANK ignore errors).
+let countFold (propagateErr: bool) (pred: CellValue -> bool)
+              : Fold<CellValue, struct (string voption * int), CellValue> =
+    { Init = struct (ValueNone, 0)
+      Step = fun (struct (e, n)) v ->
+        match e with
+        | ValueSome _ -> struct (e, n)
+        | ValueNone ->
+            match v with
+            | CellValue.Error code when propagateErr -> struct (ValueSome code, n)
+            | _ -> struct (ValueNone, (if pred v then n + 1 else n))
+      Extract = fun (struct (e, n)) ->
+        match e with
+        | ValueSome code -> CellValue.Error code
+        | ValueNone -> CellValue.Number (float n) }
+
+// ---------------------------------------------------------------------------
+// Dynamic arrays. `ArrVal` is a 2-D value (rows of columns) produced by the
+// spilling functions (SEQUENCE/UNIQUE/SORT/FILTER/…) and by element-wise
+// broadcasting of operators over ranges (`A1:A10>5`). Step 1: arrays flow
+// THROUGH the engine — consumable by aggregates, collapsing to their top-left
+// element in scalar context. Spill *placement* into neighbouring cells +
+// rendering is a separate step. See docs/calc-streaming-fusion-design.md.
+// ---------------------------------------------------------------------------
+
+/// A rectangular array value: `arr.[row].[col]`, outer = rows.
+type ArrVal = CellValue[][]
+
+/// Functions that produce an array (a spill). Detected up front so the scalar
+/// evaluator can collapse them and aggregates can consume the whole array.
+let private arrayFunctionSet =
+    set [ "SEQUENCE"; "RANDARRAY"; "UNIQUE"; "SORT"; "SORTBY"; "FILTER"; "TRANSPOSE"
+          "MAP"; "REDUCE"; "SCAN"; "MAKEARRAY" ]
+let isArrayFunction (name: string) = arrayFunctionSet.Contains(name.ToUpperInvariant())
+
+/// Does this expression evaluate to an array (a spill)? An array function, or
+/// an operator whose operand is itself an array (`SEQUENCE(5)*2`, `A1:A8>2`).
+/// Aggregates consume such an argument over its whole array, not its top-left.
+let rec isArrayExpr (e: Expr) : bool =
+    match e with
+    | Function (n, _) when isArrayFunction n -> true
+    // A range/table inside an operator broadcasts element-wise (`A1:A8+B1:B8`).
+    // A *bare* range arg never reaches this test — aggregates match RangeRef
+    // first and stream it — so this only fires inside Unary/BinOp/array funcs.
+    | RangeRef _ | TableRef _ -> true
+    | UnaryOp (_, x) -> isArrayExpr x
+    | BinOp (l, _, r) -> isArrayExpr l || isArrayExpr r
+    | _ -> false
+
+/// Apply a prefix/postfix unary operator to one value (shared by scalar eval
+/// and element-wise array broadcasting).
+let applyUnary (op: string) (v: CellValue) : CellValue =
+    match op with
+    | "-" -> (match coerceNumber v with Ok n -> CellValue.Number (-n) | Result.Error e -> err e)
+    | "+" -> (match coerceNumber v with Ok n -> CellValue.Number n | Result.Error e -> err e)
+    | "%" -> (match coerceNumber v with Ok n -> CellValue.Number (n / 100.0) | Result.Error e -> err e)
+    | _ -> err Err.value
+
+/// Apply a binary operator to two values (shared by scalar eval and array
+/// broadcasting). Mirrors the scalar BinOp semantics exactly.
+let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
+    match firstError [ lv; rv ] with
+    | Some e -> e
+    | None ->
+        match op with
+        | "&" ->
+            (match coerceText lv, coerceText rv with
+             | Ok a, Ok b -> CellValue.String (a + b)
+             | Result.Error e, _ | _, Result.Error e -> err e)
+        | "=" | "<>" | "<" | ">" | "<=" | ">=" ->
+            (match compareValues lv rv with
+             | Result.Error e -> err e
+             | Ok cmp ->
+                CellValue.Boolean
+                    (match op with
+                     | "=" -> cmp = 0 | "<>" -> cmp <> 0 | "<" -> cmp < 0
+                     | ">" -> cmp > 0 | "<=" -> cmp <= 0 | _ -> cmp >= 0))
+        | _ ->
+            (match coerceNumber lv, coerceNumber rv with
+             | Result.Error e, _ -> err e
+             | _, Result.Error e -> err e
+             | Ok a, Ok b ->
+                match op with
+                | "+" -> CellValue.Number (a + b)
+                | "-" -> CellValue.Number (a - b)
+                | "*" -> CellValue.Number (a * b)
+                | "/" -> if b = 0.0 then err Err.div0 else CellValue.Number (a / b)
+                | "^" -> (let p = a ** b in if Double.IsNaN p || Double.IsInfinity p then err Err.num else CellValue.Number p)
+                | _ -> err Err.value)
+
 /// Everything an evaluation needs beyond the expression itself: the sheet
 /// model being evaluated, the workbook (for cross-sheet refs and defined
 /// names), and which sheet is "current" (for scoping sheet-local names).
@@ -828,64 +1144,15 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
         match expandTableRef t c workbook model with
         | v :: _ -> v
         | [] -> err Err.ref
-    | UnaryOp (op, operand) ->
-        let v = eval operand ctx
-        match op with
-        | "-" ->
-            match coerceNumber v with
-            | Ok n -> CellValue.Number (-n)
-            | Result.Error e -> err e
-        | "+" ->
-            match coerceNumber v with
-            | Ok n -> CellValue.Number n
-            | Result.Error e -> err e
-        | "%" ->
-            match coerceNumber v with
-            | Ok n -> CellValue.Number (n / 100.0)
-            | Result.Error e -> err e
-        | _ -> err Err.value
-    | BinOp (left, op, right) ->
-        let lv = eval left ctx
-        let rv = eval right ctx
-        match firstError [ lv; rv ] with
-        | Some e -> e
-        | None ->
-            match op with
-            | "&" ->
-                match coerceText lv, coerceText rv with
-                | Ok a, Ok b -> CellValue.String (a + b)
-                | Result.Error e, _ | _, Result.Error e -> err e
-            | "=" | "<>" | "<" | ">" | "<=" | ">=" ->
-                match compareValues lv rv with
-                | Result.Error e -> err e
-                | Ok cmp ->
-                    let result =
-                        match op with
-                        | "=" -> cmp = 0
-                        | "<>" -> cmp <> 0
-                        | "<" -> cmp < 0
-                        | ">" -> cmp > 0
-                        | "<=" -> cmp <= 0
-                        | ">=" -> cmp >= 0
-                        | _ -> false
-                    CellValue.Boolean result
-            | _ ->
-                // Arithmetic — coerce both operands to numbers.
-                match coerceNumber lv, coerceNumber rv with
-                | Result.Error e, _ -> err e
-                | _, Result.Error e -> err e
-                | Ok a, Ok b ->
-                    match op with
-                    | "+" -> CellValue.Number (a + b)
-                    | "-" -> CellValue.Number (a - b)
-                    | "*" -> CellValue.Number (a * b)
-                    | "/" -> if b = 0.0 then err Err.div0 else CellValue.Number (a / b)
-                    | "^" ->
-                        let p = a ** b
-                        if Double.IsNaN p || Double.IsInfinity p then err Err.num
-                        else CellValue.Number p
-                    | _ -> err Err.value
-    | Function (name, args) -> evalFunction name args ctx
+    | UnaryOp (op, operand) -> applyUnary op (eval operand ctx)
+    | BinOp (left, op, right) -> applyBin op (eval left ctx) (eval right ctx)
+    | Function (name, args) ->
+        // An array-producing function in scalar context collapses to its
+        // top-left element (implicit intersection; spill placement is Step 2).
+        if isArrayFunction name then
+            let arr = evalArray expr ctx
+            if arr.Length > 0 && arr.[0].Length > 0 then arr.[0].[0] else err Err.value
+        else evalFunction name args ctx
 
 /// Evaluate every argument, flattening ranges/tables into their cell values
 /// (the form most aggregate functions want).
@@ -896,6 +1163,8 @@ and flattenArgs (args: Expr list) (ctx: EvalContext) : CellValue list =
         match arg with
         | RangeRef (a, b) -> expandRangeRef a b model workbook
         | TableRef (t, c) -> expandTableRef t c workbook model
+        | _ when isArrayExpr arg ->
+            [ for row in evalArray arg ctx do for v in row -> unwrapValue v ]
         | NameRef name ->
             // A name standing in for a range must flatten like the range
             // would — otherwise SUM(MyRange) would see only its first cell.
@@ -905,6 +1174,203 @@ and flattenArgs (args: Expr list) (ctx: EvalContext) : CellValue list =
             | Some e -> [ eval e ctx ]
             | None -> [ err Err.name ]
         | _ -> [ eval arg ctx ])
+
+/// Evaluate an expression to a 2-D array (a "spill"). Array functions build
+/// their result; a range materializes to its grid; operators broadcast
+/// element-wise; anything else is a 1×1 of its scalar value.
+and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
+    let scalar v : ArrVal = [| [| v |] |]
+    match expr with
+    | Function (name, args) when isArrayFunction name -> evalArrayFunction (name.ToUpperInvariant()) args ctx
+    | RangeRef (a, b) ->
+        match resolveModel a.Sheet ctx.Model ctx.Workbook with
+        | Some m ->
+            let sr, sc, er, ec = normalizeRange a b
+            [| for r in sr .. er -> [| for c in sc .. ec -> getCellValue { Row = r; Col = c } m |> unwrapValue |] |]
+        | None -> scalar (err Err.ref)
+    | TableRef (t, c) -> [| for v in expandTableRef t c ctx.Workbook ctx.Model -> [| v |] |]
+    | NameRef name ->
+        match ctx.Workbook |> Option.bind (resolveNameExpr name ctx.Sheet) with
+        | Some (RangeRef (a, b)) -> evalArray (RangeRef (a, b)) ctx
+        | Some (TableRef (t, c)) -> evalArray (TableRef (t, c)) ctx
+        | Some e -> scalar (eval e ctx)
+        | None -> scalar (err Err.name)
+    | UnaryOp (op, inner) -> evalArray inner ctx |> Array.map (Array.map (applyUnary op))
+    | BinOp (l, op, r) -> broadcastArr op (evalArray l ctx) (evalArray r ctx)
+    | _ -> scalar (eval expr ctx)
+
+/// Element-wise binary op with Excel-style broadcasting: a 1×1 operand is
+/// reused for every element; equal shapes pair up; otherwise → #N/A.
+and broadcastArr (op: string) (la: ArrVal) (ra: ArrVal) : ArrVal =
+    let lr = la.Length
+    let lc = if lr > 0 then la.[0].Length else 0
+    let rr = ra.Length
+    let rc = if rr > 0 then ra.[0].Length else 0
+    if (lr <> 1 && rr <> 1 && lr <> rr) || (lc <> 1 && rc <> 1 && lc <> rc) then [| [| err Err.na |] |]
+    else
+        let nr = max lr rr
+        let nc = max lc rc
+        let getL r c = la.[(if lr = 1 then 0 else r)].[(if lc = 1 then 0 else c)]
+        let getR r c = ra.[(if rr = 1 then 0 else r)].[(if rc = 1 then 0 else c)]
+        [| for r in 0 .. nr - 1 -> [| for c in 0 .. nc - 1 -> applyBin op (getL r c) (getR r c) |] |]
+
+/// The dynamic-array (spilling) functions. Operate row-wise by default;
+/// `by_col` variants and multi-key SORTBY beyond the first key are deferred.
+and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrVal =
+    let nargs = List.length args
+    let num i = match coerceNumber (eval (List.item i args) ctx) with Ok n -> n | _ -> nan
+    let boolAt i = match coerceBool (eval (List.item i args) ctx) with Ok b -> b | _ -> false
+    let errArr e : ArrVal = [| [| err e |] |]
+    let firstCol (a: ArrVal) = a |> Array.map (fun row -> if row.Length > 0 then row.[0] else CellValue.Empty)
+    let cmpVal a b = match compareValues a b with Ok c -> c | _ -> 0
+    match name with
+    | "SEQUENCE" ->
+        if nargs < 1 then errArr Err.value else
+        let rows = int (num 0)
+        let cols = if nargs >= 2 then int (num 1) else 1
+        let start = if nargs >= 3 then num 2 else 1.0
+        let step = if nargs >= 4 then num 3 else 1.0
+        if rows < 1 || cols < 1 then errArr Err.value
+        else [| for r in 0 .. rows - 1 -> [| for c in 0 .. cols - 1 -> CellValue.Number (start + float (r * cols + c) * step) |] |]
+    | "RANDARRAY" ->
+        let rows = if nargs >= 1 then int (num 0) else 1
+        let cols = if nargs >= 2 then int (num 1) else 1
+        let lo = if nargs >= 3 then num 2 else 0.0
+        let hi = if nargs >= 4 then num 3 else 1.0
+        let whole = nargs >= 5 && boolAt 4
+        if rows < 1 || cols < 1 then errArr Err.value
+        else
+            let gen () = if whole then float (rng.Next(int lo, int hi + 1)) else lo + rng.NextDouble() * (hi - lo)
+            Array.init rows (fun _ -> Array.init cols (fun _ -> CellValue.Number (gen ())))
+    | "UNIQUE" ->
+        if nargs < 1 then errArr Err.value else
+        let arr = evalArray (List.item 0 args) ctx
+        // Distinct rows, first occurrence kept; case-insensitive (engine-wide).
+        let keyOf (row: CellValue[]) =
+            row
+            |> Array.map (fun v ->
+                match v with
+                | CellValue.Number n -> "n:" + n.ToString("R", CultureInfo.InvariantCulture)
+                | CellValue.String s -> "s:" + s.ToLowerInvariant()
+                | CellValue.Boolean b -> "b:" + string b
+                | CellValue.Error e -> "x:" + e
+                | _ -> "e")
+            |> String.concat ""
+        let seen = System.Collections.Generic.HashSet<string>()
+        let outRows = ResizeArray<CellValue[]>()
+        for row in arr do if seen.Add(keyOf row) then outRows.Add row
+        if outRows.Count = 0 then errArr Err.calc else outRows.ToArray()
+    | "SORT" ->
+        if nargs < 1 then errArr Err.value else
+        let arr = evalArray (List.item 0 args) ctx
+        let col = (if nargs >= 2 then int (num 1) else 1) - 1
+        let order = if nargs >= 3 then int (num 2) else 1
+        arr
+        |> Array.sortWith (fun r1 r2 ->
+            let a = if col >= 0 && col < r1.Length then r1.[col] else CellValue.Empty
+            let b = if col >= 0 && col < r2.Length then r2.[col] else CellValue.Empty
+            let c = cmpVal a b in if order < 0 then -c else c)
+    | "SORTBY" ->
+        if nargs < 2 then errArr Err.value else
+        let arr = evalArray (List.item 0 args) ctx
+        let key = firstCol (evalArray (List.item 1 args) ctx)
+        let order = if nargs >= 3 then int (num 2) else 1
+        Array.init arr.Length id
+        |> Array.sortWith (fun i j ->
+            let a = if i < key.Length then key.[i] else CellValue.Empty
+            let b = if j < key.Length then key.[j] else CellValue.Empty
+            let c = cmpVal a b in if order < 0 then -c else c)
+        |> Array.map (fun i -> arr.[i])
+    | "FILTER" ->
+        if nargs < 2 then errArr Err.value else
+        let arr = evalArray (List.item 0 args) ctx
+        let incl = firstCol (evalArray (List.item 1 args) ctx)
+        let kept =
+            [| for i in 0 .. arr.Length - 1 do
+                 if i < incl.Length && (match coerceBool incl.[i] with Ok true -> true | _ -> false) then yield arr.[i] |]
+        if kept.Length > 0 then kept
+        elif nargs >= 3 then [| [| eval (List.item 2 args) ctx |] |]
+        else errArr Err.calc
+    | "TRANSPOSE" ->
+        if nargs < 1 then errArr Err.value else
+        let arr = evalArray (List.item 0 args) ctx
+        let nr = arr.Length
+        let nc = if nr > 0 then arr.[0].Length else 0
+        [| for c in 0 .. nc - 1 -> [| for r in 0 .. nr - 1 -> arr.[r].[c] |] |]
+    | "MAP" ->
+        // MAP(array, lambda) — apply the lambda to each element. (Excel allows
+        // several parallel arrays; v1 supports one.)
+        if nargs < 2 then errArr Err.value else
+        match lambdaPartsOf (List.item (nargs - 1) args) with
+        | None -> errArr Err.value
+        | Some parts ->
+            evalArray (List.item 0 args) ctx
+            |> Array.map (Array.map (fun v -> eval (applyLambdaExpr parts [ valueToExpr v ]) ctx))
+    | "REDUCE" ->
+        // REDUCE(initial, array, lambda(acc, value)) → scalar accumulator.
+        if nargs <> 3 then errArr Err.value else
+        match lambdaPartsOf (List.item 2 args) with
+        | None -> errArr Err.value
+        | Some parts ->
+            let mutable acc = eval (List.item 0 args) ctx
+            for row in evalArray (List.item 1 args) ctx do
+                for v in row do acc <- eval (applyLambdaExpr parts [ valueToExpr acc; valueToExpr v ]) ctx
+            [| [| acc |] |]
+    | "SCAN" ->
+        // SCAN(initial, array, lambda(acc, value)) → array of running accumulators.
+        if nargs <> 3 then errArr Err.value else
+        match lambdaPartsOf (List.item 2 args) with
+        | None -> errArr Err.value
+        | Some parts ->
+            let mutable acc = eval (List.item 0 args) ctx
+            evalArray (List.item 1 args) ctx
+            |> Array.map (Array.map (fun v ->
+                acc <- eval (applyLambdaExpr parts [ valueToExpr acc; valueToExpr v ]) ctx
+                acc))
+    | "MAKEARRAY" ->
+        // MAKEARRAY(rows, cols, lambda(r, c)) — r,c are 1-based.
+        if nargs <> 3 then errArr Err.value else
+        match lambdaPartsOf (List.item 2 args) with
+        | None -> errArr Err.value
+        | Some parts ->
+            let rows = int (num 0)
+            let cols = int (num 1)
+            if rows < 1 || cols < 1 then errArr Err.value
+            else Array.init rows (fun r -> Array.init cols (fun c ->
+                    eval (applyLambdaExpr parts [ Number (float (r + 1)); Number (float (c + 1)) ]) ctx))
+    | _ -> errArr Err.name
+
+/// Run a one-pass `Fold` across an aggregate's whole argument list WITHOUT
+/// materializing it: each range arg is streamed cell-by-cell through a
+/// `RangeView` enumerator, each scalar arg is stepped once. This is the
+/// streaming replacement for `numbersOf (flattenArgs …)` and preserves its
+/// semantics (same row-major order, same first-error propagation).
+and foldArgs (f: Fold<CellValue, 'S, 'R>) (args: Expr list) (ctx: EvalContext) : 'R =
+    let model = ctx.Model
+    let workbook = ctx.Workbook
+    let mutable s = f.Init
+    let iterRange (a: RefAst) (b: RefAst) =
+        match resolveModel a.Sheet model workbook with
+        | Some m ->
+            let sr, sc, er, ec = normalizeRange a b
+            let mutable e = ({ Model = m; SR = sr; SC = sc; ER = er; EC = ec }: RangeView).GetEnumerator()
+            while e.MoveNext() do s <- f.Step s e.Current
+        | None -> s <- f.Step s (err Err.ref)
+    for arg in args do
+        match arg with
+        | RangeRef (a, b) -> iterRange a b
+        | TableRef (t, c) -> for v in expandTableRef t c workbook model do s <- f.Step s v
+        | _ when isArrayExpr arg ->
+            for row in evalArray arg ctx do
+                for v in row do s <- f.Step s (unwrapValue v)
+        | NameRef n ->
+            match workbook |> Option.bind (resolveNameExpr n ctx.Sheet) with
+            | Some (RangeRef (a, b)) -> iterRange a b
+            | Some (TableRef (t, c)) -> for v in expandTableRef t c workbook model do s <- f.Step s v
+            | Some inner -> s <- f.Step s (unwrapValue (eval inner ctx))
+            | None -> s <- f.Step s (err Err.name)
+        | _ -> s <- f.Step s (unwrapValue (eval arg ctx))
+    f.Extract s
 
 /// Numeric values from a flattened argument list — text and blanks dropped,
 /// matching how SUM/AVERAGE/etc. ignore non-numeric cells. The first error
@@ -960,30 +1426,50 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         elif n % 2 = 1 then a.[n / 2]
         else (a.[n / 2 - 1] + a.[n / 2]) / 2.0
     let isErr v = match unwrapValue v with CellValue.Error _ -> true | _ -> false
+    // Shared index resolver for XLOOKUP / XMATCH. Streams the lookup range by
+    // index (no list), returning the 0-based offset of the match. match_mode:
+    // 0 exact, -1 exact-or-next-smaller, 1 exact-or-next-larger, 2 wildcard.
+    // search_mode: 1 first→last, -1 last→first (±2 binary treated as linear).
+    let xMatchIndex (target: CellValue) (la: RangeAccess) (matchMode: int) (searchMode: int) : int option =
+        let cmp a b = match compareValues a b with Ok c -> Some c | _ -> None
+        let order = if searchMode = -1 || searchMode = -2 then seq { la.Count - 1 .. -1 .. 0 } else seq { 0 .. la.Count - 1 }
+        match matchMode with
+        | 2 ->
+            match coerceText target with
+            | Ok pat ->
+                let rx = wildcardRegex pat
+                order |> Seq.tryFind (fun k -> match coerceText (rangeRead la k) with Ok t -> rx.IsMatch t | _ -> false)
+            | _ -> None
+        | -1 | 1 ->
+            match order |> Seq.tryFind (fun k -> cmp target (rangeRead la k) = Some 0) with
+            | Some k -> Some k
+            | None ->
+                // No exact hit: closest value on the requested side
+                // (-1 → largest value < target; 1 → smallest value > target).
+                let mutable best : (int * CellValue) option = None
+                for k in order do
+                    let v = rangeRead la k
+                    let onSide = match cmp v target with Some c -> (if matchMode = -1 then c < 0 else c > 0) | None -> false
+                    if onSide then
+                        match best with
+                        | None -> best <- Some (k, v)
+                        | Some (_, bv) -> if (match cmp v bv with Some c -> (if matchMode = -1 then c > 0 else c < 0) | None -> false) then best <- Some (k, v)
+                best |> Option.map fst
+        | _ ->
+            order |> Seq.tryFind (fun k -> cmp target (rangeRead la k) = Some 0)
 
     match name.ToUpperInvariant() with
-    // ----- aggregates -------------------------------------------------------
-    | "SUM" -> reduceNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.sum ns))
-    | "PRODUCT" -> reduceNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.fold (*) 1.0 ns))
-    | "AVERAGE" -> reduceNums (err Err.div0) (fun ns -> CellValue.Number (List.average ns))
-    | "MIN" -> reduceNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.min ns))
-    | "MAX" -> reduceNums (CellValue.Number 0.0) (fun ns -> CellValue.Number (List.max ns))
+    // ----- aggregates (streaming one-pass folds; see foldArgs / numAggFold) --
+    | "SUM" -> foldArgs (numAggFold 0.0 (+) (fun _ a -> CellValue.Number a)) args ctx
+    | "PRODUCT" -> foldArgs (numAggFold 1.0 ( * ) (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
+    | "AVERAGE" -> foldArgs (numAggFold 0.0 (+) (fun n a -> if n = 0 then err Err.div0 else CellValue.Number (a / float n))) args ctx
+    | "MIN" -> foldArgs (numAggFold infinity min (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
+    | "MAX" -> foldArgs (numAggFold (-infinity) max (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
     | "MEDIAN" -> reduceNums (err Err.num) (fun ns -> CellValue.Number (median ns))
-    | "COUNT" ->
-        let vals = flattenArgs args ctx
-        match firstError vals with
-        | Some (CellValue.Error e) -> err e
-        | _ -> CellValue.Number (float (vals |> List.sumBy (fun v -> match unwrapValue v with CellValue.Number _ -> 1 | _ -> 0)))
-    | "COUNTA" ->
-        let vals = flattenArgs args ctx
-        CellValue.Number (float (vals |> List.sumBy (fun v -> match unwrapValue v with CellValue.Empty -> 0 | _ -> 1)))
+    | "COUNT" -> foldArgs (countFold true (fun v -> match v with CellValue.Number _ -> true | _ -> false)) args ctx
+    | "COUNTA" -> foldArgs (countFold false (fun v -> match v with CellValue.Empty -> false | _ -> true)) args ctx
     | "COUNTBLANK" ->
-        let vals = flattenArgs args ctx
-        CellValue.Number (float (vals |> List.sumBy (fun v ->
-            match unwrapValue v with
-            | CellValue.Empty -> 1
-            | CellValue.String "" -> 1
-            | _ -> 0)))
+        foldArgs (countFold false (fun v -> match v with CellValue.Empty | CellValue.String "" -> true | _ -> false)) args ctx
     | "STDEV" | "STDEVP" ->
         reduceNums (err Err.div0) (fun ns ->
             let n = List.length ns
@@ -1012,66 +1498,104 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let ki = int k - 1
             if ki < 0 || ki >= List.length sorted then err Err.num
             else CellValue.Number sorted.[ki]
-    // ----- criteria aggregates ---------------------------------------------
+    // ----- criteria aggregates (streamed by index; see rangeAccessOf) -------
     | "COUNTIF" ->
         if nargs <> 2 then err Err.value else
-        let pred = compileCriteria (argRaw 1)
-        CellValue.Number (float (rangeValues (List.item 0 args) |> List.filter pred |> List.length))
+        match rangeAccessOf model workbook (List.item 0 args) with
+        | None -> err Err.value
+        | Some a ->
+            let pred = compileCriteria (argRaw 1)
+            let mutable n = 0
+            for k in 0 .. a.Count - 1 do if pred (rangeRead a k) then n <- n + 1
+            CellValue.Number (float n)
     | "SUMIF" ->
         // SUMIF(range, criteria, [sum_range])
         if nargs < 2 then err Err.value else
-        let critRange = rangeValues (List.item 0 args)
-        let sumRange =
-            if nargs >= 3 then rangeValues (List.item 2 args) else critRange
-        let pred = compileCriteria (argRaw 1)
-        let total =
-            List.zip
-                (critRange |> List.truncate (List.length sumRange))
-                (sumRange |> List.truncate (List.length critRange))
-            |> List.sumBy (fun (c, s) ->
-                if pred c then (match coerceNumber s with Ok n -> n | _ -> 0.0) else 0.0)
-        CellValue.Number total
+        match rangeAccessOf model workbook (List.item 0 args) with
+        | None -> err Err.value
+        | Some crit ->
+            let sum =
+                if nargs >= 3 then (match rangeAccessOf model workbook (List.item 2 args) with Some s -> s | None -> crit)
+                else crit
+            let pred = compileCriteria (argRaw 1)
+            let count = min crit.Count sum.Count
+            let mutable total = 0.0
+            for k in 0 .. count - 1 do
+                if pred (rangeRead crit k) then
+                    match coerceNumber (rangeRead sum k) with Ok n -> total <- total + n | _ -> ()
+            CellValue.Number total
     | "AVERAGEIF" ->
         if nargs < 2 then err Err.value else
-        let critRange = rangeValues (List.item 0 args)
-        let avgRange = if nargs >= 3 then rangeValues (List.item 2 args) else critRange
-        let pred = compileCriteria (argRaw 1)
-        let matched =
-            List.zip
-                (critRange |> List.truncate (List.length avgRange))
-                (avgRange |> List.truncate (List.length critRange))
-            |> List.choose (fun (c, v) ->
-                if pred c then (match coerceNumber v with Ok n -> Some n | _ -> None) else None)
-        if List.isEmpty matched then err Err.div0
-        else CellValue.Number (List.average matched)
+        match rangeAccessOf model workbook (List.item 0 args) with
+        | None -> err Err.value
+        | Some crit ->
+            let avg =
+                if nargs >= 3 then (match rangeAccessOf model workbook (List.item 2 args) with Some s -> s | None -> crit)
+                else crit
+            let pred = compileCriteria (argRaw 1)
+            let count = min crit.Count avg.Count
+            let mutable total = 0.0
+            let mutable n = 0
+            for k in 0 .. count - 1 do
+                if pred (rangeRead crit k) then
+                    match coerceNumber (rangeRead avg k) with Ok x -> total <- total + x; n <- n + 1 | _ -> ()
+            if n = 0 then err Err.div0 else CellValue.Number (total / float n)
     | "SUMIFS" | "COUNTIFS" ->
         // SUMIFS(sum_range, crit_range1, crit1, crit_range2, crit2, …)
-        // COUNTIFS(crit_range1, crit1, …)  — no sum range.
+        // COUNTIFS(crit_range1, crit1, …)  — no sum range. Streamed by index:
+        // each (crit range, predicate) pair is read in lockstep, no lists.
         let isSum = name.ToUpperInvariant() = "SUMIFS"
         let pairsStart = if isSum then 1 else 0
         let pairArgs = args |> List.skip pairsStart
         if List.length pairArgs % 2 <> 0 || List.isEmpty pairArgs then err Err.value else
         let pairs =
-            pairArgs
-            |> List.chunkBySize 2
+            pairArgs |> List.chunkBySize 2
             |> List.map (fun chunk ->
                 match chunk with
-                | [ rangeExpr; critExpr ] ->
-                    rangeValues rangeExpr, compileCriteria (eval critExpr ctx)
-                | _ -> [], (fun _ -> false))
-        let count = pairs |> List.map (fst >> List.length) |> List.min
-        let sumRange = if isSum then rangeValues (List.item 0 args) else []
+                | [ rangeExpr; critExpr ] -> rangeAccessOf model workbook rangeExpr, compileCriteria (eval critExpr ctx)
+                | _ -> None, (fun _ -> false))
+        if pairs |> List.exists (fun (a, _) -> Option.isNone a) then err Err.value else
+        let crits = pairs |> List.map (fun (a, p) -> a.Value, p)
+        let count = crits |> List.map (fun (a, _) -> a.Count) |> List.min
+        let sumAcc = if isSum then rangeAccessOf model workbook (List.item 0 args) else None
         let mutable total = 0.0
         let mutable hits = 0
-        for i in 0 .. count - 1 do
-            let allMatch = pairs |> List.forall (fun (vals, pred) -> pred (List.item i vals))
-            if allMatch then
+        for k in 0 .. count - 1 do
+            if crits |> List.forall (fun (a, pred) -> pred (rangeRead a k)) then
                 hits <- hits + 1
-                if isSum && i < List.length sumRange then
-                    match coerceNumber (List.item i sumRange) with
-                    | Ok n -> total <- total + n
-                    | _ -> ()
+                match sumAcc with
+                | Some s when k < s.Count -> (match coerceNumber (rangeRead s k) with Ok n -> total <- total + n | _ -> ())
+                | _ -> ()
         if isSum then CellValue.Number total else CellValue.Number (float hits)
+    | "MAXIFS" | "MINIFS" | "AVERAGEIFS" ->
+        // MAXIFS(value_range, crit_range1, crit1, …); same shape as SUMIFS.
+        // One streamed pass tracks the matched count + running min/max/sum.
+        let fn = name.ToUpperInvariant()
+        let pairArgs = args |> List.skip 1
+        if List.length pairArgs % 2 <> 0 || List.isEmpty pairArgs then err Err.value else
+        let pairs =
+            pairArgs |> List.chunkBySize 2
+            |> List.map (fun chunk ->
+                match chunk with
+                | [ rangeExpr; critExpr ] -> rangeAccessOf model workbook rangeExpr, compileCriteria (eval critExpr ctx)
+                | _ -> None, (fun _ -> false))
+        match rangeAccessOf model workbook (List.item 0 args) with
+        | Some valAcc when not (pairs |> List.exists (fun (a, _) -> Option.isNone a)) ->
+            let crits = pairs |> List.map (fun (a, p) -> a.Value, p)
+            let count = (valAcc.Count :: (crits |> List.map (fun (a, _) -> a.Count))) |> List.min
+            let mutable n = 0
+            let mutable acc = if fn = "MINIFS" then infinity elif fn = "MAXIFS" then -infinity else 0.0
+            for k in 0 .. count - 1 do
+                if crits |> List.forall (fun (a, pred) -> pred (rangeRead a k)) then
+                    match coerceNumber (rangeRead valAcc k) with
+                    | Ok x ->
+                        n <- n + 1
+                        acc <- match fn with "MINIFS" -> min acc x | "MAXIFS" -> max acc x | _ -> acc + x
+                    | _ -> ()
+            match fn with
+            | "AVERAGEIFS" -> if n = 0 then err Err.div0 else CellValue.Number (acc / float n)
+            | _ -> CellValue.Number (if n = 0 then 0.0 else acc)
+        | _ -> err Err.value
     | "SUMPRODUCT" ->
         // Element-wise product of parallel ranges, then sum.
         let cols = args |> List.map (fun a -> numbersOf (rangeValues a))
@@ -1128,6 +1652,154 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | Ok b, Ok p ->
             let r = b ** p
             if Double.IsNaN r || Double.IsInfinity r then err Err.num else CellValue.Number r
+    // ----- extended math ----------------------------------------------------
+    | "PI" -> CellValue.Number Math.PI
+    | "EXP" -> unaryNum (exp >> CellValue.Number)
+    | "LN" -> unaryNum (fun x -> if x <= 0.0 then err Err.num else CellValue.Number (log x))
+    | "LOG10" -> unaryNum (fun x -> if x <= 0.0 then err Err.num else CellValue.Number (log10 x))
+    | "LOG" ->
+        match argNum 0, (if nargs >= 2 then argNum 1 else Ok 10.0) with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok x, Ok b -> if x <= 0.0 || b <= 0.0 || b = 1.0 then err Err.num else CellValue.Number (log x / log b)
+    | "SIN" -> unaryNum (sin >> CellValue.Number)
+    | "COS" -> unaryNum (cos >> CellValue.Number)
+    | "TAN" -> unaryNum (tan >> CellValue.Number)
+    | "RADIANS" -> unaryNum (fun d -> CellValue.Number (d * Math.PI / 180.0))
+    | "DEGREES" -> unaryNum (fun r -> CellValue.Number (r * 180.0 / Math.PI))
+    | "QUOTIENT" ->
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok a, Ok b -> if b = 0.0 then err Err.div0 else CellValue.Number (Math.Truncate(a / b))
+    | "CEILING" | "FLOOR" ->
+        let up = name.ToUpperInvariant() = "CEILING"
+        match argNum 0, (if nargs >= 2 then argNum 1 else Ok 1.0) with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok x, Ok sg -> if sg = 0.0 then CellValue.Number 0.0 else CellValue.Number ((if up then ceil (x / sg) else floor (x / sg)) * sg)
+    | "MROUND" ->
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok x, Ok m -> if m = 0.0 then CellValue.Number 0.0 else CellValue.Number (Math.Round(x / m, MidpointRounding.AwayFromZero) * m)
+    | "EVEN" -> unaryNum (fun x -> let n = ceil (abs x / 2.0) * 2.0 in CellValue.Number (if x < 0.0 then -n else n))
+    | "ODD" -> unaryNum (fun x -> let n = 2.0 * ceil ((abs x - 1.0) / 2.0) + 1.0 in CellValue.Number (if x < 0.0 then -n else n))
+    | "SUMSQ" -> (match aggregateNumbers () with Result.Error e -> err e | Ok ns -> CellValue.Number (ns |> List.sumBy (fun x -> x * x)))
+    | "FACT" ->
+        match argNum 0 with
+        | Result.Error e -> err e
+        | Ok x ->
+            let n = int (floor x)
+            if n < 0 then err Err.num
+            else (let mutable p = 1.0 in (for i in 2 .. n do p <- p * float i); CellValue.Number p)
+    | "COMBIN" ->
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok nf, Ok kf ->
+            let n, k = int nf, int kf
+            if n < 0 || k < 0 || k > n then err Err.num
+            else (let mutable r = 1.0 in (for i in 0 .. k - 1 do r <- r * float (n - i) / float (i + 1)); CellValue.Number (Math.Round r))
+    | "GCD" | "LCM" ->
+        match aggregateNumbers () with
+        | Result.Error e -> err e
+        | Ok ns ->
+            let ints = ns |> List.map (fun x -> int64 (floor (abs x)))
+            let rec gcd2 a b = if b = 0L then a else gcd2 b (a % b)
+            if name.ToUpperInvariant() = "GCD" then CellValue.Number (float (List.fold gcd2 0L ints))
+            else CellValue.Number (float (ints |> List.fold (fun acc x -> if acc = 0L || x = 0L then 0L else acc / gcd2 acc x * x) 1L))
+    // ----- extended text ----------------------------------------------------
+    | "VALUE" ->
+        match argText 0 with
+        | Result.Error e -> err e
+        | Ok s ->
+            let t = s.Trim()
+            match Double.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture) with
+            | true, n -> CellValue.Number n
+            | _ ->
+                if t.EndsWith "%" then
+                    match Double.TryParse(t.TrimEnd('%'), NumberStyles.Any, CultureInfo.InvariantCulture) with
+                    | true, n -> CellValue.Number (n / 100.0)
+                    | _ -> err Err.value
+                else
+                    match DateTime.TryParse(t, CultureInfo.InvariantCulture, DateTimeStyles.None) with
+                    | true, d -> CellValue.Number (dateToSerial d)
+                    | _ -> err Err.value
+    | "EXACT" ->
+        match argText 0, argText 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok a, Ok b -> CellValue.Boolean (String.Equals(a, b, StringComparison.Ordinal))
+    | "CHAR" -> (match argNum 0 with Result.Error e -> err e | Ok n -> (let i = int n in if i < 1 || i > 255 then err Err.value else CellValue.String (string (char i))))
+    | "UNICHAR" -> (match argNum 0 with Result.Error e -> err e | Ok n -> (let i = int n in if i < 1 then err Err.value else CellValue.String (Char.ConvertFromUtf32 i)))
+    | "CODE" | "UNICODE" -> (match argText 0 with Result.Error e -> err e | Ok s -> if s.Length = 0 then err Err.value else CellValue.Number (float (int s.[0])))
+    | "CLEAN" -> (match argText 0 with Result.Error e -> err e | Ok s -> CellValue.String (System.String(s.ToCharArray() |> Array.filter (fun c -> int c >= 32))))
+    | "TEXTBEFORE" | "TEXTAFTER" ->
+        if nargs < 2 then err Err.value else
+        match argText 0, argText 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok s, Ok delim ->
+            if delim = "" then err Err.value else
+            let instance = if nargs >= 3 then (match argNum 2 with Ok n -> int n | _ -> 1) else 1
+            let rec findNth start count =
+                let idx = s.IndexOf(delim, start, StringComparison.OrdinalIgnoreCase)
+                if idx < 0 then -1 elif count <= 1 then idx else findNth (idx + delim.Length) (count - 1)
+            let idx = findNth 0 (max 1 instance)
+            if idx < 0 then err Err.na
+            elif name.ToUpperInvariant() = "TEXTBEFORE" then CellValue.String (s.Substring(0, idx))
+            else CellValue.String (s.Substring(idx + delim.Length))
+    | "FIXED" ->
+        match argNum 0 with
+        | Result.Error e -> err e
+        | Ok x ->
+            let dec = if nargs >= 2 then (match argNum 1 with Ok d -> int d | _ -> 2) else 2
+            let noCommas = if nargs >= 3 then (match argBool 2 with Ok b -> b | _ -> false) else false
+            let d = max 0 dec
+            let rounded = Math.Round(x, d, MidpointRounding.AwayFromZero)
+            CellValue.String (rounded.ToString((if noCommas then "F" else "N") + string d, CultureInfo.InvariantCulture))
+    | "T" -> (match unwrapValue (argRaw 0) with CellValue.String s -> CellValue.String s | _ -> CellValue.String "")
+    // ----- extended date/time -----------------------------------------------
+    | "TIME" ->
+        match argNum 0, argNum 1, argNum 2 with
+        | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+        | Ok h, Ok m, Ok s -> CellValue.Number ((((h * 3600.0 + m * 60.0 + s) % 86400.0) + 86400.0) % 86400.0 / 86400.0)
+    | "HOUR" -> unaryNum (fun s -> CellValue.Number (float (serialToDate s).Hour))
+    | "MINUTE" -> unaryNum (fun s -> CellValue.Number (float (serialToDate s).Minute))
+    | "SECOND" -> unaryNum (fun s -> CellValue.Number (float (serialToDate s).Second))
+    | "EDATE" ->
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok s, Ok months -> CellValue.Number (dateToSerial ((serialToDate s).AddMonths(int months)))
+    | "DAYS" ->
+        match argNum 0, argNum 1 with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok endD, Ok startD -> CellValue.Number (floor endD - floor startD)
+    | "DATEVALUE" ->
+        match argText 0 with
+        | Result.Error e -> err e
+        | Ok s ->
+            match DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None) with
+            | true, d -> CellValue.Number (float (int (dateToSerial d)))
+            | _ -> err Err.value
+    | "ISOWEEKNUM" ->
+        // ISO-8601 week = week number of the Thursday in the same week.
+        unaryNum (fun s ->
+            let d = serialToDate s
+            let dow = if d.DayOfWeek = DayOfWeek.Sunday then 7 else int d.DayOfWeek
+            let thursday = d.AddDays(float (4 - dow))
+            CellValue.Number (float ((thursday.DayOfYear - 1) / 7 + 1)))
+    // ----- extended info ----------------------------------------------------
+    | "ISEVEN" -> (match argNum 0 with Result.Error e -> err e | Ok x -> CellValue.Boolean (int64 (Math.Truncate x) % 2L = 0L))
+    | "ISODD" -> (match argNum 0 with Result.Error e -> err e | Ok x -> CellValue.Boolean (int64 (Math.Truncate x) % 2L <> 0L))
+    | "ISNONTEXT" -> (if nargs <> 1 then err Err.value else CellValue.Boolean (match unwrapValue (argRaw 0) with CellValue.String _ -> false | _ -> true))
+    | "N" ->
+        match unwrapValue (argRaw 0) with
+        | CellValue.Number n -> CellValue.Number n
+        | CellValue.Boolean b -> CellValue.Number (if b then 1.0 else 0.0)
+        | CellValue.Error e -> err e
+        | _ -> CellValue.Number 0.0
+    | "ISFORMULA" ->
+        match List.tryHead args with
+        | Some (CellRef r) ->
+            match resolveModel r.Sheet model workbook with
+            | Some m -> CellValue.Boolean (match getCellValue { Row = r.Row; Col = r.Col } m with CellValue.Formula _ -> true | _ -> false)
+            | None -> err Err.ref
+        | _ -> CellValue.Boolean false
     // ----- logical ----------------------------------------------------------
     | "IF" ->
         match args with
@@ -1195,6 +1867,27 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 | Ok 0 -> argRaw (i + 1)
                 | _ -> loop (i + 2)
         loop 1
+    | "LET" ->
+        // LET(name1, value1, name2, value2, …, calculation). Names parse as
+        // NameRef. Each value is inlined (as an expression) into the later
+        // values and the final calculation, left to right, so earlier names
+        // are visible to later ones. Inlining (rather than pre-evaluating)
+        // keeps range-valued names usable by the structural functions.
+        if nargs < 3 || nargs % 2 = 0 then err Err.value else
+        let rec build i (subst: Map<string, Expr>) =
+            if i = nargs - 1 then eval (substituteNames subst (List.item i args)) ctx
+            else
+                match List.item i args with
+                | NameRef nm ->
+                    let valExpr = substituteNames subst (List.item (i + 1) args)
+                    build (i + 2) (Map.add (nm.ToUpperInvariant()) valExpr subst)
+                | _ -> err Err.value  // name position must be a bare identifier
+        build 0 Map.empty
+    | "LAMBDA" ->
+        // A bare (uncalled) LAMBDA has no scalar value. It becomes useful when
+        // bound by LET and called — `LET(f, LAMBDA(x,x*2), f(5))` — or passed
+        // to MAP/REDUCE/SCAN/MAKEARRAY, both handled by beta-reduction.
+        err Err.calc
     | "TRUE" -> CellValue.Boolean true
     | "FALSE" -> CellValue.Boolean false
     | "NA" -> err Err.na
@@ -1389,71 +2082,90 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 else gridCell model r c
     | "MATCH" ->
         // MATCH(lookup, range, [match_type]) — 1=≤(sorted asc), 0=exact,
-        // -1=≥(sorted desc). Defaults to 1.
+        // -1=≥(sorted desc). Defaults to 1. Streamed by index (no cell list).
         if nargs < 2 then err Err.value else
-        match rangeBounds (List.item 1 args) with
+        match rangeAccessOf model workbook (List.item 1 args) with
         | None -> err Err.ref
-        | Some (sr, sc, er, ec) ->
+        | Some la ->
             let target = argRaw 0
             let matchType = if nargs >= 3 then (match argNum 2 with Ok m -> int m | _ -> 1) else 1
-            let cells =
-                [ for r in sr .. er do for c in sc .. ec -> gridCell model r c ]
             let result =
                 if matchType = 0 then
-                    cells |> List.tryFindIndex (fun v -> match compareValues target v with Ok 0 -> true | _ -> false)
-                elif matchType = 1 then
-                    // largest value ≤ target, range assumed ascending
-                    cells
-                    |> List.mapi (fun i v -> i, v)
-                    |> List.filter (fun (_, v) -> match compareValues v target with Ok c -> c <= 0 | _ -> false)
-                    |> List.tryLast
-                    |> Option.map fst
+                    seq { 0 .. la.Count - 1 }
+                    |> Seq.tryFind (fun k -> match compareValues target (rangeRead la k) with Ok 0 -> true | _ -> false)
                 else
-                    // smallest value ≥ target, range assumed descending
-                    cells
-                    |> List.mapi (fun i v -> i, v)
-                    |> List.filter (fun (_, v) -> match compareValues v target with Ok c -> c >= 0 | _ -> false)
-                    |> List.tryLast
-                    |> Option.map fst
+                    // type 1: largest value ≤ target (asc); -1: smallest ≥ target (desc).
+                    // Both pick the LAST index satisfying the side condition (old tryLast).
+                    let ok v = match compareValues v target with Ok c -> (if matchType = 1 then c <= 0 else c >= 0) | _ -> false
+                    let mutable last = None
+                    for k in 0 .. la.Count - 1 do if ok (rangeRead la k) then last <- Some k
+                    last
             match result with
-            | Some i -> CellValue.Number (float (i + 1))
+            | Some k -> CellValue.Number (float (k + 1))
             | None -> err Err.na
     | "VLOOKUP" | "HLOOKUP" ->
         // VLOOKUP(lookup, table, col_index, [range_lookup])
-        // HLOOKUP(lookup, table, row_index, [range_lookup])
+        // HLOOKUP(lookup, table, row_index, [range_lookup]). Streamed: scan the
+        // first column/row by index, then read the result cell directly.
         if nargs < 3 then err Err.value else
-        match rangeBounds (List.item 1 args) with
+        match rangeAccessOf model workbook (List.item 1 args) with
         | None -> err Err.ref
-        | Some (sr, sc, er, ec) ->
+        | Some t ->
             let isV = name.ToUpperInvariant() = "VLOOKUP"
+            let rows = t.Count / t.W
+            let cols = t.W
             let target = argRaw 0
             match argNum 2 with
             | Result.Error e -> err e
             | Ok idxN ->
                 let idx = int idxN
                 let approx = if nargs >= 4 then (match argBool 3 with Ok b -> b | _ -> true) else true
-                // search line: first column (V) or first row (H)
-                let searchLine =
-                    if isV then [ for r in sr .. er -> r, gridCell model r sc ]
-                    else [ for c in sc .. ec -> c, gridCell model sr c ]
-                let hitLine =
+                let lineLen = if isV then rows else cols
+                let lineCell i = if isV then rangeRead t (i * t.W) else rangeRead t i
+                let hit =
                     if approx then
                         // largest value ≤ target (assumes sorted ascending)
-                        searchLine
-                        |> List.filter (fun (_, v) -> match compareValues v target with Ok c -> c <= 0 | _ -> false)
-                        |> List.tryLast
+                        let mutable last = None
+                        for i in 0 .. lineLen - 1 do
+                            if (match compareValues (lineCell i) target with Ok c -> c <= 0 | _ -> false) then last <- Some i
+                        last
                     else
-                        searchLine
-                        |> List.tryFind (fun (_, v) -> match compareValues target v with Ok 0 -> true | _ -> false)
-                match hitLine with
+                        seq { 0 .. lineLen - 1 }
+                        |> Seq.tryFind (fun i -> match compareValues target (lineCell i) with Ok 0 -> true | _ -> false)
+                match hit with
                 | None -> err Err.na
-                | Some (lineIdx, _) ->
+                | Some li ->
                     if isV then
-                        let col = sc + idx - 1
-                        if col < sc || col > ec then err Err.ref else gridCell model lineIdx col
+                        if idx < 1 || idx > cols then err Err.ref else rangeRead t (li * t.W + (idx - 1))
                     else
-                        let row = sr + idx - 1
-                        if row < sr || row > er then err Err.ref else gridCell model row lineIdx
+                        if idx < 1 || idx > rows then err Err.ref else rangeRead t ((idx - 1) * t.W + li)
+    | "XLOOKUP" ->
+        // XLOOKUP(lookup, lookup_array, return_array, [if_not_found],
+        //         [match_mode], [search_mode]). The matched index into
+        //         lookup_array reads return_array directly (no lists).
+        if nargs < 3 then err Err.value else
+        let target = argRaw 0
+        match rangeAccessOf model workbook (List.item 1 args), rangeAccessOf model workbook (List.item 2 args) with
+        | Some la, Some ra ->
+            let matchMode = if nargs >= 5 then (match argNum 4 with Ok m -> int m | _ -> 0) else 0
+            let searchMode = if nargs >= 6 then (match argNum 5 with Ok s -> int s | _ -> 1) else 1
+            match xMatchIndex target la matchMode searchMode with
+            | Some k -> if k < ra.Count then rangeRead ra k else err Err.value
+            | None -> if nargs >= 4 then argRaw 3 else err Err.na
+        | _ -> err Err.value
+    | "XMATCH" ->
+        // XMATCH(lookup, lookup_array, [match_mode], [search_mode]) → 1-based
+        // position of the match within lookup_array (streamed).
+        if nargs < 2 then err Err.value else
+        let target = argRaw 0
+        match rangeAccessOf model workbook (List.item 1 args) with
+        | Some la ->
+            let matchMode = if nargs >= 3 then (match argNum 2 with Ok m -> int m | _ -> 0) else 0
+            let searchMode = if nargs >= 4 then (match argNum 3 with Ok s -> int s | _ -> 1) else 1
+            match xMatchIndex target la matchMode searchMode with
+            | Some k -> CellValue.Number (float (k + 1))
+            | None -> err Err.na
+        | None -> err Err.value
     // ----- date -------------------------------------------------------------
     | "TODAY" -> CellValue.Number (dateToSerial DateTime.Today)
     | "NOW" -> CellValue.Number (dateToSerial DateTime.Now)
@@ -1618,4 +2330,66 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
             let result = eval expr ctx
             updated <- setCell addr { cell with Value = CellValue.Formula (formula, result) } updated
         | None -> ()
+    updated
+
+/// True if the expression tree uses a dynamic-array (spilling) function.
+let rec containsArrayFunction (e: Expr) : bool =
+    match e with
+    | Function (n, _) when isArrayFunction n -> true
+    | Function (_, args) -> List.exists containsArrayFunction args
+    | UnaryOp (_, x) -> containsArrayFunction x
+    | BinOp (l, _, r) -> containsArrayFunction l || containsArrayFunction r
+    | _ -> false
+
+/// Materialize dynamic-array spills for rendering. For each formula whose
+/// formula uses a spilling function (SEQUENCE/UNIQUE/SORT/FILTER/…), evaluate
+/// the array and write its values into the anchor + neighbouring cells
+/// (row-major). A non-empty target cell (other than the anchor) blocks the
+/// spill → the anchor shows #SPILL!. Pure; returns a new model. Only formulas
+/// that actually use an array function are touched — every other cell is
+/// untouched, so this is safe to run after `recalculateAllFormulas` on any
+/// workbook. (Interactive clear-on-recalc + spill-cell dependencies are a
+/// later step; this is the render-side materialization.)
+let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                (model: SpreadsheetModel) : SpreadsheetModel =
+    let ctx = { Model = model; Workbook = workbook; Sheet = currentSheet }
+    let anchors =
+        model.Cells
+        |> Map.toList
+        |> List.choose (fun (addr, cell) ->
+            match cell.Value with
+            | CellValue.Formula (formula, _) ->
+                match parseFormula formula with
+                | Ok expr when containsArrayFunction expr -> Some (addr, cell, formula, expr)
+                | _ -> None
+            | _ -> None)
+    let mutable updated = model
+    for (addr, cell, formula, expr) in anchors do
+        let arr = evalArray expr ctx
+        let nr = arr.Length
+        let nc = if nr > 0 then arr.[0].Length else 0
+        if nr * nc <= 1 then
+            let v = if nr * nc = 1 then arr.[0].[0] else CellValue.Error Err.value
+            updated <- setCell addr { cell with Value = CellValue.Formula (formula, v) } updated
+        else
+            let occupied r c =
+                if r = 0 && c = 0 then false
+                else
+                    match Map.tryFind { Row = addr.Row + r; Col = addr.Col + c } model.Cells with
+                    | Some cd -> (match cd.Value with CellValue.Empty -> false | _ -> true)
+                    | None -> false
+            let collides =
+                seq { for r in 0 .. nr - 1 do for c in 0 .. nc - 1 do if occupied r c then yield () }
+                |> Seq.isEmpty |> not
+            if collides then
+                updated <- setCell addr { cell with Value = CellValue.Formula (formula, CellValue.Error Err.spill) } updated
+            else
+                updated <- setCell addr { cell with Value = CellValue.Formula (formula, arr.[0].[0]) } updated
+                for r in 0 .. nr - 1 do
+                    for c in 0 .. nc - 1 do
+                        if not (r = 0 && c = 0) then
+                            updated <-
+                                setCell { Row = addr.Row + r; Col = addr.Col + c }
+                                    { Value = arr.[r].[c]; Format = cell.Format; Comment = None } updated
     updated

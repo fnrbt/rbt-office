@@ -16,6 +16,11 @@ open RedBat.Spreadsheet.Formula
 type CalcMetadata = {
     /// Cells this cell directly references (may live on other sheets).
     Dependencies: Set<SheetCell>
+    /// Large ranges this cell depends on, tracked as rectangles instead of
+    /// one edge per cell (so `SUM(A1:A100000)` is one rect, not 100k edges).
+    /// A cell edit inside any of these dirties this formula; for scheduling,
+    /// formula cells that fall inside a rect become ordering dependencies.
+    DepRects: DepRect list
     /// Cells that reference this cell (may live on other sheets).
     Dependents: Set<SheetCell>
     /// Is this cell marked for recalculation?
@@ -36,6 +41,7 @@ type CalcEngine = {
 
 let emptyMetadata = {
     Dependencies = Set.empty
+    DepRects = []
     Dependents = Set.empty
     IsDirty = false
     ParsedFormula = None
@@ -64,7 +70,9 @@ let buildDependencies (cell: SheetCell) (formula: string)
                       (workbook: Workbook) (engine: CalcEngine): CalcEngine =
     match parseFormula formula with
     | Ok expr ->
-        let deps = extractReferences (Some workbook) cell.Sheet expr
+        // Large ranges become rectangle deps (rects); small ranges + single
+        // cells stay explicit edges (deps).
+        let deps, rects = referencesRanged (Some workbook) cell.Sheet expr
         let metadata =
             engine.Metadata
             |> Map.tryFind cell
@@ -83,6 +91,7 @@ let buildDependencies (cell: SheetCell) (formula: string)
         let newMetadata = {
             metadata with
                 Dependencies = deps
+                DepRects = rects
                 ParsedFormula = Some expr
         }
         updatedMetadata <- Map.add cell newMetadata updatedMetadata
@@ -101,8 +110,9 @@ let buildDependencies (cell: SheetCell) (formula: string)
         engine
 
 /// Topological sort (DFS). Returns calculation order — dependencies first
-/// — or None when the graph has a cycle.
-let topologicalSort (nodes: SheetCell list) (metadata: Map<SheetCell, CalcMetadata>): SheetCell list option =
+/// — or None when the graph has a cycle. `getDeps` yields a node's ordering
+/// dependencies (explicit cell edges plus any rect-implied formula edges).
+let topologicalSort (nodes: SheetCell list) (getDeps: SheetCell -> SheetCell seq): SheetCell list option =
     let mutable visited = Set.empty
     let mutable recStack = Set.empty
     let mutable result = []
@@ -114,9 +124,7 @@ let topologicalSort (nodes: SheetCell list) (metadata: Map<SheetCell, CalcMetada
         elif not (visited.Contains node) then
             visited <- Set.add node visited
             recStack <- Set.add node recStack
-            match Map.tryFind node metadata with
-            | Some meta -> for dep in meta.Dependencies do visit dep
-            | None -> ()
+            for dep in getDeps node do visit dep
             recStack <- Set.remove node recStack
             result <- node :: result
 
@@ -134,7 +142,21 @@ let rebuildCalcChain (workbook: Workbook) (engine: CalcEngine): CalcEngine =
                 match cell.Value with
                 | CellValue.Formula _ -> yield { Sheet = sheetId; Cell = addr }
                 | _ -> () ]
-    match topologicalSort formulaCells engine.Metadata with
+    // A formula's ordering deps = its explicit edges plus any *formula* cell
+    // that falls inside one of its dependency rectangles (so a large-range
+    // aggregate still computes after formula cells it covers — without
+    // enumerating the rect's data cells). Formula cells are few, so this scan
+    // is cheap even when the rect spans 100k data cells.
+    let getDeps (sc: SheetCell) : SheetCell seq =
+        match Map.tryFind sc engine.Metadata with
+        | Some meta when not (List.isEmpty meta.DepRects) ->
+            let rectDeps =
+                formulaCells
+                |> Seq.filter (fun fc -> meta.DepRects |> List.exists (fun r -> rectContainsCell r fc))
+            Seq.append (meta.Dependencies :> seq<_>) rectDeps
+        | Some meta -> meta.Dependencies :> seq<_>
+        | None -> Seq.empty
+    match topologicalSort formulaCells getDeps with
     | Some chain -> { engine with CalcChain = chain }
     | None ->
         // Circular reference — clear the chain to signal the error state.
@@ -166,6 +188,21 @@ let clearDirty (cell: SheetCell) (engine: CalcEngine): CalcEngine =
             Metadata = Map.add cell { metadata with IsDirty = false } engine.Metadata
             DirtySet = Set.remove cell engine.DirtySet }
     | None -> engine
+
+/// Mark a cell dirty AND dirty any formula whose dependency *rectangle*
+/// contains it. Per-cell reverse edges (`Dependents`) only exist for small
+/// ranges; large ranges are tracked as rectangles with no reverse edges, so a
+/// data-cell edit inside one is propagated by this containment scan instead.
+/// Used on every edit. The scan skips formulas without rects, so it is cheap
+/// unless the workbook actually has large-range aggregates.
+let markDirtyForCell (cell: SheetCell) (engine: CalcEngine): CalcEngine =
+    let withDirect = markDirty cell engine
+    engine.Metadata
+    |> Map.fold (fun acc fcell meta ->
+        if not (List.isEmpty meta.DepRects)
+           && meta.DepRects |> List.exists (fun r -> rectContainsCell r cell) then
+            markDirty fcell acc
+        else acc) withDirect
 
 /// Recalculate a single cell from its cached formula AST, evaluating
 /// against its own sheet's model with the full workbook in context.
@@ -256,7 +293,7 @@ let updateCell (cell: SheetCell) (value: CellValue) (cellData: CellData)
                 { engine with Metadata = Map.add cell newMetadata updatedMetadata }
             | None -> engine
 
-    let dirtyEngine = markDirty cell newEngine
+    let dirtyEngine = markDirtyForCell cell newEngine
     let finalEngine = rebuildCalcChain newWorkbook dirtyEngine
     (newWorkbook, finalEngine)
 

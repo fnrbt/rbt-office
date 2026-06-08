@@ -149,6 +149,29 @@ ok "xsheet-cycle-detected" (List.isEmpty cycEngine.CalcChain)
 ok "xsheet-cycle-in-stats" ((getStats cycWb cycEngine).HasCircularRef)
    "expected HasCircularRef = true"
 
+// --- Range-granular dependency: a large range is one rectangle, not N edges -
+// A1:A5000 (> rangeDepThreshold) feeding B1=SUM(...) must NOT reify 5000 edges,
+// yet an edit to any data cell inside it must still dirty + recalc the SUM.
+let bigModel =
+    { createEmpty 6000 4 with
+        Cells = seq { for r in 0 .. 4999 -> { Row = r; Col = 0 }, cell (CellValue.Number 1.0) } |> Map.ofSeq }
+let bigWb0 =
+    { Sheets = Map.ofList [ "s1", { Id = "s1"; Name = "Sheet1"; Model = bigModel; Visible = true } ]
+      SheetOrder = [ "s1" ]; ActiveSheet = "s1"; Tables = Map.empty; Names = Map.empty }
+let bb1 = { Sheet = "s1"; Cell = { Row = 0; Col = 1 } }
+let bb1Data = cell (CellValue.Formula ("=SUM(A1:A5000)", CellValue.Empty))
+let (bigWb1, bigEng1) = updateCell bb1 (CellValue.Formula ("=SUM(A1:A5000)", CellValue.Empty)) bb1Data bigWb0 emptyEngine
+ok "bigrange-no-cell-edges"
+   (Set.isEmpty bigEng1.Metadata.[bb1].Dependencies && List.length bigEng1.Metadata.[bb1].DepRects = 1)
+   (sprintf "deps=%d rects=%d" (Set.count bigEng1.Metadata.[bb1].Dependencies) (List.length bigEng1.Metadata.[bb1].DepRects))
+let (bigWb2, bigEng2) = smartRecalculate bigWb1 bigEng1
+ok "bigrange-initial-sum" (readWb bb1 bigWb2 = CellValue.Number 5000.0) (sprintf "B1=%A" (readWb bb1 bigWb2))
+let ai = { Sheet = "s1"; Cell = { Row = 2499; Col = 0 } }   // a data cell inside the rectangle
+let (bigWb3, bigEng3) = updateCell ai (CellValue.Number 11.0) (cell (CellValue.Number 11.0)) bigWb2 bigEng2
+ok "bigrange-edit-dirties-via-rect" (Set.contains bb1 bigEng3.DirtySet) (sprintf "dirty=%A" (Set.count bigEng3.DirtySet))
+let (bigWb4, _) = smartRecalculate bigWb3 bigEng3
+ok "bigrange-recalc" (readWb bb1 bigWb4 = CellValue.Number 5010.0) (sprintf "B1=%A" (readWb bb1 bigWb4)) // 4999×1 + 11
+
 printfn ""
 printfn "Stage 5 calc-engine tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

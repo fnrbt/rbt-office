@@ -1431,7 +1431,9 @@ let private renderSheetToPath
         match Map.tryFind sheetId wbContext.Sheets with
         | Some s -> s.Model
         | None -> createEmpty 1048576 16384
-    let model = RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) (Some sheetId) baseModel
+    let model =
+        RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) (Some sheetId) baseModel
+        |> RedBat.Spreadsheet.Formula.spillArrays (Some wbContext) (Some sheetId)
 
     // Overlay charts and sparklines at their anchor / cell rects.
     let viewport = Composit.Ui.SpreadsheetGrid.viewportOf model (float width) (float height)
@@ -1449,7 +1451,7 @@ let private renderSheetToPath
         ChartRender.parseSparklines inputPath sheetIndex
         |> List.collect (fun sp ->
             let r = RedBat.Spreadsheet.Layout.cellRect model viewport sp.Row sp.Col
-            ChartRender.buildSparkline sp.Values r sp.Color)
+            ChartRender.buildSparkline sp r)
     let slicerItems =
         ChartRender.parseSlicers inputPath
         |> List.collect (fun sl ->
