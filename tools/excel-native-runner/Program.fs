@@ -1619,6 +1619,11 @@ let main argv =
         | [| "--filterdialogtest"; output |] ->
             let spec = RedBat.Spreadsheet.Ui.filterDialog "Region" [ "East"; "North"; "South"; "West" ] (fun _ -> ())
             renderDialogPng (fullPath output) spec 480 460
+        | [| "--formatdialogtest"; output |] ->
+            // Format-cells dialog with a live "Sample" preview that re-renders the
+            // chosen number format through the real cell renderer.
+            let spec = RedBat.Spreadsheet.Ui.formatCellsDialog "currency" "#000000" "#FFFFFF" (fun _ -> ())
+            renderDialogPng (fullPath output) spec 560 520
         | [| "--cftest"; output |] ->
             // Conditional-format visuals: data bars / color scale / icon set,
             // computed over real numbers and rendered.

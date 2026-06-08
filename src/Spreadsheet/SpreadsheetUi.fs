@@ -655,6 +655,18 @@ module Ui =
             dialogSelect "format" "Number format" numberFormats initialFormat
             dialogText "text" "Text color (#hex)" "#000000" initialTextColor
             dialogText "bg" "Fill color (#hex)" "#FFFFFF" initialBgColor
+            dialogComputed "preview" "Sample" (fun values ->
+                let key = Map.tryFind "format" values |> Option.defaultValue "general"
+                let fmt = { Model.defaultFormat with NumberFormat = (if key = "general" then None else Some key) }
+                let render (n: float) = Model.displayValueWithFormat (Model.Number n) fmt
+                let text = Map.tryFind "text" values |> Option.defaultValue "" |> fun s -> s.Trim()
+                let bg = Map.tryFind "bg" values |> Option.defaultValue "" |> fun s -> s.Trim()
+                let swatch =
+                    let parts =
+                        [ if text <> "" && text <> "#000000" then yield sprintf "text %s" text
+                          if bg <> "" && bg <> "#FFFFFF" then yield sprintf "fill %s" bg ]
+                    if List.isEmpty parts then "" else "   (" + String.concat ", " parts + ")"
+                sprintf "1234.567 -> %s     -89.5 -> %s%s" (render 1234.567) (render -89.5) swatch)
         ]
         Tabs = []
         Buttons = [
