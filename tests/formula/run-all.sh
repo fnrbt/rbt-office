@@ -30,6 +30,7 @@ stages=(
     stage12-financial
     stage13-pivot
     stage14-cf
+    stage15-validation
 )
 
 failed=0

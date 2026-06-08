@@ -204,6 +204,26 @@ type ConditionalFormat = {
     Style: CellFormat
 }
 
+/// Data-validation rule (what a cell is allowed to contain).
+type ValidationRule =
+    /// Allowed values (a dropdown). Case-insensitive match.
+    | ListValues of string list
+    /// Numeric range [min, max] (inclusive); `None` = unbounded.
+    | WholeNumber of float option * float option
+    | DecimalRange of float option * float option
+    /// String length range.
+    | TextLength of float option * float option
+    /// Date (Excel serial) range.
+    | DateRange of float option * float option
+
+type DataValidation = {
+    Rule: ValidationRule
+    /// Shown when an entered value fails the rule.
+    ErrorMessage: string option
+    /// Shown as a tooltip while the cell is selected.
+    InputMessage: string option
+}
+
 /// Merged cell range (primary cell is top-left)
 type MergedCell = {
     StartRow: int
@@ -512,6 +532,9 @@ type SpreadsheetModel = {
     /// spilled cells are cleared before a re-spill. Empty for non-spilling
     /// workbooks.
     Spill: Map<CellAddress, CellAddress>
+
+    /// Data-validation rules keyed by cell.
+    Validations: Map<CellAddress, DataValidation>
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -562,6 +585,7 @@ let createEmpty rowCount colCount = {
     CfBoldCells = Set.empty
     ShowGridLines = true
     Spill = Map.empty
+    Validations = Map.empty
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")
@@ -1270,7 +1294,7 @@ let private rangeNumbers sr sc er ec (model: SpreadsheetModel) : (CellAddress * 
 let private updateFormat (addr: CellAddress) (f: CellFormat -> CellFormat) (model: SpreadsheetModel) : SpreadsheetModel =
     match getCell addr model with
     | Some cd -> setCell addr { cd with Format = f cd.Format } model
-    | None -> model
+    | None -> setCell addr { Value = Empty; Format = f defaultFormat; Comment = None } model
 
 let private hexToRgb (s: string) =
     let h = (if s.StartsWith "#" then s.Substring 1 else s)
@@ -1329,6 +1353,67 @@ let applyIconSet (sr: int) (sc: int) (er: int) (ec: int) (count: int) (model: Sp
             let bucket = min (count - 1) (int ((v - lo) / span * float count))
             updateFormat addr (fun f -> { f with IconSet = Some(bucket, count) }) m) model
     | _ -> model
+
+// --- Data validation --------------------------------------------------------
+
+let private displayText (v: CellValue) : string =
+    match unwrapVal v with
+    | String s -> s
+    | Number n -> if n = floor n && abs n < 1e15 then string (int64 n) else string n
+    | Boolean b -> if b then "TRUE" else "FALSE"
+    | _ -> ""
+
+/// Check a value against a validation rule. Blank is always allowed (Excel's
+/// default). Returns Ok or a human-readable reason.
+let validateValue (rule: ValidationRule) (value: CellValue) : Result<unit, string> =
+    let v = unwrapVal value
+    let isBlank = match v with Empty -> true | String "" -> true | _ -> false
+    let within lo hi x =
+        (match lo with Some l -> x >= l - 1e-9 | None -> true) && (match hi with Some h -> x <= h + 1e-9 | None -> true)
+    if isBlank then Result.Ok()
+    else
+        match rule with
+        | ListValues vs ->
+            let t = (displayText v).Trim().ToLowerInvariant()
+            if vs |> List.exists (fun a -> a.Trim().ToLowerInvariant() = t) then Result.Ok()
+            else Result.Error(sprintf "Value must be one of: %s" (String.concat ", " vs))
+        | WholeNumber (lo, hi) ->
+            (match v with
+             | Number n when n = floor n -> if within lo hi n then Result.Ok() else Result.Error "Enter a whole number within the allowed range."
+             | Number _ -> Result.Error "Enter a whole number (no decimals)."
+             | _ -> Result.Error "Enter a whole number.")
+        | DecimalRange (lo, hi) ->
+            (match v with
+             | Number n -> if within lo hi n then Result.Ok() else Result.Error "Enter a number within the allowed range."
+             | _ -> Result.Error "Enter a number.")
+        | TextLength (lo, hi) ->
+            let len = match v with String s -> float s.Length | _ -> float (displayText v).Length
+            if within lo hi len then Result.Ok() else Result.Error "Text length is outside the allowed range."
+        | DateRange (lo, hi) ->
+            (match v with
+             | Number n -> if within lo hi n then Result.Ok() else Result.Error "Enter a date within the allowed range."
+             | _ -> Result.Error "Enter a date.")
+
+let getValidation (addr: CellAddress) (model: SpreadsheetModel) : DataValidation option =
+    Map.tryFind addr model.Validations
+
+/// Attach a validation rule to a cell. A list rule also flags the cell so the
+/// renderer paints the dropdown arrow.
+let setValidation (addr: CellAddress) (dv: DataValidation) (model: SpreadsheetModel) : SpreadsheetModel =
+    let m = { model with Validations = Map.add addr dv model.Validations }
+    match dv.Rule with
+    | ListValues _ -> updateFormat addr (fun f -> { f with HasListDropdown = true }) m
+    | _ -> m
+
+/// Validate a prospective edit against the cell's rule (if any). Ok when valid
+/// or unconstrained; Error carries the rule's message (or a default).
+let validateEdit (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : Result<unit, string> =
+    match getValidation addr model with
+    | None -> Result.Ok()
+    | Some dv ->
+        match validateValue dv.Rule value with
+        | Result.Ok() -> Result.Ok()
+        | Result.Error def -> Result.Error(dv.ErrorMessage |> Option.defaultValue def)
 
 /// Parse CSV string to list of rows
 let parseCSV (csvText: string): string list list =

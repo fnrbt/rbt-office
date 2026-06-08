@@ -416,6 +416,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 CfBoldCells = Set.empty
                 ShowGridLines = true
                 Spill = Map.empty
+                Validations = Map.empty
             }
             recalculateAllFormulas None None importedModel
 
@@ -448,6 +449,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 CfBoldCells = Set.empty
                 ShowGridLines = true
                 Spill = Map.empty
+                Validations = Map.empty
             }
 
     /// <summary>
@@ -496,6 +498,7 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
                     CfBoldCells = Set.empty
                     ShowGridLines = true
                     Spill = Map.empty
+                    Validations = Map.empty
                 }
         }
 

@@ -286,6 +286,10 @@ let private parseCellInput (text: string) : CellValue =
 let private writeCell (row: int) (col: int) (text: string) (model: SpreadsheetModel) =
     let value = parseCellInput text
     let addr = { Row = row; Col = col }
+    // Reject edits that violate the cell's data-validation rule (keep old value).
+    match validateEdit addr value model with
+    | Result.Error _ -> model
+    | Result.Ok() ->
     let edited =
         match value, getCell addr model with
         | Empty, _ -> clearCell addr model
