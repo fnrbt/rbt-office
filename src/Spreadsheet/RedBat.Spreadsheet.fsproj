@@ -8,9 +8,9 @@
     <Compile Include="Model.fs" />
     <Compile Include="CellText.fs" />
     <Compile Include="Workbook.fs" />
+    <Compile Include="Pivot.fs" />
     <Compile Include="Formula.fs" />
     <Compile Include="Calc.fs" />
-    <Compile Include="Pivot.fs" />
     <Compile Include="Layout.fs" />
     <Compile Include="Paint.fs" />
     <Compile Include="XlsxImporter.fs" />

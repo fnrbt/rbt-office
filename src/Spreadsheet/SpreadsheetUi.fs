@@ -576,14 +576,25 @@ module Ui =
         choice "min" "Min"
     ]
 
-    /// Insert a pivot table. The app's `apply` reads the source range from the
-    /// model, resolves field names, computes the pivot (Pivot.pivotFromNames),
-    /// and places it; it returns false (keeping the dialog open) on a bad range
-    /// or unknown field.
-    let pivotTableDialog (apply: PivotUiRequest -> bool) : DialogSpec = {
+    let private pivotReqOf (values: Map<string, string>) : PivotUiRequest =
+        let g k d = Map.tryFind k values |> Option.defaultValue d
+        { Source = (g "source" "").Trim()
+          RowFields = g "rows" ""
+          ColField = (g "cols" "").Trim()
+          ValueField = (g "value" "").Trim()
+          Agg = g "agg" "sum"
+          Dest = (g "dest" "").Trim() }
+
+    /// Insert a pivot table. `preview` is a LIVE result preview (the app reads
+    /// the model + computes the pivot the dialog would write), shown reactively
+    /// as fields change. `apply` writes the live GROUPBY/PIVOTBY formula and
+    /// returns false (keeping the dialog open) on a bad range/field. This is
+    /// the "better than Excel" builder: it writes a formula you own, with a
+    /// preview Excel's insert flow doesn't offer.
+    let pivotTableDialog (preview: PivotUiRequest -> string) (apply: PivotUiRequest -> bool) : DialogSpec = {
         TestId = "xl-dlg-pivot"
         Title = "Insert pivot table"
-        Subtitle = Some "Summarize a source range by row fields and one value."
+        Subtitle = Some "Writes a live =GROUPBY/=PIVOTBY formula you can read and reuse."
         Fields = [
             dialogText "source" "Source range" "A1:C100" ""
             dialogText "rows" "Row fields (comma-separated)" "Region, Product" ""
@@ -591,19 +602,12 @@ module Ui =
             dialogText "value" "Value field" "Sales" ""
             dialogSelect "agg" "Summarize by" pivotAggChoices "sum"
             dialogText "dest" "Place at cell" "F1" ""
+            dialogComputed "preview" "Live preview" (pivotReqOf >> preview)
         ]
         Tabs = []
         Buttons = [
             dialogCancel
-            dialogButton "dlg-pivot-ok" "Create" true (fun values ->
-                apply {
-                    Source = (Map.find "source" values).Trim()
-                    RowFields = Map.find "rows" values
-                    ColField = (Map.find "cols" values).Trim()
-                    ValueField = (Map.find "value" values).Trim()
-                    Agg = Map.find "agg" values
-                    Dest = (Map.find "dest" values).Trim()
-                })
+            dialogButton "dlg-pivot-ok" "Create" true (pivotReqOf >> apply)
         ]
     }
 

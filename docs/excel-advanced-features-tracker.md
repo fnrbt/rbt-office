@@ -142,19 +142,27 @@ round-trip. ~160 functions total now.
 - **Render ✅** — native runner `--pivottest` renders a nested Region→Product
   pivot with Sum + Count measures, bold subtotals (East 470/4, West 700/3) and
   Grand Total (1170/7), verified visually.
-- **UI ✅** — Insert-Pivot dialog (`SpreadsheetUi.pivotTableDialog`, a backend-
-  agnostic `RedBat.Office.Ui.DialogSpec`): source range, row fields, optional
-  column field, value field, Summarize-by dropdown, destination cell. Wired in
-  the native app (`spreadsheet-editor` `InsertPivot → openInsertPivotDialog`):
-  reads the source range from the model, resolves field names
-  (`Pivot.pivotFromNames`), computes, and places the grid; bad range/field keeps
-  the dialog open with a status. Resolution core unit-tested
-  (`stage13-pivot.fsx`, now 33 assertions). Dialog rendered headlessly via the
-  new `OfficeShell.dialogPreview` + runner `--dialogtest` (screenshot-verified:
-  full dialog with all fields + Create/Cancel).
+- **Better-than-Excel direction ✅ — pivot as a LIVE spilling formula.**
+  `GROUPBY(row_range, value_range, [agg])` and `PIVOTBY(row, col, value, [agg])`
+  are dynamic-array functions (`Formula.fs` → `Pivot.groupBy`/`pivotBy`) that
+  **spill**, so a pivot is a normal formula: recomputes on source edits (no
+  Refresh), composable (`SUM(GROUPBY(...))`, FILTER/SORT it), and transparent/
+  diffable. Render-verified (`synthetic-groupby.xlsx`: GROUPBY → East 470/West
+  700/Grand 1170; PIVOTBY → full cross-tab).
+- **UI ✅ — formula-writing builder with live preview.** The Insert-Pivot dialog
+  (`SpreadsheetUi.pivotTableDialog`, an `Office.Ui.DialogSpec`) **writes a live
+  `=GROUPBY`/`=PIVOTBY` formula** (`Pivot.buildFormula`) instead of static
+  cells, and shows a **live preview** (the new `DialogComputedField` —
+  reactive, re-runs against the model as fields change) of the formula + its
+  first result rows. Wired in `spreadsheet-editor`. Resolution + formula
+  builder unit-tested (`stage13-pivot.fsx`, 49 assertions incl. the full
+  dialog→formula→spill pipeline). Screenshot-verified via
+  `OfficeShell.dialogPreview` + runner `--dialogtest` (full dialog incl. live
+  preview pane).
 - Still owed: parse `pivotTableDefinition`/`pivotCacheRecords` from real xlsx to
-  recompute imported pivots; nested **column** fields; report filters / page
-  fields; a live field-list drag-drop pane; pivot styles.
+  recompute imported pivots; nested column fields in PIVOTBY; report filters;
+  interactive spill auto-refresh in the editor (engine spill is render-side);
+  pivot styles.
 
 ## 5. Sparklines 🟡 (native runner)
 In-cell mini-charts, parsed from the x14 `sparklineGroups` extLst and drawn as

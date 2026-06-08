@@ -928,6 +928,19 @@ let private renderDialogField (p: ChromePalette) (renderState: ShellRenderState)
                         // the current value at a glance.
                         textStyled Font.sm p.Text valueSignal.Value)
                 ])
+        | DialogComputedField compute ->
+            // Live preview: re-run `compute` over every field's current value
+            // whenever any changes (reading the signals inside `dynamic` makes
+            // it reactive), shown as a boxed multi-line block.
+            sized dialogFieldWidth 116.0 (
+                stack [
+                    rounded 4.0 p.Input empty
+                    border p.Border 1.0 4.0 (
+                        padXY 10.0 8.0 (
+                            dynamic (fun () ->
+                                let vals = state.Values |> Seq.map (fun kv -> kv.Key, kv.Value.Value) |> Map.ofSeq
+                                columnSpaced 3.0 [ for line in (compute vals).Split('\n') -> textStyled Font.sm p.Text line ])))
+                ])
         | DialogRadioField options ->
             // Column of radio buttons. Outer circle with `accent` border
             // when selected, plain border otherwise; inner dot when the

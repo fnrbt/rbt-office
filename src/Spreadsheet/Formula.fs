@@ -1045,7 +1045,7 @@ type ArrVal = CellValue[][]
 /// evaluator can collapse them and aggregates can consume the whole array.
 let private arrayFunctionSet =
     set [ "SEQUENCE"; "RANDARRAY"; "UNIQUE"; "SORT"; "SORTBY"; "FILTER"; "TRANSPOSE"
-          "MAP"; "REDUCE"; "SCAN"; "MAKEARRAY"; "TEXTSPLIT" ]
+          "MAP"; "REDUCE"; "SCAN"; "MAKEARRAY"; "TEXTSPLIT"; "GROUPBY"; "PIVOTBY" ]
 let isArrayFunction (name: string) = arrayFunctionSet.Contains(name.ToUpperInvariant())
 
 /// Does this expression evaluate to an array (a spill)? An array function, or
@@ -1350,6 +1350,23 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
             if rows < 1 || cols < 1 then errArr Err.value
             else Array.init rows (fun r -> Array.init cols (fun c ->
                     eval (applyLambdaExpr parts [ Number (float (r + 1)); Number (float (c + 1)) ]) ctx))
+    | "GROUPBY" ->
+        // GROUPBY(row_range, value_range, [agg]) — a LIVE spilling pivot:
+        // groups the row range (1+ columns, nested) and aggregates the value
+        // range, with subtotals + a Grand Total. Recomputes when the source
+        // changes (it's a formula), and the result is a normal range you can
+        // FILTER/SORT/chart. (Better than a static PivotTable: no Refresh.)
+        if nargs < 2 then errArr Err.value else
+        let parseAggArg i = match coerceText (eval (List.item i args) ctx) with Ok s -> RedBat.Spreadsheet.Pivot.parseAgg s |> Option.defaultValue RedBat.Spreadsheet.Pivot.Sum | _ -> RedBat.Spreadsheet.Pivot.Sum
+        let agg = if nargs >= 3 then parseAggArg 2 else RedBat.Spreadsheet.Pivot.Sum
+        RedBat.Spreadsheet.Pivot.groupBy (evalArray (List.item 0 args) ctx) (evalArray (List.item 1 args) ctx) agg
+    | "PIVOTBY" ->
+        // PIVOTBY(row_range, col_range, value_range, [agg]) — live spilling
+        // cross-tab.
+        if nargs < 3 then errArr Err.value else
+        let parseAggArg i = match coerceText (eval (List.item i args) ctx) with Ok s -> RedBat.Spreadsheet.Pivot.parseAgg s |> Option.defaultValue RedBat.Spreadsheet.Pivot.Sum | _ -> RedBat.Spreadsheet.Pivot.Sum
+        let agg = if nargs >= 4 then parseAggArg 3 else RedBat.Spreadsheet.Pivot.Sum
+        RedBat.Spreadsheet.Pivot.pivotBy (evalArray (List.item 0 args) ctx) (evalArray (List.item 1 args) ctx) (evalArray (List.item 2 args) ctx) agg
     | _ -> errArr Err.name
 
 /// Run a one-pass `Fold` across an aggregate's whole argument list WITHOUT

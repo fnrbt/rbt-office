@@ -158,10 +158,69 @@ let computePivotN (source: CellValue[][]) (rowFields: int list) (values: (int * 
         |> List.map Array.ofList
         |> Array.ofList
 
+/// GROUPBY as a spilling function operates on *data-only* parallel ranges
+/// (no header row): `rowM` = the row-field columns, `valueM` = the measure
+/// columns. Returns nested groups with subtotals + a Grand Total, one measure
+/// column per value column, WITHOUT a field-name header row.
+let groupBy (rowM: CellValue[][]) (valueM: CellValue[][]) (agg: Agg) : CellValue[][] =
+    if rowM.Length = 0 then [||]
+    else
+        let r = rowM.[0].Length
+        let v = if valueM.Length > 0 then valueM.[0].Length else 0
+        let n = min rowM.Length valueM.Length
+        let header = Array.append (Array.init r (fun i -> CellValue.String(sprintf "_r%d" i))) (Array.init v (fun j -> CellValue.String(sprintf "_v%d" j)))
+        let body = [| for i in 0 .. n - 1 -> Array.append rowM.[i] valueM.[i] |]
+        let source = Array.append [| header |] body
+        let grid = computePivotN source [ 0 .. r - 1 ] [ for j in 0 .. v - 1 -> (r + j, agg) ]
+        if grid.Length > 1 then grid.[1..] else grid
+
+/// PIVOTBY as a spilling function over data-only parallel ranges: single row
+/// field × single column field, one measure. Keeps the column-key header row
+/// (those are the cross-tab's column labels).
+let pivotBy (rowM: CellValue[][]) (colM: CellValue[][]) (valueM: CellValue[][]) (agg: Agg) : CellValue[][] =
+    let n = [ rowM.Length; colM.Length; valueM.Length ] |> List.min
+    if n = 0 then [||]
+    else
+        let col0 (m: CellValue[][]) i = if i < m.Length && m.[i].Length > 0 then m.[i].[0] else CellValue.Empty
+        let header = [| CellValue.String "_r"; CellValue.String "_c"; CellValue.String "_v" |]
+        let body = [| for i in 0 .. n - 1 -> [| col0 rowM i; col0 colM i; col0 valueM i |] |]
+        computePivot (Array.append [| header |] body) 0 (Some 1) 2 agg
+
 /// Find a field's 0-based column by matching the header row (case-insensitive).
 let fieldIndex (headers: CellValue[]) (name: string) : int option =
     let t = name.Trim().ToLowerInvariant()
     headers |> Array.tryFindIndex (fun h -> (textOf h).Trim().ToLowerInvariant() = t)
+
+/// Build a LIVE pivot formula (`=GROUPBY(...)` / `=PIVOTBY(...)`) from the
+/// dialog's field names + source bounds. The ranges are the *data* rows of
+/// each field (header row excluded). This is what makes our pivot better than
+/// Excel's: the dialog writes a formula the user owns — live, composable,
+/// diffable — instead of a static object. `headers` is the source's header row
+/// (length ec-sc+1); column indices are absolute (offset by `sc`).
+let buildFormula (sr: int) (sc: int) (er: int) (_ec: int) (headers: CellValue[])
+                 (rowFieldNames: string list) (colFieldName: string option)
+                 (valueFieldName: string) (aggName: string) : Result<string, string> =
+    let resolve name = fieldIndex headers name |> Option.map (fun li -> sc + li)
+    let rowNames = rowFieldNames |> List.map (fun s -> s.Trim()) |> List.filter (fun s -> s <> "")
+    if List.isEmpty rowNames then Result.Error "Choose at least one row field."
+    else
+        match rowNames |> List.map (fun n -> n, resolve n) |> List.tryFind (snd >> Option.isNone) with
+        | Some (missing, _) -> Result.Error(sprintf "Row field not found: %s" missing)
+        | None ->
+            let cols = rowNames |> List.map (resolve >> Option.get)
+            match resolve valueFieldName with
+            | None -> Result.Error(sprintf "Value field not found: %s" valueFieldName)
+            | Some vi ->
+                let dataTop = sr + 1
+                let rng c0 c1 = sprintf "%s:%s" (formatCellRef dataTop c0) (formatCellRef er c1)
+                let aggStr = "\"" + aggName.Trim().ToLowerInvariant() + "\""
+                let rowRange = rng (List.min cols) (List.max cols)
+                match colFieldName |> Option.map (fun s -> s.Trim()) |> Option.filter (fun s -> s <> "") with
+                | Some cn ->
+                    match resolve cn with
+                    | None -> Result.Error(sprintf "Column field not found: %s" cn)
+                    | Some ci -> Result.Ok(sprintf "=PIVOTBY(%s,%s,%s,%s)" rowRange (rng ci ci) (rng vi vi) aggStr)
+                | None -> Result.Ok(sprintf "=GROUPBY(%s,%s,%s)" rowRange (rng vi vi) aggStr)
 
 /// Resolve field NAMES against the source's header row and compute the pivot —
 /// the entry point for the Insert-Pivot dialog. Nested row fields use

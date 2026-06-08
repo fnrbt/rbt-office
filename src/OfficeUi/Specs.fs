@@ -197,6 +197,11 @@ module Ui =
         /// Column of radio buttons. The active option's `Value` is what
         /// gets written to the field's value signal.
         | DialogRadioField of options: ChoiceSpec list
+        /// A read-only, LIVE-computed preview. The renderer re-runs `compute`
+        /// (passed the current value of every field) whenever any field
+        /// changes, and shows the returned (possibly multi-line) text. Use for
+        /// a live result preview — e.g. the pivot a dialog will insert.
+        | DialogComputedField of compute: (Map<string, string> -> string)
 
     type DialogField = {
         /// Stable id used as the key in the submit callback's value map.
@@ -266,6 +271,9 @@ module Ui =
 
     let dialogRadio id label options (initial: string) =
         { Id = id; Label = label; Kind = DialogRadioField options; Initial = initial }
+
+    let dialogComputed id label (compute: Map<string, string> -> string) =
+        { Id = id; Label = label; Kind = DialogComputedField compute; Initial = "" }
 
     let dialogButton testId label isPrimary action =
         { TestId = testId; Label = label; IsPrimary = isPrimary; Action = action }

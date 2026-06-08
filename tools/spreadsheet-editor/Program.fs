@@ -374,33 +374,61 @@ let private shellActions
         |> Composit.Ui.OfficeShell.openDialog renderState
 
     let openInsertPivotDialog () =
-        XlUi.pivotTableDialog (fun req ->
-            let parseRange (s: string) =
-                match s.Split(':') with
-                | [| a; b |] ->
-                    match parseCellRef (a.Trim()), parseCellRef (b.Trim()) with
-                    | Some (r1, c1), Some (r2, c2) -> Some(min r1 r2, min c1 c2, max r1 r2, max c1 c2)
-                    | _ -> None
-                | [| a |] -> parseCellRef (a.Trim()) |> Option.map (fun (r, c) -> r, c, r, c)
+        let parseRange (s: string) =
+            match s.Split(':') with
+            | [| a; b |] ->
+                match parseCellRef (a.Trim()), parseCellRef (b.Trim()) with
+                | Some (r1, c1), Some (r2, c2) -> Some(min r1 r2, min c1 c2, max r1 r2, max c1 c2)
                 | _ -> None
-            let model = Editor.activeModel state
-            match parseRange req.Source, RedBat.Spreadsheet.Pivot.parseAgg req.Agg, parseCellRef req.Dest with
-            | Some (sr, sc, er, ec), Some agg, Some (dr, dc) ->
+            | [| a |] -> parseCellRef (a.Trim()) |> Option.map (fun (r, c) -> r, c, r, c)
+            | _ -> None
+        let rec cellText (v: CellValue) =
+            match v with
+            | CellValue.Number n -> if n = floor n && abs n < 1e15 then string (int64 n) else sprintf "%g" n
+            | CellValue.String s -> s
+            | CellValue.Boolean b -> if b then "TRUE" else "FALSE"
+            | CellValue.Error e -> "#" + e
+            | CellValue.Formula (_, c) -> cellText c
+            | _ -> ""
+        // Live preview: resolve + compute against the CURRENT model, show the
+        // formula we'll write plus the first rows of its result.
+        let pivotPreview (req: XlUi.PivotUiRequest) : string =
+            match parseRange req.Source with
+            | None -> "Enter a source range like A1:C100."
+            | Some (sr, sc, er, ec) ->
+                let model = Editor.activeModel state
                 let grid = [| for r in sr .. er -> [| for c in sc .. ec -> getCellValue { Row = r; Col = c } model |] |]
+                let headers = if grid.Length > 0 then grid.[0] else [||]
                 let rowFields = req.RowFields.Split(',') |> Array.map (fun s -> s.Trim()) |> Array.filter (fun s -> s <> "") |> Array.toList
                 let colOpt = if req.ColField = "" then None else Some req.ColField
+                let agg = RedBat.Spreadsheet.Pivot.parseAgg req.Agg |> Option.defaultValue RedBat.Spreadsheet.Pivot.Sum
+                let formula = match RedBat.Spreadsheet.Pivot.buildFormula sr sc er ec headers rowFields colOpt req.ValueField req.Agg with Result.Ok f -> f | Result.Error _ -> ""
                 match RedBat.Spreadsheet.Pivot.pivotFromNames grid rowFields colOpt req.ValueField agg with
-                | Result.Ok pivot ->
+                | Result.Error m -> m
+                | Result.Ok p ->
+                    let rows = p |> Array.truncate 5 |> Array.map (fun row -> row |> Array.truncate 4 |> Array.map cellText |> String.concat "    ") |> String.concat "\n"
+                    (if formula <> "" then formula + "\n" else "") + rows
+        XlUi.pivotTableDialog pivotPreview (fun req ->
+            let model = Editor.activeModel state
+            match parseRange req.Source, parseCellRef req.Dest with
+            | Some (sr, sc, er, ec), Some (dr, dc) ->
+                // Write a LIVE GROUPBY/PIVOTBY formula (not a static grid) — the
+                // pivot is then a normal formula: recomputes on source edits,
+                // composable, and the user can read/tweak it.
+                let headers = [| for c in sc .. ec -> getCellValue { Row = sr; Col = c } model |]
+                let rowFields = req.RowFields.Split(',') |> Array.map (fun s -> s.Trim()) |> Array.filter (fun s -> s <> "") |> Array.toList
+                let colOpt = if req.ColField = "" then None else Some req.ColField
+                match RedBat.Spreadsheet.Pivot.buildFormula sr sc er ec headers rowFields colOpt req.ValueField req.Agg with
+                | Result.Ok formula ->
                     Editor.applyChange state (fun m ->
-                        let mutable acc = m
-                        for r in 0 .. pivot.Length - 1 do
-                            for c in 0 .. pivot.[r].Length - 1 do
-                                acc <- setCell { Row = dr + r; Col = dc + c } { Value = pivot.[r].[c]; Format = defaultFormat; Comment = None } acc
-                        acc) |> ignore
-                    status.Value <- sprintf "Inserted pivot at %s" (formatCellRef dr dc)
+                        let m1 = setCell { Row = dr; Col = dc } { Value = CellValue.Formula(formula, CellValue.Empty); Format = defaultFormat; Comment = None } m
+                        // Evaluate + materialize the spill so it shows immediately.
+                        RedBat.Spreadsheet.Formula.recalculateAllFormulas None None m1
+                        |> RedBat.Spreadsheet.Formula.spillArrays None None) |> ignore
+                    status.Value <- sprintf "Inserted %s at %s" (if colOpt.IsSome then "PIVOTBY" else "GROUPBY") (formatCellRef dr dc)
                     true
                 | Result.Error msg -> status.Value <- "Pivot: " + msg; false
-            | _ -> status.Value <- "Pivot: invalid source range, aggregation, or destination cell."; false)
+            | _ -> status.Value <- "Pivot: invalid source range or destination cell."; false)
         |> Composit.Ui.OfficeShell.openDialog renderState
 
     let openInsertSheetDialog () =

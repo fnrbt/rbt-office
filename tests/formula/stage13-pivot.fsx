@@ -5,9 +5,11 @@
 
 open RedBat.Spreadsheet.Model
 open RedBat.Spreadsheet.Pivot
+open RedBat.Spreadsheet.Formula
 
 let S = CellValue.String
 let N = CellValue.Number
+let cell v = { Value = v; Format = defaultFormat; Comment = None }
 // Region, Product, Sales
 let source =
     [| [| S "Region"; S "Product"; S "Sales" |]
@@ -82,6 +84,57 @@ check "byNames crosstab"  g3.[0] [| S "Row Labels"; S "A"; S "B"; S "Grand Total
 let errMsg r = match r with Result.Error (m: string) -> m | Result.Ok _ -> ""
 check "byNames bad row"   ((errMsg (pivotFromNames source [ "Nope" ] None "Sales" Sum)).StartsWith "Row field not found") true
 check "byNames bad value" ((errMsg (pivotFromNames source [ "Region" ] None "Nope" Sum)).StartsWith "Value field not found") true
+
+// ── spilling GROUPBY / PIVOTBY (the "live formula pivot") ──
+// matrix entries (data-only parallel ranges)
+let dataRows = source.[1..]
+let rowM = dataRows |> Array.map (fun r -> [| r.[0] |])   // Region
+let colM = dataRows |> Array.map (fun r -> [| r.[1] |])   // Product
+let valM = dataRows |> Array.map (fun r -> [| r.[2] |])   // Sales
+let gb = groupBy rowM valM Sum
+check "groupBy east"   gb.[0] [| S "East"; N 350.0 |]
+check "groupBy west"   gb.[1] [| S "West"; N 400.0 |]
+check "groupBy grand"  gb.[2] [| S "Grand Total"; N 750.0 |]
+let pb = pivotBy rowM colM valM Sum
+check "pivotBy header"  pb.[0] [| S "Row Labels"; S "A"; S "B"; S "Grand Total" |]
+check "pivotBy east"    pb.[1] [| S "East"; N 150.0; N 200.0; N 350.0 |]
+
+// formula path: GROUPBY over real cell ranges (data only, A1:A5 / C1:C5)
+let model =
+    { createEmpty 100 26 with
+        Cells =
+            ([ "East";"East";"West";"West";"East" ] |> List.mapi (fun i v -> { Row=i; Col=0 }, cell (S v)))
+            @ ([ 100.;200.;150.;250.;50. ] |> List.mapi (fun i v -> { Row=i; Col=2 }, cell (N v)))
+            |> Map.ofList }
+let arrAt f = match parseFormula f with Ok e -> evalArray e (contextOf model) | Result.Error e -> failwithf "parse: %s" e
+let gf = arrAt "=GROUPBY(A1:A5,C1:C5,\"sum\")"
+check "GROUPBY formula east"  gf.[0] [| S "East"; N 350.0 |]
+check "GROUPBY formula grand" gf.[gf.Length - 1] [| S "Grand Total"; N 750.0 |]
+// composable: the spill is a normal range — feed it to other functions
+check "GROUPBY is composable" (evaluateFormula "=SUM(GROUPBY(A1:A5,C1:C5,\"sum\"))" model None) (N 1500.0) // (350+400)+750
+
+// ── dialog writes a LIVE formula (buildFormula) ──
+let hdrs = source.[0]   // [Region; Product; Sales]
+let fOf r = match r with Result.Ok (s: string) -> s | Result.Error e -> "ERR:" + e
+check "formula groupby"  (fOf (buildFormula 0 0 7 2 hdrs [ "Region" ] None "Sales" "sum")) "=GROUPBY(A2:A8,C2:C8,\"sum\")"
+check "formula nested"   (fOf (buildFormula 0 0 7 2 hdrs [ "Region"; "Product" ] None "Sales" "sum")) "=GROUPBY(A2:B8,C2:C8,\"sum\")"
+check "formula pivotby"  (fOf (buildFormula 0 0 7 2 hdrs [ "Region" ] (Some "Product") "Sales" "sum")) "=PIVOTBY(A2:A8,B2:B8,C2:C8,\"sum\")"
+check "formula bad row"  ((fOf (buildFormula 0 0 7 2 hdrs [ "Nope" ] None "Sales" "sum")).StartsWith "ERR:Row field not found") true
+
+// end-to-end: the formula the dialog writes, evaluated + spilled into a model
+let srcModel =
+    { createEmpty 100 26 with
+        Cells =
+            ([ S "Region" ] @ ([ "East";"East";"West";"West";"East" ] |> List.map S) |> List.mapi (fun i v -> { Row=i; Col=0 }, cell v))
+            @ ([ S "Sales" ] @ ([ 100.;200.;150.;250.;50. ] |> List.map N) |> List.mapi (fun i v -> { Row=i; Col=2 }, cell v))
+            |> Map.ofList }
+let formula = fOf (buildFormula 0 0 5 2 [| S "Region"; S "x"; S "Sales" |] [ "Region" ] None "Sales" "sum")
+let placed = srcModel |> setCell { Row=0; Col=4 } (cell (CellValue.Formula(formula, CellValue.Empty)))
+let spilled = placed |> recalculateAllFormulas None None |> spillArrays None None
+check "dialog formula" formula "=GROUPBY(A2:A6,C2:C6,\"sum\")"
+check "spilled east"  (match getCell { Row=0; Col=4 } spilled with Some c -> (match c.Value with CellValue.Formula(_,v) -> v | v -> v) | None -> CellValue.Empty) (S "East")
+check "spilled sum"   (getCellValue { Row=0; Col=5 } spilled) (N 350.0)   // East sum spilled to F1
+check "spilled grand" (getCellValue { Row=2; Col=5 } spilled) (N 750.0)   // Grand Total
 
 printfn ""
 printfn "Stage 13 pivot tests: %d passed, %d failed" pass fail

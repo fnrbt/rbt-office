@@ -1593,9 +1593,11 @@ let main argv =
         | [| "--dialogtest"; output |] ->
             // Render the Insert-Pivot dialog standalone (headless) — proves the
             // pivot UI's DialogSpec paints through the native shell.
-            let spec = RedBat.Spreadsheet.Ui.pivotTableDialog (fun _ -> true)
+            let samplePreview (_: RedBat.Spreadsheet.Ui.PivotUiRequest) =
+                "=GROUPBY(A2:A8,C2:C8,\"sum\")\nEast    470\nWest    700\nGrand Total    1170"
+            let spec = RedBat.Spreadsheet.Ui.pivotTableDialog samplePreview (fun _ -> true)
             let widget = Composit.Ui.OfficeShell.dialogPreview RedBat.Spreadsheet.Ui.chrome spec
-            let w, h = 560, 620
+            let w, h = 560, 780
             let backend = Raster.create()
             let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
             File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)

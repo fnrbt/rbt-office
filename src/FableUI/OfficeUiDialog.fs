@@ -121,6 +121,16 @@ let private renderField (values: Dictionary<string, Signal<string>>) (field: Dia
                 textR (fun () -> valueSignal.Value)
             ]
         ]
+    | DialogComputedField compute ->
+        // Live preview: recompute from every field's current value on change.
+        div [ cls "dlg-field"; cls "dlg-field-status" ] [
+            label [ cls "dlg-label" ] [ text field.Label ]
+            div [ cls "dlg-status"; cls "dlg-preview"; attr "data-testid" fieldTestId ] [
+                textR (fun () ->
+                    let vals = values |> Seq.map (fun kv -> kv.Key, kv.Value.Value) |> Map.ofSeq
+                    compute vals)
+            ]
+        ]
 
 let private renderButton (state: DialogState) (values: Dictionary<string, Signal<string>>) (btn: DialogButton) =
     let activate (_: Browser.Types.MouseEvent) =
