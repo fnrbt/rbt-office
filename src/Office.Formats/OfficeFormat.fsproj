@@ -7,6 +7,7 @@
     <Compile Include="src/XmlDsl.fs" />
     <Compile Include="src/OfficeDsl.fs" />
     <Compile Include="src/ZipInterop.fs" />
+    <Compile Include="src/VbaProject.fs" />
     <Compile Include="src/DocxReader.fs" />
     <Compile Include="src/DocumentProcessors.fs" />
     <Compile Include="src/XlsxReader.fs" />
