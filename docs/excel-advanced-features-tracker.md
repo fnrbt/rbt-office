@@ -291,8 +291,11 @@ first-class formula operands not confirmed. Later batch.
   `injectIntoXlsx` emit a **source-only** vbaProject.bin (Office recompiles from
   source). The editor loads macros from an opened `.xlsm` onto `model.Macros`.
   Tested by self round-trip + full `.xlsm` inject→extract→run (`stage20-vbabin`,
-  9 assertions). Real-Excel validation harness staged (`tools/vba/`:
-  `gen-macro-xlsm.vbs` + `validate-real-xlsm.sh`) — pending the parity VM.
+  9 assertions) **and verified against a real Excel-authored `.xlsm`**: the
+  reader recovers the exact module source from genuine Office output (p-code +
+  real OVBA compression) and it runs on our engine. Harness: `tools/vba/`
+  (`gen-macro-xlsm.vbs` + `validate-real-xlsm.sh`); needs an Active VM session
+  (`vm-rdp-keepalive.sh ensure`) and `AccessVBOM=1` in the Trust Center.
 - **Compile cache + bytecode persistence ✅** — `Vba.compileCached` (reuse the
   BytecodeProgram), `compileToBytes`/`runBytesOnModel` (our serialized p-code),
   builtin-name lowercasing hoisted to compile time.
