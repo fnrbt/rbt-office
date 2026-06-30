@@ -323,9 +323,7 @@ let private rememberRenderTimeTableStyle tables hasRenderTimeStyle =
           SourceTextCharCount = renderTimeTableSourceTextCharCountFor tableCount tables
           HasRenderTimeStyle = hasRenderTimeStyle }
     if not (renderTimeTableStyleCacheEntryRetainable entry) then
-        renderTimeTableStyleCache
-        |> List.filter (renderTimeTableStyleCacheEntryMatches tables >> not)
-        |> setRenderTimeTableStyleCache
+        ()
     else
         let trim entries =
             let rec loop keptCount keptTables keptSourceTextChars acc remaining =
@@ -2613,11 +2611,16 @@ let private tryGetStaticPaintItemsCache model =
         else
             ValueNone
 
+let private removeStaticPaintItemsCacheForModel model =
+    let mutable cached = Unchecked.defaultof<StaticPaintItemsCache>
+    if staticPaintItemsCacheByModel.TryGetValue(model, &cached) then
+        staticPaintItemsCache
+        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, model)))
+        |> setStaticPaintItemsCache
+
 let private rememberStaticPaintItemsCache (cache: StaticPaintItemsCache) =
     if not (staticPaintItemsCacheRetainable cache) then
-        staticPaintItemsCache
-        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
-        |> setStaticPaintItemsCache
+        removeStaticPaintItemsCacheForModel cache.Model
     else
         let mutable keptCount = 1
         let mutable keptItems = cache.TotalItemCount
@@ -2971,11 +2974,16 @@ let private tryGetViewportPaintItemsCache model =
         else
             ValueNone
 
+let private removeViewportPaintItemsCacheForModel model =
+    let mutable cached = Unchecked.defaultof<ViewportPaintItemsCache>
+    if viewportPaintItemsCacheByModel.TryGetValue(model, &cached) then
+        viewportPaintItemsCache
+        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, model)))
+        |> setViewportPaintItemsCache
+
 let private rememberViewportPaintItemsCache (cache: ViewportPaintItemsCache) =
     if not (viewportPaintItemsCacheRetainable cache) then
-        viewportPaintItemsCache
-        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
-        |> setViewportPaintItemsCache
+        removeViewportPaintItemsCacheForModel cache.Model
     else
         let mutable keptCount = 1
         let mutable keptItems = cache.TotalItemCount
