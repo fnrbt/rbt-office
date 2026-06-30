@@ -6321,6 +6321,8 @@ let private setDataBarApplyCache entries =
         let mutable existing = Unchecked.defaultof<DataBarApplyCache>
         if not (dataBarApplyCacheByCells.TryGetValue(entry.Cells, &existing)) then
             dataBarApplyCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells dataBarApplyFastSlots.Length
+            dataBarApplyFastSlots.[slot] <- entry
 
 let private setIconSetApplyCache entries =
     iconSetApplyCache <- entries
@@ -6330,6 +6332,8 @@ let private setIconSetApplyCache entries =
         let mutable existing = Unchecked.defaultof<IconSetApplyCache>
         if not (iconSetApplyCacheByCells.TryGetValue(entry.Cells, &existing)) then
             iconSetApplyCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells iconSetApplyFastSlots.Length
+            iconSetApplyFastSlots.[slot] <- entry
 
 let private setColorScaleApplyCache entries =
     colorScaleApplyCache <- entries
@@ -6339,6 +6343,8 @@ let private setColorScaleApplyCache entries =
         let mutable existing = Unchecked.defaultof<ColorScaleApplyCache>
         if not (colorScaleApplyCacheByCells.TryGetValue(entry.Cells, &existing)) then
             colorScaleApplyCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells colorScaleApplyFastSlots.Length
+            colorScaleApplyFastSlots.[slot] <- entry
 
 let private tryGetDataBarApplyCache cells =
     let slot = referenceSlot cells dataBarApplyFastSlots.Length
@@ -6382,6 +6388,27 @@ let private tryGetColorScaleApplyCache cells =
         else
             ValueNone
 
+let private removeDataBarApplyCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<DataBarApplyCache>
+    if dataBarApplyCacheByCells.TryGetValue(cells, &cached) then
+        dataBarApplyCache
+        |> List.filter (dataBarApplyCacheMatches cells >> not)
+        |> setDataBarApplyCache
+
+let private removeIconSetApplyCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<IconSetApplyCache>
+    if iconSetApplyCacheByCells.TryGetValue(cells, &cached) then
+        iconSetApplyCache
+        |> List.filter (iconSetApplyCacheMatches cells >> not)
+        |> setIconSetApplyCache
+
+let private removeColorScaleApplyCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<ColorScaleApplyCache>
+    if colorScaleApplyCacheByCells.TryGetValue(cells, &cached) then
+        colorScaleApplyCache
+        |> List.filter (colorScaleApplyCacheMatches cells >> not)
+        |> setColorScaleApplyCache
+
 let private dataBarApplyCacheRetainable (cached: DataBarApplyCache) =
     cached.Entries.Count > 0
     && cached.CellCount <= conditionalFormatApplyCacheMaxTotalCells
@@ -6401,9 +6428,7 @@ let private colorScaleApplyCacheRetainable (cached: ColorScaleApplyCache) =
 
 let private rememberDataBarApplyCache cached =
     if not (dataBarApplyCacheRetainable cached) then
-        dataBarApplyCache
-        |> List.filter (dataBarApplyCacheMatches cached.Cells >> not)
-        |> setDataBarApplyCache
+        removeDataBarApplyCacheForCells cached.Cells
     else
         let trim (entries: DataBarApplyCache list) =
             let rec loop keptCount keptCells keptSourceTextChars keptKeyChars (acc: DataBarApplyCache list) (remaining: DataBarApplyCache list) : DataBarApplyCache list =
@@ -6436,9 +6461,7 @@ let private rememberDataBarApplyCache cached =
 
 let private rememberIconSetApplyCache cached =
     if not (iconSetApplyCacheRetainable cached) then
-        iconSetApplyCache
-        |> List.filter (iconSetApplyCacheMatches cached.Cells >> not)
-        |> setIconSetApplyCache
+        removeIconSetApplyCacheForCells cached.Cells
     else
         let trim (entries: IconSetApplyCache list) =
             let rec loop keptCount keptCells keptSourceTextChars (acc: IconSetApplyCache list) (remaining: IconSetApplyCache list) : IconSetApplyCache list =
@@ -6463,9 +6486,7 @@ let private rememberIconSetApplyCache cached =
 
 let private rememberColorScaleApplyCache cached =
     if not (colorScaleApplyCacheRetainable cached) then
-        colorScaleApplyCache
-        |> List.filter (colorScaleApplyCacheMatches cached.Cells >> not)
-        |> setColorScaleApplyCache
+        removeColorScaleApplyCacheForCells cached.Cells
     else
         let trim (entries: ColorScaleApplyCache list) =
             let rec loop keptCount keptCells keptSourceTextChars keptKeyChars (acc: ColorScaleApplyCache list) (remaining: ColorScaleApplyCache list) : ColorScaleApplyCache list =
@@ -7086,6 +7107,8 @@ let private setImportCsvCache entries =
         let mutable existing = Unchecked.defaultof<ImportCsvCache>
         if not (importCsvCacheByInput.TryGetValue(key, &existing)) then
             importCsvCacheByInput.[key] <- entry
+            let slot = importCsvInputHash entry.CsvText entry.StartRow entry.StartCol cells &&& (importCsvFastSlots.Length - 1)
+            importCsvFastSlots.[slot] <- entry
     for entry in entries do
         addInput entry.SourceCells entry
         if not (obj.ReferenceEquals(entry.SourceCells, entry.ResultCells)) then
@@ -7105,6 +7128,14 @@ let private tryGetImportCsvCache csvText startRow startCol cells =
             ValueSome cached
         else
             ValueNone
+
+let private removeImportCsvCacheForSource csvText startRow startCol sourceCells =
+    let key = importCsvInputKey csvText startRow startCol sourceCells
+    let mutable cached = Unchecked.defaultof<ImportCsvCache>
+    if importCsvCacheByInput.TryGetValue(key, &cached) then
+        importCsvCache
+        |> List.filter (importCsvCacheSameSource csvText startRow startCol sourceCells >> not)
+        |> setImportCsvCache
 
 let private importCsvCacheRetainable (cached: ImportCsvCache) =
     cached.CsvLength <= importCsvCacheMaxTotalChars
@@ -7131,9 +7162,7 @@ let private importCsvRetainedCellCount (cached: ImportCsvCache) =
 
 let private rememberImportCsv cached =
     if not (importCsvCacheRetainable cached) then
-        importCsvCache
-        |> List.filter (importCsvCacheSameSource cached.CsvText cached.StartRow cached.StartCol cached.SourceCells >> not)
-        |> setImportCsvCache
+        removeImportCsvCacheForSource cached.CsvText cached.StartRow cached.StartCol cached.SourceCells
     else
         let trim entries =
             let rec loop keptCount keptChars keptCells keptSourceTextChars acc remaining =
@@ -7549,6 +7578,8 @@ let private setMergeLookupIndex entries =
         let mutable existing = Unchecked.defaultof<MergeLookupIndex>
         if not (mergeLookupIndexBySource.TryGetValue(entry.Source, &existing)) then
             mergeLookupIndexBySource.[entry.Source] <- entry
+            let slot = referenceSlot entry.Source mergeLookupFastSlots.Length
+            mergeLookupFastSlots.[slot] <- entry
 
 let private setMergeRangeIndex entries =
     mergeRangeIndex <- entries
@@ -7558,6 +7589,8 @@ let private setMergeRangeIndex entries =
         let mutable existing = Unchecked.defaultof<MergeRangeIndex>
         if not (mergeRangeIndexBySource.TryGetValue(entry.Source, &existing)) then
             mergeRangeIndexBySource.[entry.Source] <- entry
+            let slot = referenceSlot entry.Source mergeRangeFastSlots.Length
+            mergeRangeFastSlots.[slot] <- entry
 
 let private setMergeRangeOrderingCache entries =
     mergeRangeOrderingCache <- entries
@@ -7567,6 +7600,8 @@ let private setMergeRangeOrderingCache entries =
         let mutable existing = Unchecked.defaultof<MergeRangeOrderingCache>
         if not (mergeRangeOrderingCacheBySource.TryGetValue(entry.Source, &existing)) then
             mergeRangeOrderingCacheBySource.[entry.Source] <- entry
+            let slot = referenceSlot entry.Source mergeRangeOrderingFastSlots.Length
+            mergeRangeOrderingFastSlots.[slot] <- entry
 
 let private setMergeRangeQueryCache entries =
     mergeRangeQueryCache <- entries
@@ -7576,6 +7611,8 @@ let private setMergeRangeQueryCache entries =
         let mutable existing = Unchecked.defaultof<MergeRangeQueryCache>
         if not (mergeRangeQueryCacheBySource.TryGetValue(entry.Source, &existing)) then
             mergeRangeQueryCacheBySource.[entry.Source] <- entry
+            let slot = referenceSlot entry.Source mergeRangeQueryFastSlots.Length
+            mergeRangeQueryFastSlots.[slot] <- entry
 
 let private tryGetMergeLookupIndex merges =
     let slot = referenceSlot merges mergeLookupFastSlots.Length
@@ -7652,6 +7689,13 @@ let private mergeRangeQueryCacheRetainable (cached: MergeRangeQueryCache) =
     && cached.TotalResultCount <= mergeRangeQueryCacheMaxTotalResults
     && cached.SourceCount <= mergeRangeQueryCacheMaxTotalSourceMerges
 
+let private removeMergeRangeQueryCacheForSource merges =
+    let mutable cached = Unchecked.defaultof<MergeRangeQueryCache>
+    if mergeRangeQueryCacheBySource.TryGetValue(merges, &cached) then
+        mergeRangeQueryCache
+        |> List.filter (mergeRangeQueryCacheMatches merges >> not)
+        |> setMergeRangeQueryCache
+
 let private rememberMergeLookupIndex cached =
     (cached
      :: (mergeLookupIndex
@@ -7675,9 +7719,7 @@ let private rememberMergeRangeOrdering cached =
 
 let private rememberMergeRangeQueryCache cached =
     if not (mergeRangeQueryCacheRetainable cached) then
-        mergeRangeQueryCache
-        |> List.filter (mergeRangeQueryCacheMatches cached.Source >> not)
-        |> setMergeRangeQueryCache
+        removeMergeRangeQueryCacheForSource cached.Source
     else
         let mutable keptCount = 1
         let mutable keptResults = cached.TotalResultCount
