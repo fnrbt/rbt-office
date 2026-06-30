@@ -5434,7 +5434,7 @@ let private captionIdMetrics label doc =
         let addBookmarkId value =
             match value with
             | Some raw ->
-                match System.Int32.TryParse(raw) with
+                match System.Int32.TryParse(raw: string) with
                 | true, parsed -> maxBookmarkId <- max maxBookmarkId parsed
                 | false, _ -> ()
             | None -> ()
@@ -5442,7 +5442,7 @@ let private captionIdMetrics label doc =
             iterTextRunsInBlock block (fun run ->
                 match run.Style.FieldCode, run.Style.FieldResult with
                 | Some code, Some result when code.StartsWith(prefix) ->
-                    match System.Int32.TryParse(result) with
+                    match System.Int32.TryParse(result: string) with
                     | true, value ->
                         maxSequenceResult <- max maxSequenceResult value
                         match run.Style.BookmarkName with
@@ -5500,7 +5500,7 @@ let private bookmarkIdMetricsSourceTextCharCountFor sourceParagraphCount blocks 
 let private tryParseBookmarkId value =
     match value with
     | Some raw ->
-        match System.Int32.TryParse(raw) with
+        match System.Int32.TryParse(raw: string) with
         | true, parsed -> ValueSome parsed
         | false, _ -> ValueNone
     | None -> ValueNone
@@ -5612,7 +5612,7 @@ let private revisionIdMetricsSourceTextCharCountFor sourceParagraphCount blocks 
 let private tryParseRevisionId value =
     match value with
     | Some raw ->
-        match System.Int32.TryParse(raw) with
+        match System.Int32.TryParse(raw: string) with
         | true, parsed -> ValueSome parsed
         | false, _ -> ValueNone
     | None -> ValueNone

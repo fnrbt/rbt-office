@@ -42,12 +42,9 @@
   <Project Path="../pdf/FsPdf.fsproj" />
   <Project Path="../renderer/Renderer.fsproj" />
   <Project Path="../text/bidi/Bidi.Core.fsproj" />
-  <Project Path="../text/bidi/Bidi.fsproj" />
   <Project Path="../text/engine/Text.Engine.fsproj" />
   <Project Path="../text/opentype/OpenType.Core.fsproj" />
-  <Project Path="../text/opentype/OpenType.fsproj" />
   <Project Path="../text/shaper/Shaper.Core.fsproj" />
   <Project Path="../text/unicode/src/Unicode/Unicode.Core.fsproj" />
-  <Project Path="../text/unicode/src/Unicode/Unicode.fsproj" />
   <Project Path="../widgets/Widgets.fsproj" />
 </Solution>

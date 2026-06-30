@@ -4674,7 +4674,25 @@ let private caseInsensitiveIdentityReplacementWouldChange (findText: string) (cu
     let mutable start = 0
     let mutable foundChangedMatch = false
     while not foundChangedMatch && start <= currentText.Length - findText.Length do
+#if FABLE_COMPILER
+        let mutable matchIndex = -1
+        let mutable candidate = start
+        while matchIndex < 0 && candidate <= currentText.Length - findText.Length do
+            let mutable offset = 0
+            let mutable matches = true
+            while matches && offset < findText.Length do
+                let actual = currentText.[candidate + offset]
+                let expected = findText.[offset]
+                if actual <> expected && Char.ToUpperInvariant actual <> Char.ToUpperInvariant expected then
+                    matches <- false
+                offset <- offset + 1
+            if matches then
+                matchIndex <- candidate
+            else
+                candidate <- candidate + 1
+#else
         let matchIndex = currentText.IndexOf(findText, start, comparison)
+#endif
         if matchIndex < 0 then
             start <- currentText.Length + 1
         else
@@ -6244,8 +6262,9 @@ let validateEdit (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel
         | Result.Ok() -> Result.Ok()
         | Result.Error def -> Result.Error(dv.ErrorMessage |> Option.defaultValue def)
 
-let private parseCSVRows (csvText: string): ResizeArray<string[]> =
-    let rows = ResizeArray<string[]>()
+/// Parse CSV string to list of rows
+let parseCSV (csvText: string): string list list =
+    let rows = ResizeArray<string list>()
     let mutable row = ResizeArray<string>()
     let cell = System.Text.StringBuilder()
     let mutable inQuotes = false
@@ -6257,7 +6276,7 @@ let private parseCSVRows (csvText: string): ResizeArray<string[]> =
 
     let finishRow () =
         finishCell()
-        rows.Add(row.ToArray())
+        rows.Add(resizeArrayToList row)
         row <- ResizeArray<string>()
 
     while i < csvText.Length do
@@ -6290,7 +6309,7 @@ let private parseCSVRows (csvText: string): ResizeArray<string[]> =
     if cell.Length > 0 || row.Count > 0 then
         finishRow()
 
-    rows
+    resizeArrayToList rows
 
 type private ImportCsvCache = {
     CsvText: string
@@ -6388,11 +6407,6 @@ let private rememberImportCsv cached =
              :: (importCsvCache
                  |> List.filter (importCsvCacheSameSource cached.CsvText cached.StartRow cached.StartCol cached.SourceCells >> not)))
             |> trim
-
-/// Parse CSV string to list of rows
-let parseCSV (csvText: string): string list list =
-    let rows = parseCSVRows csvText
-    List.init rows.Count (fun i -> arrayToList rows.[i])
 
 let private importCSVWithOptionalChanges (captureChanges: bool) (useCache: bool) (csvText: string) (startRow: int) (startCol: int) (model: SpreadsheetModel): SpreadsheetModel * ImportCsvChanges option =
     let cached =
