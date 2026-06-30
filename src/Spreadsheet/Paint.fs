@@ -12,6 +12,10 @@ let private resizeArrayToList (items: ResizeArray<'T>) =
         result <- items.[i] :: result
     result
 
+let private clearArray (items: 'T array) =
+    for i = 0 to items.Length - 1 do
+        items.[i] <- Unchecked.defaultof<'T>
+
 type Color = string
 
 type TextAlign =
@@ -1859,12 +1863,22 @@ type private StaticPaintItemsCache = {
 }
 
 let mutable private staticPaintItemsCache: StaticPaintItemsCache list = []
+let private spreadsheetModelReferenceComparer =
+    { new IEqualityComparer<SpreadsheetModel> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = RuntimeHelpers.GetHashCode(value) }
+let private staticPaintItemsCacheByModel =
+    Dictionary<SpreadsheetModel, StaticPaintItemsCache>(spreadsheetModelReferenceComparer)
+let private staticPaintItemsFastSlots = Array.zeroCreate<StaticPaintItemsCache> 256
 let private staticPaintItemsCacheMaxEntries = 64
 let private staticPaintItemsCacheMaxModels = 64
 let private staticPaintItemsCacheMaxTotalItems = 200000
 let private staticPaintItemsCacheMaxTotalItemTextChars = 5000000
 let private staticPaintItemsCacheMaxTotalSourceItems = 200000
 let private staticPaintItemsCacheMaxTotalSourceTextChars = 5000000
+
+let private spreadsheetModelSlot (model: SpreadsheetModel) slotCount =
+    RuntimeHelpers.GetHashCode(model) &&& (slotCount - 1)
 
 let private paintAddCapped limit value total =
     if total > limit then total
@@ -2404,9 +2418,33 @@ let private staticPaintItemsCacheRetainable (cache: StaticPaintItemsCache) =
     && cache.SourceItemCount <= staticPaintItemsCacheMaxTotalSourceItems
     && cache.SourceTextCharCount <= staticPaintItemsCacheMaxTotalSourceTextChars
 
+let private setStaticPaintItemsCache entries =
+    staticPaintItemsCache <- entries
+    staticPaintItemsCacheByModel.Clear()
+    clearArray staticPaintItemsFastSlots
+    for entry in entries do
+        staticPaintItemsCacheByModel.[entry.Model] <- entry
+        staticPaintItemsFastSlots.[spreadsheetModelSlot entry.Model staticPaintItemsFastSlots.Length] <- entry
+
+let private tryGetStaticPaintItemsCache model =
+    let slot = spreadsheetModelSlot model staticPaintItemsFastSlots.Length
+    let fast = staticPaintItemsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null)) && obj.ReferenceEquals(fast.Model, model) then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<StaticPaintItemsCache>
+        if staticPaintItemsCacheByModel.TryGetValue(model, &cached)
+           && obj.ReferenceEquals(cached.Model, model) then
+            staticPaintItemsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private rememberStaticPaintItemsCache (cache: StaticPaintItemsCache) =
     if not (staticPaintItemsCacheRetainable cache) then
-        staticPaintItemsCache <- staticPaintItemsCache |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+        staticPaintItemsCache
+        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+        |> setStaticPaintItemsCache
     else
         let mutable keptCount = 1
         let mutable keptItems = cache.TotalItemCount
@@ -2435,7 +2473,7 @@ let private rememberStaticPaintItemsCache (cache: StaticPaintItemsCache) =
                     Some candidate
                 else
                     None)
-        staticPaintItemsCache <- cache :: retained
+        setStaticPaintItemsCache (cache :: retained)
 
 let private iterPaintItemsPrepared (model: SpreadsheetModel) (viewport: Viewport) (emit: PaintItem -> unit) =
     emit (FillRect ({ X = 0.0; Y = 0.0; Width = viewport.Width; Height = viewport.Height }, "#ffffff"))
@@ -2456,8 +2494,8 @@ let iterPaintItems (model: SpreadsheetModel) (viewport: Viewport) (emit: PaintIt
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
     let model = model |> withFilterRowHeights
     let key = staticPaintGeometryKey viewport
-    match staticPaintItemsCache |> List.tryFind (fun cached -> obj.ReferenceEquals(cached.Model, model)) with
-    | Some cached when staticPaintItemsCacheRetainable cached ->
+    match tryGetStaticPaintItemsCache model with
+    | ValueSome cached when staticPaintItemsCacheRetainable cached ->
         let mutable entry = Unchecked.defaultof<StaticPaintItemsCacheEntry>
         if cached.Entries.TryGetValue(key, &entry) && sameMeasurer entry.Measurer viewport.Measurer then
             entry.Items
@@ -2477,12 +2515,12 @@ let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem li
                 removeStaticPaintItemsCacheEntry key cached
             rememberStaticPaintItemsCache cached
             items
-    | Some cached ->
+    | ValueSome cached ->
         rememberStaticPaintItemsCache cached
         let values = ResizeArray<PaintItem>(estimatedPaintItemCount model viewport)
         iterPaintItemsPrepared model viewport values.Add
         resizeArrayToList values
-    | None ->
+    | ValueNone ->
         let values = ResizeArray<PaintItem>(estimatedPaintItemCount model viewport)
         iterPaintItemsPrepared model viewport values.Add
         let itemCount = values.Count
@@ -2657,6 +2695,9 @@ type private ViewportPaintItemsCache = {
 }
 
 let mutable private viewportPaintItemsCache: ViewportPaintItemsCache list = []
+let private viewportPaintItemsCacheByModel =
+    Dictionary<SpreadsheetModel, ViewportPaintItemsCache>(spreadsheetModelReferenceComparer)
+let private viewportPaintItemsFastSlots = Array.zeroCreate<ViewportPaintItemsCache> 256
 let private viewportPaintItemsCacheMaxEntries = 64
 let private viewportPaintItemsCacheMaxModels = 64
 let private viewportPaintItemsCacheMaxTotalItems = 200000
@@ -2735,9 +2776,33 @@ let private viewportPaintItemsCacheRetainable (cache: ViewportPaintItemsCache) =
     && cache.SourceItemCount <= viewportPaintItemsCacheMaxTotalSourceItems
     && cache.SourceTextCharCount <= viewportPaintItemsCacheMaxTotalSourceTextChars
 
+let private setViewportPaintItemsCache entries =
+    viewportPaintItemsCache <- entries
+    viewportPaintItemsCacheByModel.Clear()
+    clearArray viewportPaintItemsFastSlots
+    for entry in entries do
+        viewportPaintItemsCacheByModel.[entry.Model] <- entry
+        viewportPaintItemsFastSlots.[spreadsheetModelSlot entry.Model viewportPaintItemsFastSlots.Length] <- entry
+
+let private tryGetViewportPaintItemsCache model =
+    let slot = spreadsheetModelSlot model viewportPaintItemsFastSlots.Length
+    let fast = viewportPaintItemsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null)) && obj.ReferenceEquals(fast.Model, model) then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<ViewportPaintItemsCache>
+        if viewportPaintItemsCacheByModel.TryGetValue(model, &cached)
+           && obj.ReferenceEquals(cached.Model, model) then
+            viewportPaintItemsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private rememberViewportPaintItemsCache (cache: ViewportPaintItemsCache) =
     if not (viewportPaintItemsCacheRetainable cache) then
-        viewportPaintItemsCache <- viewportPaintItemsCache |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+        viewportPaintItemsCache
+        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+        |> setViewportPaintItemsCache
     else
         let mutable keptCount = 1
         let mutable keptItems = cache.TotalItemCount
@@ -2766,12 +2831,12 @@ let private rememberViewportPaintItemsCache (cache: ViewportPaintItemsCache) =
                     Some candidate
                 else
                     None)
-        viewportPaintItemsCache <- cache :: retained
+        setViewportPaintItemsCache (cache :: retained)
 
 let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): ViewportPaintItem list =
     let key = viewportPaintGeometryKey viewport
-    match viewportPaintItemsCache |> List.tryFind (fun cached -> obj.ReferenceEquals(cached.Model, model)) with
-    | Some cached when viewportPaintItemsCacheRetainable cached ->
+    match tryGetViewportPaintItemsCache model with
+    | ValueSome cached when viewportPaintItemsCacheRetainable cached ->
         let mutable entry = Unchecked.defaultof<ViewportPaintItemsCacheEntry>
         if cached.Entries.TryGetValue(key, &entry) && sameMeasurer entry.Measurer viewport.Measurer then
             entry.Items
@@ -2791,12 +2856,12 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                 removeViewportPaintItemsCacheEntry key cached
             rememberViewportPaintItemsCache cached
             items
-    | Some cached ->
+    | ValueSome cached ->
         rememberViewportPaintItemsCache cached
         let items = ResizeArray<ViewportPaintItem>(estimatedPaintItemCount model viewport)
         iterViewportPaintItemsUncached model viewport (fun zone item -> items.Add { Zone = zone; Item = item })
         resizeArrayToList items
-    | _ ->
+    | ValueNone ->
         let items = ResizeArray<ViewportPaintItem>(estimatedPaintItemCount model viewport)
         iterViewportPaintItemsUncached model viewport (fun zone item -> items.Add { Zone = zone; Item = item })
         let itemCount = items.Count
