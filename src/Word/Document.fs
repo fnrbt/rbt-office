@@ -872,6 +872,8 @@ let private setBookmarkInfoCache entries =
         let mutable existing = Unchecked.defaultof<BookmarkInfoCache>
         if not (bookmarkInfoCacheByBlocks.TryGetValue(entry.BookmarkSourceBlocks, &existing)) then
             bookmarkInfoCacheByBlocks.[entry.BookmarkSourceBlocks] <- entry
+            let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(entry.BookmarkSourceBlocks) &&& (bookmarkInfoFastSlots.Length - 1)
+            bookmarkInfoFastSlots.[slot] <- entry
 
 let private setContentControlInfoCache entries =
     contentControlInfoCache <- entries
@@ -881,6 +883,8 @@ let private setContentControlInfoCache entries =
         let mutable existing = Unchecked.defaultof<ContentControlInfoCache>
         if not (contentControlInfoCacheByBlocks.TryGetValue(entry.ContentControlSourceBlocks, &existing)) then
             contentControlInfoCacheByBlocks.[entry.ContentControlSourceBlocks] <- entry
+            let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(entry.ContentControlSourceBlocks) &&& (contentControlInfoFastSlots.Length - 1)
+            contentControlInfoFastSlots.[slot] <- entry
 
 let private setCommentInfoCache entries =
     commentInfoCache <- entries
@@ -890,6 +894,8 @@ let private setCommentInfoCache entries =
         let mutable existing = Unchecked.defaultof<CommentInfoCache>
         if not (commentInfoCacheByBlocks.TryGetValue(entry.CommentSourceBlocks, &existing)) then
             commentInfoCacheByBlocks.[entry.CommentSourceBlocks] <- entry
+            let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(entry.CommentSourceBlocks) &&& (commentInfoFastSlots.Length - 1)
+            commentInfoFastSlots.[slot] <- entry
 
 let private documentInfoSlot blocks slotCount =
     System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks) &&& (slotCount - 1)
@@ -935,6 +941,27 @@ let private tryGetCommentInfoCache blocks =
             ValueSome cached
         else
             ValueNone
+
+let private removeBookmarkInfoCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<BookmarkInfoCache>
+    if bookmarkInfoCacheByBlocks.TryGetValue(blocks, &cached) then
+        bookmarkInfoCache
+        |> List.filter (bookmarkInfoCacheMatches blocks >> not)
+        |> setBookmarkInfoCache
+
+let private removeContentControlInfoCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<ContentControlInfoCache>
+    if contentControlInfoCacheByBlocks.TryGetValue(blocks, &cached) then
+        contentControlInfoCache
+        |> List.filter (contentControlInfoCacheMatches blocks >> not)
+        |> setContentControlInfoCache
+
+let private removeCommentInfoCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<CommentInfoCache>
+    if commentInfoCacheByBlocks.TryGetValue(blocks, &cached) then
+        commentInfoCache
+        |> List.filter (commentInfoCacheMatches blocks >> not)
+        |> setCommentInfoCache
 
 let private documentInfoCacheRetainable infoCount blockCount sourceTextCharCount entry =
     infoCount entry <= documentInfoCacheMaxTotalInfos
@@ -1094,9 +1121,7 @@ let private trimDocumentInfoCache infoCount blockCount sourceTextCharCount entri
 
 let private rememberBookmarkInfos cached =
     if not (bookmarkInfoCacheRetainable cached) then
-        bookmarkInfoCache
-        |> List.filter (bookmarkInfoCacheMatches cached.BookmarkSourceBlocks >> not)
-        |> setBookmarkInfoCache
+        removeBookmarkInfoCacheForBlocks cached.BookmarkSourceBlocks
     else
         (cached
          :: (bookmarkInfoCache
@@ -1106,9 +1131,7 @@ let private rememberBookmarkInfos cached =
 
 let private rememberContentControlInfos cached =
     if not (contentControlInfoCacheRetainable cached) then
-        contentControlInfoCache
-        |> List.filter (contentControlInfoCacheMatches cached.ContentControlSourceBlocks >> not)
-        |> setContentControlInfoCache
+        removeContentControlInfoCacheForBlocks cached.ContentControlSourceBlocks
     else
         (cached
          :: (contentControlInfoCache
@@ -1118,9 +1141,7 @@ let private rememberContentControlInfos cached =
 
 let private rememberCommentInfos cached =
     if not (commentInfoCacheRetainable cached) then
-        commentInfoCache
-        |> List.filter (commentInfoCacheMatches cached.CommentSourceBlocks >> not)
-        |> setCommentInfoCache
+        removeCommentInfoCacheForBlocks cached.CommentSourceBlocks
     else
         (cached
          :: (commentInfoCache
@@ -1339,6 +1360,8 @@ let private setRevisionInfoCache entries =
         let mutable existing = Unchecked.defaultof<RevisionInfoCache>
         if not (revisionInfoCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
             revisionInfoCacheByBlocks.[entry.SourceBlocks] <- entry
+            let slot = documentInfoSlot entry.SourceBlocks revisionInfoFastSlots.Length
+            revisionInfoFastSlots.[slot] <- entry
 
 let private tryGetRevisionInfoCache blocks =
     let slot = documentInfoSlot blocks revisionInfoFastSlots.Length
@@ -1353,6 +1376,13 @@ let private tryGetRevisionInfoCache blocks =
             ValueSome cached
         else
             ValueNone
+
+let private removeRevisionInfoCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<RevisionInfoCache>
+    if revisionInfoCacheByBlocks.TryGetValue(blocks, &cached) then
+        revisionInfoCache
+        |> List.filter (revisionInfoCacheMatches blocks >> not)
+        |> setRevisionInfoCache
 
 let private revisionInfoCacheRetainable (cached: RevisionInfoCache) =
     cached.InfoCount <= revisionInfoCacheMaxTotalInfos
@@ -1377,9 +1407,7 @@ let private revisionInfoSourceTextCharCountFor infoCount sourceParagraphCount bl
 
 let private rememberRevisionInfos cached =
     if not (revisionInfoCacheRetainable cached) then
-        revisionInfoCache
-        |> List.filter (revisionInfoCacheMatches cached.SourceBlocks >> not)
-        |> setRevisionInfoCache
+        removeRevisionInfoCacheForBlocks cached.SourceBlocks
     else
         let trim entries =
             let rec loop keptCount keptInfos keptBlocks keptSourceTextChars acc remaining =
@@ -1437,6 +1465,8 @@ let private setDocumentTextCache entries =
         let mutable existing = Unchecked.defaultof<DocumentTextCache>
         if not (documentTextCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
             documentTextCacheByBlocks.[entry.SourceBlocks] <- entry
+            let slot = documentInfoSlot entry.SourceBlocks documentTextFastSlots.Length
+            documentTextFastSlots.[slot] <- entry
 
 let private tryGetDocumentTextCache blocks =
     let slot = documentInfoSlot blocks documentTextFastSlots.Length
@@ -1554,6 +1584,8 @@ let private setSelectionTextCache entries =
         let mutable existing = Unchecked.defaultof<SelectionTextCache>
         if not (selectionTextCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
             selectionTextCacheByBlocks.[entry.SourceBlocks] <- entry
+            let slot = documentInfoSlot entry.SourceBlocks selectionTextFastSlots.Length
+            selectionTextFastSlots.[slot] <- entry
 
 let private tryGetSelectionTextCache blocks =
     let slot = documentInfoSlot blocks selectionTextFastSlots.Length
@@ -1568,6 +1600,13 @@ let private tryGetSelectionTextCache blocks =
             ValueSome cached
         else
             ValueNone
+
+let private removeSelectionTextCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<SelectionTextCache>
+    if selectionTextCacheByBlocks.TryGetValue(blocks, &cached) then
+        selectionTextCache
+        |> List.filter (selectionTextCacheMatches blocks >> not)
+        |> setSelectionTextCache
 
 let private selectionTextSourceParagraphCountFor textLength blocks =
     if textLength > selectionTextCacheMaxTotalChars then
@@ -1594,9 +1633,7 @@ let private selectionTextCacheWithinBudget (cached: SelectionTextCache) =
 
 let private rememberSelectionTextCache cached =
     if not (selectionTextCacheWithinBudget cached) then
-        selectionTextCache
-        |> List.filter (selectionTextCacheMatches cached.SourceBlocks >> not)
-        |> setSelectionTextCache
+        removeSelectionTextCacheForBlocks cached.SourceBlocks
     else
         let mutable keptCount = 1
         let mutable keptChars = max 1 cached.TotalChars
