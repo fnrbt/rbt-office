@@ -722,6 +722,8 @@ module API =
             let mutable existing = Unchecked.defaultof<ParagraphMapCache>
             if not (paragraphMapCacheByBlocks.TryGetValue(entry.CachedBlocks, &existing)) then
                 paragraphMapCacheByBlocks.[entry.CachedBlocks] <- entry
+                let slot = referenceSlot entry.CachedBlocks paragraphMapFastSlots.Length
+                paragraphMapFastSlots.[slot] <- entry
 
     let private setParagraphContextCache entries =
         paragraphContextCache <- entries
@@ -731,6 +733,8 @@ module API =
             let mutable existing = Unchecked.defaultof<ParagraphContextCache>
             if not (paragraphContextCacheByBlocks.TryGetValue(entry.CachedBlocks, &existing)) then
                 paragraphContextCacheByBlocks.[entry.CachedBlocks] <- entry
+                let slot = referenceSlot entry.CachedBlocks paragraphContextFastSlots.Length
+                paragraphContextFastSlots.[slot] <- entry
 
     let private setSectionNumberCache entries =
         sectionNumberCache <- entries
@@ -740,6 +744,8 @@ module API =
             let mutable existing = Unchecked.defaultof<SectionNumberCache>
             if not (sectionNumberCacheByBlocks.TryGetValue(entry.CachedBlocks, &existing)) then
                 sectionNumberCacheByBlocks.[entry.CachedBlocks] <- entry
+                let slot = referenceSlot entry.CachedBlocks sectionNumberFastSlots.Length
+                sectionNumberFastSlots.[slot] <- entry
 
     let private tryGetParagraphMapCache blocks =
         let slot = referenceSlot blocks paragraphMapFastSlots.Length
@@ -783,6 +789,27 @@ module API =
             else
                 ValueNone
 
+    let private removeParagraphMapCacheForBlocks blocks =
+        let mutable cached = Unchecked.defaultof<ParagraphMapCache>
+        if paragraphMapCacheByBlocks.TryGetValue(blocks, &cached) then
+            paragraphMapCache
+            |> List.filter (paragraphMapCacheMatches blocks >> not)
+            |> setParagraphMapCache
+
+    let private removeParagraphContextCacheForBlocks blocks =
+        let mutable cached = Unchecked.defaultof<ParagraphContextCache>
+        if paragraphContextCacheByBlocks.TryGetValue(blocks, &cached) then
+            paragraphContextCache
+            |> List.filter (paragraphContextCacheMatches blocks >> not)
+            |> setParagraphContextCache
+
+    let private removeSectionNumberCacheForBlocks blocks =
+        let mutable cached = Unchecked.defaultof<SectionNumberCache>
+        if sectionNumberCacheByBlocks.TryGetValue(blocks, &cached) then
+            sectionNumberCache
+            |> List.filter (sectionNumberCacheMatches blocks >> not)
+            |> setSectionNumberCache
+
     let private wordApiCacheRetainable entryCount sourceParagraphCount sourceTextCharCount =
         entryCount <= wordApiCacheMaxTotalEntries
         && sourceParagraphCount <= wordApiCacheMaxTotalSourceParagraphs
@@ -822,9 +849,7 @@ module API =
 
     let private rememberParagraphMapCache (cached: ParagraphMapCache) =
         if not (paragraphMapCacheRetainable cached) then
-            paragraphMapCache
-            |> List.filter (paragraphMapCacheMatches cached.CachedBlocks >> not)
-            |> setParagraphMapCache
+            removeParagraphMapCacheForBlocks cached.CachedBlocks
         else
             let retained =
                 paragraphMapCache
@@ -842,9 +867,7 @@ module API =
 
     let private rememberParagraphContextCache (cached: ParagraphContextCache) =
         if not (paragraphContextCacheRetainable cached) then
-            paragraphContextCache
-            |> List.filter (paragraphContextCacheMatches cached.CachedBlocks >> not)
-            |> setParagraphContextCache
+            removeParagraphContextCacheForBlocks cached.CachedBlocks
         else
             let retained =
                 paragraphContextCache
@@ -862,9 +885,7 @@ module API =
 
     let private rememberSectionNumberCache (cached: SectionNumberCache) =
         if not (sectionNumberCacheRetainable cached) then
-            sectionNumberCache
-            |> List.filter (sectionNumberCacheMatches cached.CachedBlocks >> not)
-            |> setSectionNumberCache
+            removeSectionNumberCacheForBlocks cached.CachedBlocks
         else
             let retained =
                 sectionNumberCache
