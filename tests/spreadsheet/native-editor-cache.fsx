@@ -360,6 +360,36 @@ else
          && usedBoundsTotal = (usedBoundsRows - 1 + 11) * 20)
         true
 
+let filterCacheCells =
+    [ { Row = 0; Col = 0 }, cell (CellValue.String "header")
+      { Row = 1; Col = 0 }, cell (CellValue.String "keep")
+      { Row = 2; Col = 0 }, cell (CellValue.String "hide")
+      { Row = 3; Col = 0 }, cell (CellValue.String "keep")
+      { Row = 4; Col = 1 }, cell (CellValue.String "other") ]
+    |> Map.ofList
+
+let filterCacheModel =
+    { createEmpty 5 2 with Cells = filterCacheCells }
+    |> applyFilter 0 (Set.ofList [ "keep" ])
+
+let filterCacheProjected = applyFilterRowHeights filterCacheModel
+let filterCacheProjectedAgain = applyFilterRowHeights filterCacheProjected
+check "native filter hidden rows value"
+    (filterCacheProjected.FilterHiddenRows |> Array.toList)
+    [ 2; 4 ]
+check "native filter hidden rows reuses"
+    (obj.ReferenceEquals(filterCacheProjected.FilterHiddenRows, filterCacheProjectedAgain.FilterHiddenRows))
+    true
+
+let filterCacheVisibleRows = getVisibleRows filterCacheProjected
+let filterCacheVisibleRowsAgain = getVisibleRows filterCacheProjected
+check "native visible rows cache value"
+    filterCacheVisibleRows
+    (Set.ofList [ 1; 3 ])
+check "native visible rows cache reuses"
+    (obj.ReferenceEquals(filterCacheVisibleRows, filterCacheVisibleRowsAgain))
+    true
+
 if isNull setFocus || isNull extendFocus || isNull startEditing || isNull commitEdit then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor helpers" "native editor reflection"

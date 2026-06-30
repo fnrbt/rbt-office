@@ -527,6 +527,55 @@ type MergedCell = {
     EndCol: int
 }
 
+[<Struct>]
+type private CellMergedReferenceKey = {
+    Cells: Map<CellAddress, CellData>
+    MergedCells: MergedCell list
+}
+
+[<Struct>]
+type private CellRowCountReferenceKey = {
+    Cells: Map<CellAddress, CellData>
+    RowCount: int
+}
+
+let private cellMapReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<Map<CellAddress, CellData>> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = referenceHash value }
+
+let private cellMergedReferenceHash cells mergedCells =
+    (referenceHash cells * 397) ^^^ referenceHash mergedCells
+
+let private cellMergedReferenceKey cells mergedCells : CellMergedReferenceKey =
+    { Cells = cells
+      MergedCells = mergedCells }
+
+let private cellRowCountReferenceHash cells rowCount =
+    (referenceHash cells * 397) ^^^ rowCount
+
+let private cellRowCountReferenceKey cells rowCount : CellRowCountReferenceKey =
+    { Cells = cells
+      RowCount = rowCount }
+
+let private cellMergedReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<CellMergedReferenceKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.Cells, right.Cells)
+            && obj.ReferenceEquals(left.MergedCells, right.MergedCells)
+
+        member _.GetHashCode(key) =
+            cellMergedReferenceHash key.Cells key.MergedCells }
+
+let private cellRowCountReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<CellRowCountReferenceKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.Cells, right.Cells)
+            && left.RowCount = right.RowCount
+
+        member _.GetHashCode(key) =
+            cellRowCountReferenceHash key.Cells key.RowCount }
+
 // ---------------------------------------------------------------------------
 // Print / page setup
 // ---------------------------------------------------------------------------
@@ -2629,6 +2678,9 @@ and private FilterHiddenRowsCacheEntry = {
 }
 
 let mutable private filterHiddenRowsCache: FilterHiddenRowsCache list = []
+let private filterHiddenRowsCacheBySource =
+    System.Collections.Generic.Dictionary<CellRowCountReferenceKey, FilterHiddenRowsCache>(cellRowCountReferenceComparer)
+let private filterHiddenRowsFastSlots = Array.zeroCreate<FilterHiddenRowsCache> 256
 let private filterHiddenRowsCacheMaxEntries = 64
 let private filterHiddenRowsCacheMaxSources = 64
 let private filterHiddenRowsCacheMaxRowCount = 2000000
@@ -2662,6 +2714,33 @@ let private filterHiddenRowsCacheMatches cells rowCount (cached: FilterHiddenRow
     obj.ReferenceEquals(cached.Cells, cells)
     && cached.RowCount = rowCount
 
+let private setFilterHiddenRowsCache entries =
+    filterHiddenRowsCache <- entries
+    filterHiddenRowsCacheBySource.Clear()
+    clearArray filterHiddenRowsFastSlots
+    for entry in entries do
+        let key = cellRowCountReferenceKey entry.Cells entry.RowCount
+        let mutable existing = Unchecked.defaultof<FilterHiddenRowsCache>
+        if not (filterHiddenRowsCacheBySource.TryGetValue(key, &existing)) then
+            filterHiddenRowsCacheBySource.[key] <- entry
+            let slot = cellRowCountReferenceHash entry.Cells entry.RowCount &&& (filterHiddenRowsFastSlots.Length - 1)
+            filterHiddenRowsFastSlots.[slot] <- entry
+
+let private tryGetFilterHiddenRowsCache cells rowCount =
+    let slot = cellRowCountReferenceHash cells rowCount &&& (filterHiddenRowsFastSlots.Length - 1)
+    let fast = filterHiddenRowsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && filterHiddenRowsCacheMatches cells rowCount fast then
+        ValueSome fast
+    else
+        let key = cellRowCountReferenceKey cells rowCount
+        let mutable cached = Unchecked.defaultof<FilterHiddenRowsCache>
+        if filterHiddenRowsCacheBySource.TryGetValue(key, &cached) then
+            filterHiddenRowsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private filterHiddenRowsCacheRetainable (cached: FilterHiddenRowsCache) =
     cached.Entries.Count > 0
     && cached.TotalRowCount <= filterHiddenRowsCacheMaxTotalRowCount
@@ -2684,7 +2763,9 @@ let private filterHiddenRowsSourceTextCharCountFor rowCount filterValues filterT
 
 let private rememberFilterHiddenRowsCache cached =
     if not (filterHiddenRowsCacheRetainable cached) then
-        filterHiddenRowsCache <- filterHiddenRowsCache |> List.filter (filterHiddenRowsCacheMatches cached.Cells cached.RowCount >> not)
+        filterHiddenRowsCache
+        |> List.filter (filterHiddenRowsCacheMatches cached.Cells cached.RowCount >> not)
+        |> setFilterHiddenRowsCache
     else
         let mutable keptCount = 1
         let mutable keptRows = cached.TotalRowCount
@@ -2717,7 +2798,8 @@ let private rememberFilterHiddenRowsCache cached =
                     Some candidate
                 else
                     None)
-        filterHiddenRowsCache <- cached :: retained
+        cached :: retained
+        |> setFilterHiddenRowsCache
 
 let private removeFilterHiddenRowsCacheEntry filters (cache: FilterHiddenRowsCache) =
     let mutable existing = Unchecked.defaultof<FilterHiddenRowsCacheEntry>
@@ -2778,8 +2860,8 @@ let private addFilterHiddenRowsCacheEntry filters (rows: int array) (cache: Filt
     addFilterHiddenRowsCacheEntryWithMetrics filters rows filterValues filterTextChars cache
 
 let private filterHiddenRows (model: SpreadsheetModel) =
-    match filterHiddenRowsCache |> List.tryFind (filterHiddenRowsCacheMatches model.Cells model.RowCount) with
-    | Some cached ->
+    match tryGetFilterHiddenRowsCache model.Cells model.RowCount with
+    | ValueSome cached ->
         let mutable entry = Unchecked.defaultof<FilterHiddenRowsCacheEntry>
         if cached.Entries.TryGetValue(model.Filters, &entry) then
             entry.Rows
@@ -2788,7 +2870,7 @@ let private filterHiddenRows (model: SpreadsheetModel) =
             addFilterHiddenRowsCacheEntry model.Filters rows cached
             rememberFilterHiddenRowsCache cached
             rows
-    | None ->
+    | ValueNone ->
         let rows = filterHiddenRowsUncached model
         let filterValues = filterValueCount model.Filters
         let filterTextChars =
@@ -2821,14 +2903,14 @@ let private filterHiddenRows (model: SpreadsheetModel) =
         rows
 
 let private tryFilterHiddenRowsCachedMetrics cells rowCount filters =
-    match filterHiddenRowsCache |> List.tryFind (filterHiddenRowsCacheMatches cells rowCount) with
-    | Some cached ->
+    match tryGetFilterHiddenRowsCache cells rowCount with
+    | ValueSome cached ->
         let mutable entry = Unchecked.defaultof<FilterHiddenRowsCacheEntry>
         if cached.Entries.TryGetValue(filters, &entry) then
             ValueSome (struct (cached.SourceTextCharCount, entry.FilterValueCount, entry.FilterTextCharCount))
         else
             ValueNone
-    | None ->
+    | ValueNone ->
         ValueNone
 
 let private intArraysEqual (left: int array) (right: int array) =
@@ -2844,13 +2926,13 @@ let private intArraysEqual (left: int array) (right: int array) =
         equal
 
 let private filterProjectionMatchesCurrent (model: SpreadsheetModel) =
-    match filterHiddenRowsCache |> List.tryFind (filterHiddenRowsCacheMatches model.Cells model.RowCount) with
-    | Some cached ->
+    match tryGetFilterHiddenRowsCache model.Cells model.RowCount with
+    | ValueSome cached ->
         let mutable entry = Unchecked.defaultof<FilterHiddenRowsCacheEntry>
         cached.Entries.TryGetValue(model.Filters, &entry)
             && (obj.ReferenceEquals(model.FilterHiddenRows, entry.Rows)
                 || intArraysEqual model.FilterHiddenRows entry.Rows)
-    | None -> false
+    | ValueNone -> false
 
 /// Apply filter to a column
 let applyFilter (col: int) (visibleValues: Set<string>) (model: SpreadsheetModel): SpreadsheetModel =
@@ -2957,6 +3039,9 @@ and private VisibleRowsCacheEntry = {
 }
 
 let mutable private visibleRowsCache: VisibleRowsCache list = []
+let private visibleRowsCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, VisibleRowsCache>(cellMapReferenceComparer)
+let private visibleRowsFastSlots = Array.zeroCreate<VisibleRowsCache> 256
 let private visibleRowsCacheMaxEntries = 64
 let private visibleRowsCacheMaxSources = 64
 let private visibleRowsCacheMaxRowCount = 200000
@@ -2970,6 +3055,31 @@ let private visibleRowsCacheMaxTotalFilterTextChars = 5000000
 
 let private visibleRowsCacheMatches cells (cached: VisibleRowsCache) =
     obj.ReferenceEquals(cached.Cells, cells)
+
+let private setVisibleRowsCache entries =
+    visibleRowsCache <- entries
+    visibleRowsCacheByCells.Clear()
+    clearArray visibleRowsFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<VisibleRowsCache>
+        if not (visibleRowsCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            visibleRowsCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells visibleRowsFastSlots.Length
+            visibleRowsFastSlots.[slot] <- entry
+
+let private tryGetVisibleRowsCache cells =
+    let slot = referenceSlot cells visibleRowsFastSlots.Length
+    let fast = visibleRowsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && visibleRowsCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<VisibleRowsCache>
+        if visibleRowsCacheByCells.TryGetValue(cells, &cached) then
+            visibleRowsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private visibleRowsCacheRetainable (cached: VisibleRowsCache) =
     cached.Entries.Count > 0
@@ -3019,7 +3129,9 @@ let private visibleRowsCacheMetricsFor rowCount cells sourceRowCount filters =
 
 let private rememberVisibleRowsCache cached =
     if not (visibleRowsCacheRetainable cached) then
-        visibleRowsCache <- visibleRowsCache |> List.filter (visibleRowsCacheMatches cached.Cells >> not)
+        visibleRowsCache
+        |> List.filter (visibleRowsCacheMatches cached.Cells >> not)
+        |> setVisibleRowsCache
     else
         let mutable keptCount = 1
         let mutable keptRows = cached.TotalRowCount
@@ -3052,7 +3164,8 @@ let private rememberVisibleRowsCache cached =
                     Some candidate
                 else
                     None)
-        visibleRowsCache <- cached :: retained
+        cached :: retained
+        |> setVisibleRowsCache
 
 let private removeVisibleRowsCacheEntry filters (cache: VisibleRowsCache) =
     let mutable existing = Unchecked.defaultof<VisibleRowsCacheEntry>
@@ -3113,22 +3226,22 @@ let private addVisibleRowsCacheEntry filters (rows: Set<int>) (cache: VisibleRow
     addVisibleRowsCacheEntryWithMetrics filters rows filterValues filterTextChars cache
 
 let private tryVisibleRowsCached filters cells =
-    match visibleRowsCache |> List.tryFind (visibleRowsCacheMatches cells) with
-    | Some cached ->
+    match tryGetVisibleRowsCache cells with
+    | ValueSome cached ->
         let mutable entry = Unchecked.defaultof<VisibleRowsCacheEntry>
         if cached.Entries.TryGetValue(filters, &entry) then ValueSome entry.Rows else ValueNone
-    | None -> ValueNone
+    | ValueNone -> ValueNone
 
 let private rememberVisibleRows (rows: Set<int>) (model: SpreadsheetModel) =
-    match visibleRowsCache |> List.tryFind (visibleRowsCacheMatches model.Cells) with
-    | Some cached ->
+    match tryGetVisibleRowsCache model.Cells with
+    | ValueSome cached ->
         let mutable entry = Unchecked.defaultof<VisibleRowsCacheEntry>
         if not (cached.Entries.TryGetValue(model.Filters, &entry)) then
             let struct (filterValues, filterTextChars, _) =
                 visibleRowsCacheMetricsFor rows.Count model.Cells model.RowCount model.Filters
             addVisibleRowsCacheEntryWithMetrics model.Filters rows filterValues filterTextChars cached
             rememberVisibleRowsCache cached
-    | None ->
+    | ValueNone ->
         let struct (filterValues, filterTextChars, sourceTextCharCount) =
             visibleRowsCacheMetricsFor rows.Count model.Cells model.RowCount model.Filters
         let entries = System.Collections.Generic.Dictionary<Map<int, ColumnFilter>, VisibleRowsCacheEntry>()
@@ -3230,8 +3343,8 @@ let getVisibleRowsHashSet (model: SpreadsheetModel): System.Collections.Generic.
 
 /// Get visible rows based on all active filters
 let getVisibleRows (model: SpreadsheetModel): Set<int> =
-    match visibleRowsCache |> List.tryFind (visibleRowsCacheMatches model.Cells) with
-    | Some cached ->
+    match tryGetVisibleRowsCache model.Cells with
+    | ValueSome cached ->
         let mutable entry = Unchecked.defaultof<VisibleRowsCacheEntry>
         if cached.Entries.TryGetValue(model.Filters, &entry) then
             entry.Rows
@@ -3239,7 +3352,7 @@ let getVisibleRows (model: SpreadsheetModel): Set<int> =
             let rows = collectVisibleRowsArray model |> Set.ofArray
             rememberVisibleRows rows model
             rows
-    | None ->
+    | ValueNone ->
         let rows = collectVisibleRowsArray model |> Set.ofArray
         rememberVisibleRows rows model
         rows
@@ -3922,33 +4035,6 @@ type private MaxUsedColumnCache = {
     SourceTextCharCount: int
     MaxColumn: int option
 }
-
-[<Struct>]
-type private CellMergedReferenceKey = {
-    Cells: Map<CellAddress, CellData>
-    MergedCells: MergedCell list
-}
-
-let private cellMapReferenceComparer =
-    { new System.Collections.Generic.IEqualityComparer<Map<CellAddress, CellData>> with
-        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
-        member _.GetHashCode(value) = referenceHash value }
-
-let private cellMergedReferenceHash cells mergedCells =
-    (referenceHash cells * 397) ^^^ referenceHash mergedCells
-
-let private cellMergedReferenceKey cells mergedCells : CellMergedReferenceKey =
-    { Cells = cells
-      MergedCells = mergedCells }
-
-let private cellMergedReferenceComparer =
-    { new System.Collections.Generic.IEqualityComparer<CellMergedReferenceKey> with
-        member _.Equals(left, right) =
-            obj.ReferenceEquals(left.Cells, right.Cells)
-            && obj.ReferenceEquals(left.MergedCells, right.MergedCells)
-
-        member _.GetHashCode(key) =
-            cellMergedReferenceHash key.Cells key.MergedCells }
 
 type private StructuralCellSourceTextCache = {
     Cells: Map<CellAddress, CellData>
