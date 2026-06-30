@@ -1670,6 +1670,13 @@ module Vba =
     }
 
     let mutable private documentTextCache: DocumentTextCache list = []
+    let private documentBlocksReferenceComparer =
+        { new IEqualityComparer<Doc.Block list> with
+            member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+            member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+    let private documentTextCacheByBlocks =
+        Dictionary<Doc.Block list, DocumentTextCache>(documentBlocksReferenceComparer)
+    let private documentTextFastSlots = Array.zeroCreate<DocumentTextCache> 256
     let private documentTextCacheMaxEntries = 64
     let private documentTextCacheMaxTotalChars = 5000000
     let private documentTextCacheMaxTotalSourceParagraphs = vbaSourceParagraphCountLimit
@@ -1677,6 +1684,44 @@ module Vba =
 
     let private documentTextCacheMatches blocks (cached: DocumentTextCache) =
         obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+    let private documentBlocksSlot blocks slotCount =
+        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks)
+        &&& (slotCount - 1)
+
+    let private documentTextCacheWithoutBlocks blocks =
+        let mutable cached = Unchecked.defaultof<DocumentTextCache>
+        if documentTextCacheByBlocks.TryGetValue(blocks, &cached)
+           && documentTextCacheMatches blocks cached then
+            documentTextCache
+            |> List.filter (documentTextCacheMatches blocks >> not)
+        else
+            documentTextCache
+
+    let private setDocumentTextCache entries =
+        documentTextCache <- entries
+        documentTextCacheByBlocks.Clear()
+        clearArray documentTextFastSlots
+        for entry in entries do
+            let mutable existing = Unchecked.defaultof<DocumentTextCache>
+            if not (documentTextCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+                documentTextCacheByBlocks.[entry.SourceBlocks] <- entry
+                documentTextFastSlots.[documentBlocksSlot entry.SourceBlocks documentTextFastSlots.Length] <- entry
+
+    let private tryGetDocumentTextCache blocks =
+        let slot = documentBlocksSlot blocks documentTextFastSlots.Length
+        let fast = documentTextFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && documentTextCacheMatches blocks fast then
+            ValueSome fast
+        else
+            let mutable cached = Unchecked.defaultof<DocumentTextCache>
+            if documentTextCacheByBlocks.TryGetValue(blocks, &cached)
+               && documentTextCacheMatches blocks cached then
+                documentTextFastSlots.[slot] <- cached
+                ValueSome cached
+            else
+                ValueNone
 
     let private documentTextSourceParagraphCountFor textLength doc =
         if textLength > documentTextCacheMaxTotalChars then
@@ -1711,16 +1756,16 @@ module Vba =
                     else
                         loop rest kept count totalChars totalBlocks totalSourceTextChars
             loop entries [] 0 0 0 0
-        documentTextCache <-
-            cached
-            :: (documentTextCache |> List.filter (documentTextCacheMatches cached.SourceBlocks >> not))
-            |> trim
+        cached
+        :: documentTextCacheWithoutBlocks cached.SourceBlocks
+        |> trim
+        |> setDocumentTextCache
 
     let private documentText (doc: Doc.Document) =
-        match documentTextCache |> List.tryFind (documentTextCacheMatches doc.Blocks) with
-        | Some cached ->
+        match tryGetDocumentTextCache doc.Blocks with
+        | ValueSome cached ->
             cached.Text
-        | None ->
+        | ValueNone ->
             let text = Doc.getText doc
             let sourceParagraphCount = documentTextSourceParagraphCountFor text.Length doc
             rememberDocumentTextCache {
@@ -1758,20 +1803,15 @@ module Vba =
     let private textStatisticsCacheMaxSources = 64
     let private textStatisticsCacheMaxTotalSourceParagraphs = vbaSourceParagraphCountLimit
     let private textStatisticsCacheMaxTotalSourceTextChars = vbaSourceTextCacheMaxTotalChars
-    let private textStatisticsBlocksComparer =
-        { new IEqualityComparer<Doc.Block list> with
-            member _.Equals(left, right) = obj.ReferenceEquals(left, right)
-            member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
     let private textStatisticsCacheByBlocks =
-        Dictionary<Doc.Block list, TextStatisticsCache>(textStatisticsBlocksComparer)
+        Dictionary<Doc.Block list, TextStatisticsCache>(documentBlocksReferenceComparer)
     let private textStatisticsFastSlots = Array.zeroCreate<TextStatisticsCache> 256
 
     let private textStatisticsCacheMatches blocks (cached: TextStatisticsCache) =
         obj.ReferenceEquals(cached.SourceBlocks, blocks)
 
     let private textStatisticsCacheSlot blocks =
-        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks)
-        &&& (textStatisticsFastSlots.Length - 1)
+        documentBlocksSlot blocks textStatisticsFastSlots.Length
 
     let private setTextStatisticsCache entries =
         textStatisticsCache <- entries

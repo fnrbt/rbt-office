@@ -61,6 +61,8 @@ let tryLoadWordFont =
     wordEditorType.GetMethod("tryLoadWordFont", staticBindingFlags)
 let wordFontCacheProperty =
     wordEditorType.GetProperty("wordFontCache", staticBindingFlags)
+let vbaDocumentText =
+    typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("documentText", BindingFlags.NonPublic ||| BindingFlags.Static)
 
 if isNull cachedLayouts then
     fail <- fail + 1
@@ -836,6 +838,34 @@ check "native date field no page map alloc"
     (dateFieldSw.Elapsed.TotalMilliseconds < 60.0
      && dateFieldAllocated < 6L * 1024L * 1024L)
     true
+
+if isNull vbaDocumentText then
+    fail <- fail + 1
+    printfn "FAIL %-34s expected private documentText method" "native vba text cache reflection"
+else
+    let vbaTextCacheDocs =
+        [| for docIndex in 0 .. 63 ->
+            { Doc.empty with
+                Blocks =
+                    [ for index in 0 .. 999 ->
+                        Doc.Paragraph (para (sprintf "native-vba-text-%02d-%04d" docIndex index) "alpha beta gamma delta") ] } |]
+
+    for doc in vbaTextCacheDocs do
+        vbaDocumentText.Invoke(null, [| box doc |]) |> ignore
+
+    let vbaTextCacheSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable vbaTextCacheTotal = 0L
+    for _pass in 1 .. 2000 do
+        for doc in vbaTextCacheDocs do
+            vbaTextCacheTotal <-
+                vbaTextCacheTotal
+                + int64 ((vbaDocumentText.Invoke(null, [| box doc |]) :?> string).Length)
+    vbaTextCacheSw.Stop()
+
+    check "native vba text cache many docs"
+        (vbaTextCacheSw.Elapsed.TotalMilliseconds < 80.0
+         && vbaTextCacheTotal > 0L)
+        true
 
 if isNull tryLoadWordFont || isNull wordFontCacheProperty then
     fail <- fail + 1
