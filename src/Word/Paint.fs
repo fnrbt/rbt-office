@@ -987,6 +987,14 @@ let private tryGetMarkupMarkerCommands paddingLeft layouts =
         else
             ValueNone
 
+let private removeMarkupMarkerCommandsCacheEntry paddingLeft layouts =
+    let key = markupMarkerCommandsCacheKey paddingLeft layouts
+    let mutable cached = Unchecked.defaultof<MarkupMarkerCommandsCacheEntry>
+    if markupMarkerCommandsCacheByKey.TryGetValue(key, &cached) then
+        markupMarkerCommandsCache.Entries
+        |> List.filter (markupMarkerCacheEntryMatches paddingLeft layouts >> not)
+        |> setMarkupMarkerCommandsCache
+
 let private markerOptionStringCharCount (value: string option) =
     match value with
     | Some value -> value.Length
@@ -1143,8 +1151,7 @@ let private rememberMarkupMarkerCommands paddingLeft layouts commandCount comman
         | candidate :: tail ->
             removeMatching (candidate :: acc) tail
     if not (markupMarkerCommandsCacheEntryRetainable entry) then
-        removeMatching [] markupMarkerCommandsCache.Entries
-        |> setMarkupMarkerCommandsCache
+        removeMarkupMarkerCommandsCacheEntry paddingLeft layouts
     else
         let trim entries =
             let rec loop keptCount keptCommands keptLayouts keptLayoutTextChars acc remaining =
@@ -3306,6 +3313,13 @@ let private tryGetLayoutLookupCache layouts =
         else
             ValueNone
 
+let private removeLayoutLookupCacheForLayouts layouts =
+    let mutable cached = Unchecked.defaultof<LayoutLookupCacheEntry>
+    if layoutLookupCacheByLayouts.TryGetValue(layouts, &cached) then
+        layoutLookupCache
+        |> List.filter (layoutLookupCacheEntryMatches layouts >> not)
+        |> setLayoutLookupCache
+
 let private rememberLayoutLookupCacheEntry entry =
     let rec removeMatching acc remaining =
         match remaining with
@@ -3315,8 +3329,7 @@ let private rememberLayoutLookupCacheEntry entry =
         | candidate :: tail ->
             removeMatching (candidate :: acc) tail
     if not (layoutLookupCacheEntryRetainable entry) then
-        removeMatching [] layoutLookupCache
-        |> setLayoutLookupCache
+        removeLayoutLookupCacheForLayouts entry.Layouts
     else
         let trim entries =
             let rec loop keptCount keptTotal keptTextChars acc remaining =
