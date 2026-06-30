@@ -1,6 +1,7 @@
 module RedBat.Word.Shapes
 
 open System
+open System.Collections.Generic
 open RedBat.Word.Document
 
 // Vector geometry for OOXML preset/custom shapes. `presetPath` maps a preset
@@ -153,17 +154,62 @@ type private PresetPathCacheEntry = {
     Path: PathSeg list
 }
 
+[<Struct>]
+type private PresetPathCacheKey = {
+    Preset: string
+    Width: float
+    Height: float
+}
+
 let mutable private presetPathCache: PresetPathCacheEntry list = []
+let private presetPathCacheByKey = Dictionary<PresetPathCacheKey, PresetPathCacheEntry>()
+let private presetPathFastSlots = Array.zeroCreate<PresetPathCacheEntry> 256
 let private presetPathCacheMaxEntries = 128
 let private presetPathCacheMaxTotalPresetChars = 1000000
 
-let private presetPathCacheMatches preset w h cached =
+let private presetPathCacheMatches preset w h (cached: PresetPathCacheEntry) =
     cached.Preset = preset && cached.Width = w && cached.Height = h
 
-let private rememberPresetPath entry =
+let private presetPathCacheKey preset w h : PresetPathCacheKey = {
+    Preset = preset
+    Width = w
+    Height = h
+}
+
+let private presetPathCacheKeyMatches (key: PresetPathCacheKey) (cached: PresetPathCacheEntry) =
+    cached.Preset = key.Preset && cached.Width = key.Width && cached.Height = key.Height
+
+let private presetPathCacheSlot (key: PresetPathCacheKey) slotCount =
+    hash key &&& (slotCount - 1)
+
+let private setPresetPathCache (entries: PresetPathCacheEntry list) =
+    presetPathCache <- entries
+    presetPathCacheByKey.Clear()
+    for i = 0 to presetPathFastSlots.Length - 1 do
+        presetPathFastSlots.[i] <- Unchecked.defaultof<PresetPathCacheEntry>
+    for entry in entries do
+        let key = presetPathCacheKey entry.Preset entry.Width entry.Height
+        presetPathCacheByKey.[key] <- entry
+        presetPathFastSlots.[presetPathCacheSlot key presetPathFastSlots.Length] <- entry
+
+let private tryGetPresetPathCache (key: PresetPathCacheKey) =
+    let slot = presetPathCacheSlot key presetPathFastSlots.Length
+    let fast = presetPathFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && presetPathCacheKeyMatches key fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<PresetPathCacheEntry>
+        if presetPathCacheByKey.TryGetValue(key, &cached) then
+            presetPathFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private rememberPresetPath (entry: PresetPathCacheEntry) =
     if entry.Preset.Length <= presetPathCacheMaxTotalPresetChars then
-        let trim entries =
-            let rec loop remaining kept count totalPresetChars =
+        let trim (entries: PresetPathCacheEntry list) =
+            let rec loop (remaining: PresetPathCacheEntry list) (kept: PresetPathCacheEntry list) count totalPresetChars =
                 match remaining with
                 | [] -> List.rev kept
                 | candidate :: rest ->
@@ -175,11 +221,11 @@ let private rememberPresetPath entry =
                     else
                         loop rest kept count totalPresetChars
             loop entries [] 0 0
-        presetPathCache <-
-            entry
-            :: (presetPathCache
-                |> List.filter (presetPathCacheMatches entry.Preset entry.Width entry.Height >> not))
-            |> trim
+        entry
+        :: (presetPathCache
+            |> List.filter (presetPathCacheMatches entry.Preset entry.Width entry.Height >> not))
+        |> trim
+        |> setPresetPathCache
 
 /// Presets we render as their true geometry (everything else uses the rect
 /// fallback). Used only for diagnostics/coverage reporting.
@@ -246,9 +292,10 @@ let private presetPathUncached (preset: string) (w: float) (h: float) : PathSeg 
     | _ -> rectPath w h
 
 let presetPath (preset: string) (w: float) (h: float) : PathSeg list =
-    match presetPathCache |> List.tryFind (presetPathCacheMatches preset w h) with
-    | Some cached -> cached.Path
-    | None ->
+    let key = presetPathCacheKey preset w h
+    match tryGetPresetPathCache key with
+    | ValueSome cached -> cached.Path
+    | ValueNone ->
         let path = presetPathUncached preset w h
         rememberPresetPath { Preset = preset; Width = w; Height = h; Path = path }
         path
