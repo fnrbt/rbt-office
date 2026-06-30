@@ -1392,6 +1392,8 @@ type private DocumentTextCache = {
 }
 
 let mutable private documentTextCache: DocumentTextCache list = []
+let private documentTextCacheByBlocks = Dictionary<Block list, DocumentTextCache>(documentInfoBlocksComparer)
+let private documentTextFastSlots = Array.zeroCreate<DocumentTextCache> 256
 let private documentTextCacheMaxEntries = 64
 let private documentTextCacheMaxTotalChars = 5000000
 let private documentTextCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
@@ -1399,6 +1401,29 @@ let private documentTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMa
 
 let private documentTextCacheMatches blocks (cached: DocumentTextCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private setDocumentTextCache entries =
+    documentTextCache <- entries
+    documentTextCacheByBlocks.Clear()
+    clearArray documentTextFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<DocumentTextCache>
+        if not (documentTextCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            documentTextCacheByBlocks.[entry.SourceBlocks] <- entry
+
+let private tryGetDocumentTextCache blocks =
+    let slot = documentInfoSlot blocks documentTextFastSlots.Length
+    let fast = documentTextFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && documentTextCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<DocumentTextCache>
+        if documentTextCacheByBlocks.TryGetValue(blocks, &cached) then
+            documentTextFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private documentTextSourceParagraphCountFor textLength blocks =
     if textLength > documentTextCacheMaxTotalChars then
@@ -1455,11 +1480,11 @@ let private rememberDocumentText cached =
                 else
                     loop keptCount keptChars keptBlocks keptSourceTextChars acc tail
         loop 0 0 0 0 [] entries
-    documentTextCache <-
-        (cached
-         :: (documentTextCache
-             |> List.filter (documentTextCacheMatches cached.SourceBlocks >> not)))
-        |> trim
+    cached
+    :: (documentTextCache
+        |> List.filter (documentTextCacheMatches cached.SourceBlocks >> not))
+    |> trim
+    |> setDocumentTextCache
 
 type private SelectionTextCache = {
     SourceBlocks: Block list
@@ -6680,10 +6705,10 @@ let extendSelectionRight doc =
 
 /// Get document text (for testing/debugging)
 let getText doc =
-    match documentTextCache |> List.tryFind (documentTextCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetDocumentTextCache doc.Blocks with
+    | ValueSome cached ->
         cached.Text
-    | None ->
+    | ValueNone ->
         let sb =
             if documentTextCanPreSizeBuilder doc.Blocks then
                 let mutable totalLength = 0L
