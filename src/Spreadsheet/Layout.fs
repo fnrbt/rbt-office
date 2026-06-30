@@ -8,6 +8,10 @@ let private resizeArrayToList (items: System.Collections.Generic.List<'T>) =
         result <- items.[i] :: result
     result
 
+let private clearArray (items: 'T array) =
+    for i = 0 to items.Length - 1 do
+        items.[i] <- Unchecked.defaultof<'T>
+
 [<Struct>]
 type Rect = {
     X: float
@@ -466,11 +470,24 @@ type private HeadersCache = {
 
 let mutable private visibleCellsCache: VisibleCellsCache list = []
 let mutable private headersCache: HeadersCache list = []
+let private spreadsheetModelReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<SpreadsheetModel> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+let private visibleCellsCacheByModel =
+    System.Collections.Generic.Dictionary<SpreadsheetModel, VisibleCellsCache>(spreadsheetModelReferenceComparer)
+let private headersCacheByModel =
+    System.Collections.Generic.Dictionary<SpreadsheetModel, HeadersCache>(spreadsheetModelReferenceComparer)
+let private visibleCellsFastSlots = Array.zeroCreate<VisibleCellsCache> 256
+let private headersFastSlots = Array.zeroCreate<HeadersCache> 256
 let private viewportGeometryCacheMaxEntries = 64
 let private viewportGeometryCacheMaxModels = 64
 let private viewportGeometryCacheMaxTotalItems = 200000
 let private viewportGeometryCacheMaxTotalSourceItems = 200000
 let private viewportGeometryCacheMaxTotalSourceTextChars = 5000000
+
+let private viewportGeometryModelSlot (model: SpreadsheetModel) slotCount =
+    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(model) &&& (slotCount - 1)
 
 let private viewportGeometryAddCapped limit value total =
     if total > limit then total
@@ -879,9 +896,55 @@ let private headersCacheRetainable (cache: HeadersCache) =
     && cache.SourceItemCount <= viewportGeometryCacheMaxTotalSourceItems
     && cache.SourceTextCharCount <= viewportGeometryCacheMaxTotalSourceTextChars
 
+let private setVisibleCellsCache entries =
+    visibleCellsCache <- entries
+    visibleCellsCacheByModel.Clear()
+    clearArray visibleCellsFastSlots
+    for entry in entries do
+        visibleCellsCacheByModel.[entry.Model] <- entry
+        visibleCellsFastSlots.[viewportGeometryModelSlot entry.Model visibleCellsFastSlots.Length] <- entry
+
+let private setHeadersCache entries =
+    headersCache <- entries
+    headersCacheByModel.Clear()
+    clearArray headersFastSlots
+    for entry in entries do
+        headersCacheByModel.[entry.Model] <- entry
+        headersFastSlots.[viewportGeometryModelSlot entry.Model headersFastSlots.Length] <- entry
+
+let private tryGetVisibleCellsCache model =
+    let slot = viewportGeometryModelSlot model visibleCellsFastSlots.Length
+    let fast = visibleCellsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null)) && obj.ReferenceEquals(fast.Model, model) then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<VisibleCellsCache>
+        if visibleCellsCacheByModel.TryGetValue(model, &cached)
+           && obj.ReferenceEquals(cached.Model, model) then
+            visibleCellsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryGetHeadersCache model =
+    let slot = viewportGeometryModelSlot model headersFastSlots.Length
+    let fast = headersFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null)) && obj.ReferenceEquals(fast.Model, model) then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<HeadersCache>
+        if headersCacheByModel.TryGetValue(model, &cached)
+           && obj.ReferenceEquals(cached.Model, model) then
+            headersFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private rememberVisibleCellsCache (cache: VisibleCellsCache) =
     if not (visibleCellsCacheRetainable cache) then
-        visibleCellsCache <- visibleCellsCache |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+        visibleCellsCache
+        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+        |> setVisibleCellsCache
     else
         let mutable keptCount = 1
         let mutable keptItems = cache.TotalItemCount
@@ -906,11 +969,13 @@ let private rememberVisibleCellsCache (cache: VisibleCellsCache) =
                     Some candidate
                 else
                     None)
-        visibleCellsCache <- cache :: retained
+        setVisibleCellsCache (cache :: retained)
 
 let private rememberHeadersCache (cache: HeadersCache) =
     if not (headersCacheRetainable cache) then
-        headersCache <- headersCache |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+        headersCache
+        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+        |> setHeadersCache
     else
         let mutable keptCount = 1
         let mutable keptItems = cache.TotalItemCount
@@ -935,7 +1000,7 @@ let private rememberHeadersCache (cache: HeadersCache) =
                     Some candidate
                 else
                     None)
-        headersCache <- cache :: retained
+        setHeadersCache (cache :: retained)
 
 let private removeVisibleCellsCacheEntry key (cache: VisibleCellsCache) =
     let mutable existing = Unchecked.defaultof<CellGeometry list>
@@ -1115,8 +1180,8 @@ let iterVisibleCells (model: SpreadsheetModel) (viewport: Viewport) (emit: CellG
 
 let visibleCells (model: SpreadsheetModel) (viewport: Viewport): CellGeometry list =
     let key = viewportGeometryKey viewport
-    match visibleCellsCache |> List.tryFind (fun cached -> obj.ReferenceEquals(cached.Model, model)) with
-    | Some cached when visibleCellsCacheRetainable cached ->
+    match tryGetVisibleCellsCache model with
+    | ValueSome cached when visibleCellsCacheRetainable cached ->
         let mutable cells = Unchecked.defaultof<CellGeometry list>
         if cached.Entries.TryGetValue(key, &cells) then
             cells
@@ -1128,12 +1193,12 @@ let visibleCells (model: SpreadsheetModel) (viewport: Viewport): CellGeometry li
             addVisibleCellsCacheEntryWithCount key cells cellCount cached
             rememberVisibleCellsCache cached
             cells
-    | Some cached ->
+    | ValueSome cached ->
         rememberVisibleCellsCache cached
         let values = System.Collections.Generic.List<CellGeometry>()
         iterVisibleCells model viewport values.Add
         resizeArrayToList values
-    | _ ->
+    | ValueNone ->
         let values = System.Collections.Generic.List<CellGeometry>()
         iterVisibleCells model viewport values.Add
         let cellCount = values.Count
@@ -1190,8 +1255,8 @@ let iterHeaders (model: SpreadsheetModel) (viewport: Viewport) (emit: HeaderGeom
 
 let headers (model: SpreadsheetModel) (viewport: Viewport): HeaderGeometry list =
     let key = viewportGeometryKey viewport
-    match headersCache |> List.tryFind (fun cached -> obj.ReferenceEquals(cached.Model, model)) with
-    | Some cached when headersCacheRetainable cached ->
+    match tryGetHeadersCache model with
+    | ValueSome cached when headersCacheRetainable cached ->
         let mutable headers = Unchecked.defaultof<HeaderGeometry list>
         if cached.Entries.TryGetValue(key, &headers) then
             headers
@@ -1203,12 +1268,12 @@ let headers (model: SpreadsheetModel) (viewport: Viewport): HeaderGeometry list 
             addHeadersCacheEntryWithCount key headers headerCount cached
             rememberHeadersCache cached
             headers
-    | Some cached ->
+    | ValueSome cached ->
         rememberHeadersCache cached
         let values = System.Collections.Generic.List<HeaderGeometry>()
         iterHeaders model viewport values.Add
         resizeArrayToList values
-    | _ ->
+    | ValueNone ->
         let values = System.Collections.Generic.List<HeaderGeometry>()
         iterHeaders model viewport values.Add
         let headerCount = values.Count
