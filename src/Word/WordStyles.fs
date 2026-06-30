@@ -9,6 +9,10 @@ let private resizeArrayToList (items: ResizeArray<'T>) =
         result <- items.[i] :: result
     result
 
+let private clearArray (items: 'T array) =
+    for i = 0 to items.Length - 1 do
+        items.[i] <- Unchecked.defaultof<'T>
+
 type ParagraphStyle = {
     Text: TextStyle
     SpacingBefore: float option
@@ -287,6 +291,13 @@ type private StyleContextCache = {
 }
 
 let mutable private styleContextCache = { Entries = [] }
+let private styleListReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<NamedStyle list> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+let private styleContextCacheByStyles =
+    System.Collections.Generic.Dictionary<NamedStyle list, StyleContextCacheEntry>(styleListReferenceComparer)
+let private styleContextFastSlots = Array.zeroCreate<StyleContextCacheEntry> 256
 let private styleContextCacheMaxEntries = 64
 let private styleContextCacheMaxTotalStyles = 200000
 let private styleContextCacheMaxTotalStyleChars = 5000000
@@ -303,6 +314,36 @@ let private styleContextCacheEntryMatches styles (entry: StyleContextCacheEntry)
 let private styleContextCacheEntryRetainable (entry: StyleContextCacheEntry) =
     entry.StyleCount <= styleContextCacheMaxTotalStyles
     && entry.StyleCharCount <= styleContextCacheMaxTotalStyleChars
+
+let private setStyleContextCache entries =
+    styleContextCache <- { Entries = entries }
+    styleContextCacheByStyles.Clear()
+    clearArray styleContextFastSlots
+    for entry in entries do
+        styleContextCacheByStyles.[entry.CachedStyles] <- entry
+        let slot =
+            System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(entry.CachedStyles)
+            &&& (styleContextFastSlots.Length - 1)
+        styleContextFastSlots.[slot] <- entry
+
+let private tryGetStyleContext styles =
+    let slot =
+        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(styles)
+        &&& (styleContextFastSlots.Length - 1)
+    let fast = styleContextFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && styleContextCacheEntryMatches styles fast
+       && styleContextCacheEntryRetainable fast then
+        ValueSome fast.Context
+    else
+        let mutable cached = Unchecked.defaultof<StyleContextCacheEntry>
+        if styleContextCacheByStyles.TryGetValue(styles, &cached)
+           && styleContextCacheEntryMatches styles cached
+           && styleContextCacheEntryRetainable cached then
+            styleContextFastSlots.[slot] <- cached
+            ValueSome cached.Context
+        else
+            ValueNone
 
 let private textStyleStringCharCountFor limit (style: RedBat.Word.TextBuffer.TextStyle option) =
     match style with
@@ -392,10 +433,9 @@ let private rememberStyleContext styles context =
         Context = context
     }
     if not (styleContextCacheEntryRetainable entry) then
-        styleContextCache <-
-            { Entries =
-                styleContextCache.Entries
-                |> List.filter (styleContextCacheEntryMatches styles >> not) }
+        styleContextCache.Entries
+        |> List.filter (styleContextCacheEntryMatches styles >> not)
+        |> setStyleContextCache
     else
         let trim entries =
             let rec loop keptCount keptStyles keptStyleChars acc remaining =
@@ -417,12 +457,11 @@ let private rememberStyleContext styles context =
                     else
                         loop keptCount keptStyles keptStyleChars acc tail
             loop 0 0 0 [] entries
-        styleContextCache <-
-            { Entries =
-                entry
-                :: (styleContextCache.Entries
-                    |> List.filter (styleContextCacheEntryMatches styles >> not))
-                |> trim }
+        entry
+        :: (styleContextCache.Entries
+            |> List.filter (styleContextCacheEntryMatches styles >> not))
+        |> trim
+        |> setStyleContextCache
     context
 
 let private buildStyleContext (doc: Document) =
@@ -452,10 +491,9 @@ let private buildStyleContext (doc: Document) =
     }
 
 let styleContext (doc: Document) =
-    match styleContextCache.Entries |> List.tryFind (styleContextCacheEntryMatches doc.Styles) with
-    | Some cached ->
-        cached.Context
-    | None ->
+    match tryGetStyleContext doc.Styles with
+    | ValueSome context -> context
+    | ValueNone ->
         let context = buildStyleContext doc
         rememberStyleContext doc.Styles context
 
@@ -586,6 +624,13 @@ let private resolvedCharacterStylesMatch (left: Map<string, NamedStyle> option) 
     | Some a, Some b -> obj.ReferenceEquals(a, b)
     | _ -> false
 
+type private EffectiveBufferCacheKey = {
+    SourceRope: RedBat.Word.Rope.Rope
+    SourceRuns: Run list
+    ParagraphStyle: ParagraphStyle
+    ResolvedCharacterStyles: Map<string, NamedStyle> option
+}
+
 let private effectiveBufferCacheEntryMatches
     (rope: RedBat.Word.Rope.Rope)
     (runs: Run list)
@@ -596,6 +641,84 @@ let private effectiveBufferCacheEntryMatches
     && obj.ReferenceEquals(entry.SourceRuns, runs)
     && (obj.ReferenceEquals(entry.ParagraphStyle, paragraphStyle) || entry.ParagraphStyle = paragraphStyle)
     && resolvedCharacterStylesMatch entry.ResolvedCharacterStyles resolvedStyles
+
+let private effectiveBufferCacheKey rope runs paragraphStyle resolvedStyles = {
+    SourceRope = rope
+    SourceRuns = runs
+    ParagraphStyle = paragraphStyle
+    ResolvedCharacterStyles = resolvedStyles
+}
+
+let private effectiveBufferResolvedStylesHash = function
+    | Some styles -> System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(styles)
+    | None -> 0
+
+let private effectiveBufferCacheHash rope runs paragraphStyle resolvedStyles =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(rope)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(runs)
+    hashCode <- (hashCode * 397) ^^^ hash paragraphStyle
+    hashCode <- (hashCode * 397) ^^^ effectiveBufferResolvedStylesHash resolvedStyles
+    hashCode
+
+let private effectiveBufferCacheKeyComparer =
+    { new System.Collections.Generic.IEqualityComparer<EffectiveBufferCacheKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.SourceRope, right.SourceRope)
+            && obj.ReferenceEquals(left.SourceRuns, right.SourceRuns)
+            && (obj.ReferenceEquals(left.ParagraphStyle, right.ParagraphStyle) || left.ParagraphStyle = right.ParagraphStyle)
+            && resolvedCharacterStylesMatch left.ResolvedCharacterStyles right.ResolvedCharacterStyles
+        member _.GetHashCode(value) =
+            effectiveBufferCacheHash
+                value.SourceRope
+                value.SourceRuns
+                value.ParagraphStyle
+                value.ResolvedCharacterStyles }
+
+let private effectiveBufferCacheByKey =
+    System.Collections.Generic.Dictionary<EffectiveBufferCacheKey, EffectiveBufferCacheEntry>(effectiveBufferCacheKeyComparer)
+let private effectiveBufferFastSlots = Array.zeroCreate<EffectiveBufferCacheEntry> 256
+
+let private effectiveBufferCacheSlot rope runs paragraphStyle resolvedStyles =
+    effectiveBufferCacheHash rope runs paragraphStyle resolvedStyles &&& (effectiveBufferFastSlots.Length - 1)
+
+let private setEffectiveBufferCache entries =
+    effectiveBufferCache <- entries
+    effectiveBufferCacheByKey.Clear()
+    clearArray effectiveBufferFastSlots
+    for entry in entries do
+        let key =
+            effectiveBufferCacheKey
+                entry.SourceRope
+                entry.SourceRuns
+                entry.ParagraphStyle
+                entry.ResolvedCharacterStyles
+        effectiveBufferCacheByKey.[key] <- entry
+        let slot =
+            effectiveBufferCacheSlot
+                entry.SourceRope
+                entry.SourceRuns
+                entry.ParagraphStyle
+                entry.ResolvedCharacterStyles
+        effectiveBufferFastSlots.[slot] <- entry
+
+let private tryGetEffectiveBuffer
+    (resolvedStyles: Map<string, NamedStyle> option)
+    (paragraphStyle: ParagraphStyle)
+    (buffer: TextBuffer) =
+    let slot = effectiveBufferCacheSlot buffer.Rope buffer.Runs paragraphStyle resolvedStyles
+    let fast = effectiveBufferFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && effectiveBufferCacheEntryMatches buffer.Rope buffer.Runs paragraphStyle resolvedStyles fast then
+        ValueSome fast.Result
+    else
+        let key = effectiveBufferCacheKey buffer.Rope buffer.Runs paragraphStyle resolvedStyles
+        let mutable cached = Unchecked.defaultof<EffectiveBufferCacheEntry>
+        if effectiveBufferCacheByKey.TryGetValue(key, &cached)
+           && effectiveBufferCacheEntryMatches buffer.Rope buffer.Runs paragraphStyle resolvedStyles cached then
+            effectiveBufferFastSlots.[slot] <- cached
+            ValueSome cached.Result
+        else
+            ValueNone
 
 let private effectiveBufferRunCount (runs: Run list) =
     let mutable total = 0
@@ -736,10 +859,10 @@ let private rememberEffectiveBuffer
         RetainedRunCount = retainedRunCount
         RetainedCharCount = effectiveBufferRetainedCharCountFor retainedRunCount paragraphStyle resolvedStyles runs result
     }
-    effectiveBufferCache <-
-        entry
-        :: (effectiveBufferCache |> List.filter (effectiveBufferCacheEntryMatches rope runs paragraphStyle resolvedStyles >> not))
-        |> trimEffectiveBufferCache
+    entry
+    :: (effectiveBufferCache |> List.filter (effectiveBufferCacheEntryMatches rope runs paragraphStyle resolvedStyles >> not))
+    |> trimEffectiveBufferCache
+    |> setEffectiveBufferCache
     result
 
 let private effectiveBufferWith transformStyle (buffer: TextBuffer) =
@@ -872,10 +995,9 @@ let private effectiveBufferCached
     (resolvedStyles: Map<string, NamedStyle> option)
     (paragraphStyle: ParagraphStyle)
     (buffer: TextBuffer) =
-    match effectiveBufferCache |> List.tryFind (effectiveBufferCacheEntryMatches buffer.Rope buffer.Runs paragraphStyle resolvedStyles) with
-    | Some cached ->
-        cached.Result
-    | None ->
+    match tryGetEffectiveBuffer resolvedStyles paragraphStyle buffer with
+    | ValueSome result -> result
+    | ValueNone ->
         let transformStyle =
             match resolvedStyles with
             | Some styles -> effectiveTextStyleWithResolved styles paragraphStyle
