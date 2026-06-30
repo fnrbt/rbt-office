@@ -7147,6 +7147,10 @@ let private importCsvInputHash csvText startRow startCol cells =
     let csvHash = hash csvText
     (((csvHash * 397) ^^^ startRow) * 397 ^^^ startCol) * 397 ^^^ referenceHash cells
 
+let private importCsvInputFastSlot csvText startRow startCol cells =
+    (((referenceHash csvText * 397) ^^^ startRow) * 397 ^^^ startCol) * 397 ^^^ referenceHash cells
+    &&& (importCsvFastSlots.Length - 1)
+
 let private importCsvInputKey csvText startRow startCol cells : ImportCsvInputKey =
     { CsvText = csvText
       StartRow = startRow
@@ -7176,7 +7180,7 @@ let private setImportCsvCache entries =
         let mutable existing = Unchecked.defaultof<ImportCsvCache>
         if not (importCsvCacheByInput.TryGetValue(key, &existing)) then
             importCsvCacheByInput.[key] <- entry
-            let slot = importCsvInputHash entry.CsvText entry.StartRow entry.StartCol cells &&& (importCsvFastSlots.Length - 1)
+            let slot = importCsvInputFastSlot entry.CsvText entry.StartRow entry.StartCol cells
             importCsvFastSlots.[slot] <- entry
     for entry in entries do
         addInput entry.SourceCells entry
@@ -7184,7 +7188,7 @@ let private setImportCsvCache entries =
             addInput entry.ResultCells entry
 
 let private tryGetImportCsvCache csvText startRow startCol cells =
-    let slot = importCsvInputHash csvText startRow startCol cells &&& (importCsvFastSlots.Length - 1)
+    let slot = importCsvInputFastSlot csvText startRow startCol cells
     let fast = importCsvFastSlots.[slot]
     if not (obj.ReferenceEquals(fast, null))
        && importCsvCacheMatchesInput csvText startRow startCol cells fast then
@@ -7198,13 +7202,19 @@ let private tryGetImportCsvCache csvText startRow startCol cells =
         else
             ValueNone
 
-let private removeImportCsvCacheForSource csvText startRow startCol sourceCells =
+let private importCsvCacheWithoutSource csvText startRow startCol sourceCells =
     let key = importCsvInputKey csvText startRow startCol sourceCells
     let mutable cached = Unchecked.defaultof<ImportCsvCache>
     if importCsvCacheByInput.TryGetValue(key, &cached) then
         importCsvCache
         |> List.filter (importCsvCacheSameSource csvText startRow startCol sourceCells >> not)
-        |> setImportCsvCache
+    else
+        importCsvCache
+
+let private removeImportCsvCacheForSource csvText startRow startCol sourceCells =
+    let entries = importCsvCacheWithoutSource csvText startRow startCol sourceCells
+    if not (obj.ReferenceEquals(entries, importCsvCache)) then
+        setImportCsvCache entries
 
 let private importCsvCacheRetainable (cached: ImportCsvCache) =
     cached.CsvLength <= importCsvCacheMaxTotalChars
@@ -7257,8 +7267,7 @@ let private rememberImportCsv cached =
                         loop keptCount keptChars keptCells keptSourceTextChars acc tail
             loop 0 0 0 0 [] entries
         (cached
-         :: (importCsvCache
-             |> List.filter (importCsvCacheSameSource cached.CsvText cached.StartRow cached.StartCol cached.SourceCells >> not)))
+         :: importCsvCacheWithoutSource cached.CsvText cached.StartRow cached.StartCol cached.SourceCells)
         |> trim
         |> setImportCsvCache
 
@@ -7753,36 +7762,63 @@ let private trimMergeSourceCache sourceCount entries =
                 loop keptCount keptSources acc tail
     loop 0 0 [] entries
 
+let private mergeLookupIndexWithoutSource merges =
+    let mutable cached = Unchecked.defaultof<MergeLookupIndex>
+    if mergeLookupIndexBySource.TryGetValue(merges, &cached) then
+        mergeLookupIndex
+        |> List.filter (mergeLookupIndexMatches merges >> not)
+    else
+        mergeLookupIndex
+
+let private mergeRangeIndexWithoutSource merges =
+    let mutable cached = Unchecked.defaultof<MergeRangeIndex>
+    if mergeRangeIndexBySource.TryGetValue(merges, &cached) then
+        mergeRangeIndex
+        |> List.filter (mergeRangeIndexMatches merges >> not)
+    else
+        mergeRangeIndex
+
+let private mergeRangeOrderingCacheWithoutSource merges =
+    let mutable cached = Unchecked.defaultof<MergeRangeOrderingCache>
+    if mergeRangeOrderingCacheBySource.TryGetValue(merges, &cached) then
+        mergeRangeOrderingCache
+        |> List.filter (mergeRangeOrderingCacheMatches merges >> not)
+    else
+        mergeRangeOrderingCache
+
+let private mergeRangeQueryCacheWithoutSource merges =
+    let mutable cached = Unchecked.defaultof<MergeRangeQueryCache>
+    if mergeRangeQueryCacheBySource.TryGetValue(merges, &cached) then
+        mergeRangeQueryCache
+        |> List.filter (mergeRangeQueryCacheMatches merges >> not)
+    else
+        mergeRangeQueryCache
+
 let private mergeRangeQueryCacheRetainable (cached: MergeRangeQueryCache) =
     cached.Entries.Count > 0
     && cached.TotalResultCount <= mergeRangeQueryCacheMaxTotalResults
     && cached.SourceCount <= mergeRangeQueryCacheMaxTotalSourceMerges
 
 let private removeMergeRangeQueryCacheForSource merges =
-    let mutable cached = Unchecked.defaultof<MergeRangeQueryCache>
-    if mergeRangeQueryCacheBySource.TryGetValue(merges, &cached) then
-        mergeRangeQueryCache
-        |> List.filter (mergeRangeQueryCacheMatches merges >> not)
-        |> setMergeRangeQueryCache
+    let entries = mergeRangeQueryCacheWithoutSource merges
+    if not (obj.ReferenceEquals(entries, mergeRangeQueryCache)) then
+        setMergeRangeQueryCache entries
 
 let private rememberMergeLookupIndex cached =
     (cached
-     :: (mergeLookupIndex
-         |> List.filter (mergeLookupIndexMatches cached.Source >> not)))
+     :: mergeLookupIndexWithoutSource cached.Source)
     |> trimMergeSourceCache (fun entry -> entry.SourceCount)
     |> setMergeLookupIndex
 
 let private rememberMergeRangeIndex cached =
     (cached
-     :: (mergeRangeIndex
-         |> List.filter (mergeRangeIndexMatches cached.Source >> not)))
+     :: mergeRangeIndexWithoutSource cached.Source)
     |> trimMergeSourceCache (fun entry -> entry.SourceCount)
     |> setMergeRangeIndex
 
 let private rememberMergeRangeOrdering cached =
     (cached
-     :: (mergeRangeOrderingCache
-         |> List.filter (mergeRangeOrderingCacheMatches cached.Source >> not)))
+     :: mergeRangeOrderingCacheWithoutSource cached.Source)
     |> trimMergeSourceCache (fun entry -> entry.SourceCount)
     |> setMergeRangeOrderingCache
 
@@ -7794,8 +7830,7 @@ let private rememberMergeRangeQueryCache cached =
         let mutable keptResults = cached.TotalResultCount
         let mutable keptSources = max 1 cached.SourceCount
         let retained =
-            mergeRangeQueryCache
-            |> List.filter (mergeRangeQueryCacheMatches cached.Source >> not)
+            mergeRangeQueryCacheWithoutSource cached.Source
             |> List.choose (fun candidate ->
                 let candidateResults = candidate.TotalResultCount
                 let candidateSources = max 1 candidate.SourceCount
