@@ -3868,6 +3868,12 @@ type private TableStyleCellsCacheEntry = {
     SourceTextCharCount: int
 }
 
+[<Struct>]
+type private TableStyleCellsReferenceKey = {
+    Cells: Map<CellAddress, CellData>
+    Tables: Table list
+}
+
 let mutable private tableStyleCellsCache: TableStyleCellsCacheEntry list = []
 let private tableStyleCellsCacheMaxEntries = 64
 let private tableStyleCellsCacheMaxTotalCells = 200000
@@ -3877,6 +3883,51 @@ let private tableStyleCellsCacheMaxTotalSourceTextChars = 5000000
 let private tableStyleCellsCacheEntryMatches cells tables (entry: TableStyleCellsCacheEntry) =
     obj.ReferenceEquals(entry.SourceCells, cells)
     && obj.ReferenceEquals(entry.SourceTables, tables)
+
+let private tableStyleCellsReferenceHash cells tables =
+    (referenceHash cells * 397) ^^^ referenceHash tables
+
+let private tableStyleCellsReferenceKey cells tables : TableStyleCellsReferenceKey =
+    { Cells = cells
+      Tables = tables }
+
+let private tableStyleCellsReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<TableStyleCellsReferenceKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.Cells, right.Cells)
+            && obj.ReferenceEquals(left.Tables, right.Tables)
+
+        member _.GetHashCode(key) =
+            tableStyleCellsReferenceHash key.Cells key.Tables }
+
+let private tableStyleCellsCacheBySource =
+    System.Collections.Generic.Dictionary<TableStyleCellsReferenceKey, TableStyleCellsCacheEntry>(tableStyleCellsReferenceComparer)
+let private tableStyleCellsFastSlots = Array.zeroCreate<TableStyleCellsCacheEntry> 256
+
+let private setTableStyleCellsCache entries =
+    tableStyleCellsCache <- entries
+    tableStyleCellsCacheBySource.Clear()
+    clearArray tableStyleCellsFastSlots
+    for entry in entries do
+        let key = tableStyleCellsReferenceKey entry.SourceCells entry.SourceTables
+        let mutable existing = Unchecked.defaultof<TableStyleCellsCacheEntry>
+        if not (tableStyleCellsCacheBySource.TryGetValue(key, &existing)) then
+            tableStyleCellsCacheBySource.[key] <- entry
+
+let private tryGetTableStyleCellsEntry cells tables =
+    let slot = tableStyleCellsReferenceHash cells tables &&& (tableStyleCellsFastSlots.Length - 1)
+    let fast = tableStyleCellsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && tableStyleCellsCacheEntryMatches cells tables fast then
+        ValueSome fast
+    else
+        let key = tableStyleCellsReferenceKey cells tables
+        let mutable cached = Unchecked.defaultof<TableStyleCellsCacheEntry>
+        if tableStyleCellsCacheBySource.TryGetValue(key, &cached) then
+            tableStyleCellsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private retainedTableStyleCellCount (cells: Map<CellAddress, CellData>) (styledCells: Map<CellAddress, CellData>) =
     if obj.ReferenceEquals(cells, styledCells) then styledCells.Count
@@ -3951,10 +4002,10 @@ let private tableStyleCellsSourceTextCharCountFor cellCount tableCount cells tab
         tableStyleCellsSourceTextCharCount cells tables
 
 let private rememberTableStyleCellsEntry entry =
-    tableStyleCellsCache <-
-        entry
-        :: (tableStyleCellsCache |> List.filter (tableStyleCellsCacheEntryMatches entry.SourceCells entry.SourceTables >> not))
-        |> trimTableStyleCellsCache
+    (entry
+     :: (tableStyleCellsCache |> List.filter (tableStyleCellsCacheEntryMatches entry.SourceCells entry.SourceTables >> not)))
+    |> trimTableStyleCellsCache
+    |> setTableStyleCellsCache
 
 let private rememberTableStyleCells cells tables styledCells =
     let cellCount = retainedTableStyleCellCount cells styledCells
@@ -3974,11 +4025,11 @@ let private rememberTableStyleCells cells tables styledCells =
     rememberTableStyleCellsEntry entry
 
 let applyTableStyles (model: SpreadsheetModel): SpreadsheetModel =
-    match tableStyleCellsCache |> List.tryFind (tableStyleCellsCacheEntryMatches model.Cells model.Tables) with
-    | Some cached ->
+    match tryGetTableStyleCellsEntry model.Cells model.Tables with
+    | ValueSome cached ->
         if obj.ReferenceEquals(cached.StyledCells, model.Cells) then model
         else { model with Cells = cached.StyledCells }
-    | None ->
+    | ValueNone ->
         let pending = System.Collections.Generic.Dictionary<CellAddress, CellData>()
         let mutable changed = false
 
