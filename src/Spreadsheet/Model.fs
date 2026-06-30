@@ -280,6 +280,13 @@ let private tryGetFormulaPresenceCache cells =
         else
             ValueNone
 
+let private removeFormulaPresenceCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<FormulaPresenceCacheEntry>
+    if formulaPresenceCacheByCells.TryGetValue(cells, &cached) then
+        formulaPresenceCache
+        |> List.filter (formulaPresenceCacheEntryMatches cells >> not)
+        |> setFormulaPresenceCache
+
 let private formulaPresenceCacheEntryRetainable (entry: FormulaPresenceCacheEntry) =
     entry.CellCount <= formulaPresenceCacheMaxTotalCells
     && entry.SourceTextCharCount <= formulaPresenceCacheMaxTotalSourceTextChars
@@ -406,9 +413,7 @@ let private rememberCellsFormulaPresenceWithSourceTextCharCount cells formulaCou
         HasFormulas = hasFormulas
     }
     if not (formulaPresenceCacheEntryRetainable entry) then
-        formulaPresenceCache
-        |> List.filter (formulaPresenceCacheEntryMatches cells >> not)
-        |> setFormulaPresenceCache
+        removeFormulaPresenceCacheForCells cells
     else
         let trim entries =
             let rec loop keptCount keptCells keptSourceTextChars acc remaining =
@@ -2181,6 +2186,13 @@ let private tryGetColumnUniqueValuesCache cells =
         else
             ValueNone
 
+let private removeColumnUniqueValuesCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<ColumnUniqueValuesCache>
+    if columnUniqueValuesCacheByCells.TryGetValue(cells, &cached) then
+        columnUniqueValuesCache
+        |> List.filter (columnUniqueValuesCacheMatches cells >> not)
+        |> setColumnUniqueValuesCache
+
 let private columnUniqueValuesCacheRetainable (cached: ColumnUniqueValuesCache) =
     cached.Entries.Count > 0
     && cached.TotalValueCount <= columnUniqueValuesCacheMaxTotalValues
@@ -2200,9 +2212,7 @@ let private columnUniqueValuesSourceTextCharCountFor valueCount valueTextCharCou
 
 let private rememberColumnUniqueValuesCache cached =
     if not (columnUniqueValuesCacheRetainable cached) then
-        columnUniqueValuesCache
-        |> List.filter (columnUniqueValuesCacheMatches cached.Cells >> not)
-        |> setColumnUniqueValuesCache
+        removeColumnUniqueValuesCacheForCells cached.Cells
     else
         let mutable keptCount = 1
         let mutable keptValues = cached.TotalValueCount
@@ -5279,6 +5289,13 @@ let private tryGetSearchCellsCache cells =
         else
             ValueNone
 
+let private removeSearchCellsCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<SearchCellsCache>
+    if searchCellsCacheByCells.TryGetValue(cells, &cached) then
+        searchCellsCache
+        |> List.filter (searchCellsCacheMatches cells >> not)
+        |> setSearchCellsCache
+
 let private setReplaceIdentityCache entries =
     replaceIdentityCache <- entries
     replaceIdentityCacheByCells.Clear()
@@ -5303,6 +5320,13 @@ let private tryGetReplaceIdentityCache cells =
             ValueSome cached
         else
             ValueNone
+
+let private removeReplaceIdentityCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<ReplaceIdentityCache>
+    if replaceIdentityCacheByCells.TryGetValue(cells, &cached) then
+        replaceIdentityCache
+        |> List.filter (replaceIdentityCacheMatches cells >> not)
+        |> setReplaceIdentityCache
 
 let private searchCellsCacheRetainable (cached: SearchCellsCache) =
     cached.Entries.Count > 0
@@ -5339,9 +5363,7 @@ let private replaceIdentityCacheSourceTextCharCountFor keyCharCount cells =
 
 let private rememberSearchCellsCache cached =
     if not (searchCellsCacheRetainable cached) then
-        searchCellsCache
-        |> List.filter (searchCellsCacheMatches cached.Cells >> not)
-        |> setSearchCellsCache
+        removeSearchCellsCacheForCells cached.Cells
     else
         let mutable keptCount = 1
         let mutable keptResults = cached.TotalResultCount
@@ -5375,9 +5397,7 @@ let private rememberSearchCellsCache cached =
 
 let private rememberReplaceIdentityCache cached =
     if not (replaceIdentityCacheRetainable cached) then
-        replaceIdentityCache
-        |> List.filter (replaceIdentityCacheMatches cached.Cells >> not)
-        |> setReplaceIdentityCache
+        removeReplaceIdentityCacheForCells cached.Cells
     else
         let mutable keptCount = 1
         let mutable keptKeyChars = cached.TotalKeyCharCount
