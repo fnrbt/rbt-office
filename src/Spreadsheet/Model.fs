@@ -6209,6 +6209,15 @@ and private ColorScaleApplyCacheKey = {
 let mutable private dataBarApplyCache: DataBarApplyCache list = []
 let mutable private iconSetApplyCache: IconSetApplyCache list = []
 let mutable private colorScaleApplyCache: ColorScaleApplyCache list = []
+let private dataBarApplyCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, DataBarApplyCache>(cellMapReferenceComparer)
+let private dataBarApplyFastSlots = Array.zeroCreate<DataBarApplyCache> 256
+let private iconSetApplyCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, IconSetApplyCache>(cellMapReferenceComparer)
+let private iconSetApplyFastSlots = Array.zeroCreate<IconSetApplyCache> 256
+let private colorScaleApplyCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, ColorScaleApplyCache>(cellMapReferenceComparer)
+let private colorScaleApplyFastSlots = Array.zeroCreate<ColorScaleApplyCache> 256
 let private conditionalFormatApplyCacheMaxEntries = 64
 let private conditionalFormatApplyCacheMaxSources = 64
 let private conditionalFormatApplyCacheMaxTotalCells = 200000
@@ -6233,6 +6242,75 @@ let private iconSetApplyCacheMatches cells (cached: IconSetApplyCache) =
 let private colorScaleApplyCacheMatches cells (cached: ColorScaleApplyCache) =
     obj.ReferenceEquals(cached.Cells, cells)
 
+let private setDataBarApplyCache entries =
+    dataBarApplyCache <- entries
+    dataBarApplyCacheByCells.Clear()
+    clearArray dataBarApplyFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<DataBarApplyCache>
+        if not (dataBarApplyCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            dataBarApplyCacheByCells.[entry.Cells] <- entry
+
+let private setIconSetApplyCache entries =
+    iconSetApplyCache <- entries
+    iconSetApplyCacheByCells.Clear()
+    clearArray iconSetApplyFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<IconSetApplyCache>
+        if not (iconSetApplyCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            iconSetApplyCacheByCells.[entry.Cells] <- entry
+
+let private setColorScaleApplyCache entries =
+    colorScaleApplyCache <- entries
+    colorScaleApplyCacheByCells.Clear()
+    clearArray colorScaleApplyFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<ColorScaleApplyCache>
+        if not (colorScaleApplyCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            colorScaleApplyCacheByCells.[entry.Cells] <- entry
+
+let private tryGetDataBarApplyCache cells =
+    let slot = referenceSlot cells dataBarApplyFastSlots.Length
+    let fast = dataBarApplyFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && dataBarApplyCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<DataBarApplyCache>
+        if dataBarApplyCacheByCells.TryGetValue(cells, &cached) then
+            dataBarApplyFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryGetIconSetApplyCache cells =
+    let slot = referenceSlot cells iconSetApplyFastSlots.Length
+    let fast = iconSetApplyFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && iconSetApplyCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<IconSetApplyCache>
+        if iconSetApplyCacheByCells.TryGetValue(cells, &cached) then
+            iconSetApplyFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryGetColorScaleApplyCache cells =
+    let slot = referenceSlot cells colorScaleApplyFastSlots.Length
+    let fast = colorScaleApplyFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && colorScaleApplyCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<ColorScaleApplyCache>
+        if colorScaleApplyCacheByCells.TryGetValue(cells, &cached) then
+            colorScaleApplyFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private dataBarApplyCacheRetainable (cached: DataBarApplyCache) =
     cached.Entries.Count > 0
     && cached.CellCount <= conditionalFormatApplyCacheMaxTotalCells
@@ -6252,7 +6330,9 @@ let private colorScaleApplyCacheRetainable (cached: ColorScaleApplyCache) =
 
 let private rememberDataBarApplyCache cached =
     if not (dataBarApplyCacheRetainable cached) then
-        dataBarApplyCache <- dataBarApplyCache |> List.filter (dataBarApplyCacheMatches cached.Cells >> not)
+        dataBarApplyCache
+        |> List.filter (dataBarApplyCacheMatches cached.Cells >> not)
+        |> setDataBarApplyCache
     else
         let trim (entries: DataBarApplyCache list) =
             let rec loop keptCount keptCells keptSourceTextChars keptKeyChars (acc: DataBarApplyCache list) (remaining: DataBarApplyCache list) : DataBarApplyCache list =
@@ -6277,15 +6357,17 @@ let private rememberDataBarApplyCache cached =
                     else
                         loop keptCount keptCells keptSourceTextChars keptKeyChars acc tail
             loop 0 0 0 0 [] entries
-        dataBarApplyCache <-
-            (cached
-             :: (dataBarApplyCache
-                 |> List.filter (dataBarApplyCacheMatches cached.Cells >> not)))
-            |> trim
+        (cached
+         :: (dataBarApplyCache
+             |> List.filter (dataBarApplyCacheMatches cached.Cells >> not)))
+        |> trim
+        |> setDataBarApplyCache
 
 let private rememberIconSetApplyCache cached =
     if not (iconSetApplyCacheRetainable cached) then
-        iconSetApplyCache <- iconSetApplyCache |> List.filter (iconSetApplyCacheMatches cached.Cells >> not)
+        iconSetApplyCache
+        |> List.filter (iconSetApplyCacheMatches cached.Cells >> not)
+        |> setIconSetApplyCache
     else
         let trim (entries: IconSetApplyCache list) =
             let rec loop keptCount keptCells keptSourceTextChars (acc: IconSetApplyCache list) (remaining: IconSetApplyCache list) : IconSetApplyCache list =
@@ -6302,15 +6384,17 @@ let private rememberIconSetApplyCache cached =
                     else
                         loop keptCount keptCells keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        iconSetApplyCache <-
-            (cached
-             :: (iconSetApplyCache
-                 |> List.filter (iconSetApplyCacheMatches cached.Cells >> not)))
-            |> trim
+        (cached
+         :: (iconSetApplyCache
+             |> List.filter (iconSetApplyCacheMatches cached.Cells >> not)))
+        |> trim
+        |> setIconSetApplyCache
 
 let private rememberColorScaleApplyCache cached =
     if not (colorScaleApplyCacheRetainable cached) then
-        colorScaleApplyCache <- colorScaleApplyCache |> List.filter (colorScaleApplyCacheMatches cached.Cells >> not)
+        colorScaleApplyCache
+        |> List.filter (colorScaleApplyCacheMatches cached.Cells >> not)
+        |> setColorScaleApplyCache
     else
         let trim (entries: ColorScaleApplyCache list) =
             let rec loop keptCount keptCells keptSourceTextChars keptKeyChars (acc: ColorScaleApplyCache list) (remaining: ColorScaleApplyCache list) : ColorScaleApplyCache list =
@@ -6335,11 +6419,11 @@ let private rememberColorScaleApplyCache cached =
                     else
                         loop keptCount keptCells keptSourceTextChars keptKeyChars acc tail
             loop 0 0 0 0 [] entries
-        colorScaleApplyCache <-
-            (cached
-             :: (colorScaleApplyCache
-                 |> List.filter (colorScaleApplyCacheMatches cached.Cells >> not)))
-            |> trim
+        (cached
+         :: (colorScaleApplyCache
+             |> List.filter (colorScaleApplyCacheMatches cached.Cells >> not)))
+        |> trim
+        |> setColorScaleApplyCache
 
 let private dataBarApplyCacheKeyCharCount (key: DataBarApplyCacheKey) =
     key.Color.Length
@@ -6429,9 +6513,9 @@ let applyDataBars (sr: int) (sc: int) (er: int) (ec: int) (color: string) (model
     }
     let rememberWithSourceTextCharCount sourceTextCharCount cells =
         let cache =
-            match dataBarApplyCache |> List.tryFind (dataBarApplyCacheMatches cells) with
-            | Some cached -> cached
-            | None ->
+            match tryGetDataBarApplyCache cells with
+            | ValueSome cached -> cached
+            | ValueNone ->
                 {
                     Cells = cells
                     CellCount = conditionalFormatApplyCacheCellCount cells
@@ -6502,8 +6586,8 @@ let applyDataBars (sr: int) (sc: int) (er: int) (ec: int) (color: string) (model
                     else
                         remember model.Cells
                         model
-    match dataBarApplyCache |> List.tryFind (dataBarApplyCacheMatches model.Cells) with
-    | Some cached when cached.Entries.ContainsKey key -> model
+    match tryGetDataBarApplyCache model.Cells with
+    | ValueSome cached when cached.Entries.ContainsKey key -> model
     | _ ->
         compute ()
 
@@ -6520,9 +6604,9 @@ let applyColorScale (sr: int) (sc: int) (er: int) (ec: int) (loColor: string) (m
     }
     let rememberWithSourceTextCharCount sourceTextCharCount cells =
         let cache =
-            match colorScaleApplyCache |> List.tryFind (colorScaleApplyCacheMatches cells) with
-            | Some cached -> cached
-            | None ->
+            match tryGetColorScaleApplyCache cells with
+            | ValueSome cached -> cached
+            | ValueNone ->
                 {
                     Cells = cells
                     CellCount = conditionalFormatApplyCacheCellCount cells
@@ -6599,8 +6683,8 @@ let applyColorScale (sr: int) (sc: int) (er: int) (ec: int) (loColor: string) (m
                     else
                         remember model.Cells
                         model
-    match colorScaleApplyCache |> List.tryFind (colorScaleApplyCacheMatches model.Cells) with
-    | Some cached when cached.Entries.ContainsKey key -> model
+    match tryGetColorScaleApplyCache model.Cells with
+    | ValueSome cached when cached.Entries.ContainsKey key -> model
     | _ ->
         compute ()
 
@@ -6618,9 +6702,9 @@ let applyIconSet (sr: int) (sc: int) (er: int) (ec: int) (count: int) (model: Sp
         }
         let rememberWithSourceTextCharCount sourceTextCharCount cells =
             let cache =
-                match iconSetApplyCache |> List.tryFind (iconSetApplyCacheMatches cells) with
-                | Some cached -> cached
-                | None ->
+                match tryGetIconSetApplyCache cells with
+                | ValueSome cached -> cached
+                | ValueNone ->
                     {
                         Cells = cells
                         CellCount = conditionalFormatApplyCacheCellCount cells
@@ -6690,8 +6774,8 @@ let applyIconSet (sr: int) (sc: int) (er: int) (ec: int) (count: int) (model: Sp
                         else
                             remember model.Cells
                             model
-        match iconSetApplyCache |> List.tryFind (iconSetApplyCacheMatches model.Cells) with
-        | Some cached when cached.Entries.ContainsKey key -> model
+        match tryGetIconSetApplyCache model.Cells with
+        | ValueSome cached when cached.Entries.ContainsKey key -> model
         | _ ->
             compute ()
 
