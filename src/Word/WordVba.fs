@@ -876,6 +876,10 @@ module Vba =
     module TextBuf = TextBuffer
     module WordLayout = Layout
 
+    let private clearArray (items: 'T array) =
+        for i = 0 to items.Length - 1 do
+            items.[i] <- Unchecked.defaultof<'T>
+
     let private eq (left: string) (right: string) =
         if left.Length <> right.Length then
             false
@@ -1754,9 +1758,53 @@ module Vba =
     let private textStatisticsCacheMaxSources = 64
     let private textStatisticsCacheMaxTotalSourceParagraphs = vbaSourceParagraphCountLimit
     let private textStatisticsCacheMaxTotalSourceTextChars = vbaSourceTextCacheMaxTotalChars
+    let private textStatisticsBlocksComparer =
+        { new IEqualityComparer<Doc.Block list> with
+            member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+            member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+    let private textStatisticsCacheByBlocks =
+        Dictionary<Doc.Block list, TextStatisticsCache>(textStatisticsBlocksComparer)
+    let private textStatisticsFastSlots = Array.zeroCreate<TextStatisticsCache> 256
 
     let private textStatisticsCacheMatches blocks (cached: TextStatisticsCache) =
         obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+    let private textStatisticsCacheSlot blocks =
+        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks)
+        &&& (textStatisticsFastSlots.Length - 1)
+
+    let private setTextStatisticsCache entries =
+        textStatisticsCache <- entries
+        textStatisticsCacheByBlocks.Clear()
+        clearArray textStatisticsFastSlots
+        for entry in entries do
+            let mutable existing = Unchecked.defaultof<TextStatisticsCache>
+            if not (textStatisticsCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+                textStatisticsCacheByBlocks.[entry.SourceBlocks] <- entry
+                textStatisticsFastSlots.[textStatisticsCacheSlot entry.SourceBlocks] <- entry
+
+    let private tryGetTextStatisticsCache blocks =
+        let slot = textStatisticsCacheSlot blocks
+        let fast = textStatisticsFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && textStatisticsCacheMatches blocks fast then
+            ValueSome fast
+        else
+            let mutable cached = Unchecked.defaultof<TextStatisticsCache>
+            if textStatisticsCacheByBlocks.TryGetValue(blocks, &cached)
+               && textStatisticsCacheMatches blocks cached then
+                textStatisticsFastSlots.[slot] <- cached
+                ValueSome cached
+            else
+                ValueNone
+
+    let private textStatisticsCacheWithoutBlocks blocks =
+        let mutable cached = Unchecked.defaultof<TextStatisticsCache>
+        if textStatisticsCacheByBlocks.TryGetValue(blocks, &cached) then
+            textStatisticsCache
+            |> List.filter (textStatisticsCacheMatches blocks >> not)
+        else
+            textStatisticsCache
 
     let private textStatisticsCacheRetainable (cached: TextStatisticsCache) =
         cached.Entries.Count > 0
@@ -1766,14 +1814,15 @@ module Vba =
 
     let private rememberTextStatisticsCache cached =
         if not (textStatisticsCacheRetainable cached) then
-            textStatisticsCache <- textStatisticsCache |> List.filter (textStatisticsCacheMatches cached.SourceBlocks >> not)
+            let entries = textStatisticsCacheWithoutBlocks cached.SourceBlocks
+            if not (obj.ReferenceEquals(entries, textStatisticsCache)) then
+                setTextStatisticsCache entries
         else
             let mutable keptCount = 1
             let mutable keptSourceParagraphs = max 1 cached.SourceParagraphCount
             let mutable keptSourceTextChars = max 1 cached.SourceTextCharCount
             let retained =
-                textStatisticsCache
-                |> List.filter (textStatisticsCacheMatches cached.SourceBlocks >> not)
+                textStatisticsCacheWithoutBlocks cached.SourceBlocks
                 |> List.choose (fun candidate ->
                     let candidateSourceParagraphs = max 1 candidate.SourceParagraphCount
                     let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
@@ -1787,7 +1836,7 @@ module Vba =
                         Some candidate
                     else
                         None)
-            textStatisticsCache <- cached :: retained
+            setTextStatisticsCache (cached :: retained)
 
     let private textStatisticsCacheKey startOffset endOffset constant = {
         StartOffset = startOffset
@@ -1827,22 +1876,22 @@ module Vba =
 
     let private tryTextStatisticsCache (doc: Doc.Document) startOffset endOffset constant =
         let key = textStatisticsCacheKey startOffset endOffset constant
-        match textStatisticsCache |> List.tryFind (textStatisticsCacheMatches doc.Blocks) with
-        | Some cached when textStatisticsCacheRetainable cached ->
+        match tryGetTextStatisticsCache doc.Blocks with
+        | ValueSome cached when textStatisticsCacheRetainable cached ->
             let mutable value = VEmpty
             if cached.Entries.TryGetValue(key, &value) then Some value else None
-        | Some cached ->
+        | ValueSome cached ->
             rememberTextStatisticsCache cached
             None
-        | None -> None
+        | ValueNone -> None
 
     let private rememberTextStatistics (doc: Doc.Document) startOffset endOffset constant (value: Value) =
         let key = textStatisticsCacheKey startOffset endOffset constant
-        match textStatisticsCache |> List.tryFind (textStatisticsCacheMatches doc.Blocks) with
-        | Some cached ->
+        match tryGetTextStatisticsCache doc.Blocks with
+        | ValueSome cached ->
             addTextStatisticsCacheEntry key value cached.Entries cached.Order
             rememberTextStatisticsCache cached
-        | None ->
+        | ValueNone ->
             let entries = Dictionary<TextStatisticsCacheKey, Value>()
             let order = Queue<TextStatisticsCacheKey>()
             addTextStatisticsCacheEntry key value entries order
