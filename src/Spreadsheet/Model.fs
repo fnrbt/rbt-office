@@ -5361,12 +5361,18 @@ let private tryGetSearchCellsCache cells =
         else
             ValueNone
 
-let private removeSearchCellsCacheForCells cells =
+let private searchCellsCacheWithoutCells cells =
     let mutable cached = Unchecked.defaultof<SearchCellsCache>
     if searchCellsCacheByCells.TryGetValue(cells, &cached) then
         searchCellsCache
         |> List.filter (searchCellsCacheMatches cells >> not)
-        |> setSearchCellsCache
+    else
+        searchCellsCache
+
+let private removeSearchCellsCacheForCells cells =
+    let entries = searchCellsCacheWithoutCells cells
+    if not (obj.ReferenceEquals(entries, searchCellsCache)) then
+        setSearchCellsCache entries
 
 let private setReplaceIdentityCache entries =
     replaceIdentityCache <- entries
@@ -5393,12 +5399,18 @@ let private tryGetReplaceIdentityCache cells =
         else
             ValueNone
 
-let private removeReplaceIdentityCacheForCells cells =
+let private replaceIdentityCacheWithoutCells cells =
     let mutable cached = Unchecked.defaultof<ReplaceIdentityCache>
     if replaceIdentityCacheByCells.TryGetValue(cells, &cached) then
         replaceIdentityCache
         |> List.filter (replaceIdentityCacheMatches cells >> not)
-        |> setReplaceIdentityCache
+    else
+        replaceIdentityCache
+
+let private removeReplaceIdentityCacheForCells cells =
+    let entries = replaceIdentityCacheWithoutCells cells
+    if not (obj.ReferenceEquals(entries, replaceIdentityCache)) then
+        setReplaceIdentityCache entries
 
 let private searchCellsCacheRetainable (cached: SearchCellsCache) =
     cached.Entries.Count > 0
@@ -5443,8 +5455,7 @@ let private rememberSearchCellsCache cached =
         let mutable keptCells = max 1 cached.CellCount
         let mutable keptSourceTextChars = max 1 cached.SourceTextCharCount
         let retained =
-            searchCellsCache
-            |> List.filter (searchCellsCacheMatches cached.Cells >> not)
+            searchCellsCacheWithoutCells cached.Cells
             |> List.choose (fun candidate ->
                 let candidateResults = candidate.TotalResultCount
                 let candidateQueryChars = max 1 candidate.TotalQueryCharCount
@@ -5476,8 +5487,7 @@ let private rememberReplaceIdentityCache cached =
         let mutable keptCells = max 1 cached.CellCount
         let mutable keptSourceTextChars = max 1 cached.SourceTextCharCount
         let retained =
-            replaceIdentityCache
-            |> List.filter (replaceIdentityCacheMatches cached.Cells >> not)
+            replaceIdentityCacheWithoutCells cached.Cells
             |> List.choose (fun candidate ->
                 let candidateKeyChars = max 1 candidate.TotalKeyCharCount
                 let candidateCells = max 1 candidate.CellCount
