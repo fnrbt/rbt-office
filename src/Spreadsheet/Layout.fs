@@ -140,10 +140,20 @@ type private PrefixSizeCacheEntry = {
 
 type private PrefixSizeCacheSlot = {
     mutable Entries: PrefixSizeCacheEntry list
+    mutable LastEntrySet: bool
+    mutable LastEntry: PrefixSizeCacheEntry
 }
 
-let private rowPrefixSizeCache = { Entries = [] }
-let private columnPrefixSizeCache = { Entries = [] }
+let private rowPrefixSizeCache = {
+    Entries = []
+    LastEntrySet = false
+    LastEntry = Unchecked.defaultof<PrefixSizeCacheEntry>
+}
+let private columnPrefixSizeCache = {
+    Entries = []
+    LastEntrySet = false
+    LastEntry = Unchecked.defaultof<PrefixSizeCacheEntry>
+}
 let private prefixSizeCacheMaxSources = 64
 let private prefixSizeCacheMaxTotalKeys = 1000000
 let private prefixSizeDirectIndexThreshold = 4096
@@ -157,9 +167,15 @@ type private HiddenPrefixSizeCacheEntry = {
 
 type private HiddenPrefixSizeCacheSlot = {
     mutable Entries: HiddenPrefixSizeCacheEntry list
+    mutable LastEntrySet: bool
+    mutable LastEntry: HiddenPrefixSizeCacheEntry
 }
 
-let private hiddenPrefixSizeCache = { Entries = [] }
+let private hiddenPrefixSizeCache = {
+    Entries = []
+    LastEntrySet = false
+    LastEntry = Unchecked.defaultof<HiddenPrefixSizeCacheEntry>
+}
 let private hiddenPrefixSizeCacheMaxSources = 64
 let private hiddenPrefixSizeCacheMaxTotalKeys = 1000000
 
@@ -172,9 +188,32 @@ let private prefixSizeCacheEntryKeyCount (entry: PrefixSizeCacheEntry) =
 let private prefixSizeCacheEntryRetainable (entry: PrefixSizeCacheEntry) =
     prefixSizeCacheEntryKeyCount entry <= prefixSizeCacheMaxTotalKeys
 
-let private rememberPrefixSizeCacheEntry (slot: PrefixSizeCacheSlot) entry =
+let private setPrefixSizeCacheEntries (slot: PrefixSizeCacheSlot) (entries: PrefixSizeCacheEntry list) =
+    slot.Entries <- entries
+    match entries with
+    | entry :: _ ->
+        slot.LastEntrySet <- true
+        slot.LastEntry <- entry
+    | [] ->
+        slot.LastEntrySet <- false
+        slot.LastEntry <- Unchecked.defaultof<PrefixSizeCacheEntry>
+
+let private tryGetPrefixSizeCacheEntry (slot: PrefixSizeCacheSlot) overrides =
+    if slot.LastEntrySet && prefixSizeCacheEntryMatches overrides slot.LastEntry then
+        Some slot.LastEntry
+    else
+        match slot.Entries |> List.tryFind (prefixSizeCacheEntryMatches overrides) with
+        | Some entry ->
+            slot.LastEntrySet <- true
+            slot.LastEntry <- entry
+            Some entry
+        | None -> None
+
+let private rememberPrefixSizeCacheEntry (slot: PrefixSizeCacheSlot) (entry: PrefixSizeCacheEntry) =
     if not (prefixSizeCacheEntryRetainable entry) then
-        slot.Entries <- slot.Entries |> List.filter (prefixSizeCacheEntryMatches entry.Source >> not)
+        slot.Entries
+        |> List.filter (prefixSizeCacheEntryMatches entry.Source >> not)
+        |> setPrefixSizeCacheEntries slot
     else
         let mutable keptCount = 1
         let mutable keptKeys = prefixSizeCacheEntryKeyCount entry
@@ -191,7 +230,8 @@ let private rememberPrefixSizeCacheEntry (slot: PrefixSizeCacheSlot) entry =
                     Some candidate
                 else
                     None)
-        slot.Entries <- entry :: retained
+        entry :: retained
+        |> setPrefixSizeCacheEntries slot
 
 let private hiddenPrefixSizeCacheEntryMatches source hiddenRows (entry: HiddenPrefixSizeCacheEntry) =
     System.Object.ReferenceEquals(entry.Source, source)
@@ -203,11 +243,33 @@ let private hiddenPrefixSizeCacheEntryKeyCount (entry: HiddenPrefixSizeCacheEntr
 let private hiddenPrefixSizeCacheEntryRetainable (entry: HiddenPrefixSizeCacheEntry) =
     hiddenPrefixSizeCacheEntryKeyCount entry <= hiddenPrefixSizeCacheMaxTotalKeys
 
+let private setHiddenPrefixSizeCacheEntries (entries: HiddenPrefixSizeCacheEntry list) =
+    hiddenPrefixSizeCache.Entries <- entries
+    match entries with
+    | entry :: _ ->
+        hiddenPrefixSizeCache.LastEntrySet <- true
+        hiddenPrefixSizeCache.LastEntry <- entry
+    | [] ->
+        hiddenPrefixSizeCache.LastEntrySet <- false
+        hiddenPrefixSizeCache.LastEntry <- Unchecked.defaultof<HiddenPrefixSizeCacheEntry>
+
+let private tryGetHiddenPrefixSizeCacheEntry overrides hiddenRows =
+    if hiddenPrefixSizeCache.LastEntrySet
+       && hiddenPrefixSizeCacheEntryMatches overrides hiddenRows hiddenPrefixSizeCache.LastEntry then
+        Some hiddenPrefixSizeCache.LastEntry
+    else
+        match hiddenPrefixSizeCache.Entries |> List.tryFind (hiddenPrefixSizeCacheEntryMatches overrides hiddenRows) with
+        | Some entry ->
+            hiddenPrefixSizeCache.LastEntrySet <- true
+            hiddenPrefixSizeCache.LastEntry <- entry
+            Some entry
+        | None -> None
+
 let private rememberHiddenPrefixSizeCacheEntry (entry: HiddenPrefixSizeCacheEntry) =
     if not (hiddenPrefixSizeCacheEntryRetainable entry) then
-        hiddenPrefixSizeCache.Entries <-
-            hiddenPrefixSizeCache.Entries
-            |> List.filter (hiddenPrefixSizeCacheEntryMatches entry.Source entry.HiddenRows >> not)
+        hiddenPrefixSizeCache.Entries
+        |> List.filter (hiddenPrefixSizeCacheEntryMatches entry.Source entry.HiddenRows >> not)
+        |> setHiddenPrefixSizeCacheEntries
     else
         let mutable keptCount = 1
         let mutable keptKeys = hiddenPrefixSizeCacheEntryKeyCount entry
@@ -224,7 +286,8 @@ let private rememberHiddenPrefixSizeCacheEntry (entry: HiddenPrefixSizeCacheEntr
                     Some candidate
                 else
                     None)
-        hiddenPrefixSizeCache.Entries <- entry :: retained
+        entry :: retained
+        |> setHiddenPrefixSizeCacheEntries
 
 let private buildPrefixSizeCache defaultSize (overrides: Map<int, float>) =
     let keys = System.Collections.Generic.List<int>(overrides.Count)
@@ -255,7 +318,7 @@ let private prefixSizeUncached defaultSize (overrides: Map<int, float>) index =
     defaultSize * float clipped + total
 
 let private prefixSize defaultSize (overrides: Map<int, float>) (slot: PrefixSizeCacheSlot) (index: int) =
-    match slot.Entries |> List.tryFind (prefixSizeCacheEntryMatches overrides) with
+    match tryGetPrefixSizeCacheEntry slot overrides with
     | Some entry ->
         let clipped = max 0 index
         defaultSize * float clipped + entry.Cache.PrefixDeltas.[lowerBound entry.Cache.Keys clipped]
@@ -307,7 +370,7 @@ let private hiddenPrefixSize defaultSize (overrides: Map<int, float>) (hiddenRow
         elif Map.isEmpty overrides then
             defaultSize * float hiddenCount
         else
-            match hiddenPrefixSizeCache.Entries |> List.tryFind (hiddenPrefixSizeCacheEntryMatches overrides hiddenRows) with
+            match tryGetHiddenPrefixSizeCacheEntry overrides hiddenRows with
             | Some cache ->
                 defaultSize * float hiddenCount
                 + cache.PrefixDeltas.[lowerBound cache.CustomRows clipped]
