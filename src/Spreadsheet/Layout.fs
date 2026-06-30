@@ -1005,19 +1005,31 @@ let private tryGetHeadersCache model =
         else
             ValueNone
 
-let private removeVisibleCellsCacheForModel model =
+let private visibleCellsCacheWithoutModel model =
     let mutable cached = Unchecked.defaultof<VisibleCellsCache>
     if visibleCellsCacheByModel.TryGetValue(model, &cached) then
         visibleCellsCache
         |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, model)))
-        |> setVisibleCellsCache
+    else
+        visibleCellsCache
 
-let private removeHeadersCacheForModel model =
+let private removeVisibleCellsCacheForModel model =
+    let entries = visibleCellsCacheWithoutModel model
+    if not (obj.ReferenceEquals(entries, visibleCellsCache)) then
+        setVisibleCellsCache entries
+
+let private headersCacheWithoutModel model =
     let mutable cached = Unchecked.defaultof<HeadersCache>
     if headersCacheByModel.TryGetValue(model, &cached) then
         headersCache
         |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, model)))
-        |> setHeadersCache
+    else
+        headersCache
+
+let private removeHeadersCacheForModel model =
+    let entries = headersCacheWithoutModel model
+    if not (obj.ReferenceEquals(entries, headersCache)) then
+        setHeadersCache entries
 
 let private rememberVisibleCellsCache (cache: VisibleCellsCache) =
     if not (visibleCellsCacheRetainable cache) then
@@ -1028,8 +1040,7 @@ let private rememberVisibleCellsCache (cache: VisibleCellsCache) =
         let mutable keptSourceItems = cache.SourceItemCount
         let mutable keptSourceTextChars = cache.SourceTextCharCount
         let retained =
-            visibleCellsCache
-            |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+            visibleCellsCacheWithoutModel cache.Model
             |> List.choose (fun candidate ->
                 let candidateItems = candidate.TotalItemCount
                 let candidateSourceItems = candidate.SourceItemCount
@@ -1057,8 +1068,7 @@ let private rememberHeadersCache (cache: HeadersCache) =
         let mutable keptSourceItems = cache.SourceItemCount
         let mutable keptSourceTextChars = cache.SourceTextCharCount
         let retained =
-            headersCache
-            |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+            headersCacheWithoutModel cache.Model
             |> List.choose (fun candidate ->
                 let candidateItems = candidate.TotalItemCount
                 let candidateSourceItems = candidate.SourceItemCount
