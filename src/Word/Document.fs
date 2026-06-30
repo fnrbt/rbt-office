@@ -4095,6 +4095,8 @@ and private CurrentTableCellCacheEntry = {
 }
 
 let mutable private currentTableCellCache: CurrentTableCellCache list = []
+let private currentTableCellCacheByBlocks = Dictionary<Block list, CurrentTableCellCache>(documentInfoBlocksComparer)
+let private currentTableCellFastSlots = Array.zeroCreate<CurrentTableCellCache> 256
 let private currentTableCellCacheMaxSources = 64
 let private currentTableCellCacheMaxTotalTableParagraphs = 200000
 let private currentTableCellCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
@@ -4103,6 +4105,40 @@ let private currentTableCellCacheBuildEntryLimit = 32768
 
 let private currentTableCellCacheMatches blocks (cached: CurrentTableCellCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private setCurrentTableCellCache entries =
+    currentTableCellCache <- entries
+    currentTableCellCacheByBlocks.Clear()
+    clearArray currentTableCellFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<CurrentTableCellCache>
+        if not (currentTableCellCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            currentTableCellCacheByBlocks.[entry.SourceBlocks] <- entry
+            let slot = documentInfoSlot entry.SourceBlocks currentTableCellFastSlots.Length
+            currentTableCellFastSlots.[slot] <- entry
+
+let private tryGetCurrentTableCellCache blocks =
+    let slot = documentInfoSlot blocks currentTableCellFastSlots.Length
+    let fast = currentTableCellFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && currentTableCellCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<CurrentTableCellCache>
+        if currentTableCellCacheByBlocks.TryGetValue(blocks, &cached) then
+            currentTableCellFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private currentTableCellCacheWithoutBlocks blocks =
+    let mutable cached = Unchecked.defaultof<CurrentTableCellCache>
+    if currentTableCellCacheByBlocks.TryGetValue(blocks, &cached)
+       && currentTableCellCacheMatches blocks cached then
+        currentTableCellCache
+        |> List.filter (currentTableCellCacheMatches blocks >> not)
+    else
+        currentTableCellCache
 
 let private trimCurrentTableCellCache caches =
     let rec loop remaining kept count totalTableParagraphs totalSourceParagraphs totalSourceTextChars =
@@ -4131,10 +4167,10 @@ let private trimCurrentTableCellCache caches =
     loop caches [] 0 0 0 0
 
 let private rememberCurrentTableCellCache cached =
-    currentTableCellCache <-
-        cached
-        :: (currentTableCellCache |> List.filter (currentTableCellCacheMatches cached.SourceBlocks >> not))
-        |> trimCurrentTableCellCache
+    cached
+    :: currentTableCellCacheWithoutBlocks cached.SourceBlocks
+    |> trimCurrentTableCellCache
+    |> setCurrentTableCellCache
 
 let private countTableCellParagraphs blocks =
     let mutable count = 0
@@ -4220,20 +4256,20 @@ let private buildCurrentTableCellCache (doc: Document) =
     }
 
 let private currentTableCellLookup (doc: Document) =
-    match currentTableCellCache |> List.tryFind (currentTableCellCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetCurrentTableCellCache doc.Blocks with
+    | ValueSome cached ->
         cached
-    | None ->
+    | ValueNone ->
         let cached = buildCurrentTableCellCache doc
         rememberCurrentTableCellCache cached
         cached
 
 let private tryFindCachedCurrentTableCell blocks blockId =
-    match currentTableCellCache |> List.tryFind (currentTableCellCacheMatches blocks) with
-    | Some cached ->
+    match tryGetCurrentTableCellCache blocks with
+    | ValueSome cached ->
         let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
         if cached.Entries.TryGetValue(blockId, &entry) then entry.Result else None
-    | None -> None
+    | ValueNone -> None
 
 let private countCurrentTableCellEntriesWithLimit limit (table: TableBlock) =
     let mutable count = 0
