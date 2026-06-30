@@ -7363,6 +7363,22 @@ let mutable private mergeLookupIndex: MergeLookupIndex list = []
 let mutable private mergeRangeIndex: MergeRangeIndex list = []
 let mutable private mergeRangeOrderingCache: MergeRangeOrderingCache list = []
 let mutable private mergeRangeQueryCache: MergeRangeQueryCache list = []
+let private mergedCellListReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<MergedCell list> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = referenceHash value }
+let private mergeLookupIndexBySource =
+    System.Collections.Generic.Dictionary<MergedCell list, MergeLookupIndex>(mergedCellListReferenceComparer)
+let private mergeLookupFastSlots = Array.zeroCreate<MergeLookupIndex> 256
+let private mergeRangeIndexBySource =
+    System.Collections.Generic.Dictionary<MergedCell list, MergeRangeIndex>(mergedCellListReferenceComparer)
+let private mergeRangeFastSlots = Array.zeroCreate<MergeRangeIndex> 256
+let private mergeRangeOrderingCacheBySource =
+    System.Collections.Generic.Dictionary<MergedCell list, MergeRangeOrderingCache>(mergedCellListReferenceComparer)
+let private mergeRangeOrderingFastSlots = Array.zeroCreate<MergeRangeOrderingCache> 256
+let private mergeRangeQueryCacheBySource =
+    System.Collections.Generic.Dictionary<MergedCell list, MergeRangeQueryCache>(mergedCellListReferenceComparer)
+let private mergeRangeQueryFastSlots = Array.zeroCreate<MergeRangeQueryCache> 256
 let private mergeLookupRowEntryLimit = 100000
 let private mergeIndexCacheMaxSources = 64
 let private mergeIndexCacheMaxTotalSourceMerges = 100000
@@ -7390,6 +7406,98 @@ let private mergeRangeOrderingCacheMatches merges (cached: MergeRangeOrderingCac
 let private mergeRangeQueryCacheMatches merges (cached: MergeRangeQueryCache) =
     System.Object.ReferenceEquals(cached.Source, merges)
 
+let private setMergeLookupIndex entries =
+    mergeLookupIndex <- entries
+    mergeLookupIndexBySource.Clear()
+    clearArray mergeLookupFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<MergeLookupIndex>
+        if not (mergeLookupIndexBySource.TryGetValue(entry.Source, &existing)) then
+            mergeLookupIndexBySource.[entry.Source] <- entry
+
+let private setMergeRangeIndex entries =
+    mergeRangeIndex <- entries
+    mergeRangeIndexBySource.Clear()
+    clearArray mergeRangeFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<MergeRangeIndex>
+        if not (mergeRangeIndexBySource.TryGetValue(entry.Source, &existing)) then
+            mergeRangeIndexBySource.[entry.Source] <- entry
+
+let private setMergeRangeOrderingCache entries =
+    mergeRangeOrderingCache <- entries
+    mergeRangeOrderingCacheBySource.Clear()
+    clearArray mergeRangeOrderingFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<MergeRangeOrderingCache>
+        if not (mergeRangeOrderingCacheBySource.TryGetValue(entry.Source, &existing)) then
+            mergeRangeOrderingCacheBySource.[entry.Source] <- entry
+
+let private setMergeRangeQueryCache entries =
+    mergeRangeQueryCache <- entries
+    mergeRangeQueryCacheBySource.Clear()
+    clearArray mergeRangeQueryFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<MergeRangeQueryCache>
+        if not (mergeRangeQueryCacheBySource.TryGetValue(entry.Source, &existing)) then
+            mergeRangeQueryCacheBySource.[entry.Source] <- entry
+
+let private tryGetMergeLookupIndex merges =
+    let slot = referenceSlot merges mergeLookupFastSlots.Length
+    let fast = mergeLookupFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && mergeLookupIndexMatches merges fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<MergeLookupIndex>
+        if mergeLookupIndexBySource.TryGetValue(merges, &cached) then
+            mergeLookupFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryGetMergeRangeIndex merges =
+    let slot = referenceSlot merges mergeRangeFastSlots.Length
+    let fast = mergeRangeFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && mergeRangeIndexMatches merges fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<MergeRangeIndex>
+        if mergeRangeIndexBySource.TryGetValue(merges, &cached) then
+            mergeRangeFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryGetMergeRangeOrderingCache merges =
+    let slot = referenceSlot merges mergeRangeOrderingFastSlots.Length
+    let fast = mergeRangeOrderingFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && mergeRangeOrderingCacheMatches merges fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<MergeRangeOrderingCache>
+        if mergeRangeOrderingCacheBySource.TryGetValue(merges, &cached) then
+            mergeRangeOrderingFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryGetMergeRangeQueryCache merges =
+    let slot = referenceSlot merges mergeRangeQueryFastSlots.Length
+    let fast = mergeRangeQueryFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && mergeRangeQueryCacheMatches merges fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<MergeRangeQueryCache>
+        if mergeRangeQueryCacheBySource.TryGetValue(merges, &cached) then
+            mergeRangeQueryFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private trimMergeSourceCache sourceCount entries =
     let rec loop keptCount keptSources acc remaining =
         match remaining with
@@ -7410,29 +7518,31 @@ let private mergeRangeQueryCacheRetainable (cached: MergeRangeQueryCache) =
     && cached.SourceCount <= mergeRangeQueryCacheMaxTotalSourceMerges
 
 let private rememberMergeLookupIndex cached =
-    mergeLookupIndex <-
-        (cached
-         :: (mergeLookupIndex
-             |> List.filter (mergeLookupIndexMatches cached.Source >> not)))
-        |> trimMergeSourceCache (fun entry -> entry.SourceCount)
+    (cached
+     :: (mergeLookupIndex
+         |> List.filter (mergeLookupIndexMatches cached.Source >> not)))
+    |> trimMergeSourceCache (fun entry -> entry.SourceCount)
+    |> setMergeLookupIndex
 
 let private rememberMergeRangeIndex cached =
-    mergeRangeIndex <-
-        (cached
-         :: (mergeRangeIndex
-             |> List.filter (mergeRangeIndexMatches cached.Source >> not)))
-        |> trimMergeSourceCache (fun entry -> entry.SourceCount)
+    (cached
+     :: (mergeRangeIndex
+         |> List.filter (mergeRangeIndexMatches cached.Source >> not)))
+    |> trimMergeSourceCache (fun entry -> entry.SourceCount)
+    |> setMergeRangeIndex
 
 let private rememberMergeRangeOrdering cached =
-    mergeRangeOrderingCache <-
-        (cached
-         :: (mergeRangeOrderingCache
-             |> List.filter (mergeRangeOrderingCacheMatches cached.Source >> not)))
-        |> trimMergeSourceCache (fun entry -> entry.SourceCount)
+    (cached
+     :: (mergeRangeOrderingCache
+         |> List.filter (mergeRangeOrderingCacheMatches cached.Source >> not)))
+    |> trimMergeSourceCache (fun entry -> entry.SourceCount)
+    |> setMergeRangeOrderingCache
 
 let private rememberMergeRangeQueryCache cached =
     if not (mergeRangeQueryCacheRetainable cached) then
-        mergeRangeQueryCache <- mergeRangeQueryCache |> List.filter (mergeRangeQueryCacheMatches cached.Source >> not)
+        mergeRangeQueryCache
+        |> List.filter (mergeRangeQueryCacheMatches cached.Source >> not)
+        |> setMergeRangeQueryCache
     else
         let mutable keptCount = 1
         let mutable keptResults = cached.TotalResultCount
@@ -7453,7 +7563,8 @@ let private rememberMergeRangeQueryCache cached =
                     Some candidate
                 else
                     None)
-        mergeRangeQueryCache <- cached :: retained
+        cached :: retained
+        |> setMergeRangeQueryCache
 
 let private mergeRangeQueryKey startRow endRowExclusive startCol endColExclusive = {
     StartRow = startRow
@@ -7496,25 +7607,25 @@ let private addMergeRangeQueryCacheEntry key entry (cache: MergeRangeQueryCache)
 
 let private cachedMergeRangeQuery startRow endRowExclusive startCol endColExclusive merges =
     let key = mergeRangeQueryKey startRow endRowExclusive startCol endColExclusive
-    match mergeRangeQueryCache |> List.tryFind (mergeRangeQueryCacheMatches merges) with
-    | Some cached when mergeRangeQueryCacheRetainable cached ->
+    match tryGetMergeRangeQueryCache merges with
+    | ValueSome cached when mergeRangeQueryCacheRetainable cached ->
         let mutable entry = Unchecked.defaultof<MergeRangeQueryCacheEntry>
         if cached.Entries.TryGetValue(key, &entry) then
             Some entry.Results
         else
             None
-    | Some cached ->
+    | ValueSome cached ->
         rememberMergeRangeQueryCache cached
         None
-    | None -> None
+    | ValueNone -> None
 
 let private rememberMergeRangeQuery startRow endRowExclusive startCol endColExclusive merges results =
     let key = mergeRangeQueryKey startRow endRowExclusive startCol endColExclusive
     let entry = { Results = results; ResultCount = results.Length }
     let cache =
-        match mergeRangeQueryCache |> List.tryFind (mergeRangeQueryCacheMatches merges) with
-        | Some cached -> cached
-        | None ->
+        match tryGetMergeRangeQueryCache merges with
+        | ValueSome cached -> cached
+        | ValueNone ->
             {
                 Source = merges
                 SourceCount = mergeSourceCountCapped merges
@@ -7556,19 +7667,19 @@ let private buildMergeLookupIndex (merges: MergedCell list) =
     { Source = merges; SourceCount = sourceCount; Rows = rows }
 
 let private mergeLookupRows merges =
-    match mergeLookupIndex |> List.tryFind (mergeLookupIndexMatches merges) with
-    | Some cached ->
+    match tryGetMergeLookupIndex merges with
+    | ValueSome cached ->
         cached.Rows
-    | None ->
+    | ValueNone ->
         let cached = buildMergeLookupIndex merges
         rememberMergeLookupIndex cached
         cached.Rows
 
 let private mergeRangeRows merges =
-    match mergeRangeIndex |> List.tryFind (mergeRangeIndexMatches merges) with
-    | Some cached ->
+    match tryGetMergeRangeIndex merges with
+    | ValueSome cached ->
         cached.ByStartRow
-    | None ->
+    | ValueNone ->
         let sourceCount = mergeSourceCountCapped merges
         if sourceCount > mergeIndexCacheMaxTotalSourceMerges then
             [||]
@@ -7588,10 +7699,10 @@ let private mergeRangeRows merges =
             arr
 
 let private mergeRangeIsStartRowAscending (merges: MergedCell list) =
-    match mergeRangeOrderingCache |> List.tryFind (mergeRangeOrderingCacheMatches merges) with
-    | Some cached ->
+    match tryGetMergeRangeOrderingCache merges with
+    | ValueSome cached ->
         cached.IsStartRowAscending
-    | None ->
+    | ValueNone ->
         let sourceCount = mergeSourceCountCapped merges
         let mutable ascending = true
         let mutable lastStart = System.Int32.MinValue
