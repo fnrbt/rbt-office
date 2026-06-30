@@ -1237,6 +1237,21 @@ let private tryGetPasteIdentityCache cells rowCount colCount =
         else
             ValueNone
 
+let private pasteIdentityCacheWithoutSource cells rowCount colCount =
+    let key = cellGridReferenceKey cells rowCount colCount
+    let mutable cached = Unchecked.defaultof<PasteIdentityCache>
+    if pasteIdentityCacheBySource.TryGetValue(key, &cached)
+       && pasteIdentityCacheMatches cells rowCount colCount cached then
+        pasteIdentityCache
+        |> List.filter (pasteIdentityCacheMatches cells rowCount colCount >> not)
+    else
+        pasteIdentityCache
+
+let private removePasteIdentityCacheForSource cells rowCount colCount =
+    let entries = pasteIdentityCacheWithoutSource cells rowCount colCount
+    if not (obj.ReferenceEquals(entries, pasteIdentityCache)) then
+        setPasteIdentityCache entries
+
 let private pasteIdentityCacheRetainable (cached: PasteIdentityCache) =
     cached.Entries.Count > 0
     && cached.Entries.Count <= pasteIdentityCacheMaxEntries
@@ -1246,37 +1261,38 @@ let private pasteIdentityCacheRetainable (cached: PasteIdentityCache) =
     && cached.TotalClipboardTextCharCount <= pasteIdentityCacheMaxTotalClipboardTextChars
 
 let private rememberPasteIdentityCache cached =
-    let trim (entries: PasteIdentityCache list) =
-        let rec loop keptCount keptCells keptSourceTextChars keptClipboardCells keptClipboardTextChars acc remaining =
-            match remaining with
-            | [] -> List.rev acc
-            | candidate :: tail ->
-                let candidateCells = max 1 candidate.CellCount
-                let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
-                let candidateClipboardCells = max 1 candidate.TotalClipboardCellCount
-                let candidateClipboardTextChars = max 1 candidate.TotalClipboardTextCharCount
-                if pasteIdentityCacheRetainable candidate
-                   && keptCount < pasteIdentityCacheMaxSources
-                   && keptCells + candidateCells <= pasteIdentityCacheMaxTotalCells
-                   && keptSourceTextChars + candidateSourceTextChars <= pasteIdentityCacheMaxTotalSourceTextChars
-                   && keptClipboardCells + candidateClipboardCells <= pasteIdentityCacheMaxTotalClipboardCells
-                   && keptClipboardTextChars + candidateClipboardTextChars <= pasteIdentityCacheMaxTotalClipboardTextChars then
-                    loop
-                        (keptCount + 1)
-                        (keptCells + candidateCells)
-                        (keptSourceTextChars + candidateSourceTextChars)
-                        (keptClipboardCells + candidateClipboardCells)
-                        (keptClipboardTextChars + candidateClipboardTextChars)
-                        (candidate :: acc)
-                        tail
-                else
-                    loop keptCount keptCells keptSourceTextChars keptClipboardCells keptClipboardTextChars acc tail
-        loop 0 0 0 0 0 [] entries
-    (cached
-     :: (pasteIdentityCache
-         |> List.filter (pasteIdentityCacheMatches cached.Cells cached.RowCount cached.ColCount >> not)))
-    |> trim
-    |> setPasteIdentityCache
+    if not (pasteIdentityCacheRetainable cached) then
+        removePasteIdentityCacheForSource cached.Cells cached.RowCount cached.ColCount
+    else
+        let trim (entries: PasteIdentityCache list) =
+            let rec loop keptCount keptCells keptSourceTextChars keptClipboardCells keptClipboardTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateCells = max 1 candidate.CellCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    let candidateClipboardCells = max 1 candidate.TotalClipboardCellCount
+                    let candidateClipboardTextChars = max 1 candidate.TotalClipboardTextCharCount
+                    if pasteIdentityCacheRetainable candidate
+                       && keptCount < pasteIdentityCacheMaxSources
+                       && keptCells + candidateCells <= pasteIdentityCacheMaxTotalCells
+                       && keptSourceTextChars + candidateSourceTextChars <= pasteIdentityCacheMaxTotalSourceTextChars
+                       && keptClipboardCells + candidateClipboardCells <= pasteIdentityCacheMaxTotalClipboardCells
+                       && keptClipboardTextChars + candidateClipboardTextChars <= pasteIdentityCacheMaxTotalClipboardTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptCells + candidateCells)
+                            (keptSourceTextChars + candidateSourceTextChars)
+                            (keptClipboardCells + candidateClipboardCells)
+                            (keptClipboardTextChars + candidateClipboardTextChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptCells keptSourceTextChars keptClipboardCells keptClipboardTextChars acc tail
+            loop 0 0 0 0 0 [] entries
+        (cached :: pasteIdentityCacheWithoutSource cached.Cells cached.RowCount cached.ColCount)
+        |> trim
+        |> setPasteIdentityCache
 
 let private pasteIdentityKeyComparer =
     { new System.Collections.Generic.IEqualityComparer<PasteIdentityCacheKey> with
