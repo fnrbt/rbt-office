@@ -3121,12 +3121,37 @@ type private EditableParagraphEndpointsCache = {
 }
 
 let mutable private editableParagraphEndpointsCache: EditableParagraphEndpointsCache list = []
+let private editableParagraphEndpointsCacheByBlocks = Dictionary<Block list, EditableParagraphEndpointsCache>(documentInfoBlocksComparer)
+let private editableParagraphEndpointsFastSlots = Array.zeroCreate<EditableParagraphEndpointsCache> 256
 let private editableParagraphEndpointsCacheMaxEntries = 64
 let private editableParagraphEndpointsCacheMaxTotalParagraphs = 200000
 let private editableParagraphEndpointsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
 let private editableParagraphEndpointsCacheMatches blocks (cached: EditableParagraphEndpointsCache) =
     obj.ReferenceEquals(cached.EndpointSourceBlocks, blocks)
+
+let private setEditableParagraphEndpointsCache entries =
+    editableParagraphEndpointsCache <- entries
+    editableParagraphEndpointsCacheByBlocks.Clear()
+    clearArray editableParagraphEndpointsFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<EditableParagraphEndpointsCache>
+        if not (editableParagraphEndpointsCacheByBlocks.TryGetValue(entry.EndpointSourceBlocks, &existing)) then
+            editableParagraphEndpointsCacheByBlocks.[entry.EndpointSourceBlocks] <- entry
+
+let private tryGetEditableParagraphEndpointsCache blocks =
+    let slot = documentInfoSlot blocks editableParagraphEndpointsFastSlots.Length
+    let fast = editableParagraphEndpointsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && editableParagraphEndpointsCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<EditableParagraphEndpointsCache>
+        if editableParagraphEndpointsCacheByBlocks.TryGetValue(blocks, &cached) then
+            editableParagraphEndpointsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private trimEditableParagraphEndpointsCache entries =
     let rec loop remaining kept count totalParagraphs totalSourceTextChars =
@@ -3146,16 +3171,16 @@ let private trimEditableParagraphEndpointsCache entries =
     loop entries [] 0 0 0
 
 let private rememberEditableParagraphEndpoints cached =
-    editableParagraphEndpointsCache <-
-        cached
-        :: (editableParagraphEndpointsCache |> List.filter (editableParagraphEndpointsCacheMatches cached.EndpointSourceBlocks >> not))
-        |> trimEditableParagraphEndpointsCache
+    cached
+    :: (editableParagraphEndpointsCache |> List.filter (editableParagraphEndpointsCacheMatches cached.EndpointSourceBlocks >> not))
+    |> trimEditableParagraphEndpointsCache
+    |> setEditableParagraphEndpointsCache
 
 let private editableParagraphEndpoints doc =
-    match editableParagraphEndpointsCache |> List.tryFind (editableParagraphEndpointsCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetEditableParagraphEndpointsCache doc.Blocks with
+    | ValueSome cached ->
         cached.EndpointFirst, cached.EndpointLast
-    | None ->
+    | ValueNone ->
         let mutable firstPara: ParagraphBlock voption = ValueNone
         let mutable lastPara: ParagraphBlock voption = ValueNone
         let mutable paragraphCount = 0
@@ -3209,6 +3234,8 @@ type private OrderedEditableParagraphsCache = {
 }
 
 let mutable private orderedEditableParagraphsCache: OrderedEditableParagraphsCache list = []
+let private orderedEditableParagraphsCacheByBlocks = Dictionary<Block list, OrderedEditableParagraphsCache>(documentInfoBlocksComparer)
+let private orderedEditableParagraphsFastSlots = Array.zeroCreate<OrderedEditableParagraphsCache> 256
 let private orderedEditableParagraphsCacheMaxEntries = 64
 let private orderedEditableParagraphsCacheMaxTotalEntries = 200000
 let private orderedEditableParagraphsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
@@ -3216,15 +3243,38 @@ let private orderedEditableParagraphsCacheMaxTotalSourceTextChars = documentSour
 let private orderedEditableParagraphsCacheMatches blocks (cached: OrderedEditableParagraphsCache) =
     obj.ReferenceEquals(cached.OrderedSourceBlocks, blocks)
 
+let private setOrderedEditableParagraphsCache entries =
+    orderedEditableParagraphsCache <- entries
+    orderedEditableParagraphsCacheByBlocks.Clear()
+    clearArray orderedEditableParagraphsFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<OrderedEditableParagraphsCache>
+        if not (orderedEditableParagraphsCacheByBlocks.TryGetValue(entry.OrderedSourceBlocks, &existing)) then
+            orderedEditableParagraphsCacheByBlocks.[entry.OrderedSourceBlocks] <- entry
+
+let private tryGetOrderedEditableParagraphsCache blocks =
+    let slot = documentInfoSlot blocks orderedEditableParagraphsFastSlots.Length
+    let fast = orderedEditableParagraphsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && orderedEditableParagraphsCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<OrderedEditableParagraphsCache>
+        if orderedEditableParagraphsCacheByBlocks.TryGetValue(blocks, &cached) then
+            orderedEditableParagraphsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private orderedEditableParagraphsCacheRetainable (cached: OrderedEditableParagraphsCache) =
     cached.EntryCount <= orderedEditableParagraphsCacheMaxTotalEntries
     && cached.SourceTextCharCount <= orderedEditableParagraphsCacheMaxTotalSourceTextChars
 
 let private rememberOrderedEditableParagraphs cached =
     if not (orderedEditableParagraphsCacheRetainable cached) then
-        orderedEditableParagraphsCache <-
-            orderedEditableParagraphsCache
-            |> List.filter (orderedEditableParagraphsCacheMatches cached.OrderedSourceBlocks >> not)
+        orderedEditableParagraphsCache
+        |> List.filter (orderedEditableParagraphsCacheMatches cached.OrderedSourceBlocks >> not)
+        |> setOrderedEditableParagraphsCache
     else
         let trim entries =
             let rec loop keptCount keptEntries keptSourceTextChars acc remaining =
@@ -3246,11 +3296,11 @@ let private rememberOrderedEditableParagraphs cached =
                     else
                         loop keptCount keptEntries keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        orderedEditableParagraphsCache <-
-            (cached
-             :: (orderedEditableParagraphsCache
-                 |> List.filter (orderedEditableParagraphsCacheMatches cached.OrderedSourceBlocks >> not)))
-            |> trim
+        (cached
+         :: (orderedEditableParagraphsCache
+             |> List.filter (orderedEditableParagraphsCacheMatches cached.OrderedSourceBlocks >> not)))
+        |> trim
+        |> setOrderedEditableParagraphsCache
 
 let private orderedEditableParagraphs doc =
     let build () =
@@ -3273,13 +3323,13 @@ let private orderedEditableParagraphs doc =
         }
         rememberOrderedEditableParagraphs cached
         cached
-    match orderedEditableParagraphsCache |> List.tryFind (orderedEditableParagraphsCacheMatches doc.Blocks) with
-    | Some cached when orderedEditableParagraphsCacheRetainable cached ->
+    match tryGetOrderedEditableParagraphsCache doc.Blocks with
+    | ValueSome cached when orderedEditableParagraphsCacheRetainable cached ->
         cached
-    | Some cached ->
+    | ValueSome cached ->
         rememberOrderedEditableParagraphs cached
         build ()
-    | None ->
+    | ValueNone ->
         build ()
 
 let private paragraphIndexById doc =
