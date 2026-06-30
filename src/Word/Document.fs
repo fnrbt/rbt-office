@@ -5881,11 +5881,21 @@ let private trimCaptionIdMetricsCache entries =
     loop 0 0 0 [] entries
 
 let private captionIdMetricsCacheWithoutMatching blocks label =
-    if captionIdMetricsCache |> List.exists (captionIdMetricsCacheMatches blocks label) then
-        captionIdMetricsCache
-        |> List.filter (fun entry -> not (captionIdMetricsCacheMatches blocks label entry))
-    else
-        captionIdMetricsCache
+    let rec rebuild keptRev remaining =
+        match remaining with
+        | [] -> List.rev keptRev
+        | entry :: tail when captionIdMetricsCacheMatches blocks label entry ->
+            rebuild keptRev tail
+        | entry :: tail ->
+            rebuild (entry :: keptRev) tail
+    let rec seek keptRev remaining =
+        match remaining with
+        | [] -> captionIdMetricsCache
+        | entry :: tail when captionIdMetricsCacheMatches blocks label entry ->
+            rebuild keptRev tail
+        | entry :: tail ->
+            seek (entry :: keptRev) tail
+    seek [] captionIdMetricsCache
 
 let private rememberCaptionIdMetrics cached =
     let withoutMatching =
@@ -5986,11 +5996,21 @@ let private tryParseBookmarkId value =
     | None -> ValueNone
 
 let private bookmarkIdMetricsCacheWithoutMatching blocks =
-    if bookmarkIdMetricsCache |> List.exists (bookmarkIdMetricsCacheMatches blocks) then
-        bookmarkIdMetricsCache
-        |> List.filter (bookmarkIdMetricsCacheMatches blocks >> not)
-    else
-        bookmarkIdMetricsCache
+    let rec rebuild keptRev remaining =
+        match remaining with
+        | [] -> List.rev keptRev
+        | entry :: tail when bookmarkIdMetricsCacheMatches blocks entry ->
+            rebuild keptRev tail
+        | entry :: tail ->
+            rebuild (entry :: keptRev) tail
+    let rec seek keptRev remaining =
+        match remaining with
+        | [] -> bookmarkIdMetricsCache
+        | entry :: tail when bookmarkIdMetricsCacheMatches blocks entry ->
+            rebuild keptRev tail
+        | entry :: tail ->
+            seek (entry :: keptRev) tail
+    seek [] bookmarkIdMetricsCache
 
 let private rememberBookmarkIdMetrics cached =
     if not (bookmarkIdMetricsCacheRetainable cached) then
@@ -6103,11 +6123,21 @@ let private tryParseRevisionId value =
     | None -> ValueNone
 
 let private revisionIdMetricsCacheWithoutMatching blocks =
-    if revisionIdMetricsCache |> List.exists (revisionIdMetricsCacheMatches blocks) then
-        revisionIdMetricsCache
-        |> List.filter (revisionIdMetricsCacheMatches blocks >> not)
-    else
-        revisionIdMetricsCache
+    let rec rebuild keptRev remaining =
+        match remaining with
+        | [] -> List.rev keptRev
+        | entry :: tail when revisionIdMetricsCacheMatches blocks entry ->
+            rebuild keptRev tail
+        | entry :: tail ->
+            rebuild (entry :: keptRev) tail
+    let rec seek keptRev remaining =
+        match remaining with
+        | [] -> revisionIdMetricsCache
+        | entry :: tail when revisionIdMetricsCacheMatches blocks entry ->
+            rebuild keptRev tail
+        | entry :: tail ->
+            seek (entry :: keptRev) tail
+    seek [] revisionIdMetricsCache
 
 let private rememberRevisionIdMetrics cached =
     if not (revisionIdMetricsCacheRetainable cached) then
