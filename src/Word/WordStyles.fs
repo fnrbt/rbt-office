@@ -345,6 +345,14 @@ let private tryGetStyleContext styles =
         else
             ValueNone
 
+let private styleContextEntriesWithout styles =
+    let mutable cached = Unchecked.defaultof<StyleContextCacheEntry>
+    if styleContextCacheByStyles.TryGetValue(styles, &cached) then
+        styleContextCache.Entries
+        |> List.filter (styleContextCacheEntryMatches styles >> not)
+    else
+        styleContextCache.Entries
+
 let private textStyleStringCharCountFor limit (style: RedBat.Word.TextBuffer.TextStyle option) =
     match style with
     | None -> 0
@@ -433,9 +441,9 @@ let private rememberStyleContext styles context =
         Context = context
     }
     if not (styleContextCacheEntryRetainable entry) then
-        styleContextCache.Entries
-        |> List.filter (styleContextCacheEntryMatches styles >> not)
-        |> setStyleContextCache
+        let entries = styleContextEntriesWithout styles
+        if not (obj.ReferenceEquals(entries, styleContextCache.Entries)) then
+            setStyleContextCache entries
     else
         let trim entries =
             let rec loop keptCount keptStyles keptStyleChars acc remaining =
@@ -457,9 +465,7 @@ let private rememberStyleContext styles context =
                     else
                         loop keptCount keptStyles keptStyleChars acc tail
             loop 0 0 0 [] entries
-        entry
-        :: (styleContextCache.Entries
-            |> List.filter (styleContextCacheEntryMatches styles >> not))
+        entry :: styleContextEntriesWithout styles
         |> trim
         |> setStyleContextCache
     context

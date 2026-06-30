@@ -353,6 +353,14 @@ module Page =
         && entry.PartParagraphCount <= headerFooterPartLookupCacheMaxTotalPartParagraphs
         && entry.PartTextCharCount <= headerFooterPartLookupCacheMaxTotalPartTextChars
 
+    let private headerFooterPartLookupCacheWithout parts =
+        let mutable cached = Unchecked.defaultof<HeaderFooterPartLookup>
+        if headerFooterPartLookupCacheByParts.TryGetValue(parts, &cached) then
+            headerFooterPartLookupCache
+            |> List.filter (headerFooterPartLookupCacheMatches parts >> not)
+        else
+            headerFooterPartLookupCache
+
     let private trimHeaderFooterPartLookupCache entries =
         let rec loop remaining kept count totalParts totalPartParagraphs totalPartTextChars =
             match remaining with
@@ -382,12 +390,12 @@ module Page =
 
     let private rememberHeaderFooterPartLookup cached =
         if not (headerFooterPartLookupRetainable cached) then
-            headerFooterPartLookupCache
-            |> List.filter (headerFooterPartLookupCacheMatches cached.Parts >> not)
-            |> setHeaderFooterPartLookupCache
+            let entries = headerFooterPartLookupCacheWithout cached.Parts
+            if not (obj.ReferenceEquals(entries, headerFooterPartLookupCache)) then
+                setHeaderFooterPartLookupCache entries
         else
             cached
-            :: (headerFooterPartLookupCache |> List.filter (headerFooterPartLookupCacheMatches cached.Parts >> not))
+            :: headerFooterPartLookupCacheWithout cached.Parts
             |> trimHeaderFooterPartLookupCache
             |> setHeaderFooterPartLookupCache
 
