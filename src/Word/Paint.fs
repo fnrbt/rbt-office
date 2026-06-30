@@ -49,6 +49,10 @@ let private resizeArrayToList (items: ResizeArray<'T>) =
         result <- items.[i] :: result
     result
 
+let private clearArray (items: 'T array) =
+    for i = 0 to items.Length - 1 do
+        items.[i] <- Unchecked.defaultof<'T>
+
 let private columnWidthPrefix (columnWidths: float list) =
     let widths = columnWidths |> List.toArray
     let prefix = Array.zeroCreate<float> (widths.Length + 1)
@@ -1991,6 +1995,19 @@ type private DocumentPaintCommandsCacheEntry = {
     RetainedStyleCharCount: int
 }
 
+type private DocumentPaintCommandsCacheKey = {
+    Settings: LayoutSettings
+    FontFamily: string
+    Blocks: Block list
+    Styles: NamedStyle list
+    PageSetup: PageSetup
+    Headers: ParagraphBlock list
+    Footers: ParagraphBlock list
+    HeaderParts: HeaderFooterPart list
+    FooterParts: HeaderFooterPart list
+    CachedLayouts: BlockLayout list option
+}
+
 let mutable private documentPaintCommandsCache: DocumentPaintCommandsCacheEntry list = []
 let private documentPaintCommandsCacheMaxEntries = 64
 let private documentPaintCommandsCacheMaxTotalItems = 200000
@@ -2040,6 +2057,10 @@ let private cachedLayoutsMatch left right =
     | None, None -> true
     | _ -> false
 
+let private cachedLayoutsHash = function
+    | Some layouts -> System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(layouts)
+    | None -> 0
+
 let private documentPaintCacheEntryMatches settings fontFamily (doc: Document) cachedLayouts (cached: DocumentPaintCommandsCacheEntry) =
     cached.Settings = settings
       && cached.FontFamily = fontFamily
@@ -2051,6 +2072,153 @@ let private documentPaintCacheEntryMatches settings fontFamily (doc: Document) c
       && obj.ReferenceEquals(cached.HeaderParts, doc.HeaderParts)
       && obj.ReferenceEquals(cached.FooterParts, doc.FooterParts)
       && cachedLayoutsMatch cached.CachedLayouts cachedLayouts
+
+let private documentPaintCacheEntryMatchesKey (key: DocumentPaintCommandsCacheKey) (cached: DocumentPaintCommandsCacheEntry) =
+    cached.Settings = key.Settings
+      && cached.FontFamily = key.FontFamily
+      && obj.ReferenceEquals(cached.Blocks, key.Blocks)
+      && obj.ReferenceEquals(cached.Styles, key.Styles)
+      && cached.PageSetup = key.PageSetup
+      && obj.ReferenceEquals(cached.Headers, key.Headers)
+      && obj.ReferenceEquals(cached.Footers, key.Footers)
+      && obj.ReferenceEquals(cached.HeaderParts, key.HeaderParts)
+      && obj.ReferenceEquals(cached.FooterParts, key.FooterParts)
+      && cachedLayoutsMatch cached.CachedLayouts key.CachedLayouts
+
+let private documentPaintCommandsCacheKey settings fontFamily (doc: Document) cachedLayouts = {
+    Settings = settings
+    FontFamily = fontFamily
+    Blocks = doc.Blocks
+    Styles = doc.Styles
+    PageSetup = doc.PageSetup
+    Headers = doc.Headers
+    Footers = doc.Footers
+    HeaderParts = doc.HeaderParts
+    FooterParts = doc.FooterParts
+    CachedLayouts = cachedLayouts
+}
+
+let private documentPaintCommandsEntryKey (entry: DocumentPaintCommandsCacheEntry) = {
+    Settings = entry.Settings
+    FontFamily = entry.FontFamily
+    Blocks = entry.Blocks
+    Styles = entry.Styles
+    PageSetup = entry.PageSetup
+    Headers = entry.Headers
+    Footers = entry.Footers
+    HeaderParts = entry.HeaderParts
+    FooterParts = entry.FooterParts
+    CachedLayouts = entry.CachedLayouts
+}
+
+let private documentPaintCommandsCacheHash
+    settings
+    fontFamily
+    blocks
+    styles
+    pageSetup
+    headers
+    footers
+    headerParts
+    footerParts
+    cachedLayouts =
+    let mutable hashCode = hash settings
+    hashCode <- (hashCode * 397) ^^^ hash fontFamily
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(styles)
+    hashCode <- (hashCode * 397) ^^^ hash pageSetup
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(headers)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(footers)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(headerParts)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(footerParts)
+    hashCode <- (hashCode * 397) ^^^ cachedLayoutsHash cachedLayouts
+    hashCode
+
+let private documentPaintCommandsCacheKeyHash (key: DocumentPaintCommandsCacheKey) =
+    documentPaintCommandsCacheHash
+        key.Settings
+        key.FontFamily
+        key.Blocks
+        key.Styles
+        key.PageSetup
+        key.Headers
+        key.Footers
+        key.HeaderParts
+        key.FooterParts
+        key.CachedLayouts
+
+let private documentPaintCommandsCacheEntryHash (entry: DocumentPaintCommandsCacheEntry) =
+    documentPaintCommandsCacheHash
+        entry.Settings
+        entry.FontFamily
+        entry.Blocks
+        entry.Styles
+        entry.PageSetup
+        entry.Headers
+        entry.Footers
+        entry.HeaderParts
+        entry.FooterParts
+        entry.CachedLayouts
+
+let private documentPaintCommandsCacheKeyComparer =
+    { new IEqualityComparer<DocumentPaintCommandsCacheKey> with
+        member _.Equals(left, right) =
+            left.Settings = right.Settings
+            && left.FontFamily = right.FontFamily
+            && obj.ReferenceEquals(left.Blocks, right.Blocks)
+            && obj.ReferenceEquals(left.Styles, right.Styles)
+            && left.PageSetup = right.PageSetup
+            && obj.ReferenceEquals(left.Headers, right.Headers)
+            && obj.ReferenceEquals(left.Footers, right.Footers)
+            && obj.ReferenceEquals(left.HeaderParts, right.HeaderParts)
+            && obj.ReferenceEquals(left.FooterParts, right.FooterParts)
+            && cachedLayoutsMatch left.CachedLayouts right.CachedLayouts
+        member _.GetHashCode(value) =
+            documentPaintCommandsCacheKeyHash value }
+
+let private documentPaintCommandsCacheByKey =
+    Dictionary<DocumentPaintCommandsCacheKey, DocumentPaintCommandsCacheEntry>(documentPaintCommandsCacheKeyComparer)
+let private documentPaintCommandsFastSlots = Array.zeroCreate<DocumentPaintCommandsCacheEntry> 256
+
+let private documentPaintCommandsCacheSlot settings fontFamily (doc: Document) cachedLayouts =
+    documentPaintCommandsCacheHash
+        settings
+        fontFamily
+        doc.Blocks
+        doc.Styles
+        doc.PageSetup
+        doc.Headers
+        doc.Footers
+        doc.HeaderParts
+        doc.FooterParts
+        cachedLayouts
+    &&& (documentPaintCommandsFastSlots.Length - 1)
+
+let private setDocumentPaintCommandsCache entries =
+    documentPaintCommandsCache <- entries
+    documentPaintCommandsCacheByKey.Clear()
+    clearArray documentPaintCommandsFastSlots
+    for entry in entries do
+        let key = documentPaintCommandsEntryKey entry
+        documentPaintCommandsCacheByKey.[key] <- entry
+        let slot = documentPaintCommandsCacheEntryHash entry &&& (documentPaintCommandsFastSlots.Length - 1)
+        documentPaintCommandsFastSlots.[slot] <- entry
+
+let private tryGetDocumentPaintCommandsCache settings fontFamily (doc: Document) cachedLayouts =
+    let slot = documentPaintCommandsCacheSlot settings fontFamily doc cachedLayouts
+    let fast = documentPaintCommandsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && documentPaintCacheEntryMatches settings fontFamily doc cachedLayouts fast then
+        ValueSome fast.Result
+    else
+        let key = documentPaintCommandsCacheKey settings fontFamily doc cachedLayouts
+        let mutable cached = Unchecked.defaultof<DocumentPaintCommandsCacheEntry>
+        if documentPaintCommandsCacheByKey.TryGetValue(key, &cached)
+           && documentPaintCacheEntryMatchesKey key cached then
+            documentPaintCommandsFastSlots.[slot] <- cached
+            ValueSome cached.Result
+        else
+            ValueNone
 
 let private documentPaintTableSourceParagraphCount (table: TableBlock) =
     let mutable count = 0
@@ -2891,7 +3059,9 @@ let private rememberDocumentPaintCommands settings fontFamily (doc: Document) ca
                 else
                     loop tail kept count totalItems totalSourceParagraphs totalSourceTextChars totalStyleChars
         loop entries [] 0 0 0 0 0
-    documentPaintCommandsCache <- (entry :: removeMatching [] documentPaintCommandsCache) |> trim
+    (entry :: removeMatching [] documentPaintCommandsCache)
+    |> trim
+    |> setDocumentPaintCommandsCache
 
 let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
     let layouts, pages, layoutCount =
@@ -3012,9 +3182,9 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
     layouts, resizeArrayToList commands, pages, commandCount
 
 let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
-    match documentPaintCommandsCache |> List.tryFind (documentPaintCacheEntryMatches settings fontFamily doc cachedLayouts) with
-    | Some cached -> cached.Result
-    | _ ->
+    match tryGetDocumentPaintCommandsCache settings fontFamily doc cachedLayouts with
+    | ValueSome result -> result
+    | ValueNone ->
         let layouts, commands, pages, commandCount =
             collectDocumentCommandsWithLayoutsUncached settings fontFamily measureText measureRange doc cachedLayouts
         let result = layouts, commands, pages
