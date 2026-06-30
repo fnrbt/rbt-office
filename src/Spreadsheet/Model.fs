@@ -4374,15 +4374,20 @@ let private tryGetMaxUsedColumnCache cells =
         else
             ValueNone
 
+let private removeMaxUsedColumnCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<MaxUsedColumnCache>
+    if maxUsedColumnCacheByCells.TryGetValue(cells, &cached) then
+        maxUsedColumnCache
+        |> List.filter (maxUsedColumnCacheMatches cells >> not)
+        |> setMaxUsedColumnCache
+
 let private maxUsedColumnCacheRetainable (cached: MaxUsedColumnCache) =
     cached.CellCount <= maxUsedColumnCacheMaxTotalCells
     && cached.SourceTextCharCount <= maxUsedColumnCacheMaxTotalSourceTextChars
 
 let private rememberMaxUsedColumn (cached: MaxUsedColumnCache) =
     if not (maxUsedColumnCacheRetainable cached) then
-        maxUsedColumnCache
-        |> List.filter (maxUsedColumnCacheMatches cached.Cells >> not)
-        |> setMaxUsedColumnCache
+        removeMaxUsedColumnCacheForCells cached.Cells
     else
         let trim (entries: MaxUsedColumnCache list) =
             let rec loop keptCount keptCells keptSourceTextChars (acc: MaxUsedColumnCache list) (remaining: MaxUsedColumnCache list) =
@@ -4681,6 +4686,14 @@ let private tryGetUsedBoundsCache cells mergedCells =
         else
             ValueNone
 
+let private removeUsedBoundsCacheForSource cells mergedCells =
+    let key = cellMergedReferenceKey cells mergedCells
+    let mutable cached = Unchecked.defaultof<UsedBoundsCache>
+    if usedBoundsCacheBySource.TryGetValue(key, &cached) then
+        usedBoundsCache
+        |> List.filter (usedBoundsCacheMatches cells mergedCells >> not)
+        |> setUsedBoundsCache
+
 let private usedBoundsCacheRetainable (cached: UsedBoundsCache) =
     cached.CellCount <= usedBoundsCacheMaxTotalCells
     && cached.MergedCellCount <= usedBoundsCacheMaxTotalMergedCells
@@ -4688,9 +4701,7 @@ let private usedBoundsCacheRetainable (cached: UsedBoundsCache) =
 
 let private rememberUsedBounds cached =
     if not (usedBoundsCacheRetainable cached) then
-        usedBoundsCache
-        |> List.filter (usedBoundsCacheMatches cached.Cells cached.MergedCells >> not)
-        |> setUsedBoundsCache
+        removeUsedBoundsCacheForSource cached.Cells cached.MergedCells
     else
         let trim (entries: UsedBoundsCache list) =
             let rec loop keptCount keptCells keptMergedCells keptSourceTextChars acc remaining =
@@ -4772,6 +4783,14 @@ let private tryGetExportCsvCache cells mergedCells =
         else
             ValueNone
 
+let private removeExportCsvCacheForSource cells mergedCells =
+    let key = cellMergedReferenceKey cells mergedCells
+    let mutable cached = Unchecked.defaultof<ExportCsvCache>
+    if exportCsvCacheBySource.TryGetValue(key, &cached) then
+        exportCsvCache
+        |> List.filter (exportCsvCacheMatches cells mergedCells >> not)
+        |> setExportCsvCache
+
 let private exportCsvCacheRetainable (cached: ExportCsvCache) =
     cached.TextLength <= exportCsvCacheMaxTotalChars
     && cached.CellCount <= exportCsvCacheMaxTotalCells
@@ -4791,9 +4810,7 @@ let private exportCsvSourceTextCharCountFor textLength cellCount mergedCellCount
 
 let private rememberExportCsv cached =
     if not (exportCsvCacheRetainable cached) then
-        exportCsvCache
-        |> List.filter (exportCsvCacheMatches cached.Cells cached.MergedCells >> not)
-        |> setExportCsvCache
+        removeExportCsvCacheForSource cached.Cells cached.MergedCells
     else
         let trim entries =
             let rec loop keptCount keptChars keptCells keptMergedCells keptSourceTextChars acc remaining =
@@ -4925,6 +4942,14 @@ let private tryGetLastUsedColumnInRowCache cells mergedCells =
         else
             ValueNone
 
+let private removeLastUsedColumnInRowCacheForSource cells mergedCells =
+    let key = cellMergedReferenceKey cells mergedCells
+    let mutable cached = Unchecked.defaultof<LastUsedColumnInRowCache>
+    if lastUsedColumnInRowCacheBySource.TryGetValue(key, &cached) then
+        lastUsedColumnInRowCache
+        |> List.filter (lastUsedColumnInRowCacheMatches cells mergedCells >> not)
+        |> setLastUsedColumnInRowCache
+
 let private lastUsedColumnInRowCacheRetainable (cached: LastUsedColumnInRowCache) =
     cached.CellCount <= lastUsedColumnInRowCacheMaxTotalCells
     && cached.MergedCellCount <= lastUsedColumnInRowCacheMaxTotalMergedCells
@@ -5016,9 +5041,7 @@ let private scanLastUsedColumnInRow row (model: SpreadsheetModel) =
 
 let private rememberLastUsedColumnInRowCache cached =
     if not (lastUsedColumnInRowCacheRetainable cached) then
-        lastUsedColumnInRowCache
-        |> List.filter (lastUsedColumnInRowCacheMatches cached.Cells cached.MergedCells >> not)
-        |> setLastUsedColumnInRowCache
+        removeLastUsedColumnInRowCacheForSource cached.Cells cached.MergedCells
     else
         let trim (entries: LastUsedColumnInRowCache list) =
             let rec loop keptCount keptCells keptMergedCells keptSourceTextChars acc remaining =
