@@ -221,6 +221,23 @@ let private tryGetTableNamesCache tables =
         else
             ValueNone
 
+let private sheetNamesCacheWithoutMatching sheets sheetOrder =
+    let key = sheetNamesReferenceKey sheets sheetOrder
+    let mutable cached = Unchecked.defaultof<SheetNamesCacheEntry>
+    if sheetNamesCacheBySource.TryGetValue(key, &cached) then
+        sheetNamesCache
+        |> List.filter (sheetNamesCacheEntryMatches sheets sheetOrder >> not)
+    else
+        sheetNamesCache
+
+let private tableNamesCacheWithoutMatching tables =
+    let mutable cached = Unchecked.defaultof<TableNamesCacheEntry>
+    if tableNamesCacheBySource.TryGetValue(tables, &cached) then
+        tableNamesCache
+        |> List.filter (tableNamesCacheEntryMatches tables >> not)
+    else
+        tableNamesCache
+
 let private tableNamesCacheEntryRetainable (entry: TableNamesCacheEntry) =
     entry.NameCount <= tableNamesCacheMaxTotalNames
     && entry.NameCharCount <= tableNamesCacheMaxTotalNameChars
@@ -608,9 +625,7 @@ let private rememberSheetNamesCacheEntryWithMetrics sheets sheetOrder sourceItem
     if not (sheetNamesCacheEntryRetainable entry) then
         ()
     else
-        (entry
-         :: (sheetNamesCache
-             |> List.filter (sheetNamesCacheEntryMatches sheets sheetOrder >> not)))
+        (entry :: sheetNamesCacheWithoutMatching sheets sheetOrder)
         |> trimSheetNamesCache
         |> setSheetNamesCache
     names
@@ -626,9 +641,7 @@ let private rememberTableNamesCacheEntryWithMetrics tables sourceItemCount nameC
     if not (tableNamesCacheEntryRetainable entry) then
         ()
     else
-        (entry
-         :: (tableNamesCache
-             |> List.filter (tableNamesCacheEntryMatches tables >> not)))
+        (entry :: tableNamesCacheWithoutMatching tables)
         |> trimTableNamesCache
         |> setTableNamesCache
     names
