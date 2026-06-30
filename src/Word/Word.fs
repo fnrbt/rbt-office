@@ -16,6 +16,16 @@ module API =
 
     let private optionalText value = if isNull (box value) || value = "" then None else Some value
 
+    let private clearArray (items: 'T array) =
+        for i = 0 to items.Length - 1 do
+            items.[i] <- Unchecked.defaultof<'T>
+
+    let private referenceHash (value: obj) =
+        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value)
+
+    let private referenceSlot (value: obj) slotCount =
+        referenceHash value &&& (slotCount - 1)
+
     /// Editor instance
     type Editor = {
         Handler: Inp.InputHandler
@@ -273,6 +283,19 @@ module API =
     let mutable private paragraphMapCache: ParagraphMapCache list = []
     let mutable private paragraphContextCache: ParagraphContextCache list = []
     let mutable private sectionNumberCache: SectionNumberCache list = []
+    let private blockListReferenceComparer =
+        { new IEqualityComparer<Doc.Block list> with
+            member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+            member _.GetHashCode(value) = referenceHash value }
+    let private paragraphMapCacheByBlocks =
+        Dictionary<Doc.Block list, ParagraphMapCache>(blockListReferenceComparer)
+    let private paragraphMapFastSlots = Array.zeroCreate<ParagraphMapCache> 256
+    let private paragraphContextCacheByBlocks =
+        Dictionary<Doc.Block list, ParagraphContextCache>(blockListReferenceComparer)
+    let private paragraphContextFastSlots = Array.zeroCreate<ParagraphContextCache> 256
+    let private sectionNumberCacheByBlocks =
+        Dictionary<Doc.Block list, SectionNumberCache>(blockListReferenceComparer)
+    let private sectionNumberFastSlots = Array.zeroCreate<SectionNumberCache> 256
     let private wordApiCacheMaxSources = 8
     let private wordApiCacheMaxTotalEntries = 200000
     let private wordApiCacheMaxTotalSourceParagraphs = 100000
@@ -691,6 +714,75 @@ module API =
     let private sectionNumberCacheMatches blocks (cached: SectionNumberCache) =
         obj.ReferenceEquals(cached.CachedBlocks, blocks)
 
+    let private setParagraphMapCache entries =
+        paragraphMapCache <- entries
+        paragraphMapCacheByBlocks.Clear()
+        clearArray paragraphMapFastSlots
+        for entry in entries do
+            let mutable existing = Unchecked.defaultof<ParagraphMapCache>
+            if not (paragraphMapCacheByBlocks.TryGetValue(entry.CachedBlocks, &existing)) then
+                paragraphMapCacheByBlocks.[entry.CachedBlocks] <- entry
+
+    let private setParagraphContextCache entries =
+        paragraphContextCache <- entries
+        paragraphContextCacheByBlocks.Clear()
+        clearArray paragraphContextFastSlots
+        for entry in entries do
+            let mutable existing = Unchecked.defaultof<ParagraphContextCache>
+            if not (paragraphContextCacheByBlocks.TryGetValue(entry.CachedBlocks, &existing)) then
+                paragraphContextCacheByBlocks.[entry.CachedBlocks] <- entry
+
+    let private setSectionNumberCache entries =
+        sectionNumberCache <- entries
+        sectionNumberCacheByBlocks.Clear()
+        clearArray sectionNumberFastSlots
+        for entry in entries do
+            let mutable existing = Unchecked.defaultof<SectionNumberCache>
+            if not (sectionNumberCacheByBlocks.TryGetValue(entry.CachedBlocks, &existing)) then
+                sectionNumberCacheByBlocks.[entry.CachedBlocks] <- entry
+
+    let private tryGetParagraphMapCache blocks =
+        let slot = referenceSlot blocks paragraphMapFastSlots.Length
+        let fast = paragraphMapFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && paragraphMapCacheMatches blocks fast then
+            ValueSome fast
+        else
+            let mutable cached = Unchecked.defaultof<ParagraphMapCache>
+            if paragraphMapCacheByBlocks.TryGetValue(blocks, &cached) then
+                paragraphMapFastSlots.[slot] <- cached
+                ValueSome cached
+            else
+                ValueNone
+
+    let private tryGetParagraphContextCache blocks =
+        let slot = referenceSlot blocks paragraphContextFastSlots.Length
+        let fast = paragraphContextFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && paragraphContextCacheMatches blocks fast then
+            ValueSome fast
+        else
+            let mutable cached = Unchecked.defaultof<ParagraphContextCache>
+            if paragraphContextCacheByBlocks.TryGetValue(blocks, &cached) then
+                paragraphContextFastSlots.[slot] <- cached
+                ValueSome cached
+            else
+                ValueNone
+
+    let private tryGetSectionNumberCache blocks =
+        let slot = referenceSlot blocks sectionNumberFastSlots.Length
+        let fast = sectionNumberFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && sectionNumberCacheMatches blocks fast then
+            ValueSome fast
+        else
+            let mutable cached = Unchecked.defaultof<SectionNumberCache>
+            if sectionNumberCacheByBlocks.TryGetValue(blocks, &cached) then
+                sectionNumberFastSlots.[slot] <- cached
+                ValueSome cached
+            else
+                ValueNone
+
     let private wordApiCacheRetainable entryCount sourceParagraphCount sourceTextCharCount =
         entryCount <= wordApiCacheMaxTotalEntries
         && sourceParagraphCount <= wordApiCacheMaxTotalSourceParagraphs
@@ -730,7 +822,9 @@ module API =
 
     let private rememberParagraphMapCache (cached: ParagraphMapCache) =
         if not (paragraphMapCacheRetainable cached) then
-            paragraphMapCache <- paragraphMapCache |> List.filter (paragraphMapCacheMatches cached.CachedBlocks >> not)
+            paragraphMapCache
+            |> List.filter (paragraphMapCacheMatches cached.CachedBlocks >> not)
+            |> setParagraphMapCache
         else
             let retained =
                 paragraphMapCache
@@ -743,11 +837,14 @@ module API =
                     (fun entry -> entry.SourceParagraphCount)
                     (fun entry -> entry.SourceTextCharCount)
                     paragraphMapCacheRetainable
-            paragraphMapCache <- cached :: retained
+            cached :: retained
+            |> setParagraphMapCache
 
     let private rememberParagraphContextCache (cached: ParagraphContextCache) =
         if not (paragraphContextCacheRetainable cached) then
-            paragraphContextCache <- paragraphContextCache |> List.filter (paragraphContextCacheMatches cached.CachedBlocks >> not)
+            paragraphContextCache
+            |> List.filter (paragraphContextCacheMatches cached.CachedBlocks >> not)
+            |> setParagraphContextCache
         else
             let retained =
                 paragraphContextCache
@@ -760,11 +857,14 @@ module API =
                     (fun entry -> entry.SourceParagraphCount)
                     (fun entry -> entry.SourceTextCharCount)
                     paragraphContextCacheRetainable
-            paragraphContextCache <- cached :: retained
+            cached :: retained
+            |> setParagraphContextCache
 
     let private rememberSectionNumberCache (cached: SectionNumberCache) =
         if not (sectionNumberCacheRetainable cached) then
-            sectionNumberCache <- sectionNumberCache |> List.filter (sectionNumberCacheMatches cached.CachedBlocks >> not)
+            sectionNumberCache
+            |> List.filter (sectionNumberCacheMatches cached.CachedBlocks >> not)
+            |> setSectionNumberCache
         else
             let retained =
                 sectionNumberCache
@@ -777,7 +877,8 @@ module API =
                     (fun entry -> entry.SourceParagraphCount)
                     (fun entry -> entry.SourceTextCharCount)
                     sectionNumberCacheRetainable
-            sectionNumberCache <- cached :: retained
+            cached :: retained
+            |> setSectionNumberCache
 
     let private jsOpt value =
         match value with
@@ -818,9 +919,9 @@ module API =
         paragraphs
 
     let private paragraphMap (doc: Doc.Document) =
-        match paragraphMapCache |> List.tryFind (paragraphMapCacheMatches doc.Blocks) with
-        | Some cached -> cached.Paragraphs
-        | None ->
+        match tryGetParagraphMapCache doc.Blocks with
+        | ValueSome cached -> cached.Paragraphs
+        | ValueNone ->
             let paragraphs = buildParagraphMap doc
             let sourceParagraphCount = wordApiSourceParagraphCountFor paragraphs.Count doc.Blocks
             rememberParagraphMapCache ({
@@ -912,9 +1013,9 @@ module API =
         contexts
 
     let private paragraphContexts (doc: Doc.Document) =
-        match paragraphContextCache |> List.tryFind (paragraphContextCacheMatches doc.Blocks) with
-        | Some cached -> cached.Contexts
-        | None ->
+        match tryGetParagraphContextCache doc.Blocks with
+        | ValueSome cached -> cached.Contexts
+        | ValueNone ->
             let contexts = buildParagraphContexts doc
             let sourceParagraphCount = wordApiSourceParagraphCountFor contexts.Count doc.Blocks
             rememberParagraphContextCache ({
@@ -1088,9 +1189,9 @@ module API =
         sections
 
     let private sectionNumbersByParagraphId (doc: Doc.Document) =
-        match sectionNumberCache |> List.tryFind (sectionNumberCacheMatches doc.Blocks) with
-        | Some cached -> cached.Sections
-        | None ->
+        match tryGetSectionNumberCache doc.Blocks with
+        | ValueSome cached -> cached.Sections
+        | ValueNone ->
             let sections = buildSectionNumbersByParagraphId doc
             let sourceParagraphCount = wordApiSourceParagraphCountFor sections.Count doc.Blocks
             rememberSectionNumberCache ({
