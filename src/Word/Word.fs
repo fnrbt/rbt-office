@@ -789,26 +789,44 @@ module API =
             else
                 ValueNone
 
-    let private removeParagraphMapCacheForBlocks blocks =
+    let private paragraphMapCacheWithoutBlocks blocks =
         let mutable cached = Unchecked.defaultof<ParagraphMapCache>
         if paragraphMapCacheByBlocks.TryGetValue(blocks, &cached) then
             paragraphMapCache
             |> List.filter (paragraphMapCacheMatches blocks >> not)
-            |> setParagraphMapCache
+        else
+            paragraphMapCache
 
-    let private removeParagraphContextCacheForBlocks blocks =
+    let private paragraphContextCacheWithoutBlocks blocks =
         let mutable cached = Unchecked.defaultof<ParagraphContextCache>
         if paragraphContextCacheByBlocks.TryGetValue(blocks, &cached) then
             paragraphContextCache
             |> List.filter (paragraphContextCacheMatches blocks >> not)
-            |> setParagraphContextCache
+        else
+            paragraphContextCache
 
-    let private removeSectionNumberCacheForBlocks blocks =
+    let private sectionNumberCacheWithoutBlocks blocks =
         let mutable cached = Unchecked.defaultof<SectionNumberCache>
         if sectionNumberCacheByBlocks.TryGetValue(blocks, &cached) then
             sectionNumberCache
             |> List.filter (sectionNumberCacheMatches blocks >> not)
-            |> setSectionNumberCache
+        else
+            sectionNumberCache
+
+    let private removeParagraphMapCacheForBlocks blocks =
+        let entries = paragraphMapCacheWithoutBlocks blocks
+        if not (obj.ReferenceEquals(entries, paragraphMapCache)) then
+            setParagraphMapCache entries
+
+    let private removeParagraphContextCacheForBlocks blocks =
+        let entries = paragraphContextCacheWithoutBlocks blocks
+        if not (obj.ReferenceEquals(entries, paragraphContextCache)) then
+            setParagraphContextCache entries
+
+    let private removeSectionNumberCacheForBlocks blocks =
+        let entries = sectionNumberCacheWithoutBlocks blocks
+        if not (obj.ReferenceEquals(entries, sectionNumberCache)) then
+            setSectionNumberCache entries
 
     let private wordApiCacheRetainable entryCount sourceParagraphCount sourceTextCharCount =
         entryCount <= wordApiCacheMaxTotalEntries
@@ -852,8 +870,7 @@ module API =
             removeParagraphMapCacheForBlocks cached.CachedBlocks
         else
             let retained =
-                paragraphMapCache
-                |> List.filter (paragraphMapCacheMatches cached.CachedBlocks >> not)
+                paragraphMapCacheWithoutBlocks cached.CachedBlocks
                 |> wordApiCacheTrim
                     cached.EntryCount
                     cached.SourceParagraphCount
@@ -870,8 +887,7 @@ module API =
             removeParagraphContextCacheForBlocks cached.CachedBlocks
         else
             let retained =
-                paragraphContextCache
-                |> List.filter (paragraphContextCacheMatches cached.CachedBlocks >> not)
+                paragraphContextCacheWithoutBlocks cached.CachedBlocks
                 |> wordApiCacheTrim
                     cached.EntryCount
                     cached.SourceParagraphCount
@@ -888,8 +904,7 @@ module API =
             removeSectionNumberCacheForBlocks cached.CachedBlocks
         else
             let retained =
-                sectionNumberCache
-                |> List.filter (sectionNumberCacheMatches cached.CachedBlocks >> not)
+                sectionNumberCacheWithoutBlocks cached.CachedBlocks
                 |> wordApiCacheTrim
                     cached.EntryCount
                     cached.SourceParagraphCount
