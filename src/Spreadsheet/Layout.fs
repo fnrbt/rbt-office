@@ -209,18 +209,26 @@ let private tryGetPrefixSizeCacheEntry (slot: PrefixSizeCacheSlot) overrides =
             Some entry
         | None -> None
 
+let private prefixSizeCacheEntriesWithoutSource (slot: PrefixSizeCacheSlot) source =
+    let rec loop acc remaining =
+        match remaining with
+        | [] -> slot.Entries
+        | candidate :: tail when prefixSizeCacheEntryMatches source candidate ->
+            List.rev acc @ (tail |> List.filter (prefixSizeCacheEntryMatches source >> not))
+        | candidate :: tail ->
+            loop (candidate :: acc) tail
+    loop [] slot.Entries
+
 let private rememberPrefixSizeCacheEntry (slot: PrefixSizeCacheSlot) (entry: PrefixSizeCacheEntry) =
     if not (prefixSizeCacheEntryRetainable entry) then
-        if slot.Entries |> List.exists (prefixSizeCacheEntryMatches entry.Source) then
-            slot.Entries
-            |> List.filter (prefixSizeCacheEntryMatches entry.Source >> not)
-            |> setPrefixSizeCacheEntries slot
+        let entries = prefixSizeCacheEntriesWithoutSource slot entry.Source
+        if not (obj.ReferenceEquals(entries, slot.Entries)) then
+            setPrefixSizeCacheEntries slot entries
     else
         let mutable keptCount = 1
         let mutable keptKeys = prefixSizeCacheEntryKeyCount entry
         let retained =
-            slot.Entries
-            |> List.filter (prefixSizeCacheEntryMatches entry.Source >> not)
+            prefixSizeCacheEntriesWithoutSource slot entry.Source
             |> List.choose (fun candidate ->
                 let candidateKeys = prefixSizeCacheEntryKeyCount candidate
                 if prefixSizeCacheEntryRetainable candidate
@@ -266,18 +274,26 @@ let private tryGetHiddenPrefixSizeCacheEntry overrides hiddenRows =
             Some entry
         | None -> None
 
+let private hiddenPrefixSizeCacheEntriesWithoutSource source hiddenRows =
+    let rec loop acc remaining =
+        match remaining with
+        | [] -> hiddenPrefixSizeCache.Entries
+        | candidate :: tail when hiddenPrefixSizeCacheEntryMatches source hiddenRows candidate ->
+            List.rev acc @ (tail |> List.filter (hiddenPrefixSizeCacheEntryMatches source hiddenRows >> not))
+        | candidate :: tail ->
+            loop (candidate :: acc) tail
+    loop [] hiddenPrefixSizeCache.Entries
+
 let private rememberHiddenPrefixSizeCacheEntry (entry: HiddenPrefixSizeCacheEntry) =
     if not (hiddenPrefixSizeCacheEntryRetainable entry) then
-        if hiddenPrefixSizeCache.Entries |> List.exists (hiddenPrefixSizeCacheEntryMatches entry.Source entry.HiddenRows) then
-            hiddenPrefixSizeCache.Entries
-            |> List.filter (hiddenPrefixSizeCacheEntryMatches entry.Source entry.HiddenRows >> not)
-            |> setHiddenPrefixSizeCacheEntries
+        let entries = hiddenPrefixSizeCacheEntriesWithoutSource entry.Source entry.HiddenRows
+        if not (obj.ReferenceEquals(entries, hiddenPrefixSizeCache.Entries)) then
+            setHiddenPrefixSizeCacheEntries entries
     else
         let mutable keptCount = 1
         let mutable keptKeys = hiddenPrefixSizeCacheEntryKeyCount entry
         let retained =
-            hiddenPrefixSizeCache.Entries
-            |> List.filter (hiddenPrefixSizeCacheEntryMatches entry.Source entry.HiddenRows >> not)
+            hiddenPrefixSizeCacheEntriesWithoutSource entry.Source entry.HiddenRows
             |> List.choose (fun candidate ->
                 let candidateKeys = hiddenPrefixSizeCacheEntryKeyCount candidate
                 if hiddenPrefixSizeCacheEntryRetainable candidate
