@@ -3913,6 +3913,7 @@ let private setTableStyleCellsCache entries =
         let mutable existing = Unchecked.defaultof<TableStyleCellsCacheEntry>
         if not (tableStyleCellsCacheBySource.TryGetValue(key, &existing)) then
             tableStyleCellsCacheBySource.[key] <- entry
+            tableStyleCellsFastSlots.[tableStyleCellsReferenceHash entry.SourceCells entry.SourceTables &&& (tableStyleCellsFastSlots.Length - 1)] <- entry
 
 let private tryGetTableStyleCellsEntry cells tables =
     let slot = tableStyleCellsReferenceHash cells tables &&& (tableStyleCellsFastSlots.Length - 1)
@@ -3950,6 +3951,11 @@ let private trimTableStyleCellsCache entries =
             else
                 loop rest kept count totalCells totalTables totalSourceTextChars
     loop entries [] 0 0 0 0
+
+let private tableStyleCellsCacheEntryRetainable entry =
+    entry.CellCount <= tableStyleCellsCacheMaxTotalCells
+    && entry.TableCount <= tableStyleCellsCacheMaxTotalTables
+    && entry.SourceTextCharCount <= tableStyleCellsCacheMaxTotalSourceTextChars
 
 let private tableStyleCellsTableCount (tables: Table list) =
     let mutable count = 0
@@ -4022,7 +4028,8 @@ let private rememberTableStyleCells cells tables styledCells =
         TableCount = tableCount
         SourceTextCharCount = tableStyleCellsSourceTextCharCountFor cellCount tableCount cells tables
     }
-    rememberTableStyleCellsEntry entry
+    if tableStyleCellsCacheEntryRetainable entry then
+        rememberTableStyleCellsEntry entry
 
 let applyTableStyles (model: SpreadsheetModel): SpreadsheetModel =
     match tryGetTableStyleCellsEntry model.Cells model.Tables with

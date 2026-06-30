@@ -180,6 +180,7 @@ let private setSheetNamesCache entries =
         let mutable existing = Unchecked.defaultof<SheetNamesCacheEntry>
         if not (sheetNamesCacheBySource.TryGetValue(key, &existing)) then
             sheetNamesCacheBySource.[key] <- entry
+            sheetNamesFastSlots.[sheetNamesReferenceHash entry.Sheets entry.SheetOrder &&& (sheetNamesFastSlots.Length - 1)] <- entry
 
 let private setTableNamesCache entries =
     tableNamesCache <- entries
@@ -189,6 +190,7 @@ let private setTableNamesCache entries =
         let mutable existing = Unchecked.defaultof<TableNamesCacheEntry>
         if not (tableNamesCacheBySource.TryGetValue(entry.Tables, &existing)) then
             tableNamesCacheBySource.[entry.Tables] <- entry
+            tableNamesFastSlots.[referenceHash entry.Tables &&& (tableNamesFastSlots.Length - 1)] <- entry
 
 let private tryGetSheetNamesCache sheets sheetOrder =
     let slot = sheetNamesReferenceHash sheets sheetOrder &&& (sheetNamesFastSlots.Length - 1)
@@ -604,9 +606,7 @@ let private rememberSheetNamesCacheEntryWithMetrics sheets sheetOrder sourceItem
         Names = names
     }
     if not (sheetNamesCacheEntryRetainable entry) then
-        sheetNamesCache
-        |> List.filter (sheetNamesCacheEntryMatches sheets sheetOrder >> not)
-        |> setSheetNamesCache
+        ()
     else
         (entry
          :: (sheetNamesCache
@@ -624,9 +624,7 @@ let private rememberTableNamesCacheEntryWithMetrics tables sourceItemCount nameC
         Names = names
     }
     if not (tableNamesCacheEntryRetainable entry) then
-        tableNamesCache
-        |> List.filter (tableNamesCacheEntryMatches tables >> not)
-        |> setTableNamesCache
+        ()
     else
         (entry
          :: (tableNamesCache
