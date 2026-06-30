@@ -3467,6 +3467,13 @@ type private PageBreakBeforeLookupCache = {
 }
 
 let mutable private pageBreakBeforeLookupCache: PageBreakBeforeLookupCache list = []
+let private pageBreakBeforeLookupStylesComparer =
+    { new IEqualityComparer<NamedStyle list> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+let private pageBreakBeforeLookupCacheByStyles =
+    Dictionary<NamedStyle list, PageBreakBeforeLookupCache>(pageBreakBeforeLookupStylesComparer)
+let private pageBreakBeforeLookupFastSlots = Array.zeroCreate<PageBreakBeforeLookupCache> 256
 let private pageBreakBeforeLookupCacheMaxEntries = 64
 let private pageBreakBeforeLookupCacheMaxTotalStyles = 200000
 let private pageBreakBeforeLookupCacheMaxTotalStyleTextChars = documentSourceTextCacheMaxTotalChars
@@ -3477,6 +3484,40 @@ let private pageBreakBeforeLookupCacheMatches styles (cached: PageBreakBeforeLoo
 let private pageBreakBeforeLookupCacheRetainable cached =
     cached.StyleCount <= pageBreakBeforeLookupCacheMaxTotalStyles
     && cached.StyleTextCharCount <= pageBreakBeforeLookupCacheMaxTotalStyleTextChars
+
+let private setPageBreakBeforeLookupCache entries =
+    pageBreakBeforeLookupCache <- entries
+    pageBreakBeforeLookupCacheByStyles.Clear()
+    clearArray pageBreakBeforeLookupFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<PageBreakBeforeLookupCache>
+        if not (pageBreakBeforeLookupCacheByStyles.TryGetValue(entry.Styles, &existing)) then
+            pageBreakBeforeLookupCacheByStyles.[entry.Styles] <- entry
+            let slot = documentInfoSlot entry.Styles pageBreakBeforeLookupFastSlots.Length
+            pageBreakBeforeLookupFastSlots.[slot] <- entry
+
+let private tryGetPageBreakBeforeLookupCache styles =
+    let slot = documentInfoSlot styles pageBreakBeforeLookupFastSlots.Length
+    let fast = pageBreakBeforeLookupFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && pageBreakBeforeLookupCacheMatches styles fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<PageBreakBeforeLookupCache>
+        if pageBreakBeforeLookupCacheByStyles.TryGetValue(styles, &cached) then
+            pageBreakBeforeLookupFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private pageBreakBeforeLookupCacheWithoutStyles styles =
+    let mutable cached = Unchecked.defaultof<PageBreakBeforeLookupCache>
+    if pageBreakBeforeLookupCacheByStyles.TryGetValue(styles, &cached)
+       && pageBreakBeforeLookupCacheMatches styles cached then
+        pageBreakBeforeLookupCache
+        |> List.filter (pageBreakBeforeLookupCacheMatches styles >> not)
+    else
+        pageBreakBeforeLookupCache
 
 let private optionalStringCharCount (value: string option) =
     match value with
@@ -3557,22 +3598,21 @@ let private trimPageBreakBeforeLookupCache caches =
 
 let private rememberPageBreakBeforeLookup cached =
     if not (pageBreakBeforeLookupCacheRetainable cached) then
-        pageBreakBeforeLookupCache <-
-            pageBreakBeforeLookupCache
-            |> List.filter (pageBreakBeforeLookupCacheMatches cached.Styles >> not)
+        let entries = pageBreakBeforeLookupCacheWithoutStyles cached.Styles
+        if not (obj.ReferenceEquals(entries, pageBreakBeforeLookupCache)) then
+            setPageBreakBeforeLookupCache entries
     else
-        pageBreakBeforeLookupCache <-
-            (cached
-             :: (pageBreakBeforeLookupCache
-                 |> List.filter (pageBreakBeforeLookupCacheMatches cached.Styles >> not)))
-            |> trimPageBreakBeforeLookupCache
+        cached
+        :: pageBreakBeforeLookupCacheWithoutStyles cached.Styles
+        |> trimPageBreakBeforeLookupCache
+        |> setPageBreakBeforeLookupCache
 
 let private pageBreakBeforeLookup (doc: Document) =
     let cache =
-        match pageBreakBeforeLookupCache |> List.tryFind (pageBreakBeforeLookupCacheMatches doc.Styles) with
-        | Some cached ->
+        match tryGetPageBreakBeforeLookupCache doc.Styles with
+        | ValueSome cached ->
             cached
-        | None ->
+        | ValueNone ->
             let paragraphStyles = Dictionary<string, bool>()
             let mutable defaultBreak = false
             for style in doc.Styles do
