@@ -3198,6 +3198,15 @@ let private editableParagraphEndpointsCacheMaxTotalSourceTextChars = documentSou
 let private editableParagraphEndpointsCacheMatches blocks (cached: EditableParagraphEndpointsCache) =
     obj.ReferenceEquals(cached.EndpointSourceBlocks, blocks)
 
+let private editableParagraphEndpointsCacheWithoutBlocks blocks =
+    let mutable cached = Unchecked.defaultof<EditableParagraphEndpointsCache>
+    if editableParagraphEndpointsCacheByBlocks.TryGetValue(blocks, &cached)
+       && editableParagraphEndpointsCacheMatches blocks cached then
+        editableParagraphEndpointsCache
+        |> List.filter (editableParagraphEndpointsCacheMatches blocks >> not)
+    else
+        editableParagraphEndpointsCache
+
 let private setEditableParagraphEndpointsCache entries =
     editableParagraphEndpointsCache <- entries
     editableParagraphEndpointsCacheByBlocks.Clear()
@@ -3242,7 +3251,7 @@ let private trimEditableParagraphEndpointsCache entries =
 
 let private rememberEditableParagraphEndpoints cached =
     cached
-    :: (editableParagraphEndpointsCache |> List.filter (editableParagraphEndpointsCacheMatches cached.EndpointSourceBlocks >> not))
+    :: editableParagraphEndpointsCacheWithoutBlocks cached.EndpointSourceBlocks
     |> trimEditableParagraphEndpointsCache
     |> setEditableParagraphEndpointsCache
 
@@ -3313,6 +3322,15 @@ let private orderedEditableParagraphsCacheMaxTotalSourceTextChars = documentSour
 let private orderedEditableParagraphsCacheMatches blocks (cached: OrderedEditableParagraphsCache) =
     obj.ReferenceEquals(cached.OrderedSourceBlocks, blocks)
 
+let private orderedEditableParagraphsCacheWithoutBlocks blocks =
+    let mutable cached = Unchecked.defaultof<OrderedEditableParagraphsCache>
+    if orderedEditableParagraphsCacheByBlocks.TryGetValue(blocks, &cached)
+       && orderedEditableParagraphsCacheMatches blocks cached then
+        orderedEditableParagraphsCache
+        |> List.filter (orderedEditableParagraphsCacheMatches blocks >> not)
+    else
+        orderedEditableParagraphsCache
+
 let private setOrderedEditableParagraphsCache entries =
     orderedEditableParagraphsCache <- entries
     orderedEditableParagraphsCacheByBlocks.Clear()
@@ -3339,11 +3357,9 @@ let private tryGetOrderedEditableParagraphsCache blocks =
             ValueNone
 
 let private removeOrderedEditableParagraphsCacheForBlocks blocks =
-    let mutable cached = Unchecked.defaultof<OrderedEditableParagraphsCache>
-    if orderedEditableParagraphsCacheByBlocks.TryGetValue(blocks, &cached) then
-        orderedEditableParagraphsCache
-        |> List.filter (orderedEditableParagraphsCacheMatches blocks >> not)
-        |> setOrderedEditableParagraphsCache
+    let entries = orderedEditableParagraphsCacheWithoutBlocks blocks
+    if not (obj.ReferenceEquals(entries, orderedEditableParagraphsCache)) then
+        setOrderedEditableParagraphsCache entries
 
 let private orderedEditableParagraphsCacheRetainable (cached: OrderedEditableParagraphsCache) =
     cached.EntryCount <= orderedEditableParagraphsCacheMaxTotalEntries
@@ -3374,8 +3390,7 @@ let private rememberOrderedEditableParagraphs cached =
                         loop keptCount keptEntries keptSourceTextChars acc tail
             loop 0 0 0 [] entries
         (cached
-         :: (orderedEditableParagraphsCache
-             |> List.filter (orderedEditableParagraphsCacheMatches cached.OrderedSourceBlocks >> not)))
+         :: orderedEditableParagraphsCacheWithoutBlocks cached.OrderedSourceBlocks)
         |> trim
         |> setOrderedEditableParagraphsCache
 
@@ -4380,6 +4395,15 @@ let private normalizedRangeCacheMaxTotalSourceTextChars = documentSourceTextCach
 let private normalizedRangeCacheMatches blocks (cached: NormalizedRangeCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
 
+let private normalizedRangeCacheWithoutBlocks blocks =
+    let mutable cached = Unchecked.defaultof<NormalizedRangeCache>
+    if normalizedRangeCacheByBlocks.TryGetValue(blocks, &cached)
+       && normalizedRangeCacheMatches blocks cached then
+        normalizedRangeCache
+        |> List.filter (normalizedRangeCacheMatches blocks >> not)
+    else
+        normalizedRangeCache
+
 let private setNormalizedRangeCache entries =
     normalizedRangeCache <- entries
     normalizedRangeCacheByBlocks.Clear()
@@ -4406,11 +4430,9 @@ let private tryGetNormalizedRangeCache blocks =
             ValueNone
 
 let private removeNormalizedRangeCacheForBlocks blocks =
-    let mutable cached = Unchecked.defaultof<NormalizedRangeCache>
-    if normalizedRangeCacheByBlocks.TryGetValue(blocks, &cached) then
-        normalizedRangeCache
-        |> List.filter (normalizedRangeCacheMatches blocks >> not)
-        |> setNormalizedRangeCache
+    let entries = normalizedRangeCacheWithoutBlocks blocks
+    if not (obj.ReferenceEquals(entries, normalizedRangeCache)) then
+        setNormalizedRangeCache entries
 
 let private normalizedRangeCacheRetainable (cached: NormalizedRangeCache) =
     cached.Entries.Count > 0
@@ -4428,8 +4450,7 @@ let private rememberNormalizedRangeCache cached =
         let mutable keptBlocks = max 1 cached.SourceParagraphCount
         let mutable keptSourceTextChars = max 1 cached.SourceTextCharCount
         let retained =
-            normalizedRangeCache
-            |> List.filter (normalizedRangeCacheMatches cached.SourceBlocks >> not)
+            normalizedRangeCacheWithoutBlocks cached.SourceBlocks
             |> List.choose (fun candidate ->
                 let candidateBlockIds = max 1 candidate.TotalBlockIds
                 let candidateBlocks = max 1 candidate.SourceParagraphCount
