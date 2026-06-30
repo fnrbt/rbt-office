@@ -6384,6 +6384,8 @@ type private FieldPresenceCache = {
 }
 
 let mutable private fieldPresenceCache: FieldPresenceCache list = []
+let private fieldPresenceCacheByBlocks = Dictionary<Block list, FieldPresenceCache>(documentInfoBlocksComparer)
+let private fieldPresenceFastSlots = Array.zeroCreate<FieldPresenceCache> 256
 let private fieldPresenceCacheMaxEntries = 64
 let private fieldPresenceCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private fieldPresenceCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
@@ -6391,13 +6393,38 @@ let private fieldPresenceCacheMaxTotalSourceTextChars = documentSourceTextCacheM
 let private fieldPresenceCacheMatches blocks (cached: FieldPresenceCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
 
+let private setFieldPresenceCache entries =
+    fieldPresenceCache <- entries
+    fieldPresenceCacheByBlocks.Clear()
+    clearArray fieldPresenceFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<FieldPresenceCache>
+        if not (fieldPresenceCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            fieldPresenceCacheByBlocks.[entry.SourceBlocks] <- entry
+
+let private tryGetFieldPresenceCache blocks =
+    let slot = documentInfoSlot blocks fieldPresenceFastSlots.Length
+    let fast = fieldPresenceFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && fieldPresenceCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<FieldPresenceCache>
+        if fieldPresenceCacheByBlocks.TryGetValue(blocks, &cached) then
+            fieldPresenceFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private fieldPresenceCacheRetainable (cached: FieldPresenceCache) =
     cached.SourceParagraphCount <= fieldPresenceCacheMaxTotalSourceParagraphs
     && cached.SourceTextCharCount <= fieldPresenceCacheMaxTotalSourceTextChars
 
 let private rememberFieldPresence cached =
     if not (fieldPresenceCacheRetainable cached) then
-        fieldPresenceCache <- fieldPresenceCache |> List.filter (fieldPresenceCacheMatches cached.SourceBlocks >> not)
+        fieldPresenceCache
+        |> List.filter (fieldPresenceCacheMatches cached.SourceBlocks >> not)
+        |> setFieldPresenceCache
     else
         let trim (entries: FieldPresenceCache list) =
             let rec loop keptCount keptSourceParagraphs keptSourceTextChars acc remaining =
@@ -6419,11 +6446,11 @@ let private rememberFieldPresence cached =
                     else
                         loop keptCount keptSourceParagraphs keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        fieldPresenceCache <-
-            (cached
-             :: (fieldPresenceCache
-                 |> List.filter (fieldPresenceCacheMatches cached.SourceBlocks >> not)))
-            |> trim
+        (cached
+         :: (fieldPresenceCache
+             |> List.filter (fieldPresenceCacheMatches cached.SourceBlocks >> not)))
+        |> trim
+        |> setFieldPresenceCache
 
 let private fieldCodeRequiresPageMap code =
     match fieldCodeParts code with
@@ -6434,10 +6461,10 @@ let private fieldCodeRequiresPageMap code =
     | _ -> false
 
 let private documentFieldRefreshRequirements doc =
-    match fieldPresenceCache |> List.tryFind (fieldPresenceCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetFieldPresenceCache doc.Blocks with
+    | ValueSome cached ->
         struct (cached.HasFields, cached.RequiresPageMap)
-    | None ->
+    | ValueNone ->
         let mutable hasFields = false
         let mutable requiresPageMap = false
         iterEditableParagraphsUntil doc (fun para ->
