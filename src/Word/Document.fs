@@ -1321,6 +1321,8 @@ type private RevisionInfoCache = {
 }
 
 let mutable private revisionInfoCache: RevisionInfoCache list = []
+let private revisionInfoCacheByBlocks = Dictionary<Block list, RevisionInfoCache>(documentInfoBlocksComparer)
+let private revisionInfoFastSlots = Array.zeroCreate<RevisionInfoCache> 256
 let private revisionInfoCacheMaxEntries = 64
 let private revisionInfoCacheMaxTotalInfos = 200000
 let private revisionInfoCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
@@ -1328,6 +1330,29 @@ let private revisionInfoCacheMaxTotalSourceTextChars = documentSourceTextCacheMa
 
 let private revisionInfoCacheMatches blocks (cached: RevisionInfoCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private setRevisionInfoCache entries =
+    revisionInfoCache <- entries
+    revisionInfoCacheByBlocks.Clear()
+    clearArray revisionInfoFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<RevisionInfoCache>
+        if not (revisionInfoCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            revisionInfoCacheByBlocks.[entry.SourceBlocks] <- entry
+
+let private tryGetRevisionInfoCache blocks =
+    let slot = documentInfoSlot blocks revisionInfoFastSlots.Length
+    let fast = revisionInfoFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && revisionInfoCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<RevisionInfoCache>
+        if revisionInfoCacheByBlocks.TryGetValue(blocks, &cached) then
+            revisionInfoFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private revisionInfoCacheRetainable (cached: RevisionInfoCache) =
     cached.InfoCount <= revisionInfoCacheMaxTotalInfos
@@ -1352,7 +1377,9 @@ let private revisionInfoSourceTextCharCountFor infoCount sourceParagraphCount bl
 
 let private rememberRevisionInfos cached =
     if not (revisionInfoCacheRetainable cached) then
-        revisionInfoCache <- revisionInfoCache |> List.filter (revisionInfoCacheMatches cached.SourceBlocks >> not)
+        revisionInfoCache
+        |> List.filter (revisionInfoCacheMatches cached.SourceBlocks >> not)
+        |> setRevisionInfoCache
     else
         let trim entries =
             let rec loop keptCount keptInfos keptBlocks keptSourceTextChars acc remaining =
@@ -1377,11 +1404,11 @@ let private rememberRevisionInfos cached =
                     else
                         loop keptCount keptInfos keptBlocks keptSourceTextChars acc tail
             loop 0 0 0 0 [] entries
-        revisionInfoCache <-
-            (cached
-             :: (revisionInfoCache
-                 |> List.filter (revisionInfoCacheMatches cached.SourceBlocks >> not)))
-            |> trim
+        (cached
+         :: (revisionInfoCache
+             |> List.filter (revisionInfoCacheMatches cached.SourceBlocks >> not)))
+        |> trim
+        |> setRevisionInfoCache
 
 type private DocumentTextCache = {
     SourceBlocks: Block list
@@ -8202,10 +8229,10 @@ let private selectedRevisionSpans accept para selectionRange =
     spans, firstStart
 
 let revisionInfos doc =
-    match revisionInfoCache |> List.tryFind (revisionInfoCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetRevisionInfoCache doc.Blocks with
+    | ValueSome cached ->
         cached.Infos
-    | None ->
+    | ValueNone ->
         let revisions = ResizeArray<RevisionInfo>()
         iterEditableParagraphs doc (fun para ->
             let mutable pendingStart = 0
@@ -8290,6 +8317,8 @@ type private RevisionNavigationCache = {
 }
 
 let mutable private revisionNavigationCache: RevisionNavigationCache list = []
+let private revisionNavigationCacheByBlocks = Dictionary<Block list, RevisionNavigationCache>(documentInfoBlocksComparer)
+let private revisionNavigationFastSlots = Array.zeroCreate<RevisionNavigationCache> 256
 let private revisionNavigationCacheMaxEntries = 64
 let private revisionNavigationCacheMaxTotalSpans = 200000
 let private revisionNavigationCacheMaxTotalParagraphs = 100000
@@ -8297,6 +8326,29 @@ let private revisionNavigationCacheMaxTotalSourceTextChars = documentSourceTextC
 
 let private revisionNavigationCacheMatches blocks (cached: RevisionNavigationCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private setRevisionNavigationCache entries =
+    revisionNavigationCache <- entries
+    revisionNavigationCacheByBlocks.Clear()
+    clearArray revisionNavigationFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<RevisionNavigationCache>
+        if not (revisionNavigationCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            revisionNavigationCacheByBlocks.[entry.SourceBlocks] <- entry
+
+let private tryGetRevisionNavigationCache blocks =
+    let slot = documentInfoSlot blocks revisionNavigationFastSlots.Length
+    let fast = revisionNavigationFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && revisionNavigationCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<RevisionNavigationCache>
+        if revisionNavigationCacheByBlocks.TryGetValue(blocks, &cached) then
+            revisionNavigationFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private revisionNavigationCacheRetainable (cached: RevisionNavigationCache) =
     cached.SpanCount <= revisionNavigationCacheMaxTotalSpans
@@ -8315,7 +8367,9 @@ let private revisionNavigationSourceTextCharCountFor spanCount sourceParagraphCo
 
 let private rememberRevisionNavigation cached =
     if not (revisionNavigationCacheRetainable cached) then
-        revisionNavigationCache <- revisionNavigationCache |> List.filter (revisionNavigationCacheMatches cached.SourceBlocks >> not)
+        revisionNavigationCache
+        |> List.filter (revisionNavigationCacheMatches cached.SourceBlocks >> not)
+        |> setRevisionNavigationCache
     else
         let trim entries =
             let rec loop keptCount keptSpans keptParagraphs keptSourceTextChars acc remaining =
@@ -8340,17 +8394,17 @@ let private rememberRevisionNavigation cached =
                     else
                         loop keptCount keptSpans keptParagraphs keptSourceTextChars acc tail
             loop 0 0 0 0 [] entries
-        revisionNavigationCache <-
-            (cached
-             :: (revisionNavigationCache
-                 |> List.filter (revisionNavigationCacheMatches cached.SourceBlocks >> not)))
-            |> trim
+        (cached
+         :: (revisionNavigationCache
+             |> List.filter (revisionNavigationCacheMatches cached.SourceBlocks >> not)))
+        |> trim
+        |> setRevisionNavigationCache
 
 let private revisionNavigationSpans doc =
-    match revisionNavigationCache |> List.tryFind (revisionNavigationCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetRevisionNavigationCache doc.Blocks with
+    | ValueSome cached ->
         cached
-    | None ->
+    | ValueNone ->
         let spans = ResizeArray<RevisionNavigationSpan>()
         let paragraphIndexes = Dictionary<BlockId, int>()
         let mutable paragraphIndex = 0
