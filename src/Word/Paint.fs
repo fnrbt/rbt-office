@@ -3313,21 +3313,20 @@ let private tryGetLayoutLookupCache layouts =
         else
             ValueNone
 
-let private removeLayoutLookupCacheForLayouts layouts =
+let private layoutLookupCacheWithoutLayouts layouts =
     let mutable cached = Unchecked.defaultof<LayoutLookupCacheEntry>
     if layoutLookupCacheByLayouts.TryGetValue(layouts, &cached) then
         layoutLookupCache
         |> List.filter (layoutLookupCacheEntryMatches layouts >> not)
-        |> setLayoutLookupCache
+    else
+        layoutLookupCache
+
+let private removeLayoutLookupCacheForLayouts layouts =
+    let entries = layoutLookupCacheWithoutLayouts layouts
+    if not (obj.ReferenceEquals(entries, layoutLookupCache)) then
+        setLayoutLookupCache entries
 
 let private rememberLayoutLookupCacheEntry entry =
-    let rec removeMatching acc remaining =
-        match remaining with
-        | [] -> List.rev acc
-        | candidate :: tail when layoutLookupCacheEntryMatches entry.Layouts candidate ->
-            List.rev acc @ tail
-        | candidate :: tail ->
-            removeMatching (candidate :: acc) tail
     if not (layoutLookupCacheEntryRetainable entry) then
         removeLayoutLookupCacheForLayouts entry.Layouts
     else
@@ -3351,7 +3350,7 @@ let private rememberLayoutLookupCacheEntry entry =
                     else
                         loop keptCount keptTotal keptTextChars acc tail
             loop 0 0 0 [] entries
-        (entry :: removeMatching [] layoutLookupCache)
+        (entry :: layoutLookupCacheWithoutLayouts entry.Layouts)
         |> trim
         |> setLayoutLookupCache
 
