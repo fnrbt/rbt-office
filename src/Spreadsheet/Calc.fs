@@ -720,7 +720,7 @@ let recalculateCell (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine):
                 { Model = model
                   Workbook = Some workbook
                   Sheet = Some cell.Sheet
-                  CriteriaCache = Some (System.Collections.Generic.Dictionary<CellValue, CellValue -> bool>())
+                  CriteriaCache = Some (CriteriaPredicateCache())
                   CurrentCell = Some cell.Cell }
             Some (eval expr ctx)
         | _ -> None

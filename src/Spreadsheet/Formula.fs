@@ -1740,6 +1740,19 @@ let private compileCriteria (criteria: CellValue) : CellValue -> bool =
 let private criteriaPredicateCacheMaxEntries = 2048
 let private criteriaPredicateCacheMaxTotalTextChars = 1000000
 
+type CriteriaPredicateCache() =
+    let values = Dictionary<CellValue, CellValue -> bool>()
+    let textChars = Dictionary<CellValue, int>()
+    let order = Queue<CellValue>()
+    let mutable totalTextChars = 0
+
+    member internal _.Values = values
+    member internal _.TextChars = textChars
+    member internal _.Order = order
+    member internal _.TotalTextChars
+        with get () = totalTextChars
+        and set value = totalTextChars <- value
+
 let private criteriaPredicateCacheAddCapped amount total =
     if amount <= 0 then total
     elif total > criteriaPredicateCacheMaxTotalTextChars
@@ -1783,30 +1796,63 @@ let private criteriaPredicateRetainedTextCharCount criteria =
             | _ -> baseTextChars
     | _ -> baseTextChars
 
-let private criteriaPredicateCacheTotalTextChars (cache: Dictionary<CellValue, CellValue -> bool>) =
-    let mutable total = 0
-    use entries = (cache :> seq<_>).GetEnumerator()
-    while total <= criteriaPredicateCacheMaxTotalTextChars && entries.MoveNext() do
-        total <- criteriaPredicateCacheAddCapped (criteriaPredicateRetainedTextCharCount entries.Current.Key) total
-    total
+let private removeCriteriaPredicateCacheEntry criteria (cache: CriteriaPredicateCache) =
+    let mutable entryTextChars = 0
+    if cache.TextChars.TryGetValue(criteria, &entryTextChars) then
+        cache.TotalTextChars <- max 0 (cache.TotalTextChars - entryTextChars)
+        cache.TextChars.Remove criteria |> ignore
+    cache.Values.Remove criteria |> ignore
 
-let private cachedCriteriaPredicate (cache: Dictionary<CellValue, CellValue -> bool> option) criteria =
+let private clearCriteriaPredicateCache (cache: CriteriaPredicateCache) =
+    cache.Values.Clear()
+    cache.TextChars.Clear()
+    cache.Order.Clear()
+    cache.TotalTextChars <- 0
+
+let private addCriteriaPredicateCacheEntry (cache: CriteriaPredicateCache) criteria pred entryTextChars =
+    if entryTextChars > criteriaPredicateCacheMaxTotalTextChars then
+        removeCriteriaPredicateCacheEntry criteria cache
+    else
+        let existed = cache.Values.ContainsKey criteria
+        if existed then
+            removeCriteriaPredicateCacheEntry criteria cache
+        else
+            cache.Order.Enqueue criteria
+        cache.Values.[criteria] <- pred
+        cache.TextChars.[criteria] <- entryTextChars
+        cache.TotalTextChars <- cache.TotalTextChars + entryTextChars
+
+        let mutable skippedCurrent = false
+        while (cache.Values.Count > criteriaPredicateCacheMaxEntries
+               || cache.TotalTextChars > criteriaPredicateCacheMaxTotalTextChars)
+              && cache.Order.Count > 0 do
+            let oldest = cache.Order.Dequeue()
+            if oldest = criteria then
+                skippedCurrent <- true
+            else
+                removeCriteriaPredicateCacheEntry oldest cache
+        if skippedCurrent && cache.Values.ContainsKey criteria then
+            cache.Order.Enqueue criteria
+
+        if cache.Values.Count > criteriaPredicateCacheMaxEntries
+           || cache.TotalTextChars > criteriaPredicateCacheMaxTotalTextChars then
+            clearCriteriaPredicateCache cache
+            cache.Order.Enqueue criteria
+            cache.Values.[criteria] <- pred
+            cache.TextChars.[criteria] <- entryTextChars
+            cache.TotalTextChars <- entryTextChars
+
+let private cachedCriteriaPredicate (cache: CriteriaPredicateCache option) criteria =
     match cache with
     | None -> compileCriteria criteria
     | Some cache ->
         let mutable pred = Unchecked.defaultof<CellValue -> bool>
-        if cache.TryGetValue(criteria, &pred) then
+        if cache.Values.TryGetValue(criteria, &pred) then
             pred
         else
             pred <- compileCriteria criteria
             let entryTextChars = criteriaPredicateRetainedTextCharCount criteria
-            if entryTextChars <= criteriaPredicateCacheMaxTotalTextChars then
-                let totalTextChars = criteriaPredicateCacheTotalTextChars cache
-                if cache.Count >= criteriaPredicateCacheMaxEntries
-                   || totalTextChars > criteriaPredicateCacheMaxTotalTextChars
-                   || totalTextChars + entryTextChars > criteriaPredicateCacheMaxTotalTextChars then
-                    cache.Clear()
-                cache.[criteria] <- pred
+            addCriteriaPredicateCacheEntry cache criteria pred entryTextChars
             pred
 
 /// Static 0-indexed bounds of a range-shaped expression (RangeRef or a
@@ -2967,7 +3013,7 @@ type EvalContext = {
     Model: SpreadsheetModel
     Workbook: RedBat.Spreadsheet.Workbook.Workbook option
     Sheet: RedBat.Spreadsheet.Workbook.SheetId option
-    CriteriaCache: Dictionary<CellValue, CellValue -> bool> option
+    CriteriaCache: CriteriaPredicateCache option
     /// Address of the cell being evaluated, when known. Needed to resolve
     /// this-row structured refs (`Table[@Col]` / `[@Col]`) and to find the
     /// containing table for unqualified refs. None for ad-hoc evaluation.
@@ -10613,7 +10659,7 @@ let evaluateFormula (formula: string) (model: SpreadsheetModel)
             { Model = model
               Workbook = workbook
               Sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
-              CriteriaCache = Some (Dictionary<CellValue, CellValue -> bool>())
+              CriteriaCache = Some (CriteriaPredicateCache())
               CurrentCell = None }
         eval expr ctx
     | Result.Error msg -> CellValue.Error msg
@@ -10799,7 +10845,7 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
         let formulaCells = collectFormulaCells model
         rememberCellsFormulaCount model.Cells formulaCells.Count
         if formulaCells.Count = 0 then model else
-        let criteriaCache = Dictionary<CellValue, CellValue -> bool>()
+        let criteriaCache = CriteriaPredicateCache()
 
         let formulaByAddress = Dictionary<CellAddress, FormulaCell>(formulaCells.Count)
         let addIndexed (index: Dictionary<int, ResizeArray<CellAddress>>) key addr =
@@ -11082,7 +11128,7 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
             changed <- true
     for (addr, cell, formula, expr) in anchors do
         let updated = { model with Cells = updatedCells; Spill = spillMap }
-        let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some (Dictionary<CellValue, CellValue -> bool>()); CurrentCell = Some addr }
+        let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some (CriteriaPredicateCache()); CurrentCell = Some addr }
         let nr = arr.Length
         let nc = if nr > 0 then arr.[0].Length else 0
         if nr * nc <= 1 then

@@ -550,6 +550,27 @@ ok "criteria cache deep formula value stack"
    (deepCriteriaCachedFormulaResult = CellValue.Number 1.0
     && deepCriteriaCachedFormulaSw.Elapsed.TotalMilliseconds < 500.0)
    (sprintf "deep formula criteria result %A took %.1f ms" deepCriteriaCachedFormulaResult deepCriteriaCachedFormulaSw.Elapsed.TotalMilliseconds)
+let distinctCriteriaPairs = 512
+let distinctCriteriaFormula =
+    let args =
+        [ for i in 0 .. distinctCriteriaPairs - 1 do
+            yield "A1:A1"
+            yield sprintf "\"miss-%04d\"" i ]
+        |> String.concat ","
+    "=COUNTIFS(" + args + ")"
+let distinctCriteriaModel =
+    { createEmpty 2 2 with
+        Cells = [ { Row = 0; Col = 0 }, cell (CellValue.String "miss-0000") ] |> Map.ofList }
+let distinctCriteriaSw = Stopwatch.StartNew()
+let distinctCriteriaResult = evaluateFormula distinctCriteriaFormula distinctCriteriaModel None
+distinctCriteriaSw.Stop()
+ok "criteria cache many distinct predicates"
+   (distinctCriteriaResult = CellValue.Number 0.0
+    && distinctCriteriaSw.Elapsed.TotalMilliseconds < 500.0)
+   (sprintf "distinct criteria result %A took %.1f ms" distinctCriteriaResult distinctCriteriaSw.Elapsed.TotalMilliseconds)
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
 
 // Layout prefix caches must preserve row/column coordinates and invalidate
 // when the immutable override maps change.
