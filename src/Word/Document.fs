@@ -1367,6 +1367,15 @@ let private revisionInfoCacheMaxTotalSourceTextChars = documentSourceTextCacheMa
 let private revisionInfoCacheMatches blocks (cached: RevisionInfoCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
 
+let private revisionInfoCacheWithoutBlocks blocks =
+    let mutable cached = Unchecked.defaultof<RevisionInfoCache>
+    if revisionInfoCacheByBlocks.TryGetValue(blocks, &cached)
+       && revisionInfoCacheMatches blocks cached then
+        revisionInfoCache
+        |> List.filter (revisionInfoCacheMatches blocks >> not)
+    else
+        revisionInfoCache
+
 let private setRevisionInfoCache entries =
     revisionInfoCache <- entries
     revisionInfoCacheByBlocks.Clear()
@@ -1393,11 +1402,9 @@ let private tryGetRevisionInfoCache blocks =
             ValueNone
 
 let private removeRevisionInfoCacheForBlocks blocks =
-    let mutable cached = Unchecked.defaultof<RevisionInfoCache>
-    if revisionInfoCacheByBlocks.TryGetValue(blocks, &cached) then
-        revisionInfoCache
-        |> List.filter (revisionInfoCacheMatches blocks >> not)
-        |> setRevisionInfoCache
+    let entries = revisionInfoCacheWithoutBlocks blocks
+    if not (obj.ReferenceEquals(entries, revisionInfoCache)) then
+        setRevisionInfoCache entries
 
 let private revisionInfoCacheRetainable (cached: RevisionInfoCache) =
     cached.InfoCount <= revisionInfoCacheMaxTotalInfos
@@ -1448,8 +1455,7 @@ let private rememberRevisionInfos cached =
                         loop keptCount keptInfos keptBlocks keptSourceTextChars acc tail
             loop 0 0 0 0 [] entries
         (cached
-         :: (revisionInfoCache
-             |> List.filter (revisionInfoCacheMatches cached.SourceBlocks >> not)))
+         :: revisionInfoCacheWithoutBlocks cached.SourceBlocks)
         |> trim
         |> setRevisionInfoCache
 
@@ -1471,6 +1477,15 @@ let private documentTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMa
 
 let private documentTextCacheMatches blocks (cached: DocumentTextCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private documentTextCacheWithoutBlocks blocks =
+    let mutable cached = Unchecked.defaultof<DocumentTextCache>
+    if documentTextCacheByBlocks.TryGetValue(blocks, &cached)
+       && documentTextCacheMatches blocks cached then
+        documentTextCache
+        |> List.filter (documentTextCacheMatches blocks >> not)
+    else
+        documentTextCache
 
 let private setDocumentTextCache entries =
     documentTextCache <- entries
@@ -1553,8 +1568,7 @@ let private rememberDocumentText cached =
                     loop keptCount keptChars keptBlocks keptSourceTextChars acc tail
         loop 0 0 0 0 [] entries
     cached
-    :: (documentTextCache
-        |> List.filter (documentTextCacheMatches cached.SourceBlocks >> not))
+    :: documentTextCacheWithoutBlocks cached.SourceBlocks
     |> trim
     |> setDocumentTextCache
 
@@ -1591,6 +1605,15 @@ let private selectionTextCacheMaxTotalSourceTextChars = documentSourceTextCacheM
 let private selectionTextCacheMatches blocks (cached: SelectionTextCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
 
+let private selectionTextCacheWithoutBlocks blocks =
+    let mutable cached = Unchecked.defaultof<SelectionTextCache>
+    if selectionTextCacheByBlocks.TryGetValue(blocks, &cached)
+       && selectionTextCacheMatches blocks cached then
+        selectionTextCache
+        |> List.filter (selectionTextCacheMatches blocks >> not)
+    else
+        selectionTextCache
+
 let private setSelectionTextCache entries =
     selectionTextCache <- entries
     selectionTextCacheByBlocks.Clear()
@@ -1617,11 +1640,9 @@ let private tryGetSelectionTextCache blocks =
             ValueNone
 
 let private removeSelectionTextCacheForBlocks blocks =
-    let mutable cached = Unchecked.defaultof<SelectionTextCache>
-    if selectionTextCacheByBlocks.TryGetValue(blocks, &cached) then
-        selectionTextCache
-        |> List.filter (selectionTextCacheMatches blocks >> not)
-        |> setSelectionTextCache
+    let entries = selectionTextCacheWithoutBlocks blocks
+    if not (obj.ReferenceEquals(entries, selectionTextCache)) then
+        setSelectionTextCache entries
 
 let private selectionTextSourceParagraphCountFor textLength blocks =
     if textLength > selectionTextCacheMaxTotalChars then
@@ -1655,8 +1676,7 @@ let private rememberSelectionTextCache cached =
         let mutable keptBlocks = max 1 cached.SourceParagraphCount
         let mutable keptSourceTextChars = max 1 cached.SourceTextCharCount
         let retained =
-            selectionTextCache
-            |> List.filter (selectionTextCacheMatches cached.SourceBlocks >> not)
+            selectionTextCacheWithoutBlocks cached.SourceBlocks
             |> List.choose (fun candidate ->
                 let candidateChars = max 1 candidate.TotalChars
                 let candidateBlocks = max 1 candidate.SourceParagraphCount
