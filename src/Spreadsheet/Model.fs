@@ -280,12 +280,18 @@ let private tryGetFormulaPresenceCache cells =
         else
             ValueNone
 
-let private removeFormulaPresenceCacheForCells cells =
+let private formulaPresenceCacheWithoutCells cells =
     let mutable cached = Unchecked.defaultof<FormulaPresenceCacheEntry>
     if formulaPresenceCacheByCells.TryGetValue(cells, &cached) then
         formulaPresenceCache
         |> List.filter (formulaPresenceCacheEntryMatches cells >> not)
-        |> setFormulaPresenceCache
+    else
+        formulaPresenceCache
+
+let private removeFormulaPresenceCacheForCells cells =
+    let entries = formulaPresenceCacheWithoutCells cells
+    if not (obj.ReferenceEquals(entries, formulaPresenceCache)) then
+        setFormulaPresenceCache entries
 
 let private formulaPresenceCacheEntryRetainable (entry: FormulaPresenceCacheEntry) =
     entry.CellCount <= formulaPresenceCacheMaxTotalCells
@@ -435,9 +441,7 @@ let private rememberCellsFormulaPresenceWithSourceTextCharCount cells formulaCou
                     else
                         loop keptCount keptCells keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        (entry
-         :: (formulaPresenceCache
-             |> List.filter (formulaPresenceCacheEntryMatches cells >> not)))
+        (entry :: formulaPresenceCacheWithoutCells cells)
         |> trim
         |> setFormulaPresenceCache
 
