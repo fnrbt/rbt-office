@@ -8,6 +8,16 @@ let private resizeArrayToList (items: ResizeArray<'T>) =
         result <- items.[i] :: result
     result
 
+let private clearArray (items: 'T array) =
+    for i = 0 to items.Length - 1 do
+        items.[i] <- Unchecked.defaultof<'T>
+
+let private referenceHash (value: obj) =
+    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value)
+
+let private referenceSlot (value: obj) slotCount =
+    referenceHash value &&& (slotCount - 1)
+
 let private prependResizeArray (items: ResizeArray<'T>) tail =
     let mutable result = tail
     for i = items.Count - 1 downto 0 do
@@ -3913,6 +3923,33 @@ type private MaxUsedColumnCache = {
     MaxColumn: int option
 }
 
+[<Struct>]
+type private CellMergedReferenceKey = {
+    Cells: Map<CellAddress, CellData>
+    MergedCells: MergedCell list
+}
+
+let private cellMapReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<Map<CellAddress, CellData>> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = referenceHash value }
+
+let private cellMergedReferenceHash cells mergedCells =
+    (referenceHash cells * 397) ^^^ referenceHash mergedCells
+
+let private cellMergedReferenceKey cells mergedCells : CellMergedReferenceKey =
+    { Cells = cells
+      MergedCells = mergedCells }
+
+let private cellMergedReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<CellMergedReferenceKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.Cells, right.Cells)
+            && obj.ReferenceEquals(left.MergedCells, right.MergedCells)
+
+        member _.GetHashCode(key) =
+            cellMergedReferenceHash key.Cells key.MergedCells }
+
 type private StructuralCellSourceTextCache = {
     Cells: Map<CellAddress, CellData>
     SourceTextCharCount: int
@@ -3944,6 +3981,9 @@ let private structuralCellSourceTextCharCountFor (cells: Map<CellAddress, CellDa
             sourceTextCharCount
 
 let mutable private maxUsedColumnCache: MaxUsedColumnCache list = []
+let private maxUsedColumnCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, MaxUsedColumnCache>(cellMapReferenceComparer)
+let private maxUsedColumnFastSlots = Array.zeroCreate<MaxUsedColumnCache> 256
 let private maxUsedColumnCacheMaxSources = 64
 let private maxUsedColumnCacheMaxTotalCells = structuralCellSourceTextCacheMaxTotalCells
 let private maxUsedColumnCacheMaxTotalSourceTextChars = structuralCellSourceTextCacheMaxTotalSourceTextChars
@@ -3951,13 +3991,40 @@ let private maxUsedColumnCacheMaxTotalSourceTextChars = structuralCellSourceText
 let private maxUsedColumnCacheMatches cells (cached: MaxUsedColumnCache) =
     obj.ReferenceEquals(cached.Cells, cells)
 
+let private setMaxUsedColumnCache entries =
+    maxUsedColumnCache <- entries
+    maxUsedColumnCacheByCells.Clear()
+    clearArray maxUsedColumnFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<MaxUsedColumnCache>
+        if not (maxUsedColumnCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            maxUsedColumnCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells maxUsedColumnFastSlots.Length
+            maxUsedColumnFastSlots.[slot] <- entry
+
+let private tryGetMaxUsedColumnCache cells =
+    let slot = referenceSlot cells maxUsedColumnFastSlots.Length
+    let fast = maxUsedColumnFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && maxUsedColumnCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<MaxUsedColumnCache>
+        if maxUsedColumnCacheByCells.TryGetValue(cells, &cached) then
+            maxUsedColumnFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private maxUsedColumnCacheRetainable (cached: MaxUsedColumnCache) =
     cached.CellCount <= maxUsedColumnCacheMaxTotalCells
     && cached.SourceTextCharCount <= maxUsedColumnCacheMaxTotalSourceTextChars
 
 let private rememberMaxUsedColumn (cached: MaxUsedColumnCache) =
     if not (maxUsedColumnCacheRetainable cached) then
-        maxUsedColumnCache <- maxUsedColumnCache |> List.filter (maxUsedColumnCacheMatches cached.Cells >> not)
+        maxUsedColumnCache
+        |> List.filter (maxUsedColumnCacheMatches cached.Cells >> not)
+        |> setMaxUsedColumnCache
     else
         let trim (entries: MaxUsedColumnCache list) =
             let rec loop keptCount keptCells keptSourceTextChars (acc: MaxUsedColumnCache list) (remaining: MaxUsedColumnCache list) =
@@ -3979,20 +4046,20 @@ let private rememberMaxUsedColumn (cached: MaxUsedColumnCache) =
                     else
                         loop keptCount keptCells keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        maxUsedColumnCache <-
-            (cached
-             :: (maxUsedColumnCache
-                 |> List.filter (maxUsedColumnCacheMatches cached.Cells >> not)))
-            |> trim
+        (cached
+         :: (maxUsedColumnCache
+             |> List.filter (maxUsedColumnCacheMatches cached.Cells >> not)))
+        |> trim
+        |> setMaxUsedColumnCache
 
 let private maxUsedColumn (model: SpreadsheetModel) =
-    match maxUsedColumnCache |> List.tryFind (maxUsedColumnCacheMatches model.Cells) with
-    | Some cached when maxUsedColumnCacheRetainable cached ->
+    match tryGetMaxUsedColumnCache model.Cells with
+    | ValueSome cached when maxUsedColumnCacheRetainable cached ->
         cached.MaxColumn
-    | Some cached ->
+    | ValueSome cached ->
         rememberMaxUsedColumn cached
         cached.MaxColumn
-    | None ->
+    | ValueNone ->
         let mutable found = false
         let mutable maxCol = 0
         model.Cells
@@ -4209,6 +4276,9 @@ type private UsedBoundsCache = {
 }
 
 let mutable private usedBoundsCache: UsedBoundsCache list = []
+let private usedBoundsCacheBySource =
+    System.Collections.Generic.Dictionary<CellMergedReferenceKey, UsedBoundsCache>(cellMergedReferenceComparer)
+let private usedBoundsFastSlots = Array.zeroCreate<UsedBoundsCache> 256
 let private usedBoundsCacheMaxSources = 64
 let private usedBoundsCacheMaxTotalCells = structuralCellSourceTextCacheMaxTotalCells
 let private usedBoundsCacheMaxTotalMergedCells = 100000
@@ -4226,6 +4296,33 @@ let private usedBoundsCacheMatches cells mergedCells (cached: UsedBoundsCache) =
     obj.ReferenceEquals(cached.Cells, cells)
     && obj.ReferenceEquals(cached.MergedCells, mergedCells)
 
+let private setUsedBoundsCache entries =
+    usedBoundsCache <- entries
+    usedBoundsCacheBySource.Clear()
+    clearArray usedBoundsFastSlots
+    for entry in entries do
+        let key = cellMergedReferenceKey entry.Cells entry.MergedCells
+        let mutable existing = Unchecked.defaultof<UsedBoundsCache>
+        if not (usedBoundsCacheBySource.TryGetValue(key, &existing)) then
+            usedBoundsCacheBySource.[key] <- entry
+            let slot = cellMergedReferenceHash entry.Cells entry.MergedCells &&& (usedBoundsFastSlots.Length - 1)
+            usedBoundsFastSlots.[slot] <- entry
+
+let private tryGetUsedBoundsCache cells mergedCells =
+    let slot = cellMergedReferenceHash cells mergedCells &&& (usedBoundsFastSlots.Length - 1)
+    let fast = usedBoundsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && usedBoundsCacheMatches cells mergedCells fast then
+        ValueSome fast
+    else
+        let key = cellMergedReferenceKey cells mergedCells
+        let mutable cached = Unchecked.defaultof<UsedBoundsCache>
+        if usedBoundsCacheBySource.TryGetValue(key, &cached) then
+            usedBoundsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private usedBoundsCacheRetainable (cached: UsedBoundsCache) =
     cached.CellCount <= usedBoundsCacheMaxTotalCells
     && cached.MergedCellCount <= usedBoundsCacheMaxTotalMergedCells
@@ -4233,9 +4330,9 @@ let private usedBoundsCacheRetainable (cached: UsedBoundsCache) =
 
 let private rememberUsedBounds cached =
     if not (usedBoundsCacheRetainable cached) then
-        usedBoundsCache <-
-            usedBoundsCache
-            |> List.filter (usedBoundsCacheMatches cached.Cells cached.MergedCells >> not)
+        usedBoundsCache
+        |> List.filter (usedBoundsCacheMatches cached.Cells cached.MergedCells >> not)
+        |> setUsedBoundsCache
     else
         let trim (entries: UsedBoundsCache list) =
             let rec loop keptCount keptCells keptMergedCells keptSourceTextChars acc remaining =
@@ -4260,11 +4357,11 @@ let private rememberUsedBounds cached =
                     else
                         loop keptCount keptCells keptMergedCells keptSourceTextChars acc tail
             loop 0 0 0 0 [] entries
-        usedBoundsCache <-
-            (cached
-             :: (usedBoundsCache
-                 |> List.filter (usedBoundsCacheMatches cached.Cells cached.MergedCells >> not)))
-            |> trim
+        (cached
+         :: (usedBoundsCache
+             |> List.filter (usedBoundsCacheMatches cached.Cells cached.MergedCells >> not)))
+        |> trim
+        |> setUsedBoundsCache
 
 type private ExportCsvCache = {
     Cells: Map<CellAddress, CellData>
@@ -4343,13 +4440,13 @@ let private rememberExportCsv cached =
             |> trim
 
 let usedBounds (model: SpreadsheetModel) : (int * int) option =
-    match usedBoundsCache |> List.tryFind (usedBoundsCacheMatches model.Cells model.MergedCells) with
-    | Some cached when usedBoundsCacheRetainable cached ->
+    match tryGetUsedBoundsCache model.Cells model.MergedCells with
+    | ValueSome cached when usedBoundsCacheRetainable cached ->
         cached.Bounds
-    | Some cached ->
+    | ValueSome cached ->
         rememberUsedBounds cached
         cached.Bounds
-    | None ->
+    | ValueNone ->
         let mutable any = false
         let mutable maxRow = 0
         let mutable maxCol = 0
@@ -4400,6 +4497,9 @@ type private LastUsedColumnInRowCache = {
 }
 
 let mutable private lastUsedColumnInRowCache: LastUsedColumnInRowCache list = []
+let private lastUsedColumnInRowCacheBySource =
+    System.Collections.Generic.Dictionary<CellMergedReferenceKey, LastUsedColumnInRowCache>(cellMergedReferenceComparer)
+let private lastUsedColumnInRowFastSlots = Array.zeroCreate<LastUsedColumnInRowCache> 256
 let private lastUsedColumnInRowCacheMaxEntries = 64
 let private lastUsedColumnInRowCacheMaxSources = 64
 let private lastUsedColumnInRowCacheMaxTotalCells = structuralCellSourceTextCacheMaxTotalCells
@@ -4409,6 +4509,33 @@ let private lastUsedColumnInRowCacheMaxTotalSourceTextChars = structuralCellSour
 let private lastUsedColumnInRowCacheMatches cells mergedCells (cached: LastUsedColumnInRowCache) =
     obj.ReferenceEquals(cached.Cells, cells)
     && obj.ReferenceEquals(cached.MergedCells, mergedCells)
+
+let private setLastUsedColumnInRowCache entries =
+    lastUsedColumnInRowCache <- entries
+    lastUsedColumnInRowCacheBySource.Clear()
+    clearArray lastUsedColumnInRowFastSlots
+    for entry in entries do
+        let key = cellMergedReferenceKey entry.Cells entry.MergedCells
+        let mutable existing = Unchecked.defaultof<LastUsedColumnInRowCache>
+        if not (lastUsedColumnInRowCacheBySource.TryGetValue(key, &existing)) then
+            lastUsedColumnInRowCacheBySource.[key] <- entry
+            let slot = cellMergedReferenceHash entry.Cells entry.MergedCells &&& (lastUsedColumnInRowFastSlots.Length - 1)
+            lastUsedColumnInRowFastSlots.[slot] <- entry
+
+let private tryGetLastUsedColumnInRowCache cells mergedCells =
+    let slot = cellMergedReferenceHash cells mergedCells &&& (lastUsedColumnInRowFastSlots.Length - 1)
+    let fast = lastUsedColumnInRowFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && lastUsedColumnInRowCacheMatches cells mergedCells fast then
+        ValueSome fast
+    else
+        let key = cellMergedReferenceKey cells mergedCells
+        let mutable cached = Unchecked.defaultof<LastUsedColumnInRowCache>
+        if lastUsedColumnInRowCacheBySource.TryGetValue(key, &cached) then
+            lastUsedColumnInRowFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private lastUsedColumnInRowCacheRetainable (cached: LastUsedColumnInRowCache) =
     cached.CellCount <= lastUsedColumnInRowCacheMaxTotalCells
@@ -4501,9 +4628,9 @@ let private scanLastUsedColumnInRow row (model: SpreadsheetModel) =
 
 let private rememberLastUsedColumnInRowCache cached =
     if not (lastUsedColumnInRowCacheRetainable cached) then
-        lastUsedColumnInRowCache <-
-            lastUsedColumnInRowCache
-            |> List.filter (lastUsedColumnInRowCacheMatches cached.Cells cached.MergedCells >> not)
+        lastUsedColumnInRowCache
+        |> List.filter (lastUsedColumnInRowCacheMatches cached.Cells cached.MergedCells >> not)
+        |> setLastUsedColumnInRowCache
     else
         let trim (entries: LastUsedColumnInRowCache list) =
             let rec loop keptCount keptCells keptMergedCells keptSourceTextChars acc remaining =
@@ -4528,11 +4655,11 @@ let private rememberLastUsedColumnInRowCache cached =
                     else
                         loop keptCount keptCells keptMergedCells keptSourceTextChars acc tail
             loop 0 0 0 0 [] entries
-        lastUsedColumnInRowCache <-
-            (cached
-             :: (lastUsedColumnInRowCache
-                 |> List.filter (lastUsedColumnInRowCacheMatches cached.Cells cached.MergedCells >> not)))
-            |> trim
+        (cached
+         :: (lastUsedColumnInRowCache
+             |> List.filter (lastUsedColumnInRowCacheMatches cached.Cells cached.MergedCells >> not)))
+        |> trim
+        |> setLastUsedColumnInRowCache
 
 let private addLastUsedColumnInRowCacheEntry row result (entries: System.Collections.Generic.Dictionary<int, int option>) (order: System.Collections.Generic.Queue<int>) =
     if not (entries.ContainsKey row) then
@@ -4549,8 +4676,8 @@ let private addLastUsedColumnInRowCacheEntry row result (entries: System.Collect
         entries.[row] <- result
 
 let lastUsedColumnInRow (row: int) (model: SpreadsheetModel) : int option =
-    match lastUsedColumnInRowCache |> List.tryFind (lastUsedColumnInRowCacheMatches model.Cells model.MergedCells) with
-    | Some cached when lastUsedColumnInRowCacheRetainable cached ->
+    match tryGetLastUsedColumnInRowCache model.Cells model.MergedCells with
+    | ValueSome cached when lastUsedColumnInRowCacheRetainable cached ->
         let mutable lastColumn = Unchecked.defaultof<int option>
         if cached.Entries.TryGetValue(row, &lastColumn) then
             lastColumn
@@ -4558,14 +4685,14 @@ let lastUsedColumnInRow (row: int) (model: SpreadsheetModel) : int option =
             let computed = lastUsedColumnInRowFromIndex row cached.CellRowLastColumns cached.MergeRowLastColumns cached.MergedCells
             addLastUsedColumnInRowCacheEntry row computed cached.Entries cached.Order
             computed
-    | Some cached ->
+    | ValueSome cached ->
         rememberLastUsedColumnInRowCache cached
         let mutable lastColumn = Unchecked.defaultof<int option>
         if cached.Entries.TryGetValue(row, &lastColumn) then
             lastColumn
         else
             lastUsedColumnInRowFromIndex row cached.CellRowLastColumns cached.MergeRowLastColumns cached.MergedCells
-    | None ->
+    | ValueNone ->
         let mergedCellCount = mergedCellCountCapped lastUsedColumnInRowCacheMaxTotalMergedCells model.MergedCells
         if model.Cells.Count > lastUsedColumnInRowCacheMaxTotalCells
            || mergedCellCount > lastUsedColumnInRowCacheMaxTotalMergedCells then
