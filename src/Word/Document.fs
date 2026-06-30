@@ -1962,6 +1962,15 @@ let private blockLookupCacheRetainable (cached: BlockLookupCache) =
     && cached.SourceParagraphCount <= blockLookupCacheMaxTotalSourceParagraphs
     && cached.SourceTextCharCount <= blockLookupCacheMaxTotalSourceTextChars
 
+let private blockLookupCacheWithoutBlocks blocks =
+    let mutable cached = Unchecked.defaultof<BlockLookupCache>
+    if blockLookupCacheByBlocks.TryGetValue(blocks, &cached)
+       && blockLookupCacheMatches blocks cached then
+        blockLookupCache
+        |> List.filter (blockLookupCacheMatches blocks >> not)
+    else
+        blockLookupCache
+
 let private setBlockLookupCache entries =
     blockLookupCache <- entries
     blockLookupCacheByBlocks.Clear()
@@ -2018,9 +2027,9 @@ let private blockLookupSourceTextCharCountFor entryCount sourceParagraphCount bl
 
 let private rememberBlockLookup cached =
     if not (blockLookupCacheRetainable cached) then
-        blockLookupCache
-        |> List.filter (blockLookupCacheMatches cached.CachedBlocks >> not)
-        |> setBlockLookupCache
+        let entries = blockLookupCacheWithoutBlocks cached.CachedBlocks
+        if not (obj.ReferenceEquals(entries, blockLookupCache)) then
+            setBlockLookupCache entries
     else
         let trim entries =
             let rec loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc remaining =
@@ -2047,8 +2056,7 @@ let private rememberBlockLookup cached =
             loop 0 0 0 0 [] entries
         let entries =
             (cached
-             :: (blockLookupCache
-                 |> List.filter (blockLookupCacheMatches cached.CachedBlocks >> not)))
+             :: blockLookupCacheWithoutBlocks cached.CachedBlocks)
             |> trim
         setBlockLookupCache entries
 
@@ -2720,6 +2728,15 @@ let private paragraphLookupCacheRetainable (cached: ParagraphLookupCache) =
     && cached.SourceParagraphCount <= paragraphLookupCacheMaxTotalSourceParagraphs
     && cached.SourceTextCharCount <= paragraphLookupCacheMaxTotalSourceTextChars
 
+let private paragraphLookupCacheWithoutBlocks blocks =
+    let mutable cached = Unchecked.defaultof<ParagraphLookupCache>
+    if paragraphLookupCacheByBlocks.TryGetValue(blocks, &cached)
+       && paragraphLookupCacheMatches blocks cached then
+        paragraphLookupCache
+        |> List.filter (paragraphLookupCacheMatches blocks >> not)
+    else
+        paragraphLookupCache
+
 let private setParagraphLookupCache entries =
     paragraphLookupCache <- entries
     paragraphLookupCacheByBlocks.Clear()
@@ -2762,9 +2779,9 @@ let private tryParagraphLookupSourceMetricsFromBlockLookup blocks =
 
 let private rememberParagraphLookup cached =
     if not (paragraphLookupCacheRetainable cached) then
-        paragraphLookupCache
-        |> List.filter (paragraphLookupCacheMatches cached.CachedBlocks >> not)
-        |> setParagraphLookupCache
+        let entries = paragraphLookupCacheWithoutBlocks cached.CachedBlocks
+        if not (obj.ReferenceEquals(entries, paragraphLookupCache)) then
+            setParagraphLookupCache entries
     else
         let trim entries =
             let rec loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc remaining =
@@ -2791,8 +2808,7 @@ let private rememberParagraphLookup cached =
             loop 0 0 0 0 [] entries
         let entries =
             (cached
-             :: (paragraphLookupCache
-                 |> List.filter (paragraphLookupCacheMatches cached.CachedBlocks >> not)))
+             :: paragraphLookupCacheWithoutBlocks cached.CachedBlocks)
             |> trim
         setParagraphLookupCache entries
 
