@@ -840,6 +840,16 @@ type private CommentInfoCache = {
 let mutable private bookmarkInfoCache: BookmarkInfoCache list = []
 let mutable private contentControlInfoCache: ContentControlInfoCache list = []
 let mutable private commentInfoCache: CommentInfoCache list = []
+let private documentInfoBlocksComparer =
+    { new IEqualityComparer<Block list> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+let private bookmarkInfoCacheByBlocks = Dictionary<Block list, BookmarkInfoCache>(documentInfoBlocksComparer)
+let private bookmarkInfoFastSlots = Array.zeroCreate<BookmarkInfoCache> 256
+let private contentControlInfoCacheByBlocks = Dictionary<Block list, ContentControlInfoCache>(documentInfoBlocksComparer)
+let private contentControlInfoFastSlots = Array.zeroCreate<ContentControlInfoCache> 256
+let private commentInfoCacheByBlocks = Dictionary<Block list, CommentInfoCache>(documentInfoBlocksComparer)
+let private commentInfoFastSlots = Array.zeroCreate<CommentInfoCache> 256
 let private documentInfoCacheMaxEntries = 64
 let private documentInfoCacheMaxTotalInfos = 200000
 let private documentInfoCacheMaxTotalBlocks = 100000
@@ -853,6 +863,78 @@ let private contentControlInfoCacheMatches blocks (cached: ContentControlInfoCac
 
 let private commentInfoCacheMatches blocks (cached: CommentInfoCache) =
     obj.ReferenceEquals(cached.CommentSourceBlocks, blocks)
+
+let private setBookmarkInfoCache entries =
+    bookmarkInfoCache <- entries
+    bookmarkInfoCacheByBlocks.Clear()
+    clearArray bookmarkInfoFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<BookmarkInfoCache>
+        if not (bookmarkInfoCacheByBlocks.TryGetValue(entry.BookmarkSourceBlocks, &existing)) then
+            bookmarkInfoCacheByBlocks.[entry.BookmarkSourceBlocks] <- entry
+
+let private setContentControlInfoCache entries =
+    contentControlInfoCache <- entries
+    contentControlInfoCacheByBlocks.Clear()
+    clearArray contentControlInfoFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<ContentControlInfoCache>
+        if not (contentControlInfoCacheByBlocks.TryGetValue(entry.ContentControlSourceBlocks, &existing)) then
+            contentControlInfoCacheByBlocks.[entry.ContentControlSourceBlocks] <- entry
+
+let private setCommentInfoCache entries =
+    commentInfoCache <- entries
+    commentInfoCacheByBlocks.Clear()
+    clearArray commentInfoFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<CommentInfoCache>
+        if not (commentInfoCacheByBlocks.TryGetValue(entry.CommentSourceBlocks, &existing)) then
+            commentInfoCacheByBlocks.[entry.CommentSourceBlocks] <- entry
+
+let private documentInfoSlot blocks slotCount =
+    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks) &&& (slotCount - 1)
+
+let private tryGetBookmarkInfoCache blocks =
+    let slot = documentInfoSlot blocks bookmarkInfoFastSlots.Length
+    let fast = bookmarkInfoFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && bookmarkInfoCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<BookmarkInfoCache>
+        if bookmarkInfoCacheByBlocks.TryGetValue(blocks, &cached) then
+            bookmarkInfoFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryGetContentControlInfoCache blocks =
+    let slot = documentInfoSlot blocks contentControlInfoFastSlots.Length
+    let fast = contentControlInfoFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && contentControlInfoCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<ContentControlInfoCache>
+        if contentControlInfoCacheByBlocks.TryGetValue(blocks, &cached) then
+            contentControlInfoFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryGetCommentInfoCache blocks =
+    let slot = documentInfoSlot blocks commentInfoFastSlots.Length
+    let fast = commentInfoFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && commentInfoCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<CommentInfoCache>
+        if commentInfoCacheByBlocks.TryGetValue(blocks, &cached) then
+            commentInfoFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private documentInfoCacheRetainable infoCount blockCount sourceTextCharCount entry =
     infoCount entry <= documentInfoCacheMaxTotalInfos
@@ -965,15 +1047,15 @@ let private documentInfoSourceTextCharCountFor infoCount sourceParagraphCount bl
             blocks
 
 let private tryDocumentInfoCachedSourceMetrics blocks =
-    match bookmarkInfoCache |> List.tryFind (bookmarkInfoCacheMatches blocks) with
-    | Some cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
-    | None ->
-        match contentControlInfoCache |> List.tryFind (contentControlInfoCacheMatches blocks) with
-        | Some cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
-        | None ->
-            match commentInfoCache |> List.tryFind (commentInfoCacheMatches blocks) with
-            | Some cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
-            | None -> ValueNone
+    match tryGetBookmarkInfoCache blocks with
+    | ValueSome cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
+    | ValueNone ->
+        match tryGetContentControlInfoCache blocks with
+        | ValueSome cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
+        | ValueNone ->
+            match tryGetCommentInfoCache blocks with
+            | ValueSome cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
+            | ValueNone -> ValueNone
 
 let private documentInfoSourceMetricsFor infoCount blocks =
     if infoCount > documentInfoCacheMaxTotalInfos then
@@ -1012,33 +1094,39 @@ let private trimDocumentInfoCache infoCount blockCount sourceTextCharCount entri
 
 let private rememberBookmarkInfos cached =
     if not (bookmarkInfoCacheRetainable cached) then
-        bookmarkInfoCache <- bookmarkInfoCache |> List.filter (bookmarkInfoCacheMatches cached.BookmarkSourceBlocks >> not)
+        bookmarkInfoCache
+        |> List.filter (bookmarkInfoCacheMatches cached.BookmarkSourceBlocks >> not)
+        |> setBookmarkInfoCache
     else
-        bookmarkInfoCache <-
-            (cached
-             :: (bookmarkInfoCache
-                 |> List.filter (bookmarkInfoCacheMatches cached.BookmarkSourceBlocks >> not)))
-            |> trimDocumentInfoCache (fun entry -> entry.BookmarkInfoCount) (fun entry -> entry.SourceParagraphCount) (fun entry -> entry.SourceTextCharCount)
+        (cached
+         :: (bookmarkInfoCache
+             |> List.filter (bookmarkInfoCacheMatches cached.BookmarkSourceBlocks >> not)))
+        |> trimDocumentInfoCache (fun entry -> entry.BookmarkInfoCount) (fun entry -> entry.SourceParagraphCount) (fun entry -> entry.SourceTextCharCount)
+        |> setBookmarkInfoCache
 
 let private rememberContentControlInfos cached =
     if not (contentControlInfoCacheRetainable cached) then
-        contentControlInfoCache <- contentControlInfoCache |> List.filter (contentControlInfoCacheMatches cached.ContentControlSourceBlocks >> not)
+        contentControlInfoCache
+        |> List.filter (contentControlInfoCacheMatches cached.ContentControlSourceBlocks >> not)
+        |> setContentControlInfoCache
     else
-        contentControlInfoCache <-
-            (cached
-             :: (contentControlInfoCache
-                 |> List.filter (contentControlInfoCacheMatches cached.ContentControlSourceBlocks >> not)))
-            |> trimDocumentInfoCache (fun entry -> entry.ContentControlInfoCount) (fun entry -> entry.SourceParagraphCount) (fun entry -> entry.SourceTextCharCount)
+        (cached
+         :: (contentControlInfoCache
+             |> List.filter (contentControlInfoCacheMatches cached.ContentControlSourceBlocks >> not)))
+        |> trimDocumentInfoCache (fun entry -> entry.ContentControlInfoCount) (fun entry -> entry.SourceParagraphCount) (fun entry -> entry.SourceTextCharCount)
+        |> setContentControlInfoCache
 
 let private rememberCommentInfos cached =
     if not (commentInfoCacheRetainable cached) then
-        commentInfoCache <- commentInfoCache |> List.filter (commentInfoCacheMatches cached.CommentSourceBlocks >> not)
+        commentInfoCache
+        |> List.filter (commentInfoCacheMatches cached.CommentSourceBlocks >> not)
+        |> setCommentInfoCache
     else
-        commentInfoCache <-
-            (cached
-             :: (commentInfoCache
-                 |> List.filter (commentInfoCacheMatches cached.CommentSourceBlocks >> not)))
-            |> trimDocumentInfoCache (fun entry -> entry.CommentInfoCount) (fun entry -> entry.SourceParagraphCount) (fun entry -> entry.SourceTextCharCount)
+        (cached
+         :: (commentInfoCache
+             |> List.filter (commentInfoCacheMatches cached.CommentSourceBlocks >> not)))
+        |> trimDocumentInfoCache (fun entry -> entry.CommentInfoCount) (fun entry -> entry.SourceParagraphCount) (fun entry -> entry.SourceTextCharCount)
+        |> setCommentInfoCache
 
 /// Document
 type HeaderFooterPart = {
@@ -3329,10 +3417,10 @@ let buildPageMap (doc: Document) =
     }
 
 let bookmarkInfos (doc: Document) =
-    match bookmarkInfoCache |> List.tryFind (bookmarkInfoCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetBookmarkInfoCache doc.Blocks with
+    | ValueSome cached ->
         cached.BookmarkInfos
-    | None ->
+    | ValueNone ->
         let infosByName = Dictionary<string, BookmarkInfo>()
         let namesInOrder = ResizeArray<string>()
         iterEditableParagraphs doc (fun para ->
@@ -3383,10 +3471,10 @@ let bookmarkInfos (doc: Document) =
         infos
 
 let contentControlInfos (doc: Document) =
-    match contentControlInfoCache |> List.tryFind (contentControlInfoCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetContentControlInfoCache doc.Blocks with
+    | ValueSome cached ->
         cached.ContentControlInfos
-    | None ->
+    | ValueNone ->
         let infos = ResizeArray<ContentControlInfo>()
         iterEditableParagraphs doc (fun para ->
             para.Metadata.ContentControlId
@@ -3409,10 +3497,10 @@ let contentControlInfos (doc: Document) =
         infos
 
 let commentInfos (doc: Document) =
-    match commentInfoCache |> List.tryFind (commentInfoCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetCommentInfoCache doc.Blocks with
+    | ValueSome cached ->
         cached.CommentInfos
-    | None ->
+    | ValueNone ->
         let infos = ResizeArray<CommentInfo>()
         let seenAnchors = HashSet<string>()
         iterEditableParagraphs doc (fun para ->
