@@ -11,6 +11,13 @@ module SpreadsheetGrid = Composit.Ui.SpreadsheetGrid
 
 let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasure v
 
+type WorkbookSnapshot = {
+    Sheets: SpreadsheetModel array
+    ActiveSheet: int
+    RetainedCellCount: int
+    RetainedTextCharCount: int
+}
+
 /// Interactive editor state. Holds the full workbook (sheets array +
 /// names + active index) plus per-app UI state: selection drag anchor,
 /// in-cell edit buffer, scroll position, formula bar text, undo/redo
@@ -40,10 +47,295 @@ type SpreadsheetEditorState = {
     /// Drag-select anchor: the (row, col) where the pointer went down,
     /// used to compute Range selections on PointerMove.
     DragAnchor: Signal<(int * int) option>
-    UndoStack: RefSignal<(SpreadsheetModel array * int) list>
-    RedoStack: RefSignal<(SpreadsheetModel array * int) list>
+    UndoStack: RefSignal<WorkbookSnapshot list>
+    RedoStack: RefSignal<WorkbookSnapshot list>
+    mutable UsedBoundsCells: Map<CellAddress, CellData> option
+    mutable UsedBoundsMergedCells: MergedCell list option
+    mutable UsedBoundsValue: (int * int) option option
     FocusId: int
 }
+
+let private maxUndoDepth = 50
+let private historyMaxTotalRetainedCells = 500000
+let private historyMaxTotalRetainedTextChars = 20000000
+
+let private addCapped limit value total =
+    if total > limit then total
+    else min (limit + 1) (total + max 0 value)
+
+let private optionTextCharCount (value: string option) =
+    match value with
+    | Some text -> text.Length
+    | None -> 0
+
+let private optionItemCount = function
+    | Some _ -> 1
+    | None -> 0
+
+let private listItemCount limit (items: 'T list) =
+    let mutable count = 0
+    let mutable remaining = items
+    while count <= limit && not remaining.IsEmpty do
+        count <- count + 1
+        remaining <- remaining.Tail
+    count
+
+let private borderStyleTextCharCount (border: BorderStyle option) =
+    match border with
+    | Some border -> border.Style.Length + optionTextCharCount border.Color
+    | None -> 0
+
+let private cellFormatTextCharCount (format: CellFormat) =
+    optionTextCharCount format.FontName
+    + optionTextCharCount format.TextColor
+    + optionTextCharCount format.BgColor
+    + optionTextCharCount format.HorizontalAlign
+    + optionTextCharCount format.VerticalAlign
+    + optionTextCharCount format.NumberFormat
+    + borderStyleTextCharCount format.BorderTop
+    + borderStyleTextCharCount format.BorderBottom
+    + borderStyleTextCharCount format.BorderLeft
+    + borderStyleTextCharCount format.BorderRight
+    + borderStyleTextCharCount format.BorderDiagonal
+    + (match format.DataBar with Some (_, color) -> color.Length | None -> 0)
+
+let private filterValueCount (filters: Map<int, ColumnFilter>) =
+    let mutable total = 0
+    use entries = (filters :> seq<_>).GetEnumerator()
+    while total <= historyMaxTotalRetainedCells && entries.MoveNext() do
+        total <- addCapped historyMaxTotalRetainedCells entries.Current.Value.VisibleValues.Count total
+    total
+
+let private filterTextCharCount (filters: Map<int, ColumnFilter>) =
+    let mutable total = 0
+    use entries = (filters :> seq<_>).GetEnumerator()
+    while total <= historyMaxTotalRetainedTextChars && entries.MoveNext() do
+        use values = (entries.Current.Value.VisibleValues :> seq<_>).GetEnumerator()
+        while total <= historyMaxTotalRetainedTextChars && values.MoveNext() do
+            total <- addCapped historyMaxTotalRetainedTextChars values.Current.Length total
+    total
+
+let private richRunsTextCharCount (runs: Map<CellAddress, (string * RunOverride) list>) =
+    let mutable total = 0
+    use entries = (runs :> seq<_>).GetEnumerator()
+    while total <= historyMaxTotalRetainedTextChars && entries.MoveNext() do
+        let mutable remaining = entries.Current.Value
+        while total <= historyMaxTotalRetainedTextChars && not remaining.IsEmpty do
+            let text, run = remaining.Head
+            total <- addCapped historyMaxTotalRetainedTextChars text.Length total
+            total <- addCapped historyMaxTotalRetainedTextChars (optionTextCharCount run.Color) total
+            total <- addCapped historyMaxTotalRetainedTextChars (optionTextCharCount run.FontName) total
+            remaining <- remaining.Tail
+    total
+
+let private richRunsItemCount (runs: Map<CellAddress, (string * RunOverride) list>) =
+    let mutable total = 0
+    use entries = (runs :> seq<_>).GetEnumerator()
+    while total <= historyMaxTotalRetainedCells && entries.MoveNext() do
+        total <- addCapped historyMaxTotalRetainedCells 1 total
+        total <- addCapped historyMaxTotalRetainedCells (listItemCount historyMaxTotalRetainedCells entries.Current.Value) total
+    total
+
+let private conditionalRuleTextCharCount rule =
+    match rule with
+    | ConditionalFormatRule.ContainsText text -> text.Length
+    | ConditionalFormatRule.GreaterThan _
+    | ConditionalFormatRule.LessThan _
+    | ConditionalFormatRule.Between _
+    | ConditionalFormatRule.Equal _ -> 0
+
+let private conditionalFormatsItemCount (formats: Map<CellAddress, ConditionalFormat list>) =
+    let mutable total = 0
+    use entries = (formats :> seq<_>).GetEnumerator()
+    while total <= historyMaxTotalRetainedCells && entries.MoveNext() do
+        total <- addCapped historyMaxTotalRetainedCells 1 total
+        total <- addCapped historyMaxTotalRetainedCells (listItemCount historyMaxTotalRetainedCells entries.Current.Value) total
+    total
+
+let private conditionalFormatsTextCharCount (formats: Map<CellAddress, ConditionalFormat list>) =
+    let mutable total = 0
+    use entries = (formats :> seq<_>).GetEnumerator()
+    while total <= historyMaxTotalRetainedTextChars && entries.MoveNext() do
+        let mutable remaining = entries.Current.Value
+        while total <= historyMaxTotalRetainedTextChars && not remaining.IsEmpty do
+            let format = remaining.Head
+            total <- addCapped historyMaxTotalRetainedTextChars (conditionalRuleTextCharCount format.Rule) total
+            total <- addCapped historyMaxTotalRetainedTextChars (cellFormatTextCharCount format.Style) total
+            remaining <- remaining.Tail
+    total
+
+let private tableStyleTextCharCount (style: TableStyle option) =
+    match style with
+    | Some style ->
+        style.Name.Length
+        + optionTextCharCount style.HeaderFill
+        + optionTextCharCount style.StripeFill
+    | None -> 0
+
+let private tablesTextCharCount (tables: Table list) =
+    let mutable total = 0
+    let mutable remaining = tables
+    while total <= historyMaxTotalRetainedTextChars && not remaining.IsEmpty do
+        let table = remaining.Head
+        total <- addCapped historyMaxTotalRetainedTextChars table.Name.Length total
+        total <- addCapped historyMaxTotalRetainedTextChars (tableStyleTextCharCount table.Style) total
+        remaining <- remaining.Tail
+    total
+
+let private validationRuleItemCount = function
+    | ValidationRule.ListValues values -> listItemCount historyMaxTotalRetainedCells values
+    | ValidationRule.WholeNumber _
+    | ValidationRule.DecimalRange _
+    | ValidationRule.TextLength _
+    | ValidationRule.DateRange _ -> 0
+
+let private validationRuleTextCharCount = function
+    | ValidationRule.ListValues values ->
+        let mutable total = 0
+        let mutable remaining = values
+        while total <= historyMaxTotalRetainedTextChars && not remaining.IsEmpty do
+            total <- addCapped historyMaxTotalRetainedTextChars remaining.Head.Length total
+            remaining <- remaining.Tail
+        total
+    | ValidationRule.WholeNumber _
+    | ValidationRule.DecimalRange _
+    | ValidationRule.TextLength _
+    | ValidationRule.DateRange _ -> 0
+
+let private validationsItemCount (validations: Map<CellAddress, DataValidation>) =
+    let mutable total = 0
+    use entries = (validations :> seq<_>).GetEnumerator()
+    while total <= historyMaxTotalRetainedCells && entries.MoveNext() do
+        total <- addCapped historyMaxTotalRetainedCells 1 total
+        total <- addCapped historyMaxTotalRetainedCells (validationRuleItemCount entries.Current.Value.Rule) total
+    total
+
+let private validationsTextCharCount (validations: Map<CellAddress, DataValidation>) =
+    let mutable total = 0
+    use entries = (validations :> seq<_>).GetEnumerator()
+    while total <= historyMaxTotalRetainedTextChars && entries.MoveNext() do
+        let validation = entries.Current.Value
+        total <- addCapped historyMaxTotalRetainedTextChars (validationRuleTextCharCount validation.Rule) total
+        total <- addCapped historyMaxTotalRetainedTextChars (optionTextCharCount validation.ErrorMessage) total
+        total <- addCapped historyMaxTotalRetainedTextChars (optionTextCharCount validation.InputMessage) total
+    total
+
+let private headerFooterTextCharCount headerFooter =
+    optionTextCharCount headerFooter.OddHeader
+    + optionTextCharCount headerFooter.OddFooter
+    + optionTextCharCount headerFooter.EvenHeader
+    + optionTextCharCount headerFooter.EvenFooter
+    + optionTextCharCount headerFooter.FirstHeader
+    + optionTextCharCount headerFooter.FirstFooter
+
+let private pageSetupItemCount pageSetup =
+    let mutable total = listItemCount historyMaxTotalRetainedCells pageSetup.ManualRowBreaks
+    total <- addCapped historyMaxTotalRetainedCells (listItemCount historyMaxTotalRetainedCells pageSetup.ManualColBreaks) total
+    total <- addCapped historyMaxTotalRetainedCells (optionItemCount pageSetup.PrintArea) total
+    total <- addCapped historyMaxTotalRetainedCells (optionItemCount pageSetup.RepeatRows) total
+    total <- addCapped historyMaxTotalRetainedCells (optionItemCount pageSetup.RepeatCols) total
+    total
+
+let private commandListRetainedItemCount (commands: Command list) =
+    let mutable total = 0
+    let mutable remaining = commands
+    while total <= historyMaxTotalRetainedCells && not remaining.IsEmpty do
+        total <- addCapped historyMaxTotalRetainedCells (max 1 remaining.Head.RetainedItemCount) total
+        remaining <- remaining.Tail
+    total
+
+let private commandListRetainedTextCharCount (commands: Command list) =
+    let mutable total = 0
+    let mutable remaining = commands
+    while total <= historyMaxTotalRetainedTextChars && not remaining.IsEmpty do
+        total <- addCapped historyMaxTotalRetainedTextChars (max 1 remaining.Head.RetainedTextCharCount) total
+        remaining <- remaining.Tail
+    total
+
+let private sheetSnapshotRetainedCellCount (sheet: SpreadsheetModel) =
+    let mutable total = commandRetainedCellMapItemCount sheet.Cells
+    total <- addCapped historyMaxTotalRetainedCells sheet.RowHeights.Count total
+    total <- addCapped historyMaxTotalRetainedCells sheet.ColumnWidths.Count total
+    total <- addCapped historyMaxTotalRetainedCells sheet.SearchResults.Length total
+    total <- addCapped historyMaxTotalRetainedCells (conditionalFormatsItemCount sheet.ConditionalFormats) total
+    total <- addCapped historyMaxTotalRetainedCells sheet.MergedCells.Length total
+    total <- addCapped historyMaxTotalRetainedCells (richRunsItemCount sheet.RichRuns) total
+    total <- addCapped historyMaxTotalRetainedCells (listItemCount historyMaxTotalRetainedCells sheet.Tables) total
+    total <- addCapped historyMaxTotalRetainedCells sheet.CfBoldCells.Count total
+    total <- addCapped historyMaxTotalRetainedCells sheet.Spill.Count total
+    total <- addCapped historyMaxTotalRetainedCells (validationsItemCount sheet.Validations) total
+    total <- addCapped historyMaxTotalRetainedCells sheet.FilterHiddenRows.Length total
+    total <- addCapped historyMaxTotalRetainedCells sheet.Filters.Count total
+    total <- addCapped historyMaxTotalRetainedCells (filterValueCount sheet.Filters) total
+    total <- addCapped historyMaxTotalRetainedCells (pageSetupItemCount sheet.PageSetup) total
+    total <-
+        match sheet.Clipboard with
+        | Some clipboard -> addCapped historyMaxTotalRetainedCells (commandRetainedClipboardItemCount clipboard) total
+        | None -> total
+    total <- addCapped historyMaxTotalRetainedCells (commandListRetainedItemCount sheet.History.Past) total
+    total <- addCapped historyMaxTotalRetainedCells (commandListRetainedItemCount sheet.History.Future) total
+    max 1 total
+
+let private sheetSnapshotRetainedTextCharCount (sheet: SpreadsheetModel) =
+    let mutable total = commandRetainedCellMapTextCharCount sheet.Cells
+    total <- addCapped historyMaxTotalRetainedTextChars sheet.EditBuffer.Length total
+    total <- addCapped historyMaxTotalRetainedTextChars (optionTextCharCount sheet.SearchQuery) total
+    total <- addCapped historyMaxTotalRetainedTextChars sheet.Macros.Length total
+    total <- addCapped historyMaxTotalRetainedTextChars (filterTextCharCount sheet.Filters) total
+    total <- addCapped historyMaxTotalRetainedTextChars (richRunsTextCharCount sheet.RichRuns) total
+    total <- addCapped historyMaxTotalRetainedTextChars (conditionalFormatsTextCharCount sheet.ConditionalFormats) total
+    total <- addCapped historyMaxTotalRetainedTextChars (tablesTextCharCount sheet.Tables) total
+    total <- addCapped historyMaxTotalRetainedTextChars (validationsTextCharCount sheet.Validations) total
+    total <- addCapped historyMaxTotalRetainedTextChars (headerFooterTextCharCount sheet.PageSetup.HeaderFooter) total
+    total <-
+        match sheet.Clipboard with
+        | Some clipboard -> addCapped historyMaxTotalRetainedTextChars (commandRetainedClipboardTextCharCount clipboard) total
+        | None -> total
+    total <- addCapped historyMaxTotalRetainedTextChars (commandListRetainedTextCharCount sheet.History.Past) total
+    total <- addCapped historyMaxTotalRetainedTextChars (commandListRetainedTextCharCount sheet.History.Future) total
+    total
+
+let private workbookSnapshotRetainedCellCount (sheets: SpreadsheetModel array) =
+    let mutable total = 0
+    let mutable index = 0
+    while total <= historyMaxTotalRetainedCells && index < sheets.Length do
+        total <- addCapped historyMaxTotalRetainedCells (sheetSnapshotRetainedCellCount sheets.[index]) total
+        index <- index + 1
+    max 1 total
+
+let private workbookSnapshotRetainedTextCharCount (sheets: SpreadsheetModel array) =
+    let mutable total = 0
+    let mutable index = 0
+    while total <= historyMaxTotalRetainedTextChars && index < sheets.Length do
+        total <- addCapped historyMaxTotalRetainedTextChars (sheetSnapshotRetainedTextCharCount sheets.[index]) total
+        index <- index + 1
+    total
+
+let private createWorkbookSnapshot sheets activeIndex = {
+    Sheets = sheets
+    ActiveSheet = activeIndex
+    RetainedCellCount = workbookSnapshotRetainedCellCount sheets
+    RetainedTextCharCount = workbookSnapshotRetainedTextCharCount sheets
+}
+
+let private trimStack (stack: WorkbookSnapshot list) =
+    let rec trim remaining count totalCells totalTextChars kept =
+        match remaining with
+        | [] -> List.rev kept
+        | item :: rest ->
+            let retainedCells = max 1 item.RetainedCellCount
+            let retainedTextChars = max 1 item.RetainedTextCharCount
+            let nextTotalCells = totalCells + retainedCells
+            let nextTotalTextChars = totalTextChars + retainedTextChars
+            if count < maxUndoDepth
+               && retainedCells <= historyMaxTotalRetainedCells
+               && retainedTextChars <= historyMaxTotalRetainedTextChars
+               && nextTotalCells <= historyMaxTotalRetainedCells
+               && nextTotalTextChars <= historyMaxTotalRetainedTextChars then
+                trim rest (count + 1) nextTotalCells nextTotalTextChars (item :: kept)
+            else
+                trim rest count totalCells totalTextChars kept
+    trim stack 0 0 0 []
 
 let createState (sheets: SpreadsheetModel array) (names: string array) (activeIndex: int) =
     let idx = max 0 (min (sheets.Length - 1) activeIndex)
@@ -60,6 +352,9 @@ let createState (sheets: SpreadsheetModel array) (names: string array) (activeIn
         DragAnchor = signal None
         UndoStack = refSignal []
         RedoStack = refSignal []
+        UsedBoundsCells = None
+        UsedBoundsMergedCells = None
+        UsedBoundsValue = None
         FocusId = Focus.allocId()
     }
 
@@ -75,12 +370,34 @@ let activeSheetName (state: SpreadsheetEditorState) : string =
     let idx = state.ActiveSheet.Value
     if idx >= 0 && idx < names.Length then names.[idx] else "Sheet1"
 
+let private clearUsedBoundsCache state =
+    state.UsedBoundsCells <- None
+    state.UsedBoundsMergedCells <- None
+    state.UsedBoundsValue <- None
+
+let private usedBoundsCached (state: SpreadsheetEditorState) (model: SpreadsheetModel) =
+    match state.UsedBoundsCells, state.UsedBoundsMergedCells, state.UsedBoundsValue with
+    | Some cells, Some mergedCells, Some bounds
+        when System.Object.ReferenceEquals(cells, model.Cells)
+             && System.Object.ReferenceEquals(mergedCells, model.MergedCells) ->
+        bounds
+    | _ ->
+        let bounds = usedBounds model
+        state.UsedBoundsCells <- Some model.Cells
+        state.UsedBoundsMergedCells <- Some model.MergedCells
+        state.UsedBoundsValue <- Some bounds
+        bounds
+
 /// Replace the active sheet's model. Does not push undo; callers that
 /// want history should go through applyChange.
 let private putActiveModel (state: SpreadsheetEditorState) (model: SpreadsheetModel) =
     let sheets = state.Sheets.Value |> Array.copy
     let idx = state.ActiveSheet.Value
     if idx >= 0 && idx < sheets.Length then
+        let before = sheets.[idx]
+        if not (System.Object.ReferenceEquals(before.Cells, model.Cells))
+           || not (System.Object.ReferenceEquals(before.MergedCells, model.MergedCells)) then
+            clearUsedBoundsCache state
         sheets.[idx] <- model
         state.Sheets.Value <- sheets
 
@@ -92,7 +409,9 @@ let applyChange (state: SpreadsheetEditorState) (transform: SpreadsheetModel -> 
     let after = transform before
     if System.Object.ReferenceEquals(before, after) then false
     else
-        state.UndoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.UndoStack.Value
+        state.UndoStack.Value <-
+            (createWorkbookSnapshot state.Sheets.Value state.ActiveSheet.Value :: state.UndoStack.Value)
+            |> trimStack
         state.RedoStack.Value <- []
         putActiveModel state after
         Platform.requestRedraw()
@@ -111,22 +430,28 @@ let applyChangeNoHistory (state: SpreadsheetEditorState) (transform: Spreadsheet
 
 let undo (state: SpreadsheetEditorState) =
     match state.UndoStack.Value with
-    | (sheets, idx) :: rest ->
-        state.RedoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.RedoStack.Value
+    | snapshot :: rest ->
+        state.RedoStack.Value <-
+            (createWorkbookSnapshot state.Sheets.Value state.ActiveSheet.Value :: state.RedoStack.Value)
+            |> trimStack
         state.UndoStack.Value <- rest
-        state.Sheets.Value <- sheets
-        state.ActiveSheet.Value <- idx
+        state.Sheets.Value <- snapshot.Sheets
+        state.ActiveSheet.Value <- snapshot.ActiveSheet
+        clearUsedBoundsCache state
         Platform.requestRedraw()
         true
     | [] -> true
 
 let redo (state: SpreadsheetEditorState) =
     match state.RedoStack.Value with
-    | (sheets, idx) :: rest ->
-        state.UndoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.UndoStack.Value
+    | snapshot :: rest ->
+        state.UndoStack.Value <-
+            (createWorkbookSnapshot state.Sheets.Value state.ActiveSheet.Value :: state.UndoStack.Value)
+            |> trimStack
         state.RedoStack.Value <- rest
-        state.Sheets.Value <- sheets
-        state.ActiveSheet.Value <- idx
+        state.Sheets.Value <- snapshot.Sheets
+        state.ActiveSheet.Value <- snapshot.ActiveSheet
+        clearUsedBoundsCache state
         Platform.requestRedraw()
         true
     | [] -> true
@@ -139,6 +464,7 @@ let switchSheet (state: SpreadsheetEditorState) (index: int) =
         state.ScrollY.Value <- 0.0
         state.EditingCell.Value <- None
         state.EditBuffer.Value <- ""
+        clearUsedBoundsCache state
         Platform.requestRedraw()
 
 // ── Selection helpers ──────────────────────────────────────
@@ -190,9 +516,9 @@ let ensureCellVisible (state: SpreadsheetEditorState) (row: int) (col: int) =
     if viewW <= 0.0 || viewH <= 0.0 then () else
     let headerH = 20.0
     let rowHeaderW = 28.0
-    let cellY = [ 0 .. row - 1 ] |> List.sumBy (fun r -> getRowHeight r model)
+    let cellY = Layout.rowTop model row
     let cellH = getRowHeight row model
-    let cellX = [ 0 .. col - 1 ] |> List.sumBy (fun c -> getColumnWidth c model)
+    let cellX = Layout.columnLeft model col
     let cellW = getColumnWidth col model
     let cellTopCanvas = headerH + cellY
     let cellBottomCanvas = cellTopCanvas + cellH
@@ -222,7 +548,9 @@ let private setFocus (state: SpreadsheetEditorState) (row: int) (col: int) =
         match findMergedCell { Row = r0; Col = c0 } model with
         | Some merge -> merge.StartRow, merge.StartCol
         | None -> r0, c0
-    applyChangeNoHistory state (fun m -> { m with Selection = SingleCell (r, c) }) |> ignore
+    let selection = SingleCell (r, c)
+    if model.Selection <> selection then
+        applyChangeNoHistory state (fun m -> { m with Selection = selection }) |> ignore
     ensureCellVisible state r c
 
 let private extendFocus (state: SpreadsheetEditorState) (row: int) (col: int) =
@@ -237,7 +565,8 @@ let private extendFocus (state: SpreadsheetEditorState) (row: int) (col: int) =
     let sel =
         if ar = r && ac = c then SingleCell (r, c)
         else Range (min ar r, min ac c, max ar r, max ac c)
-    applyChangeNoHistory state (fun m -> { m with Selection = sel }) |> ignore
+    if model.Selection <> sel then
+        applyChangeNoHistory state (fun m -> { m with Selection = sel }) |> ignore
     ensureCellVisible state r c
 
 /// Number of rows that fit in the current visible viewport — used by
@@ -290,20 +619,22 @@ let private writeCell (row: int) (col: int) (text: string) (model: SpreadsheetMo
     match validateEdit addr value model with
     | Result.Error _ -> model
     | Result.Ok() ->
-    let edited =
-        match value, getCell addr model with
-        | Empty, _ -> clearCell addr model
-        | v, Some existing -> setCell addr { existing with Value = v } model
-        | v, None -> setCell addr { Value = v; Format = defaultFormat; Comment = None } model
-    // Recompute formulas and (re)materialize dynamic-array spills so the edit
-    // is live — a spilling formula (FILTER/SORT/GROUPBY/PIVOTBY) refreshes when
-    // its source changes. (Same-sheet scope; cross-sheet recalc is separate.)
-    let recomputed = RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
-    // Fire the workbook's Worksheet_Change handler (if any), passing the edited
-    // cell as Target. A no-op unless the macro module defines the sub; its
-    // writes apply directly, so this can't recurse back through writeCell.
-    let target = sprintf "Range(\"%s%d\")" (columnToLetter col) (row + 1)
-    RedBat.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
+        let edited =
+            match value, getCell addr model with
+            | Empty, _ -> clearCell addr model
+            | v, Some existing -> setCell addr { existing with Value = v } model
+            | v, None -> setCell addr { Value = v; Format = defaultFormat; Comment = None } model
+        if System.Object.ReferenceEquals(model, edited) then model
+        else
+            // Recompute formulas and (re)materialize dynamic-array spills so the edit
+            // is live — a spilling formula (FILTER/SORT/GROUPBY/PIVOTBY) refreshes when
+            // its source changes. (Same-sheet scope; cross-sheet recalc is separate.)
+            let recomputed = RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
+            // Fire the workbook's Worksheet_Change handler (if any), passing the edited
+            // cell as Target. A no-op unless the macro module defines the sub; its
+            // writes apply directly, so this can't recurse back through writeCell.
+            let target = sprintf "Range(\"%s%d\")" (columnToLetter col) (row + 1)
+            RedBat.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
 
 /// Active cell reference like "B7" for the status bar / cell-ref box.
 let activeCellRef (state: SpreadsheetEditorState) =
@@ -467,12 +798,7 @@ let private handleKey (state: SpreadsheetEditorState) (ev: KeyEvent) : bool =
     | { Ctrl = true; Key = "End" } ->
         let model = activeModel state
         let maxRow, maxCol =
-            if Map.isEmpty model.Cells then 0, 0
-            else
-                let addrs = model.Cells |> Map.toSeq |> Seq.map fst
-                let r = addrs |> Seq.map (fun a -> a.Row) |> Seq.max
-                let c = addrs |> Seq.map (fun a -> a.Col) |> Seq.max
-                r, c
+            usedBoundsCached state model |> Option.defaultValue (0, 0)
         setFocus state maxRow maxCol
         true
     | { Key = "Home"; Shift = false } ->
@@ -482,11 +808,7 @@ let private handleKey (state: SpreadsheetEditorState) (ev: KeyEvent) : bool =
     | { Key = "End"; Shift = false } ->
         let model = activeModel state
         let r, _ = focusCell model
-        let lastCol =
-            model.Cells
-            |> Map.toSeq
-            |> Seq.choose (fun (a, _) -> if a.Row = r then Some a.Col else None)
-            |> fun s -> if Seq.isEmpty s then 0 else Seq.max s
+        let lastCol = lastUsedColumnInRow r model |> Option.defaultValue 0
         setFocus state r lastCol
         true
     | { Key = "PageDown"; Shift = false } ->
@@ -646,21 +968,21 @@ let scrollWidget (width: float) (height: float) (state: SpreadsheetEditorState) 
         // sized to Excel's real bounds so visibleRange can virtualize, but
         // summing every row/col here on each frame freezes the first paint.
         let dataMaxRow, dataMaxCol =
-            if Map.isEmpty model.Cells then -1, -1
-            else
-                let addrs = model.Cells |> Map.toSeq |> Seq.map fst
-                let maxR = addrs |> Seq.map (fun a -> a.Row) |> Seq.max
-                let maxC = addrs |> Seq.map (fun a -> a.Col) |> Seq.max
-                maxR, maxC
-        let rowBudget = min (dataMaxRow + 200) (model.RowCount - 1)
-        let colBudget = min (dataMaxCol + 50) (model.ColCount - 1)
-        let contentWidth =
-            [ 0 .. colBudget ]
-            |> List.sumBy (fun c -> getColumnWidth c model)
-            |> (+) 28.0
-        let contentHeight =
-            [ 0 .. rowBudget ]
-            |> List.sumBy (fun r -> getRowHeight r model)
-            |> (+) 20.0
-        let inner = widget (max width contentWidth) (max height contentHeight) state
+            usedBoundsCached state model |> Option.defaultValue (-1, -1)
+        let rowBudget = min (max 199 (dataMaxRow + 200)) (model.RowCount - 1)
+        let colBudget = min (max 49 (dataMaxCol + 50)) (model.ColCount - 1)
+        let contentWidth = 28.0 + Layout.columnLeft model (colBudget + 1)
+        let contentHeight = 20.0 + Layout.rowTop model (rowBudget + 1)
+        let inner =
+            SpreadsheetGrid.viewportWidget
+                (max width contentWidth)
+                (max height contentHeight)
+                width
+                height
+                state.ScrollX.Value
+                state.ScrollY.Value
+                model
+            |> pointerRegion (handlePointer state width height)
+            |> onKey (handleKey state)
+            |> fun grid -> Focusable(state.FocusId, grid)
         scrollWith true true state.ScrollX state.ScrollY inner)

@@ -10,6 +10,12 @@ open RedBat.Spreadsheet.Paint
 
 let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasure v
 
+let private resizeArrayToList (items: System.Collections.Generic.List<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
 let private defaultFont () = Composit.Ui.Layout.font()
 
 /// Cache of font variants keyed by (familyKey, bold, italic). familyKey is the
@@ -17,19 +23,36 @@ let private defaultFont () = Composit.Ui.Layout.font()
 /// "arial", "cambria", "times"); unknown families fall back to "calibri".
 let private fontCache = System.Collections.Generic.Dictionary<string * bool * bool, Renderer.Text.FontData option>()
 
+let private trimBounds (value: string) =
+    let mutable start = 0
+    let mutable last = value.Length - 1
+    while start <= last && System.Char.IsWhiteSpace value.[start] do
+        start <- start + 1
+    while last >= start && System.Char.IsWhiteSpace value.[last] do
+        last <- last - 1
+    start, last - start + 1
+
+let private startsWithAtIgnoreCase (value: string) start length (prefix: string) =
+    length >= prefix.Length
+    && System.String.Compare(value, start, prefix, 0, prefix.Length, System.StringComparison.OrdinalIgnoreCase) = 0
+
+let private equalsAtIgnoreCase (value: string) start length (expected: string) =
+    length = expected.Length
+    && System.String.Compare(value, start, expected, 0, length, System.StringComparison.OrdinalIgnoreCase) = 0
+
 let private fontDirs () =
     let cwd = System.IO.Directory.GetCurrentDirectory()
-    [
+    let dirs = System.Collections.Generic.List<string>()
+    for dir in [
         System.Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
         System.IO.Path.GetFullPath(System.IO.Path.Combine(cwd, "artifacts/fonts/windows"))
         System.IO.Path.GetFullPath(System.IO.Path.Combine(cwd, "../../artifacts/fonts/windows"))
         // Sibling office repo's font cache, when running from office-spreadsheet/.
         System.IO.Path.GetFullPath(System.IO.Path.Combine(cwd, "../office/artifacts/fonts/windows"))
-    ]
-    |> List.choose (fun dir ->
-        if System.String.IsNullOrWhiteSpace dir then None
-        elif System.IO.Directory.Exists dir then Some dir
-        else None)
+    ] do
+        if not (System.String.IsNullOrWhiteSpace dir) && System.IO.Directory.Exists dir then
+            dirs.Add dir
+    resizeArrayToList dirs
 
 /// Map an XLSX font `name val="..."` to a normalized family key. Anything we
 /// don't have a TTF for falls back to "calibri" — the renderer keeps working
@@ -38,14 +61,15 @@ let private familyKey (name: string option) =
     match name with
     | None -> "calibri"
     | Some n ->
-        let lower = n.Trim().ToLowerInvariant()
-        if lower.StartsWith "arial" then "arial"
-        elif lower.StartsWith "calibri" then "calibri"
-        elif lower.StartsWith "cambria" then "cambria"
-        elif lower.StartsWith "times" then "times"
-        elif lower.StartsWith "verdana" then "verdana"
-        elif lower.StartsWith "garamond" then "garamond"
-        elif lower.StartsWith "segoe" then "segoeui"
+        let start, length = trimBounds n
+        if length = 0 then "calibri"
+        elif startsWithAtIgnoreCase n start length "arial" then "arial"
+        elif startsWithAtIgnoreCase n start length "calibri" then "calibri"
+        elif startsWithAtIgnoreCase n start length "cambria" then "cambria"
+        elif startsWithAtIgnoreCase n start length "times" then "times"
+        elif startsWithAtIgnoreCase n start length "verdana" then "verdana"
+        elif startsWithAtIgnoreCase n start length "garamond" then "garamond"
+        elif startsWithAtIgnoreCase n start length "segoe" then "segoeui"
         // Localized "Body Text Font" names from non-English Excel installs.
         // OOXML stores the localized display name verbatim; Windows resolves
         // it through the OS locale. For our purposes Arial is the closest
@@ -53,14 +77,14 @@ let private familyKey (name: string option) =
         // font (verified against pandas-testdateoverflow's Polish
         // "Czcionka tekstu podstawowego" — column widths and row heights
         // match Excel's reported values with Arial metrics, not Calibri's).
-        elif lower = "czcionka tekstu podstawowego" then "arial"     // Polish
-        elif lower = "schrift des textkörpers" then "arial"          // German
-        elif lower = "police du corps" then "arial"                  // French
-        elif lower = "carattere del corpo" then "arial"              // Italian
-        elif lower = "fuente del cuerpo" then "arial"                // Spanish
-        elif lower = "本文のフォント" then "arial"                    // Japanese
-        elif lower = "正文字体" then "arial"                          // Chinese (Simplified)
-        elif lower = "본문 글꼴" then "arial"                         // Korean
+        elif equalsAtIgnoreCase n start length "czcionka tekstu podstawowego" then "arial"     // Polish
+        elif equalsAtIgnoreCase n start length "schrift des textkörpers" then "arial"          // German
+        elif equalsAtIgnoreCase n start length "police du corps" then "arial"                  // French
+        elif equalsAtIgnoreCase n start length "carattere del corpo" then "arial"              // Italian
+        elif equalsAtIgnoreCase n start length "fuente del cuerpo" then "arial"                // Spanish
+        elif equalsAtIgnoreCase n start length "本文のフォント" then "arial"                    // Japanese
+        elif equalsAtIgnoreCase n start length "正文字体" then "arial"                          // Chinese (Simplified)
+        elif equalsAtIgnoreCase n start length "본문 글꼴" then "arial"                         // Korean
         else "calibri"
 
 let private fontFiles family bold italic =
@@ -122,6 +146,17 @@ let private loadVariant family bold italic =
 
 let private rendererFont (fontName: string option) (bold: bool) (italic: bool) =
     let family = familyKey fontName
+    let font =
+        match loadVariant family bold italic with
+        | Some f -> f
+        | None ->
+            // Family lookup failed — try Calibri before falling back to the
+            // built-in default so we don't lose bold/italic for Arial/Times etc.
+            loadVariant "calibri" bold italic
+            |> Option.defaultWith defaultFont
+    font
+
+let private rendererFontForFamily family (bold: bool) (italic: bool) =
     match loadVariant family bold italic with
     | Some f -> f
     | None ->
@@ -175,24 +210,33 @@ let private fallbackFontFor (codepoint: int) (bold: bool) : Renderer.Text.FontDa
         |> Option.bind (fun f -> if Renderer.Text.hasGlyph f codepoint then Some f else None))
 
 let private parseHexColor (value: string) =
-    let value = value.Trim()
-    let parseByte (s: string) =
-        match System.Byte.TryParse(s, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture) with
-        | true, value -> Some value
-        | false, _ -> None
-    let s = if value.StartsWith("#") then value.Substring(1) else value
-    match s.Length with
+    let hexValue (c: char) =
+        if c >= '0' && c <= '9' then int c - int '0'
+        elif c >= 'a' && c <= 'f' then int c - int 'a' + 10
+        elif c >= 'A' && c <= 'F' then int c - int 'A' + 10
+        else -1
+    let parseByteAt offset =
+        let hi = hexValue value.[offset]
+        let lo = hexValue value.[offset + 1]
+        if hi < 0 || lo < 0 then None else Some (byte ((hi <<< 4) ||| lo))
+    let parseShortAt offset =
+        let v = hexValue value.[offset]
+        if v < 0 then None else Some (byte ((v <<< 4) ||| v))
+    let start0, length0 = trimBounds value
+    let start, length =
+        if length0 > 0 && value.[start0] = '#' then start0 + 1, length0 - 1
+        else start0, length0
+    match length with
     | 3 ->
-        let expand (c: char) = string c + string c
-        match parseByte (expand s.[0]), parseByte (expand s.[1]), parseByte (expand s.[2]) with
+        match parseShortAt start, parseShortAt (start + 1), parseShortAt (start + 2) with
         | Some r, Some g, Some b -> Color.rgb r g b
         | _ -> Color.black
     | 6 ->
-        match parseByte s.[0..1], parseByte s.[2..3], parseByte s.[4..5] with
+        match parseByteAt start, parseByteAt (start + 2), parseByteAt (start + 4) with
         | Some r, Some g, Some b -> Color.rgb r g b
         | _ -> Color.black
     | 8 ->
-        match parseByte s.[0..1], parseByte s.[2..3], parseByte s.[4..5], parseByte s.[6..7] with
+        match parseByteAt start, parseByteAt (start + 2), parseByteAt (start + 4), parseByteAt (start + 6) with
         | Some r, Some g, Some b, Some a -> Color.rgba r g b a
         | _ -> Color.black
     | _ -> Color.black
@@ -256,7 +300,7 @@ let private toRendererCommands (text: PaintText) =
             match fallbackFontFor cp text.Bold with
             | Some fb -> fb
             | None -> primary  // no fallback installed — keep using primary, render as .notdef
-    let segments : (Renderer.Text.FontData * string) list =
+    let segments =
         let txt = text.Text
         let result = System.Collections.Generic.List<Renderer.Text.FontData * string>()
         let buf = System.Text.StringBuilder()
@@ -281,15 +325,15 @@ let private toRendererCommands (text: PaintText) =
         match currentFont with
         | ValueSome f when buf.Length > 0 -> result.Add(f, buf.ToString())
         | _ -> ()
-        List.ofSeq result
+        result
 
-    let segmentLayouts =
-        segments
-        |> List.map (fun (f, s) ->
-            let l = Renderer.Text.layout f pxSize s
-            let w = Renderer.Text.measureWidth f pxSize s
-            f, l, w)
-    let totalWidth = segmentLayouts |> List.sumBy (fun (_, _, w) -> w)
+    let segmentLayouts = System.Collections.Generic.List<_>(segments.Count)
+    let mutable totalWidth = 0.0
+    for f, s in segments do
+        let layout = Renderer.Text.layout f pxSize s
+        let width = Renderer.Text.measureWidth f pxSize s
+        segmentLayouts.Add(f, layout, width)
+        totalWidth <- totalWidth + width
     // Cell-text rotation (Excel `<alignment textRotation>`): 1..90 = degrees
     // CCW, 91..180 = (value-90) degrees CW, 255 = stacked (handled as flat
     // here). The PDF renderer already rotates; the native/interactive path
@@ -341,47 +385,47 @@ let private toRendererCommands (text: PaintText) =
         else blockTopY + float text.LineIndex * lineHeight + ascent + baselineShiftPx
     let color = Solid (parseHexColor text.Color)
     let mutable cursor = alignedX
-    let inner = [
-        for (_, layout, width) in segmentLayouts do
-            yield Cmd.DrawGlyphs(vec2 cursor baseline, layout, color)
-            cursor <- cursor + width
-        let lineStyle = {
-            Width = px 1.0
-            Cap = Butt
-            Join = Miter
-            Paint = color
-            DashArray = []
-            DashOffset = px 0.0
-            MiterLimit = 4.0
-        }
-        if text.Underline && totalWidth > 0.0 then
-            // Single underline stroke spans all glyph segments. Position at
-            // ~1 px below the baseline (matches Excel/GDI; OpenType's
-            // OS/2.sxUnderlinePosition isn't surfaced by our font loader,
-            // so use a Calibri-tuned constant). Stroke thickness 1 px.
-            let underlineY = baseline + max 1.0 (pxSize * 0.08)
-            yield Cmd.StrokePath(
-                [ MoveTo (vec2 alignedX underlineY)
-                  LineTo (vec2 (alignedX + totalWidth) underlineY) ],
-                lineStyle)
-            if text.UnderlineDouble then
-                // Double underline: a second stroke ~2 px below the first.
-                let underlineY2 = underlineY + max 2.0 (pxSize * 0.12)
-                yield Cmd.StrokePath(
-                    [ MoveTo (vec2 alignedX underlineY2)
-                      LineTo (vec2 (alignedX + totalWidth) underlineY2) ],
-                    lineStyle)
-        if text.Strikethrough && totalWidth > 0.0 then
-            // Strikethrough at ~30% above baseline — visually centers on
-            // the lowercase x-height. (OpenType yStrikeoutPosition would
-            // be more accurate; using a Calibri-tuned constant to match
-            // Excel/GDI.)
-            let strikeY = baseline - pxSize * 0.28
-            yield Cmd.StrokePath(
-                [ MoveTo (vec2 alignedX strikeY)
-                  LineTo (vec2 (alignedX + totalWidth) strikeY) ],
-                lineStyle)
-    ]
+    let innerCommands = System.Collections.Generic.List<Cmd>(segmentLayouts.Count + 3)
+    for _, layout, width in segmentLayouts do
+        innerCommands.Add(Cmd.DrawGlyphs(vec2 cursor baseline, layout, color))
+        cursor <- cursor + width
+    let lineStyle = {
+        Width = px 1.0
+        Cap = Butt
+        Join = Miter
+        Paint = color
+        DashArray = []
+        DashOffset = px 0.0
+        MiterLimit = 4.0
+    }
+    if text.Underline && totalWidth > 0.0 then
+        // Single underline stroke spans all glyph segments. Position at
+        // ~1 px below the baseline (matches Excel/GDI; OpenType's
+        // OS/2.sxUnderlinePosition isn't surfaced by our font loader,
+        // so use a Calibri-tuned constant). Stroke thickness 1 px.
+        let underlineY = baseline + max 1.0 (pxSize * 0.08)
+        innerCommands.Add(Cmd.StrokePath(
+            [ MoveTo (vec2 alignedX underlineY)
+              LineTo (vec2 (alignedX + totalWidth) underlineY) ],
+            lineStyle))
+        if text.UnderlineDouble then
+            // Double underline: a second stroke ~2 px below the first.
+            let underlineY2 = underlineY + max 2.0 (pxSize * 0.12)
+            innerCommands.Add(Cmd.StrokePath(
+                [ MoveTo (vec2 alignedX underlineY2)
+                  LineTo (vec2 (alignedX + totalWidth) underlineY2) ],
+                lineStyle))
+    if text.Strikethrough && totalWidth > 0.0 then
+        // Strikethrough at ~30% above baseline — visually centers on
+        // the lowercase x-height. (OpenType yStrikeoutPosition would
+        // be more accurate; using a Calibri-tuned constant to match
+        // Excel/GDI.)
+        let strikeY = baseline - pxSize * 0.28
+        innerCommands.Add(Cmd.StrokePath(
+            [ MoveTo (vec2 alignedX strikeY)
+              LineTo (vec2 (alignedX + totalWidth) strikeY) ],
+            lineStyle))
+    let inner = resizeArrayToList innerCommands
     if not isRotated then inner
     else
         // Screen space is y-down so Matrix3x2.rotate(θ) turns clockwise;
@@ -400,14 +444,13 @@ let private toRendererCommands (text: PaintText) =
         let rotPt x y =
             let dx, dy = x - alignedX, y - baseline
             alignedX + dx * cosT - dy * sinT, baseline + dx * sinT + dy * cosT
-        let corners =
-            [ rotPt alignedX (baseline - ascent)
-              rotPt (alignedX + totalWidth) (baseline - ascent)
-              rotPt alignedX (baseline + descent)
-              rotPt (alignedX + totalWidth) (baseline + descent) ]
-        let minX = corners |> List.map fst |> List.min
-        let maxX = corners |> List.map fst |> List.max
-        let maxY = corners |> List.map snd |> List.max
+        let x1, y1 = rotPt alignedX (baseline - ascent)
+        let x2, y2 = rotPt (alignedX + totalWidth) (baseline - ascent)
+        let x3, y3 = rotPt alignedX (baseline + descent)
+        let x4, y4 = rotPt (alignedX + totalWidth) (baseline + descent)
+        let minX = min (min x1 x2) (min x3 x4)
+        let maxX = max (max x1 x2) (max x3 x4)
+        let maxY = max (max y1 y2) (max y3 y4)
         let rightAlign = text.Rotation >= 90 && text.Rotation < 180
         let shiftX =
             if rightAlign then (text.Rect.X + text.Rect.Width - 2.0) - maxX
@@ -420,13 +463,13 @@ let private toRendererCommands (text: PaintText) =
         let xform = Matrix3x2.multiply rot (Matrix3x2.translate shiftX shiftY)
         [ Cmd.Group(xform, 1.0, inner) ]
 
-let rec private renderPaintItem item =
+let rec private appendPaintItem (commands: System.Collections.Generic.List<Cmd>) item =
     match item with
     | FillRect (rect, color) ->
-        [ Cmd.FillRect(Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color) ]
+        commands.Add(Cmd.FillRect(Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color))
     | StrokeRect (rect, color, width) ->
-        [ Cmd.StrokeRect(Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color, px width) ]
-    | DrawText text -> toRendererCommands text
+        commands.Add(Cmd.StrokeRect(Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color, px width))
+    | DrawText text -> commands.AddRange(toRendererCommands text)
     | GridLine (x1, y1, x2, y2, color, width) ->
         // Pixel-snap axis-aligned strokes so they cover WHOLE pixels — like
         // Excel's GDI — instead of straddling the grid. A stroke centred on an
@@ -455,26 +498,246 @@ let rec private renderPaintItem item =
             DashOffset = px 0.0
             MiterLimit = 4.0
         }
-        [ Cmd.StrokePath([MoveTo (vec2 sx1 sy1); LineTo (vec2 sx2 sy2)], style) ]
+        commands.Add(Cmd.StrokePath([MoveTo (vec2 sx1 sy1); LineTo (vec2 sx2 sy2)], style))
     | VecPath (segs, fill, stroke) ->
-        let toSeg = function
-            | VMove (x, y) -> MoveTo (vec2 x y)
-            | VLine (x, y) -> LineTo (vec2 x y)
-            | VCubic (x1, y1, x2, y2, x, y) -> CubicTo (vec2 x1 y1, vec2 x2 y2, vec2 x y)
-            | VClose -> Close
-        let ps = segs |> List.map toSeg
-        [ match fill with
-          | Some c -> yield Cmd.FillPath(ps, Solid (parseHexColor c), NonZero)
-          | None -> ()
-          match stroke with
-          | Some (c, w) ->
-              yield Cmd.StrokePath(ps, { Width = px w; Cap = Butt; Join = Miter
-                                         Paint = Solid (parseHexColor c)
-                                         DashArray = []; DashOffset = px 0.0; MiterLimit = 4.0 })
-          | None -> () ]
+        let pathSegments = System.Collections.Generic.List<_>()
+        for seg in segs do
+            match seg with
+            | VMove (x, y) -> pathSegments.Add(MoveTo (vec2 x y))
+            | VLine (x, y) -> pathSegments.Add(LineTo (vec2 x y))
+            | VCubic (x1, y1, x2, y2, x, y) -> pathSegments.Add(CubicTo (vec2 x1 y1, vec2 x2 y2, vec2 x y))
+            | VClose -> pathSegments.Add Close
+        let ps = resizeArrayToList pathSegments
+        match fill with
+        | Some c -> commands.Add(Cmd.FillPath(ps, Solid (parseHexColor c), NonZero))
+        | None -> ()
+        match stroke with
+        | Some (c, w) ->
+            commands.Add(Cmd.StrokePath(ps, { Width = px w; Cap = Butt; Join = Miter
+                                              Paint = Solid (parseHexColor c)
+                                              DashArray = []; DashOffset = px 0.0; MiterLimit = 4.0 }))
+        | None -> ()
     | VecGroup ((a, b, c, d, e, f), children) ->
         let xform = { M11 = a; M12 = b; M21 = c; M22 = d; DX = e; DY = f }
-        [ Cmd.Group(xform, 1.0, children |> List.collect renderPaintItem) ]
+        let childCommands = System.Collections.Generic.List<Cmd>()
+        for child in children do
+            appendPaintItem childCommands child
+        commands.Add(Cmd.Group(xform, 1.0, resizeArrayToList childCommands))
+
+let private renderPaintItem item =
+    let commands = System.Collections.Generic.List<Cmd>()
+    appendPaintItem commands item
+    resizeArrayToList commands
+
+type private RendererPaintItemsCacheEntry = {
+    PaintItems: PaintItem list
+    Commands: Cmd list
+    CommandCount: int
+    TextCharCount: int
+}
+
+let mutable private cellRendererCommandsCache: RendererPaintItemsCacheEntry list = []
+let private cellRendererCommandsCacheMaxEntries = 16
+let private cellRendererCommandsCacheMaxCommands = 200000
+let private cellRendererCommandsCacheMaxTextChars = 5000000
+
+let private addCapped limit value total =
+    if total > limit then
+        total
+    else
+        let value = max 0 value
+        let remaining = limit - total
+        if value > remaining then limit + 1 else total + value
+
+let rec private paintItemTextCharCount limit total item =
+    match item with
+    | DrawText text -> addCapped limit text.Text.Length total
+    | VecGroup (_, children) ->
+        let mutable next = total
+        let mutable remaining = children
+        while next <= limit && not remaining.IsEmpty do
+            next <- paintItemTextCharCount limit next remaining.Head
+            remaining <- remaining.Tail
+        next
+    | _ -> total
+
+let private paintItemsTextCharCount limit (items: PaintItem list) =
+    let mutable total = 0
+    let mutable remaining = items
+    while total <= limit && not remaining.IsEmpty do
+        total <- paintItemTextCharCount limit total remaining.Head
+        remaining <- remaining.Tail
+    total
+
+let private rendererCommandsCacheEntryMatches paintItems entry =
+    obj.ReferenceEquals(entry.PaintItems, paintItems)
+
+let private rememberRendererCommandsForPaintItems paintItems commands commandCount textCharCount =
+    let rec removeMatching acc remaining =
+        match remaining with
+        | [] -> List.rev acc
+        | candidate :: tail when rendererCommandsCacheEntryMatches paintItems candidate ->
+            List.rev acc @ tail
+        | candidate :: tail ->
+            removeMatching (candidate :: acc) tail
+    if commandCount > cellRendererCommandsCacheMaxCommands
+       || textCharCount > cellRendererCommandsCacheMaxTextChars then
+        cellRendererCommandsCache <- removeMatching [] cellRendererCommandsCache
+    else
+        let entry = {
+            PaintItems = paintItems
+            Commands = commands
+            CommandCount = commandCount
+            TextCharCount = textCharCount
+        }
+        let trim entries =
+            let rec loop keptCount keptCommands keptTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateCommands = max 1 candidate.CommandCount
+                    let candidateTextChars = max 1 candidate.TextCharCount
+                    if keptCount < cellRendererCommandsCacheMaxEntries
+                       && keptCommands + candidateCommands <= cellRendererCommandsCacheMaxCommands
+                       && keptTextChars + candidateTextChars <= cellRendererCommandsCacheMaxTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptCommands + candidateCommands)
+                            (keptTextChars + candidateTextChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptCommands keptTextChars acc tail
+            loop 0 0 0 [] entries
+        cellRendererCommandsCache <- (entry :: removeMatching [] cellRendererCommandsCache) |> trim
+
+let private rendererCommandsForPaintItems (paintItems: PaintItem list) =
+    match cellRendererCommandsCache |> List.tryFind (rendererCommandsCacheEntryMatches paintItems) with
+    | Some cached ->
+        cached.Commands
+    | _ ->
+        let commands = System.Collections.Generic.List<Cmd>()
+        for item in paintItems do
+            appendPaintItem commands item
+        let rendered = resizeArrayToList commands
+        let commandCount = commands.Count
+        let textCharCount =
+            if commandCount <= cellRendererCommandsCacheMaxCommands then
+                paintItemsTextCharCount cellRendererCommandsCacheMaxTextChars paintItems
+            else
+                cellRendererCommandsCacheMaxTextChars + 1
+        rememberRendererCommandsForPaintItems paintItems rendered commandCount textCharCount
+        rendered
+
+let private rendererCommandsForPaintItemsUncached (paintItems: PaintItem list) =
+    let commands = System.Collections.Generic.List<Cmd>()
+    for item in paintItems do
+        appendPaintItem commands item
+    resizeArrayToList commands
+
+type private SparseDefaultRendererFrameCacheEntry = {
+    PrefixItems: PaintItem list
+    SelectionFills: PaintItem list
+    GridItems: PaintItem list
+    SelectionStrokes: PaintItem list
+    TextItems: PaintItem list
+    SuffixItems: PaintItem list
+    Commands: Cmd list
+    CommandCount: int
+}
+
+let mutable private sparseDefaultRendererFrameCache: SparseDefaultRendererFrameCacheEntry list = []
+let private sparseDefaultRendererFrameCacheMaxEntries = 16
+let private sparseDefaultRendererFrameCacheMaxCommands = 200000
+
+let private sparseDefaultRendererFrameMatches (parts: SparseDefaultPaintParts) (entry: SparseDefaultRendererFrameCacheEntry) =
+    entry.PrefixItems = parts.PrefixItems
+    && obj.ReferenceEquals(entry.GridItems, parts.GridItems)
+    && obj.ReferenceEquals(entry.TextItems, parts.TextItems)
+    && entry.SelectionFills = parts.SelectionFills
+    && entry.SelectionStrokes = parts.SelectionStrokes
+    && entry.SuffixItems = parts.SuffixItems
+
+let private rememberSparseDefaultRendererFrame (parts: SparseDefaultPaintParts) commands commandCount =
+    if commandCount > sparseDefaultRendererFrameCacheMaxCommands then
+        ()
+    else
+        let entry = {
+            PrefixItems = parts.PrefixItems
+            SelectionFills = parts.SelectionFills
+            GridItems = parts.GridItems
+            SelectionStrokes = parts.SelectionStrokes
+            TextItems = parts.TextItems
+            SuffixItems = parts.SuffixItems
+            Commands = commands
+            CommandCount = commandCount
+        }
+        let rec removeMatching acc remaining =
+            match remaining with
+            | [] -> List.rev acc
+            | candidate :: tail when sparseDefaultRendererFrameMatches parts candidate ->
+                List.rev acc @ tail
+            | candidate :: tail ->
+                removeMatching (candidate :: acc) tail
+        let trim entries =
+            let rec loop keptCount keptCommands acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let commandCount = max 1 candidate.CommandCount
+                    if keptCount < sparseDefaultRendererFrameCacheMaxEntries
+                       && keptCommands + commandCount <= sparseDefaultRendererFrameCacheMaxCommands then
+                        loop
+                            (keptCount + 1)
+                            (keptCommands + commandCount)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptCommands acc tail
+            loop 0 0 [] entries
+        sparseDefaultRendererFrameCache <- (entry :: removeMatching [] sparseDefaultRendererFrameCache) |> trim
+
+let private addRendererCommands (target: System.Collections.Generic.List<Cmd>) commands =
+    for command in commands do
+        target.Add command
+
+let private prependRendererCommands prefix tail =
+    let mutable result = tail
+    let buffer = System.Collections.Generic.List<Cmd>()
+    for command in prefix do
+        buffer.Add command
+    for i = buffer.Count - 1 downto 0 do
+        result <- buffer.[i] :: result
+    result
+
+let private rendererCommandsForSparseDefaultParts (parts: SparseDefaultPaintParts) =
+    match sparseDefaultRendererFrameCache |> List.tryFind (sparseDefaultRendererFrameMatches parts) with
+    | Some cached -> cached.Commands
+    | None ->
+        let prefixCommands = rendererCommandsForPaintItems parts.PrefixItems
+        let fillCommands = rendererCommandsForPaintItemsUncached parts.SelectionFills
+        let gridCommands = rendererCommandsForPaintItems parts.GridItems
+        let strokeCommands = rendererCommandsForPaintItemsUncached parts.SelectionStrokes
+        let textCommands = rendererCommandsForPaintItems parts.TextItems
+        let suffixCommands = rendererCommandsForPaintItems parts.SuffixItems
+        let rendered =
+            let tail =
+                if suffixCommands.IsEmpty then textCommands
+                else prependRendererCommands textCommands suffixCommands
+            tail
+            |> prependRendererCommands strokeCommands
+            |> prependRendererCommands gridCommands
+            |> prependRendererCommands fillCommands
+            |> prependRendererCommands prefixCommands
+        let commandCount =
+            prefixCommands.Length
+            + fillCommands.Length
+            + gridCommands.Length
+            + strokeCommands.Length
+            + textCommands.Length
+            + suffixCommands.Length
+        rememberSparseDefaultRendererFrame parts rendered commandCount
+        rendered
 
 /// Measure a text run in pixels using the real loaded font. Plugged into
 /// Viewport.Measurer so Paint.wrapLines can break lines on actual glyph
@@ -489,7 +752,7 @@ let rec private renderPaintItem item =
 /// next run on top of the trailing characters.
 let private segmentByFontCoverage
     (primary: Renderer.Text.FontData) (bold: bool) (text: string)
-    : (Renderer.Text.FontData * string) list =
+    : System.Collections.Generic.List<Renderer.Text.FontData * string> =
     let fontFor (cp: int) : Renderer.Text.FontData =
         if Renderer.Text.hasGlyph primary cp then primary
         else
@@ -519,12 +782,12 @@ let private segmentByFontCoverage
     match currentFont with
     | ValueSome f when buf.Length > 0 -> result.Add(f, buf.ToString())
     | _ -> ()
-    List.ofSeq result
+    result
 
-let private measureText
+let private measureTextUncached
     (text: string) (fontPt: float)
-    (fontName: string option) (bold: bool) (italic: bool) : float =
-    let font = rendererFont fontName bold italic
+    family (bold: bool) (italic: bool) : float =
+    let font = rendererFontForFamily family bold italic
     let pxSize = fontPt * 96.0 / 72.0
     // Walk codepoints with the same primary-then-fallback policy the draw
     // path uses. Otherwise a run like " (切手) " measured under Times comes
@@ -532,10 +795,61 @@ let private measureText
     // and Paint.fs's rich-text cursor positions the next run on top of the
     // trailing space — visible in phpsp-26template row 1 as "(切手)& "
     // instead of "(切手) &".
-    segmentByFontCoverage font bold text
-    |> List.sumBy (fun (f, s) -> Renderer.Text.measureWidth f pxSize s)
+    let mutable width = 0.0
+    for f, s in segmentByFontCoverage font bold text do
+        width <- width + Renderer.Text.measureWidth f pxSize s
+    width
 
-let viewportOf (model: SpreadsheetModel) width height : Viewport =
+[<Struct>]
+type private TextMeasureCacheKey = {
+    Text: string
+    FontPt: float
+    Family: string
+    Bold: bool
+    Italic: bool
+}
+
+let private textMeasureCache = System.Collections.Generic.Dictionary<TextMeasureCacheKey, float>()
+let private textMeasureCacheOrder = System.Collections.Generic.Queue<TextMeasureCacheKey>()
+let private textMeasureCacheMaxEntries = 200000
+let private textMeasureCacheMaxTotalTextChars = 5000000
+let private textMeasureCacheMaxSingleTextChars = 32768
+let mutable private textMeasureCacheTotalTextChars = 0
+
+let private textMeasureCacheKeyChars key =
+    key.Text.Length + key.Family.Length
+
+let private trimTextMeasureCache () =
+    while (textMeasureCache.Count > textMeasureCacheMaxEntries
+           || textMeasureCacheTotalTextChars > textMeasureCacheMaxTotalTextChars)
+          && textMeasureCacheOrder.Count > 0 do
+        let oldest = textMeasureCacheOrder.Dequeue()
+        if textMeasureCache.Remove oldest then
+            textMeasureCacheTotalTextChars <- max 0 (textMeasureCacheTotalTextChars - textMeasureCacheKeyChars oldest)
+
+let private rememberTextMeasure key width =
+    let entryChars = textMeasureCacheKeyChars key
+    if key.Text.Length <= textMeasureCacheMaxSingleTextChars
+       && entryChars <= textMeasureCacheMaxTotalTextChars then
+        if not (textMeasureCache.ContainsKey key) then
+            textMeasureCacheOrder.Enqueue key
+            textMeasureCacheTotalTextChars <- textMeasureCacheTotalTextChars + entryChars
+        textMeasureCache.[key] <- width
+        trimTextMeasureCache ()
+
+let private measureText
+    (text: string) (fontPt: float)
+    (fontName: string option) (bold: bool) (italic: bool) : float =
+    let family = familyKey fontName
+    let key = { Text = text; FontPt = fontPt; Family = family; Bold = bold; Italic = italic }
+    match textMeasureCache.TryGetValue key with
+    | true, width -> width
+    | false, _ ->
+        let width = measureTextUncached text fontPt family bold italic
+        rememberTextMeasure key width
+        width
+
+let private viewportOfCore scrollX scrollY width height : Viewport =
     // Match Excel's column/row header pixel sizes at 96 DPI / 100% zoom so
     // parity screenshots align cell-for-cell with our PNG renders. Measured
     // against artifacts/excel/pandas-test1-sheet1-headings.png: the column
@@ -544,30 +858,61 @@ let viewportOf (model: SpreadsheetModel) width height : Viewport =
     // height renders at 21 source px.
     let headerHeight = 20.0
     let rowHeaderWidth = 28.0
-    { ScrollX = 0.0
-      ScrollY = 0.0
+    { ScrollX = scrollX
+      ScrollY = scrollY
       Width = width
       Height = height
       HeaderHeight = headerHeight
       RowHeaderWidth = rowHeaderWidth
       Measurer = Some measureText }
 
+let viewportOf (model: SpreadsheetModel) width height : Viewport =
+    viewportOfCore 0.0 0.0 width height
+
 let private cellCommands (model: SpreadsheetModel) width height =
     let viewport = viewportOf model width height
-    buildPaintItems model viewport
-    |> List.collect renderPaintItem
+    match tryBuildSparseDefaultPaintParts model viewport with
+    | Some parts -> rendererCommandsForSparseDefaultParts parts
+    | None ->
+        buildPaintItems model viewport
+        |> rendererCommandsForPaintItems
+
+let private cellCommandsInViewport (model: SpreadsheetModel) scrollX scrollY viewportWidth viewportHeight =
+    let viewport = viewportOfCore scrollX scrollY viewportWidth viewportHeight
+    let commands =
+        match tryBuildSparseDefaultPaintParts model viewport with
+        | Some parts -> rendererCommandsForSparseDefaultParts parts
+        | None ->
+            buildPaintItems model viewport
+            |> rendererCommandsForPaintItems
+    Cmd.FillRect(
+        Renderer.Types.rect scrollX scrollY viewportWidth viewportHeight,
+        parseHexColor "#FFFFFF")
+    :: commands
 
 let widget width height (model: SpreadsheetModel) =
     canvas width height (fun w h -> cellCommands model w h)
 
+let viewportWidget contentWidth contentHeight viewportWidth viewportHeight scrollX scrollY (model: SpreadsheetModel) =
+    canvas contentWidth contentHeight (fun _ _ ->
+        cellCommandsInViewport model scrollX scrollY viewportWidth viewportHeight)
+
 /// Render the sheet with extra paint items (e.g. charts) overlaid on top, in
 /// the same viewport pixel space as the cells.
 let widgetWith width height (model: SpreadsheetModel) (extra: PaintItem list) =
-    canvas width height (fun w h -> (cellCommands model w h) @ (extra |> List.collect renderPaintItem))
+    canvas width height (fun w h ->
+        let commands = System.Collections.Generic.List<Cmd>()
+        commands.AddRange(cellCommands model w h)
+        for item in extra do
+            appendPaintItem commands item
+        resizeArrayToList commands)
 
 /// Render a standalone vector PaintItem scene (no model) on a white
 /// background — used to prove the VecPath/VecGroup primitives end-to-end.
 let renderScene width height (items: PaintItem list) =
     canvas width height (fun w h ->
-        Cmd.FillRect(Renderer.Types.rect 0.0 0.0 w h, parseHexColor "#FFFFFF")
-        :: (items |> List.collect renderPaintItem))
+        let commands = System.Collections.Generic.List<Cmd>()
+        commands.Add(Cmd.FillRect(Renderer.Types.rect 0.0 0.0 w h, parseHexColor "#FFFFFF"))
+        for item in items do
+            appendPaintItem commands item
+        resizeArrayToList commands)

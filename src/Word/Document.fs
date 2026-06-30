@@ -1,6 +1,84 @@
 module RedBat.Word.Document
 
+open System.Collections.Generic
 open RedBat.Word.TextBuffer
+
+let private resizeArrayToList (items: ResizeArray<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
+let private prependResizeArray (items: ResizeArray<'T>) tail =
+    let mutable result = tail
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
+let private tryRemoveListItemAtV index items =
+    let rec removeSmall remaining items =
+        match remaining, items with
+        | 0, _ :: tail -> ValueSome tail
+        | remaining, item :: tail when remaining > 0 ->
+            match removeSmall (remaining - 1) tail with
+            | ValueSome tail -> ValueSome (item :: tail)
+            | ValueNone -> ValueNone
+        | _ -> ValueNone
+
+    if index < 0 then
+        ValueNone
+    elif index <= 8 then
+        removeSmall index items
+    else
+        let prefix = ResizeArray<'T>(index)
+        let rec loop position items =
+            match items with
+            | [] -> ValueNone
+            | _ :: tail when position = index ->
+                ValueSome (prependResizeArray prefix tail)
+            | item :: tail ->
+                prefix.Add item
+                loop (position + 1) tail
+        loop 0 items
+
+let private tryInsertListItemAfterAtV index createItem items =
+    let rec insertSmall remaining items =
+        match remaining, items with
+        | 0, item :: tail -> ValueSome (item :: createItem () :: tail)
+        | remaining, item :: tail when remaining > 0 ->
+            match insertSmall (remaining - 1) tail with
+            | ValueSome tail -> ValueSome (item :: tail)
+            | ValueNone -> ValueNone
+        | _ -> ValueNone
+
+    if index < 0 then
+        ValueNone
+    elif index <= 8 then
+        insertSmall index items
+    else
+        let prefix = ResizeArray<'T>(index)
+        let rec loop position items =
+            match items with
+            | [] -> ValueNone
+            | item :: tail when position = index ->
+                ValueSome (prependResizeArray prefix (item :: createItem () :: tail))
+            | item :: tail ->
+                prefix.Add item
+                loop (position + 1) tail
+        loop 0 items
+
+let private stringResizeArrayConcatNewline (items: ResizeArray<string>) =
+    if items.Count = 0 then
+        ""
+    else
+        let mutable capacity = items.Count - 1
+        for item in items do
+            capacity <- capacity + item.Length
+        let builder = System.Text.StringBuilder(capacity)
+        builder.Append(items.[0]) |> ignore
+        for i = 1 to items.Count - 1 do
+            builder.Append('\n').Append(items.[i]) |> ignore
+        builder.ToString()
 
 /// Block ID for tracking blocks
 type BlockId = string
@@ -380,6 +458,584 @@ type ContentControlInfo = {
     BlockId: BlockId
 }
 
+type CommentInfo = {
+    Id: string
+    Text: string
+    Author: string option
+    Date: string option
+    BlockId: BlockId
+    StartOffset: int
+    EndOffset: int
+    Excerpt: string
+}
+
+let private documentSourceTextCacheMaxTotalChars = 5000000
+let private sourceParagraphCountCacheLimit = 100000
+
+let private sourceStructureVisitedItemLimit maxSourceParagraphs =
+    maxSourceParagraphs * 4
+
+let private sourceStructureOverwhelmsParagraphs maxSourceParagraphs paragraphCount visitedItems =
+    visitedItems > maxSourceParagraphs
+    && paragraphCount * 4 < visitedItems
+
+let private documentAddCapped total value =
+    if total > documentSourceTextCacheMaxTotalChars then
+        total
+    else
+        let value = max 0 value
+        let remaining = documentSourceTextCacheMaxTotalChars - total
+        if value > remaining then documentSourceTextCacheMaxTotalChars + 1
+        else total + value
+
+let private documentOptionStringCharCount (value: string option) =
+    match value with
+    | Some value -> value.Length
+    | None -> 0
+
+let private documentSectionColumnsStringCharCount (columns: SectionColumns option) =
+    match columns with
+    | Some columns ->
+        let mutable total = 0
+        let mutable seen = 0
+        let mutable widths = columns.Widths
+        while total <= documentSourceTextCacheMaxTotalChars
+              && seen <= sourceParagraphCountCacheLimit
+              && not widths.IsEmpty do
+            total <- documentAddCapped total 1
+            seen <- seen + 1
+            widths <- widths.Tail
+        if seen > sourceParagraphCountCacheLimit then
+            documentSourceTextCacheMaxTotalChars + 1
+        else
+            total
+    | None -> 0
+
+let private documentTextStyleStringCharCount (style: RedBat.Word.TextBuffer.TextStyle) =
+    documentOptionStringCharCount style.Style
+    + documentOptionStringCharCount style.UnderlineStyle
+    + documentOptionStringCharCount style.UnderlineColor
+    + documentOptionStringCharCount style.EmphasisMark
+    + documentOptionStringCharCount style.FontFamily
+    + documentOptionStringCharCount style.Color
+    + documentOptionStringCharCount style.Highlight
+    + documentOptionStringCharCount style.Hyperlink
+    + documentOptionStringCharCount style.CommentId
+    + documentOptionStringCharCount style.CommentText
+    + documentOptionStringCharCount style.CommentAuthor
+    + documentOptionStringCharCount style.CommentDate
+    + documentOptionStringCharCount style.NoteId
+    + documentOptionStringCharCount style.NoteType
+    + documentOptionStringCharCount style.NoteText
+    + documentOptionStringCharCount style.BookmarkStartId
+    + documentOptionStringCharCount style.BookmarkName
+    + documentOptionStringCharCount style.BookmarkEndId
+    + documentOptionStringCharCount style.FieldCode
+    + documentOptionStringCharCount style.FieldResult
+    + documentOptionStringCharCount style.EquationXml
+    + documentOptionStringCharCount style.RevisionId
+    + documentOptionStringCharCount style.RevisionType
+    + documentOptionStringCharCount style.RevisionAuthor
+    + documentOptionStringCharCount style.RevisionDate
+    + documentOptionStringCharCount style.VertAlign
+
+let private documentImageStringCharCount (image: RedBat.Word.TextBuffer.ImageRun) =
+    image.Src.Length
+    + documentOptionStringCharCount image.Alt
+    + documentOptionStringCharCount image.Name
+    + documentOptionStringCharCount image.Title
+    + documentOptionStringCharCount image.Wrap
+    + documentOptionStringCharCount image.PositionHRelativeFrom
+    + documentOptionStringCharCount image.PositionVRelativeFrom
+    + documentOptionStringCharCount image.RelativeHeight
+    + documentOptionStringCharCount image.CropLeft
+    + documentOptionStringCharCount image.CropTop
+    + documentOptionStringCharCount image.CropRight
+    + documentOptionStringCharCount image.CropBottom
+
+let private documentRunStringCharCount = function
+    | Text textRun -> documentTextStyleStringCharCount textRun.Style
+    | Image image -> documentImageStringCharCount image
+
+let private documentBufferSourceTextCharCount (buffer: RedBat.Word.TextBuffer.TextBuffer) =
+    let limit = documentSourceTextCacheMaxTotalChars + 1
+    let mutable total = TextBuffer.length buffer
+    let mutable seen = 0
+    let mutable remaining = buffer.Runs
+    while total <= documentSourceTextCacheMaxTotalChars
+          && seen <= sourceParagraphCountCacheLimit
+          && not remaining.IsEmpty do
+        total <- documentAddCapped total (documentRunStringCharCount remaining.Head)
+        seen <- seen + 1
+        remaining <- remaining.Tail
+    if seen > sourceParagraphCountCacheLimit then limit else min total limit
+
+let private documentParagraphBorderStringCharCount (border: ParagraphBorder option) =
+    match border with
+    | Some border -> documentOptionStringCharCount border.Style + documentOptionStringCharCount border.Color
+    | None -> 0
+
+let private documentParagraphBordersStringCharCount (borders: ParagraphBorders option) =
+    match borders with
+    | Some borders ->
+        documentParagraphBorderStringCharCount borders.Top
+        + documentParagraphBorderStringCharCount borders.Right
+        + documentParagraphBorderStringCharCount borders.Bottom
+        + documentParagraphBorderStringCharCount borders.Left
+    | None -> 0
+
+let private documentTabStopStringCharCount (tabStop: TabStop) =
+    tabStop.Alignment.Length + documentOptionStringCharCount tabStop.Leader
+
+let private documentParagraphMetadataStringCharCount (metadata: BlockMetadata) =
+    let mutable total =
+        documentOptionStringCharCount metadata.Style
+        + documentOptionStringCharCount metadata.ContentControlId
+        + documentOptionStringCharCount metadata.ContentControlTag
+        + documentOptionStringCharCount metadata.ContentControlAlias
+        + documentOptionStringCharCount metadata.ListId
+        + documentOptionStringCharCount metadata.ListNumberFormat
+        + documentOptionStringCharCount metadata.ListLevelText
+        + documentOptionStringCharCount metadata.RightTabLeader
+        + documentOptionStringCharCount metadata.LineSpacingRule
+        + documentOptionStringCharCount metadata.BackgroundColor
+        + documentParagraphBordersStringCharCount metadata.ParagraphBorders
+        + documentOptionStringCharCount metadata.SectionBreak
+        + documentSectionColumnsStringCharCount metadata.SectionColumns
+    let mutable seen = 0
+    let mutable tabStops = metadata.TabStops
+    while total <= documentSourceTextCacheMaxTotalChars
+          && seen <= sourceParagraphCountCacheLimit
+          && not tabStops.IsEmpty do
+        total <- documentAddCapped total (documentTabStopStringCharCount tabStops.Head)
+        seen <- seen + 1
+        tabStops <- tabStops.Tail
+    let mutable headerReferences = metadata.HeaderReferences
+    while total <= documentSourceTextCacheMaxTotalChars
+          && seen <= sourceParagraphCountCacheLimit
+          && not headerReferences.IsEmpty do
+        let kind, relationshipId = headerReferences.Head
+        total <- documentAddCapped total (kind.Length + relationshipId.Length)
+        seen <- seen + 1
+        headerReferences <- headerReferences.Tail
+    let mutable footerReferences = metadata.FooterReferences
+    while total <= documentSourceTextCacheMaxTotalChars
+          && seen <= sourceParagraphCountCacheLimit
+          && not footerReferences.IsEmpty do
+        let kind, relationshipId = footerReferences.Head
+        total <- documentAddCapped total (kind.Length + relationshipId.Length)
+        seen <- seen + 1
+        footerReferences <- footerReferences.Tail
+    if seen > sourceParagraphCountCacheLimit then
+        documentSourceTextCacheMaxTotalChars + 1
+    else
+        total
+
+let private documentParagraphSourceTextCharCount (paragraph: ParagraphBlock) =
+    let mutable total = paragraph.Id.Length
+    total <- documentAddCapped total (documentBufferSourceTextCharCount paragraph.Buffer)
+    total <- documentAddCapped total (documentParagraphMetadataStringCharCount paragraph.Metadata)
+    total
+
+let private documentTableBorderStringCharCount (border: TableBorder option) =
+    match border with
+    | Some border ->
+        let mutable total = 0
+        total <- documentAddCapped total (documentOptionStringCharCount border.Style)
+        total <- documentAddCapped total (documentOptionStringCharCount border.Color)
+        total
+    | None -> 0
+
+let private documentTableBordersStringCharCount (borders: TableBorders option) =
+    match borders with
+    | Some borders ->
+        let mutable total = 0
+        total <- documentAddCapped total (documentTableBorderStringCharCount borders.Top)
+        total <- documentAddCapped total (documentTableBorderStringCharCount borders.Right)
+        total <- documentAddCapped total (documentTableBorderStringCharCount borders.Bottom)
+        total <- documentAddCapped total (documentTableBorderStringCharCount borders.Left)
+        total <- documentAddCapped total (documentTableBorderStringCharCount borders.InsideH)
+        total <- documentAddCapped total (documentTableBorderStringCharCount borders.InsideV)
+        total
+    | None -> 0
+
+let private documentShadingStringCharCount (shading: Shading option) =
+    match shading with
+    | Some shading ->
+        let mutable total = 0
+        total <- documentAddCapped total (documentOptionStringCharCount shading.Pattern)
+        total <- documentAddCapped total (documentOptionStringCharCount shading.ForegroundColor)
+        total <- documentAddCapped total (documentOptionStringCharCount shading.BackgroundColor)
+        total
+    | None -> 0
+
+let private documentTableStringCharCount (table: TableBlock) =
+    let mutable total = table.Id.Length
+    total <- documentAddCapped total (documentOptionStringCharCount table.Alignment)
+    total <- documentAddCapped total (documentOptionStringCharCount table.BackgroundColor)
+    total <- documentAddCapped total (documentShadingStringCharCount table.Shading)
+    total <- documentAddCapped total (documentTableBordersStringCharCount table.Borders)
+    total
+
+let private documentTableRowStringCharCount (row: TableRow) =
+    let mutable total = 0
+    total <- documentAddCapped total (documentOptionStringCharCount row.HeightRule)
+    total <- documentAddCapped total (documentTableBordersStringCharCount row.BordersOverride)
+    total
+
+let private documentTableCellStringCharCount (cell: TableCell) =
+    let mutable total = 0
+    total <- documentAddCapped total (documentOptionStringCharCount cell.BackgroundColor)
+    total <- documentAddCapped total (documentShadingStringCharCount cell.Shading)
+    total <- documentAddCapped total (documentOptionStringCharCount cell.BorderColor)
+    total <- documentAddCapped total (documentTableBordersStringCharCount cell.Borders)
+    total <- documentAddCapped total (documentOptionStringCharCount cell.VerticalAlignment)
+    total
+
+let private documentPathSegmentsStringCharCount (segments: PathSeg list) =
+    let mutable total = 0
+    let mutable seen = 0
+    let mutable remaining = segments
+    while total <= documentSourceTextCacheMaxTotalChars
+          && seen <= sourceParagraphCountCacheLimit
+          && not remaining.IsEmpty do
+        total <- documentAddCapped total 1
+        seen <- seen + 1
+        remaining <- remaining.Tail
+    if seen > sourceParagraphCountCacheLimit then
+        documentSourceTextCacheMaxTotalChars + 1
+    else
+        total
+
+let private documentShapeGeometryStringCharCount = function
+    | GeoRect -> 0
+    | GeoPreset preset -> preset.Length
+    | GeoCustom (segments, _, _) -> documentPathSegmentsStringCharCount segments
+
+let private documentGradientStringCharCount (gradient: GradientSpec option) =
+    match gradient with
+    | Some gradient ->
+        let mutable total = 0
+        let mutable seen = 0
+        let mutable remaining = gradient.Stops
+        while total <= documentSourceTextCacheMaxTotalChars
+              && seen <= sourceParagraphCountCacheLimit
+              && not remaining.IsEmpty do
+            total <- documentAddCapped total remaining.Head.Color.Length
+            seen <- seen + 1
+            remaining <- remaining.Tail
+        if seen > sourceParagraphCountCacheLimit then
+            documentSourceTextCacheMaxTotalChars + 1
+        else
+            total
+    | None -> 0
+
+let private documentTextBoxStringCharCount (textBox: TextBoxBlock) =
+    let mutable total = textBox.Id.Length
+    total <- documentAddCapped total (documentOptionStringCharCount textBox.PositionHRelativeFrom)
+    total <- documentAddCapped total (documentOptionStringCharCount textBox.PositionVRelativeFrom)
+    total <- documentAddCapped total (documentOptionStringCharCount textBox.FillColor)
+    total <- documentAddCapped total (documentOptionStringCharCount textBox.BorderColor)
+    total <- documentAddCapped total (documentOptionStringCharCount textBox.RelativeHeight)
+    total <- documentAddCapped total (documentShapeGeometryStringCharCount textBox.Geometry)
+    total <- documentAddCapped total (documentGradientStringCharCount textBox.Gradient)
+    total
+
+let private documentBlocksSourceTextCharCountWithLimit maxVisitedItems (blocks: Block list) =
+    let limit = documentSourceTextCacheMaxTotalChars + 1
+    let maxVisitedItems = sourceStructureVisitedItemLimit maxVisitedItems
+    let mutable total = 0
+    let mutable visitedItems = 0
+    let canContinue () =
+        total <= documentSourceTextCacheMaxTotalChars
+        && visitedItems <= maxVisitedItems
+    let visitItem () =
+        visitedItems <- visitedItems + 1
+    let addParagraph paragraph =
+        if canContinue () then
+            visitItem ()
+            total <- documentAddCapped total (documentParagraphSourceTextCharCount paragraph)
+    let addTable table =
+        let stack = Stack<TableBlock>()
+        stack.Push table
+        while stack.Count > 0 && canContinue () do
+            let table = stack.Pop()
+            visitItem ()
+            total <- documentAddCapped total (documentTableStringCharCount table)
+            let mutable rows = table.Rows
+            while canContinue () && not rows.IsEmpty do
+                let row = rows.Head
+                visitItem ()
+                total <- documentAddCapped total (documentTableRowStringCharCount row)
+                let mutable cells = row.Cells
+                while canContinue () && not cells.IsEmpty do
+                    let cell = cells.Head
+                    visitItem ()
+                    total <- documentAddCapped total (documentTableCellStringCharCount cell)
+                    let mutable paragraphs = cell.Content
+                    while canContinue () && not paragraphs.IsEmpty do
+                        addParagraph paragraphs.Head
+                        paragraphs <- paragraphs.Tail
+                    let mutable nestedTables = cell.NestedTables
+                    while canContinue () && not nestedTables.IsEmpty do
+                        stack.Push nestedTables.Head
+                        nestedTables <- nestedTables.Tail
+                    cells <- cells.Tail
+                rows <- rows.Tail
+    let mutable remaining = blocks
+    while canContinue () && not remaining.IsEmpty do
+        match remaining.Head with
+        | Paragraph paragraph
+        | Heading (_, paragraph) ->
+            addParagraph paragraph
+        | Table table ->
+            addTable table
+        | TextBox textBox ->
+            visitItem ()
+            total <- documentAddCapped total (documentTextBoxStringCharCount textBox)
+            let mutable paragraphs = textBox.Content
+            while canContinue () && not paragraphs.IsEmpty do
+                addParagraph paragraphs.Head
+                paragraphs <- paragraphs.Tail
+        remaining <- remaining.Tail
+    if visitedItems > maxVisitedItems then limit else min total limit
+
+let private documentBlocksSourceTextCharCount (blocks: Block list) =
+    documentBlocksSourceTextCharCountWithLimit sourceParagraphCountCacheLimit blocks
+
+let private documentBlocksSourceTextCharCountFor maxTotalSourceParagraphs sourceParagraphCount blocks =
+    if sourceParagraphCount > maxTotalSourceParagraphs then
+        documentSourceTextCacheMaxTotalChars + 1
+    else
+        documentBlocksSourceTextCharCountWithLimit maxTotalSourceParagraphs blocks
+
+type private BookmarkInfoCache = {
+    BookmarkSourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    BookmarkInfoCount: int
+    BookmarkInfos: BookmarkInfo list
+}
+
+type private ContentControlInfoCache = {
+    ContentControlSourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    ContentControlInfoCount: int
+    ContentControlInfos: ContentControlInfo list
+}
+
+type private CommentInfoCache = {
+    CommentSourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    CommentInfoCount: int
+    CommentInfos: CommentInfo list
+}
+
+let mutable private bookmarkInfoCache: BookmarkInfoCache list = []
+let mutable private contentControlInfoCache: ContentControlInfoCache list = []
+let mutable private commentInfoCache: CommentInfoCache list = []
+let private documentInfoCacheMaxEntries = 64
+let private documentInfoCacheMaxTotalInfos = 200000
+let private documentInfoCacheMaxTotalBlocks = 100000
+let private documentInfoCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private bookmarkInfoCacheMatches blocks (cached: BookmarkInfoCache) =
+    obj.ReferenceEquals(cached.BookmarkSourceBlocks, blocks)
+
+let private contentControlInfoCacheMatches blocks (cached: ContentControlInfoCache) =
+    obj.ReferenceEquals(cached.ContentControlSourceBlocks, blocks)
+
+let private commentInfoCacheMatches blocks (cached: CommentInfoCache) =
+    obj.ReferenceEquals(cached.CommentSourceBlocks, blocks)
+
+let private documentInfoCacheRetainable infoCount blockCount sourceTextCharCount entry =
+    infoCount entry <= documentInfoCacheMaxTotalInfos
+    && blockCount entry <= documentInfoCacheMaxTotalBlocks
+    && sourceTextCharCount entry <= documentInfoCacheMaxTotalSourceTextChars
+
+let private bookmarkInfoCacheRetainable entry =
+    documentInfoCacheRetainable
+        (fun entry -> entry.BookmarkInfoCount)
+        (fun entry -> entry.SourceParagraphCount)
+        (fun entry -> entry.SourceTextCharCount)
+        entry
+
+let private contentControlInfoCacheRetainable entry =
+    documentInfoCacheRetainable
+        (fun entry -> entry.ContentControlInfoCount)
+        (fun entry -> entry.SourceParagraphCount)
+        (fun entry -> entry.SourceTextCharCount)
+        entry
+
+let private commentInfoCacheRetainable entry =
+    documentInfoCacheRetainable
+        (fun entry -> entry.CommentInfoCount)
+        (fun entry -> entry.SourceParagraphCount)
+        (fun entry -> entry.SourceTextCharCount)
+        entry
+
+let private documentInfoCountTableParagraphs (table: TableBlock) =
+    let mutable count = 0
+    let mutable visitedItems = 0
+    let canContinue () =
+        count <= documentInfoCacheMaxTotalBlocks
+        && visitedItems <= documentInfoCacheMaxTotalBlocks
+    let visitItem () =
+        visitedItems <- visitedItems + 1
+    let addParagraphs (paragraphs: ParagraphBlock list) =
+        let mutable remaining = paragraphs
+        while canContinue () && not remaining.IsEmpty do
+            count <- count + 1
+            remaining <- remaining.Tail
+    let stack = Stack<TableBlock>()
+    stack.Push table
+    while canContinue () && stack.Count > 0 do
+        let table = stack.Pop()
+        visitItem ()
+        let mutable rows = table.Rows
+        while canContinue () && not rows.IsEmpty do
+            let row = rows.Head
+            visitItem ()
+            let mutable cells = row.Cells
+            while canContinue () && not cells.IsEmpty do
+                let cell = cells.Head
+                visitItem ()
+                addParagraphs cell.Content
+                let mutable nestedTables = cell.NestedTables
+                while canContinue () && not nestedTables.IsEmpty do
+                    stack.Push nestedTables.Head
+                    nestedTables <- nestedTables.Tail
+                cells <- cells.Tail
+            rows <- rows.Tail
+    if visitedItems > documentInfoCacheMaxTotalBlocks then
+        documentInfoCacheMaxTotalBlocks + 1
+    else
+        min count (documentInfoCacheMaxTotalBlocks + 1)
+
+let private documentInfoCountSourceParagraphs (blocks: Block list) =
+    let mutable count = 0
+    let mutable visitedItems = 0
+    let canContinue () =
+        count <= documentInfoCacheMaxTotalBlocks
+        && visitedItems <= documentInfoCacheMaxTotalBlocks
+    let visitItem () =
+        visitedItems <- visitedItems + 1
+    let addParagraphs (paragraphs: ParagraphBlock list) =
+        let mutable remainingParagraphs = paragraphs
+        while canContinue () && not remainingParagraphs.IsEmpty do
+            count <- count + 1
+            remainingParagraphs <- remainingParagraphs.Tail
+    let mutable remaining = blocks
+    while canContinue () && not remaining.IsEmpty do
+        visitItem ()
+        match remaining.Head with
+        | Paragraph _
+        | Heading _ ->
+            count <- count + 1
+        | Table table ->
+            count <- count + documentInfoCountTableParagraphs table
+        | TextBox textBox ->
+            addParagraphs textBox.Content
+        remaining <- remaining.Tail
+    if visitedItems > documentInfoCacheMaxTotalBlocks then
+        documentInfoCacheMaxTotalBlocks + 1
+    else
+        min count (documentInfoCacheMaxTotalBlocks + 1)
+
+let private documentInfoSourceParagraphCountFor infoCount blocks =
+    if infoCount > documentInfoCacheMaxTotalInfos then
+        documentInfoCacheMaxTotalBlocks + 1
+    else
+        documentInfoCountSourceParagraphs blocks
+
+let private documentInfoSourceTextCharCountFor infoCount sourceParagraphCount blocks =
+    if infoCount > documentInfoCacheMaxTotalInfos
+       || sourceParagraphCount > documentInfoCacheMaxTotalBlocks then
+        documentInfoCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            documentInfoCacheMaxTotalBlocks
+            sourceParagraphCount
+            blocks
+
+let private tryDocumentInfoCachedSourceMetrics blocks =
+    match bookmarkInfoCache |> List.tryFind (bookmarkInfoCacheMatches blocks) with
+    | Some cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
+    | None ->
+        match contentControlInfoCache |> List.tryFind (contentControlInfoCacheMatches blocks) with
+        | Some cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
+        | None ->
+            match commentInfoCache |> List.tryFind (commentInfoCacheMatches blocks) with
+            | Some cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
+            | None -> ValueNone
+
+let private documentInfoSourceMetricsFor infoCount blocks =
+    if infoCount > documentInfoCacheMaxTotalInfos then
+        struct (documentInfoCacheMaxTotalBlocks + 1, documentInfoCacheMaxTotalSourceTextChars + 1)
+    else
+        match tryDocumentInfoCachedSourceMetrics blocks with
+        | ValueSome metrics -> metrics
+        | ValueNone ->
+            let sourceParagraphCount = documentInfoSourceParagraphCountFor infoCount blocks
+            let sourceTextCharCount = documentInfoSourceTextCharCountFor infoCount sourceParagraphCount blocks
+            struct (sourceParagraphCount, sourceTextCharCount)
+
+let private trimDocumentInfoCache infoCount blockCount sourceTextCharCount entries =
+    let rec loop keptCount keptInfos keptBlocks keptSourceTextChars acc remaining =
+        match remaining with
+        | [] -> List.rev acc
+        | candidate :: tail ->
+            let candidateInfos = max 1 (infoCount candidate)
+            let candidateBlocks = max 1 (blockCount candidate)
+            let candidateSourceTextChars = max 1 (sourceTextCharCount candidate)
+            if documentInfoCacheRetainable infoCount blockCount sourceTextCharCount candidate
+               && keptCount < documentInfoCacheMaxEntries
+               && keptInfos + candidateInfos <= documentInfoCacheMaxTotalInfos
+               && keptBlocks + candidateBlocks <= documentInfoCacheMaxTotalBlocks
+               && keptSourceTextChars + candidateSourceTextChars <= documentInfoCacheMaxTotalSourceTextChars then
+                loop
+                    (keptCount + 1)
+                    (keptInfos + candidateInfos)
+                    (keptBlocks + candidateBlocks)
+                    (keptSourceTextChars + candidateSourceTextChars)
+                    (candidate :: acc)
+                    tail
+            else
+                loop keptCount keptInfos keptBlocks keptSourceTextChars acc tail
+    loop 0 0 0 0 [] entries
+
+let private rememberBookmarkInfos cached =
+    if not (bookmarkInfoCacheRetainable cached) then
+        bookmarkInfoCache <- bookmarkInfoCache |> List.filter (bookmarkInfoCacheMatches cached.BookmarkSourceBlocks >> not)
+    else
+        bookmarkInfoCache <-
+            (cached
+             :: (bookmarkInfoCache
+                 |> List.filter (bookmarkInfoCacheMatches cached.BookmarkSourceBlocks >> not)))
+            |> trimDocumentInfoCache (fun entry -> entry.BookmarkInfoCount) (fun entry -> entry.SourceParagraphCount) (fun entry -> entry.SourceTextCharCount)
+
+let private rememberContentControlInfos cached =
+    if not (contentControlInfoCacheRetainable cached) then
+        contentControlInfoCache <- contentControlInfoCache |> List.filter (contentControlInfoCacheMatches cached.ContentControlSourceBlocks >> not)
+    else
+        contentControlInfoCache <-
+            (cached
+             :: (contentControlInfoCache
+                 |> List.filter (contentControlInfoCacheMatches cached.ContentControlSourceBlocks >> not)))
+            |> trimDocumentInfoCache (fun entry -> entry.ContentControlInfoCount) (fun entry -> entry.SourceParagraphCount) (fun entry -> entry.SourceTextCharCount)
+
+let private rememberCommentInfos cached =
+    if not (commentInfoCacheRetainable cached) then
+        commentInfoCache <- commentInfoCache |> List.filter (commentInfoCacheMatches cached.CommentSourceBlocks >> not)
+    else
+        commentInfoCache <-
+            (cached
+             :: (commentInfoCache
+                 |> List.filter (commentInfoCacheMatches cached.CommentSourceBlocks >> not)))
+            |> trimDocumentInfoCache (fun entry -> entry.CommentInfoCount) (fun entry -> entry.SourceParagraphCount) (fun entry -> entry.SourceTextCharCount)
+
 /// Document
 type HeaderFooterPart = {
     Kind: string
@@ -466,12 +1122,93 @@ type Document = {
     FooterParts: HeaderFooterPart list
 }
 
+let setPageSetup (setup: PageSetup) (doc: Document) =
+    if doc.PageSetup = setup then doc else { doc with PageSetup = setup }
+
 type FindMatch = {
     BlockId: BlockId
     Start: int
     End: int
     Text: string
 }
+
+let private countTableParagraphsWithLimit maxSourceParagraphs (table: TableBlock) =
+    let mutable count = 0
+    let mutable visitedItems = 0
+    let maxVisitedItems = sourceStructureVisitedItemLimit maxSourceParagraphs
+    let canContinue () =
+        count <= maxSourceParagraphs
+        && visitedItems <= maxVisitedItems
+    let visitItem () =
+        visitedItems <- visitedItems + 1
+    let addParagraphs (paragraphs: ParagraphBlock list) =
+        let mutable remaining = paragraphs
+        while canContinue () && not remaining.IsEmpty do
+            count <- count + 1
+            remaining <- remaining.Tail
+    let stack = Stack<TableBlock>()
+    stack.Push table
+    while canContinue () && stack.Count > 0 do
+        let table = stack.Pop()
+        visitItem ()
+        let mutable rows = table.Rows
+        while canContinue () && not rows.IsEmpty do
+            let row = rows.Head
+            visitItem ()
+            let mutable cells = row.Cells
+            while canContinue () && not cells.IsEmpty do
+                let cell = cells.Head
+                visitItem ()
+                addParagraphs cell.Content
+                let mutable nestedTables = cell.NestedTables
+                while canContinue () && not nestedTables.IsEmpty do
+                    stack.Push nestedTables.Head
+                    nestedTables <- nestedTables.Tail
+                cells <- cells.Tail
+            rows <- rows.Tail
+    if visitedItems > maxVisitedItems
+       || sourceStructureOverwhelmsParagraphs maxSourceParagraphs count visitedItems then
+        maxSourceParagraphs + 1
+    else
+        min count (maxSourceParagraphs + 1)
+
+let private countTableParagraphs (table: TableBlock) =
+    countTableParagraphsWithLimit sourceParagraphCountCacheLimit table
+
+let private countSourceParagraphsWithLimit maxSourceParagraphs (blocks: Block list) =
+    let mutable count = 0
+    let mutable visitedItems = 0
+    let maxVisitedItems = sourceStructureVisitedItemLimit maxSourceParagraphs
+    let canContinue () =
+        count <= maxSourceParagraphs
+        && visitedItems <= maxVisitedItems
+    let visitItem () =
+        visitedItems <- visitedItems + 1
+    let addParagraphs (paragraphs: ParagraphBlock list) =
+        let mutable remainingParagraphs = paragraphs
+        while canContinue () && not remainingParagraphs.IsEmpty do
+            count <- count + 1
+            remainingParagraphs <- remainingParagraphs.Tail
+    let mutable remaining = blocks
+    while canContinue () && not remaining.IsEmpty do
+        visitItem ()
+        match remaining.Head with
+        | Paragraph _
+        | Heading _ ->
+            count <- count + 1
+        | Table table ->
+            count <- count + countTableParagraphsWithLimit maxSourceParagraphs table
+        | TextBox textBox ->
+            addParagraphs textBox.Content
+        remaining <- remaining.Tail
+    if visitedItems > maxVisitedItems
+       || sourceStructureOverwhelmsParagraphs maxSourceParagraphs count visitedItems then
+        maxSourceParagraphs + 1
+    else
+        min count (maxSourceParagraphs + 1)
+
+let private countSourceParagraphs (blocks: Block list) =
+    countSourceParagraphsWithLimit sourceParagraphCountCacheLimit blocks
 
 type RevisionInfo = {
     BlockId: BlockId
@@ -482,6 +1219,324 @@ type RevisionInfo = {
     Date: string option
     Text: string
 }
+
+type private RevisionInfoCache = {
+    SourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    InfoCount: int
+    Infos: RevisionInfo list
+}
+
+let mutable private revisionInfoCache: RevisionInfoCache list = []
+let private revisionInfoCacheMaxEntries = 64
+let private revisionInfoCacheMaxTotalInfos = 200000
+let private revisionInfoCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private revisionInfoCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private revisionInfoCacheMatches blocks (cached: RevisionInfoCache) =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private revisionInfoCacheRetainable (cached: RevisionInfoCache) =
+    cached.InfoCount <= revisionInfoCacheMaxTotalInfos
+    && cached.SourceParagraphCount <= revisionInfoCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= revisionInfoCacheMaxTotalSourceTextChars
+
+let private revisionInfoSourceParagraphCountFor infoCount blocks =
+    if infoCount > revisionInfoCacheMaxTotalInfos then
+        revisionInfoCacheMaxTotalSourceParagraphs + 1
+    else
+        countSourceParagraphs blocks
+
+let private revisionInfoSourceTextCharCountFor infoCount sourceParagraphCount blocks =
+    if infoCount > revisionInfoCacheMaxTotalInfos
+       || sourceParagraphCount > revisionInfoCacheMaxTotalSourceParagraphs then
+        revisionInfoCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            revisionInfoCacheMaxTotalSourceParagraphs
+            sourceParagraphCount
+            blocks
+
+let private rememberRevisionInfos cached =
+    if not (revisionInfoCacheRetainable cached) then
+        revisionInfoCache <- revisionInfoCache |> List.filter (revisionInfoCacheMatches cached.SourceBlocks >> not)
+    else
+        let trim entries =
+            let rec loop keptCount keptInfos keptBlocks keptSourceTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateInfos = max 1 candidate.InfoCount
+                    let candidateBlocks = max 1 candidate.SourceParagraphCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    if revisionInfoCacheRetainable candidate
+                       && keptCount < revisionInfoCacheMaxEntries
+                       && keptInfos + candidateInfos <= revisionInfoCacheMaxTotalInfos
+                       && keptBlocks + candidateBlocks <= revisionInfoCacheMaxTotalSourceParagraphs
+                       && keptSourceTextChars + candidateSourceTextChars <= revisionInfoCacheMaxTotalSourceTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptInfos + candidateInfos)
+                            (keptBlocks + candidateBlocks)
+                            (keptSourceTextChars + candidateSourceTextChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptInfos keptBlocks keptSourceTextChars acc tail
+            loop 0 0 0 0 [] entries
+        revisionInfoCache <-
+            (cached
+             :: (revisionInfoCache
+                 |> List.filter (revisionInfoCacheMatches cached.SourceBlocks >> not)))
+            |> trim
+
+type private DocumentTextCache = {
+    SourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    Text: string
+    TextLength: int
+}
+
+let mutable private documentTextCache: DocumentTextCache list = []
+let private documentTextCacheMaxEntries = 64
+let private documentTextCacheMaxTotalChars = 5000000
+let private documentTextCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private documentTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private documentTextCacheMatches blocks (cached: DocumentTextCache) =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private documentTextSourceParagraphCountFor textLength blocks =
+    if textLength > documentTextCacheMaxTotalChars then
+        documentTextCacheMaxTotalSourceParagraphs + 1
+    else
+        countSourceParagraphs blocks
+
+let private documentTextSourceTextCharCountFor textLength sourceParagraphCount blocks =
+    if textLength > documentTextCacheMaxTotalChars
+       || sourceParagraphCount > documentTextCacheMaxTotalSourceParagraphs then
+        documentTextCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            documentTextCacheMaxTotalSourceParagraphs
+            sourceParagraphCount
+            blocks
+
+let private documentTextCanPreSizeBuilder (blocks: Block list) =
+    let mutable count = 0
+    let mutable canPreSize = true
+    let mutable remaining = blocks
+    while canPreSize
+          && count <= 2048
+          && not remaining.IsEmpty do
+        match remaining.Head with
+        | Paragraph _
+        | Heading _ -> ()
+        | Table _
+        | TextBox _ -> canPreSize <- false
+        count <- count + 1
+        remaining <- remaining.Tail
+    canPreSize && count <= 2048
+
+let private rememberDocumentText cached =
+    let trim entries =
+        let rec loop keptCount keptChars keptBlocks keptSourceTextChars acc remaining =
+            match remaining with
+            | [] -> List.rev acc
+            | candidate :: tail ->
+                let candidateChars = max 1 candidate.TextLength
+                let candidateBlocks = max 1 candidate.SourceParagraphCount
+                let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                if keptCount < documentTextCacheMaxEntries
+                   && keptChars + candidateChars <= documentTextCacheMaxTotalChars
+                   && keptBlocks + candidateBlocks <= documentTextCacheMaxTotalSourceParagraphs
+                   && keptSourceTextChars + candidateSourceTextChars <= documentTextCacheMaxTotalSourceTextChars then
+                    loop
+                        (keptCount + 1)
+                        (keptChars + candidateChars)
+                        (keptBlocks + candidateBlocks)
+                        (keptSourceTextChars + candidateSourceTextChars)
+                        (candidate :: acc)
+                        tail
+                else
+                    loop keptCount keptChars keptBlocks keptSourceTextChars acc tail
+        loop 0 0 0 0 [] entries
+    documentTextCache <-
+        (cached
+         :: (documentTextCache
+             |> List.filter (documentTextCacheMatches cached.SourceBlocks >> not)))
+        |> trim
+
+type private SelectionTextCache = {
+    SourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    Entries: Dictionary<SelectionTextCacheKey, SelectionTextCacheEntry>
+    Order: Queue<SelectionTextCacheKey>
+    mutable TotalChars: int
+}
+
+and private SelectionTextCacheKey = {
+    AnchorBlockId: BlockId
+    AnchorOffset: int
+    FocusBlockId: BlockId
+    FocusOffset: int
+}
+
+and private SelectionTextCacheEntry = {
+    Text: string
+    TextLength: int
+}
+
+let mutable private selectionTextCache: SelectionTextCache list = []
+let private selectionTextCacheMaxEntries = 64
+let private selectionTextCacheMaxSources = 64
+let private selectionTextCacheMaxTotalChars = 5000000
+let private selectionTextCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private selectionTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private selectionTextCacheMatches blocks (cached: SelectionTextCache) =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private selectionTextSourceParagraphCountFor textLength blocks =
+    if textLength > selectionTextCacheMaxTotalChars then
+        selectionTextCacheMaxTotalSourceParagraphs + 1
+    else
+        countSourceParagraphs blocks
+
+let private selectionTextSourceTextCharCountFor textLength sourceParagraphCount blocks =
+    if textLength > selectionTextCacheMaxTotalChars
+       || sourceParagraphCount > selectionTextCacheMaxTotalSourceParagraphs then
+        selectionTextCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            selectionTextCacheMaxTotalSourceParagraphs
+            sourceParagraphCount
+            blocks
+
+let private selectionTextCacheWithinBudget (cached: SelectionTextCache) =
+    cached.Entries.Count > 0
+    && cached.Entries.Count <= selectionTextCacheMaxEntries
+    && cached.TotalChars <= selectionTextCacheMaxTotalChars
+    && cached.SourceParagraphCount <= selectionTextCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= selectionTextCacheMaxTotalSourceTextChars
+
+let private rememberSelectionTextCache cached =
+    if not (selectionTextCacheWithinBudget cached) then
+        selectionTextCache <- selectionTextCache |> List.filter (selectionTextCacheMatches cached.SourceBlocks >> not)
+    else
+        let mutable keptCount = 1
+        let mutable keptChars = max 1 cached.TotalChars
+        let mutable keptBlocks = max 1 cached.SourceParagraphCount
+        let mutable keptSourceTextChars = max 1 cached.SourceTextCharCount
+        let retained =
+            selectionTextCache
+            |> List.filter (selectionTextCacheMatches cached.SourceBlocks >> not)
+            |> List.choose (fun candidate ->
+                let candidateChars = max 1 candidate.TotalChars
+                let candidateBlocks = max 1 candidate.SourceParagraphCount
+                let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                if selectionTextCacheWithinBudget candidate
+                   && keptCount < selectionTextCacheMaxSources
+                   && keptChars + candidateChars <= selectionTextCacheMaxTotalChars
+                   && keptBlocks + candidateBlocks <= selectionTextCacheMaxTotalSourceParagraphs
+                   && keptSourceTextChars + candidateSourceTextChars <= selectionTextCacheMaxTotalSourceTextChars then
+                    keptCount <- keptCount + 1
+                    keptChars <- keptChars + candidateChars
+                    keptBlocks <- keptBlocks + candidateBlocks
+                    keptSourceTextChars <- keptSourceTextChars + candidateSourceTextChars
+                    Some candidate
+                else
+                    None)
+        selectionTextCache <- cached :: retained
+
+let private selectionTextKey (selection: Selection) = {
+    AnchorBlockId = selection.Anchor.BlockId
+    AnchorOffset = selection.Anchor.Offset
+    FocusBlockId = selection.Focus.BlockId
+    FocusOffset = selection.Focus.Offset
+}
+
+let private removeSelectionTextCacheEntry key (cache: SelectionTextCache) =
+    let mutable existing = Unchecked.defaultof<SelectionTextCacheEntry>
+    if cache.Entries.TryGetValue(key, &existing) then
+        cache.TotalChars <- max 0 (cache.TotalChars - existing.TextLength)
+        cache.Entries.Remove key |> ignore
+
+let private addSelectionTextCacheEntry key (text: string) (cache: SelectionTextCache) =
+    let textLength = max 1 text.Length
+    let mutable existing = Unchecked.defaultof<SelectionTextCacheEntry>
+    if textLength > selectionTextCacheMaxTotalChars then
+        if cache.Entries.TryGetValue(key, &existing) then
+            cache.TotalChars <- max 0 (cache.TotalChars - existing.TextLength)
+            cache.Entries.Remove key |> ignore
+    elif cache.Entries.TryGetValue(key, &existing) then
+        cache.TotalChars <- max 0 (cache.TotalChars - existing.TextLength)
+        cache.Entries.[key] <- { Text = text; TextLength = textLength }
+        cache.TotalChars <- cache.TotalChars + textLength
+    else
+        cache.Order.Enqueue key
+        cache.Entries.[key] <- { Text = text; TextLength = textLength }
+        cache.TotalChars <- cache.TotalChars + textLength
+    if textLength <= selectionTextCacheMaxTotalChars then
+        while (cache.Entries.Count > selectionTextCacheMaxEntries
+               || cache.TotalChars > selectionTextCacheMaxTotalChars)
+              && cache.Order.Count > 0 do
+            let oldest = cache.Order.Dequeue()
+            if oldest <> key then
+                removeSelectionTextCacheEntry oldest cache
+        if cache.Entries.Count > selectionTextCacheMaxEntries
+           || cache.TotalChars > selectionTextCacheMaxTotalChars then
+            let current = cache.Entries.[key]
+            cache.Entries.Clear()
+            cache.Order.Clear()
+            cache.Order.Enqueue key
+            cache.Entries.[key] <- current
+            cache.TotalChars <- current.TextLength
+
+let private cachedSelectionText (doc: Document) =
+    match doc.Selection with
+    | None -> None
+    | Some selection ->
+        match selectionTextCache |> List.tryFind (selectionTextCacheMatches doc.Blocks) with
+        | Some cached when selectionTextCacheWithinBudget cached ->
+            let key = selectionTextKey selection
+            let mutable entry = Unchecked.defaultof<SelectionTextCacheEntry>
+            if cached.Entries.TryGetValue(key, &entry) then Some entry.Text else None
+        | Some cached ->
+            rememberSelectionTextCache cached
+            None
+        | None -> None
+
+let private rememberSelectionText (doc: Document) (text: string) =
+    match doc.Selection with
+    | None -> ()
+    | Some selection ->
+        let key = selectionTextKey selection
+        match selectionTextCache |> List.tryFind (selectionTextCacheMatches doc.Blocks) with
+        | Some cached ->
+            addSelectionTextCacheEntry key text cached
+            rememberSelectionTextCache cached
+        | None ->
+            let entries = Dictionary<SelectionTextCacheKey, SelectionTextCacheEntry>()
+            let order = Queue<SelectionTextCacheKey>()
+            let sourceParagraphCount = selectionTextSourceParagraphCountFor text.Length doc.Blocks
+            let cache = {
+                SourceBlocks = doc.Blocks
+                SourceParagraphCount = sourceParagraphCount
+                SourceTextCharCount =
+                    selectionTextSourceTextCharCountFor
+                        text.Length
+                        sourceParagraphCount
+                        doc.Blocks
+                Entries = entries
+                Order = order
+                TotalChars = 0
+            }
+            addSelectionTextCacheEntry key text cache
+            rememberSelectionTextCache cache
 
 type PageBlockAnchor = {
     PageBlockId: BlockId
@@ -530,14 +1585,297 @@ let empty = {
     FooterParts = []
 }
 
+let private plainTextDocument (text: string) =
+    {
+        Blocks = [
+            Paragraph {
+                Id = "block-0"
+                Buffer = TextBuffer.ofString text
+                Metadata = defaultMetadata
+            }
+        ]
+        Selection = Some {
+            Anchor = { BlockId = "block-0"; Offset = text.Length }
+            Focus = { BlockId = "block-0"; Offset = text.Length }
+        }
+        PageSetup = defaultPageSetup
+        Styles = []
+        Headers = []
+        Footers = []
+        HeaderParts = []
+        FooterParts = []
+    }
+
+let private stringSegmentEquals (text: string) offset (segment: string) =
+    if offset = 0 && segment.Length = text.Length then
+        System.String.Equals(segment, text, System.StringComparison.Ordinal)
+    elif offset < 0 || offset + segment.Length > text.Length then
+        false
+    else
+        let mutable index = 0
+        let mutable same = true
+        while same && index < segment.Length do
+            if text.[offset + index] <> segment.[index] then
+                same <- false
+            index <- index + 1
+        same
+
+let private ropeEqualsString (text: string) rope =
+    match rope with
+    | Rope.Empty -> text.Length = 0
+    | Rope.Leaf segment -> System.String.Equals(segment, text, System.StringComparison.Ordinal)
+    | Rope.Node _ ->
+        if Rope.length rope <> text.Length then
+            false
+        else
+            let rec loop offset current =
+                match current with
+                | Rope.Empty -> true
+                | Rope.Leaf segment -> stringSegmentEquals text offset segment
+                | Rope.Node (left, right, _) ->
+                    loop offset left && loop (offset + Rope.length left) right
+            loop 0 rope
+
+let private isDefaultTextStyle style =
+    obj.ReferenceEquals(style, TextBuffer.defaultStyle) || style = TextBuffer.defaultStyle
+
+let private isDefaultBlockMetadata metadata =
+    obj.ReferenceEquals(metadata, defaultMetadata) || metadata = defaultMetadata
+
+let private isDefaultPageSetup setup =
+    obj.ReferenceEquals(setup, defaultPageSetup) || setup = defaultPageSetup
+
+let private isPlainTextBuffer (text: string) buffer =
+    ropeEqualsString text buffer.Rope
+        && match buffer.Runs with
+           | [] -> text.Length = 0
+           | [ Text run ] ->
+               run.Start = 0
+                   && run.Length = text.Length
+                   && isDefaultTextStyle run.Style
+           | _ -> false
+
+let setPlainTextContent (text: string) doc =
+    let textLength = text.Length
+    let selectionAtEnd =
+        match doc.Selection with
+        | Some selection ->
+            selection.Anchor.BlockId = "block-0"
+                && selection.Anchor.Offset = textLength
+                && selection.Focus.BlockId = "block-0"
+                && selection.Focus.Offset = textLength
+        | None -> false
+    match doc.Blocks with
+    | [ Paragraph para ]
+        when para.Id = "block-0"
+            && isDefaultBlockMetadata para.Metadata
+            && isPlainTextBuffer text para.Buffer
+            && selectionAtEnd
+            && isDefaultPageSetup doc.PageSetup
+            && doc.Styles.IsEmpty
+            && doc.Headers.IsEmpty
+            && doc.Footers.IsEmpty
+            && doc.HeaderParts.IsEmpty
+            && doc.FooterParts.IsEmpty ->
+        doc
+    | _ ->
+        plainTextDocument text
+
+type private BlockLookupEntry = {
+    TopBlock: Block
+    TopIndex: int
+}
+
+let private getBlockId = function
+    | Paragraph p -> p.Id
+    | Heading (_, p) -> p.Id
+    | Table t -> t.Id
+    | TextBox t -> t.Id
+
 /// Find block by ID
+type private BlockLookupCache = {
+    CachedBlocks: Block list
+    EntryCount: int
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    EntriesById: Dictionary<BlockId, BlockLookupEntry>
+    TopBlocks: Block array
+}
+
+let mutable private blockLookupCache: BlockLookupCache list = []
+let private blockLookupCacheMaxEntries = 64
+let private blockLookupCacheMaxTotalEntries = 200000
+let private blockLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private blockLookupCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private blockLookupCacheMatches blocks (cached: BlockLookupCache) =
+    obj.ReferenceEquals(cached.CachedBlocks, blocks)
+
+let private blockLookupCacheRetainable (cached: BlockLookupCache) =
+    cached.EntryCount <= blockLookupCacheMaxTotalEntries
+    && cached.SourceParagraphCount <= blockLookupCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= blockLookupCacheMaxTotalSourceTextChars
+
+let private blockLookupSourceParagraphCountFor entryCount blocks =
+    if entryCount > blockLookupCacheMaxTotalEntries then
+        blockLookupCacheMaxTotalSourceParagraphs + 1
+    else
+        countSourceParagraphs blocks
+
+let private blockLookupSourceTextCharCountFor entryCount sourceParagraphCount blocks =
+    if entryCount > blockLookupCacheMaxTotalEntries
+       || sourceParagraphCount > blockLookupCacheMaxTotalSourceParagraphs then
+        blockLookupCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            blockLookupCacheMaxTotalSourceParagraphs
+            sourceParagraphCount
+            blocks
+
+let private rememberBlockLookup cached =
+    if not (blockLookupCacheRetainable cached) then
+        blockLookupCache <- blockLookupCache |> List.filter (blockLookupCacheMatches cached.CachedBlocks >> not)
+    else
+        let trim entries =
+            let rec loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateEntries = max 1 candidate.EntryCount
+                    let candidateSourceParagraphs = max 1 candidate.SourceParagraphCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    if blockLookupCacheRetainable candidate
+                       && keptCount < blockLookupCacheMaxEntries
+                       && keptEntries + candidateEntries <= blockLookupCacheMaxTotalEntries
+                       && keptSourceParagraphs + candidateSourceParagraphs <= blockLookupCacheMaxTotalSourceParagraphs
+                       && keptSourceTextChars + candidateSourceTextChars <= blockLookupCacheMaxTotalSourceTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptEntries + candidateEntries)
+                            (keptSourceParagraphs + candidateSourceParagraphs)
+                            (keptSourceTextChars + candidateSourceTextChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc tail
+            loop 0 0 0 0 [] entries
+        blockLookupCache <-
+            (cached
+             :: (blockLookupCache
+                 |> List.filter (blockLookupCacheMatches cached.CachedBlocks >> not)))
+            |> trim
+
+let private blockLookup blocks =
+    let build () =
+        let entriesById = Dictionary<BlockId, BlockLookupEntry>()
+        let topBlocks = ResizeArray<Block>()
+        let mutable index = 0
+        for block in blocks do
+            topBlocks.Add block
+            let blockId = getBlockId block
+            if not (entriesById.ContainsKey blockId) then
+                entriesById.[blockId] <- { TopBlock = block; TopIndex = index }
+            index <- index + 1
+        let sourceParagraphCount = blockLookupSourceParagraphCountFor entriesById.Count blocks
+        let cached = {
+            CachedBlocks = blocks
+            EntryCount = entriesById.Count
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = blockLookupSourceTextCharCountFor entriesById.Count sourceParagraphCount blocks
+            EntriesById = entriesById
+            TopBlocks = topBlocks.ToArray()
+        }
+        rememberBlockLookup cached
+        cached
+    match blockLookupCache |> List.tryFind (blockLookupCacheMatches blocks) with
+    | Some cached when blockLookupCacheRetainable cached ->
+        cached
+    | Some cached ->
+        rememberBlockLookup cached
+        build ()
+    | None ->
+        build ()
+
 let findBlock doc blockId =
-    doc.Blocks
-    |> List.tryFind (function
-        | Paragraph p -> p.Id = blockId
-        | Heading (_, p) -> p.Id = blockId
-        | Table t -> t.Id = blockId
-        | TextBox t -> t.Id = blockId)
+    let lookup = blockLookup doc.Blocks
+    let mutable entry = Unchecked.defaultof<BlockLookupEntry>
+    if lookup.EntriesById.TryGetValue(blockId, &entry) then Some entry.TopBlock else None
+
+let private tryFindTopBlockUntil doc blockId =
+    let tryCached () =
+        match blockLookupCache |> List.tryFind (blockLookupCacheMatches doc.Blocks) with
+        | Some lookup when blockLookupCacheRetainable lookup ->
+            let mutable entry = Unchecked.defaultof<BlockLookupEntry>
+            if lookup.EntriesById.TryGetValue(blockId, &entry) then Some entry.TopBlock else None
+        | _ -> None
+    let scan () =
+        let rec loop remaining =
+            match remaining with
+            | block :: _ when getBlockId block = blockId -> Some block
+            | _ :: tail -> loop tail
+            | [] -> None
+        loop doc.Blocks
+    match tryCached () with
+    | Some block -> Some block
+    | None -> scan ()
+
+let private tryFindTopBlockWithIndexUntil doc blockId =
+    let tryCached () =
+        match blockLookupCache |> List.tryFind (blockLookupCacheMatches doc.Blocks) with
+        | Some lookup when blockLookupCacheRetainable lookup ->
+            let mutable entry = Unchecked.defaultof<BlockLookupEntry>
+            if lookup.EntriesById.TryGetValue(blockId, &entry) then
+                Some (entry.TopBlock, entry.TopIndex)
+            else
+                None
+        | _ -> None
+    let scan () =
+        let rec loop index remaining =
+            match remaining with
+            | block :: _ when getBlockId block = blockId -> Some (block, index)
+            | _ :: tail -> loop (index + 1) tail
+            | [] -> None
+        loop 0 doc.Blocks
+    match tryCached () with
+    | Some result -> Some result
+    | None -> scan ()
+
+let private tryFindAdjacentTopBlock doc blockId offset =
+    let tryCached () =
+        match blockLookupCache |> List.tryFind (blockLookupCacheMatches doc.Blocks) with
+        | Some lookup when blockLookupCacheRetainable lookup ->
+            let mutable entry = Unchecked.defaultof<BlockLookupEntry>
+            if lookup.EntriesById.TryGetValue(blockId, &entry) then
+                let index = entry.TopIndex + offset
+                if index >= 0 && index < lookup.TopBlocks.Length then
+                    Some lookup.TopBlocks.[index]
+                else
+                    None
+            else
+                None
+        | _ -> None
+    let scanNext () =
+        let rec loop remaining =
+            match remaining with
+            | block :: next :: _ when getBlockId block = blockId -> Some next
+            | block :: [] when getBlockId block = blockId -> None
+            | _ :: tail -> loop tail
+            | [] -> None
+        loop doc.Blocks
+    let scanPrevious () =
+        let rec loop hasPrevious previous remaining =
+            match remaining with
+            | block :: _ when getBlockId block = blockId ->
+                if hasPrevious then Some previous else None
+            | block :: tail -> loop true block tail
+            | [] -> None
+        loop false Unchecked.defaultof<Block> doc.Blocks
+    match tryCached () with
+    | Some block -> Some block
+    | None ->
+        if offset = 1 then scanNext ()
+        elif offset = -1 then scanPrevious ()
+        else None
 
 /// Try to get the editable paragraph payload from a block.
 let tryGetParagraph = function
@@ -553,11 +1891,54 @@ let getParagraph = function
     | Table _
     | TextBox _ -> invalidOp "This block does not have a paragraph payload"
 
-let private getBlockId = function
-    | Paragraph p -> p.Id
+let private appendBlock block blocks =
+    let values = ResizeArray<Block>()
+    for existing in blocks do
+        values.Add existing
+    values.Add block
+    resizeArrayToList values
+
+let private topLevelBlockId = function
+    | Paragraph p
     | Heading (_, p) -> p.Id
     | Table t -> t.Id
     | TextBox t -> t.Id
+
+let private insertBlockAfterTopLevelId blockId block blocks =
+    let prefix = ResizeArray<Block>()
+    let rec loop remaining =
+        match remaining with
+        | [] -> prependResizeArray prefix [ block ]
+        | existing :: tail when topLevelBlockId existing = blockId ->
+            prependResizeArray prefix (existing :: block :: tail)
+        | existing :: tail ->
+            prefix.Add existing
+            loop tail
+    loop blocks
+
+let private replaceBlockAndInsertAfterIndex index replacement inserted blocks =
+    let prefix = ResizeArray<Block>()
+    let rec loop currentIndex remaining =
+        match remaining with
+        | [] -> prependResizeArray prefix []
+        | _ :: tail when currentIndex = index ->
+            prependResizeArray prefix (replacement :: inserted :: tail)
+        | block :: tail ->
+            prefix.Add block
+            loop (currentIndex + 1) tail
+    loop 0 blocks
+
+let private replaceTopLevelBlockAtIndex index replacement blocks =
+    let prefix = ResizeArray<Block>(max 0 index)
+    let rec loop currentIndex remaining =
+        match remaining with
+        | [] -> prependResizeArray prefix []
+        | _ :: tail when currentIndex = index ->
+            prependResizeArray prefix (replacement :: tail)
+        | block :: tail ->
+            prefix.Add block
+            loop (currentIndex + 1) tail
+    loop 0 blocks
 
 let private withParagraphBuffer block para =
     match block with
@@ -566,65 +1947,836 @@ let private withParagraphBuffer block para =
     | Table _
     | TextBox _ -> None
 
+let private paragraphReplacementMatches (current: ParagraphBlock) (replacement: ParagraphBlock) =
+    obj.ReferenceEquals(current, replacement)
+    || (current.Id = replacement.Id
+        && obj.ReferenceEquals(current.Buffer, replacement.Buffer)
+        && current.Metadata = replacement.Metadata)
+
+let private blockReplacementMatches current replacement =
+    obj.ReferenceEquals(current, replacement)
+    || match current, replacement with
+       | Paragraph currentPara, Paragraph replacementPara
+       | Heading (_, currentPara), Heading (_, replacementPara) ->
+           paragraphReplacementMatches currentPara replacementPara
+       | Table currentTable, Table replacementTable ->
+           obj.ReferenceEquals(currentTable, replacementTable)
+       | TextBox currentTextBox, TextBox replacementTextBox ->
+           obj.ReferenceEquals(currentTextBox, replacementTextBox)
+       | _ ->
+           false
+
 /// Replace block in document
 let replaceBlock (doc: Document) blockId newBlock =
-    { doc with
-        Blocks = doc.Blocks |> List.map (fun b ->
-            if getBlockId b = blockId then newBlock else b) }
+    let rec revAppend reversed tail =
+        match reversed with
+        | [] -> tail
+        | head :: rest -> revAppend rest (head :: tail)
+    let rec containsBlockId remaining =
+        match remaining with
+        | [] -> false
+        | block :: tail ->
+            getBlockId block = blockId || containsBlockId tail
+    let rec replaceMatching remaining =
+        match remaining with
+        | [] -> []
+        | block :: tail ->
+            let block = if getBlockId block = blockId then newBlock else block
+            block :: replaceMatching tail
+    let rec loop prefix remaining =
+        match remaining with
+        | [] ->
+            doc
+        | block :: tail ->
+            if getBlockId block = blockId then
+                if blockReplacementMatches block newBlock then
+                    doc
+                elif containsBlockId tail then
+                    { doc with Blocks = revAppend prefix (newBlock :: replaceMatching tail) }
+                else
+                    { doc with Blocks = revAppend prefix (newBlock :: tail) }
+            else
+                loop (block :: prefix) tail
+    loop [] doc.Blocks
+
+let private replaceFirstTopLevelBlock (doc: Document) blockId newBlock =
+    let rec revAppend reversed tail =
+        match reversed with
+        | [] -> tail
+        | head :: rest -> revAppend rest (head :: tail)
+    let rec loop prefix remaining =
+        match remaining with
+        | [] ->
+            doc
+        | block :: tail ->
+            if getBlockId block = blockId then
+                if blockReplacementMatches block newBlock then
+                    doc
+                else
+                    { doc with Blocks = revAppend prefix (newBlock :: tail) }
+            else
+                loop (block :: prefix) tail
+    loop [] doc.Blocks
+
+let private paragraphNeedsReplacement (paragraphId: BlockId) (newPara: ParagraphBlock) (paragraph: ParagraphBlock) =
+    paragraph.Id = paragraphId
+    && not (paragraphReplacementMatches paragraph newPara)
+
+let private contentNeedsParagraphReplacement (paragraphId: BlockId) (newPara: ParagraphBlock) (paragraphs: ParagraphBlock list) =
+    let mutable found = false
+    let mutable remaining = paragraphs
+    while not found && not remaining.IsEmpty do
+        match remaining with
+        | paragraph :: tail ->
+            found <- paragraphNeedsReplacement paragraphId newPara paragraph
+            remaining <- tail
+        | [] -> ()
+    found
+
+let private cellNeedsParagraphReplacement (paragraphId: BlockId) (newPara: ParagraphBlock) (cell: TableCell) =
+    contentNeedsParagraphReplacement paragraphId newPara cell.Content
+
+let private cellsNeedParagraphReplacement (paragraphId: BlockId) (newPara: ParagraphBlock) (cells: TableCell list) =
+    let mutable found = false
+    let mutable remaining = cells
+    while not found && not remaining.IsEmpty do
+        match remaining with
+        | cell :: tail ->
+            found <- cellNeedsParagraphReplacement paragraphId newPara cell
+            remaining <- tail
+        | [] -> ()
+    found
+
+let private rowNeedsParagraphReplacement (paragraphId: BlockId) (newPara: ParagraphBlock) (row: TableRow) =
+    cellsNeedParagraphReplacement paragraphId newPara row.Cells
+
+let private rowsNeedParagraphReplacement (paragraphId: BlockId) (newPara: ParagraphBlock) (rows: TableRow list) =
+    let mutable found = false
+    let mutable remaining = rows
+    while not found && not remaining.IsEmpty do
+        match remaining with
+        | row :: tail ->
+            found <- rowNeedsParagraphReplacement paragraphId newPara row
+            remaining <- tail
+        | [] -> ()
+    found
+
+let private tableNeedsParagraphReplacement (paragraphId: BlockId) (newPara: ParagraphBlock) (table: TableBlock) =
+    rowsNeedParagraphReplacement paragraphId newPara table.Rows
+
+let private replaceParagraphInContent (paragraphId: BlockId) (newPara: ParagraphBlock) (paragraphs: ParagraphBlock list) =
+    if not (contentNeedsParagraphReplacement paragraphId newPara paragraphs) then
+        paragraphs, false
+    else
+        let rec revAppend (reversed: ParagraphBlock list) (tail: ParagraphBlock list) =
+            match reversed with
+            | [] -> tail
+            | head :: rest -> revAppend rest (head :: tail)
+        let rec loop (prefix: ParagraphBlock list) changed (remaining: ParagraphBlock list) =
+            match remaining with
+            | [] ->
+                if changed then Some (revAppend prefix []) else None
+            | paragraph :: tail when paragraph.Id = paragraphId ->
+                if paragraphReplacementMatches paragraph newPara then
+                    loop (paragraph :: prefix) changed tail
+                elif contentNeedsParagraphReplacement paragraphId newPara tail then
+                    loop (newPara :: prefix) true tail
+                else
+                    Some (revAppend prefix (newPara :: tail))
+            | paragraph :: tail ->
+                loop (paragraph :: prefix) changed tail
+        match loop [] false paragraphs with
+        | Some paragraphs -> paragraphs, true
+        | None -> paragraphs, false
+
+let private replaceParagraphInCell paragraphId newPara (cell: TableCell) =
+    let content, changed = replaceParagraphInContent paragraphId newPara cell.Content
+    if changed then { cell with Content = content }, true else cell, false
+
+let private replaceParagraphInRow paragraphId newPara (row: TableRow) =
+    if not (rowNeedsParagraphReplacement paragraphId newPara row) then
+        row, false
+    else
+        let rec revAppend reversed tail =
+            match reversed with
+            | [] -> tail
+            | head :: rest -> revAppend rest (head :: tail)
+        let rec loop prefix changed cells =
+            match cells with
+            | [] ->
+                if changed then Some (revAppend prefix []) else None
+            | cell :: tail ->
+                let cell, cellChanged = replaceParagraphInCell paragraphId newPara cell
+                if cellChanged && not (cellsNeedParagraphReplacement paragraphId newPara tail) then
+                    Some (revAppend prefix (cell :: tail))
+                else
+                    loop (cell :: prefix) (changed || cellChanged) tail
+        match loop [] false row.Cells with
+        | Some cells -> { row with Cells = cells }, true
+        | None -> row, false
+
+let private replaceParagraphInBlock paragraphId newPara block =
+    match block with
+    | Paragraph p when p.Id = paragraphId ->
+        if paragraphReplacementMatches p newPara then block, false else Paragraph newPara, true
+    | Heading (level, p) when p.Id = paragraphId ->
+        if paragraphReplacementMatches p newPara then block, false else Heading (level, newPara), true
+    | Table table ->
+        if not (tableNeedsParagraphReplacement paragraphId newPara table) then
+            block, false
+        else
+            let rec revAppend reversed tail =
+                match reversed with
+                | [] -> tail
+                | head :: rest -> revAppend rest (head :: tail)
+            let rec loop prefix changed rows =
+                match rows with
+                | [] ->
+                    if changed then Some (revAppend prefix []) else None
+                | row :: tail ->
+                    let row, rowChanged = replaceParagraphInRow paragraphId newPara row
+                    if rowChanged && not (rowsNeedParagraphReplacement paragraphId newPara tail) then
+                        Some (revAppend prefix (row :: tail))
+                    else
+                        loop (row :: prefix) (changed || rowChanged) tail
+            match loop [] false table.Rows with
+            | Some rows -> Table { table with Rows = rows }, true
+            | None -> block, false
+    | TextBox textBox ->
+        if not (contentNeedsParagraphReplacement paragraphId newPara textBox.Content) then
+            block, false
+        else
+            let content, changed = replaceParagraphInContent paragraphId newPara textBox.Content
+            if changed then TextBox { textBox with Content = content }, true else block, false
+    | _ -> block, false
+
+let private updateParagraphInContent paragraphId (update: ParagraphBlock -> ParagraphBlock) (paragraphs: ParagraphBlock list) =
+    let rec revAppend reversed tail =
+        match reversed with
+        | [] -> tail
+        | head :: rest -> revAppend rest (head :: tail)
+    let rec loop (prefix: ParagraphBlock list) (remaining: ParagraphBlock list) =
+        match remaining with
+        | [] -> None
+        | paragraph :: tail when paragraph.Id = paragraphId ->
+            let updated = update paragraph
+            if obj.ReferenceEquals(updated, paragraph) || updated = paragraph then
+                None
+            else
+                Some (revAppend prefix (updated :: tail))
+        | paragraph :: tail ->
+            loop (paragraph :: prefix) tail
+    match loop [] paragraphs with
+    | Some paragraphs -> paragraphs, true
+    | None -> paragraphs, false
+
+let private updateParagraphInCell paragraphId update (cell: TableCell) =
+    let content, changed = updateParagraphInContent paragraphId update cell.Content
+    if changed then { cell with Content = content }, true else cell, false
+
+let private updateParagraphInRow paragraphId update (row: TableRow) =
+    let rec revAppend reversed tail =
+        match reversed with
+        | [] -> tail
+        | head :: rest -> revAppend rest (head :: tail)
+    let rec loop prefix remaining =
+        match remaining with
+        | [] -> row, false
+        | cell :: tail ->
+            let cell, cellChanged = updateParagraphInCell paragraphId update cell
+            if cellChanged then
+                { row with Cells = revAppend prefix (cell :: tail) }, true
+            else
+                loop (cell :: prefix) tail
+    loop [] row.Cells
+
+let private updateParagraphInBlock paragraphId update block =
+    match block with
+    | Paragraph p when p.Id = paragraphId ->
+        let updated = update p
+        if obj.ReferenceEquals(updated, p) || updated = p then block, false else Paragraph updated, true
+    | Heading (level, p) when p.Id = paragraphId ->
+        let updated = update p
+        if obj.ReferenceEquals(updated, p) || updated = p then block, false else Heading (level, updated), true
+    | Table table ->
+        let rec revAppend reversed tail =
+            match reversed with
+            | [] -> tail
+            | head :: rest -> revAppend rest (head :: tail)
+        let rec loop prefix remaining =
+            match remaining with
+            | [] -> block, false
+            | row :: tail ->
+                let row, rowChanged = updateParagraphInRow paragraphId update row
+                if rowChanged then
+                    Table { table with Rows = revAppend prefix (row :: tail) }, true
+                else
+                    loop (row :: prefix) tail
+        loop [] table.Rows
+    | TextBox textBox ->
+        let content, changed = updateParagraphInContent paragraphId update textBox.Content
+        if changed then TextBox { textBox with Content = content }, true else block, false
+    | _ -> block, false
+
+let private contentNeedsParagraphReplacements (replacements: Dictionary<BlockId, ParagraphBlock>) (paragraphs: ParagraphBlock list) =
+    let mutable found = false
+    let mutable remaining = paragraphs
+    let mutable replacement = Unchecked.defaultof<ParagraphBlock>
+    while not found && not remaining.IsEmpty do
+        match remaining with
+        | paragraph :: tail ->
+            found <-
+                replacements.TryGetValue(paragraph.Id, &replacement)
+                && not (paragraphReplacementMatches paragraph replacement)
+            remaining <- tail
+        | [] -> ()
+    found
+
+let private cellNeedsParagraphReplacements replacements (cell: TableCell) =
+    contentNeedsParagraphReplacements replacements cell.Content
+
+let private rowNeedsParagraphReplacements replacements (row: TableRow) =
+    let mutable found = false
+    let mutable remaining = row.Cells
+    while not found && not remaining.IsEmpty do
+        match remaining with
+        | cell :: tail ->
+            found <- cellNeedsParagraphReplacements replacements cell
+            remaining <- tail
+        | [] -> ()
+    found
+
+let private tableNeedsParagraphReplacements replacements (table: TableBlock) =
+    let mutable found = false
+    let mutable remaining = table.Rows
+    while not found && not remaining.IsEmpty do
+        match remaining with
+        | row :: tail ->
+            found <- rowNeedsParagraphReplacements replacements row
+            remaining <- tail
+        | [] -> ()
+    found
+
+let private blockNeedsParagraphReplacements (replacements: Dictionary<BlockId, ParagraphBlock>) block =
+    match block with
+    | Paragraph paragraph
+    | Heading (_, paragraph) ->
+        let mutable replacement = Unchecked.defaultof<ParagraphBlock>
+        replacements.TryGetValue(paragraph.Id, &replacement)
+        && not (paragraphReplacementMatches paragraph replacement)
+    | Table table ->
+        tableNeedsParagraphReplacements replacements table
+    | TextBox textBox ->
+        contentNeedsParagraphReplacements replacements textBox.Content
+
+let private blocksNeedParagraphReplacements (replacements: Dictionary<BlockId, ParagraphBlock>) (blocks: Block list) =
+    let mutable found = false
+    let mutable remaining = blocks
+    while not found && not remaining.IsEmpty do
+        match remaining with
+        | block :: tail ->
+            found <- blockNeedsParagraphReplacements replacements block
+            remaining <- tail
+        | [] -> ()
+    found
+
+let private replaceParagraphsInContent (replacements: Dictionary<BlockId, ParagraphBlock>) (paragraphs: ParagraphBlock list) =
+    if not (contentNeedsParagraphReplacements replacements paragraphs) then
+        paragraphs, false
+    else
+        let values = ResizeArray<ParagraphBlock>()
+        let mutable changed = false
+        for paragraph in paragraphs do
+            let mutable replacement = Unchecked.defaultof<ParagraphBlock>
+            if replacements.TryGetValue(paragraph.Id, &replacement) then
+                if paragraphReplacementMatches paragraph replacement then
+                    values.Add paragraph
+                else
+                    values.Add replacement
+                    changed <- true
+            else
+                values.Add paragraph
+        if changed then resizeArrayToList values, true else paragraphs, false
+
+let private replaceParagraphsInCell replacements (cell: TableCell) =
+    let content, changed = replaceParagraphsInContent replacements cell.Content
+    if changed then { cell with Content = content }, true else cell, false
+
+let private replaceParagraphsInRow replacements (row: TableRow) =
+    if not (rowNeedsParagraphReplacements replacements row) then
+        row, false
+    else
+        let cells = ResizeArray<TableCell>()
+        let mutable changed = false
+        for cell in row.Cells do
+            let cell, cellChanged = replaceParagraphsInCell replacements cell
+            cells.Add cell
+            changed <- changed || cellChanged
+        if changed then { row with Cells = resizeArrayToList cells }, true else row, false
+
+let private replaceParagraphsInBlock (replacements: Dictionary<BlockId, ParagraphBlock>) block =
+    match block with
+    | Paragraph p ->
+        let mutable replacement = Unchecked.defaultof<ParagraphBlock>
+        if replacements.TryGetValue(p.Id, &replacement)
+           && not (paragraphReplacementMatches p replacement) then
+            Paragraph replacement, true
+        else
+            block, false
+    | Heading (level, p) ->
+        let mutable replacement = Unchecked.defaultof<ParagraphBlock>
+        if replacements.TryGetValue(p.Id, &replacement)
+           && not (paragraphReplacementMatches p replacement) then
+            Heading (level, replacement), true
+        else
+            block, false
+    | Table table ->
+        if not (tableNeedsParagraphReplacements replacements table) then
+            block, false
+        else
+            let rows = ResizeArray<TableRow>()
+            let mutable changed = false
+            for row in table.Rows do
+                let row, rowChanged = replaceParagraphsInRow replacements row
+                rows.Add row
+                changed <- changed || rowChanged
+            if changed then Table { table with Rows = resizeArrayToList rows }, true else block, false
+    | TextBox textBox ->
+        if not (contentNeedsParagraphReplacements replacements textBox.Content) then
+            block, false
+        else
+            let content, changed = replaceParagraphsInContent replacements textBox.Content
+            if changed then TextBox { textBox with Content = content }, true else block, false
+
+let private replaceParagraphs (doc: Document) (replacements: Dictionary<BlockId, ParagraphBlock>) =
+    if replacements.Count = 0 then
+        doc
+    elif replacements.Count = 1 then
+        let prefix = ResizeArray<Block>()
+        let mutable remaining = doc.Blocks
+        let mutable result: Document voption = ValueNone
+        while result.IsNone && not remaining.IsEmpty do
+            match remaining with
+            | block :: tail ->
+                let block, blockChanged = replaceParagraphsInBlock replacements block
+                if blockChanged then
+                    result <- ValueSome { doc with Blocks = prependResizeArray prefix (block :: tail) }
+                else
+                    prefix.Add block
+                    remaining <- tail
+            | [] -> ()
+        match result with
+        | ValueSome doc -> doc
+        | ValueNone -> doc
+    else
+        let blocks = ResizeArray<Block>()
+        let mutable pendingUnchangedBlocks = Unchecked.defaultof<ResizeArray<Block>>
+        let mutable changed = false
+        let mutable tailAfterLastChange: Block list = []
+
+        let flushPendingUnchangedBlocks () =
+            if not (obj.ReferenceEquals(pendingUnchangedBlocks, null)) && pendingUnchangedBlocks.Count > 0 then
+                blocks.AddRange pendingUnchangedBlocks
+                pendingUnchangedBlocks.Clear()
+
+        let addChangedBlock block tail =
+            if changed then
+                flushPendingUnchangedBlocks ()
+            changed <- true
+            blocks.Add block
+            tailAfterLastChange <- tail
+
+        let addUnchangedBlock block =
+            if changed then
+                if obj.ReferenceEquals(pendingUnchangedBlocks, null) then
+                    pendingUnchangedBlocks <- ResizeArray<Block>()
+                pendingUnchangedBlocks.Add block
+            else
+                blocks.Add block
+
+        let mutable remaining = doc.Blocks
+        while not remaining.IsEmpty do
+            match remaining with
+            | block :: tail ->
+                let block, blockChanged = replaceParagraphsInBlock replacements block
+                if blockChanged then
+                    addChangedBlock block tail
+                else
+                    addUnchangedBlock block
+                remaining <- tail
+            | [] -> ()
+
+        if changed then
+            { doc with Blocks = prependResizeArray blocks tailAfterLastChange }
+        else
+            doc
+
+type private ParagraphLookupCache = {
+    CachedBlocks: Block list
+    EntryCount: int
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    Paragraphs: Dictionary<BlockId, ParagraphBlock>
+}
+
+let mutable private paragraphLookupCache: ParagraphLookupCache list = []
+let private paragraphLookupCacheMaxEntries = 64
+let private paragraphLookupCacheMaxTotalEntries = 200000
+let private paragraphLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private paragraphLookupCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private paragraphLookupCacheMatches blocks (cached: ParagraphLookupCache) =
+    obj.ReferenceEquals(cached.CachedBlocks, blocks)
+
+let private paragraphLookupCacheRetainable (cached: ParagraphLookupCache) =
+    cached.EntryCount <= paragraphLookupCacheMaxTotalEntries
+    && cached.SourceParagraphCount <= paragraphLookupCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= paragraphLookupCacheMaxTotalSourceTextChars
+
+let private paragraphLookupSourceTextCharCountFor entryCount sourceParagraphCount blocks =
+    if entryCount > paragraphLookupCacheMaxTotalEntries
+       || sourceParagraphCount > paragraphLookupCacheMaxTotalSourceParagraphs then
+        paragraphLookupCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            paragraphLookupCacheMaxTotalSourceParagraphs
+            sourceParagraphCount
+            blocks
+
+let private tryParagraphLookupSourceMetricsFromBlockLookup blocks =
+    match blockLookupCache |> List.tryFind (blockLookupCacheMatches blocks) with
+    | Some cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
+    | None -> ValueNone
+
+let private rememberParagraphLookup cached =
+    if not (paragraphLookupCacheRetainable cached) then
+        paragraphLookupCache <- paragraphLookupCache |> List.filter (paragraphLookupCacheMatches cached.CachedBlocks >> not)
+    else
+        let trim entries =
+            let rec loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateEntries = max 1 candidate.EntryCount
+                    let candidateSourceParagraphs = max 1 candidate.SourceParagraphCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    if paragraphLookupCacheRetainable candidate
+                       && keptCount < paragraphLookupCacheMaxEntries
+                       && keptEntries + candidateEntries <= paragraphLookupCacheMaxTotalEntries
+                       && keptSourceParagraphs + candidateSourceParagraphs <= paragraphLookupCacheMaxTotalSourceParagraphs
+                       && keptSourceTextChars + candidateSourceTextChars <= paragraphLookupCacheMaxTotalSourceTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptEntries + candidateEntries)
+                            (keptSourceParagraphs + candidateSourceParagraphs)
+                            (keptSourceTextChars + candidateSourceTextChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc tail
+            loop 0 0 0 0 [] entries
+        paragraphLookupCache <-
+            (cached
+             :: (paragraphLookupCache
+                 |> List.filter (paragraphLookupCacheMatches cached.CachedBlocks >> not)))
+            |> trim
+
+let private addParagraphLookup (paragraphs: Dictionary<BlockId, ParagraphBlock>) (paragraph: ParagraphBlock) =
+    if not (paragraphs.ContainsKey paragraph.Id) then
+        paragraphs.[paragraph.Id] <- paragraph
+
+type private ParagraphLookupFrame =
+    | ParagraphLookupTable of TableBlock
+    | ParagraphLookupCell of TableCell
+    | ParagraphLookupParagraph of ParagraphBlock
+
+let private addTableParagraphLookups
+    (paragraphs: Dictionary<BlockId, ParagraphBlock>)
+    visitSourceItem
+    addSourceParagraph
+    (table: TableBlock) =
+    let stack = Stack<ParagraphLookupFrame>()
+    let pushCellFrames (cells: TableCell list) =
+        let cellArray = List.toArray cells
+        for index = cellArray.Length - 1 downto 0 do
+            visitSourceItem ()
+            stack.Push(ParagraphLookupCell cellArray.[index])
+    let pushCellContentFrames (cell: TableCell) =
+        let frames = ResizeArray<ParagraphLookupFrame>()
+        let mutable content = cell.Content
+        let mutable contentIndex = 0
+        let mutable tables = cell.NestedTables
+        let mutable anchors = cell.NestedTableAnchors
+        while not tables.IsEmpty do
+            match tables with
+            | table :: tableTail ->
+                let anchor =
+                    match anchors with
+                    | anchor :: anchorTail ->
+                        anchors <- anchorTail
+                        anchor
+                    | [] -> System.Int32.MaxValue
+                let target = max contentIndex anchor
+                while contentIndex < target && not content.IsEmpty do
+                    match content with
+                    | paragraph :: paragraphTail ->
+                        frames.Add(ParagraphLookupParagraph paragraph)
+                        content <- paragraphTail
+                        contentIndex <- contentIndex + 1
+                    | [] -> ()
+                frames.Add(ParagraphLookupTable table)
+                tables <- tableTail
+            | [] -> ()
+        while not content.IsEmpty do
+            match content with
+            | paragraph :: paragraphTail ->
+                frames.Add(ParagraphLookupParagraph paragraph)
+                content <- paragraphTail
+            | [] -> ()
+        for index = frames.Count - 1 downto 0 do
+            stack.Push frames.[index]
+    stack.Push(ParagraphLookupTable table)
+    while stack.Count > 0 do
+        match stack.Pop() with
+        | ParagraphLookupParagraph paragraph ->
+            addSourceParagraph ()
+            addParagraphLookup paragraphs paragraph
+        | ParagraphLookupCell cell ->
+            pushCellContentFrames cell
+        | ParagraphLookupTable table ->
+            visitSourceItem ()
+            let rowArray = List.toArray table.Rows
+            for rowIndex = rowArray.Length - 1 downto 0 do
+                visitSourceItem ()
+                pushCellFrames rowArray.[rowIndex].Cells
+
+let private addBlockParagraphLookups
+    (paragraphs: Dictionary<BlockId, ParagraphBlock>)
+    visitSourceItem
+    addSourceParagraph
+    block =
+    match block with
+    | Paragraph paragraph
+    | Heading (_, paragraph) ->
+        addSourceParagraph ()
+        addParagraphLookup paragraphs paragraph
+    | Table table ->
+        addTableParagraphLookups paragraphs visitSourceItem addSourceParagraph table
+    | TextBox textBox ->
+        for paragraph in textBox.Content do
+            addSourceParagraph ()
+            addParagraphLookup paragraphs paragraph
+
+let private paragraphLookup (doc: Document) =
+    let build () =
+        let paragraphs = Dictionary<BlockId, ParagraphBlock>()
+        let mutable sourceParagraphCount = 0
+        let mutable visitedSourceItems = 0
+        let maxVisitedSourceItems = sourceStructureVisitedItemLimit paragraphLookupCacheMaxTotalSourceParagraphs
+        let canCountSource () =
+            sourceParagraphCount <= paragraphLookupCacheMaxTotalSourceParagraphs
+            && visitedSourceItems <= maxVisitedSourceItems
+        let visitSourceItem () =
+            if canCountSource () then
+                visitedSourceItems <- visitedSourceItems + 1
+        let addSourceParagraph () =
+            if canCountSource () then
+                sourceParagraphCount <- sourceParagraphCount + 1
+        let sourceParagraphCountResult () =
+            if visitedSourceItems > maxVisitedSourceItems
+               || sourceStructureOverwhelmsParagraphs paragraphLookupCacheMaxTotalSourceParagraphs sourceParagraphCount visitedSourceItems then
+                paragraphLookupCacheMaxTotalSourceParagraphs + 1
+            else
+                min sourceParagraphCount (paragraphLookupCacheMaxTotalSourceParagraphs + 1)
+        for block in doc.Blocks do
+            visitSourceItem ()
+            addBlockParagraphLookups paragraphs visitSourceItem addSourceParagraph block
+        let struct (sourceParagraphCount, sourceTextCharCount) =
+            match tryParagraphLookupSourceMetricsFromBlockLookup doc.Blocks with
+            | ValueSome metrics -> metrics
+            | ValueNone ->
+                let sourceParagraphCount =
+                    if paragraphs.Count > paragraphLookupCacheMaxTotalEntries then
+                        paragraphLookupCacheMaxTotalSourceParagraphs + 1
+                    else
+                        sourceParagraphCountResult ()
+                let sourceTextCharCount =
+                    paragraphLookupSourceTextCharCountFor paragraphs.Count sourceParagraphCount doc.Blocks
+                struct (sourceParagraphCount, sourceTextCharCount)
+        let cached = {
+            CachedBlocks = doc.Blocks
+            EntryCount = paragraphs.Count
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = sourceTextCharCount
+            Paragraphs = paragraphs
+        }
+        rememberParagraphLookup cached
+        paragraphs
+    match paragraphLookupCache |> List.tryFind (paragraphLookupCacheMatches doc.Blocks) with
+    | Some cached when paragraphLookupCacheRetainable cached ->
+        cached.Paragraphs
+    | Some cached ->
+        rememberParagraphLookup cached
+        build ()
+    | None ->
+        build ()
 
 /// Find an editable paragraph anywhere in the document, including table cells.
-let findParagraph doc paragraphId =
-    doc.Blocks
-    |> List.tryPick (function
-        | Paragraph p
-        | Heading (_, p) when p.Id = paragraphId -> Some p
-        | Table t ->
-            t.Rows
-            |> List.tryPick (fun row ->
-                row.Cells
-                |> List.tryPick (fun cell ->
-                    cell.Content |> List.tryFind (fun p -> p.Id = paragraphId)))
-        | TextBox t ->
-            t.Content |> List.tryFind (fun p -> p.Id = paragraphId)
-        | _ -> None)
+let findParagraph (doc: Document) paragraphId =
+    let paragraphs = paragraphLookup doc
+    let mutable paragraph = Unchecked.defaultof<ParagraphBlock>
+    if paragraphs.TryGetValue(paragraphId, &paragraph) then
+        Some paragraph
+    else
+        None
+
+let private tryReplaceTopLevelParagraphBeforeNestedContent doc paragraphId newPara =
+    let prefix = ResizeArray<Block>()
+    let mutable remaining = doc.Blocks
+    let mutable result: Document voption = ValueNone
+    let mutable blockedByNestedContent = false
+
+    while result.IsNone && not blockedByNestedContent do
+        match remaining with
+        | [] ->
+            result <- ValueSome doc
+        | Paragraph para :: tail when para.Id = paragraphId ->
+            result <-
+                if paragraphReplacementMatches para newPara then
+                    ValueSome doc
+                else
+                    ValueSome { doc with Blocks = prependResizeArray prefix (Paragraph newPara :: tail) }
+        | Heading (level, para) :: tail when para.Id = paragraphId ->
+            result <-
+                if paragraphReplacementMatches para newPara then
+                    ValueSome doc
+                else
+                    ValueSome { doc with Blocks = prependResizeArray prefix (Heading (level, newPara) :: tail) }
+        | (Table _ | TextBox _) :: _ ->
+            blockedByNestedContent <- true
+        | block :: tail ->
+            prefix.Add block
+            remaining <- tail
+
+    if blockedByNestedContent then ValueNone else result
+
+let private tryUpdateTopLevelParagraphBeforeNestedContent doc paragraphId updateParagraph =
+    let prefix = ResizeArray<Block>()
+    let mutable remaining = doc.Blocks
+    let mutable result: Document voption = ValueNone
+    let mutable blockedByNestedContent = false
+
+    while result.IsNone && not blockedByNestedContent do
+        match remaining with
+        | [] ->
+            result <- ValueSome doc
+        | Paragraph para :: tail when para.Id = paragraphId ->
+            let nextPara = updateParagraph para
+            result <-
+                if paragraphReplacementMatches para nextPara then
+                    ValueSome doc
+                else
+                    ValueSome { doc with Blocks = prependResizeArray prefix (Paragraph nextPara :: tail) }
+        | Heading (level, para) :: tail when para.Id = paragraphId ->
+            let nextPara = updateParagraph para
+            result <-
+                if paragraphReplacementMatches para nextPara then
+                    ValueSome doc
+                else
+                    ValueSome { doc with Blocks = prependResizeArray prefix (Heading (level, nextPara) :: tail) }
+        | (Table _ | TextBox _) :: _ ->
+            blockedByNestedContent <- true
+        | block :: tail ->
+            prefix.Add block
+            remaining <- tail
+
+    if blockedByNestedContent then ValueNone else result
 
 /// Replace an editable paragraph anywhere in the document, preserving its container.
 let replaceParagraph (doc: Document) paragraphId newPara =
-    let replaceInCell (cell: TableCell) =
-        { cell with
-            Content =
-                cell.Content
-                |> List.map (fun p -> if p.Id = paragraphId then newPara else p) }
+    match tryReplaceTopLevelParagraphBeforeNestedContent doc paragraphId newPara with
+    | ValueSome updatedDoc -> updatedDoc
+    | ValueNone ->
+        let mutable shouldReplace = false
+        let mutable scanning = true
+        let mutable remaining = doc.Blocks
+        while scanning do
+            match remaining with
+            | [] ->
+                scanning <- false
+            | Paragraph para :: tail ->
+                if para.Id = paragraphId then
+                    shouldReplace <- not (paragraphReplacementMatches para newPara)
+                    scanning <- false
+                else
+                    remaining <- tail
+            | Heading (_, para) :: tail ->
+                if para.Id = paragraphId then
+                    shouldReplace <- not (paragraphReplacementMatches para newPara)
+                    scanning <- false
+                else
+                    remaining <- tail
+            | (Table _ as block) :: tail
+            | (TextBox _ as block) :: tail ->
+                let _, blockChanged = replaceParagraphInBlock paragraphId newPara block
+                if blockChanged then
+                    shouldReplace <- true
+                    scanning <- false
+                else
+                    remaining <- tail
+        if shouldReplace then
+            let rec revAppend reversed tail =
+                match reversed with
+                | [] -> tail
+                | head :: rest -> revAppend rest (head :: tail)
+            let rec loop prefix remaining =
+                match remaining with
+                | [] -> None
+                | block :: tail ->
+                    let block, blockChanged = replaceParagraphInBlock paragraphId newPara block
+                    if blockChanged then
+                        Some (revAppend prefix (block :: tail))
+                    else
+                        loop (block :: prefix) tail
+            match loop [] doc.Blocks with
+            | Some blocks -> { doc with Blocks = blocks }
+            | None -> doc
+        else
+            doc
 
-    { doc with
-        Blocks =
-            doc.Blocks
-            |> List.map (function
-                | Paragraph p when p.Id = paragraphId -> Paragraph newPara
-                | Heading (level, p) when p.Id = paragraphId -> Heading (level, newPara)
-                | Table t ->
-                    Table {
-                        t with
-                            Rows =
-                                t.Rows
-                                |> List.map (fun row ->
-                                    { row with Cells = row.Cells |> List.map replaceInCell })
-                    }
-                | TextBox t ->
-                    TextBox { t with Content = t.Content |> List.map (fun p -> if p.Id = paragraphId then newPara else p) }
-                | block -> block) }
+let private updateParagraph (doc: Document) paragraphId update =
+    let rec revAppend reversed tail =
+        match reversed with
+        | [] -> tail
+        | head :: rest -> revAppend rest (head :: tail)
+    let rec loop prefix remaining =
+        match remaining with
+        | [] -> None
+        | block :: tail ->
+            let block, blockChanged = updateParagraphInBlock paragraphId update block
+            if blockChanged then
+                Some (revAppend prefix (block :: tail))
+            else
+                loop (block :: prefix) tail
+    match loop [] doc.Blocks with
+    | Some blocks -> { doc with Blocks = blocks }
+    | None -> doc
 
 let private editableParagraphsInOrder doc =
-    doc.Blocks
-    |> List.collect (function
+    let paragraphs = ResizeArray<ParagraphBlock>()
+    for block in doc.Blocks do
+        match block with
         | Paragraph p
-        | Heading (_, p) -> [p]
+        | Heading (_, p) -> paragraphs.Add p
         | Table t ->
-            t.Rows
-            |> List.collect (fun row ->
-                row.Cells
-                |> List.collect (fun cell -> cell.Content))
-        | TextBox t -> t.Content)
+            for row in t.Rows do
+                for cell in row.Cells do
+                    for para in cell.Content do
+                        paragraphs.Add para
+        | TextBox t ->
+            for para in t.Content do
+                paragraphs.Add para
+    resizeArrayToList paragraphs
 
 let private blockParagraphs (block: Block) =
     match block with
@@ -636,6 +2788,236 @@ let private blockParagraphs (block: Block) =
         |> List.collect (fun cell -> cell.Content)
     | TextBox textBox -> textBox.Content
 
+let private iterBlockParagraphs (block: Block) f =
+    match block with
+    | Paragraph p
+    | Heading (_, p) -> f p
+    | Table table ->
+        for row in table.Rows do
+            for cell in row.Cells do
+                for para in cell.Content do
+                    f para
+    | TextBox textBox ->
+        for para in textBox.Content do
+            f para
+
+let private iterBlockParagraphsUntil (block: Block) f =
+    let mutable keepGoing = true
+    match block with
+    | Paragraph p
+    | Heading (_, p) ->
+        keepGoing <- f p
+    | Table table ->
+        let mutable rows = table.Rows
+        while keepGoing && not rows.IsEmpty do
+            match rows with
+            | row :: rowTail ->
+                let mutable cells = row.Cells
+                while keepGoing && not cells.IsEmpty do
+                    match cells with
+                    | cell :: cellTail ->
+                        let mutable content = cell.Content
+                        while keepGoing && not content.IsEmpty do
+                            match content with
+                            | para :: paraTail ->
+                                keepGoing <- f para
+                                content <- paraTail
+                            | [] -> ()
+                        cells <- cellTail
+                    | [] -> ()
+                rows <- rowTail
+            | [] -> ()
+    | TextBox textBox ->
+        let mutable content = textBox.Content
+        while keepGoing && not content.IsEmpty do
+            match content with
+            | para :: tail ->
+                keepGoing <- f para
+                content <- tail
+            | [] -> ()
+    keepGoing
+
+let private iterEditableParagraphs doc f =
+    for block in doc.Blocks do
+        iterBlockParagraphs block f
+
+type private EditableParagraphEndpointsCache = {
+    EndpointSourceBlocks: Block list
+    EndpointFirst: ParagraphBlock voption
+    EndpointLast: ParagraphBlock voption
+    EndpointParagraphCount: int
+    EndpointSourceTextCharCount: int
+}
+
+let mutable private editableParagraphEndpointsCache: EditableParagraphEndpointsCache list = []
+let private editableParagraphEndpointsCacheMaxEntries = 64
+let private editableParagraphEndpointsCacheMaxTotalParagraphs = 200000
+let private editableParagraphEndpointsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private editableParagraphEndpointsCacheMatches blocks (cached: EditableParagraphEndpointsCache) =
+    obj.ReferenceEquals(cached.EndpointSourceBlocks, blocks)
+
+let private trimEditableParagraphEndpointsCache entries =
+    let rec loop remaining kept count totalParagraphs totalSourceTextChars =
+        match remaining with
+        | [] -> List.rev kept
+        | entry :: rest ->
+            let paragraphCount = max 1 entry.EndpointParagraphCount
+            let sourceTextCharCount = max 1 entry.EndpointSourceTextCharCount
+            let nextTotalParagraphs = totalParagraphs + paragraphCount
+            let nextTotalSourceTextChars = totalSourceTextChars + sourceTextCharCount
+            if count < editableParagraphEndpointsCacheMaxEntries
+               && nextTotalParagraphs <= editableParagraphEndpointsCacheMaxTotalParagraphs
+               && nextTotalSourceTextChars <= editableParagraphEndpointsCacheMaxTotalSourceTextChars then
+                loop rest (entry :: kept) (count + 1) nextTotalParagraphs nextTotalSourceTextChars
+            else
+                loop rest kept count totalParagraphs totalSourceTextChars
+    loop entries [] 0 0 0
+
+let private rememberEditableParagraphEndpoints cached =
+    editableParagraphEndpointsCache <-
+        cached
+        :: (editableParagraphEndpointsCache |> List.filter (editableParagraphEndpointsCacheMatches cached.EndpointSourceBlocks >> not))
+        |> trimEditableParagraphEndpointsCache
+
+let private editableParagraphEndpoints doc =
+    match editableParagraphEndpointsCache |> List.tryFind (editableParagraphEndpointsCacheMatches doc.Blocks) with
+    | Some cached ->
+        cached.EndpointFirst, cached.EndpointLast
+    | None ->
+        let mutable firstPara: ParagraphBlock voption = ValueNone
+        let mutable lastPara: ParagraphBlock voption = ValueNone
+        let mutable paragraphCount = 0
+        iterEditableParagraphs doc (fun para ->
+            paragraphCount <- paragraphCount + 1
+            match firstPara with
+            | ValueNone -> firstPara <- ValueSome para
+            | ValueSome _ -> ()
+            lastPara <- ValueSome para)
+        rememberEditableParagraphEndpoints {
+            EndpointSourceBlocks = doc.Blocks
+            EndpointFirst = firstPara
+            EndpointLast = lastPara
+            EndpointParagraphCount = paragraphCount
+            EndpointSourceTextCharCount =
+                documentBlocksSourceTextCharCountFor
+                    editableParagraphEndpointsCacheMaxTotalParagraphs
+                    paragraphCount
+                    doc.Blocks
+        }
+        firstPara, lastPara
+
+let private iterEditableParagraphsUntil doc f =
+    let mutable keepGoing = true
+    let mutable blocks = doc.Blocks
+    while keepGoing && not blocks.IsEmpty do
+        match blocks with
+        | block :: tail ->
+            keepGoing <- iterBlockParagraphsUntil block f
+            blocks <- tail
+        | [] -> ()
+
+let private tryFindEditableParagraphUntil doc paragraphId =
+    let mutable found: ParagraphBlock voption = ValueNone
+    iterEditableParagraphsUntil doc (fun para ->
+        if para.Id = paragraphId then
+            found <- ValueSome para
+            false
+        else
+            true)
+    match found with
+    | ValueSome para -> Some para
+    | ValueNone -> None
+
+type private OrderedEditableParagraphsCache = {
+    OrderedSourceBlocks: Block list
+    EntryCount: int
+    SourceTextCharCount: int
+    OrderedParagraphs: ParagraphBlock array
+    OrderedIndexById: Dictionary<BlockId, int>
+}
+
+let mutable private orderedEditableParagraphsCache: OrderedEditableParagraphsCache list = []
+let private orderedEditableParagraphsCacheMaxEntries = 64
+let private orderedEditableParagraphsCacheMaxTotalEntries = 200000
+let private orderedEditableParagraphsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private orderedEditableParagraphsCacheMatches blocks (cached: OrderedEditableParagraphsCache) =
+    obj.ReferenceEquals(cached.OrderedSourceBlocks, blocks)
+
+let private orderedEditableParagraphsCacheRetainable (cached: OrderedEditableParagraphsCache) =
+    cached.EntryCount <= orderedEditableParagraphsCacheMaxTotalEntries
+    && cached.SourceTextCharCount <= orderedEditableParagraphsCacheMaxTotalSourceTextChars
+
+let private rememberOrderedEditableParagraphs cached =
+    if not (orderedEditableParagraphsCacheRetainable cached) then
+        orderedEditableParagraphsCache <-
+            orderedEditableParagraphsCache
+            |> List.filter (orderedEditableParagraphsCacheMatches cached.OrderedSourceBlocks >> not)
+    else
+        let trim entries =
+            let rec loop keptCount keptEntries keptSourceTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateEntries = max 1 candidate.EntryCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    if orderedEditableParagraphsCacheRetainable candidate
+                       && keptCount < orderedEditableParagraphsCacheMaxEntries
+                       && keptEntries + candidateEntries <= orderedEditableParagraphsCacheMaxTotalEntries
+                       && keptSourceTextChars + candidateSourceTextChars <= orderedEditableParagraphsCacheMaxTotalSourceTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptEntries + candidateEntries)
+                            (keptSourceTextChars + candidateSourceTextChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptEntries keptSourceTextChars acc tail
+            loop 0 0 0 [] entries
+        orderedEditableParagraphsCache <-
+            (cached
+             :: (orderedEditableParagraphsCache
+                 |> List.filter (orderedEditableParagraphsCacheMatches cached.OrderedSourceBlocks >> not)))
+            |> trim
+
+let private orderedEditableParagraphs doc =
+    let build () =
+        let paragraphs = ResizeArray<ParagraphBlock>()
+        let indexById = Dictionary<BlockId, int>()
+        iterEditableParagraphs doc (fun para ->
+            if not (indexById.ContainsKey para.Id) then
+                indexById.[para.Id] <- paragraphs.Count
+            paragraphs.Add para)
+        let cached = {
+            OrderedSourceBlocks = doc.Blocks
+            EntryCount = paragraphs.Count
+            SourceTextCharCount =
+                documentBlocksSourceTextCharCountFor
+                    orderedEditableParagraphsCacheMaxTotalEntries
+                    paragraphs.Count
+                    doc.Blocks
+            OrderedParagraphs = paragraphs.ToArray()
+            OrderedIndexById = indexById
+        }
+        rememberOrderedEditableParagraphs cached
+        cached
+    match orderedEditableParagraphsCache |> List.tryFind (orderedEditableParagraphsCacheMatches doc.Blocks) with
+    | Some cached when orderedEditableParagraphsCacheRetainable cached ->
+        cached
+    | Some cached ->
+        rememberOrderedEditableParagraphs cached
+        build ()
+    | None ->
+        build ()
+
+let private paragraphIndexById doc =
+    (orderedEditableParagraphs doc).OrderedIndexById
+
+let private paragraphIndexOf (indexes: Dictionary<BlockId, int>) blockId =
+    let mutable index = 0
+    if indexes.TryGetValue(blockId, &index) then index else System.Int32.MaxValue
+
 let private blockId (block: Block) =
     match block with
     | Paragraph p
@@ -643,185 +3025,542 @@ let private blockId (block: Block) =
     | Table table -> table.Id
     | TextBox textBox -> textBox.Id
 
-let private paragraphPageBreakBefore (doc: Document) (para: ParagraphBlock) =
-    let styleBreak =
-        para.Metadata.Style
-        |> Option.bind (fun styleId ->
-            doc.Styles
-            |> List.tryFind (fun style -> style.StyleType = "paragraph" && style.Id = styleId)
-            |> Option.bind (fun style -> style.PageBreakBefore))
+type private PageBreakBeforeLookupCache = {
+    Styles: NamedStyle list
+    ParagraphStyles: Dictionary<string, bool>
+    DefaultBreak: bool
+    StyleCount: int
+    StyleTextCharCount: int
+}
 
-    let defaultBreak =
-        doc.Styles
-        |> List.tryFind (fun style -> style.StyleType = "defaults")
-        |> Option.bind (fun style -> style.PageBreakBefore)
+let mutable private pageBreakBeforeLookupCache: PageBreakBeforeLookupCache list = []
+let private pageBreakBeforeLookupCacheMaxEntries = 64
+let private pageBreakBeforeLookupCacheMaxTotalStyles = 200000
+let private pageBreakBeforeLookupCacheMaxTotalStyleTextChars = documentSourceTextCacheMaxTotalChars
 
-    styleBreak |> Option.orElse defaultBreak |> Option.defaultValue false
+let private pageBreakBeforeLookupCacheMatches styles (cached: PageBreakBeforeLookupCache) =
+    obj.ReferenceEquals(cached.Styles, styles)
+
+let private pageBreakBeforeLookupCacheRetainable cached =
+    cached.StyleCount <= pageBreakBeforeLookupCacheMaxTotalStyles
+    && cached.StyleTextCharCount <= pageBreakBeforeLookupCacheMaxTotalStyleTextChars
+
+let private optionalStringCharCount (value: string option) =
+    match value with
+    | Some value -> value.Length
+    | None -> 0
+
+let private textStyleStringCharCount (style: TextBuffer.TextStyle) =
+    optionalStringCharCount style.Style
+    + optionalStringCharCount style.UnderlineStyle
+    + optionalStringCharCount style.UnderlineColor
+    + optionalStringCharCount style.FontFamily
+    + optionalStringCharCount style.Color
+    + optionalStringCharCount style.Highlight
+    + optionalStringCharCount style.Hyperlink
+    + optionalStringCharCount style.CommentId
+    + optionalStringCharCount style.CommentText
+    + optionalStringCharCount style.CommentAuthor
+    + optionalStringCharCount style.CommentDate
+    + optionalStringCharCount style.NoteId
+    + optionalStringCharCount style.NoteType
+    + optionalStringCharCount style.NoteText
+    + optionalStringCharCount style.BookmarkStartId
+    + optionalStringCharCount style.BookmarkName
+    + optionalStringCharCount style.BookmarkEndId
+    + optionalStringCharCount style.FieldCode
+    + optionalStringCharCount style.FieldResult
+    + optionalStringCharCount style.EquationXml
+    + optionalStringCharCount style.RevisionId
+    + optionalStringCharCount style.RevisionType
+    + optionalStringCharCount style.RevisionAuthor
+    + optionalStringCharCount style.RevisionDate
+    + optionalStringCharCount style.VertAlign
+
+let private namedStyleStringCharCount (style: NamedStyle) =
+    style.Id.Length
+    + optionalStringCharCount style.Name
+    + style.StyleType.Length
+    + optionalStringCharCount style.BasedOn
+    + optionalStringCharCount style.Next
+    + optionalStringCharCount style.Linked
+    + optionalStringCharCount style.Aliases
+    + optionalStringCharCount style.LineSpacingRule
+    + optionalStringCharCount style.BackgroundColor
+    + (match style.Text with
+       | Some textStyle -> textStyleStringCharCount textStyle
+       | None -> 0)
+
+let private pageBreakBeforeStylesTextCharCount (styles: NamedStyle list) =
+    let limit = pageBreakBeforeLookupCacheMaxTotalStyleTextChars + 1
+    let mutable total = 0
+    let mutable seen = 0
+    let mutable remaining = styles
+    while total <= pageBreakBeforeLookupCacheMaxTotalStyleTextChars
+          && seen <= pageBreakBeforeLookupCacheMaxTotalStyles
+          && not remaining.IsEmpty do
+        total <- min limit (total + namedStyleStringCharCount remaining.Head)
+        seen <- seen + 1
+        remaining <- remaining.Tail
+    min total limit
+
+let private trimPageBreakBeforeLookupCache caches =
+    let rec loop remaining kept count totalStyles totalStyleTextChars =
+        match remaining with
+        | [] -> List.rev kept
+        | cached :: rest ->
+            let styleCount = max 1 cached.StyleCount
+            let styleTextCharCount = max 1 cached.StyleTextCharCount
+            let nextTotalStyles = totalStyles + styleCount
+            let nextTotalStyleTextChars = totalStyleTextChars + styleTextCharCount
+            if pageBreakBeforeLookupCacheRetainable cached
+               && count < pageBreakBeforeLookupCacheMaxEntries
+               && nextTotalStyles <= pageBreakBeforeLookupCacheMaxTotalStyles
+               && nextTotalStyleTextChars <= pageBreakBeforeLookupCacheMaxTotalStyleTextChars then
+                loop rest (cached :: kept) (count + 1) nextTotalStyles nextTotalStyleTextChars
+            else
+                loop rest kept count totalStyles totalStyleTextChars
+    loop caches [] 0 0 0
+
+let private rememberPageBreakBeforeLookup cached =
+    if not (pageBreakBeforeLookupCacheRetainable cached) then
+        pageBreakBeforeLookupCache <-
+            pageBreakBeforeLookupCache
+            |> List.filter (pageBreakBeforeLookupCacheMatches cached.Styles >> not)
+    else
+        pageBreakBeforeLookupCache <-
+            (cached
+             :: (pageBreakBeforeLookupCache
+                 |> List.filter (pageBreakBeforeLookupCacheMatches cached.Styles >> not)))
+            |> trimPageBreakBeforeLookupCache
+
+let private pageBreakBeforeLookup (doc: Document) =
+    let cache =
+        match pageBreakBeforeLookupCache |> List.tryFind (pageBreakBeforeLookupCacheMatches doc.Styles) with
+        | Some cached ->
+            cached
+        | None ->
+            let paragraphStyles = Dictionary<string, bool>()
+            let mutable defaultBreak = false
+            for style in doc.Styles do
+                match style.StyleType, style.PageBreakBefore with
+                | "paragraph", Some pageBreakBefore ->
+                    paragraphStyles.[style.Id] <- pageBreakBefore
+                | "defaults", Some pageBreakBefore ->
+                    defaultBreak <- pageBreakBefore
+                | _ -> ()
+            let cached = {
+                Styles = doc.Styles
+                ParagraphStyles = paragraphStyles
+                DefaultBreak = defaultBreak
+                StyleCount = doc.Styles.Length
+                StyleTextCharCount = pageBreakBeforeStylesTextCharCount doc.Styles
+            }
+            rememberPageBreakBeforeLookup cached
+            cached
+    let paragraphPageBreakBefore (para: ParagraphBlock) =
+        match para.Metadata.Style with
+        | Some styleId ->
+            let mutable pageBreakBefore = false
+            if cache.ParagraphStyles.TryGetValue(styleId, &pageBreakBefore) then pageBreakBefore
+            else cache.DefaultBreak
+        | None ->
+            cache.DefaultBreak
+    paragraphPageBreakBefore
 
 let buildPageMap (doc: Document) =
     let mutable physicalPageNumber = 1
     let mutable displayPageStart = 1
     let mutable displayPageStartPhysical = 1
-    let mutable blockAnchors: PageBlockAnchor list = []
-    let mutable fieldAnchors: PageFieldAnchor list = []
-    let mutable bookmarkAnchors: PageBookmarkAnchor list = []
+    let blockAnchors = ResizeArray<PageBlockAnchor>()
+    let fieldAnchors = ResizeArray<PageFieldAnchor>()
+    let bookmarkAnchors = ResizeArray<PageBookmarkAnchor>()
+    let seenBookmarkAnchors = HashSet<string>()
+    let paragraphPageBreakBefore = pageBreakBeforeLookup doc
 
     let displayPageNumber () = displayPageStart + physicalPageNumber - displayPageStartPhysical
 
     let addParagraphAnchors para =
         let pageNumber = displayPageNumber ()
-        para.Buffer.Runs
-        |> List.iter (function
+        for runValue in para.Buffer.Runs do
+            match runValue with
             | Text run ->
                 run.Style.FieldCode
                 |> Option.iter (fun code ->
-                    fieldAnchors <- fieldAnchors @ [{ PageFieldBlockId = para.Id; PageFieldStartOffset = run.Start; PageFieldCode = code; PageNumber = pageNumber }])
-                run.Style.BookmarkName
-                |> Option.iter (fun name ->
-                    bookmarkAnchors <- bookmarkAnchors @ [{ PageBookmarkName = name; PageBookmarkBlockId = para.Id; PageBookmarkStartOffset = run.Start; PageNumber = pageNumber }])
-            | Image _ -> ())
+                    fieldAnchors.Add { PageFieldBlockId = para.Id; PageFieldStartOffset = run.Start; PageFieldCode = code; PageNumber = pageNumber })
+                match run.Style.BookmarkName with
+                | Some name when seenBookmarkAnchors.Add name ->
+                    bookmarkAnchors.Add { PageBookmarkName = name; PageBookmarkBlockId = para.Id; PageBookmarkStartOffset = run.Start; PageNumber = pageNumber }
+                | _ -> ()
+            | Image _ -> ()
 
-    doc.Blocks
-    |> List.iter (fun block ->
-        let paragraphs = blockParagraphs block
-        if blockAnchors.Length > 0 && paragraphs |> List.exists (paragraphPageBreakBefore doc) then
+    for block in doc.Blocks do
+        let mutable hasPageBreakBefore = false
+        let mutable sectionPageStart = None
+        let mutable hasPageBreakAfter = false
+        iterBlockParagraphs block (fun para ->
+            if paragraphPageBreakBefore para then
+                hasPageBreakBefore <- true
+            match para.Metadata.SectionPageNumberStart with
+            | Some start -> sectionPageStart <- Some start
+            | None -> ()
+            if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
+                hasPageBreakAfter <- true)
+        if blockAnchors.Count > 0 && hasPageBreakBefore then
             physicalPageNumber <- physicalPageNumber + 1
-        paragraphs
-        |> List.choose (fun para -> para.Metadata.SectionPageNumberStart)
-        |> List.tryLast
+        sectionPageStart
         |> Option.iter (fun start ->
             displayPageStart <- max 1 start
             displayPageStartPhysical <- physicalPageNumber)
         let pageNumber = displayPageNumber ()
-        blockAnchors <- blockAnchors @ [{ PageBlockId = blockId block; PageNumber = pageNumber }]
-        paragraphs |> List.iter addParagraphAnchors
-        if paragraphs |> List.exists (fun para -> para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage") then
-            physicalPageNumber <- physicalPageNumber + 1)
+        blockAnchors.Add { PageBlockId = blockId block; PageNumber = pageNumber }
+        iterBlockParagraphs block addParagraphAnchors
+        if hasPageBreakAfter then
+            physicalPageNumber <- physicalPageNumber + 1
 
     {
         PageCount = max 1 physicalPageNumber
-        BlockAnchors = blockAnchors
-        Fields = fieldAnchors
-        Bookmarks = bookmarkAnchors |> List.distinctBy (fun anchor -> anchor.PageBookmarkName)
+        BlockAnchors = resizeArrayToList blockAnchors
+        Fields = resizeArrayToList fieldAnchors
+        Bookmarks = resizeArrayToList bookmarkAnchors
     }
 
 let bookmarkInfos (doc: Document) =
-    let rawInfos =
-        editableParagraphsInOrder doc
-        |> List.collect (fun para ->
-            para.Buffer.Runs
-            |> List.choose (function
+    match bookmarkInfoCache |> List.tryFind (bookmarkInfoCacheMatches doc.Blocks) with
+    | Some cached ->
+        cached.BookmarkInfos
+    | None ->
+        let infosByName = Dictionary<string, BookmarkInfo>()
+        let namesInOrder = ResizeArray<string>()
+        iterEditableParagraphs doc (fun para ->
+            for runValue in para.Buffer.Runs do
+                match runValue with
                 | Text run ->
-                    match run.Style.BookmarkStartId, run.Style.BookmarkName with
-                    | Some bookmarkId, Some bookmarkName ->
-                        Some {
-                            Id = bookmarkId
-                            Name = bookmarkName
-                            BlockId = para.Id
-                            StartOffset = run.Start
-                            EndOffset = run.Start + run.Length
-                        }
-                    | _ -> None
-                | Image _ -> None))
-    rawInfos
-    |> List.groupBy (fun info -> info.Name)
-    |> List.map (fun (bookmarkName, infos) ->
-        let firstInfo = infos |> List.head
-        let blockInfos = infos |> List.filter (fun info -> info.BlockId = firstInfo.BlockId)
-        {
-            Id = firstInfo.Id
-            Name = bookmarkName
-            BlockId = firstInfo.BlockId
-            StartOffset = blockInfos |> List.map (fun info -> info.StartOffset) |> List.min
-            EndOffset = blockInfos |> List.map (fun info -> info.EndOffset) |> List.max
-        })
+                    match run.Style.BookmarkStartId with
+                    | Some bookmarkId ->
+                        match run.Style.BookmarkName with
+                        | Some bookmarkName ->
+                            let mutable info = Unchecked.defaultof<BookmarkInfo>
+                            if infosByName.TryGetValue(bookmarkName, &info) then
+                                if info.BlockId = para.Id then
+                                    infosByName.[bookmarkName] <- {
+                                        info with
+                                            StartOffset = min info.StartOffset run.Start
+                                            EndOffset = max info.EndOffset (run.Start + run.Length)
+                                    }
+                                else
+                                    ()
+                            else
+                                namesInOrder.Add bookmarkName
+                                infosByName.[bookmarkName] <- {
+                                    Id = bookmarkId
+                                    Name = bookmarkName
+                                    BlockId = para.Id
+                                    StartOffset = run.Start
+                                    EndOffset = run.Start + run.Length
+                                }
+                                ()
+                        | None -> ()
+                    | None -> ()
+                | Image _ -> ())
+        let infos = [
+            for name in namesInOrder do
+                let mutable info = Unchecked.defaultof<BookmarkInfo>
+                if infosByName.TryGetValue(name, &info) then
+                    yield info
+        ]
+        let struct (sourceParagraphCount, sourceTextCharCount) = documentInfoSourceMetricsFor infos.Length doc.Blocks
+        rememberBookmarkInfos {
+            BookmarkSourceBlocks = doc.Blocks
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = sourceTextCharCount
+            BookmarkInfoCount = infos.Length
+            BookmarkInfos = infos
+        }
+        infos
 
 let contentControlInfos (doc: Document) =
-    editableParagraphsInOrder doc
-    |> List.choose (fun para ->
-        para.Metadata.ContentControlId
-        |> Option.map (fun controlId -> {
-            Id = controlId
-            Tag = para.Metadata.ContentControlTag |> Option.defaultValue "content-control"
-            Alias = para.Metadata.ContentControlAlias |> Option.defaultValue (para.Metadata.ContentControlTag |> Option.defaultValue controlId)
-            BlockId = para.Id
-        }))
-    |> List.distinctBy (fun info -> info.Id, info.BlockId)
+    match contentControlInfoCache |> List.tryFind (contentControlInfoCacheMatches doc.Blocks) with
+    | Some cached ->
+        cached.ContentControlInfos
+    | None ->
+        let infos = ResizeArray<ContentControlInfo>()
+        iterEditableParagraphs doc (fun para ->
+            para.Metadata.ContentControlId
+            |> Option.iter (fun controlId ->
+                infos.Add {
+                    Id = controlId
+                    Tag = para.Metadata.ContentControlTag |> Option.defaultValue "content-control"
+                    Alias = para.Metadata.ContentControlAlias |> Option.defaultValue (para.Metadata.ContentControlTag |> Option.defaultValue controlId)
+                    BlockId = para.Id
+                }))
+        let infos = resizeArrayToList infos
+        let struct (sourceParagraphCount, sourceTextCharCount) = documentInfoSourceMetricsFor infos.Length doc.Blocks
+        rememberContentControlInfos {
+            ContentControlSourceBlocks = doc.Blocks
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = sourceTextCharCount
+            ContentControlInfoCount = infos.Length
+            ContentControlInfos = infos
+        }
+        infos
+
+let commentInfos (doc: Document) =
+    match commentInfoCache |> List.tryFind (commentInfoCacheMatches doc.Blocks) with
+    | Some cached ->
+        cached.CommentInfos
+    | None ->
+        let infos = ResizeArray<CommentInfo>()
+        let seenAnchors = HashSet<string>()
+        iterEditableParagraphs doc (fun para ->
+            for runValue in para.Buffer.Runs do
+                match runValue with
+                | Text run ->
+                    match run.Style.CommentId with
+                    | Some id ->
+                        let text = run.Style.CommentText |> Option.defaultValue ""
+                        let key = id + "\u0000" + text
+                        if seenAnchors.Add key then
+                            infos.Add {
+                                Id = id
+                                Text = text
+                                Author = run.Style.CommentAuthor
+                                Date = run.Style.CommentDate
+                                BlockId = para.Id
+                                StartOffset = run.Start
+                                EndOffset = run.Start + run.Length
+                                Excerpt = TextBuffer.slice run.Start run.Length para.Buffer
+                            }
+                    | None -> ()
+                | Image _ -> ())
+        let infos = resizeArrayToList infos
+        let struct (sourceParagraphCount, sourceTextCharCount) = documentInfoSourceMetricsFor infos.Length doc.Blocks
+        rememberCommentInfos {
+            CommentSourceBlocks = doc.Blocks
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = sourceTextCharCount
+            CommentInfoCount = infos.Length
+            CommentInfos = infos
+        }
+        infos
+
+let private paragraphContentControlMatches controlId (para: ParagraphBlock) =
+    match para.Metadata.ContentControlId with
+    | None -> false
+    | Some id ->
+        id = controlId
+        || (para.Metadata.ContentControlTag |> Option.defaultValue "content-control") = controlId
+
+let private tryFindBookmarkInfo bookmarkId (doc: Document) =
+    let mutable found = false
+    let mutable result = Unchecked.defaultof<BookmarkInfo>
+    iterEditableParagraphs doc (fun para ->
+        if not found then
+            let mutable paragraphHasMatch = false
+            let mutable info = Unchecked.defaultof<BookmarkInfo>
+            for runValue in para.Buffer.Runs do
+                match runValue with
+                | Text run ->
+                    match run.Style.BookmarkStartId with
+                    | Some runBookmarkId ->
+                        match run.Style.BookmarkName with
+                        | Some bookmarkName when runBookmarkId = bookmarkId || bookmarkName = bookmarkId ->
+                            let runEnd = run.Start + run.Length
+                            if paragraphHasMatch then
+                                info <- {
+                                    info with
+                                        StartOffset = min info.StartOffset run.Start
+                                        EndOffset = max info.EndOffset runEnd
+                                }
+                            else
+                                paragraphHasMatch <- true
+                                info <- {
+                                    Id = runBookmarkId
+                                    Name = bookmarkName
+                                    BlockId = para.Id
+                                    StartOffset = run.Start
+                                    EndOffset = runEnd
+                                }
+                        | _ -> ()
+                    | None -> ()
+                | Image _ -> ()
+            if paragraphHasMatch then
+                result <- info
+                found <- true)
+    if found then Some result else None
+
+let private selectionMatchesBookmark bookmarkId doc =
+    match doc.Selection with
+    | Some selection when selection.Anchor.BlockId = selection.Focus.BlockId ->
+        match tryFindEditableParagraphUntil doc selection.Anchor.BlockId with
+        | Some para ->
+            let mutable found = false
+            let mutable startOffset = 0
+            let mutable endOffset = 0
+            for runValue in para.Buffer.Runs do
+                match runValue with
+                | Text run when run.Style.BookmarkStartId = Some bookmarkId || run.Style.BookmarkName = Some bookmarkId ->
+                    let runEnd = run.Start + run.Length
+                    if found then
+                        startOffset <- min startOffset run.Start
+                        endOffset <- max endOffset runEnd
+                    else
+                        found <- true
+                        startOffset <- run.Start
+                        endOffset <- runEnd
+                | _ -> ()
+            found
+                && selection.Anchor.Offset = startOffset
+                && selection.Focus.Offset = endOffset
+        | None -> false
+    | _ -> false
+
+let private selectionMatchesContentControl controlId doc =
+    match doc.Selection with
+    | Some selection when selection.Anchor.BlockId = selection.Focus.BlockId ->
+        match tryFindEditableParagraphUntil doc selection.Anchor.BlockId with
+        | Some para ->
+            paragraphContentControlMatches controlId para
+                && selection.Anchor.Offset = 0
+                && selection.Focus.Offset = TextBuffer.length para.Buffer
+        | None -> false
+    | _ -> false
 
 let selectBookmark bookmarkId doc =
-    match bookmarkInfos doc |> List.tryFind (fun info -> info.Id = bookmarkId || info.Name = bookmarkId) with
-    | None -> doc
-    | Some info ->
-        { doc with
-            Selection = Some {
-                Anchor = { BlockId = info.BlockId; Offset = info.StartOffset }
-                Focus = { BlockId = info.BlockId; Offset = info.EndOffset }
-            } }
+    if selectionMatchesBookmark bookmarkId doc then
+        doc
+    else
+        match tryFindBookmarkInfo bookmarkId doc with
+        | None -> doc
+        | Some info ->
+            let anchor = { BlockId = info.BlockId; Offset = info.StartOffset }
+            let focus = { BlockId = info.BlockId; Offset = info.EndOffset }
+            match doc.Selection with
+            | Some current when current.Anchor = anchor && current.Focus = focus ->
+                doc
+            | _ ->
+                { doc with Selection = Some { Anchor = anchor; Focus = focus } }
 
 let selectContentControl controlId doc =
-    match contentControlInfos doc |> List.tryFind (fun info -> info.Id = controlId || info.Tag = controlId) with
-    | None -> doc
-    | Some info ->
-        match findParagraph doc info.BlockId with
+    if selectionMatchesContentControl controlId doc then
+        doc
+    else
+        let mutable selected = None
+        iterEditableParagraphs doc (fun para ->
+            if selected.IsNone && paragraphContentControlMatches controlId para then
+                selected <- Some para)
+        match selected with
         | None -> doc
         | Some para ->
-            { doc with
-                Selection = Some {
-                    Anchor = { BlockId = para.Id; Offset = 0 }
-                    Focus = { BlockId = para.Id; Offset = TextBuffer.length para.Buffer }
-                } }
+            let anchor = { BlockId = para.Id; Offset = 0 }
+            let focus = { BlockId = para.Id; Offset = TextBuffer.length para.Buffer }
+            match doc.Selection with
+            | Some current when current.Anchor = anchor && current.Focus = focus ->
+                doc
+            | _ ->
+                { doc with Selection = Some { Anchor = anchor; Focus = focus } }
 
 let removeBookmark bookmarkId doc =
-    let clearBookmarkStyle style =
-        if style.BookmarkStartId = Some bookmarkId || style.BookmarkName = Some bookmarkId then
-            { style with BookmarkStartId = None; BookmarkName = None; BookmarkEndId = None }
-        else style
-
-    (doc, editableParagraphsInOrder doc)
-    ||> List.fold (fun currentDoc para ->
-        let newRuns =
-            para.Buffer.Runs
-            |> List.map (function
-                | Text run -> Text { run with Style = clearBookmarkStyle run.Style }
-                | Image run -> Image run)
-        replaceParagraph currentDoc para.Id { para with Buffer = { para.Buffer with Runs = newRuns } })
+    let mutable replacements: Dictionary<BlockId, ParagraphBlock> = null
+    iterEditableParagraphs doc (fun para ->
+        let mutable runs: ResizeArray<Run> = null
+        let mutable prefixCount = 0
+        let mutable changed = false
+        let ensureChanged () =
+            if not changed then
+                changed <- true
+                runs <- ResizeArray<Run>()
+                let mutable copied = 0
+                let mutable prefix = para.Buffer.Runs
+                while copied < prefixCount do
+                    match prefix with
+                    | prefixRun :: tail ->
+                        runs.Add prefixRun
+                        prefix <- tail
+                        copied <- copied + 1
+                    | [] -> copied <- prefixCount
+        for runValue in para.Buffer.Runs do
+            match runValue with
+            | Text run ->
+                if run.Style.BookmarkStartId = Some bookmarkId || run.Style.BookmarkName = Some bookmarkId then
+                    ensureChanged ()
+                    runs.Add(Text { run with Style = { run.Style with BookmarkStartId = None; BookmarkName = None; BookmarkEndId = None } })
+                elif changed then
+                    runs.Add runValue
+                else
+                    prefixCount <- prefixCount + 1
+            | Image _ ->
+                if changed then
+                    runs.Add runValue
+                else
+                    prefixCount <- prefixCount + 1
+        if changed then
+            if isNull replacements then
+                replacements <- Dictionary<BlockId, ParagraphBlock>()
+            replacements.[para.Id] <- { para with Buffer = { para.Buffer with Runs = resizeArrayToList runs } })
+    if isNull replacements then doc else replaceParagraphs doc replacements
 
 let renameBookmark bookmarkId bookmarkName doc =
     let normalizedName =
         if System.String.IsNullOrWhiteSpace bookmarkName then "Bookmark"
         else bookmarkName.Trim().Replace(" ", "_")
 
-    let renameBookmarkStyle style =
-        if style.BookmarkStartId = Some bookmarkId || style.BookmarkName = Some bookmarkId then
-            { style with BookmarkName = Some normalizedName }
-        else style
-
-    (doc, editableParagraphsInOrder doc)
-    ||> List.fold (fun currentDoc para ->
-        let newRuns =
-            para.Buffer.Runs
-            |> List.map (function
-                | Text run -> Text { run with Style = renameBookmarkStyle run.Style }
-                | Image run -> Image run)
-        replaceParagraph currentDoc para.Id { para with Buffer = { para.Buffer with Runs = newRuns } })
+    let mutable replacements: Dictionary<BlockId, ParagraphBlock> = null
+    iterEditableParagraphs doc (fun para ->
+        let mutable runs: ResizeArray<Run> = null
+        let mutable prefixCount = 0
+        let mutable changed = false
+        let ensureChanged () =
+            if not changed then
+                changed <- true
+                runs <- ResizeArray<Run>()
+                let mutable copied = 0
+                let mutable prefix = para.Buffer.Runs
+                while copied < prefixCount do
+                    match prefix with
+                    | prefixRun :: tail ->
+                        runs.Add prefixRun
+                        prefix <- tail
+                        copied <- copied + 1
+                    | [] -> copied <- prefixCount
+        for runValue in para.Buffer.Runs do
+            match runValue with
+            | Text run ->
+                if (run.Style.BookmarkStartId = Some bookmarkId || run.Style.BookmarkName = Some bookmarkId)
+                    && run.Style.BookmarkName <> Some normalizedName then
+                    ensureChanged ()
+                    runs.Add(Text { run with Style = { run.Style with BookmarkName = Some normalizedName } })
+                elif changed then
+                    runs.Add runValue
+                else
+                    prefixCount <- prefixCount + 1
+            | Image _ ->
+                if changed then
+                    runs.Add runValue
+                else
+                    prefixCount <- prefixCount + 1
+        if changed then
+            if isNull replacements then
+                replacements <- Dictionary<BlockId, ParagraphBlock>()
+            replacements.[para.Id] <- { para with Buffer = { para.Buffer with Runs = resizeArrayToList runs } })
+    if isNull replacements then doc else replaceParagraphs doc replacements
 
 let removeContentControl controlId doc =
-    (doc, contentControlInfos doc)
-    ||> List.fold (fun currentDoc info ->
-        if info.Id = controlId || info.Tag = controlId then
-            match findParagraph currentDoc info.BlockId with
-            | None -> currentDoc
-            | Some para ->
-                replaceParagraph currentDoc para.Id {
-                    para with
-                        Metadata = {
-                            para.Metadata with
-                                ContentControlId = None
-                                ContentControlTag = None
-                                ContentControlAlias = None
-                        }
-                }
-        else currentDoc)
+    let mutable replacements: Dictionary<BlockId, ParagraphBlock> = null
+    iterEditableParagraphs doc (fun para ->
+        if paragraphContentControlMatches controlId para then
+            if isNull replacements then
+                replacements <- Dictionary<BlockId, ParagraphBlock>()
+            replacements.[para.Id] <- {
+                para with
+                    Metadata = {
+                        para.Metadata with
+                            ContentControlId = None
+                            ContentControlTag = None
+                            ContentControlAlias = None
+                    }
+            })
+    if isNull replacements then doc else replaceParagraphs doc replacements
 
 let updateContentControl controlId newControlId tag alias doc =
     let normalize fallback (value: string) =
@@ -830,22 +3569,22 @@ let updateContentControl controlId newControlId tag alias doc =
     let tag = normalize "content-control" tag
     let alias = normalize tag alias
 
-    (doc, contentControlInfos doc)
-    ||> List.fold (fun currentDoc info ->
-        if info.Id = controlId || info.Tag = controlId then
-            match findParagraph currentDoc info.BlockId with
-            | None -> currentDoc
-            | Some para ->
-                replaceParagraph currentDoc para.Id {
-                    para with
-                        Metadata = {
-                            para.Metadata with
-                                ContentControlId = Some newControlId
-                                ContentControlTag = Some tag
-                                ContentControlAlias = Some alias
-                        }
+    let mutable replacements: Dictionary<BlockId, ParagraphBlock> = null
+    iterEditableParagraphs doc (fun para ->
+        if paragraphContentControlMatches controlId para then
+            if para.Metadata.ContentControlId <> Some newControlId
+               || para.Metadata.ContentControlTag <> Some tag
+               || para.Metadata.ContentControlAlias <> Some alias then
+                let nextMetadata = {
+                    para.Metadata with
+                        ContentControlId = Some newControlId
+                        ContentControlTag = Some tag
+                        ContentControlAlias = Some alias
                 }
-        else currentDoc)
+                if isNull replacements then
+                    replacements <- Dictionary<BlockId, ParagraphBlock>()
+                replacements.[para.Id] <- { para with Metadata = nextMetadata })
+    if isNull replacements then doc else replaceParagraphs doc replacements
 
 let private emptyTableCell () =
     {
@@ -875,99 +3614,744 @@ let private emptyTableCell () =
     }
 
 let private tryFindTableCellByParagraph doc paragraphId =
-    doc.Blocks
-    |> List.tryPick (function
+    let mutable result = None
+    let mutable blocks = doc.Blocks
+    while result.IsNone && not blocks.IsEmpty do
+        match blocks with
+        | Table table :: blockTail ->
+            let mutable rowIndex = 0
+            let mutable rows = table.Rows
+            while result.IsNone && not rows.IsEmpty do
+                match rows with
+                | row :: rowTail ->
+                    let mutable colIndex = 0
+                    let mutable cells = row.Cells
+                    while result.IsNone && not cells.IsEmpty do
+                        match cells with
+                        | cell :: cellTail ->
+                            let mutable content = cell.Content
+                            while result.IsNone && not content.IsEmpty do
+                                match content with
+                                | para :: paraTail ->
+                                    if para.Id = paragraphId then
+                                        result <- Some (table.Id, rowIndex, colIndex)
+                                    content <- paraTail
+                                | [] -> ()
+                            colIndex <- colIndex + 1
+                            cells <- cellTail
+                        | [] -> ()
+                    rowIndex <- rowIndex + 1
+                    rows <- rowTail
+                | [] -> ()
+            blocks <- blockTail
+        | _ :: blockTail ->
+            blocks <- blockTail
+        | [] -> ()
+    result
+
+type private CurrentTableCellCache = {
+    SourceBlocks: Block list
+    Entries: Dictionary<BlockId, CurrentTableCellCacheEntry>
+    SourceTableParagraphCount: int
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+}
+
+and private CurrentTableCellCacheEntry = {
+    Result: (BlockId * int * int) option
+}
+
+let mutable private currentTableCellCache: CurrentTableCellCache list = []
+let private currentTableCellCacheMaxSources = 64
+let private currentTableCellCacheMaxTotalTableParagraphs = 200000
+let private currentTableCellCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private currentTableCellCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+let private currentTableCellCacheBuildEntryLimit = 32768
+
+let private currentTableCellCacheMatches blocks (cached: CurrentTableCellCache) =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private trimCurrentTableCellCache caches =
+    let rec loop remaining kept count totalTableParagraphs totalSourceParagraphs totalSourceTextChars =
+        match remaining with
+        | [] -> List.rev kept
+        | cached :: rest ->
+            let tableParagraphCount = max 1 cached.SourceTableParagraphCount
+            let sourceParagraphCount = max 1 cached.SourceParagraphCount
+            let sourceTextCharCount = max 1 cached.SourceTextCharCount
+            let nextTotalTableParagraphs = totalTableParagraphs + tableParagraphCount
+            let nextTotalSourceParagraphs = totalSourceParagraphs + sourceParagraphCount
+            let nextTotalSourceTextChars = totalSourceTextChars + sourceTextCharCount
+            if count < currentTableCellCacheMaxSources
+               && nextTotalTableParagraphs <= currentTableCellCacheMaxTotalTableParagraphs
+               && nextTotalSourceParagraphs <= currentTableCellCacheMaxTotalSourceParagraphs
+               && nextTotalSourceTextChars <= currentTableCellCacheMaxTotalSourceTextChars then
+                loop
+                    rest
+                    (cached :: kept)
+                    (count + 1)
+                    nextTotalTableParagraphs
+                    nextTotalSourceParagraphs
+                    nextTotalSourceTextChars
+            else
+                loop rest kept count totalTableParagraphs totalSourceParagraphs totalSourceTextChars
+    loop caches [] 0 0 0 0
+
+let private rememberCurrentTableCellCache cached =
+    currentTableCellCache <-
+        cached
+        :: (currentTableCellCache |> List.filter (currentTableCellCacheMatches cached.SourceBlocks >> not))
+        |> trimCurrentTableCellCache
+
+let private countTableCellParagraphs blocks =
+    let mutable count = 0
+    for block in blocks do
+        match block with
         | Table table ->
-            table.Rows
-            |> List.mapi (fun rowIndex row -> rowIndex, row)
-            |> List.tryPick (fun (rowIndex, row) ->
-                row.Cells
-                |> List.mapi (fun colIndex cell -> colIndex, cell)
-                |> List.tryPick (fun (colIndex, cell) ->
-                    if cell.Content |> List.exists (fun para -> para.Id = paragraphId) then
-                        Some (table.Id, rowIndex, colIndex)
-                    else
-                        None))
-        | _ -> None)
+            count <- count + countTableParagraphs table
+        | _ -> ()
+    count
+
+let private currentTableCellSourceTableParagraphCountFor entryCount blocks =
+    if entryCount > currentTableCellCacheMaxTotalTableParagraphs then
+        currentTableCellCacheMaxTotalTableParagraphs + 1
+    else
+        countTableCellParagraphs blocks
+
+let private currentTableCellSourceParagraphCountFor sourceTableParagraphCount blocks =
+    if sourceTableParagraphCount > currentTableCellCacheMaxTotalTableParagraphs then
+        currentTableCellCacheMaxTotalSourceParagraphs + 1
+    else
+        countSourceParagraphs blocks
+
+let private currentTableCellSourceTextCharCountFor sourceTableParagraphCount sourceParagraphCount blocks =
+    if sourceTableParagraphCount > currentTableCellCacheMaxTotalTableParagraphs
+       || sourceParagraphCount > currentTableCellCacheMaxTotalSourceParagraphs then
+        currentTableCellCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            currentTableCellCacheMaxTotalSourceParagraphs
+            sourceParagraphCount
+            blocks
+
+let private addCurrentTableCellEntry (entries: Dictionary<BlockId, CurrentTableCellCacheEntry>) tableId rowIndex colIndex cell =
+    for paragraph in cell.Content do
+        if not (entries.ContainsKey paragraph.Id) then
+            entries.[paragraph.Id] <- { Result = Some (tableId, rowIndex, colIndex) }
+
+let private buildCurrentTableCellCache (doc: Document) =
+    let entries = Dictionary<BlockId, CurrentTableCellCacheEntry>()
+    let mutable countedTableParagraphs = 0
+    let mutable countedTableParagraphsExact = true
+    let sourceTableParagraphLimit = sourceParagraphCountCacheLimit
+    let sourceTableVisitedItemLimit = sourceStructureVisitedItemLimit sourceTableParagraphLimit
+    for block in doc.Blocks do
+        match block with
+        | Table table ->
+            let mutable tableParagraphCount = 0
+            let mutable tableVisitedItems = 1
+            let mutable rowIndex = 0
+            for row in table.Rows do
+                tableVisitedItems <- tableVisitedItems + 1
+                let mutable colIndex = 0
+                for cell in row.Cells do
+                    tableVisitedItems <- tableVisitedItems + 1
+                    if not cell.NestedTables.IsEmpty then
+                        countedTableParagraphsExact <- false
+                    tableParagraphCount <- tableParagraphCount + cell.Content.Length
+                    addCurrentTableCellEntry entries table.Id rowIndex colIndex cell
+                    colIndex <- colIndex + 1
+                rowIndex <- rowIndex + 1
+            let tableCount =
+                if tableVisitedItems > sourceTableVisitedItemLimit
+                   || sourceStructureOverwhelmsParagraphs sourceTableParagraphLimit tableParagraphCount tableVisitedItems then
+                    sourceTableParagraphLimit + 1
+                else
+                    min tableParagraphCount (sourceTableParagraphLimit + 1)
+            countedTableParagraphs <- countedTableParagraphs + tableCount
+        | _ -> ()
+    let sourceTableParagraphCount =
+        if entries.Count > currentTableCellCacheMaxTotalTableParagraphs then
+            currentTableCellCacheMaxTotalTableParagraphs + 1
+        elif countedTableParagraphsExact then
+            countedTableParagraphs
+        else
+            currentTableCellSourceTableParagraphCountFor entries.Count doc.Blocks
+    let sourceParagraphCount = currentTableCellSourceParagraphCountFor sourceTableParagraphCount doc.Blocks
+    {
+        SourceBlocks = doc.Blocks
+        Entries = entries
+        SourceTableParagraphCount = sourceTableParagraphCount
+        SourceParagraphCount = sourceParagraphCount
+        SourceTextCharCount = currentTableCellSourceTextCharCountFor sourceTableParagraphCount sourceParagraphCount doc.Blocks
+    }
+
+let private currentTableCellLookup (doc: Document) =
+    match currentTableCellCache |> List.tryFind (currentTableCellCacheMatches doc.Blocks) with
+    | Some cached ->
+        cached
+    | None ->
+        let cached = buildCurrentTableCellCache doc
+        rememberCurrentTableCellCache cached
+        cached
+
+let private tryFindCachedCurrentTableCell blocks blockId =
+    match currentTableCellCache |> List.tryFind (currentTableCellCacheMatches blocks) with
+    | Some cached ->
+        let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
+        if cached.Entries.TryGetValue(blockId, &entry) then entry.Result else None
+    | None -> None
+
+let private countCurrentTableCellEntriesWithLimit limit (table: TableBlock) =
+    let mutable count = 0
+    let mutable rows = table.Rows
+    while count <= limit && not rows.IsEmpty do
+        let mutable cells = rows.Head.Cells
+        while count <= limit && not cells.IsEmpty do
+            let mutable paragraphs = cells.Head.Content
+            while count <= limit && not paragraphs.IsEmpty do
+                count <- count + 1
+                paragraphs <- paragraphs.Tail
+            cells <- cells.Tail
+        rows <- rows.Tail
+    count
+
+let private shouldBuildCurrentTableCellCacheForSingleTable table =
+    countCurrentTableCellEntriesWithLimit (currentTableCellCacheBuildEntryLimit + 1) table
+    <= currentTableCellCacheBuildEntryLimit
+
+let private countCurrentTableCellEntriesInBlocksWithLimit limit (blocks: Block list) =
+    let mutable count = 0
+    let mutable remaining = blocks
+    while count <= limit && not remaining.IsEmpty do
+        match remaining.Head with
+        | Table table ->
+            count <- count + countCurrentTableCellEntriesWithLimit (limit - count) table
+        | _ -> ()
+        remaining <- remaining.Tail
+    count
+
+let private shouldBuildCurrentTableCellCacheForBlocks blocks =
+    countCurrentTableCellEntriesInBlocksWithLimit (currentTableCellCacheBuildEntryLimit + 1) blocks
+    <= currentTableCellCacheBuildEntryLimit
+
+let private tryFindCurrentTableCellUntil doc blockId =
+    let tryCached () =
+        tryFindCachedCurrentTableCell doc.Blocks blockId
+    let scan () =
+        let mutable result = None
+        let mutable blocks = doc.Blocks
+        while result.IsNone && not blocks.IsEmpty do
+            match blocks with
+            | Table table :: tail ->
+                let mutable rowIndex = 0
+                let mutable rows = table.Rows
+                while result.IsNone && not rows.IsEmpty do
+                    match rows with
+                    | row :: rowTail ->
+                        let mutable colIndex = 0
+                        let mutable cells = row.Cells
+                        while result.IsNone && not cells.IsEmpty do
+                            match cells with
+                            | cell :: cellTail ->
+                                if cell.Content |> List.exists (fun para -> para.Id = blockId) then
+                                    result <- Some (table.Id, rowIndex, colIndex)
+                                colIndex <- colIndex + 1
+                                cells <- cellTail
+                            | [] -> ()
+                        rowIndex <- rowIndex + 1
+                        rows <- rowTail
+                    | [] -> ()
+                blocks <- tail
+            | _ :: tail ->
+                blocks <- tail
+            | [] -> ()
+        result
+    match tryCached () with
+    | Some result -> Some result
+    | None -> scan ()
 
 let private updateTable (doc: Document) tableId update =
-    { doc with
-        Blocks =
-            doc.Blocks
-            |> List.map (function
-                | Table table when table.Id = tableId -> Table (update table)
-                | block -> block) }
+    match tryFindTopBlockWithIndexUntil doc tableId with
+    | Some (Table table, tableIndex) ->
+        let nextTable = update table
+        if obj.ReferenceEquals(nextTable, table) || nextTable = table then
+            doc
+        else
+            { doc with Blocks = replaceTopLevelBlockAtIndex tableIndex (Table nextTable) doc.Blocks }
+    | _ ->
+        doc
+
+let private updateTableCell rowIndex colIndex updateCell (table: TableBlock) =
+    let rowPrefix = ResizeArray<TableRow>(max 0 rowIndex)
+    let rec updateRowAt rowPosition rows =
+        match rows with
+        | [] -> None
+        | row :: tail when rowPosition = rowIndex ->
+            let cellPrefix = ResizeArray<TableCell>(max 0 colIndex)
+            let rec updateCellAt cellPosition cells =
+                match cells with
+                | [] -> None
+                | cell :: cellTail when cellPosition = colIndex ->
+                    let nextCell = updateCell cell
+                    if nextCell = cell then
+                        None
+                    else
+                        Some (
+                            prependResizeArray
+                                rowPrefix
+                                ({ row with Cells = prependResizeArray cellPrefix (nextCell :: cellTail) } :: tail))
+                | cell :: cellTail ->
+                    cellPrefix.Add cell
+                    updateCellAt (cellPosition + 1) cellTail
+            updateCellAt 0 row.Cells
+        | row :: tail ->
+            rowPrefix.Add row
+            updateRowAt (rowPosition + 1) tail
+    match updateRowAt 0 table.Rows with
+    | Some rows -> { table with Rows = rows }
+    | None -> table
 
 let private currentTableCell doc =
     match doc.Selection with
-    | Some sel -> tryFindTableCellByParagraph doc sel.Focus.BlockId
+    | Some sel ->
+        let cachedOrBuild shouldBuild =
+            match tryFindCachedCurrentTableCell doc.Blocks sel.Focus.BlockId with
+            | Some result -> Some result
+            | None ->
+                if shouldBuild () then
+                    let cached = currentTableCellLookup doc
+                    let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
+                    if cached.Entries.TryGetValue(sel.Focus.BlockId, &entry) then
+                        entry.Result
+                    else
+                        None
+                else
+                    tryFindCurrentTableCellUntil doc sel.Focus.BlockId
+        match doc.Blocks with
+        | [ Table table ] ->
+            cachedOrBuild (fun () -> shouldBuildCurrentTableCellCacheForSingleTable table)
+        | _ ->
+            cachedOrBuild (fun () -> shouldBuildCurrentTableCellCacheForBlocks doc.Blocks)
     | None -> None
 
-let private tryGetTableCellParagraph doc tableId rowIndex colIndex =
-    doc.Blocks
-    |> List.tryPick (function
-        | Table table when table.Id = tableId ->
-            table.Rows
-            |> List.tryItem rowIndex
-            |> Option.bind (fun row -> row.Cells |> List.tryItem colIndex)
-            |> Option.bind (fun cell -> cell.Content |> List.tryHead)
-        | _ -> None)
+let private tryGetTableCellParagraphInRow colIndex (row: TableRow) =
+    row.Cells
+    |> List.tryItem colIndex
+    |> Option.bind (fun cell -> cell.Content |> List.tryHead)
 
 /// Find block index by ID
 let findBlockIndex doc blockId =
-    doc.Blocks
-    |> List.tryFindIndex (fun b -> getBlockId b = blockId)
+    let lookup = blockLookup doc.Blocks
+    let mutable entry = Unchecked.defaultof<BlockLookupEntry>
+    if lookup.EntriesById.TryGetValue(blockId, &entry) then Some entry.TopIndex else None
+
+type private NormalizedRangeCacheKey = {
+    AnchorBlockId: BlockId
+    AnchorOffset: int
+    FocusBlockId: BlockId
+    FocusOffset: int
+}
+
+type private NormalizedRangeCacheEntry = {
+    StartPos: Position
+    EndPos: Position
+    BlockIds: BlockId list
+    BlockIdCount: int
+}
+
+type private NormalizedRangeCache = {
+    SourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    Entries: Dictionary<NormalizedRangeCacheKey, NormalizedRangeCacheEntry>
+    Order: Queue<NormalizedRangeCacheKey>
+    mutable TotalBlockIds: int
+}
+
+let mutable private normalizedRangeCache: NormalizedRangeCache list = []
+let private normalizedRangeCacheMaxEntries = 64
+let private normalizedRangeCacheMaxSources = 64
+let private normalizedRangeCacheMaxTotalBlockIds = 200000
+let private normalizedRangeCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private normalizedRangeCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private normalizedRangeCacheMatches blocks (cached: NormalizedRangeCache) =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private normalizedRangeCacheRetainable (cached: NormalizedRangeCache) =
+    cached.Entries.Count > 0
+    && cached.Entries.Count <= normalizedRangeCacheMaxEntries
+    && cached.TotalBlockIds <= normalizedRangeCacheMaxTotalBlockIds
+    && cached.SourceParagraphCount <= normalizedRangeCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= normalizedRangeCacheMaxTotalSourceTextChars
+
+let private rememberNormalizedRangeCache cached =
+    if not (normalizedRangeCacheRetainable cached) then
+        normalizedRangeCache <- normalizedRangeCache |> List.filter (normalizedRangeCacheMatches cached.SourceBlocks >> not)
+    else
+        let mutable keptCount = 1
+        let mutable keptBlockIds = max 1 cached.TotalBlockIds
+        let mutable keptBlocks = max 1 cached.SourceParagraphCount
+        let mutable keptSourceTextChars = max 1 cached.SourceTextCharCount
+        let retained =
+            normalizedRangeCache
+            |> List.filter (normalizedRangeCacheMatches cached.SourceBlocks >> not)
+            |> List.choose (fun candidate ->
+                let candidateBlockIds = max 1 candidate.TotalBlockIds
+                let candidateBlocks = max 1 candidate.SourceParagraphCount
+                let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                if normalizedRangeCacheRetainable candidate
+                   && keptCount < normalizedRangeCacheMaxSources
+                   && keptBlockIds + candidateBlockIds <= normalizedRangeCacheMaxTotalBlockIds
+                   && keptBlocks + candidateBlocks <= normalizedRangeCacheMaxTotalSourceParagraphs
+                   && keptSourceTextChars + candidateSourceTextChars <= normalizedRangeCacheMaxTotalSourceTextChars then
+                    keptCount <- keptCount + 1
+                    keptBlockIds <- keptBlockIds + candidateBlockIds
+                    keptBlocks <- keptBlocks + candidateBlocks
+                    keptSourceTextChars <- keptSourceTextChars + candidateSourceTextChars
+                    Some candidate
+                else
+                    None)
+        normalizedRangeCache <- cached :: retained
+
+let private normalizedRangeKey (sel: Selection) = {
+    AnchorBlockId = sel.Anchor.BlockId
+    AnchorOffset = sel.Anchor.Offset
+    FocusBlockId = sel.Focus.BlockId
+    FocusOffset = sel.Focus.Offset
+}
+
+let private normalizedRangeSourceParagraphCountFor blockIdCount blocks =
+    if blockIdCount > normalizedRangeCacheMaxTotalBlockIds then
+        normalizedRangeCacheMaxTotalSourceParagraphs + 1
+    else
+        countSourceParagraphs blocks
+
+let private normalizedRangeSourceTextCharCountFor blockIdCount sourceParagraphCount blocks =
+    if blockIdCount > normalizedRangeCacheMaxTotalBlockIds
+       || sourceParagraphCount > normalizedRangeCacheMaxTotalSourceParagraphs then
+        normalizedRangeCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            normalizedRangeCacheMaxTotalSourceParagraphs
+            sourceParagraphCount
+            blocks
+
+let private removeNormalizedRangeEntry key (cache: NormalizedRangeCache) =
+    let mutable entry = Unchecked.defaultof<NormalizedRangeCacheEntry>
+    if cache.Entries.TryGetValue(key, &entry) then
+        cache.TotalBlockIds <- cache.TotalBlockIds - entry.BlockIdCount
+        cache.Entries.Remove key |> ignore
+
+let private addNormalizedRangeEntry key entry (cache: NormalizedRangeCache) =
+    if entry.BlockIdCount > normalizedRangeCacheMaxTotalBlockIds then
+        removeNormalizedRangeEntry key cache
+    else
+        if not (cache.Entries.ContainsKey key) then
+            cache.Order.Enqueue key
+            cache.TotalBlockIds <- cache.TotalBlockIds + entry.BlockIdCount
+        else
+            let mutable oldEntry = Unchecked.defaultof<NormalizedRangeCacheEntry>
+            if cache.Entries.TryGetValue(key, &oldEntry) then
+                cache.TotalBlockIds <- cache.TotalBlockIds - oldEntry.BlockIdCount + entry.BlockIdCount
+        cache.Entries.[key] <- entry
+        while (cache.Entries.Count > normalizedRangeCacheMaxEntries
+               || cache.TotalBlockIds > normalizedRangeCacheMaxTotalBlockIds)
+              && cache.Order.Count > 0 do
+            let oldest = cache.Order.Dequeue()
+            if oldest <> key then
+                removeNormalizedRangeEntry oldest cache
+        if cache.Entries.Count > normalizedRangeCacheMaxEntries
+           || cache.TotalBlockIds > normalizedRangeCacheMaxTotalBlockIds then
+            let current = cache.Entries.[key]
+            cache.Entries.Clear()
+            cache.Order.Clear()
+            cache.Order.Enqueue key
+            cache.Entries.[key] <- current
+            cache.TotalBlockIds <- current.BlockIdCount
+
+let private cachedNormalizedRange doc sel =
+    match normalizedRangeCache |> List.tryFind (normalizedRangeCacheMatches doc.Blocks) with
+    | Some cached when normalizedRangeCacheRetainable cached ->
+        let key = normalizedRangeKey sel
+        let mutable entry = Unchecked.defaultof<NormalizedRangeCacheEntry>
+        if cached.Entries.TryGetValue(key, &entry) then
+            Some (entry.StartPos, entry.EndPos, entry.BlockIds)
+        else
+            None
+    | Some cached ->
+        rememberNormalizedRangeCache cached
+        None
+    | None -> None
+
+let private rememberNormalizedRange doc sel startPos endPos blockIds =
+    let key = normalizedRangeKey sel
+    let entry = {
+        StartPos = startPos
+        EndPos = endPos
+        BlockIds = blockIds
+        BlockIdCount = blockIds.Length
+    }
+    let cache =
+        match normalizedRangeCache |> List.tryFind (normalizedRangeCacheMatches doc.Blocks) with
+        | Some cached -> cached
+        | None ->
+            let sourceParagraphCount = normalizedRangeSourceParagraphCountFor entry.BlockIdCount doc.Blocks
+            {
+                SourceBlocks = doc.Blocks
+                SourceParagraphCount = sourceParagraphCount
+                SourceTextCharCount = normalizedRangeSourceTextCharCountFor entry.BlockIdCount sourceParagraphCount doc.Blocks
+                Entries = Dictionary<NormalizedRangeCacheKey, NormalizedRangeCacheEntry>()
+                Order = Queue<NormalizedRangeCacheKey>()
+                TotalBlockIds = 0
+            }
+    addNormalizedRangeEntry key entry cache
+    rememberNormalizedRangeCache cache
 
 /// Get normalized range with block IDs for multi-block selection
 let getNormalizedRange (sel: Selection) (doc: Document) =
-    let paragraphs = editableParagraphsInOrder doc
-    let anchorIdx = paragraphs |> List.tryFindIndex (fun p -> p.Id = sel.Anchor.BlockId)
-    let focusIdx = paragraphs |> List.tryFindIndex (fun p -> p.Id = sel.Focus.BlockId)
-
-    match anchorIdx, focusIdx with
-    | Some aIdx, Some fIdx ->
-        // Determine selection direction
-        let (startIdx, startPos, endIdx, endPos) =
-            if aIdx < fIdx then
-                (aIdx, sel.Anchor, fIdx, sel.Focus)
-            elif aIdx > fIdx then
-                (fIdx, sel.Focus, aIdx, sel.Anchor)
+    match cachedNormalizedRange doc sel with
+    | Some cached -> cached
+    | None ->
+        let result =
+            let ordered = orderedEditableParagraphs doc
+            let mutable anchorIndex = 0
+            let mutable focusIndex = 0
+            if ordered.OrderedIndexById.TryGetValue(sel.Anchor.BlockId, &anchorIndex)
+               && ordered.OrderedIndexById.TryGetValue(sel.Focus.BlockId, &focusIndex) then
+                let anchorFirst = anchorIndex <= focusIndex
+                let startPos, endPos, startIndex, endIndex =
+                    if sel.Anchor.BlockId = sel.Focus.BlockId then
+                        if sel.Anchor.Offset <= sel.Focus.Offset then
+                            sel.Anchor, sel.Focus, anchorIndex, focusIndex
+                        else
+                            sel.Focus, sel.Anchor, focusIndex, anchorIndex
+                    elif anchorFirst then
+                        sel.Anchor, sel.Focus, anchorIndex, focusIndex
+                    else
+                        sel.Focus, sel.Anchor, focusIndex, anchorIndex
+                let blockIds = ResizeArray<BlockId>(endIndex - startIndex + 1)
+                for i = startIndex to endIndex do
+                    blockIds.Add ordered.OrderedParagraphs.[i].Id
+                startPos, endPos, resizeArrayToList blockIds
             else
-                // Same block, compare offsets
-                if sel.Anchor.Offset <= sel.Focus.Offset then
-                    (aIdx, sel.Anchor, fIdx, sel.Focus)
+                let blockIds = ResizeArray<BlockId>()
+                let mutable collecting = false
+                let mutable foundBoth = false
+                let mutable foundAnchor = false
+                let mutable foundFocus = false
+                let mutable anchorFirst = false
+
+                iterEditableParagraphsUntil doc (fun para ->
+                    let isAnchor = para.Id = sel.Anchor.BlockId
+                    let isFocus = para.Id = sel.Focus.BlockId
+                    if isAnchor || isFocus then
+                        if not collecting then
+                            collecting <- true
+                            anchorFirst <- isAnchor
+                        blockIds.Add para.Id
+                        foundAnchor <- foundAnchor || isAnchor
+                        foundFocus <- foundFocus || isFocus
+                        foundBoth <- foundAnchor && foundFocus
+                    elif collecting then
+                        blockIds.Add para.Id
+                    not foundBoth)
+
+                if foundAnchor && foundFocus then
+                    let startPos, endPos =
+                        if sel.Anchor.BlockId = sel.Focus.BlockId then
+                            if sel.Anchor.Offset <= sel.Focus.Offset then sel.Anchor, sel.Focus
+                            else sel.Focus, sel.Anchor
+                        elif anchorFirst then
+                            sel.Anchor, sel.Focus
+                        else
+                            sel.Focus, sel.Anchor
+                    (startPos, endPos, resizeArrayToList blockIds)
                 else
-                    (fIdx, sel.Focus, aIdx, sel.Anchor)
+                    // Fallback if blocks not found
+                    (sel.Anchor, sel.Focus, [])
+        let startPos, endPos, blockIds = result
+        rememberNormalizedRange doc sel startPos endPos blockIds
+        result
 
-        let blockIds =
-            paragraphs
-            |> List.mapi (fun i p -> (i, p))
-            |> List.filter (fun (i, _) -> i >= startIdx && i <= endIdx)
-            |> List.map (fun (_, p) -> p.Id)
+let private selectedParagraphIds doc includeCollapsed =
+    match doc.Selection with
+    | None -> []
+    | Some sel when sel.IsCollapsed ->
+        if includeCollapsed then [sel.Focus.BlockId] else []
+    | Some sel ->
+        let _, _, ids = getNormalizedRange sel doc
+        ids
 
-        (startPos, endPos, blockIds)
-    | _ ->
-        // Fallback if blocks not found
-        (sel.Anchor, sel.Focus, [])
+let private tryUpdateTopLevelSelectedParagraphs
+    (doc: Document)
+    (sel: Selection)
+    (updateParagraph: ParagraphBlock -> ParagraphBlock) =
+    if sel.Anchor.BlockId = sel.Focus.BlockId then
+        ValueNone
+    else
+        let blocks = ResizeArray<Block>()
+        let mutable changed = false
+        let mutable remaining = doc.Blocks
+        let mutable collecting = false
+        let mutable valid = true
+        let mutable foundEnd = false
+        let mutable endTarget = ""
+
+        let addUpdatedBlock
+            (block: Block)
+            (para: ParagraphBlock)
+            (wrap: ParagraphBlock -> Block) =
+            let nextPara = updateParagraph para
+            if nextPara = para then
+                blocks.Add block
+            else
+                changed <- true
+                blocks.Add(wrap nextPara)
+
+        let startCollecting (block: Block) (para: ParagraphBlock) (wrap: ParagraphBlock -> Block) =
+            let anchorMatch = para.Id = sel.Anchor.BlockId
+            let focusMatch = para.Id = sel.Focus.BlockId
+            if anchorMatch || focusMatch then
+                collecting <- true
+                endTarget <- if anchorMatch then sel.Focus.BlockId else sel.Anchor.BlockId
+                addUpdatedBlock block para wrap
+            else
+                blocks.Add block
+
+        let continueCollecting (block: Block) (para: ParagraphBlock) (wrap: ParagraphBlock -> Block) =
+            let isLast = para.Id = endTarget
+            addUpdatedBlock block para wrap
+            if isLast then
+                foundEnd <- true
+
+        while valid && not foundEnd && not remaining.IsEmpty do
+            match remaining with
+            | block :: tail ->
+                if collecting then
+                    match block with
+                    | Paragraph para ->
+                        continueCollecting block para Paragraph
+                    | Heading (level, para) ->
+                        continueCollecting block para (fun para -> Heading (level, para))
+                    | Table _
+                    | TextBox _ ->
+                        valid <- false
+                else
+                    match block with
+                    | Paragraph para ->
+                        startCollecting block para Paragraph
+                    | Heading (level, para) ->
+                        startCollecting block para (fun para -> Heading (level, para))
+                    | Table _
+                    | TextBox _ ->
+                        blocks.Add block
+                remaining <- tail
+            | [] -> ()
+
+        if valid && foundEnd then
+            if changed then
+                ValueSome { doc with Blocks = prependResizeArray blocks remaining }
+            else
+                ValueSome doc
+        else
+            ValueNone
+
+let private tryUpdateTopLevelParagraphById
+    (doc: Document)
+    paragraphId
+    (updateParagraph: ParagraphBlock -> ParagraphBlock) =
+    let prefix = ResizeArray<Block>()
+    let mutable remaining = doc.Blocks
+    let mutable result: Document voption = ValueNone
+
+    while result.IsNone && not remaining.IsEmpty do
+        match remaining with
+        | block :: tail ->
+            match block with
+            | Paragraph para when para.Id = paragraphId ->
+                let nextPara = updateParagraph para
+                result <-
+                    if nextPara = para then
+                        ValueSome doc
+                    else
+                        ValueSome { doc with Blocks = prependResizeArray prefix (Paragraph nextPara :: tail) }
+            | Heading (level, para) when para.Id = paragraphId ->
+                let nextPara = updateParagraph para
+                result <-
+                    if nextPara = para then
+                        ValueSome doc
+                    else
+                        ValueSome { doc with Blocks = prependResizeArray prefix (Heading (level, nextPara) :: tail) }
+            | _ ->
+                prefix.Add block
+                remaining <- tail
+        | [] -> ()
+
+    result
+
+let private updateSelectedParagraphs includeCollapsed updateParagraph doc =
+    let genericUpdate () =
+        let blockIds = selectedParagraphIds doc includeCollapsed
+        if blockIds.IsEmpty then
+            doc
+        else
+            let selected = HashSet<BlockId>()
+            for blockId in blockIds do
+                selected.Add blockId |> ignore
+            let replacements = Dictionary<BlockId, ParagraphBlock>()
+            let processParagraph (para: ParagraphBlock) =
+                if selected.Contains para.Id then
+                    let nextPara = updateParagraph para
+                    if nextPara <> para then
+                        replacements.[para.Id] <- nextPara
+                    true
+                else
+                    false
+            if selected.Count = blockIds.Length then
+                let mutable seen = 0
+                iterEditableParagraphsUntil doc (fun para ->
+                    if processParagraph para then
+                        seen <- seen + 1
+                    seen < selected.Count)
+            else
+                iterEditableParagraphs doc (fun para -> processParagraph para |> ignore)
+            replaceParagraphs doc replacements
+
+    match doc.Selection with
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId && (includeCollapsed || not sel.IsCollapsed) ->
+        match tryUpdateTopLevelParagraphById doc sel.Focus.BlockId updateParagraph with
+        | ValueSome doc -> doc
+        | ValueNone -> genericUpdate ()
+    | Some sel when not sel.IsCollapsed && sel.Anchor.BlockId <> sel.Focus.BlockId ->
+        match tryUpdateTopLevelSelectedParagraphs doc sel updateParagraph with
+        | ValueSome doc -> doc
+        | ValueNone -> genericUpdate ()
+    | _ -> genericUpdate ()
+
+let private updateSelectedParagraphMetadata includeCollapsed updateMetadata doc =
+    updateSelectedParagraphs includeCollapsed (fun para ->
+        let nextMetadata = updateMetadata para.Metadata
+        if nextMetadata = para.Metadata then
+            para
+        else
+            { para with Metadata = nextMetadata }) doc
 
 /// Split block at cursor, creating two blocks
 let splitBlock doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
+        match tryFindTopBlockWithIndexUntil doc sel.Focus.BlockId with
         | None -> doc
-        | Some block ->
+        | Some (block, idx) ->
             let para = getParagraph block
             let offset = sel.Focus.Offset
 
-            // Split buffer at offset
-            let beforeText = TextBuffer.slice 0 offset para.Buffer
-            let afterText = TextBuffer.slice offset (TextBuffer.length para.Buffer - offset) para.Buffer
-
-            // Create two buffers
-            let beforeBuffer = TextBuffer.ofString beforeText
-            let afterBuffer = TextBuffer.ofString afterText
+            // Split buffer at offset while preserving run metadata.
+            let beforeBuffer = TextBuffer.sliceBuffer 0 offset para.Buffer
+            let afterBuffer = TextBuffer.sliceBuffer offset (TextBuffer.length para.Buffer - offset) para.Buffer
 
             // Create new block for the second part (carry over metadata)
             let newBlockId = nextBlockId()
@@ -988,199 +4372,426 @@ let splitBlock doc =
                 | Table t -> Table t
                 | TextBox t -> TextBox t
 
-            // Insert new block after current block
-            match findBlockIndex doc para.Id with
-            | None -> doc
-            | Some idx ->
-                let newBlocks =
-                    doc.Blocks
-                    |> List.mapi (fun i b ->
-                        if i = idx then [updatedBlock; newBlock]
-                        else [b])
-                    |> List.concat
-
-                // Move cursor to start of new block
-                let newSel = {
-                    Anchor = { BlockId = newBlockId; Offset = 0 }
-                    Focus = { BlockId = newBlockId; Offset = 0 }
-                }
-                { doc with Blocks = newBlocks; Selection = Some newSel }
+            // Move cursor to start of new block
+            let newSel = {
+                Anchor = { BlockId = newBlockId; Offset = 0 }
+                Focus = { BlockId = newBlockId; Offset = 0 }
+            }
+            { doc with Blocks = replaceBlockAndInsertAfterIndex idx updatedBlock newBlock doc.Blocks; Selection = Some newSel }
 
 /// Merge block with previous block (for Backspace at start)
-let mergeWithPrevious doc blockId =
-    match findBlockIndex doc blockId with
-    | None -> doc
-    | Some idx when idx = 0 -> doc  // First block, can't merge
-    | Some idx ->
-        match findBlock doc blockId with
-        | None -> doc
-        | Some currentBlock ->
-            let currentPara = getParagraph currentBlock
-            let prevBlock = doc.Blocks.[idx - 1]
-            let prevPara = getParagraph prevBlock
-
-            // Merge buffers: previous + current
-            let prevText = TextBuffer.toString prevPara.Buffer
-            let currentText = TextBuffer.toString currentPara.Buffer
-            let mergedBuffer = TextBuffer.ofString (prevText + currentText)
-
-            // Update previous block with merged buffer
-            let mergedPara = { prevPara with Buffer = mergedBuffer }
-            let mergedBlock =
-                match prevBlock with
-                | Paragraph _ -> Paragraph mergedPara
-                | Heading (level, _) -> Heading (level, mergedPara)
-                | Table t -> Table t
-                | TextBox t -> TextBox t
-
-            // Remove current block
-            let newBlocks =
-                doc.Blocks
-                |> List.mapi (fun i b ->
-                    if i = idx - 1 then Some mergedBlock
-                    elif i = idx then None
-                    else Some b)
-                |> List.choose id
-
-            // Move cursor to junction point
-            let newSel = {
-                Anchor = { BlockId = prevPara.Id; Offset = prevText.Length }
-                Focus = { BlockId = prevPara.Id; Offset = prevText.Length }
-            }
-            { doc with Blocks = newBlocks; Selection = Some newSel }
+let mergeWithPrevious (doc: Document) blockId =
+    let prefix = ResizeArray<Block>()
+    let rec loop hasPrevious previous remaining =
+        match remaining with
+        | [] -> doc
+        | block :: tail when getBlockId block = blockId ->
+            if not hasPrevious then
+                doc
+            else
+                match tryGetParagraph previous, tryGetParagraph block with
+                | Some prevPara, Some currentPara ->
+                    let prevLen = TextBuffer.length prevPara.Buffer
+                    let mergedBuffer = TextBuffer.append prevPara.Buffer currentPara.Buffer
+                    let mergedPara = { prevPara with Buffer = mergedBuffer }
+                    let mergedBlock =
+                        match previous with
+                        | Paragraph _ -> Paragraph mergedPara
+                        | Heading (level, _) -> Heading (level, mergedPara)
+                        | Table t -> Table t
+                        | TextBox t -> TextBox t
+                    let selection =
+                        Some {
+                            Anchor = { BlockId = prevPara.Id; Offset = prevLen }
+                            Focus = { BlockId = prevPara.Id; Offset = prevLen }
+                        }
+                    { doc with Blocks = prependResizeArray prefix (mergedBlock :: tail); Selection = selection }
+                | _ -> doc
+        | block :: tail ->
+            if hasPrevious then
+                prefix.Add previous
+            loop true block tail
+    loop false Unchecked.defaultof<Block> doc.Blocks
 
 /// Merge block with next block (for Delete at end)
-let mergeWithNext doc blockId =
-    match findBlockIndex doc blockId with
-    | None -> doc
-    | Some idx when idx >= doc.Blocks.Length - 1 -> doc  // Last block, can't merge
-    | Some idx ->
-        match findBlock doc blockId with
-        | None -> doc
-        | Some currentBlock ->
-            let currentPara = getParagraph currentBlock
-            let nextBlock = doc.Blocks.[idx + 1]
-            let nextPara = getParagraph nextBlock
+let mergeWithNext (doc: Document) blockId =
+    let prefix = ResizeArray<Block>()
+    let rec loop remaining =
+        match remaining with
+        | block :: nextBlock :: tail when getBlockId block = blockId ->
+            match tryGetParagraph block, tryGetParagraph nextBlock with
+            | Some currentPara, Some nextPara ->
+                let mergedBuffer = TextBuffer.append currentPara.Buffer nextPara.Buffer
+                let mergedPara = { currentPara with Buffer = mergedBuffer }
+                let mergedBlock =
+                    match block with
+                    | Paragraph _ -> Paragraph mergedPara
+                    | Heading (level, _) -> Heading (level, mergedPara)
+                    | Table t -> Table t
+                    | TextBox t -> TextBox t
+                { doc with Blocks = prependResizeArray prefix (mergedBlock :: tail) }
+            | _ -> doc
+        | block :: tail ->
+            prefix.Add block
+            loop tail
+        | [] -> doc
+    loop doc.Blocks
 
-            // Merge buffers: current + next
-            let currentText = TextBuffer.toString currentPara.Buffer
-            let nextText = TextBuffer.toString nextPara.Buffer
-            let mergedBuffer = TextBuffer.ofString (currentText + nextText)
+let private tryNormalizeTopLevelSelectionRangeUntil (doc: Document) (sel: Selection) =
+    if sel.Anchor.BlockId = sel.Focus.BlockId then
+        None
+    else
+        let topLevelParagraphId = function
+            | Paragraph p
+            | Heading (_, p) -> Some p.Id
+            | Table _
+            | TextBox _ -> None
+        let ids = ResizeArray<BlockId>()
+        let mutable collecting = false
+        let mutable validTopLevelRange = true
+        let mutable foundAnchor = false
+        let mutable foundFocus = false
+        let mutable anchorFirst = false
+        let mutable firstBlock = Unchecked.defaultof<Block>
+        let mutable lastBlock = Unchecked.defaultof<Block>
+        let mutable hasFirstBlock = false
+        let mutable remaining = doc.Blocks
+        while validTopLevelRange && not (foundAnchor && foundFocus) && not remaining.IsEmpty do
+            match remaining with
+            | block :: tail ->
+                match topLevelParagraphId block with
+                | Some blockId ->
+                    let isAnchor = blockId = sel.Anchor.BlockId
+                    let isFocus = blockId = sel.Focus.BlockId
+                    if isAnchor || isFocus then
+                        if not collecting then
+                            collecting <- true
+                            anchorFirst <- isAnchor
+                            firstBlock <- block
+                            hasFirstBlock <- true
+                        lastBlock <- block
+                        ids.Add blockId
+                        foundAnchor <- foundAnchor || isAnchor
+                        foundFocus <- foundFocus || isFocus
+                    elif collecting then
+                        ids.Add blockId
+                | None ->
+                    if collecting then
+                        validTopLevelRange <- false
+                remaining <- tail
+            | [] -> ()
+        if validTopLevelRange && hasFirstBlock && foundAnchor && foundFocus then
+            let startPos, endPos =
+                if anchorFirst then sel.Anchor, sel.Focus else sel.Focus, sel.Anchor
+            Some (startPos, endPos, resizeArrayToList ids, firstBlock, lastBlock)
+        else
+            None
 
-            // Update current block with merged buffer
-            let mergedPara = { currentPara with Buffer = mergedBuffer }
+let private tryDeleteTopLevelSelectionRangeUntil (doc: Document) (sel: Selection) =
+    if sel.Anchor.BlockId = sel.Focus.BlockId then
+        ValueNone
+    else
+        let topLevelParagraphId = function
+            | Paragraph p
+            | Heading (_, p) -> ValueSome p.Id
+            | Table _
+            | TextBox _ -> ValueNone
+
+        let prefix = ResizeArray<Block>()
+
+        let buildResult startPos endPos firstBlock lastBlock afterLast =
+            let firstPara = getParagraph firstBlock
+            let lastPara = getParagraph lastBlock
+            let beforeBuffer = TextBuffer.sliceBuffer 0 startPos.Offset firstPara.Buffer
+            let lastBufferLen = TextBuffer.length lastPara.Buffer
+            let afterBuffer = TextBuffer.sliceBuffer endPos.Offset (lastBufferLen - endPos.Offset) lastPara.Buffer
+            let mergedBuffer = TextBuffer.append beforeBuffer afterBuffer
+            let mergedPara = { firstPara with Buffer = mergedBuffer }
             let mergedBlock =
-                match currentBlock with
+                match firstBlock with
                 | Paragraph _ -> Paragraph mergedPara
                 | Heading (level, _) -> Heading (level, mergedPara)
                 | Table t -> Table t
                 | TextBox t -> TextBox t
+            let offset = TextBuffer.length beforeBuffer
+            let selection =
+                Some {
+                    Anchor = { BlockId = firstPara.Id; Offset = offset }
+                    Focus = { BlockId = firstPara.Id; Offset = offset }
+                }
+            { doc with Blocks = prependResizeArray prefix (mergedBlock :: afterLast); Selection = selection }
 
-            // Remove next block
-            let newBlocks =
-                doc.Blocks
-                |> List.mapi (fun i b ->
-                    if i = idx then Some mergedBlock
-                    elif i = idx + 1 then None
-                    else Some b)
-                |> List.choose id
+        let rec findEnd anchorFirst firstBlock remaining =
+            let endTarget = if anchorFirst then sel.Focus.BlockId else sel.Anchor.BlockId
+            match remaining with
+            | [] -> ValueNone
+            | block :: tail ->
+                match topLevelParagraphId block with
+                | ValueSome blockId when blockId = endTarget ->
+                    let startPos, endPos =
+                        if anchorFirst then sel.Anchor, sel.Focus else sel.Focus, sel.Anchor
+                    ValueSome (buildResult startPos endPos firstBlock block tail)
+                | ValueSome _ ->
+                    findEnd anchorFirst firstBlock tail
+                | ValueNone ->
+                    ValueNone
 
-            // Keep cursor at current position
-            { doc with Blocks = newBlocks }
+        let rec findStart remaining =
+            match remaining with
+            | [] -> ValueNone
+            | block :: tail ->
+                match topLevelParagraphId block with
+                | ValueSome blockId when blockId = sel.Anchor.BlockId || blockId = sel.Focus.BlockId ->
+                    let anchorFirst = blockId = sel.Anchor.BlockId
+                    findEnd anchorFirst block tail
+                | _ ->
+                    prefix.Add block
+                    findStart tail
+
+        findStart doc.Blocks
 
 /// Delete selected text across blocks
 let deleteSelection doc =
     match doc.Selection with
     | None -> doc
     | Some sel when sel.IsCollapsed -> doc  // No selection to delete
-    | Some sel ->
-        let (startPos, endPos, blockIds) = getNormalizedRange sel doc
-
-        match blockIds with
-        | [] -> doc
-        | [singleBlock] when singleBlock = startPos.BlockId && singleBlock = endPos.BlockId ->
-            // Single block selection
-            match findParagraph doc singleBlock with
-            | None -> doc
-            | Some para ->
-                let len = endPos.Offset - startPos.Offset
-                let newBuffer = TextBuffer.delete startPos.Offset len para.Buffer
-                let newPara = { para with Buffer = newBuffer }
-                let newDoc = replaceParagraph doc para.Id newPara
-
-                // Move cursor to start of selection
-                let newSel = {
-                    Anchor = startPos
-                    Focus = startPos
-                }
-                { newDoc with Selection = Some newSel }
-        | _ ->
-            // Multi-block selection
-            // Keep text before selection start in first block
-            // Keep text after selection end in last block
-            // Delete middle blocks
-
-            if blockIds.IsEmpty then doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let startOffset = min sel.Anchor.Offset sel.Focus.Offset
+        let endOffset = max sel.Anchor.Offset sel.Focus.Offset
+        let deleteLen = endOffset - startOffset
+        if deleteLen <= 0 then
+            doc
+        else
+            let mutable changed = false
+            let updated =
+                updateParagraph doc sel.Anchor.BlockId (fun para ->
+                    changed <- true
+                    { para with Buffer = TextBuffer.delete startOffset deleteLen para.Buffer })
+            if changed then
+                let pos = { BlockId = sel.Anchor.BlockId; Offset = startOffset }
+                { updated with Selection = Some { Anchor = pos; Focus = pos } }
             else
-                let firstBlockId = List.head blockIds
-                let lastBlockId = List.last blockIds
+                doc
+    | Some sel ->
+        match tryDeleteTopLevelSelectionRangeUntil doc sel with
+        | ValueSome doc ->
+            doc
+        | ValueNone ->
+            let topLevelRange = tryNormalizeTopLevelSelectionRangeUntil doc sel
+            let (startPos, endPos, blockIds) =
+                match topLevelRange with
+                | Some (startPos, endPos, blockIds, _, _) -> startPos, endPos, blockIds
+                | None -> getNormalizedRange sel doc
 
-                match findBlock doc firstBlockId, findBlock doc lastBlockId with
-                | Some firstBlock, Some lastBlock ->
-                    let firstPara = getParagraph firstBlock
-                    let lastPara = getParagraph lastBlock
+            match blockIds with
+            | [] -> doc
+            | [singleBlock] when singleBlock = startPos.BlockId && singleBlock = endPos.BlockId ->
+                // Single block selection
+                match tryFindEditableParagraphUntil doc singleBlock with
+                | None -> doc
+                | Some para ->
+                    let len = endPos.Offset - startPos.Offset
+                    let newBuffer = TextBuffer.delete startPos.Offset len para.Buffer
+                    let newPara = { para with Buffer = newBuffer }
+                    let newDoc = replaceParagraph doc para.Id newPara
 
-                    // Get text before selection start
-                    let beforeText = TextBuffer.slice 0 startPos.Offset firstPara.Buffer
-
-                    // Get text after selection end
-                    let lastBufferLen = TextBuffer.length lastPara.Buffer
-                    let afterText = TextBuffer.slice endPos.Offset (lastBufferLen - endPos.Offset) lastPara.Buffer
-
-                    // Merge into single buffer
-                    let mergedBuffer = TextBuffer.ofString (beforeText + afterText)
-
-                    // Update first block with merged content
-                    let mergedPara = { firstPara with Buffer = mergedBuffer }
-                    let mergedBlock =
-                        match firstBlock with
-                        | Paragraph _ -> Paragraph mergedPara
-                        | Heading (level, _) -> Heading (level, mergedPara)
-                        | Table t -> Table t
-                        | TextBox t -> TextBox t
-
-                    // Remove all selected editable paragraphs and replace the first with merged content.
-                    // Table-cell paragraphs are not top-level blocks, so filter them inside table cells.
-                    let removeIds = Set.ofList (List.tail blockIds)
-                    let newBlocks =
-                        doc.Blocks
-                        |> List.choose (function
-                            | Paragraph p when Set.contains p.Id removeIds -> None
-                            | Heading (_, p) when Set.contains p.Id removeIds -> None
-                            | Paragraph p when p.Id = firstBlockId -> Some mergedBlock
-                            | Heading (_, p) when p.Id = firstBlockId -> Some mergedBlock
-                            | Table t ->
-                                let rows =
-                                    t.Rows
-                                    |> List.map (fun row ->
-                                        { row with
-                                            Cells =
-                                                row.Cells
-                                                |> List.map (fun cell ->
-                                                    { cell with Content = cell.Content |> List.filter (fun p -> not (Set.contains p.Id removeIds)) }) })
-                                Some (Table { t with Rows = rows })
-                            | block -> Some block)
-
-                    // Move cursor to merge point
+                    // Move cursor to start of selection
                     let newSel = {
-                        Anchor = { BlockId = firstBlockId; Offset = String.length beforeText }
-                        Focus = { BlockId = firstBlockId; Offset = String.length beforeText }
+                        Anchor = startPos
+                        Focus = startPos
                     }
+                    { newDoc with Selection = Some newSel }
+            | _ ->
+                // Multi-block selection
+                // Keep text before selection start in first block
+                // Keep text after selection end in last block
+                // Delete middle blocks
 
-                    { doc with Blocks = newBlocks; Selection = Some newSel }
-                | _ -> doc
+                if blockIds.IsEmpty then doc
+                else
+                    let firstBlockId, lastBlockId =
+                        match topLevelRange with
+                        | Some (_, _, _, firstBlock, lastBlock) -> getBlockId firstBlock, getBlockId lastBlock
+                        | None -> List.head blockIds, List.last blockIds
+
+                    let endpointBlocks =
+                        match topLevelRange with
+                        | Some (_, _, _, firstBlock, lastBlock) -> Some (firstBlock, lastBlock)
+                        | None ->
+                            match findBlock doc firstBlockId, findBlock doc lastBlockId with
+                            | Some firstBlock, Some lastBlock -> Some (firstBlock, lastBlock)
+                            | _ -> None
+
+                    match endpointBlocks with
+                    | Some (firstBlock, lastBlock) ->
+                        let firstPara = getParagraph firstBlock
+                        let lastPara = getParagraph lastBlock
+
+                        // Keep content before the selection start and after the selection end.
+                        let beforeBuffer = TextBuffer.sliceBuffer 0 startPos.Offset firstPara.Buffer
+                        let lastBufferLen = TextBuffer.length lastPara.Buffer
+                        let afterBuffer = TextBuffer.sliceBuffer endPos.Offset (lastBufferLen - endPos.Offset) lastPara.Buffer
+
+                        // Merge into single buffer
+                        let mergedBuffer = TextBuffer.append beforeBuffer afterBuffer
+
+                        // Update first block with merged content
+                        let mergedPara = { firstPara with Buffer = mergedBuffer }
+                        let mergedBlock =
+                            match firstBlock with
+                            | Paragraph _ -> Paragraph mergedPara
+                            | Heading (level, _) -> Heading (level, mergedPara)
+                            | Table t -> Table t
+                            | TextBox t -> TextBox t
+
+                        let tryTopLevelRangeDelete () =
+                            match topLevelRange with
+                            | None -> None
+                            | Some _ ->
+                                let prefix = ResizeArray<Block>()
+                                let rec skipToLast remaining =
+                                    match remaining with
+                                    | [] -> None
+                                    | block :: tail when getBlockId block = lastBlockId -> Some tail
+                                    | _ :: tail -> skipToLast tail
+                                let rec loop remaining =
+                                    match remaining with
+                                    | [] -> None
+                                    | block :: tail when getBlockId block = firstBlockId ->
+                                        skipToLast tail
+                                        |> Option.map (fun afterLast -> prependResizeArray prefix (mergedBlock :: afterLast))
+                                    | block :: tail ->
+                                        prefix.Add block
+                                        loop tail
+                                loop doc.Blocks
+
+                        let deleteNestedSelectionFallback () =
+                            // Remove all selected editable paragraphs and replace the first with merged content.
+                            // Table-cell paragraphs are not top-level blocks, so filter them inside table cells.
+                            let removeIds = HashSet<BlockId>()
+                            let mutable remainingIds =
+                                match blockIds with
+                                | _ :: tail -> tail
+                                | [] -> []
+                            while not remainingIds.IsEmpty do
+                                match remainingIds with
+                                | blockId :: tail ->
+                                    removeIds.Add blockId |> ignore
+                                    remainingIds <- tail
+                                | [] -> ()
+
+                            let filteredCellContent (content: ParagraphBlock list) =
+                                let values = ResizeArray<ParagraphBlock>()
+                                let mutable changed = false
+                                for para in content do
+                                    if removeIds.Contains para.Id then
+                                        changed <- true
+                                    else
+                                        values.Add para
+                                if changed then resizeArrayToList values else content
+
+                            let filteredRows (rows: TableRow list) =
+                                let rowValues = ResizeArray<TableRow>()
+                                let mutable changed = false
+                                for row in rows do
+                                    let cellValues = ResizeArray<TableCell>()
+                                    let mutable rowChanged = false
+                                    for cell in row.Cells do
+                                        let content = filteredCellContent cell.Content
+                                        rowChanged <- rowChanged || not (obj.ReferenceEquals(content, cell.Content))
+                                        cellValues.Add { cell with Content = content }
+                                    if rowChanged then
+                                        rowValues.Add { row with Cells = resizeArrayToList cellValues }
+                                        changed <- true
+                                    else
+                                        rowValues.Add row
+                                if changed then resizeArrayToList rowValues else rows
+
+                            let rec skipToLast remaining =
+                                match remaining with
+                                | [] -> None
+                                | block :: tail when getBlockId block = lastBlockId -> Some tail
+                                | block :: tail when removeIds.Contains(getBlockId block) -> skipToLast tail
+                                | _ -> None
+                            let rec loop prefix remaining =
+                                match remaining with
+                                | [] -> None
+                                | block :: tail when getBlockId block = firstBlockId ->
+                                    skipToLast tail
+                                    |> Option.map (fun afterLast -> prependResizeArray prefix (mergedBlock :: afterLast))
+                                | block :: tail ->
+                                    prefix.Add block
+                                    loop prefix tail
+                            match loop (ResizeArray<Block>()) doc.Blocks with
+                            | Some blocks -> blocks
+                            | None ->
+                                let newBlockValues = ResizeArray<Block>()
+                                for block in doc.Blocks do
+                                    match block with
+                                    | Paragraph p when removeIds.Contains p.Id -> ()
+                                    | Heading (_, p) when removeIds.Contains p.Id -> ()
+                                    | Paragraph p when p.Id = firstBlockId -> newBlockValues.Add mergedBlock
+                                    | Heading (_, p) when p.Id = firstBlockId -> newBlockValues.Add mergedBlock
+                                    | Table t ->
+                                        let rows = filteredRows t.Rows
+                                        if obj.ReferenceEquals(rows, t.Rows) then
+                                            newBlockValues.Add block
+                                        else
+                                            newBlockValues.Add(Table { t with Rows = rows })
+                                    | block -> newBlockValues.Add block
+                                resizeArrayToList newBlockValues
+
+                        let newBlocks =
+                            match tryTopLevelRangeDelete () with
+                            | Some blocks -> blocks
+                            | None -> deleteNestedSelectionFallback ()
+
+                        // Move cursor to merge point
+                        let newSel = {
+                            Anchor = { BlockId = firstBlockId; Offset = TextBuffer.length beforeBuffer }
+                            Focus = { BlockId = firstBlockId; Offset = TextBuffer.length beforeBuffer }
+                        }
+
+                        { doc with Blocks = newBlocks; Selection = Some newSel }
+                    | _ -> doc
 
 /// Delete forward (Delete key)
+let private tryDeleteForwardTopLevelParagraph (doc: Document) (blockId: BlockId) offset =
+    let prefix = ResizeArray<Block>()
+    let finish tail (para: ParagraphBlock) wrap =
+        let maxOffset = TextBuffer.length para.Buffer
+        if offset >= maxOffset then
+            match tail with
+            | nextBlock :: afterNext ->
+                match tryGetParagraph nextBlock with
+                | Some nextPara ->
+                    let mergedBuffer = TextBuffer.append para.Buffer nextPara.Buffer
+                    let mergedPara = { para with Buffer = mergedBuffer }
+                    ValueSome { doc with Blocks = prependResizeArray prefix (wrap mergedPara :: afterNext) }
+                | None ->
+                    ValueSome doc
+            | [] ->
+                ValueSome doc
+        else
+            let newBuffer = TextBuffer.delete offset 1 para.Buffer
+            let updatedPara = { para with Buffer = newBuffer }
+            ValueSome { doc with Blocks = prependResizeArray prefix (wrap updatedPara :: tail) }
+
+    let rec loop remaining =
+        match remaining with
+        | [] -> ValueNone
+        | block :: tail ->
+            match block with
+            | Paragraph para when para.Id = blockId ->
+                finish tail para Paragraph
+            | Heading (level, para) when para.Id = blockId ->
+                finish tail para (fun para -> Heading (level, para))
+            | _ ->
+                prefix.Add block
+                loop tail
+
+    loop doc.Blocks
+
 let deleteForward doc =
     match doc.Selection with
     | None -> doc
@@ -1188,28 +4799,39 @@ let deleteForward doc =
         // Delete selection if active
         deleteSelection doc
     | Some sel ->
-        match findParagraph doc sel.Focus.BlockId with
-        | None -> doc
-        | Some para ->
-            let maxOffset = TextBuffer.length para.Buffer
+        match tryDeleteForwardTopLevelParagraph doc sel.Focus.BlockId sel.Focus.Offset with
+        | ValueSome doc -> doc
+        | ValueNone ->
+            let mutable found = false
+            let mutable atEnd = false
+            let newDoc =
+                updateParagraph doc sel.Focus.BlockId (fun para ->
+                    found <- true
+                    let maxOffset = TextBuffer.length para.Buffer
 
-            if sel.Focus.Offset >= maxOffset then
-                mergeWithNext doc sel.Focus.BlockId
-            else
-                let newBuffer = TextBuffer.delete sel.Focus.Offset 1 para.Buffer
-                let newPara = { para with Buffer = newBuffer }
-                replaceParagraph doc para.Id newPara
+                    if sel.Focus.Offset >= maxOffset then
+                        atEnd <- true
+                        para
+                    else
+                        let newBuffer = TextBuffer.delete sel.Focus.Offset 1 para.Buffer
+                        { para with Buffer = newBuffer })
+            if not found then doc
+            elif atEnd then mergeWithNext doc sel.Focus.BlockId
+            else newDoc
+
+let private setSelectionIfChanged selection doc =
+    match doc.Selection with
+    | Some current when current = selection -> doc
+    | _ -> { doc with Selection = Some selection }
 
 /// Move cursor up to previous block
 let moveCursorUp doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findBlockIndex doc sel.Focus.BlockId with
+        match tryFindAdjacentTopBlock doc sel.Focus.BlockId -1 with
         | None -> doc
-        | Some idx when idx = 0 -> doc  // Already at first block
-        | Some idx ->
-            let prevBlock = doc.Blocks.[idx - 1]
+        | Some prevBlock ->
             let prevPara = getParagraph prevBlock
             let prevLen = TextBuffer.length prevPara.Buffer
 
@@ -1218,18 +4840,16 @@ let moveCursorUp doc =
                 Anchor = { BlockId = prevPara.Id; Offset = prevLen }
                 Focus = { BlockId = prevPara.Id; Offset = prevLen }
             }
-            { doc with Selection = Some newSel }
+            setSelectionIfChanged newSel doc
 
 /// Move cursor down to next block
 let moveCursorDown doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findBlockIndex doc sel.Focus.BlockId with
+        match tryFindAdjacentTopBlock doc sel.Focus.BlockId 1 with
         | None -> doc
-        | Some idx when idx >= doc.Blocks.Length - 1 -> doc  // Already at last block
-        | Some idx ->
-            let nextBlock = doc.Blocks.[idx + 1]
+        | Some nextBlock ->
             let nextPara = getParagraph nextBlock
 
             // Move to start of next block
@@ -1237,33 +4857,68 @@ let moveCursorDown doc =
                 Anchor = { BlockId = nextPara.Id; Offset = 0 }
                 Focus = { BlockId = nextPara.Id; Offset = 0 }
             }
-            { doc with Selection = Some newSel }
+            setSelectionIfChanged newSel doc
 
 /// Move cursor to start of current block (Home key)
 let moveCursorToLineStart doc =
     match doc.Selection with
     | None -> doc
+    | Some sel when sel.Focus.Offset = 0 && sel.Anchor = sel.Focus ->
+        doc
     | Some sel ->
         let newSel = {
             Anchor = { sel.Focus with Offset = 0 }
             Focus = { sel.Focus with Offset = 0 }
         }
-        { doc with Selection = Some newSel }
+        setSelectionIfChanged newSel doc
+
+let private findCursorParagraph doc blockId =
+    let tryCachedBlockLookup () =
+        match blockLookupCache |> List.tryFind (blockLookupCacheMatches doc.Blocks) with
+        | Some cached when blockLookupCacheRetainable cached ->
+            let mutable entry = Unchecked.defaultof<BlockLookupEntry>
+            if cached.EntriesById.TryGetValue(blockId, &entry) then
+                match entry.TopBlock with
+                | Paragraph p when p.Id = blockId -> Some p
+                | Heading (_, p) when p.Id = blockId -> Some p
+                | _ -> None
+            else
+                None
+        | _ -> None
+    let tryCachedParagraphLookup () =
+        match paragraphLookupCache |> List.tryFind (paragraphLookupCacheMatches doc.Blocks) with
+        | Some cached when paragraphLookupCacheRetainable cached ->
+            let mutable paragraph = Unchecked.defaultof<ParagraphBlock>
+            if cached.Paragraphs.TryGetValue(blockId, &paragraph) then Some paragraph else None
+        | _ -> None
+    match tryCachedBlockLookup () with
+    | Some para -> Some para
+    | None ->
+        match tryCachedParagraphLookup () with
+        | Some para -> Some para
+        | None -> tryFindEditableParagraphUntil doc blockId
+
+let private tryFindCursorParagraphLength doc blockId =
+    match findCursorParagraph doc blockId with
+    | Some para -> ValueSome (TextBuffer.length para.Buffer)
+    | None -> ValueNone
 
 /// Move cursor to end of current block (End key)
 let moveCursorToLineEnd doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findParagraph doc sel.Focus.BlockId with
-        | None -> doc
-        | Some para ->
-            let maxOffset = TextBuffer.length para.Buffer
-            let newSel = {
-                Anchor = { sel.Focus with Offset = maxOffset }
-                Focus = { sel.Focus with Offset = maxOffset }
-            }
-            { doc with Selection = Some newSel }
+        match tryFindCursorParagraphLength doc sel.Focus.BlockId with
+        | ValueNone -> doc
+        | ValueSome maxOffset ->
+            if sel.Focus.Offset = maxOffset && sel.Anchor = sel.Focus then
+                doc
+            else
+                let newSel = {
+                    Anchor = { sel.Focus with Offset = maxOffset }
+                    Focus = { sel.Focus with Offset = maxOffset }
+                }
+                setSelectionIfChanged newSel doc
 
 
 /// Insert text at cursor
@@ -1278,38 +4933,44 @@ let insertText text doc =
         match doc'.Selection with
         | None -> doc'
         | Some sel' ->
-            match findParagraph doc' sel'.Focus.BlockId with
-            | None -> doc'
-            | Some para ->
-                let newBuffer = TextBuffer.insert sel'.Focus.Offset text para.Buffer
-                let newPara = { para with Buffer = newBuffer }
-
-                let newDoc = replaceParagraph doc' para.Id newPara
-
+            let mutable changed = false
+            let newDoc =
+                updateParagraph doc' sel'.Focus.BlockId (fun para ->
+                    changed <- true
+                    let newBuffer = TextBuffer.insert sel'.Focus.Offset text para.Buffer
+                    { para with Buffer = newBuffer })
+            if changed then
                 // Move cursor forward
                 let newSel = {
                     Anchor = { sel'.Focus with Offset = sel'.Focus.Offset + text.Length }
                     Focus = { sel'.Focus with Offset = sel'.Focus.Offset + text.Length }
                 }
                 { newDoc with Selection = Some newSel }
+            else doc'
 
 let insertField fieldCode result doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        let doc' = insertText result doc
+        let doc' = if sel.IsCollapsed then doc else deleteSelection doc
         match doc'.Selection with
         | None -> doc'
         | Some sel' ->
-            let startOffset = max 0 (sel'.Focus.Offset - result.Length)
-            match findParagraph doc' sel'.Focus.BlockId with
-            | None -> doc'
-            | Some para ->
-                let newBuffer =
-                    TextBuffer.applyStyle startOffset result.Length (fun style ->
-                        { style with FieldCode = Some fieldCode; FieldResult = Some result }) para.Buffer
-                let newPara = { para with Buffer = newBuffer }
-                replaceParagraph doc' para.Id newPara
+            let startOffset = sel'.Focus.Offset
+            let mutable changed = false
+            let newDoc =
+                updateParagraph doc' sel'.Focus.BlockId (fun para ->
+                    changed <- true
+                    let inserted = TextBuffer.insert startOffset result para.Buffer
+                    let styled =
+                        TextBuffer.applyStyle startOffset result.Length (fun style ->
+                            { style with FieldCode = Some fieldCode; FieldResult = Some result }) inserted
+                    { para with Buffer = styled })
+            if changed then
+                let nextPos = { sel'.Focus with Offset = startOffset + result.Length }
+                { newDoc with Selection = Some { Anchor = nextPos; Focus = nextPos } }
+            else
+                doc'
 
 let private escapeXml (text: string) =
     text
@@ -1330,7 +4991,7 @@ let insertEquation equationText doc =
         | None -> doc'
         | Some sel' ->
             let startOffset = max 0 (sel'.Focus.Offset - text.Length)
-            match findParagraph doc' sel'.Focus.BlockId with
+            match findCursorParagraph doc' sel'.Focus.BlockId with
             | None -> doc'
             | Some para ->
                 let newBuffer =
@@ -1351,7 +5012,7 @@ let insertImageAtCursor src width height alt doc =
         match doc'.Selection with
         | None -> doc'
         | Some sel' ->
-            match findParagraph doc' sel'.Focus.BlockId with
+            match findCursorParagraph doc' sel'.Focus.BlockId with
             | None -> doc'
             | Some para ->
                 let newBuffer = TextBuffer.insertImage sel'.Focus.Offset src width height alt para.Buffer
@@ -1368,52 +5029,105 @@ let insertImageAtCursor src width height alt doc =
 
 /// Resize image at specified position
 let resizeImage blockId offset newWidth newHeight doc =
-    match findParagraph doc blockId with
-    | None -> doc
-    | Some para ->
+    let resizeInParagraph para =
         let newBuffer = TextBuffer.resizeImage offset newWidth newHeight para.Buffer
-        let newPara = { para with Buffer = newBuffer }
+        if obj.ReferenceEquals(newBuffer, para.Buffer) then
+            para
+        else
+            { para with Buffer = newBuffer }
 
-        replaceParagraph doc para.Id newPara
+    match tryUpdateTopLevelParagraphBeforeNestedContent doc blockId resizeInParagraph with
+    | ValueSome updatedDoc -> updatedDoc
+    | ValueNone ->
+        match findCursorParagraph doc blockId with
+        | None -> doc
+        | Some para ->
+            let newBuffer = TextBuffer.resizeImage offset newWidth newHeight para.Buffer
+            if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                doc
+            else
+                let newPara = { para with Buffer = newBuffer }
+                replaceParagraph doc para.Id newPara
 
 let resizeImageNearCursor newWidth newHeight doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findParagraph doc sel.Focus.BlockId with
-        | None -> doc
-        | Some para ->
-            let imageOffset =
-                para.Buffer.Runs
-                |> List.choose (function
-                    | TextBuffer.Image img when img.Start <= sel.Focus.Offset -> Some img.Start
-                    | _ -> None)
-                |> List.sortDescending
-                |> List.tryHead
+        let resizeNearFocus para =
+            let mutable imageOffset = None
+            for run in para.Buffer.Runs do
+                match run with
+                | TextBuffer.Image img when img.Start <= sel.Focus.Offset ->
+                    match imageOffset with
+                    | Some offset when offset >= img.Start -> ()
+                    | _ -> imageOffset <- Some img.Start
+                | _ -> ()
             match imageOffset with
+            | None -> para
+            | Some offset ->
+                let newBuffer = TextBuffer.resizeImage offset newWidth newHeight para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    para
+                else
+                    { para with Buffer = newBuffer }
+
+        match tryUpdateTopLevelParagraphBeforeNestedContent doc sel.Focus.BlockId resizeNearFocus with
+        | ValueSome updatedDoc -> updatedDoc
+        | ValueNone ->
+            match findCursorParagraph doc sel.Focus.BlockId with
             | None -> doc
-            | Some offset -> resizeImage para.Id offset newWidth newHeight doc
+            | Some para ->
+                let newPara = resizeNearFocus para
+                if obj.ReferenceEquals(newPara, para) || paragraphReplacementMatches para newPara then
+                    doc
+                else
+                    replaceParagraph doc para.Id newPara
 
 /// Move an image run to a new document position.
 let moveImage blockId offset targetBlockId targetOffset doc =
-    match findParagraph doc blockId with
-    | None -> doc
-    | Some sourcePara ->
-        match sourcePara.Buffer.Runs |> List.tryPick (function TextBuffer.Image img when img.Start = offset -> Some img | _ -> None) with
+    let insertImageRun boundedOffset (img: TextBuffer.ImageRun) buffer =
+        TextBuffer.insertImageWithMetadata boundedOffset img.Src img.Linked img.Width img.Height img.Alt img.Name img.Title img.Floating img.Wrap img.PositionX img.PositionY img.PositionHRelativeFrom img.PositionVRelativeFrom img.BehindDoc img.AllowOverlap img.LayoutInCell img.DistanceTop img.DistanceBottom img.DistanceLeft img.DistanceRight img.RelativeHeight img.Locked img.SimplePosition img.SimplePositionX img.SimplePositionY img.CropLeft img.CropTop img.CropRight img.CropBottom buffer
+    if blockId = targetBlockId && (targetOffset = offset || targetOffset = offset + 1) then
+        doc
+    else
+        match findCursorParagraph doc blockId with
         | None -> doc
-        | Some img ->
-            let sourceBuffer = TextBuffer.delete offset 1 sourcePara.Buffer
-            let docWithoutImage = replaceParagraph doc sourcePara.Id { sourcePara with Buffer = sourceBuffer }
-            match findParagraph docWithoutImage targetBlockId with
-            | None -> docWithoutImage
-            | Some targetPara ->
+        | Some sourcePara ->
+            if blockId = targetBlockId then
                 let insertOffset =
-                    if blockId = targetBlockId && targetOffset > offset then targetOffset - 1
+                    if targetOffset > offset then targetOffset - 1
                     else targetOffset
-                let boundedOffset = max 0 (min (TextBuffer.length targetPara.Buffer) insertOffset)
-                let targetBuffer = TextBuffer.insertImageWithMetadata boundedOffset img.Src img.Linked img.Width img.Height img.Alt img.Name img.Title img.Floating img.Wrap img.PositionX img.PositionY img.PositionHRelativeFrom img.PositionVRelativeFrom img.BehindDoc img.AllowOverlap img.LayoutInCell img.DistanceTop img.DistanceBottom img.DistanceLeft img.DistanceRight img.RelativeHeight img.Locked img.SimplePosition img.SimplePositionX img.SimplePositionY img.CropLeft img.CropTop img.CropRight img.CropBottom targetPara.Buffer
-                let nextDoc = replaceParagraph docWithoutImage targetPara.Id { targetPara with Buffer = targetBuffer }
-                { nextDoc with Selection = Some { Anchor = { BlockId = targetBlockId; Offset = boundedOffset + 1 }; Focus = { BlockId = targetBlockId; Offset = boundedOffset + 1 } } }
+                let boundedOffset = max 0 (min (max 0 (TextBuffer.length sourcePara.Buffer - 1)) insertOffset)
+                if boundedOffset = offset then
+                    doc
+                else
+                    match sourcePara.Buffer.Runs |> List.tryPick (function TextBuffer.Image img when img.Start = offset -> Some img | _ -> None) with
+                    | None -> doc
+                    | Some img ->
+                        let targetBuffer =
+                            match TextBuffer.tryMoveImageWithinBuffer offset boundedOffset img sourcePara.Buffer with
+                            | Some buffer -> buffer
+                            | None ->
+                                let sourceBuffer = TextBuffer.delete offset 1 sourcePara.Buffer
+                                insertImageRun boundedOffset img sourceBuffer
+                        if obj.ReferenceEquals(targetBuffer, sourcePara.Buffer) then
+                            doc
+                        else
+                            let nextDoc = replaceParagraph doc sourcePara.Id { sourcePara with Buffer = targetBuffer }
+                            { nextDoc with Selection = Some { Anchor = { BlockId = targetBlockId; Offset = boundedOffset + 1 }; Focus = { BlockId = targetBlockId; Offset = boundedOffset + 1 } } }
+            else
+                match sourcePara.Buffer.Runs |> List.tryPick (function TextBuffer.Image img when img.Start = offset -> Some img | _ -> None) with
+                | None -> doc
+                | Some img ->
+                    let sourceBuffer = TextBuffer.delete offset 1 sourcePara.Buffer
+                    let docWithoutImage = replaceParagraph doc sourcePara.Id { sourcePara with Buffer = sourceBuffer }
+                    match findCursorParagraph docWithoutImage targetBlockId with
+                    | None -> docWithoutImage
+                    | Some targetPara ->
+                        let boundedOffset = max 0 (min (TextBuffer.length targetPara.Buffer) targetOffset)
+                        let targetBuffer = insertImageRun boundedOffset img targetPara.Buffer
+                        let nextDoc = replaceParagraph docWithoutImage targetPara.Id { targetPara with Buffer = targetBuffer }
+                        { nextDoc with Selection = Some { Anchor = { BlockId = targetBlockId; Offset = boundedOffset + 1 }; Focus = { BlockId = targetBlockId; Offset = boundedOffset + 1 } } }
 
 /// Delete backward (backspace)
 let deleteBackward doc =
@@ -1426,7 +5140,7 @@ let deleteBackward doc =
         // At start of block, merge with previous
         mergeWithPrevious doc sel.Focus.BlockId
     | Some sel ->
-        match findParagraph doc sel.Focus.BlockId with
+        match findCursorParagraph doc sel.Focus.BlockId with
         | None -> doc
         | Some para ->
             let newBuffer = TextBuffer.delete (sel.Focus.Offset - 1) 1 para.Buffer
@@ -1443,29 +5157,37 @@ let deleteBackward doc =
 
 /// Set cursor position
 let setCursor blockId offset doc =
-    { doc with
-        Selection = Some {
-            Anchor = { BlockId = blockId; Offset = offset }
-            Focus = { BlockId = blockId; Offset = offset }
-        } }
+    match doc.Selection with
+    | Some current
+        when current.Anchor.BlockId = blockId
+            && current.Anchor.Offset = offset
+            && current.Focus.BlockId = blockId
+            && current.Focus.Offset = offset ->
+        doc
+    | _ ->
+        { doc with
+            Selection = Some {
+                Anchor = { BlockId = blockId; Offset = offset }
+                Focus = { BlockId = blockId; Offset = offset }
+            } }
 
 let insertTableRowAfterSelection doc =
     match currentTableCell doc with
     | None -> doc
     | Some (tableId, rowIndex, _) ->
         updateTable doc tableId (fun table ->
-            let columnCount =
-                table.Rows
-                |> List.tryItem rowIndex
-                |> Option.map (fun row -> row.Cells.Length)
-                |> Option.defaultValue 1
-                |> max 1
-            let newRow = { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None }
-            { table with
-                Rows =
-                    table.Rows
-                    |> List.mapi (fun i row -> if i = rowIndex then [row; newRow] else [row])
-                    |> List.concat })
+            let newRow columnCount = { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None }
+            let prefix = ResizeArray<TableRow>(max 0 rowIndex)
+            let rec insertAfter rowPosition rows =
+                match rows with
+                | [] ->
+                    prependResizeArray prefix [ newRow 1 ]
+                | row :: tail when rowPosition = rowIndex ->
+                    prependResizeArray prefix (row :: newRow (max 1 row.Cells.Length) :: tail)
+                | row :: tail ->
+                    prefix.Add row
+                    insertAfter (rowPosition + 1) tail
+            { table with Rows = insertAfter 0 table.Rows })
 
 let insertTableColumnAfterSelection doc =
     match currentTableCell doc with
@@ -1476,56 +5198,88 @@ let insertTableColumnAfterSelection doc =
                 Rows =
                     table.Rows
                     |> List.map (fun row ->
-                        { row with
-                            Cells =
-                                row.Cells
-                                |> List.mapi (fun i cell -> if i = colIndex then [cell; emptyTableCell ()] else [cell])
-                                |> List.concat }) })
+                        match tryInsertListItemAfterAtV colIndex emptyTableCell row.Cells with
+                        | ValueSome cells -> { row with Cells = cells }
+                        | ValueNone -> row) })
 
 let deleteSelectedTableRow doc =
     match currentTableCell doc with
     | None -> doc
     | Some (tableId, rowIndex, colIndex) ->
+        let mutable deletedRow = false
+        let mutable targetPara = None
         let updatedDoc = updateTable doc tableId (fun table ->
-            if table.Rows.Length <= 1 then table
-            else { table with Rows = table.Rows |> List.mapi (fun i row -> i, row) |> List.choose (fun (i, row) -> if i = rowIndex then None else Some row) })
+            match table.Rows with
+            | [] | [_] -> table
+            | rows ->
+                let prefix = ResizeArray<TableRow>(max 0 rowIndex)
+                let rec deleteAt rowPosition rows =
+                    match rows with
+                    | [] -> table
+                    | _ :: tail when rowPosition = rowIndex ->
+                        deletedRow <- true
+                        targetPara <-
+                            match tail with
+                            | nextRow :: _ ->
+                                tryGetTableCellParagraphInRow colIndex nextRow
+                            | [] when prefix.Count > 0 ->
+                                tryGetTableCellParagraphInRow colIndex prefix.[prefix.Count - 1]
+                            | [] ->
+                                None
+                        let nextTable = { table with Rows = prependResizeArray prefix tail }
+                        nextTable
+                    | row :: tail ->
+                        prefix.Add row
+                        deleteAt (rowPosition + 1) tail
+                deleteAt 0 rows)
 
-        match doc.Blocks |> List.tryPick (function Table table when table.Id = tableId -> Some table.Rows.Length | _ -> None) with
-        | Some oldLength when oldLength > 1 ->
-            let targetRow = min rowIndex (oldLength - 2)
-            match tryGetTableCellParagraph updatedDoc tableId targetRow colIndex with
+        if deletedRow then
+            match targetPara with
             | Some para -> setCursor para.Id 0 updatedDoc
             | None -> updatedDoc
-        | _ -> updatedDoc
+        else
+            updatedDoc
 
 let deleteSelectedTableColumn doc =
     match currentTableCell doc with
     | None -> doc
-    | Some (tableId, _, colIndex) ->
+    | Some (tableId, rowIndex, colIndex) ->
+        let mutable deletedColumn = false
+        let mutable targetPara = None
         let updatedDoc = updateTable doc tableId (fun table ->
-            let maxColumns = table.Rows |> List.map (fun row -> row.Cells.Length) |> List.fold max 0
-            if maxColumns <= 1 then table
+            let mutable hasMultipleColumns = false
+            let mutable rows = table.Rows
+            while not hasMultipleColumns && not rows.IsEmpty do
+                match rows.Head.Cells with
+                | _ :: _ :: _ -> hasMultipleColumns <- true
+                | _ -> ()
+                rows <- rows.Tail
+            if not hasMultipleColumns then table
             else
-                { table with
-                    Rows =
-                        table.Rows
-                        |> List.map (fun row ->
-                            { row with
-                                Cells =
-                                    row.Cells
-                                    |> List.mapi (fun i cell -> i, cell)
-                                    |> List.choose (fun (i, cell) -> if i = colIndex then None else Some cell) }) })
-
-        match currentTableCell updatedDoc with
-        | Some _ -> updatedDoc
-        | None ->
-            match currentTableCell doc with
-            | Some (_, rowIndex, _) ->
+                deletedColumn <- true
                 let targetCol = max 0 (colIndex - 1)
-                match tryGetTableCellParagraph updatedDoc tableId rowIndex targetCol with
-                | Some para -> setCursor para.Id 0 updatedDoc
-                | None -> updatedDoc
+                let mutable rowPosition = 0
+                let nextTable =
+                    { table with
+                        Rows =
+                            table.Rows
+                            |> List.map (fun row ->
+                                let nextRow =
+                                    match tryRemoveListItemAtV colIndex row.Cells with
+                                    | ValueSome cells -> { row with Cells = cells }
+                                    | ValueNone -> row
+                                if rowPosition = rowIndex then
+                                    targetPara <- tryGetTableCellParagraphInRow targetCol nextRow
+                                rowPosition <- rowPosition + 1
+                                nextRow) }
+                nextTable)
+
+        if deletedColumn then
+            match targetPara with
+            | Some para -> setCursor para.Id 0 updatedDoc
             | None -> updatedDoc
+        else
+            updatedDoc
 
 let insertTable rows columns doc =
     let rowCount = max 1 rows
@@ -1552,40 +5306,16 @@ let insertTable rows columns doc =
     let blocks =
         match doc.Selection with
         | Some sel ->
-            let insertAfterIndex =
-                doc.Blocks
-                |> List.tryFindIndex (function
-                    | Paragraph p -> p.Id = sel.Focus.BlockId
-                    | Heading (_, p) -> p.Id = sel.Focus.BlockId
-                    | Table t -> t.Id = sel.Focus.BlockId
-                    | TextBox t -> t.Id = sel.Focus.BlockId)
-            match insertAfterIndex with
-            | Some index ->
-                let before = doc.Blocks |> List.take (index + 1)
-                let after = doc.Blocks |> List.skip (index + 1)
-                before @ [tableBlock] @ after
-            | None -> doc.Blocks @ [tableBlock]
-        | None -> doc.Blocks @ [tableBlock]
+            insertBlockAfterTopLevelId sel.Focus.BlockId tableBlock doc.Blocks
+        | None -> appendBlock tableBlock doc.Blocks
     { doc with Blocks = blocks } |> setCursor firstCellPara.Id 0
 
 let private insertTopLevelBlockAfterSelection block doc =
     let blocks =
         match doc.Selection with
         | Some sel ->
-            let insertAfterIndex =
-                doc.Blocks
-                |> List.tryFindIndex (function
-                    | Paragraph p -> p.Id = sel.Focus.BlockId
-                    | Heading (_, p) -> p.Id = sel.Focus.BlockId
-                    | Table t -> t.Id = sel.Focus.BlockId
-                    | TextBox t -> t.Id = sel.Focus.BlockId)
-            match insertAfterIndex with
-            | Some index ->
-                let before = doc.Blocks |> List.take (index + 1)
-                let after = doc.Blocks |> List.skip (index + 1)
-                before @ [block] @ after
-            | None -> doc.Blocks @ [block]
-        | None -> doc.Blocks @ [block]
+            insertBlockAfterTopLevelId sel.Focus.BlockId block doc.Blocks
+        | None -> appendBlock block doc.Blocks
     { doc with Blocks = blocks }
 
 let insertTextBox text doc =
@@ -1613,73 +5343,372 @@ let insertTextBox text doc =
     }
     insertTopLevelBlockAfterSelection textBox doc
 
-let private textRunsInParagraph para =
-    para.Buffer.Runs
-    |> List.choose (function
-        | TextBuffer.Text run -> Some run
-        | TextBuffer.Image _ -> None)
+let private iterTextRunsInParagraph para f =
+    for runValue in para.Buffer.Runs do
+        match runValue with
+        | TextBuffer.Text run -> f run
+        | TextBuffer.Image _ -> ()
 
-let private textRunsInBlock block =
+let private iterTextRunsInBlock block f =
     match block with
     | Paragraph para
-    | Heading (_, para) -> textRunsInParagraph para
+    | Heading (_, para) -> iterTextRunsInParagraph para f
     | Table table ->
-        table.Rows
-        |> List.collect (fun row -> row.Cells)
-        |> List.collect (fun cell -> cell.Content)
-        |> List.collect textRunsInParagraph
+        for row in table.Rows do
+            for cell in row.Cells do
+                for para in cell.Content do
+                    iterTextRunsInParagraph para f
     | TextBox textBox ->
-        textBox.Content |> List.collect textRunsInParagraph
+        for para in textBox.Content do
+            iterTextRunsInParagraph para f
+
+type private CaptionIdMetricsCache = {
+    SourceBlocks: Block list
+    SourceLabel: string
+    MaxSequenceResult: int
+    MaxBookmarkId: int
+    LatestCaption: (int * string * string) option
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+}
+
+let mutable private captionIdMetricsCache: CaptionIdMetricsCache list = []
+let private captionIdMetricsCacheMaxEntries = 16
+let private captionIdMetricsCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit + 20000
+let private captionIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private captionIdMetricsCacheMatches blocks label cached =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+    && cached.SourceLabel = label
+
+let private captionIdMetricsCacheRetainable cached =
+    cached.SourceParagraphCount <= captionIdMetricsCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= captionIdMetricsCacheMaxTotalSourceTextChars
+
+let private trimCaptionIdMetricsCache entries =
+    let rec loop keptCount keptBlocks keptSourceTextChars acc remaining =
+        match remaining with
+        | [] -> List.rev acc
+        | candidate :: tail ->
+            let candidateBlocks = max 1 candidate.SourceParagraphCount
+            let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+            if captionIdMetricsCacheRetainable candidate
+               && keptCount < captionIdMetricsCacheMaxEntries
+               && keptBlocks + candidateBlocks <= captionIdMetricsCacheMaxTotalSourceParagraphs
+               && keptSourceTextChars + candidateSourceTextChars <= captionIdMetricsCacheMaxTotalSourceTextChars then
+                loop
+                    (keptCount + 1)
+                    (keptBlocks + candidateBlocks)
+                    (keptSourceTextChars + candidateSourceTextChars)
+                    (candidate :: acc)
+                    tail
+            else
+                loop keptCount keptBlocks keptSourceTextChars acc tail
+    loop 0 0 0 [] entries
+
+let private rememberCaptionIdMetrics cached =
+    let withoutMatching =
+        captionIdMetricsCache
+        |> List.filter (fun entry -> not (captionIdMetricsCacheMatches cached.SourceBlocks cached.SourceLabel entry))
+    if not (captionIdMetricsCacheRetainable cached) then
+        captionIdMetricsCache <- withoutMatching
+    else
+        captionIdMetricsCache <-
+            (cached :: withoutMatching)
+            |> trimCaptionIdMetricsCache
+
+let private captionIdMetricsSourceTextCharCountFor sourceParagraphCount blocks =
+    documentBlocksSourceTextCharCountFor
+        captionIdMetricsCacheMaxTotalSourceParagraphs
+        sourceParagraphCount
+        blocks
+
+let private captionIdMetrics label doc =
+    match captionIdMetricsCache |> List.tryFind (captionIdMetricsCacheMatches doc.Blocks label) with
+    | Some cached -> cached
+    | None ->
+        let prefix = sprintf " SEQ %s " label
+        let mutable maxSequenceResult = 0
+        let mutable maxBookmarkId = 0
+        let mutable latestCaption = None
+        let addBookmarkId value =
+            match value with
+            | Some raw ->
+                match System.Int32.TryParse(raw) with
+                | true, parsed -> maxBookmarkId <- max maxBookmarkId parsed
+                | false, _ -> ()
+            | None -> ()
+        for block in doc.Blocks do
+            iterTextRunsInBlock block (fun run ->
+                match run.Style.FieldCode, run.Style.FieldResult with
+                | Some code, Some result when code.StartsWith(prefix) ->
+                    match System.Int32.TryParse(result) with
+                    | true, value ->
+                        maxSequenceResult <- max maxSequenceResult value
+                        match run.Style.BookmarkName with
+                        | Some bookmarkName ->
+                            match latestCaption with
+                            | Some (latestNumber, _, _) when latestNumber >= value -> ()
+                            | _ -> latestCaption <- Some (value, result, bookmarkName)
+                        | None -> ()
+                    | false, _ -> ()
+                | _ -> ()
+                addBookmarkId run.Style.BookmarkStartId
+                addBookmarkId run.Style.BookmarkEndId)
+        let sourceParagraphCount = countSourceParagraphsWithLimit captionIdMetricsCacheMaxTotalSourceParagraphs doc.Blocks
+        let cached = {
+            SourceBlocks = doc.Blocks
+            SourceLabel = label
+            MaxSequenceResult = maxSequenceResult
+            MaxBookmarkId = maxBookmarkId
+            LatestCaption = latestCaption
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = captionIdMetricsSourceTextCharCountFor sourceParagraphCount doc.Blocks
+        }
+        rememberCaptionIdMetrics cached
+        cached
 
 let private nextSequenceResult label doc =
-    let prefix = sprintf " SEQ %s " label
-    let maxExisting =
-        doc.Blocks
-        |> List.collect textRunsInBlock
-        |> List.choose (fun run ->
-            match run.Style.FieldCode, run.Style.FieldResult with
-            | Some code, Some result when code.StartsWith(prefix) ->
-                match System.Int32.TryParse(result) with
-                | true, value -> Some value
-                | false, _ -> None
-            | _ -> None)
-        |> function
-            | [] -> 0
-            | values -> List.max values
-    string (maxExisting + 1)
+    let metrics = captionIdMetrics label doc
+    string (metrics.MaxSequenceResult + 1)
+
+type private BookmarkIdMetricsCache = {
+    SourceBlocks: Block list
+    MaxBookmarkId: int
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+}
+
+let mutable private bookmarkIdMetricsCache: BookmarkIdMetricsCache list = []
+let private bookmarkIdMetricsCacheMaxEntries = 64
+let private bookmarkIdMetricsCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private bookmarkIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private bookmarkIdMetricsCacheMatches blocks cached =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private bookmarkIdMetricsCacheRetainable cached =
+    cached.SourceParagraphCount <= bookmarkIdMetricsCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= bookmarkIdMetricsCacheMaxTotalSourceTextChars
+
+let private bookmarkIdMetricsSourceTextCharCountFor sourceParagraphCount blocks =
+    documentBlocksSourceTextCharCountFor
+        bookmarkIdMetricsCacheMaxTotalSourceParagraphs
+        sourceParagraphCount
+        blocks
+
+let private tryParseBookmarkId value =
+    match value with
+    | Some raw ->
+        match System.Int32.TryParse(raw) with
+        | true, parsed -> ValueSome parsed
+        | false, _ -> ValueNone
+    | None -> ValueNone
+
+let private rememberBookmarkIdMetrics cached =
+    if not (bookmarkIdMetricsCacheRetainable cached) then
+        bookmarkIdMetricsCache <- bookmarkIdMetricsCache |> List.filter (bookmarkIdMetricsCacheMatches cached.SourceBlocks >> not)
+    else
+        let trim entries =
+            let rec loop keptCount keptBlocks keptSourceTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateBlocks = max 1 candidate.SourceParagraphCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    if bookmarkIdMetricsCacheRetainable candidate
+                       && keptCount < bookmarkIdMetricsCacheMaxEntries
+                       && keptBlocks + candidateBlocks <= bookmarkIdMetricsCacheMaxTotalSourceParagraphs
+                       && keptSourceTextChars + candidateSourceTextChars <= bookmarkIdMetricsCacheMaxTotalSourceTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptBlocks + candidateBlocks)
+                            (keptSourceTextChars + candidateSourceTextChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptBlocks keptSourceTextChars acc tail
+            loop 0 0 0 [] entries
+        bookmarkIdMetricsCache <-
+            (cached
+             :: (bookmarkIdMetricsCache
+                 |> List.filter (bookmarkIdMetricsCacheMatches cached.SourceBlocks >> not)))
+            |> trim
+
+let private bookmarkIdMetrics doc =
+    match bookmarkIdMetricsCache |> List.tryFind (bookmarkIdMetricsCacheMatches doc.Blocks) with
+    | Some cached -> cached
+    | None ->
+        let mutable maxExisting = 0
+        for block in doc.Blocks do
+            iterTextRunsInBlock block (fun run ->
+                match tryParseBookmarkId run.Style.BookmarkStartId with
+                | ValueSome parsed -> maxExisting <- max maxExisting parsed
+                | ValueNone -> ()
+                match tryParseBookmarkId run.Style.BookmarkEndId with
+                | ValueSome parsed -> maxExisting <- max maxExisting parsed
+                | ValueNone -> ())
+        let sourceParagraphCount =
+            countSourceParagraphsWithLimit bookmarkIdMetricsCacheMaxTotalSourceParagraphs doc.Blocks
+        let cached = {
+            SourceBlocks = doc.Blocks
+            MaxBookmarkId = maxExisting
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = bookmarkIdMetricsSourceTextCharCountFor sourceParagraphCount doc.Blocks
+        }
+        rememberBookmarkIdMetrics cached
+        cached
 
 let private nextBookmarkId doc =
-    let maxExisting =
-        doc.Blocks
-        |> List.collect textRunsInBlock
-        |> List.collect (fun run -> [run.Style.BookmarkStartId; run.Style.BookmarkEndId])
-        |> List.choose id
-        |> List.choose (fun value ->
-            match System.Int32.TryParse(value) with
-            | true, parsed -> Some parsed
-            | false, _ -> None)
-        |> function
-            | [] -> 0
-            | values -> List.max values
-    string (maxExisting + 1)
+    string ((bookmarkIdMetrics doc).MaxBookmarkId + 1)
+
+let private bookmarkStyleRetainedTextCharCount (bookmarkId: string) (bookmarkName: string) =
+    bookmarkId.Length + bookmarkName.Length + bookmarkId.Length
+
+let private rememberBookmarkIdAfterChange
+    (sourceDoc: Document)
+    (updatedDoc: Document)
+    (bookmarkId: string)
+    (bookmarkName: string) =
+    match tryParseBookmarkId (Some bookmarkId) with
+    | ValueNone -> ()
+    | ValueSome parsed ->
+        let sourceMetrics = bookmarkIdMetrics sourceDoc
+        rememberBookmarkIdMetrics {
+            SourceBlocks = updatedDoc.Blocks
+            MaxBookmarkId = max sourceMetrics.MaxBookmarkId parsed
+            SourceParagraphCount = sourceMetrics.SourceParagraphCount
+            SourceTextCharCount =
+                documentAddCapped
+                    sourceMetrics.SourceTextCharCount
+                    (bookmarkStyleRetainedTextCharCount bookmarkId bookmarkName)
+        }
+
+type private RevisionIdMetricsCache = {
+    SourceBlocks: Block list
+    MaxRevisionId: int
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+}
+
+let mutable private revisionIdMetricsCache: RevisionIdMetricsCache list = []
+let private revisionIdMetricsCacheMaxEntries = 64
+let private revisionIdMetricsCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private revisionIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private revisionIdMetricsCacheMatches blocks cached =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private revisionIdMetricsCacheRetainable cached =
+    cached.SourceParagraphCount <= revisionIdMetricsCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= revisionIdMetricsCacheMaxTotalSourceTextChars
+
+let private revisionIdMetricsSourceTextCharCountFor sourceParagraphCount blocks =
+    documentBlocksSourceTextCharCountFor
+        revisionIdMetricsCacheMaxTotalSourceParagraphs
+        sourceParagraphCount
+        blocks
+
+let private tryParseRevisionId value =
+    match value with
+    | Some raw ->
+        match System.Int32.TryParse(raw) with
+        | true, parsed -> ValueSome parsed
+        | false, _ -> ValueNone
+    | None -> ValueNone
+
+let private rememberRevisionIdMetrics cached =
+    if not (revisionIdMetricsCacheRetainable cached) then
+        revisionIdMetricsCache <- revisionIdMetricsCache |> List.filter (revisionIdMetricsCacheMatches cached.SourceBlocks >> not)
+    else
+        let trim entries =
+            let rec loop keptCount keptBlocks keptSourceTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateBlocks = max 1 candidate.SourceParagraphCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    if revisionIdMetricsCacheRetainable candidate
+                       && keptCount < revisionIdMetricsCacheMaxEntries
+                       && keptBlocks + candidateBlocks <= revisionIdMetricsCacheMaxTotalSourceParagraphs
+                       && keptSourceTextChars + candidateSourceTextChars <= revisionIdMetricsCacheMaxTotalSourceTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptBlocks + candidateBlocks)
+                            (keptSourceTextChars + candidateSourceTextChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptBlocks keptSourceTextChars acc tail
+            loop 0 0 0 [] entries
+        revisionIdMetricsCache <-
+            (cached
+             :: (revisionIdMetricsCache
+                 |> List.filter (revisionIdMetricsCacheMatches cached.SourceBlocks >> not)))
+            |> trim
+
+let private revisionIdMetrics doc =
+    match revisionIdMetricsCache |> List.tryFind (revisionIdMetricsCacheMatches doc.Blocks) with
+    | Some cached -> cached
+    | None ->
+        let mutable maxExisting = 0
+        for block in doc.Blocks do
+            iterTextRunsInBlock block (fun run ->
+                match tryParseRevisionId run.Style.RevisionId with
+                | ValueSome parsed -> maxExisting <- max maxExisting parsed
+                | ValueNone -> ())
+        let sourceParagraphCount =
+            countSourceParagraphsWithLimit revisionIdMetricsCacheMaxTotalSourceParagraphs doc.Blocks
+        let cached = {
+            SourceBlocks = doc.Blocks
+            MaxRevisionId = maxExisting
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = revisionIdMetricsSourceTextCharCountFor sourceParagraphCount doc.Blocks
+        }
+        rememberRevisionIdMetrics cached
+        cached
 
 let private nextRevisionId doc =
-    let maxExisting =
-        doc.Blocks
-        |> List.collect textRunsInBlock
-        |> List.choose (fun run -> run.Style.RevisionId)
-        |> List.choose (fun value ->
-            match System.Int32.TryParse(value) with
-            | true, parsed -> Some parsed
-            | false, _ -> None)
-        |> function
-            | [] -> 0
-            | values -> List.max values
-    string (maxExisting + 1)
+    string ((revisionIdMetrics doc).MaxRevisionId + 1)
+
+let private revisionStyleRetainedTextCharCount
+    (revisionType: string)
+    (revisionId: string)
+    (author: string option)
+    (date: string option) =
+    revisionType.Length
+    + revisionId.Length
+    + documentOptionStringCharCount author
+    + documentOptionStringCharCount date
+
+let private rememberRevisionIdAfterChange
+    (sourceDoc: Document)
+    (updatedDoc: Document)
+    (revisionType: string)
+    (revisionId: string)
+    (author: string option)
+    (date: string option)
+    addedTextChars =
+    match tryParseRevisionId (Some revisionId) with
+    | ValueNone -> ()
+    | ValueSome parsed ->
+        let sourceMetrics = revisionIdMetrics sourceDoc
+        let delta =
+            max 0 addedTextChars
+            + revisionStyleRetainedTextCharCount revisionType revisionId author date
+        rememberRevisionIdMetrics {
+            SourceBlocks = updatedDoc.Blocks
+            MaxRevisionId = max sourceMetrics.MaxRevisionId parsed
+            SourceParagraphCount = sourceMetrics.SourceParagraphCount
+            SourceTextCharCount = documentAddCapped sourceMetrics.SourceTextCharCount delta
+        }
 
 let insertCaption label captionText doc =
-    let result = nextSequenceResult label doc
-    let bookmarkId = nextBookmarkId doc
+    let metrics = captionIdMetrics label doc
+    let resultNumber = metrics.MaxSequenceResult + 1
+    let bookmarkIdNumber = metrics.MaxBookmarkId + 1
+    let result = string resultNumber
+    let bookmarkId = string bookmarkIdNumber
     let bookmarkName = sprintf "_Ref%s" bookmarkId
     let prefix = label + " "
     let suffix = ": " + captionText
@@ -1693,35 +5722,53 @@ let insertCaption label captionText doc =
                 BookmarkEndId = Some bookmarkId
                 FieldCode = Some (sprintf " SEQ %s \\* ARABIC " label)
                 FieldResult = Some result })
-    let para = Paragraph {
+    let paragraph = {
         Id = nextBlockId ()
         Buffer = buffer
         Metadata = { defaultMetadata with Style = Some "Caption" }
     }
-    insertTopLevelBlockAfterSelection para doc
+    let inserted = insertTopLevelBlockAfterSelection (Paragraph paragraph) doc
+    let sourceParagraphCount =
+        if metrics.SourceParagraphCount > captionIdMetricsCacheMaxTotalSourceParagraphs then
+            metrics.SourceParagraphCount
+        else
+            min (captionIdMetricsCacheMaxTotalSourceParagraphs + 1) (metrics.SourceParagraphCount + 1)
+    rememberCaptionIdMetrics {
+        SourceBlocks = inserted.Blocks
+        SourceLabel = label
+        MaxSequenceResult = resultNumber
+        MaxBookmarkId = bookmarkIdNumber
+        LatestCaption = Some (resultNumber, result, bookmarkName)
+        SourceParagraphCount = sourceParagraphCount
+        SourceTextCharCount =
+            documentAddCapped
+                metrics.SourceTextCharCount
+                (documentParagraphSourceTextCharCount paragraph)
+    }
+    inserted
 
 let insertCrossReferenceToLatestCaption label doc =
-    let prefix = sprintf " SEQ %s " label
-    let latest =
-        doc.Blocks
-        |> List.collect textRunsInBlock
-        |> List.choose (fun run ->
-            match run.Style.FieldCode, run.Style.FieldResult, run.Style.BookmarkName with
-            | Some code, Some result, Some bookmarkName when code.StartsWith(prefix) ->
-                match System.Int32.TryParse(result) with
-                | true, number -> Some (number, result, bookmarkName)
-                | false, _ -> None
-            | _ -> None)
-        |> List.sortBy (fun (number, _, _) -> number)
-        |> List.tryLast
-    match latest with
-    | None -> doc
+    match (captionIdMetrics label doc).LatestCaption with
     | Some (_, result, bookmarkName) ->
         insertField (sprintf " REF %s \\h " bookmarkName) result doc
+    | None -> doc
+
+let private isFieldCodeSeparator c =
+    c = ' ' || c = '\t' || c = '\r' || c = '\n'
 
 let private fieldCodeParts (code: string) =
-    code.Trim().Split([| ' '; '\t'; '\r'; '\n' |], System.StringSplitOptions.RemoveEmptyEntries)
-    |> Array.toList
+    let parts = ResizeArray<string>()
+    let mutable tokenStart = -1
+    for i = 0 to code.Length - 1 do
+        if isFieldCodeSeparator code.[i] then
+            if tokenStart >= 0 then
+                parts.Add(code.Substring(tokenStart, i - tokenStart))
+                tokenStart <- -1
+        elif tokenStart < 0 then
+            tokenStart <- i
+    if tokenStart >= 0 then
+        parts.Add(code.Substring(tokenStart, code.Length - tokenStart))
+    resizeArrayToList parts
 
 let private dateFieldFormat (code: string) =
     let formatSwitch = code.IndexOf("\\@")
@@ -1750,7 +5797,21 @@ let private timeFieldFormat (code: string) =
     if code.IndexOf("\\@") < 0 then "h:mm tt" else dateFieldFormat code
 
 let private normalizeStyleKey (s: string) =
-    s.Replace(" ", "").Replace("-", "").ToLowerInvariant()
+    let mutable needsNormalize = false
+    let mutable i = 0
+    while not needsNormalize && i < s.Length do
+        let c = s.[i]
+        if c = ' ' || c = '-' || System.Char.IsUpper c then
+            needsNormalize <- true
+        i <- i + 1
+    if not needsNormalize then
+        s
+    else
+        let builder = System.Text.StringBuilder(s.Length)
+        for c in s do
+            if c <> ' ' && c <> '-' then
+                builder.Append(System.Char.ToLowerInvariant c) |> ignore
+        builder.ToString()
 
 /// Extract the style name a STYLEREF field points at: the first quoted string,
 /// else the first non-switch token after the field name (e.g. STYLEREF Heading1,
@@ -1761,8 +5822,7 @@ let private styleRefStyleName (code: string) =
         let q2 = code.IndexOf('"', q1 + 1)
         if q2 > q1 then Some (code.Substring(q1 + 1, q2 - q1 - 1)) else None
     else
-        code.Trim().Split([| ' '; '\t'; '\r'; '\n' |], System.StringSplitOptions.RemoveEmptyEntries)
-        |> Array.toList
+        fieldCodeParts code
         |> function
            | _ :: rest -> rest |> List.tryFind (fun t -> not (t.StartsWith("\\")))
            | [] -> None
@@ -1778,26 +5838,31 @@ let private tocHeadingRange (code: string) =
     match fieldSwitchValue "\\o" code with
     | None -> 1, 3
     | Some value ->
-        match value.Split('-') with
-        | parts when parts.Length = 2 ->
-            let first = parseBound 1 parts[0]
-            let last = parseBound 3 parts[1]
+        let dashIndex = value.IndexOf('-')
+        if dashIndex >= 0 && dashIndex = value.LastIndexOf('-') then
+            let first = parseBound 1 (value.Substring(0, dashIndex))
+            let last = parseBound 3 (value.Substring(dashIndex + 1))
             min first last, max first last
-        | _ -> 1, 3
+        else
+            1, 3
 
-let private tocHeadingLines code pageMap doc =
+let private tocHeadingLines code (blockPage: BlockId -> int) doc =
     let minLevel, maxLevel = tocHeadingRange code
-    doc.Blocks
-    |> List.choose (function
+    let builder = System.Text.StringBuilder()
+    let mutable firstLine = true
+    let appendLine (text: string) =
+        if firstLine then
+            firstLine <- false
+        else
+            builder.Append('\n') |> ignore
+        builder.Append text |> ignore
+    for block in doc.Blocks do
+        match block with
         | Heading (level, para) when level >= minLevel && level <= maxLevel ->
-            let pageNumber =
-                pageMap.BlockAnchors
-                |> List.tryFind (fun anchor -> anchor.PageBlockId = para.Id)
-                |> Option.map (fun anchor -> anchor.PageNumber)
-                |> Option.defaultValue 1
-            Some (String.replicate (max 0 (level - 1)) "  " + paragraphText para + "\t" + string pageNumber)
-        | _ -> None)
-    |> String.concat "\n"
+            let pageNumber = blockPage para.Id
+            appendLine (String.replicate (max 0 (level - 1)) "  " + paragraphText para + "\t" + string pageNumber)
+        | _ -> ()
+    builder.ToString()
 
 let private tocCaptionLines label doc =
     let hasSequenceField para =
@@ -1816,95 +5881,181 @@ let private tocCaptionLines label doc =
         | _ -> None)
     |> String.concat "\n"
 
-let private collectSequenceRefreshTargets doc =
-    let mutable counters: Map<string, int> = Map.empty
-    let mutable sequences: Map<string, string list> = Map.empty
-    let mutable bookmarks: Map<string, string> = Map.empty
+let private collectSequenceBookmarkResults fieldCodePartsFor doc =
+    let counters = Dictionary<string, int>()
+    let bookmarks = Dictionary<string, string>()
 
     let addSequence label bookmarkName =
-        let next = (counters |> Map.tryFind label |> Option.defaultValue 0) + 1
-        counters <- counters |> Map.add label next
-        let result = string next
-        sequences <- sequences |> Map.add label ((sequences |> Map.tryFind label |> Option.defaultValue []) @ [result])
-        bookmarkName |> Option.iter (fun name -> bookmarks <- bookmarks |> Map.add name result)
+        let mutable previous = 0
+        let next =
+            if counters.TryGetValue(label, &previous) then previous + 1
+            else 1
+        counters.[label] <- next
+        bookmarkName |> Option.iter (fun name -> bookmarks.[name] <- string next)
 
-    editableParagraphsInOrder doc
-    |> List.iter (fun para ->
-        para.Buffer.Runs
-        |> List.iter (function
+    iterEditableParagraphs doc (fun para ->
+        for runItem in para.Buffer.Runs do
+            match runItem with
             | Text run ->
-                match run.Style.FieldCode |> Option.map fieldCodeParts with
+                match run.Style.FieldCode |> Option.map fieldCodePartsFor with
                 | Some ("SEQ" :: label :: _) -> addSequence label run.Style.BookmarkName
                 | _ -> ()
-            | Image _ -> ()))
-    sequences, bookmarks
+            | Image _ -> ())
+    bookmarks
+
+let private collectSequencePageResults fieldCodePartsFor doc fieldPage bookmarkPage =
+    let counters = Dictionary<string, int>()
+    let results = Dictionary<string, ResizeArray<string>>()
+    iterEditableParagraphs doc (fun para ->
+        for runItem in para.Buffer.Runs do
+            match runItem with
+            | Text run ->
+                match run.Style.FieldCode |> Option.map fieldCodePartsFor with
+                | Some ("SEQ" :: label :: _) ->
+                    let mutable previous = 0
+                    let next =
+                        if counters.TryGetValue(label, &previous) then previous + 1
+                        else 1
+                    counters.[label] <- next
+                    let pageNumber = run.Style.BookmarkName |> Option.map bookmarkPage |> Option.defaultValue (fieldPage para.Id run.Start)
+                    let result = string next + "\t" + string pageNumber
+                    let mutable labelResults = Unchecked.defaultof<ResizeArray<string>>
+                    if results.TryGetValue(label, &labelResults) then
+                        labelResults.Add result
+                    else
+                        let labelResults = ResizeArray<string>()
+                        labelResults.Add result
+                        results.[label] <- labelResults
+                | _ -> ()
+            | Image _ -> ())
+    results
 
 let refreshFieldsWithPageMap pageMap doc =
-    let allSequenceResults, allBookmarkResults = collectSequenceRefreshTargets doc
-    let mutable sequenceCounters: Map<string, int> = Map.empty
-    let mutable sequenceResults: Map<string, string list> = Map.empty
+    let sequenceCounters = Dictionary<string, int>()
+    let sequenceResults = Dictionary<string, ResizeArray<string>>()
+    let fieldCodePartsCache = Dictionary<string, string list>()
+    let fieldCodePartsFor code =
+        let mutable parts = Unchecked.defaultof<string list>
+        if fieldCodePartsCache.TryGetValue(code, &parts) then
+            parts
+        else
+            let parts = fieldCodeParts code
+            fieldCodePartsCache.[code] <- parts
+            parts
+    let fieldPageByPosition = Dictionary<struct (BlockId * int), int>()
+    for anchor in pageMap.Fields do
+        fieldPageByPosition.[struct (anchor.PageFieldBlockId, anchor.PageFieldStartOffset)] <- anchor.PageNumber
+    let blockPageById = Dictionary<BlockId, int>()
+    for anchor in pageMap.BlockAnchors do
+        if not (blockPageById.ContainsKey anchor.PageBlockId) then
+            blockPageById.[anchor.PageBlockId] <- anchor.PageNumber
+    let bookmarkPageByName = Dictionary<string, int>()
+    for anchor in pageMap.Bookmarks do
+        if not (bookmarkPageByName.ContainsKey anchor.PageBookmarkName) then
+            bookmarkPageByName.[anchor.PageBookmarkName] <- anchor.PageNumber
 
     let nextSeqResult label =
-        let next = (sequenceCounters |> Map.tryFind label |> Option.defaultValue 0) + 1
-        sequenceCounters <- sequenceCounters |> Map.add label next
+        let mutable previous = 0
+        let next =
+            if sequenceCounters.TryGetValue(label, &previous) then previous + 1
+            else 1
+        sequenceCounters.[label] <- next
         let result = string next
-        let existing = sequenceResults |> Map.tryFind label |> Option.defaultValue []
-        sequenceResults <- sequenceResults |> Map.add label (existing @ [result])
+        let mutable results = Unchecked.defaultof<ResizeArray<string>>
+        if sequenceResults.TryGetValue(label, &results) then
+            results.Add result
+        else
+            let results = ResizeArray<string>()
+            results.Add result
+            sequenceResults.[label] <- results
         result
 
     let fieldPage blockId startOffset =
-        pageMap.Fields
-        |> List.tryFind (fun anchor -> anchor.PageFieldBlockId = blockId && anchor.PageFieldStartOffset = startOffset)
-        |> Option.map (fun anchor -> anchor.PageNumber)
-        |> Option.defaultValue 1
+        let mutable pageNumber = 0
+        if fieldPageByPosition.TryGetValue(struct (blockId, startOffset), &pageNumber) then pageNumber else 1
+
+    let blockPage blockId =
+        let mutable pageNumber = 0
+        if blockPageById.TryGetValue(blockId, &pageNumber) then pageNumber else 1
 
     let bookmarkPage bookmarkName =
-        pageMap.Bookmarks
-        |> List.tryFind (fun anchor -> anchor.PageBookmarkName = bookmarkName)
-        |> Option.map (fun anchor -> anchor.PageNumber)
-        |> Option.defaultValue 1
+        let mutable pageNumber = 0
+        if bookmarkPageByName.TryGetValue(bookmarkName, &pageNumber) then pageNumber else 1
 
-    let sequencePageResults =
-        let mutable counters: Map<string, int> = Map.empty
-        let mutable results: Map<string, string list> = Map.empty
-        editableParagraphsInOrder doc
-        |> List.iter (fun para ->
-            para.Buffer.Runs
-            |> List.iter (function
-                | Text run ->
-                    match run.Style.FieldCode |> Option.map fieldCodeParts with
-                    | Some ("SEQ" :: label :: _) ->
-                        let next = (counters |> Map.tryFind label |> Option.defaultValue 0) + 1
-                        counters <- counters |> Map.add label next
-                        let pageNumber = run.Style.BookmarkName |> Option.map bookmarkPage |> Option.defaultValue (fieldPage para.Id run.Start)
-                        let existing = results |> Map.tryFind label |> Option.defaultValue []
-                        results <- results |> Map.add label (existing @ [sprintf "%d\t%d" next pageNumber])
-                    | _ -> ()
-                | Image _ -> ()))
-        results
+    let mutable sequenceBookmarkResults = ValueNone
+    let allBookmarkResults () =
+        match sequenceBookmarkResults with
+        | ValueSome results -> results
+        | ValueNone ->
+            let results = collectSequenceBookmarkResults fieldCodePartsFor doc
+            sequenceBookmarkResults <- ValueSome results
+            results
 
-    // Ordered (blockId, styleKey, text) for STYLEREF: it shows the text of the
-    // nearest paragraph of the referenced style — search backward from the field,
-    // then forward (matches Word for inline/body STYLEREF use).
-    let orderedBodyParas =
-        editableParagraphsInOrder doc
-        |> List.map (fun p -> p.Id, normalizeStyleKey (p.Metadata.Style |> Option.defaultValue ""), paragraphText p)
+    let mutable sequencePageResults = ValueNone
+    let allSequencePageResults () =
+        match sequencePageResults with
+        | ValueSome results -> results
+        | ValueNone ->
+            let results = collectSequencePageResults fieldCodePartsFor doc fieldPage bookmarkPage
+            sequencePageResults <- ValueSome results
+            results
+
+    let sequencePageLines label =
+        let mutable results = Unchecked.defaultof<ResizeArray<string>>
+        if (allSequencePageResults ()).TryGetValue(label, &results) then
+            stringResizeArrayConcatNewline results
+        else
+            ""
+
+    let mutable styleRefCache = ValueNone
+    let styleRefIndex () =
+        match styleRefCache with
+        | ValueSome cache -> cache
+        | ValueNone ->
+            // Ordered (blockId, styleKey, text) for STYLEREF: it shows the text of the
+            // nearest paragraph of the referenced style — search backward from the field,
+            // then forward (matches Word for inline/body STYLEREF use).
+            let orderedBodyParas = ResizeArray<BlockId * string * string>()
+            let orderedBodyIndex = Dictionary<BlockId, int>()
+            iterEditableParagraphs doc (fun p ->
+                if not (orderedBodyIndex.ContainsKey p.Id) then
+                    orderedBodyIndex.[p.Id] <- orderedBodyParas.Count
+                orderedBodyParas.Add(p.Id, normalizeStyleKey (p.Metadata.Style |> Option.defaultValue ""), paragraphText p))
+            let cache = struct (orderedBodyParas, orderedBodyIndex)
+            styleRefCache <- ValueSome cache
+            cache
 
     let styleRefResult blockId styleName =
+        let struct (orderedBodyParas, orderedBodyIndex) = styleRefIndex ()
         let wanted =
             match System.Int32.TryParse(styleName: string) with
             | true, n -> "heading" + string n
             | false, _ -> normalizeStyleKey styleName
-        let pick = List.tryPick (fun (_, key, t) -> if key = wanted && t <> "" then Some t else None)
-        match orderedBodyParas |> List.tryFindIndex (fun (id, _, _) -> id = blockId) with
-        | None -> pick orderedBodyParas
-        | Some i ->
-            let before = orderedBodyParas |> List.take i |> List.rev
-            let after = orderedBodyParas |> List.skip i
-            pick before |> Option.orElseWith (fun () -> pick after)
+        let mutable result: string option = None
+        let tryPick index =
+            if result.IsNone && index >= 0 && index < orderedBodyParas.Count then
+                let _, key, text = orderedBodyParas.[index]
+                if key = wanted && text <> "" then
+                    result <- Some text
+        let mutable index = 0
+        if orderedBodyIndex.TryGetValue(blockId, &index) then
+            let mutable i = index - 1
+            while result.IsNone && i >= 0 do
+                tryPick i
+                i <- i - 1
+            i <- index
+            while result.IsNone && i < orderedBodyParas.Count do
+                tryPick i
+                i <- i + 1
+        else
+            let mutable i = 0
+            while result.IsNone && i < orderedBodyParas.Count do
+                tryPick i
+                i <- i + 1
+        result
 
     let resultForField blockId startOffset style text =
-        match style.FieldCode |> Option.map (fun code -> code, fieldCodeParts code) with
+        match style.FieldCode |> Option.map (fun code -> code, fieldCodePartsFor code) with
         | Some (code, "DATE" :: _) -> System.DateTime.Now.ToString(dateFieldFormat code)
         | Some (code, "TIME" :: _) -> System.DateTime.Now.ToString(timeFieldFormat code)
         | Some (code, "STYLEREF" :: _) ->
@@ -1913,21 +6064,23 @@ let refreshFieldsWithPageMap pageMap doc =
             | None -> text
         | Some (code, "TOC" :: _) ->
             match fieldSwitchValue "\\c" code with
-            | Some label -> sequencePageResults |> Map.tryFind label |> Option.defaultValue [] |> String.concat "\n"
-            | None -> tocHeadingLines code pageMap doc
+            | Some label -> sequencePageLines label
+            | None -> tocHeadingLines code blockPage doc
         | Some (_, "SEQ" :: label :: _) ->
             nextSeqResult label
         | Some (_, "REF" :: bookmarkName :: _) ->
-            allBookmarkResults |> Map.tryFind bookmarkName |> Option.defaultValue text
+            let mutable result = Unchecked.defaultof<string>
+            if (allBookmarkResults ()).TryGetValue(bookmarkName, &result) then result else text
         | Some (_, "PAGE" :: _) -> string (fieldPage blockId startOffset)
         | Some (_, "PAGEREF" :: bookmarkName :: _) -> string (bookmarkPage bookmarkName)
         | Some (_, "NUMPAGES" :: _) -> string pageMap.PageCount
         | _ -> text
 
-    (doc, editableParagraphsInOrder doc)
-    ||> List.fold (fun currentDoc para ->
+    let replacements = Dictionary<BlockId, ParagraphBlock>()
+    iterEditableParagraphs doc (fun para ->
         let mutable buffer = para.Buffer
         let mutable shift = 0
+        let mutable changed = false
         for run in para.Buffer.Runs do
             match run with
             | Image _ -> ()
@@ -1942,73 +6095,194 @@ let refreshFieldsWithPageMap pageMap doc =
                         let newStyle = { textRun.Style with FieldResult = Some newText }
                         buffer <- buffer |> TextBuffer.delete start textRun.Length |> TextBuffer.insert start newText |> TextBuffer.applyStyle start newText.Length (fun _ -> newStyle)
                         shift <- shift + newText.Length - textRun.Length
-                    else
+                        changed <- true
+                    elif textRun.Style.FieldResult <> Some oldText then
                         buffer <- buffer |> TextBuffer.applyStyle start textRun.Length (fun style -> { style with FieldResult = Some oldText })
-        replaceParagraph currentDoc para.Id { para with Buffer = buffer })
+                        changed <- true
+        if changed then
+            replacements.[para.Id] <- { para with Buffer = buffer })
+    replaceParagraphs doc replacements
+
+type private FieldPresenceCache = {
+    SourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    HasFields: bool
+    RequiresPageMap: bool
+}
+
+let mutable private fieldPresenceCache: FieldPresenceCache list = []
+let private fieldPresenceCacheMaxEntries = 64
+let private fieldPresenceCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private fieldPresenceCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private fieldPresenceCacheMatches blocks (cached: FieldPresenceCache) =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private fieldPresenceCacheRetainable (cached: FieldPresenceCache) =
+    cached.SourceParagraphCount <= fieldPresenceCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= fieldPresenceCacheMaxTotalSourceTextChars
+
+let private rememberFieldPresence cached =
+    if not (fieldPresenceCacheRetainable cached) then
+        fieldPresenceCache <- fieldPresenceCache |> List.filter (fieldPresenceCacheMatches cached.SourceBlocks >> not)
+    else
+        let trim (entries: FieldPresenceCache list) =
+            let rec loop keptCount keptSourceParagraphs keptSourceTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateSourceParagraphs = max 1 candidate.SourceParagraphCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    if fieldPresenceCacheRetainable candidate
+                       && keptCount < fieldPresenceCacheMaxEntries
+                       && keptSourceParagraphs + candidateSourceParagraphs <= fieldPresenceCacheMaxTotalSourceParagraphs
+                       && keptSourceTextChars + candidateSourceTextChars <= fieldPresenceCacheMaxTotalSourceTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptSourceParagraphs + candidateSourceParagraphs)
+                            (keptSourceTextChars + candidateSourceTextChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptSourceParagraphs keptSourceTextChars acc tail
+            loop 0 0 0 [] entries
+        fieldPresenceCache <-
+            (cached
+             :: (fieldPresenceCache
+                 |> List.filter (fieldPresenceCacheMatches cached.SourceBlocks >> not)))
+            |> trim
+
+let private fieldCodeRequiresPageMap code =
+    match fieldCodeParts code with
+    | "PAGE" :: _
+    | "PAGEREF" :: _
+    | "NUMPAGES" :: _
+    | "TOC" :: _ -> true
+    | _ -> false
+
+let private documentFieldRefreshRequirements doc =
+    match fieldPresenceCache |> List.tryFind (fieldPresenceCacheMatches doc.Blocks) with
+    | Some cached ->
+        struct (cached.HasFields, cached.RequiresPageMap)
+    | None ->
+        let mutable hasFields = false
+        let mutable requiresPageMap = false
+        iterEditableParagraphsUntil doc (fun para ->
+            let mutable remaining = para.Buffer.Runs
+            while not requiresPageMap && not remaining.IsEmpty do
+                match remaining with
+                | Text run :: tail ->
+                    match run.Style.FieldCode with
+                    | Some code ->
+                        hasFields <- true
+                        if fieldCodeRequiresPageMap code then
+                            requiresPageMap <- true
+                    | None -> ()
+                    remaining <- tail
+                | _ :: tail ->
+                    remaining <- tail
+                | [] -> ()
+            not requiresPageMap)
+        let sourceParagraphCount = countSourceParagraphs doc.Blocks
+        rememberFieldPresence {
+            SourceBlocks = doc.Blocks
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount =
+                documentBlocksSourceTextCharCountFor
+                    fieldPresenceCacheMaxTotalSourceParagraphs
+                    sourceParagraphCount
+                    doc.Blocks
+            HasFields = hasFields
+            RequiresPageMap = requiresPageMap
+        }
+        struct (hasFields, requiresPageMap)
+
+let private emptyPageMap = {
+    PageCount = 1
+    BlockAnchors = []
+    Fields = []
+    Bookmarks = []
+}
 
 let refreshFields doc =
-    refreshFieldsWithPageMap (buildPageMap doc) doc
+    match documentFieldRefreshRequirements doc with
+    | struct (false, _) -> doc
+    | struct (true, true) -> refreshFieldsWithPageMap (buildPageMap doc) doc
+    | struct (true, false) -> refreshFieldsWithPageMap emptyPageMap doc
 
 let setCurrentTextBoxStyle x y width height fillColor borderColor borderWidth doc =
-    let selectedTextBoxId =
+    let fillColor = if System.String.IsNullOrWhiteSpace fillColor then None else Some fillColor
+    let borderColor = if System.String.IsNullOrWhiteSpace borderColor then None else Some borderColor
+    let borderWidth = if borderWidth > 0.0 then Some borderWidth else None
+    let selectedBlockId =
         doc.Selection
-        |> Option.bind (fun sel ->
-            doc.Blocks
-            |> List.tryPick (function
-                | TextBox textBox when textBox.Id = sel.Focus.BlockId -> Some textBox.Id
-                | _ -> None))
-    let fallbackTextBoxId =
-        doc.Blocks
-        |> List.rev
-        |> List.tryPick (function
-            | TextBox textBox -> Some textBox.Id
-            | _ -> None)
-    match selectedTextBoxId |> Option.orElse fallbackTextBoxId with
+        |> Option.map (fun sel -> sel.Focus.BlockId)
+    let mutable selectedTextBox = None
+    let mutable lastTextBox = None
+    let mutable remaining = doc.Blocks
+    let mutable scannedBlockCount = 0
+    while selectedTextBox.IsNone && not remaining.IsEmpty do
+        match remaining with
+        | TextBox textBox :: tail ->
+            scannedBlockCount <- scannedBlockCount + 1
+            lastTextBox <- Some textBox
+            match selectedBlockId with
+            | Some blockId when blockId = textBox.Id -> selectedTextBox <- Some textBox
+            | _ -> ()
+            remaining <- tail
+        | _ :: tail ->
+            scannedBlockCount <- scannedBlockCount + 1
+            remaining <- tail
+        | [] -> ()
+    if selectedTextBox.IsNone then
+        for block in remaining do
+            match block with
+            | TextBox textBox -> lastTextBox <- Some textBox
+            | _ -> ()
+    match selectedTextBox |> Option.orElse lastTextBox with
     | None -> doc
-    | Some textBoxId ->
-        { doc with
-            Blocks =
-                doc.Blocks
-                |> List.map (function
-                    | TextBox textBox when textBox.Id = textBoxId ->
-                        TextBox { textBox with
-                                    X = Some x
-                                    Y = Some y
-                                    Width = width
-                                    Height = height
-                                    FillColor = if System.String.IsNullOrWhiteSpace fillColor then None else Some fillColor
-                                    BorderColor = if System.String.IsNullOrWhiteSpace borderColor then None else Some borderColor
-                                    BorderWidth = if borderWidth > 0.0 then Some borderWidth else None }
-                    | block -> block) }
+    | Some textBox ->
+        let nextTextBox =
+            { textBox with
+                X = Some x
+                Y = Some y
+                Width = width
+                Height = height
+                FillColor = fillColor
+                BorderColor = borderColor
+                BorderWidth = borderWidth }
+        if nextTextBox = textBox then
+            doc
+        else
+            let prefix = ResizeArray<Block>(max 0 scannedBlockCount)
+            let rec updateBlocks remaining =
+                match remaining with
+                | [] -> doc
+                | TextBox existing :: tail when existing.Id = textBox.Id ->
+                    { doc with Blocks = prependResizeArray prefix (TextBox nextTextBox :: tail) }
+                | block :: tail ->
+                    prefix.Add block
+                    updateBlocks tail
+            updateBlocks doc.Blocks
 
 let setSelectedTableCellStyleWithShading backgroundColor shading width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
     match currentTableCell doc with
     | None -> doc
     | Some (tableId, rowIndex, colIndex) ->
         updateTable doc tableId (fun table ->
-            { table with
-                Rows =
-                    table.Rows
-                    |> List.mapi (fun r row ->
-                        if r <> rowIndex then row
-                        else
-                            { row with
-                                Cells =
-                                    row.Cells
-                                    |> List.mapi (fun c cell ->
-                                        if c <> colIndex then cell
-                                        else
-                                            { cell with
-                                                BackgroundColor = backgroundColor
-                                                Shading = shading
-                                                Width = width
-                                                BorderColor = borderColor
-                                                BorderWidth = borderWidth
-                                                VerticalAlignment = verticalAlignment
-                                                PaddingTop = paddingTop
-                                                PaddingRight = paddingRight
-                                                PaddingBottom = paddingBottom
-                                                PaddingLeft = paddingLeft }) }) })
+            updateTableCell rowIndex colIndex (fun cell ->
+                { cell with
+                    BackgroundColor = backgroundColor
+                    Shading = shading
+                    Width = width
+                    BorderColor = borderColor
+                    BorderWidth = borderWidth
+                    VerticalAlignment = verticalAlignment
+                    PaddingTop = paddingTop
+                    PaddingRight = paddingRight
+                    PaddingBottom = paddingBottom
+                    PaddingLeft = paddingLeft }) table)
 
 let setSelectedTableCellStyle backgroundColor width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
     setSelectedTableCellStyleWithShading backgroundColor None width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc
@@ -2018,23 +6292,36 @@ let setCurrentTableCellMargins paddingTop paddingRight paddingBottom paddingLeft
     | None -> doc
     | Some (tableId, _, _) ->
         updateTable doc tableId (fun table ->
-            { table with
-                PaddingTop = paddingTop
-                PaddingRight = paddingRight
-                PaddingBottom = paddingBottom
-                PaddingLeft = paddingLeft })
+            if table.PaddingTop = paddingTop
+               && table.PaddingRight = paddingRight
+               && table.PaddingBottom = paddingBottom
+               && table.PaddingLeft = paddingLeft then
+                table
+            else
+                { table with
+                    PaddingTop = paddingTop
+                    PaddingRight = paddingRight
+                    PaddingBottom = paddingBottom
+                    PaddingLeft = paddingLeft })
 
 let setCurrentTableCellMarginsAndSpacing paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc =
     match currentTableCell doc with
     | None -> doc
     | Some (tableId, _, _) ->
         updateTable doc tableId (fun table ->
-            { table with
-                PaddingTop = paddingTop
-                PaddingRight = paddingRight
-                PaddingBottom = paddingBottom
-                PaddingLeft = paddingLeft
-                CellSpacing = cellSpacing })
+            if table.PaddingTop = paddingTop
+               && table.PaddingRight = paddingRight
+               && table.PaddingBottom = paddingBottom
+               && table.PaddingLeft = paddingLeft
+               && table.CellSpacing = cellSpacing then
+                table
+            else
+                { table with
+                    PaddingTop = paddingTop
+                    PaddingRight = paddingRight
+                    PaddingBottom = paddingBottom
+                    PaddingLeft = paddingLeft
+                    CellSpacing = cellSpacing })
 
 let private headingFontSize level =
     match level with
@@ -2043,9 +6330,17 @@ let private headingFontSize level =
     | 3 -> 14.0
     | _ -> 11.0
 
+let private hasHeadingStyle level buffer =
+    let bold = level >= 1 && level <= 3
+    let fontSize = headingFontSize level
+    buffer.Runs
+    |> List.forall (function
+        | Text tr -> tr.Style.Bold = bold && tr.Style.FontSize = fontSize
+        | Image _ -> true)
+
 let private styleHeadingBuffer level buffer =
     let len = TextBuffer.length buffer
-    if len = 0 then buffer
+    if len = 0 || hasHeadingStyle level buffer then buffer
     else
         TextBuffer.applyStyle 0 len (fun style ->
             { style with
@@ -2056,20 +6351,30 @@ let setHeadingLevel level doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | Some (Paragraph para)
-        | Some (Heading (_, para)) ->
-            let boundedLevel = max 1 (min 3 level)
-            let styledPara = { para with Buffer = styleHeadingBuffer boundedLevel para.Buffer }
-            replaceBlock doc para.Id (Heading (boundedLevel, styledPara))
+        match tryFindTopBlockUntil doc sel.Focus.BlockId with
+        | Some block ->
+            match block with
+            | Paragraph para
+            | Heading (_, para) ->
+                let boundedLevel = max 1 (min 3 level)
+                let styledBuffer = styleHeadingBuffer boundedLevel para.Buffer
+                match block with
+                | Heading (currentLevel, _) when currentLevel = boundedLevel && obj.ReferenceEquals(styledBuffer, para.Buffer) ->
+                    doc
+                | _ ->
+                    let styledPara =
+                        if obj.ReferenceEquals(styledBuffer, para.Buffer) then para
+                        else { para with Buffer = styledBuffer }
+                    replaceFirstTopLevelBlock doc para.Id (Heading (boundedLevel, styledPara))
+            | _ -> doc
         | _ -> doc
 
 let clearHeading doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | Some (Heading (_, para)) -> replaceBlock doc para.Id (Paragraph para)
+        match tryFindTopBlockUntil doc sel.Focus.BlockId with
+        | Some (Heading (_, para)) -> replaceFirstTopLevelBlock doc para.Id (Paragraph para)
         | _ -> doc
 
 /// Move cursor left
@@ -2089,7 +6394,7 @@ let moveCursorRight doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findParagraph doc sel.Focus.BlockId with
+        match findCursorParagraph doc sel.Focus.BlockId with
         | None -> doc
         | Some para ->
             let maxOffset = TextBuffer.length para.Buffer
@@ -2116,7 +6421,7 @@ let extendSelectionRight doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        match findParagraph doc sel.Focus.BlockId with
+        match findCursorParagraph doc sel.Focus.BlockId with
         | None -> doc
         | Some para ->
             let maxOffset = TextBuffer.length para.Buffer
@@ -2128,138 +6433,906 @@ let extendSelectionRight doc =
 
 /// Get document text (for testing/debugging)
 let getText doc =
-    editableParagraphsInOrder doc
-    |> List.map (fun para -> TextBuffer.toString para.Buffer)
-    |> String.concat "\n"
+    match documentTextCache |> List.tryFind (documentTextCacheMatches doc.Blocks) with
+    | Some cached ->
+        cached.Text
+    | None ->
+        let sb =
+            if documentTextCanPreSizeBuilder doc.Blocks then
+                let mutable totalLength = 0L
+                let mutable paragraphCount = 0L
+                iterEditableParagraphs doc (fun para ->
+                    totalLength <- totalLength + int64 (TextBuffer.length para.Buffer)
+                    paragraphCount <- paragraphCount + 1L)
+                let separatorLength = max 0L (paragraphCount - 1L)
+                let capacity = min (int64 System.Int32.MaxValue) (totalLength + separatorLength) |> int
+                System.Text.StringBuilder(capacity)
+            else
+                System.Text.StringBuilder()
+        let mutable first = true
+        let mutable sourceParagraphCount = 0
+        iterEditableParagraphs doc (fun para ->
+            if sourceParagraphCount <= documentTextCacheMaxTotalSourceParagraphs then
+                sourceParagraphCount <- sourceParagraphCount + 1
+            if first then
+                first <- false
+            else
+                sb.Append '\n' |> ignore
+            TextBuffer.appendToStringBuilder sb para.Buffer)
+        let text = sb.ToString()
+        let sourceParagraphCount =
+            if text.Length > documentTextCacheMaxTotalChars
+               || sourceParagraphCount >= documentTextCacheMaxTotalSourceParagraphs then
+                documentTextCacheMaxTotalSourceParagraphs + 1
+            else
+                sourceParagraphCount
+        rememberDocumentText {
+            SourceBlocks = doc.Blocks
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount =
+                documentTextSourceTextCharCountFor
+                    text.Length
+                    sourceParagraphCount
+                    doc.Blocks
+            Text = text
+            TextLength = text.Length
+        }
+        text
 
-let private textForSearch matchCase (text: string) =
-    if matchCase then text else text.ToLowerInvariant()
+let private iterMatchesInBuffer matchCase (query: string) (buffer: TextBuffer.TextBuffer) (emit: FindMatch -> unit) =
+    TextBuffer.iterMatchRanges matchCase query buffer (fun start finish ->
+        let matchText =
+            if matchCase then query
+            else TextBuffer.slice start (finish - start) buffer
+        emit { BlockId = ""; Start = start; End = finish; Text = matchText })
+
+let private indexOfQueryInString matchCase (query: string) (text: string) start =
+#if FABLE_COMPILER
+    if start > text.Length - query.Length then
+        -1
+    elif matchCase then
+        text.IndexOf(query, start)
+    else
+        let charEqualsIgnoreCase a b =
+            a = b || System.Char.ToUpperInvariant a = System.Char.ToUpperInvariant b
+        let mutable found = -1
+        let mutable index = start
+        while found < 0 && index <= text.Length - query.Length do
+            let mutable offset = 0
+            let mutable matches = true
+            while matches && offset < query.Length do
+                if not (charEqualsIgnoreCase text.[index + offset] query.[offset]) then
+                    matches <- false
+                offset <- offset + 1
+            if matches then
+                found <- index
+            index <- index + 1
+        found
+#else
+    let comparison = if matchCase then System.StringComparison.Ordinal else System.StringComparison.OrdinalIgnoreCase
+    text.IndexOf(query, start, comparison)
+#endif
+
+let private iterMatchesInStringFromFirst matchCase (query: string) (text: string) firstIndex (emit: FindMatch -> unit) =
+    let queryLength = query.Length
+    let mutable index = firstIndex
+    while index >= 0 do
+        let finish = index + queryLength
+        let matchText =
+            if matchCase then query
+            else text.Substring(index, queryLength)
+        emit { BlockId = ""; Start = index; End = finish; Text = matchText }
+        index <- indexOfQueryInString matchCase query text finish
+
+let private iterMatchRangesInStringFromFirst matchCase (query: string) (text: string) firstIndex (emit: int -> int -> unit) =
+    let queryLength = query.Length
+    let mutable index = firstIndex
+    while index >= 0 do
+        let finish = index + queryLength
+        emit index finish
+        index <- indexOfQueryInString matchCase query text finish
+
+let private substringEqualsOrdinal (text: string) start length (value: string) =
+    if length <> value.Length then
+        false
+    else
+        let mutable equal = true
+        let mutable offset = 0
+        while equal && offset < length do
+            if text.[start + offset] <> value.[offset] then
+                equal <- false
+            offset <- offset + 1
+        equal
+
+let private allStringMatchesEqualReplacement matchCase (query: string) (replacement: string) (text: string) firstIndex =
+    if query.Length <> replacement.Length then
+        false
+    else
+        let mutable allEqual = true
+        let mutable index = firstIndex
+        while allEqual && index >= 0 do
+            allEqual <- substringEqualsOrdinal text index query.Length replacement
+            index <- indexOfQueryInString matchCase query text (index + query.Length)
+        allEqual
+
+let private bufferRangeEqualsReplacement start finish (replacement: string) (buffer: TextBuffer.TextBuffer) =
+    let length = finish - start
+    if length <> replacement.Length then
+        false
+    else
+        match TextBuffer.trySliceNoCopyV start length buffer with
+        | ValueSome text -> text = replacement
+        | ValueNone -> TextBuffer.slice start length buffer = replacement
+
+let private tryReplaceSingleRunTextFromFirst matchCase (query: string) (replacement: string) (text: string) firstIndex (buffer: TextBuffer.TextBuffer) =
+    match buffer.Runs with
+    | [ Text tr ] when tr.Start = 0 && tr.Length = text.Length ->
+        let builder = System.Text.StringBuilder(text.Length)
+        let appendTextSlice start finish =
+            if finish > start then
+#if FABLE_COMPILER
+                builder.Append(text.Substring(start, finish - start)) |> ignore
+#else
+                builder.Append(text, start, finish - start) |> ignore
+#endif
+        let queryLength = query.Length
+        let replacementLength = replacement.Length
+        let mutable cursor = 0
+        let mutable count = 0
+        let mutable index = firstIndex
+        while index >= 0 do
+            let finish = index + queryLength
+            appendTextSlice cursor index
+            if replacementLength > 0 then
+                builder.Append replacement |> ignore
+            cursor <- finish
+            count <- count + 1
+            index <- indexOfQueryInString matchCase query text finish
+        appendTextSlice cursor text.Length
+        let replacedText = builder.ToString()
+        Some (
+            { Rope = RedBat.Word.Rope.ofString replacedText
+              Runs = if replacedText.Length > 0 then [ Text { tr with Length = replacedText.Length } ] else [] },
+            count)
+    | _ ->
+        None
 
 let private findMatchesInText matchCase (query: string) (text: string) =
-    if query = "" then
-        []
+    let matches = ResizeArray<FindMatch>()
+    let buffer = TextBuffer.ofString text
+    iterMatchesInBuffer matchCase query buffer matches.Add
+    resizeArrayToList matches
+
+type private FindTextCacheEntry = {
+    Matches: FindMatch array
+    mutable MatchesList: FindMatch list option
+    ResultTextCharCount: int
+}
+
+type private FindTextCache = {
+    SourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    Entries: Dictionary<struct (string * bool), FindTextCacheEntry>
+    Order: Queue<struct (string * bool)>
+    mutable TotalResultCount: int
+    mutable TotalResultTextCharCount: int
+    mutable TotalQueryCharCount: int
+}
+
+let mutable private findTextCache: FindTextCache list = []
+let private findTextCacheMaxEntries = 64
+let private findTextCacheMaxSources = 64
+let private findTextCacheMaxResultCount = 200000
+let private findTextCacheMaxTotalResultCount = 200000
+let private findTextCacheMaxTotalResultTextChars = documentSourceTextCacheMaxTotalChars
+let private findTextCacheMaxTotalQueryChars = documentSourceTextCacheMaxTotalChars
+let private findTextCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private findTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private arrayToList (items: 'T array) =
+    let mutable result = []
+    for i = items.Length - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
+let private findTextCacheKeyCharCount (struct (query, _): struct (string * bool)) =
+    query.Length
+
+let private findTextCacheResultTextCharCount matchCase (matches: FindMatch array) =
+    if matchCase then
+        0
     else
-        let source = textForSearch matchCase text
-        let needle = textForSearch matchCase query
-        let mutable offset = 0
-        let mutable matches = []
-        let mutable searching = true
+        let limit = findTextCacheMaxTotalResultTextChars + 1
+        let mutable total = 0
+        let mutable index = 0
+        while total <= findTextCacheMaxTotalResultTextChars
+              && index < matches.Length do
+            total <- documentAddCapped total matches.[index].Text.Length
+            index <- index + 1
+        min total limit
 
-        while searching do
-            let index = source.IndexOf(needle, offset)
-            if index < 0 then
-                searching <- false
-            else
-                matches <- matches @ [{ BlockId = ""; Start = index; End = index + query.Length; Text = text.Substring(index, query.Length) }]
-                offset <- index + max 1 query.Length
-
+let private findTextCacheEntryList (entry: FindTextCacheEntry) =
+    match entry.MatchesList with
+    | Some matches -> matches
+    | None ->
+        let matches = arrayToList entry.Matches
+        entry.MatchesList <- Some matches
         matches
 
+let private findTextSourceParagraphCountFor resultCount resultTextCharCount keyCharCount blocks =
+    if resultCount > findTextCacheMaxResultCount
+       || resultTextCharCount > findTextCacheMaxTotalResultTextChars
+       || keyCharCount > findTextCacheMaxTotalQueryChars then
+        findTextCacheMaxTotalSourceParagraphs + 1
+    else
+        countSourceParagraphs blocks
+
+let private findTextSourceTextCharCountFor resultCount resultTextCharCount keyCharCount sourceParagraphCount blocks =
+    if resultCount > findTextCacheMaxResultCount
+       || resultTextCharCount > findTextCacheMaxTotalResultTextChars
+       || keyCharCount > findTextCacheMaxTotalQueryChars
+       || sourceParagraphCount > findTextCacheMaxTotalSourceParagraphs then
+        findTextCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            findTextCacheMaxTotalSourceParagraphs
+            sourceParagraphCount
+            blocks
+
+let private findTextCacheMatches blocks (cached: FindTextCache) =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private findTextCacheRetainable (cached: FindTextCache) =
+    cached.Entries.Count > 0
+    && cached.Entries.Count <= findTextCacheMaxEntries
+    && cached.TotalResultCount <= findTextCacheMaxTotalResultCount
+    && cached.TotalResultTextCharCount <= findTextCacheMaxTotalResultTextChars
+    && cached.TotalQueryCharCount <= findTextCacheMaxTotalQueryChars
+    && cached.SourceParagraphCount <= findTextCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= findTextCacheMaxTotalSourceTextChars
+
+let private rememberFindTextCache cached =
+    if not (findTextCacheRetainable cached) then
+        findTextCache <- findTextCache |> List.filter (findTextCacheMatches cached.SourceBlocks >> not)
+    else
+        let mutable keptCount = 1
+        let mutable keptResults = cached.TotalResultCount
+        let mutable keptResultTextChars = cached.TotalResultTextCharCount
+        let mutable keptQueryChars = cached.TotalQueryCharCount
+        let mutable keptBlocks = max 1 cached.SourceParagraphCount
+        let mutable keptSourceTextChars = max 1 cached.SourceTextCharCount
+        let retained =
+            findTextCache
+            |> List.filter (findTextCacheMatches cached.SourceBlocks >> not)
+            |> List.choose (fun candidate ->
+                let candidateResults = candidate.TotalResultCount
+                let candidateResultTextChars = candidate.TotalResultTextCharCount
+                let candidateQueryChars = max 1 candidate.TotalQueryCharCount
+                let candidateBlocks = max 1 candidate.SourceParagraphCount
+                let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                if findTextCacheRetainable candidate
+                   && keptCount < findTextCacheMaxSources
+                   && keptResults + candidateResults <= findTextCacheMaxTotalResultCount
+                   && keptResultTextChars + candidateResultTextChars <= findTextCacheMaxTotalResultTextChars
+                   && keptQueryChars + candidateQueryChars <= findTextCacheMaxTotalQueryChars
+                   && keptBlocks + candidateBlocks <= findTextCacheMaxTotalSourceParagraphs
+                   && keptSourceTextChars + candidateSourceTextChars <= findTextCacheMaxTotalSourceTextChars then
+                    keptCount <- keptCount + 1
+                    keptResults <- keptResults + candidateResults
+                    keptResultTextChars <- keptResultTextChars + candidateResultTextChars
+                    keptQueryChars <- keptQueryChars + candidateQueryChars
+                    keptBlocks <- keptBlocks + candidateBlocks
+                    keptSourceTextChars <- keptSourceTextChars + candidateSourceTextChars
+                    Some candidate
+                else
+                    None)
+        findTextCache <- cached :: retained
+
+let private cachedFindTextMatches query matchCase doc =
+    let key = struct (query, matchCase)
+    match findTextCache |> List.tryFind (findTextCacheMatches doc.Blocks) with
+    | Some cached when findTextCacheRetainable cached ->
+        let mutable entry = Unchecked.defaultof<FindTextCacheEntry>
+        if cached.Entries.TryGetValue(key, &entry) then Some entry else None
+    | Some cached ->
+        rememberFindTextCache cached
+        None
+    | None -> None
+
+let private removeFindTextCacheEntry key (cache: FindTextCache) =
+    let mutable existing = Unchecked.defaultof<FindTextCacheEntry>
+    if cache.Entries.TryGetValue(key, &existing) then
+        cache.TotalResultCount <- max 0 (cache.TotalResultCount - existing.Matches.Length)
+        cache.TotalResultTextCharCount <- max 0 (cache.TotalResultTextCharCount - existing.ResultTextCharCount)
+        cache.TotalQueryCharCount <- max 0 (cache.TotalQueryCharCount - findTextCacheKeyCharCount key)
+        cache.Entries.Remove key |> ignore
+
+let private addFindTextCacheEntry key entry (cache: FindTextCache) =
+    let mutable existing = Unchecked.defaultof<FindTextCacheEntry>
+    let keyCharCount = findTextCacheKeyCharCount key
+    if entry.Matches.Length > findTextCacheMaxResultCount
+       || entry.ResultTextCharCount > findTextCacheMaxTotalResultTextChars
+       || keyCharCount > findTextCacheMaxTotalQueryChars then
+        removeFindTextCacheEntry key cache
+    else
+        let alreadyCached = cache.Entries.TryGetValue(key, &existing)
+        if alreadyCached then
+            cache.TotalResultCount <- max 0 (cache.TotalResultCount - existing.Matches.Length)
+            cache.TotalResultTextCharCount <- max 0 (cache.TotalResultTextCharCount - existing.ResultTextCharCount)
+        else
+            cache.Order.Enqueue key
+            cache.TotalQueryCharCount <- cache.TotalQueryCharCount + keyCharCount
+        cache.Entries.[key] <- entry
+        cache.TotalResultCount <- cache.TotalResultCount + entry.Matches.Length
+        cache.TotalResultTextCharCount <- cache.TotalResultTextCharCount + entry.ResultTextCharCount
+        while (cache.Entries.Count > findTextCacheMaxEntries
+               || cache.TotalResultCount > findTextCacheMaxTotalResultCount
+               || cache.TotalResultTextCharCount > findTextCacheMaxTotalResultTextChars
+               || cache.TotalQueryCharCount > findTextCacheMaxTotalQueryChars)
+              && cache.Order.Count > 0 do
+            let oldest = cache.Order.Dequeue()
+            if oldest <> key then
+                removeFindTextCacheEntry oldest cache
+        if cache.Entries.Count > findTextCacheMaxEntries
+           || cache.TotalResultCount > findTextCacheMaxTotalResultCount
+           || cache.TotalResultTextCharCount > findTextCacheMaxTotalResultTextChars
+           || cache.TotalQueryCharCount > findTextCacheMaxTotalQueryChars then
+            let current = cache.Entries.[key]
+            cache.Entries.Clear()
+            cache.Order.Clear()
+            cache.Order.Enqueue key
+            cache.Entries.[key] <- current
+            cache.TotalResultCount <- current.Matches.Length
+            cache.TotalResultTextCharCount <- current.ResultTextCharCount
+            cache.TotalQueryCharCount <- keyCharCount
+
+let private rememberFindTextMatchesWithSourceMetrics query matchCase doc matches matchesList sourceParagraphCountOpt sourceTextCharCountOpt =
+    let key = struct (query, matchCase)
+    let keyCharCount = findTextCacheKeyCharCount key
+    let entry = {
+        Matches = matches
+        MatchesList = matchesList
+        ResultTextCharCount = findTextCacheResultTextCharCount matchCase matches
+    }
+    match findTextCache |> List.tryFind (findTextCacheMatches doc.Blocks) with
+    | Some cached ->
+        addFindTextCacheEntry key entry cached
+        rememberFindTextCache cached
+    | None ->
+        let entries = Dictionary<struct (string * bool), FindTextCacheEntry>()
+        let order = Queue<struct (string * bool)>()
+        let sourceParagraphCount =
+            match sourceParagraphCountOpt with
+            | ValueSome count -> count
+            | ValueNone ->
+                findTextSourceParagraphCountFor
+                    matches.Length
+                    entry.ResultTextCharCount
+                    keyCharCount
+                    doc.Blocks
+        let sourceTextCharCount =
+            match sourceTextCharCountOpt with
+            | ValueSome count -> count
+            | ValueNone ->
+                findTextSourceTextCharCountFor
+                    matches.Length
+                    entry.ResultTextCharCount
+                    keyCharCount
+                    sourceParagraphCount
+                    doc.Blocks
+        let cache = {
+            SourceBlocks = doc.Blocks
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = sourceTextCharCount
+            Entries = entries
+            Order = order
+            TotalResultCount = 0
+            TotalResultTextCharCount = 0
+            TotalQueryCharCount = 0
+        }
+        addFindTextCacheEntry key entry cache
+        rememberFindTextCache cache
+
+let private rememberFindTextMatches query matchCase doc matches matchesList =
+    rememberFindTextMatchesWithSourceMetrics query matchCase doc matches matchesList ValueNone ValueNone
+
+let private rememberEmptyFindTextMatches query matchCase doc =
+    rememberFindTextMatches query matchCase doc [||] (Some [])
+
+let private rememberEmptyFindTextMatchesWithSourceMetrics query matchCase doc sourceParagraphCount sourceTextCharCount =
+    rememberFindTextMatchesWithSourceMetrics
+        query
+        matchCase
+        doc
+        [||]
+        (Some [])
+        (ValueSome sourceParagraphCount)
+        (ValueSome sourceTextCharCount)
+
+let private findTextMatchesArray query matchCase doc =
+    if System.String.IsNullOrEmpty query then
+        [||]
+    else
+        match cachedFindTextMatches query matchCase doc with
+        | Some cached ->
+            cached.Matches
+        | _ ->
+            let matches = ResizeArray<FindMatch>()
+            iterEditableParagraphs doc (fun para ->
+                match TextBuffer.trySliceNoCopyV 0 (TextBuffer.length para.Buffer) para.Buffer with
+                | ValueSome text when query.Length <= text.Length ->
+                    let firstIndex = indexOfQueryInString matchCase query text 0
+                    if firstIndex >= 0 then
+                        iterMatchesInStringFromFirst matchCase query text firstIndex (fun matchInfo ->
+                            matches.Add { matchInfo with BlockId = para.Id })
+                | ValueSome _ -> ()
+                | ValueNone ->
+                    iterMatchesInBuffer matchCase query para.Buffer (fun matchInfo ->
+                        matches.Add { matchInfo with BlockId = para.Id }))
+            let result = matches.ToArray()
+            rememberFindTextMatches query matchCase doc result None
+            result
+
+let findTextArray query matchCase doc =
+    findTextMatchesArray query matchCase doc
+
 let findText query matchCase doc =
-    editableParagraphsInOrder doc
-    |> List.collect (fun para ->
-        let text = TextBuffer.toString para.Buffer
-        findMatchesInText matchCase query text
-        |> List.map (fun matchInfo -> { matchInfo with BlockId = para.Id }))
+    if System.String.IsNullOrEmpty query then
+        []
+    else
+        match cachedFindTextMatches query matchCase doc with
+        | Some cached ->
+            findTextCacheEntryList cached
+        | _ ->
+            let matches = findTextMatchesArray query matchCase doc
+            match cachedFindTextMatches query matchCase doc with
+            | Some cached ->
+                findTextCacheEntryList cached
+            | _ -> arrayToList matches
 
 let selectFindMatch (matchInfo: FindMatch) doc =
-    { doc with
-        Selection = Some {
-            Anchor = { BlockId = matchInfo.BlockId; Offset = matchInfo.Start }
-            Focus = { BlockId = matchInfo.BlockId; Offset = matchInfo.End }
-        } }
+    match doc.Selection with
+    | Some current
+        when current.Anchor.BlockId = matchInfo.BlockId
+             && current.Anchor.Offset = matchInfo.Start
+             && current.Focus.BlockId = matchInfo.BlockId
+             && current.Focus.Offset = matchInfo.End ->
+        doc
+    | _ ->
+        { doc with
+            Selection =
+                Some {
+                    Anchor = { BlockId = matchInfo.BlockId; Offset = matchInfo.Start }
+                    Focus = { BlockId = matchInfo.BlockId; Offset = matchInfo.End }
+                } }
 
 let replaceAllText query replacement matchCase doc =
     if query = "" then
         (doc, 0)
+    elif matchCase && query = replacement then
+        (doc, 0)
+    elif
+        match cachedFindTextMatches query matchCase doc with
+        | Some cached -> cached.Matches.Length = 0
+        | None -> false
+    then
+        (doc, 0)
     else
-        let mutable updatedDoc = doc
+        let mutable foundAnyMatch = false
+
+        let tryReplaceParagraph (para: ParagraphBlock) =
+            match TextBuffer.trySliceNoCopyV 0 (TextBuffer.length para.Buffer) para.Buffer with
+            | ValueSome text when query.Length <= text.Length ->
+                let firstIndex = indexOfQueryInString matchCase query text 0
+                if firstIndex >= 0 then
+                    foundAnyMatch <- true
+                    if allStringMatchesEqualReplacement matchCase query replacement text firstIndex then
+                        ValueNone
+                    else
+                        match tryReplaceSingleRunTextFromFirst matchCase query replacement text firstIndex para.Buffer with
+                        | Some (buffer, matchCount) ->
+                            ValueSome ({ para with Buffer = buffer }, matchCount)
+                        | None ->
+                            let estimate =
+                                if query.Length = 0 then 4
+                                else max 4 (min 256 (text.Length / query.Length))
+                            let matches = ResizeArray<struct (int * int)>(estimate)
+                            iterMatchRangesInStringFromFirst matchCase query text firstIndex (fun start finish ->
+                                matches.Add(struct (start, finish)))
+                            ValueSome ({ para with Buffer = TextBuffer.replaceRanges matches replacement para.Buffer }, matches.Count)
+                else
+                    ValueNone
+            | ValueSome _ -> ValueNone
+            | ValueNone ->
+                let mutable matches = Unchecked.defaultof<ResizeArray<struct (int * int)>>
+                let mutable changesText = false
+                let addMatch start finish =
+                    foundAnyMatch <- true
+                    if obj.ReferenceEquals(matches, null) then
+                        let estimate =
+                            if query.Length = 0 then 4
+                            else max 4 (min 256 (TextBuffer.length para.Buffer / query.Length))
+                        matches <- ResizeArray<struct (int * int)>(estimate)
+                    matches.Add(struct (start, finish))
+                    if not changesText && not (bufferRangeEqualsReplacement start finish replacement para.Buffer) then
+                        changesText <- true
+                TextBuffer.iterMatchRanges matchCase query para.Buffer addMatch
+                if obj.ReferenceEquals(matches, null) || not changesText then
+                    ValueNone
+                else
+                    ValueSome ({ para with Buffer = TextBuffer.replaceRanges matches replacement para.Buffer }, matches.Count)
+
+        let replaceGeneric () =
+            let mutable count = 0
+            let mutable replacements = Unchecked.defaultof<Dictionary<BlockId, ParagraphBlock>>
+
+            iterEditableParagraphs doc (fun para ->
+                match tryReplaceParagraph para with
+                | ValueSome (para, matchCount) ->
+                    count <- count + matchCount
+                    if obj.ReferenceEquals(replacements, null) then
+                        replacements <- Dictionary<BlockId, ParagraphBlock>()
+                    replacements.[para.Id] <- para
+                | ValueNone -> ())
+
+            if not foundAnyMatch then
+                rememberEmptyFindTextMatches query matchCase doc
+
+            let doc =
+                if obj.ReferenceEquals(replacements, null) then doc
+                else replaceParagraphs doc replacements
+            (doc, count)
+
         let mutable count = 0
+        let mutable changed = false
+        let mutable nestedBlock = false
+        let mutable prefixCount = 0
+        let mutable blocks = Unchecked.defaultof<ResizeArray<Block>>
+        let mutable pendingUnchangedBlocks = Unchecked.defaultof<ResizeArray<Block>>
+        let mutable tailAfterLastChange: Block list = []
+        let mutable trackEmptyFindSourceMetrics = true
+        let mutable emptyFindSourceParagraphCount = 0
+        let mutable emptyFindSourceTextCharCount = 0
 
-        for para in editableParagraphsInOrder doc do
-            let text = TextBuffer.toString para.Buffer
-            let matches = findMatchesInText matchCase query text
+        let trackEmptyFindParagraphSource para =
+            if trackEmptyFindSourceMetrics then
+                if emptyFindSourceParagraphCount <= findTextCacheMaxTotalSourceParagraphs then
+                    emptyFindSourceParagraphCount <- emptyFindSourceParagraphCount + 1
+                if emptyFindSourceTextCharCount <= findTextCacheMaxTotalSourceTextChars then
+                    emptyFindSourceTextCharCount <-
+                        documentAddCapped
+                            emptyFindSourceTextCharCount
+                            (documentParagraphSourceTextCharCount para)
 
-            if not matches.IsEmpty then
-                let mutable buffer = para.Buffer
-                for matchInfo in matches |> List.rev do
-                    buffer <- buffer |> TextBuffer.delete matchInfo.Start (matchInfo.End - matchInfo.Start)
-                    buffer <- buffer |> TextBuffer.insert matchInfo.Start replacement
-                    count <- count + 1
+        let stopEmptyFindSourceTracking () =
+            trackEmptyFindSourceMetrics <- false
 
-                updatedDoc <- replaceParagraph updatedDoc para.Id { para with Buffer = buffer }
+        let rememberTopLevelEmptyFind () =
+            let sourceParagraphCount =
+                if emptyFindSourceParagraphCount > findTextCacheMaxTotalSourceParagraphs then
+                    findTextCacheMaxTotalSourceParagraphs + 1
+                else
+                    emptyFindSourceParagraphCount
+            let sourceTextCharCount =
+                if sourceParagraphCount > findTextCacheMaxTotalSourceParagraphs then
+                    findTextCacheMaxTotalSourceTextChars + 1
+                else
+                    min emptyFindSourceTextCharCount (findTextCacheMaxTotalSourceTextChars + 1)
+            rememberEmptyFindTextMatchesWithSourceMetrics
+                query
+                matchCase
+                doc
+                sourceParagraphCount
+                sourceTextCharCount
 
-        (updatedDoc, count)
+        let copyPrefix () =
+            blocks <- ResizeArray<Block>()
+            let mutable copied = 0
+            let mutable prefix = doc.Blocks
+            while copied < prefixCount do
+                match prefix with
+                | block :: tail ->
+                    blocks.Add block
+                    prefix <- tail
+                    copied <- copied + 1
+                | [] ->
+                    copied <- prefixCount
+
+        let ensureChanged () =
+            if not changed then
+                changed <- true
+                copyPrefix ()
+
+        let flushPendingUnchangedBlocks () =
+            if not (obj.ReferenceEquals(pendingUnchangedBlocks, null)) && pendingUnchangedBlocks.Count > 0 then
+                blocks.AddRange pendingUnchangedBlocks
+                pendingUnchangedBlocks.Clear()
+
+        let addChangedBlock block tail =
+            if changed then
+                flushPendingUnchangedBlocks ()
+            else
+                ensureChanged ()
+            blocks.Add block
+            tailAfterLastChange <- tail
+
+        let addUnchangedBlock block =
+            if changed then
+                if obj.ReferenceEquals(pendingUnchangedBlocks, null) then
+                    pendingUnchangedBlocks <- ResizeArray<Block>()
+                pendingUnchangedBlocks.Add block
+            else
+                prefixCount <- prefixCount + 1
+
+        let mutable remainingBlocks = doc.Blocks
+        while not nestedBlock && not remainingBlocks.IsEmpty do
+            match remainingBlocks with
+            | Paragraph para :: tail ->
+                trackEmptyFindParagraphSource para
+                match tryReplaceParagraph para with
+                | ValueSome (para, matchCount) ->
+                    stopEmptyFindSourceTracking ()
+                    count <- count + matchCount
+                    addChangedBlock (Paragraph para) tail
+                | ValueNone ->
+                    if foundAnyMatch then
+                        stopEmptyFindSourceTracking ()
+                    addUnchangedBlock (Paragraph para)
+                remainingBlocks <- tail
+            | Heading (level, para) :: tail ->
+                trackEmptyFindParagraphSource para
+                match tryReplaceParagraph para with
+                | ValueSome (para, matchCount) ->
+                    stopEmptyFindSourceTracking ()
+                    count <- count + matchCount
+                    addChangedBlock (Heading (level, para)) tail
+                | ValueNone ->
+                    if foundAnyMatch then
+                        stopEmptyFindSourceTracking ()
+                    addUnchangedBlock (Heading (level, para))
+                remainingBlocks <- tail
+            | _ ->
+                nestedBlock <- true
+
+        if nestedBlock then
+            replaceGeneric ()
+        elif changed then
+            { doc with Blocks = prependResizeArray blocks tailAfterLastChange }, count
+        else
+            if not foundAnyMatch then
+                rememberTopLevelEmptyFind ()
+            doc, 0
 
 /// Set selection range
 let setSelection anchor focus doc =
-    { doc with Selection = Some { Anchor = anchor; Focus = focus } }
+    match doc.Selection with
+    | Some current when current.Anchor = anchor && current.Focus = focus ->
+        doc
+    | _ ->
+        { doc with Selection = Some { Anchor = anchor; Focus = focus } }
 
 /// Select range in current block
 let selectRange startOffset endOffset doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        { doc with
-            Selection = Some {
-                Anchor = { sel.Focus with Offset = startOffset }
-                Focus = { sel.Focus with Offset = endOffset }
-            } }
+        setSelection { sel.Focus with Offset = startOffset } { sel.Focus with Offset = endOffset } doc
 
 /// Select all text in document (all blocks)
 let selectAll doc =
-    match editableParagraphsInOrder doc with
-    | [] -> doc
-    | firstPara :: rest ->
-        let lastPara =
-            match rest with
-            | [] -> firstPara
-            | _ -> List.last rest
-        let lastLen = TextBuffer.length lastPara.Buffer
-        { doc with
-            Selection = Some {
-                Anchor = { BlockId = firstPara.Id; Offset = 0 }
-                Focus = { BlockId = lastPara.Id; Offset = lastLen }
-            } }
+    let singleParagraphAlreadySelected (para: ParagraphBlock) (current: Selection) =
+        current.Anchor.BlockId = para.Id &&
+        current.Anchor.Offset = 0 &&
+        current.Focus.BlockId = para.Id &&
+        current.Focus.Offset = TextBuffer.length para.Buffer
+
+    match doc.Blocks, doc.Selection with
+    | [ Paragraph para ], Some current when singleParagraphAlreadySelected para current -> doc
+    | [ Heading (_, para) ], Some current when singleParagraphAlreadySelected para current -> doc
+    | _ ->
+        let firstPara, lastPara = editableParagraphEndpoints doc
+        match firstPara, lastPara with
+        | ValueSome firstPara, ValueSome lastPara ->
+            let lastLen = TextBuffer.length lastPara.Buffer
+            match doc.Selection with
+            | Some current
+                when current.Anchor.BlockId = firstPara.Id &&
+                     current.Anchor.Offset = 0 &&
+                     current.Focus.BlockId = lastPara.Id &&
+                     current.Focus.Offset = lastLen ->
+                doc
+            | _ ->
+                { doc with
+                    Selection =
+                        Some {
+                            Anchor = { BlockId = firstPara.Id; Offset = 0 }
+                            Focus = { BlockId = lastPara.Id; Offset = lastLen }
+                        } }
+        | _ -> doc
+
+let private collectSelectionBufferReplacements
+    (doc: Document)
+    (startPos: Position)
+    (endPos: Position)
+    (blockIds: BlockId list)
+    (formatBuffer: int -> int -> RedBat.Word.TextBuffer.TextBuffer -> RedBat.Word.TextBuffer.TextBuffer) =
+    let blockCount = blockIds.Length
+    let selectedIndexes = Dictionary<BlockId, int>(blockCount)
+    let mutable i = 0
+    for blockId in blockIds do
+        selectedIndexes.[blockId] <- i
+        i <- i + 1
+
+    let replacements = Dictionary<BlockId, ParagraphBlock>()
+    let processParagraph (para: ParagraphBlock) =
+        let mutable index = 0
+        if selectedIndexes.TryGetValue(para.Id, &index) then
+            let bufferLen = TextBuffer.length para.Buffer
+            let formatStart, formatLen =
+                if blockCount = 1 then
+                    startPos.Offset, endPos.Offset - startPos.Offset
+                elif index = 0 then
+                    startPos.Offset, bufferLen - startPos.Offset
+                elif index = blockCount - 1 then
+                    0, endPos.Offset
+                else
+                    0, bufferLen
+            if formatLen > 0 then
+                let newBuffer = formatBuffer formatStart formatLen para.Buffer
+                if not (obj.ReferenceEquals(newBuffer, para.Buffer)) then
+                    replacements.[para.Id] <- { para with Buffer = newBuffer }
+            true
+        else
+            false
+
+    if selectedIndexes.Count = blockCount then
+        let mutable seen = 0
+        iterEditableParagraphsUntil doc (fun para ->
+            if processParagraph para then
+                seen <- seen + 1
+            seen < blockCount)
+    else
+        iterEditableParagraphs doc (fun para -> processParagraph para |> ignore)
+
+    replacements
+
+let private tryApplyTopLevelSelectionBufferFormat
+    (doc: Document)
+    (sel: Selection)
+    (formatBuffer: int -> int -> RedBat.Word.TextBuffer.TextBuffer -> RedBat.Word.TextBuffer.TextBuffer) =
+    if sel.Anchor.BlockId = sel.Focus.BlockId then
+        ValueNone
+    else
+        let blocks = ResizeArray<Block>()
+        let mutable changed = false
+        let mutable remaining = doc.Blocks
+        let mutable collecting = false
+        let mutable valid = true
+        let mutable foundEnd = false
+        let mutable startPos = Unchecked.defaultof<Position>
+        let mutable endPos = Unchecked.defaultof<Position>
+        let mutable endTarget = ""
+
+        let addFormattedBlock
+            (block: Block)
+            (para: ParagraphBlock)
+            (wrap: ParagraphBlock -> Block)
+            isFirst
+            isLast =
+            let bufferLen = TextBuffer.length para.Buffer
+            let formatStart, formatLen =
+                if isFirst then
+                    startPos.Offset, bufferLen - startPos.Offset
+                elif isLast then
+                    0, endPos.Offset
+                else
+                    0, bufferLen
+
+            if formatLen > 0 then
+                let newBuffer = formatBuffer formatStart formatLen para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    blocks.Add block
+                else
+                    changed <- true
+                    blocks.Add(wrap { para with Buffer = newBuffer })
+            else
+                blocks.Add block
+
+        let startCollecting (block: Block) (para: ParagraphBlock) (wrap: ParagraphBlock -> Block) =
+            let anchorMatch = para.Id = sel.Anchor.BlockId
+            let focusMatch = para.Id = sel.Focus.BlockId
+            if anchorMatch || focusMatch then
+                collecting <- true
+                if anchorMatch then
+                    startPos <- sel.Anchor
+                    endPos <- sel.Focus
+                    endTarget <- sel.Focus.BlockId
+                else
+                    startPos <- sel.Focus
+                    endPos <- sel.Anchor
+                    endTarget <- sel.Anchor.BlockId
+                addFormattedBlock block para wrap true false
+            else
+                blocks.Add block
+
+        let continueCollecting (block: Block) (para: ParagraphBlock) (wrap: ParagraphBlock -> Block) =
+            let isLast = para.Id = endTarget
+            addFormattedBlock block para wrap false isLast
+            if isLast then
+                foundEnd <- true
+
+        while valid && not foundEnd && not remaining.IsEmpty do
+            match remaining with
+            | block :: tail ->
+                if collecting then
+                    match block with
+                    | Paragraph para ->
+                        continueCollecting block para Paragraph
+                    | Heading (level, para) ->
+                        continueCollecting block para (fun para -> Heading (level, para))
+                    | Table _
+                    | TextBox _ ->
+                        valid <- false
+                else
+                    match block with
+                    | Paragraph para ->
+                        startCollecting block para Paragraph
+                    | Heading (level, para) ->
+                        startCollecting block para (fun para -> Heading (level, para))
+                    | Table _
+                    | TextBox _ ->
+                        blocks.Add block
+                remaining <- tail
+            | [] -> ()
+
+        if valid && foundEnd then
+            if changed then
+                ValueSome { doc with Blocks = prependResizeArray blocks remaining }
+            else
+                ValueSome doc
+        else
+            ValueNone
+
+let private applySelectionBufferFormat
+    (doc: Document)
+    (sel: Selection)
+    (formatBuffer: int -> int -> RedBat.Word.TextBuffer.TextBuffer -> RedBat.Word.TextBuffer.TextBuffer) =
+    match tryApplyTopLevelSelectionBufferFormat doc sel formatBuffer with
+    | ValueSome doc ->
+        doc
+    | ValueNone ->
+        let (startPos, endPos, blockIds) = getNormalizedRange sel doc
+        let blockCount = blockIds.Length
+        if blockCount = 0 then
+            doc
+        else
+            let replacements = collectSelectionBufferReplacements doc startPos endPos blockIds formatBuffer
+            replaceParagraphs doc replacements
 
 /// Apply formatting to selection
 let applyFormattingToSelection formatFn doc =
     match doc.Selection with
     | None -> doc
     | Some sel when sel.IsCollapsed -> doc  // No selection
-    | Some sel ->
-        let (startPos, endPos, blockIds) = getNormalizedRange sel doc
-
-        // Apply formatting to each block in selection
-        let mutable updatedDoc = doc
-        for (i, blockId) in (blockIds |> List.mapi (fun i id -> (i, id))) do
-            match findParagraph updatedDoc blockId with
-            | None -> ()
-            | Some para ->
-                let bufferLen = TextBuffer.length para.Buffer
-
-                // Determine range to format within this block
-                let (formatStart, formatLen) =
-                    if blockIds.Length = 1 then
-                        // Single block selection
-                        (startPos.Offset, endPos.Offset - startPos.Offset)
-                    elif i = 0 then
-                        // First block: from startOffset to end
-                        (startPos.Offset, bufferLen - startPos.Offset)
-                    elif i = blockIds.Length - 1 then
-                        // Last block: from 0 to endOffset
-                        (0, endPos.Offset)
-                    else
-                        // Middle block: format entire block
-                        (0, bufferLen)
-
-                // Apply formatting
-                if formatLen > 0 then
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            let mutable changed = false
+            let updated =
+                updateParagraph doc sel.Anchor.BlockId (fun para ->
                     let newBuffer = formatFn formatStart formatLen para.Buffer
-                    let newPara = { para with Buffer = newBuffer }
-                    updatedDoc <- replaceParagraph updatedDoc para.Id newPara
-
-        updatedDoc
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        para
+                    else
+                        changed <- true
+                        { para with Buffer = newBuffer })
+            if changed then updated else doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel formatFn
 
 /// Toggle bold on selection
 let toggleBold doc =
@@ -2291,27 +7364,189 @@ let clearFormatting doc =
 
 /// Set vertical alignment on selection
 let setVertAlign align doc =
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setVertAlign start len align buf) doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setVertAlign formatStart formatLen align para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setVertAlign formatStart formatLen align para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setVertAlign start len align buffer)
 
 /// Set text color on selection
 let setColor color doc =
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setColor start len color buf) doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setColor formatStart formatLen color para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setColor formatStart formatLen color para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setColor start len color buffer)
 
 /// Set highlight color on selection
 let setHighlight color doc =
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setHighlight start len color buf) doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setHighlight formatStart formatLen color para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setHighlight formatStart formatLen color para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setHighlight start len color buffer)
 
 /// Set hyperlink on selection
 let setHyperlink target doc =
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setHyperlink start len target buf) doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setHyperlink formatStart formatLen target para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setHyperlink formatStart formatLen target para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setHyperlink start len target buffer)
 
 /// Set comment metadata on selection
 let setComment commentId commentText author date doc =
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setComment start len commentId commentText author date buf) doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setComment formatStart formatLen commentId commentText author date para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setComment formatStart formatLen commentId commentText author date para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setComment start len commentId commentText author date buffer)
 
 /// Set footnote/endnote metadata on selection
 let setNote noteId noteType noteText doc =
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setNote start len noteId noteType noteText buf) doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setNote formatStart formatLen noteId noteType noteText para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setNote formatStart formatLen noteId noteType noteText para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setNote start len noteId noteType noteText buffer)
 
 /// Set bookmark markers on selection
 let setBookmark bookmarkName doc =
@@ -2319,7 +7554,11 @@ let setBookmark bookmarkName doc =
         if System.String.IsNullOrWhiteSpace bookmarkName then "Bookmark"
         else bookmarkName.Trim().Replace(" ", "_")
     let bookmarkId = nextBookmarkId doc
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setBookmark start len bookmarkId normalizedName buf) doc
+    let updated =
+        applyFormattingToSelection (fun start len buf -> TextBuffer.setBookmark start len bookmarkId normalizedName buf) doc
+    if not (obj.ReferenceEquals(updated.Blocks, doc.Blocks)) then
+        rememberBookmarkIdAfterChange doc updated bookmarkId normalizedName
+    updated
 
 /// Set content control metadata on selected paragraphs
 let setContentControl controlId tag alias doc =
@@ -2328,102 +7567,177 @@ let setContentControl controlId tag alias doc =
     let controlId = normalize "1" controlId
     let tag = normalize "content-control" tag
     let alias = normalize tag alias
-    let blockIds =
-        match doc.Selection with
-        | None -> []
-        | Some sel when sel.IsCollapsed -> [sel.Focus.BlockId]
-        | Some sel ->
-            let (_, _, ids) = getNormalizedRange sel doc
-            ids
-    (doc, blockIds)
-    ||> List.fold (fun currentDoc blockId ->
-        match findParagraph currentDoc blockId with
-        | None -> currentDoc
-        | Some para ->
-            replaceParagraph currentDoc para.Id {
-                para with
-                    Metadata = {
-                        para.Metadata with
-                            ContentControlId = Some controlId
-                            ContentControlTag = Some tag
-                            ContentControlAlias = Some alias
-                    }
-            })
+    updateSelectedParagraphMetadata true (fun metadata ->
+        {
+            metadata with
+                ContentControlId = Some controlId
+                ContentControlTag = Some tag
+                ContentControlAlias = Some alias
+        }) doc
 
 /// Set named paragraph style on selected paragraphs
 let setParagraphStyle styleId doc =
     let normalizedStyle =
         if System.String.IsNullOrWhiteSpace styleId then None else Some (styleId.Trim())
-    let blockIds =
-        match doc.Selection with
-        | None -> []
-        | Some sel when sel.IsCollapsed -> [sel.Focus.BlockId]
-        | Some sel ->
-            let (_, _, ids) = getNormalizedRange sel doc
-            ids
-    (doc, blockIds)
-    ||> List.fold (fun currentDoc blockId ->
-        match findParagraph currentDoc blockId with
-        | None -> currentDoc
-        | Some para ->
-            replaceParagraph currentDoc para.Id {
-                para with Metadata = { para.Metadata with Style = normalizedStyle }
-            })
+    updateSelectedParagraphMetadata true (fun metadata -> { metadata with Style = normalizedStyle }) doc
 
 /// Set named character style on selection
 let setCharacterStyle styleId doc =
     let normalizedStyle =
         if System.String.IsNullOrWhiteSpace styleId then None else Some (styleId.Trim())
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setCharacterStyle start len normalizedStyle buf) doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setCharacterStyle formatStart formatLen normalizedStyle para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setCharacterStyle formatStart formatLen normalizedStyle para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setCharacterStyle start len normalizedStyle buffer)
+
+let private setRevisionMetadata revisionType revisionId author date doc =
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setRevision formatStart formatLen revisionType revisionId author date para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setRevision formatStart formatLen revisionType revisionId author date para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setRevision start len revisionType revisionId author date buffer)
 
 /// Set revision metadata on selection
-let setRevision revisionType revisionId author date doc =
+let setRevision revisionType revisionId author date =
     let normalizedType = if revisionType = "delete" then "delete" else "insert"
     let revisionId = if System.String.IsNullOrWhiteSpace revisionId then "1" else revisionId
     let author = if System.String.IsNullOrWhiteSpace author then None else Some author
     let date = if System.String.IsNullOrWhiteSpace date then None else Some date
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setRevision start len normalizedType revisionId author date buf) doc
+    fun doc -> setRevisionMetadata normalizedType revisionId author date doc
 
 let private setRevisionWithOptions revisionType revisionId author date doc =
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setRevision start len revisionType revisionId author date buf) doc
+    setRevisionMetadata revisionType revisionId author date doc
 
 let private adjacentInsertRevisionId doc (pos: Position) author date =
-    findParagraph doc pos.BlockId
+    findCursorParagraph doc pos.BlockId
     |> Option.bind (fun para ->
         para.Buffer.Runs
         |> List.tryPick (function
             | TextBuffer.Text tr when tr.Start + tr.Length = pos.Offset && tr.Style.RevisionType = Some "insert" && tr.Style.RevisionAuthor = author && tr.Style.RevisionDate = date -> tr.Style.RevisionId
             | _ -> None))
 
+let private adjacentInsertRevisionIdInParagraph (para: ParagraphBlock) offset author date =
+    para.Buffer.Runs
+    |> List.tryPick (function
+        | TextBuffer.Text tr when tr.Start + tr.Length = offset && tr.Style.RevisionType = Some "insert" && tr.Style.RevisionAuthor = author && tr.Style.RevisionDate = date -> tr.Style.RevisionId
+        | _ -> None)
+
 /// Insert text while recording the inserted run as a revision.
-let insertTrackedText author date text doc =
+let insertTrackedText author date (insertedText: string) doc =
     let author = if System.String.IsNullOrWhiteSpace author then None else Some author
     let date = if System.String.IsNullOrWhiteSpace date then None else Some date
-    let deletionRevisionId = nextRevisionId doc
-    let docForInsert =
+    if insertedText.Length = 0 then
+        doc
+    else
         match doc.Selection with
+        | Some sel when sel.IsCollapsed ->
+            let mutable changed = false
+            let mutable newSelection: Selection option = None
+            let mutable usedRevisionId: string option = None
+            let updated =
+                updateParagraph doc sel.Focus.BlockId (fun para ->
+                    changed <- true
+                    let insertionRevisionId =
+                        match adjacentInsertRevisionIdInParagraph para sel.Focus.Offset author date with
+                        | Some revisionId -> revisionId
+                        | None -> nextRevisionId doc
+                    usedRevisionId <- Some insertionRevisionId
+                    let startOffset = sel.Focus.Offset
+                    let buffer =
+                        para.Buffer
+                        |> TextBuffer.insert startOffset insertedText
+                        |> TextBuffer.applyStyle startOffset insertedText.Length (fun style ->
+                            { style with RevisionType = Some "insert"; RevisionId = Some insertionRevisionId; RevisionAuthor = author; RevisionDate = date })
+                    newSelection <- Some {
+                        Anchor = { sel.Focus with Offset = startOffset + insertedText.Length }
+                        Focus = { sel.Focus with Offset = startOffset + insertedText.Length }
+                    }
+                    { para with Buffer = buffer })
+            if changed then
+                let result = { updated with Selection = newSelection }
+                match usedRevisionId with
+                | Some revisionId ->
+                    rememberRevisionIdAfterChange doc result "insert" revisionId author date insertedText.Length
+                | None -> ()
+                result
+            else
+                doc
         | Some sel when not sel.IsCollapsed ->
+            let deletionRevisionId = nextRevisionId doc
             let startPos, _, _ = getNormalizedRange sel doc
-            let marked = setRevisionWithOptions "delete" deletionRevisionId author date doc
-            { marked with Selection = Some { Anchor = startPos; Focus = startPos } }
-        | _ -> doc
-
-    let insertionRevisionId =
-        match docForInsert.Selection with
-        | Some sel -> adjacentInsertRevisionId docForInsert sel.Focus author date |> Option.defaultValue (nextRevisionId docForInsert)
-        | None -> nextRevisionId docForInsert
-    let inserted = insertText text docForInsert
-    match inserted.Selection with
-    | None -> inserted
-    | Some sel when text.Length > 0 ->
-        let startOffset = max 0 (sel.Focus.Offset - text.Length)
-        let revisionSelection = {
-            Anchor = { sel.Focus with Offset = startOffset }
-            Focus = sel.Focus
-        }
-        let styled = setRevisionWithOptions "insert" insertionRevisionId author date { inserted with Selection = Some revisionSelection }
-        { styled with Selection = Some sel }
-    | _ -> inserted
+            let docForInsert =
+                let marked = setRevisionWithOptions "delete" deletionRevisionId author date doc
+                let result = { marked with Selection = Some { Anchor = startPos; Focus = startPos } }
+                rememberRevisionIdAfterChange doc result "delete" deletionRevisionId author date 0
+                result
+            let insertionRevisionId =
+                match docForInsert.Selection with
+                | Some sel ->
+                    match adjacentInsertRevisionId docForInsert sel.Focus author date with
+                    | Some revisionId -> revisionId
+                    | None -> nextRevisionId docForInsert
+                | None -> nextRevisionId docForInsert
+            let inserted = insertText insertedText docForInsert
+            match inserted.Selection with
+            | None -> inserted
+            | Some sel ->
+                let startOffset = max 0 (sel.Focus.Offset - insertedText.Length)
+                let revisionSelection = {
+                    Anchor = { sel.Focus with Offset = startOffset }
+                    Focus = sel.Focus
+                }
+                let styled = setRevisionWithOptions "insert" insertionRevisionId author date { inserted with Selection = Some revisionSelection }
+                rememberRevisionIdAfterChange docForInsert styled "insert" insertionRevisionId author date insertedText.Length
+                { styled with Selection = Some sel }
+        | Some _ -> doc
+        | None -> doc
 
 /// Mark the selected text as deleted instead of physically removing it.
 let trackDeleteSelection author date doc =
@@ -2434,159 +7748,409 @@ let trackDeleteSelection author date doc =
         let startPos, _, _ = getNormalizedRange sel doc
         let author = if System.String.IsNullOrWhiteSpace author then None else Some author
         let date = if System.String.IsNullOrWhiteSpace date then None else Some date
-        let marked = setRevisionWithOptions "delete" (nextRevisionId doc) author date doc
+        let revisionId = nextRevisionId doc
+        let marked = setRevisionWithOptions "delete" revisionId author date doc
+        rememberRevisionIdAfterChange doc marked "delete" revisionId author date 0
         { marked with Selection = Some { Anchor = startPos; Focus = startPos } }
 
 let private isDeletedRun (run: TextBuffer.TextRun) =
     run.Style.RevisionType = Some "delete"
 
 let private nextTrackDeletableOffset para offset =
-    para.Buffer.Runs
-    |> List.choose (function
-        | TextBuffer.Text tr when not (isDeletedRun tr) && tr.Start + tr.Length > offset ->
-            Some (max offset tr.Start)
-        | _ -> None)
-    |> List.tryHead
+    let mutable result = None
+    for run in para.Buffer.Runs do
+        if result.IsNone then
+            match run with
+            | TextBuffer.Text tr when not (isDeletedRun tr) && tr.Start + tr.Length > offset ->
+                result <- Some (max offset tr.Start)
+            | _ -> ()
+    result
 
 let private previousTrackDeletableOffset para offset =
-    para.Buffer.Runs
-    |> List.choose (function
+    let mutable result = None
+    for run in para.Buffer.Runs do
+        match run with
         | TextBuffer.Text tr when not (isDeletedRun tr) && tr.Start < offset ->
-            Some ((min offset (tr.Start + tr.Length)) - 1)
-        | _ -> None)
-    |> List.filter (fun value -> value >= 0)
-    |> List.tryLast
+            let value = (min offset (tr.Start + tr.Length)) - 1
+            if value >= 0 then
+                result <- Some value
+        | _ -> ()
+    result
+
+let private trackDeleteSingleWhere blockId offsetForParagraph author date doc =
+    let author = if System.String.IsNullOrWhiteSpace author then None else Some author
+    let date = if System.String.IsNullOrWhiteSpace date then None else Some date
+    let mutable changed = false
+    let mutable selection = None
+    let mutable usedRevisionId: string option = None
+    let updated =
+        updateParagraph doc blockId (fun para ->
+            match offsetForParagraph para with
+            | None -> para
+            | Some offset ->
+                changed <- true
+                let revisionId = nextRevisionId doc
+                usedRevisionId <- Some revisionId
+                let buffer = TextBuffer.setRevision offset 1 "delete" revisionId author date para.Buffer
+                selection <- Some {
+                    Anchor = { BlockId = para.Id; Offset = offset }
+                    Focus = { BlockId = para.Id; Offset = offset }
+                }
+                { para with Buffer = buffer })
+    if changed then
+        let result = { updated with Selection = selection }
+        match usedRevisionId with
+        | Some revisionId -> rememberRevisionIdAfterChange doc result "delete" revisionId author date 0
+        | None -> ()
+        result
+    else
+        doc
 
 let trackDeleteForward author date doc =
     match doc.Selection with
     | None -> doc
     | Some sel when not sel.IsCollapsed -> trackDeleteSelection author date doc
     | Some sel ->
-        match findParagraph doc sel.Focus.BlockId with
-        | None -> doc
-        | Some para ->
-            match nextTrackDeletableOffset para sel.Focus.Offset with
-            | None -> doc
-            | Some offset ->
-                let startPos = { sel.Focus with Offset = offset }
-                let selection = { Anchor = startPos; Focus = { startPos with Offset = offset + 1 } }
-                trackDeleteSelection author date { doc with Selection = Some selection }
+        trackDeleteSingleWhere
+            sel.Focus.BlockId
+            (fun para -> nextTrackDeletableOffset para sel.Focus.Offset)
+            author
+            date
+            doc
 
 let trackDeleteBackward author date doc =
     match doc.Selection with
     | None -> doc
     | Some sel when not sel.IsCollapsed -> trackDeleteSelection author date doc
     | Some sel ->
-        match findParagraph doc sel.Focus.BlockId with
-        | None -> doc
-        | Some para ->
-            match previousTrackDeletableOffset para sel.Focus.Offset with
-            | None -> doc
-            | Some offset ->
-                let startPos = { sel.Focus with Offset = offset }
-                let selection = { Anchor = startPos; Focus = { startPos with Offset = offset + 1 } }
-                trackDeleteSelection author date { doc with Selection = Some selection }
+        trackDeleteSingleWhere
+            sel.Focus.BlockId
+            (fun para -> previousTrackDeletableOffset para sel.Focus.Offset)
+            author
+            date
+            doc
 
-type private RevisionEdit = {
+type private RevisionSpan = {
     Start: int
     Length: int
-    RevisionType: string
+    ShouldDelete: bool
 }
 
-let private selectionRangeForBlock blockId doc =
-    match doc.Selection with
-    | None -> None
-    | Some sel when sel.IsCollapsed ->
-        if sel.Focus.BlockId = blockId then Some (sel.Focus.Offset, sel.Focus.Offset, true) else None
-    | Some sel ->
-        let startPos, endPos, blockIds = getNormalizedRange sel doc
-        if blockIds |> List.contains blockId then
-            match findParagraph doc blockId with
-            | None -> None
-            | Some para ->
-                let bufferLen = TextBuffer.length para.Buffer
-                let startOffset = if blockId = startPos.BlockId then startPos.Offset else 0
-                let endOffset = if blockId = endPos.BlockId then endPos.Offset else bufferLen
-                Some (startOffset, endOffset, false)
-        else None
+let private addRevisionSpan (spans: ResizeArray<RevisionSpan>) span =
+    if spans.Count > 0 then
+        let last = spans.[spans.Count - 1]
+        if last.ShouldDelete = span.ShouldDelete && last.Start + last.Length = span.Start then
+            spans.[spans.Count - 1] <- { last with Length = last.Length + span.Length }
+        else
+            spans.Add span
+    else
+        spans.Add span
 
-let private selectedRevisionEdits para selectionRange =
+let private selectedRevisionSpans accept para selectionRange =
     let selStart, selEnd, isCollapsed = selectionRange
     let intersects start endPos selStart selEnd isCollapsed =
         if isCollapsed then selStart >= start && selStart <= endPos
         else start < selEnd && endPos > selStart
 
-    para.Buffer.Runs
-    |> List.choose (function
+    let spans = ResizeArray<RevisionSpan>()
+    let mutable firstStart = None
+    for runValue in para.Buffer.Runs do
+        match runValue with
         | Text tr ->
             match tr.Style.RevisionType with
             | Some revisionType ->
                 let runEnd = tr.Start + tr.Length
                 if intersects tr.Start runEnd selStart selEnd isCollapsed then
-                    Some { Start = tr.Start; Length = tr.Length; RevisionType = revisionType }
-                else None
-            | None -> None
-        | Image _ -> None)
-
-let revisionInfos doc =
-    editableParagraphsInOrder doc
-    |> List.collect (fun para ->
-        para.Buffer.Runs
-        |> List.choose (function
-            | Text tr ->
-                tr.Style.RevisionType
-                |> Option.map (fun revisionType -> {
-                    BlockId = para.Id
-                    Start = tr.Start
-                    End = tr.Start + tr.Length
-                    RevisionType = revisionType
-                    Author = tr.Style.RevisionAuthor
-                    Date = tr.Style.RevisionDate
-                    Text = TextBuffer.slice tr.Start tr.Length para.Buffer
-                })
-            | Image _ -> None))
-
-let private applyRevisionDecision accept doc =
-    let selectedBlockIds =
-        match doc.Selection with
-        | None -> []
-        | Some sel when sel.IsCollapsed -> [sel.Focus.BlockId]
-        | Some sel ->
-            let _, _, blockIds = getNormalizedRange sel doc
-            blockIds
-
-    let mutable updatedDoc = doc
-    let mutable changed = false
-    let mutable firstSelection: Position option = None
-
-    for blockId in selectedBlockIds do
-        match findParagraph updatedDoc blockId, selectionRangeForBlock blockId updatedDoc with
-        | Some para, Some selectionRange ->
-            let edits = selectedRevisionEdits para selectionRange
-            if not edits.IsEmpty then
-                let mutable buffer = para.Buffer
-                for edit in edits |> List.sortByDescending (fun edit -> edit.Start) do
                     let shouldDelete =
-                        match accept, edit.RevisionType with
+                        match accept, revisionType with
                         | true, "delete" -> true
                         | false, "insert" -> true
                         | _ -> false
-                    if shouldDelete then
-                        buffer <- TextBuffer.delete edit.Start edit.Length buffer
+                    addRevisionSpan spans { Start = tr.Start; Length = tr.Length; ShouldDelete = shouldDelete }
+                    match firstStart with
+                    | None -> firstStart <- Some tr.Start
+                    | Some _ -> ()
+            | None -> ()
+        | Image _ -> ()
+    spans, firstStart
+
+let revisionInfos doc =
+    match revisionInfoCache |> List.tryFind (revisionInfoCacheMatches doc.Blocks) with
+    | Some cached ->
+        cached.Infos
+    | None ->
+        let revisions = ResizeArray<RevisionInfo>()
+        iterEditableParagraphs doc (fun para ->
+            let mutable pendingStart = 0
+            let mutable pendingEnd = 0
+            let mutable pendingRevisionType: string option = None
+            let mutable pendingRevisionId: string option = None
+            let mutable pendingAuthor: string option = None
+            let mutable pendingDate: string option = None
+            let flushPending () =
+                match pendingRevisionType with
+                | Some revisionType ->
+                    revisions.Add {
+                        BlockId = para.Id
+                        Start = pendingStart
+                        End = pendingEnd
+                        RevisionType = revisionType
+                        Author = pendingAuthor
+                        Date = pendingDate
+                        Text = TextBuffer.slice pendingStart (pendingEnd - pendingStart) para.Buffer
+                    }
+                    pendingRevisionType <- None
+                    pendingRevisionId <- None
+                    pendingAuthor <- None
+                    pendingDate <- None
+                | None -> ()
+            for runValue in para.Buffer.Runs do
+                match runValue with
+                | Text tr ->
+                    match tr.Style.RevisionType with
+                    | Some revisionType ->
+                        let runEnd = tr.Start + tr.Length
+                        let canExtend =
+                            match pendingRevisionType with
+                            | Some currentType ->
+                                pendingEnd = tr.Start
+                                && currentType = revisionType
+                                && pendingRevisionId = tr.Style.RevisionId
+                                && pendingAuthor = tr.Style.RevisionAuthor
+                                && pendingDate = tr.Style.RevisionDate
+                            | None -> false
+                        if canExtend then
+                            pendingEnd <- runEnd
+                        else
+                            flushPending ()
+                            pendingStart <- tr.Start
+                            pendingEnd <- runEnd
+                            pendingRevisionType <- Some revisionType
+                            pendingRevisionId <- tr.Style.RevisionId
+                            pendingAuthor <- tr.Style.RevisionAuthor
+                            pendingDate <- tr.Style.RevisionDate
+                    | None ->
+                        flushPending ()
+                | Image _ ->
+                    flushPending ()
+            flushPending ())
+        let infos = resizeArrayToList revisions
+        let sourceParagraphCount = revisionInfoSourceParagraphCountFor infos.Length doc.Blocks
+        rememberRevisionInfos {
+            SourceBlocks = doc.Blocks
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = revisionInfoSourceTextCharCountFor infos.Length sourceParagraphCount doc.Blocks
+            InfoCount = infos.Length
+            Infos = infos
+        }
+        infos
+
+type private RevisionNavigationSpan = {
+    BlockId: BlockId
+    ParagraphIndex: int
+    Start: int
+    End: int
+}
+
+type private RevisionNavigationCache = {
+    SourceBlocks: Block list
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    SpanCount: int
+    Spans: RevisionNavigationSpan array
+    ParagraphIndexes: Dictionary<BlockId, int>
+    ParagraphIndexesComplete: bool
+}
+
+let mutable private revisionNavigationCache: RevisionNavigationCache list = []
+let private revisionNavigationCacheMaxEntries = 64
+let private revisionNavigationCacheMaxTotalSpans = 200000
+let private revisionNavigationCacheMaxTotalParagraphs = 100000
+let private revisionNavigationCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private revisionNavigationCacheMatches blocks (cached: RevisionNavigationCache) =
+    obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private revisionNavigationCacheRetainable (cached: RevisionNavigationCache) =
+    cached.SpanCount <= revisionNavigationCacheMaxTotalSpans
+    && cached.SourceParagraphCount <= revisionNavigationCacheMaxTotalParagraphs
+    && cached.SourceTextCharCount <= revisionNavigationCacheMaxTotalSourceTextChars
+
+let private revisionNavigationSourceTextCharCountFor spanCount sourceParagraphCount blocks =
+    if spanCount > revisionNavigationCacheMaxTotalSpans
+       || sourceParagraphCount > revisionNavigationCacheMaxTotalParagraphs then
+        revisionNavigationCacheMaxTotalSourceTextChars + 1
+    else
+        documentBlocksSourceTextCharCountFor
+            revisionNavigationCacheMaxTotalParagraphs
+            sourceParagraphCount
+            blocks
+
+let private rememberRevisionNavigation cached =
+    if not (revisionNavigationCacheRetainable cached) then
+        revisionNavigationCache <- revisionNavigationCache |> List.filter (revisionNavigationCacheMatches cached.SourceBlocks >> not)
+    else
+        let trim entries =
+            let rec loop keptCount keptSpans keptParagraphs keptSourceTextChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateSpans = max 1 candidate.SpanCount
+                    let candidateParagraphs = max 1 candidate.SourceParagraphCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    if revisionNavigationCacheRetainable candidate
+                       && keptCount < revisionNavigationCacheMaxEntries
+                       && keptSpans + candidateSpans <= revisionNavigationCacheMaxTotalSpans
+                       && keptParagraphs + candidateParagraphs <= revisionNavigationCacheMaxTotalParagraphs
+                       && keptSourceTextChars + candidateSourceTextChars <= revisionNavigationCacheMaxTotalSourceTextChars then
+                        loop
+                            (keptCount + 1)
+                            (keptSpans + candidateSpans)
+                            (keptParagraphs + candidateParagraphs)
+                            (keptSourceTextChars + candidateSourceTextChars)
+                            (candidate :: acc)
+                            tail
                     else
-                        buffer <- TextBuffer.clearRevision edit.Start edit.Length buffer
+                        loop keptCount keptSpans keptParagraphs keptSourceTextChars acc tail
+            loop 0 0 0 0 [] entries
+        revisionNavigationCache <-
+            (cached
+             :: (revisionNavigationCache
+                 |> List.filter (revisionNavigationCacheMatches cached.SourceBlocks >> not)))
+            |> trim
+
+let private revisionNavigationSpans doc =
+    match revisionNavigationCache |> List.tryFind (revisionNavigationCacheMatches doc.Blocks) with
+    | Some cached ->
+        cached
+    | None ->
+        let spans = ResizeArray<RevisionNavigationSpan>()
+        let paragraphIndexes = Dictionary<BlockId, int>()
+        let mutable paragraphIndex = 0
+        iterEditableParagraphs doc (fun para ->
+            let currentParagraphIndex = paragraphIndex
+            paragraphIndex <- paragraphIndex + 1
+
+            let mutable pendingStart = 0
+            let mutable pendingEnd = 0
+            let mutable pendingRevisionType: string option = None
+            let mutable pendingRevisionId: string option = None
+            let mutable pendingAuthor: string option = None
+            let mutable pendingDate: string option = None
+            let flushPending () =
+                match pendingRevisionType with
+                | Some _ ->
+                    spans.Add {
+                        BlockId = para.Id
+                        ParagraphIndex = currentParagraphIndex
+                        Start = pendingStart
+                        End = pendingEnd
+                    }
+                    if not (paragraphIndexes.ContainsKey para.Id) then
+                        paragraphIndexes.[para.Id] <- currentParagraphIndex
+                    pendingRevisionType <- None
+                    pendingRevisionId <- None
+                    pendingAuthor <- None
+                    pendingDate <- None
+                | None -> ()
+            for runValue in para.Buffer.Runs do
+                match runValue with
+                | Text tr ->
+                    match tr.Style.RevisionType with
+                    | Some revisionType ->
+                        let runEnd = tr.Start + tr.Length
+                        let canExtend =
+                            match pendingRevisionType with
+                            | Some currentType ->
+                                pendingEnd = tr.Start
+                                && currentType = revisionType
+                                && pendingRevisionId = tr.Style.RevisionId
+                                && pendingAuthor = tr.Style.RevisionAuthor
+                                && pendingDate = tr.Style.RevisionDate
+                            | None -> false
+                        if canExtend then
+                            pendingEnd <- runEnd
+                        else
+                            flushPending ()
+                            pendingStart <- tr.Start
+                            pendingEnd <- runEnd
+                            pendingRevisionType <- Some revisionType
+                            pendingRevisionId <- tr.Style.RevisionId
+                            pendingAuthor <- tr.Style.RevisionAuthor
+                            pendingDate <- tr.Style.RevisionDate
+                    | None ->
+                        flushPending ()
+                | Image _ ->
+                    flushPending ()
+            flushPending ())
+        let cached = {
+            SourceBlocks = doc.Blocks
+            SourceParagraphCount = paragraphIndex
+            SourceTextCharCount = revisionNavigationSourceTextCharCountFor spans.Count paragraphIndex doc.Blocks
+            SpanCount = spans.Count
+            Spans = spans.ToArray()
+            ParagraphIndexes = paragraphIndexes
+            ParagraphIndexesComplete = paragraphIndexes.Count = paragraphIndex
+        }
+        rememberRevisionNavigation cached
+        cached
+
+let private applyRevisionDecision accept doc =
+    let selectedBlockIds, selectionRangeForParagraph =
+        match doc.Selection with
+        | None ->
+            [], fun _ (_: ParagraphBlock) -> None
+        | Some sel when sel.IsCollapsed ->
+            [sel.Focus.BlockId],
+            fun blockId (_: ParagraphBlock) ->
+                if sel.Focus.BlockId = blockId then Some (sel.Focus.Offset, sel.Focus.Offset, true) else None
+        | Some sel ->
+            let startPos, endPos, blockIds = getNormalizedRange sel doc
+            let selectedBlockIdSet = HashSet<BlockId>(blockIds)
+            blockIds,
+            fun blockId (para: ParagraphBlock) ->
+                if selectedBlockIdSet.Contains blockId then
+                    let bufferLen = TextBuffer.length para.Buffer
+                    let startOffset = if blockId = startPos.BlockId then startPos.Offset else 0
+                    let endOffset = if blockId = endPos.BlockId then endPos.Offset else bufferLen
+                    Some (startOffset, endOffset, false)
+                else None
+
+    let mutable changed = false
+    let mutable firstSelection: Position option = None
+    let replacements = Dictionary<BlockId, ParagraphBlock>()
+
+    let processParagraph (para: ParagraphBlock) =
+        match selectionRangeForParagraph para.Id para with
+        | Some selectionRange ->
+            let selStart, selEnd, isCollapsed = selectionRange
+            let struct (buffer, firstStart, paragraphChanged) =
+                TextBuffer.resolveRevisionsInRange accept selStart selEnd isCollapsed para.Buffer
+            if paragraphChanged then
                 let newPara = { para with Buffer = buffer }
-                updatedDoc <- replaceParagraph updatedDoc para.Id newPara
+                replacements.[para.Id] <- newPara
                 changed <- true
                 match firstSelection with
-                | None -> firstSelection <- Some { BlockId = para.Id; Offset = edits |> List.map _.Start |> List.min }
+                | None ->
+                    match firstStart with
+                    | Some start -> firstSelection <- Some { BlockId = para.Id; Offset = start }
+                    | None -> ()
                 | Some _ -> ()
-        | _ -> ()
+        | None -> ()
+
+    match selectedBlockIds with
+    | [blockId] ->
+        match findCursorParagraph doc blockId with
+        | Some para -> processParagraph para
+        | None -> ()
+    | _ ->
+        iterEditableParagraphs doc processParagraph
 
     if changed then
+        let updatedDoc = replaceParagraphs doc replacements
         let selection = firstSelection |> Option.map (fun pos -> { Anchor = pos; Focus = pos })
         { updatedDoc with Selection = selection |> Option.orElse updatedDoc.Selection }
-    else updatedDoc
+    else doc
 
 /// Accept selected revision runs. Insertions become normal text; deletions are removed.
 let acceptSelectedRevision doc =
@@ -2596,380 +8160,511 @@ let acceptSelectedRevision doc =
 let rejectSelectedRevision doc =
     applyRevisionDecision false doc
 
-let private allRevisionSelection doc =
-    match revisionInfos doc with
-    | [] -> None
-    | revisions ->
-        let first = revisions |> List.head
-        let last = revisions |> List.last
-        Some {
-            Anchor = { BlockId = first.BlockId; Offset = first.Start }
-            Focus = { BlockId = last.BlockId; Offset = last.End }
-        }
+let private applyAllRevisionDecision accept doc =
+    let replacements = Dictionary<BlockId, ParagraphBlock>()
+    let mutable firstSelection: Position option = None
+    iterEditableParagraphs doc (fun para ->
+        let bufferLen = TextBuffer.length para.Buffer
+        let struct (buffer, firstStart, paragraphChanged) =
+            TextBuffer.resolveRevisionsInRange accept 0 bufferLen false para.Buffer
+        if paragraphChanged then
+            replacements.[para.Id] <- { para with Buffer = buffer }
+            match firstSelection, firstStart with
+            | None, Some start -> firstSelection <- Some { BlockId = para.Id; Offset = start }
+            | _ -> ())
+    if replacements.Count = 0 then
+        doc
+    else
+        let updatedDoc = replaceParagraphs doc replacements
+        let selection = firstSelection |> Option.map (fun pos -> { Anchor = pos; Focus = pos })
+        { updatedDoc with Selection = selection |> Option.orElse updatedDoc.Selection }
 
 /// Accept all revision runs in document order.
 let acceptAllRevisions doc =
-    match allRevisionSelection doc with
-    | None -> doc
-    | Some selection -> applyRevisionDecision true { doc with Selection = Some selection }
+    applyAllRevisionDecision true doc
 
 /// Reject all revision runs in document order.
 let rejectAllRevisions doc =
-    match allRevisionSelection doc with
-    | None -> doc
-    | Some selection -> applyRevisionDecision false { doc with Selection = Some selection }
+    applyAllRevisionDecision false doc
 
-let private revisionSortKey doc revision =
-    let paragraphs = editableParagraphsInOrder doc
-    let blockIndex = paragraphs |> List.tryFindIndex (fun para -> para.Id = revision.BlockId) |> Option.defaultValue System.Int32.MaxValue
-    blockIndex, revision.Start
-
-let private currentRevisionCursor useSelectionStart doc =
-    let paragraphs = editableParagraphsInOrder doc
+let private currentRevisionPosition useSelectionStart doc =
     match doc.Selection with
     | Some sel ->
-        let pos =
-            if sel.Anchor.BlockId = sel.Focus.BlockId then
-                let offset = if useSelectionStart then min sel.Anchor.Offset sel.Focus.Offset else max sel.Anchor.Offset sel.Focus.Offset
-                { sel.Focus with Offset = offset }
-            elif useSelectionStart then
-                let startPos, _, _ = getNormalizedRange sel doc
-                startPos
-            else
-                let _, endPos, _ = getNormalizedRange sel doc
-                endPos
-        let blockIndex = paragraphs |> List.tryFindIndex (fun para -> para.Id = pos.BlockId) |> Option.defaultValue 0
-        blockIndex, pos.Offset
-    | None -> 0, 0
+        if sel.Anchor.BlockId = sel.Focus.BlockId then
+            let offset = if useSelectionStart then min sel.Anchor.Offset sel.Focus.Offset else max sel.Anchor.Offset sel.Focus.Offset
+            { sel.Focus with Offset = offset }
+        elif useSelectionStart then
+            let startPos, _, _ = getNormalizedRange sel doc
+            startPos
+        else
+            let _, endPos, _ = getNormalizedRange sel doc
+            endPos
+    | None -> { BlockId = ""; Offset = 0 }
+
+let private currentRevisionPositionStruct useSelectionStart doc =
+    match doc.Selection with
+    | Some sel ->
+        if sel.Anchor.BlockId = sel.Focus.BlockId then
+            let offset =
+                if useSelectionStart then min sel.Anchor.Offset sel.Focus.Offset
+                else max sel.Anchor.Offset sel.Focus.Offset
+            struct (sel.Focus.BlockId, offset)
+        elif useSelectionStart then
+            let startPos, _, _ = getNormalizedRange sel doc
+            struct (startPos.BlockId, startPos.Offset)
+        else
+            let _, endPos, _ = getNormalizedRange sel doc
+            struct (endPos.BlockId, endPos.Offset)
+    | None ->
+        struct ("", 0)
+
+let private selectRevisionRange blockId start endPos doc =
+    match doc.Selection with
+    | Some current
+        when current.Anchor.BlockId = blockId
+             && current.Anchor.Offset = start
+             && current.Focus.BlockId = blockId
+             && current.Focus.Offset = endPos ->
+        doc
+    | _ ->
+        { doc with
+            Selection =
+                Some {
+                    Anchor = { BlockId = blockId; Offset = start }
+                    Focus = { BlockId = blockId; Offset = endPos }
+                } }
 
 let private selectRevision revision doc =
-    { doc with
-        Selection = Some {
-            Anchor = { BlockId = revision.BlockId; Offset = revision.Start }
-            Focus = { BlockId = revision.BlockId; Offset = revision.End }
-        } }
+    selectRevisionRange revision.BlockId revision.Start revision.End doc
+
+let private revisionSpanAfter paragraphIndex offset (span: RevisionNavigationSpan) =
+    span.ParagraphIndex > paragraphIndex
+        || (span.ParagraphIndex = paragraphIndex && span.Start > offset)
+
+let private revisionSpanBefore paragraphIndex offset (span: RevisionNavigationSpan) =
+    span.ParagraphIndex < paragraphIndex
+        || (span.ParagraphIndex = paragraphIndex && span.Start < offset)
+
+let private tryEditableParagraphIndexById doc paragraphId =
+    let mutable index = 0
+    let mutable found = ValueNone
+    iterEditableParagraphsUntil doc (fun para ->
+        if para.Id = paragraphId then
+            found <- ValueSome index
+            false
+        else
+            index <- index + 1
+            true)
+    found
+
+let private tryFindNextRevisionSpan doc =
+    let cache = revisionNavigationSpans doc
+    if cache.Spans.Length = 0 then
+        ValueNone
+    else
+        let struct (currentBlockId, currentOffset) = currentRevisionPositionStruct false doc
+        let span =
+            if cache.ParagraphIndexesComplete then
+                let mutable currentIndex = -1
+                let hasCurrentIndex =
+                    currentBlockId <> "" && cache.ParagraphIndexes.TryGetValue(currentBlockId, &currentIndex)
+                if currentBlockId = "" || not hasCurrentIndex then
+                    cache.Spans.[0]
+                else
+                    let mutable lo = 0
+                    let mutable hi = cache.Spans.Length
+                    while lo < hi do
+                        let mid = lo + (hi - lo) / 2
+                        if revisionSpanAfter currentIndex currentOffset cache.Spans.[mid] then
+                            hi <- mid
+                        else
+                            lo <- mid + 1
+                    if lo < cache.Spans.Length then cache.Spans.[lo] else cache.Spans.[0]
+            else
+                if currentBlockId = "" then
+                    cache.Spans.[0]
+                else
+                    let mutable currentIndex = -1
+                    let hasCurrentIndex =
+                        if cache.ParagraphIndexes.TryGetValue(currentBlockId, &currentIndex) then
+                            true
+                        else
+                            match tryEditableParagraphIndexById doc currentBlockId with
+                            | ValueSome index ->
+                                currentIndex <- index
+                                true
+                            | ValueNone ->
+                                false
+                    if not hasCurrentIndex then
+                        cache.Spans.[0]
+                    else
+                        let mutable lo = 0
+                        let mutable hi = cache.Spans.Length
+                        while lo < hi do
+                            let mid = lo + (hi - lo) / 2
+                            if revisionSpanAfter currentIndex currentOffset cache.Spans.[mid] then
+                                hi <- mid
+                            else
+                                lo <- mid + 1
+                        if lo < cache.Spans.Length then cache.Spans.[lo] else cache.Spans.[0]
+        ValueSome (struct (span.BlockId, span.Start, span.End))
 
 /// Select next revision, wrapping to the first revision when needed.
 let selectNextRevision doc =
-    let revisions = revisionInfos doc
-    match revisions with
-    | [] -> doc
-    | _ ->
-        let currentBlock, currentOffset = currentRevisionCursor false doc
-        let next =
-            revisions
-            |> List.tryFind (fun revision ->
-                let blockIndex, start = revisionSortKey doc revision
-                blockIndex > currentBlock || (blockIndex = currentBlock && start > currentOffset))
-            |> Option.defaultValue (List.head revisions)
-        selectRevision next doc
+    match tryFindNextRevisionSpan doc with
+    | ValueSome (struct (blockId, start, endPos)) -> selectRevisionRange blockId start endPos doc
+    | ValueNone -> doc
+
+let private tryFindPreviousRevisionSpan doc =
+    let cache = revisionNavigationSpans doc
+    if cache.Spans.Length = 0 then
+        ValueNone
+    else
+        let struct (currentBlockId, currentOffset) = currentRevisionPositionStruct true doc
+        let span =
+            if cache.ParagraphIndexesComplete then
+                let mutable currentIndex = -1
+                let hasCurrentIndex =
+                    currentBlockId <> "" && cache.ParagraphIndexes.TryGetValue(currentBlockId, &currentIndex)
+                if currentBlockId = "" || not hasCurrentIndex then
+                    cache.Spans.[cache.Spans.Length - 1]
+                else
+                    let mutable lo = 0
+                    let mutable hi = cache.Spans.Length
+                    while lo < hi do
+                        let mid = lo + (hi - lo) / 2
+                        if revisionSpanBefore currentIndex currentOffset cache.Spans.[mid] then
+                            lo <- mid + 1
+                        else
+                            hi <- mid
+                    let index = lo - 1
+                    if index >= 0 then cache.Spans.[index] else cache.Spans.[cache.Spans.Length - 1]
+            else
+                if currentBlockId = "" then
+                    cache.Spans.[cache.Spans.Length - 1]
+                else
+                    let mutable currentIndex = -1
+                    let hasCurrentIndex =
+                        if cache.ParagraphIndexes.TryGetValue(currentBlockId, &currentIndex) then
+                            true
+                        else
+                            match tryEditableParagraphIndexById doc currentBlockId with
+                            | ValueSome index ->
+                                currentIndex <- index
+                                true
+                            | ValueNone ->
+                                false
+                    if not hasCurrentIndex then
+                        cache.Spans.[cache.Spans.Length - 1]
+                    else
+                        let mutable lo = 0
+                        let mutable hi = cache.Spans.Length
+                        while lo < hi do
+                            let mid = lo + (hi - lo) / 2
+                            if revisionSpanBefore currentIndex currentOffset cache.Spans.[mid] then
+                                lo <- mid + 1
+                            else
+                                hi <- mid
+                        let index = lo - 1
+                        if index >= 0 then cache.Spans.[index] else cache.Spans.[cache.Spans.Length - 1]
+        ValueSome (struct (span.BlockId, span.Start, span.End))
 
 /// Select previous revision, wrapping to the last revision when needed.
 let selectPreviousRevision doc =
-    let revisions = revisionInfos doc
-    match revisions with
-    | [] -> doc
-    | _ ->
-        let currentBlock, currentOffset = currentRevisionCursor true doc
-        let previous =
-            revisions
-            |> List.filter (fun revision ->
-                let blockIndex, start = revisionSortKey doc revision
-                blockIndex < currentBlock || (blockIndex = currentBlock && start < currentOffset))
-            |> List.tryLast
-            |> Option.defaultValue (List.last revisions)
-        selectRevision previous doc
+    match tryFindPreviousRevisionSpan doc with
+    | ValueSome (struct (blockId, start, endPos)) -> selectRevisionRange blockId start endPos doc
+    | ValueNone -> doc
 
 /// Set font size on selection
 let setFontSize size doc =
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setFontSize start len size buf) doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setFontSize formatStart formatLen size para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setFontSize formatStart formatLen size para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setFontSize start len size buffer)
 
 /// Set font family on selection
 let setFontFamily family doc =
-    applyFormattingToSelection (fun start len buf -> TextBuffer.setFontFamily start len family buf) doc
+    match doc.Selection with
+    | None -> doc
+    | Some sel when sel.IsCollapsed -> doc
+    | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+        let formatStart = min sel.Anchor.Offset sel.Focus.Offset
+        let formatLen = abs (sel.Focus.Offset - sel.Anchor.Offset)
+        if formatLen <= 0 then
+            doc
+        else
+            match doc.Blocks with
+            | [ Paragraph para ] when para.Id = sel.Anchor.BlockId ->
+                let newBuffer = TextBuffer.setFontFamily formatStart formatLen family para.Buffer
+                if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                    doc
+                else
+                    replaceParagraph doc para.Id { para with Buffer = newBuffer }
+            | _ ->
+                match findCursorParagraph doc sel.Anchor.BlockId with
+                | Some para ->
+                    let newBuffer = TextBuffer.setFontFamily formatStart formatLen family para.Buffer
+                    if obj.ReferenceEquals(newBuffer, para.Buffer) then
+                        doc
+                    else
+                        replaceParagraph doc para.Id { para with Buffer = newBuffer }
+                | None -> doc
+    | Some sel ->
+        applySelectionBufferFormat doc sel (fun start len buffer ->
+            TextBuffer.setFontFamily start len family buffer)
+
+let private selectionTextColdCacheParagraphLimit = 4096
+
+let private selectionTextSourceSmallEnoughForColdCache doc =
+    let mutable count = 0
+    let mutable smallEnough = true
+    iterEditableParagraphsUntil doc (fun _ ->
+        count <- count + 1
+        if count > selectionTextColdCacheParagraphLimit then
+            smallEnough <- false
+            false
+        else
+            true)
+    smallEnough
 
 /// Get selected text as plain text
 let getSelectionText doc =
-    match doc.Selection with
-    | None -> ""
-    | Some sel when sel.Anchor = sel.Focus -> ""  // No selection
-    | Some sel ->
-        let (startPos, endPos, blockIds) = getNormalizedRange sel doc
-
-        blockIds
-        |> List.mapi (fun i blockId ->
-            let para = findParagraph doc blockId
-            match para with
+    match cachedSelectionText doc with
+    | Some text -> text
+    | _ ->
+        let text =
+            match doc.Selection with
             | None -> ""
-            | Some para ->
-                let bufferLen = TextBuffer.length para.Buffer
-
-                // Determine slice range for this block
-                let sliceStart = if i = 0 then startPos.Offset else 0
-                let sliceEnd = if i = blockIds.Length - 1 then endPos.Offset else bufferLen
+            | Some sel when sel.Anchor = sel.Focus -> ""  // No selection
+            | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+                let sliceStart = min sel.Anchor.Offset sel.Focus.Offset
+                let sliceEnd = max sel.Anchor.Offset sel.Focus.Offset
                 let sliceLen = sliceEnd - sliceStart
+                if sliceLen <= 0 then
+                    ""
+                else
+                    match tryFindEditableParagraphUntil doc sel.Anchor.BlockId with
+                    | None -> ""
+                    | Some para -> TextBuffer.slice sliceStart sliceLen para.Buffer
+            | Some sel ->
+                let selectedText = System.Text.StringBuilder()
+                let mutable firstParagraph = true
 
-                if sliceLen <= 0 then ""
-                else TextBuffer.slice sliceStart sliceLen para.Buffer
-        )
-        |> String.concat "\n"  // Separate blocks with newlines
+                let appendSlice (para: ParagraphBlock) startOffset endOffset =
+                    let bufferLen = TextBuffer.length para.Buffer
+                    let sliceStart = max 0 (min bufferLen startOffset)
+                    let sliceEnd = max sliceStart (min bufferLen endOffset)
+                    if not firstParagraph then
+                        selectedText.Append("\n") |> ignore
+                    firstParagraph <- false
+                    if sliceEnd > sliceStart then
+                        TextBuffer.appendSliceToStringBuilder
+                            selectedText
+                            sliceStart
+                            (sliceEnd - sliceStart)
+                            para.Buffer
+
+                let mutable collecting = false
+                let mutable foundBoth = false
+
+                iterEditableParagraphsUntil doc (fun para ->
+                    let isAnchor = para.Id = sel.Anchor.BlockId
+                    let isFocus = para.Id = sel.Focus.BlockId
+                    if isAnchor || isFocus then
+                        if not collecting then
+                            collecting <- true
+                            let startOffset = if isAnchor then sel.Anchor.Offset else sel.Focus.Offset
+                            appendSlice para startOffset (TextBuffer.length para.Buffer)
+                        else
+                            let endOffset = if isAnchor then sel.Anchor.Offset else sel.Focus.Offset
+                            appendSlice para 0 endOffset
+                            foundBoth <- true
+                    elif collecting then
+                        appendSlice para 0 (TextBuffer.length para.Buffer)
+                    not foundBoth)
+
+                if foundBoth then selectedText.ToString() else ""
+        if text.Length > 0
+           && (doc.Selection
+               |> Option.exists (fun sel -> sel.Anchor.BlockId <> sel.Focus.BlockId))
+           && selectionTextSourceSmallEnoughForColdCache doc then
+            rememberSelectionText doc text
+        text
+
+let private updateCurrentParagraphMaybe (update: ParagraphBlock -> ParagraphBlock option) doc =
+    match doc.Selection with
+    | None -> doc
+    | Some sel ->
+        let rec updateTopLevel remaining =
+            match remaining with
+            | [] -> ValueNone
+            | block :: tail ->
+                match block with
+                | Paragraph para when para.Id = sel.Focus.BlockId ->
+                    match update para with
+                    | Some nextPara -> ValueSome (replaceFirstTopLevelBlock doc para.Id (Paragraph nextPara))
+                    | None -> ValueSome doc
+                | Heading (level, para) when para.Id = sel.Focus.BlockId ->
+                    match update para with
+                    | Some nextPara -> ValueSome (replaceFirstTopLevelBlock doc para.Id (Heading (level, nextPara)))
+                    | None -> ValueSome doc
+                | _ ->
+                    updateTopLevel tail
+
+        match updateTopLevel doc.Blocks with
+        | ValueSome nextDoc -> nextDoc
+        | ValueNone ->
+            let mutable nestedChanged = false
+            let nextDoc =
+                updateParagraph doc sel.Focus.BlockId (fun para ->
+                    match update para with
+                    | Some nextPara when nextPara <> para ->
+                        nestedChanged <- true
+                        nextPara
+                    | Some _ ->
+                        para
+                    | None -> para)
+            if nestedChanged then nextDoc else doc
+
+let private updateCurrentParagraph (update: ParagraphBlock -> ParagraphBlock) doc =
+    updateCurrentParagraphMaybe (update >> Some) doc
+
+let private updateCurrentParagraphMetadata update doc =
+    updateCurrentParagraphMaybe
+        (fun para ->
+            let nextMetadata = update para.Metadata
+            if nextMetadata = para.Metadata then
+                None
+            else
+                Some { para with Metadata = nextMetadata })
+        doc
+
+let private updateCurrentParagraphMetadataMaybe update doc =
+    updateCurrentParagraphMaybe
+        (fun para ->
+            update para.Metadata
+            |> Option.map (fun metadata -> { para with Metadata = metadata }))
+        doc
 
 /// Toggle bullet list on current block
 let toggleBulletList doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata =
-                if para.Metadata.ListStyle = Bullet then
-                    { para.Metadata with ListStyle = NoList; ListLevel = 0 }
-                else
-                    { para.Metadata with ListStyle = Bullet; ListLevel = max 1 para.Metadata.ListLevel }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadata
+        (fun metadata ->
+            if metadata.ListStyle = Bullet then
+                { metadata with ListStyle = NoList; ListLevel = 0 }
+            else
+                { metadata with ListStyle = Bullet; ListLevel = max 1 metadata.ListLevel })
+        doc
 
 /// Toggle numbered list on current block
 let toggleNumberedList doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata =
-                if para.Metadata.ListStyle = Numbered then
-                    { para.Metadata with ListStyle = NoList; ListLevel = 0 }
-                else
-                    { para.Metadata with ListStyle = Numbered; ListLevel = max 1 para.Metadata.ListLevel }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadata
+        (fun metadata ->
+            if metadata.ListStyle = Numbered then
+                { metadata with ListStyle = NoList; ListLevel = 0 }
+            else
+                { metadata with ListStyle = Numbered; ListLevel = max 1 metadata.ListLevel })
+        doc
 
 /// Apply a numbering marker format to the current block and ensure it is a numbered list.
 let setNumberFormat format doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let normalizedFormat =
-                match format with
-                | "lowerLetter" | "upperLetter" | "lowerRoman" | "upperRoman" -> format
-                | _ -> "decimal"
-            let newMetadata = {
-                para.Metadata with
-                    ListStyle = Numbered
-                    ListLevel = max 1 para.Metadata.ListLevel
-                    ListNumberFormat = Some normalizedFormat
-                    ListLevelText = None
-            }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    let normalizedFormat =
+        match format with
+        | "lowerLetter" | "upperLetter" | "lowerRoman" | "upperRoman" -> format
+        | _ -> "decimal"
+    updateCurrentParagraphMetadata
+        (fun metadata ->
+            { metadata with
+                ListStyle = Numbered
+                ListLevel = max 1 metadata.ListLevel
+                ListNumberFormat = Some normalizedFormat
+                ListLevelText = None })
+        doc
 
 /// Increase list indentation (Tab)
 let increaseIndent doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            // Only increase if in a list and not at max level
-            if para.Metadata.ListStyle <> NoList && para.Metadata.ListLevel < 9 then
-                let newMetadata = { para.Metadata with ListLevel = para.Metadata.ListLevel + 1 }
-                let newPara = { para with Metadata = newMetadata }
-                let newBlock = match block with
-                               | Paragraph _ -> Paragraph newPara
-                               | Heading (level, _) -> Heading (level, newPara)
-                               | Table t -> Table t
-                               | TextBox t -> TextBox t
-                replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadataMaybe
+        (fun metadata ->
+            if metadata.ListStyle <> NoList && metadata.ListLevel < 9 then
+                Some { metadata with ListLevel = metadata.ListLevel + 1 }
             else
-                doc
+                None)
+        doc
 
 /// Decrease list indentation (Shift+Tab)
 let decreaseIndent doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            // Only decrease if in a list
-            if para.Metadata.ListStyle <> NoList && para.Metadata.ListLevel > 0 then
-                let newLevel = para.Metadata.ListLevel - 1
-                let newMetadata =
-                    if newLevel = 0 then
-                        // Exit list when reaching level 0
-                        { para.Metadata with ListStyle = NoList; ListLevel = 0 }
-                    else
-                        { para.Metadata with ListLevel = newLevel }
-                let newPara = { para with Metadata = newMetadata }
-                let newBlock = match block with
-                               | Paragraph _ -> Paragraph newPara
-                               | Heading (level, _) -> Heading (level, newPara)
-                               | Table t -> Table t
-                               | TextBox t -> TextBox t
-                replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadataMaybe
+        (fun metadata ->
+            if metadata.ListStyle <> NoList && metadata.ListLevel > 0 then
+                let newLevel = metadata.ListLevel - 1
+                if newLevel = 0 then
+                    Some { metadata with ListStyle = NoList; ListLevel = 0 }
+                else
+                    Some { metadata with ListLevel = newLevel }
             else
-                doc
+                None)
+        doc
 
 
 /// Set alignment to left
 let alignLeft doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with Alignment = Left }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadata (fun metadata -> { metadata with Alignment = Left }) doc
 
 /// Set alignment to center
 let alignCenter doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with Alignment = Center }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadata (fun metadata -> { metadata with Alignment = Center }) doc
 
 /// Set alignment to right
 let alignRight doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with Alignment = Right }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadata (fun metadata -> { metadata with Alignment = Right }) doc
 
 /// Set alignment to justify
 let alignJustify doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with Alignment = Justify }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadata (fun metadata -> { metadata with Alignment = Justify }) doc
 
 let setCurrentParagraphStyle alignment indentLeft indentRight spacingBefore spacingAfter lineSpacing firstLineIndent backgroundColor doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = {
-                para.Metadata with
-                    Alignment = alignment
-                    IndentLeft = indentLeft
-                    IndentRight = indentRight
-                    SpacingBefore = spacingBefore
-                    SpacingAfter = spacingAfter
-                    LineSpacing = lineSpacing
-                    LineSpacingRule = Some "auto"
-                    FirstLineIndent = firstLineIndent
-                    BackgroundColor = backgroundColor
-            }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock =
-                match block with
-                | Paragraph _ -> Paragraph newPara
-                | Heading (level, _) -> Heading (level, newPara)
-                | Table table -> Table table
-                | TextBox textBox -> TextBox textBox
-            replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadata
+        (fun metadata ->
+            { metadata with
+                Alignment = alignment
+                IndentLeft = indentLeft
+                IndentRight = indentRight
+                SpacingBefore = spacingBefore
+                SpacingAfter = spacingAfter
+                LineSpacing = lineSpacing
+                LineSpacingRule = Some "auto"
+                FirstLineIndent = firstLineIndent
+                BackgroundColor = backgroundColor })
+        doc
 
 let setCurrentSectionBreak sectionBreak doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with SectionBreak = sectionBreak }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock =
-                match block with
-                | Paragraph _ -> Paragraph newPara
-                | Heading (level, _) -> Heading (level, newPara)
-                | Table table -> Table table
-                | TextBox textBox -> TextBox textBox
-            replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadata (fun metadata -> { metadata with SectionBreak = sectionBreak }) doc
 
 let setCurrentHeaderFooterReferences headerReferences footerReferences doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with HeaderReferences = headerReferences; FooterReferences = footerReferences }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock =
-                match block with
-                | Paragraph _ -> Paragraph newPara
-                | Heading (level, _) -> Heading (level, newPara)
-                | Table table -> Table table
-                | TextBox textBox -> TextBox textBox
-            replaceBlock doc para.Id newBlock
+    updateCurrentParagraphMetadata
+        (fun metadata -> { metadata with HeaderReferences = headerReferences; FooterReferences = footerReferences })
+        doc
