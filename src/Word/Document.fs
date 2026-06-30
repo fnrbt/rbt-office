@@ -1483,6 +1483,8 @@ and private SelectionTextCacheEntry = {
 }
 
 let mutable private selectionTextCache: SelectionTextCache list = []
+let private selectionTextCacheByBlocks = Dictionary<Block list, SelectionTextCache>(documentInfoBlocksComparer)
+let private selectionTextFastSlots = Array.zeroCreate<SelectionTextCache> 256
 let private selectionTextCacheMaxEntries = 64
 let private selectionTextCacheMaxSources = 64
 let private selectionTextCacheMaxTotalChars = 5000000
@@ -1491,6 +1493,29 @@ let private selectionTextCacheMaxTotalSourceTextChars = documentSourceTextCacheM
 
 let private selectionTextCacheMatches blocks (cached: SelectionTextCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private setSelectionTextCache entries =
+    selectionTextCache <- entries
+    selectionTextCacheByBlocks.Clear()
+    clearArray selectionTextFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<SelectionTextCache>
+        if not (selectionTextCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            selectionTextCacheByBlocks.[entry.SourceBlocks] <- entry
+
+let private tryGetSelectionTextCache blocks =
+    let slot = documentInfoSlot blocks selectionTextFastSlots.Length
+    let fast = selectionTextFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && selectionTextCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<SelectionTextCache>
+        if selectionTextCacheByBlocks.TryGetValue(blocks, &cached) then
+            selectionTextFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private selectionTextSourceParagraphCountFor textLength blocks =
     if textLength > selectionTextCacheMaxTotalChars then
@@ -1517,7 +1542,9 @@ let private selectionTextCacheWithinBudget (cached: SelectionTextCache) =
 
 let private rememberSelectionTextCache cached =
     if not (selectionTextCacheWithinBudget cached) then
-        selectionTextCache <- selectionTextCache |> List.filter (selectionTextCacheMatches cached.SourceBlocks >> not)
+        selectionTextCache
+        |> List.filter (selectionTextCacheMatches cached.SourceBlocks >> not)
+        |> setSelectionTextCache
     else
         let mutable keptCount = 1
         let mutable keptChars = max 1 cached.TotalChars
@@ -1542,7 +1569,8 @@ let private rememberSelectionTextCache cached =
                     Some candidate
                 else
                     None)
-        selectionTextCache <- cached :: retained
+        cached :: retained
+        |> setSelectionTextCache
 
 let private selectionTextKey (selection: Selection) = {
     AnchorBlockId = selection.Anchor.BlockId
@@ -1592,26 +1620,26 @@ let private cachedSelectionText (doc: Document) =
     match doc.Selection with
     | None -> None
     | Some selection ->
-        match selectionTextCache |> List.tryFind (selectionTextCacheMatches doc.Blocks) with
-        | Some cached when selectionTextCacheWithinBudget cached ->
+        match tryGetSelectionTextCache doc.Blocks with
+        | ValueSome cached when selectionTextCacheWithinBudget cached ->
             let key = selectionTextKey selection
             let mutable entry = Unchecked.defaultof<SelectionTextCacheEntry>
             if cached.Entries.TryGetValue(key, &entry) then Some entry.Text else None
-        | Some cached ->
+        | ValueSome cached ->
             rememberSelectionTextCache cached
             None
-        | None -> None
+        | ValueNone -> None
 
 let private rememberSelectionText (doc: Document) (text: string) =
     match doc.Selection with
     | None -> ()
     | Some selection ->
         let key = selectionTextKey selection
-        match selectionTextCache |> List.tryFind (selectionTextCacheMatches doc.Blocks) with
-        | Some cached ->
+        match tryGetSelectionTextCache doc.Blocks with
+        | ValueSome cached ->
             addSelectionTextCacheEntry key text cached
             rememberSelectionTextCache cached
-        | None ->
+        | ValueNone ->
             let entries = Dictionary<SelectionTextCacheKey, SelectionTextCacheEntry>()
             let order = Queue<SelectionTextCacheKey>()
             let sourceParagraphCount = selectionTextSourceParagraphCountFor text.Length doc.Blocks
