@@ -3989,6 +3989,16 @@ let private tryGetTableStyleCellsEntry cells tables =
         else
             ValueNone
 
+let private tableStyleCellsCacheWithoutSource cells tables =
+    let key = tableStyleCellsReferenceKey cells tables
+    let mutable cached = Unchecked.defaultof<TableStyleCellsCacheEntry>
+    if tableStyleCellsCacheBySource.TryGetValue(key, &cached)
+       && tableStyleCellsCacheEntryMatches cells tables cached then
+        tableStyleCellsCache
+        |> List.filter (tableStyleCellsCacheEntryMatches cells tables >> not)
+    else
+        tableStyleCellsCache
+
 let private retainedTableStyleCellCount (cells: Map<CellAddress, CellData>) (styledCells: Map<CellAddress, CellData>) =
     if obj.ReferenceEquals(cells, styledCells) then styledCells.Count
     else cells.Count + styledCells.Count
@@ -4067,8 +4077,7 @@ let private tableStyleCellsSourceTextCharCountFor cellCount tableCount cells tab
         tableStyleCellsSourceTextCharCount cells tables
 
 let private rememberTableStyleCellsEntry entry =
-    (entry
-     :: (tableStyleCellsCache |> List.filter (tableStyleCellsCacheEntryMatches entry.SourceCells entry.SourceTables >> not)))
+    (entry :: tableStyleCellsCacheWithoutSource entry.SourceCells entry.SourceTables)
     |> trimTableStyleCellsCache
     |> setTableStyleCellsCache
 
