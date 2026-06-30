@@ -2627,12 +2627,18 @@ let private tryGetStaticPaintItemsCache model =
         else
             ValueNone
 
-let private removeStaticPaintItemsCacheForModel model =
+let private staticPaintItemsCacheWithoutModel model =
     let mutable cached = Unchecked.defaultof<StaticPaintItemsCache>
     if staticPaintItemsCacheByModel.TryGetValue(model, &cached) then
         staticPaintItemsCache
         |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, model)))
-        |> setStaticPaintItemsCache
+    else
+        staticPaintItemsCache
+
+let private removeStaticPaintItemsCacheForModel model =
+    let entries = staticPaintItemsCacheWithoutModel model
+    if not (obj.ReferenceEquals(entries, staticPaintItemsCache)) then
+        setStaticPaintItemsCache entries
 
 let private rememberStaticPaintItemsCache (cache: StaticPaintItemsCache) =
     if not (staticPaintItemsCacheRetainable cache) then
@@ -2644,8 +2650,7 @@ let private rememberStaticPaintItemsCache (cache: StaticPaintItemsCache) =
         let mutable keptSourceItems = cache.SourceItemCount
         let mutable keptSourceTextChars = cache.SourceTextCharCount
         let retained =
-            staticPaintItemsCache
-            |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+            staticPaintItemsCacheWithoutModel cache.Model
             |> List.choose (fun candidate ->
                 let candidateItems = candidate.TotalItemCount
                 let candidateItemTextChars = candidate.TotalItemTextCharCount
@@ -2990,12 +2995,18 @@ let private tryGetViewportPaintItemsCache model =
         else
             ValueNone
 
-let private removeViewportPaintItemsCacheForModel model =
+let private viewportPaintItemsCacheWithoutModel model =
     let mutable cached = Unchecked.defaultof<ViewportPaintItemsCache>
     if viewportPaintItemsCacheByModel.TryGetValue(model, &cached) then
         viewportPaintItemsCache
         |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, model)))
-        |> setViewportPaintItemsCache
+    else
+        viewportPaintItemsCache
+
+let private removeViewportPaintItemsCacheForModel model =
+    let entries = viewportPaintItemsCacheWithoutModel model
+    if not (obj.ReferenceEquals(entries, viewportPaintItemsCache)) then
+        setViewportPaintItemsCache entries
 
 let private rememberViewportPaintItemsCache (cache: ViewportPaintItemsCache) =
     if not (viewportPaintItemsCacheRetainable cache) then
@@ -3007,8 +3018,7 @@ let private rememberViewportPaintItemsCache (cache: ViewportPaintItemsCache) =
         let mutable keptSourceItems = cache.SourceItemCount
         let mutable keptSourceTextChars = cache.SourceTextCharCount
         let retained =
-            viewportPaintItemsCache
-            |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
+            viewportPaintItemsCacheWithoutModel cache.Model
             |> List.choose (fun candidate ->
                 let candidateItems = candidate.TotalItemCount
                 let candidateItemTextChars = candidate.TotalItemTextCharCount
