@@ -575,6 +575,13 @@ type private CellRowCountReferenceKey = {
     RowCount: int
 }
 
+[<Struct>]
+type private CellGridReferenceKey = {
+    Cells: Map<CellAddress, CellData>
+    RowCount: int
+    ColCount: int
+}
+
 let private cellMapReferenceComparer =
     { new System.Collections.Generic.IEqualityComparer<Map<CellAddress, CellData>> with
         member _.Equals(left, right) = obj.ReferenceEquals(left, right)
@@ -594,6 +601,14 @@ let private cellRowCountReferenceKey cells rowCount : CellRowCountReferenceKey =
     { Cells = cells
       RowCount = rowCount }
 
+let private cellGridReferenceHash cells rowCount colCount =
+    ((referenceHash cells * 397) ^^^ rowCount) * 397 ^^^ colCount
+
+let private cellGridReferenceKey cells rowCount colCount : CellGridReferenceKey =
+    { Cells = cells
+      RowCount = rowCount
+      ColCount = colCount }
+
 let private cellMergedReferenceComparer =
     { new System.Collections.Generic.IEqualityComparer<CellMergedReferenceKey> with
         member _.Equals(left, right) =
@@ -611,6 +626,16 @@ let private cellRowCountReferenceComparer =
 
         member _.GetHashCode(key) =
             cellRowCountReferenceHash key.Cells key.RowCount }
+
+let private cellGridReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<CellGridReferenceKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.Cells, right.Cells)
+            && left.RowCount = right.RowCount
+            && left.ColCount = right.ColCount
+
+        member _.GetHashCode(key) =
+            cellGridReferenceHash key.Cells key.RowCount key.ColCount }
 
 // ---------------------------------------------------------------------------
 // Print / page setup
@@ -1147,6 +1172,9 @@ and private PasteIdentityCacheKey = {
 }
 
 let mutable private pasteIdentityCache: PasteIdentityCache list = []
+let private pasteIdentityCacheBySource =
+    System.Collections.Generic.Dictionary<CellGridReferenceKey, PasteIdentityCache>(cellGridReferenceComparer)
+let private pasteIdentityFastSlots = Array.zeroCreate<PasteIdentityCache> 256
 let private pasteIdentityCacheMaxEntries = 64
 let private pasteIdentityCacheMaxSources = 64
 let private pasteIdentityCacheMaxTotalCells = 200000
@@ -1172,6 +1200,33 @@ let private pasteIdentityCacheMatches cells rowCount colCount (cached: PasteIden
     obj.ReferenceEquals(cached.Cells, cells)
     && cached.RowCount = rowCount
     && cached.ColCount = colCount
+
+let private setPasteIdentityCache entries =
+    pasteIdentityCache <- entries
+    pasteIdentityCacheBySource.Clear()
+    clearArray pasteIdentityFastSlots
+    for entry in entries do
+        let key = cellGridReferenceKey entry.Cells entry.RowCount entry.ColCount
+        let mutable existing = Unchecked.defaultof<PasteIdentityCache>
+        if not (pasteIdentityCacheBySource.TryGetValue(key, &existing)) then
+            pasteIdentityCacheBySource.[key] <- entry
+            let slot = cellGridReferenceHash entry.Cells entry.RowCount entry.ColCount &&& (pasteIdentityFastSlots.Length - 1)
+            pasteIdentityFastSlots.[slot] <- entry
+
+let private tryGetPasteIdentityCache cells rowCount colCount =
+    let slot = cellGridReferenceHash cells rowCount colCount &&& (pasteIdentityFastSlots.Length - 1)
+    let fast = pasteIdentityFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && pasteIdentityCacheMatches cells rowCount colCount fast then
+        ValueSome fast
+    else
+        let key = cellGridReferenceKey cells rowCount colCount
+        let mutable cached = Unchecked.defaultof<PasteIdentityCache>
+        if pasteIdentityCacheBySource.TryGetValue(key, &cached) then
+            pasteIdentityFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private pasteIdentityCacheRetainable (cached: PasteIdentityCache) =
     cached.Entries.Count > 0
@@ -1208,11 +1263,11 @@ let private rememberPasteIdentityCache cached =
                 else
                     loop keptCount keptCells keptSourceTextChars keptClipboardCells keptClipboardTextChars acc tail
         loop 0 0 0 0 0 [] entries
-    pasteIdentityCache <-
-        (cached
-         :: (pasteIdentityCache
-             |> List.filter (pasteIdentityCacheMatches cached.Cells cached.RowCount cached.ColCount >> not)))
-        |> trim
+    (cached
+     :: (pasteIdentityCache
+         |> List.filter (pasteIdentityCacheMatches cached.Cells cached.RowCount cached.ColCount >> not)))
+    |> trim
+    |> setPasteIdentityCache
 
 let private pasteIdentityKeyComparer =
     { new System.Collections.Generic.IEqualityComparer<PasteIdentityCacheKey> with
@@ -1275,14 +1330,14 @@ let private pasteIdentityLookupKey (targetAddr: CellAddress) (clipboardData: Cli
     pasteIdentityKeyWithCounts targetAddr clipboardData 0 0
 
 let private tryPasteIdentityCache targetAddr clipboardData (model: SpreadsheetModel) =
-    match pasteIdentityCache |> List.tryFind (pasteIdentityCacheMatches model.Cells model.RowCount model.ColCount) with
-    | Some cached when pasteIdentityCacheRetainable cached ->
+    match tryGetPasteIdentityCache model.Cells model.RowCount model.ColCount with
+    | ValueSome cached when pasteIdentityCacheRetainable cached ->
         let key = pasteIdentityLookupKey targetAddr clipboardData
         if cached.Entries.ContainsKey key then Some model else None
-    | Some cached ->
+    | ValueSome cached ->
         rememberPasteIdentityCache cached
         None
-    | None -> None
+    | ValueNone -> None
 
 let private rememberPasteIdentityWithSourceTextCharCount
     sourceTextCharCount
@@ -1294,10 +1349,10 @@ let private rememberPasteIdentityWithSourceTextCharCount
     =
     let key = pasteIdentityKeyWithCounts targetAddr clipboardData clipboardCellCount clipboardTextCharCount
     let cache =
-        match pasteIdentityCache |> List.tryFind (pasteIdentityCacheMatches model.Cells model.RowCount model.ColCount) with
-        | Some cached ->
+        match tryGetPasteIdentityCache model.Cells model.RowCount model.ColCount with
+        | ValueSome cached ->
             cached
-        | None ->
+        | ValueNone ->
             {
                 Cells = model.Cells
                 CellCount = max 1 model.Cells.Count

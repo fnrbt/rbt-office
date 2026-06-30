@@ -495,6 +495,20 @@ check "native formula presence cache count"
     (cellsFormulaCountIfKnown formulaPresenceCells)
     (Some 0)
 
+let pasteIdentityCells =
+    [ { Row = 1; Col = 1 }, cell (CellValue.String "same") ]
+    |> Map.ofList
+let pasteIdentityModel = { createEmpty 4 4 with Cells = pasteIdentityCells }
+let pasteIdentityClipboard = serializeSelection (SingleCell (1, 1)) pasteIdentityModel false
+let pasteIdentityFirst = pasteClipboard { Row = 1; Col = 1 } pasteIdentityClipboard pasteIdentityModel
+let pasteIdentitySecond = pasteClipboard { Row = 1; Col = 1 } pasteIdentityClipboard pasteIdentityFirst
+check "native paste identity keeps model"
+    (obj.ReferenceEquals(pasteIdentityModel, pasteIdentityFirst))
+    true
+check "native paste identity cache reuses"
+    (obj.ReferenceEquals(pasteIdentityFirst, pasteIdentitySecond))
+    true
+
 if isNull setFocus || isNull extendFocus || isNull startEditing || isNull commitEdit then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor helpers" "native editor reflection"
