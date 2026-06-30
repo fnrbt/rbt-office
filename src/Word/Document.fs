@@ -9,6 +9,10 @@ let private resizeArrayToList (items: ResizeArray<'T>) =
         result <- items.[i] :: result
     result
 
+let private clearArray (items: 'T array) =
+    for i = 0 to items.Length - 1 do
+        items.[i] <- Unchecked.defaultof<'T>
+
 let private prependResizeArray (items: ResizeArray<'T>) tail =
     let mutable result = tail
     for i = items.Count - 1 downto 0 do
@@ -1684,6 +1688,8 @@ let setPlainTextContent (text: string) doc =
 type private BlockLookupEntry = {
     TopBlock: Block
     TopIndex: int
+    TopBlockResult: Block option
+    TopParagraphResult: ParagraphBlock option
 }
 
 let private getBlockId = function
@@ -1691,6 +1697,17 @@ let private getBlockId = function
     | Heading (_, p) -> p.Id
     | Table t -> t.Id
     | TextBox t -> t.Id
+
+let private blockLookupEntry block index =
+    let paragraph =
+        match block with
+        | Paragraph paragraph
+        | Heading (_, paragraph) -> Some paragraph
+        | _ -> None
+    { TopBlock = block
+      TopIndex = index
+      TopBlockResult = Some block
+      TopParagraphResult = paragraph }
 
 /// Find block by ID
 type private BlockLookupCache = {
@@ -1700,9 +1717,18 @@ type private BlockLookupCache = {
     SourceTextCharCount: int
     EntriesById: Dictionary<BlockId, BlockLookupEntry>
     TopBlocks: Block array
+    mutable LastEntrySet: bool
+    mutable LastEntryId: BlockId
+    mutable LastEntry: BlockLookupEntry
 }
 
 let mutable private blockLookupCache: BlockLookupCache list = []
+let private blockLookupBlocksComparer =
+    { new IEqualityComparer<Block list> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+let private blockLookupCacheByBlocks = Dictionary<Block list, BlockLookupCache>(blockLookupBlocksComparer)
+let private blockLookupFastSlots = Array.zeroCreate<BlockLookupCache> 256
 let private blockLookupCacheMaxEntries = 64
 let private blockLookupCacheMaxTotalEntries = 200000
 let private blockLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
@@ -1715,6 +1741,44 @@ let private blockLookupCacheRetainable (cached: BlockLookupCache) =
     cached.EntryCount <= blockLookupCacheMaxTotalEntries
     && cached.SourceParagraphCount <= blockLookupCacheMaxTotalSourceParagraphs
     && cached.SourceTextCharCount <= blockLookupCacheMaxTotalSourceTextChars
+
+let private setBlockLookupCache entries =
+    blockLookupCache <- entries
+    blockLookupCacheByBlocks.Clear()
+    clearArray blockLookupFastSlots
+    for entry in entries do
+        blockLookupCacheByBlocks.[entry.CachedBlocks] <- entry
+        let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(entry.CachedBlocks) &&& (blockLookupFastSlots.Length - 1)
+        blockLookupFastSlots.[slot] <- entry
+
+let private tryGetBlockLookup blocks =
+    let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks) &&& (blockLookupFastSlots.Length - 1)
+    let fast = blockLookupFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && obj.ReferenceEquals(fast.CachedBlocks, blocks)
+       && blockLookupCacheRetainable fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<BlockLookupCache>
+        if blockLookupCacheByBlocks.TryGetValue(blocks, &cached)
+           && blockLookupCacheRetainable cached then
+            blockLookupFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryFindBlockLookupEntry (lookup: BlockLookupCache) blockId =
+    if lookup.LastEntrySet && lookup.LastEntryId = blockId then
+        ValueSome lookup.LastEntry
+    else
+        let mutable entry = Unchecked.defaultof<BlockLookupEntry>
+        if lookup.EntriesById.TryGetValue(blockId, &entry) then
+            lookup.LastEntrySet <- true
+            lookup.LastEntryId <- blockId
+            lookup.LastEntry <- entry
+            ValueSome entry
+        else
+            ValueNone
 
 let private blockLookupSourceParagraphCountFor entryCount blocks =
     if entryCount > blockLookupCacheMaxTotalEntries then
@@ -1734,7 +1798,9 @@ let private blockLookupSourceTextCharCountFor entryCount sourceParagraphCount bl
 
 let private rememberBlockLookup cached =
     if not (blockLookupCacheRetainable cached) then
-        blockLookupCache <- blockLookupCache |> List.filter (blockLookupCacheMatches cached.CachedBlocks >> not)
+        blockLookupCache
+        |> List.filter (blockLookupCacheMatches cached.CachedBlocks >> not)
+        |> setBlockLookupCache
     else
         let trim entries =
             let rec loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc remaining =
@@ -1759,11 +1825,12 @@ let private rememberBlockLookup cached =
                     else
                         loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc tail
             loop 0 0 0 0 [] entries
-        blockLookupCache <-
+        let entries =
             (cached
              :: (blockLookupCache
                  |> List.filter (blockLookupCacheMatches cached.CachedBlocks >> not)))
             |> trim
+        setBlockLookupCache entries
 
 let private blockLookup blocks =
     let build () =
@@ -1774,7 +1841,7 @@ let private blockLookup blocks =
             topBlocks.Add block
             let blockId = getBlockId block
             if not (entriesById.ContainsKey blockId) then
-                entriesById.[blockId] <- { TopBlock = block; TopIndex = index }
+                entriesById.[blockId] <- blockLookupEntry block index
             index <- index + 1
         let sourceParagraphCount = blockLookupSourceParagraphCountFor entriesById.Count blocks
         let cached = {
@@ -1784,30 +1851,30 @@ let private blockLookup blocks =
             SourceTextCharCount = blockLookupSourceTextCharCountFor entriesById.Count sourceParagraphCount blocks
             EntriesById = entriesById
             TopBlocks = topBlocks.ToArray()
+            LastEntrySet = false
+            LastEntryId = ""
+            LastEntry = Unchecked.defaultof<BlockLookupEntry>
         }
         rememberBlockLookup cached
         cached
-    match blockLookupCache |> List.tryFind (blockLookupCacheMatches blocks) with
-    | Some cached when blockLookupCacheRetainable cached ->
-        cached
-    | Some cached ->
-        rememberBlockLookup cached
-        build ()
-    | None ->
-        build ()
+    match tryGetBlockLookup blocks with
+    | ValueSome cached -> cached
+    | ValueNone -> build ()
 
 let findBlock doc blockId =
     let lookup = blockLookup doc.Blocks
-    let mutable entry = Unchecked.defaultof<BlockLookupEntry>
-    if lookup.EntriesById.TryGetValue(blockId, &entry) then Some entry.TopBlock else None
+    match tryFindBlockLookupEntry lookup blockId with
+    | ValueSome entry -> entry.TopBlockResult
+    | ValueNone -> None
 
 let private tryFindTopBlockUntil doc blockId =
     let tryCached () =
-        match blockLookupCache |> List.tryFind (blockLookupCacheMatches doc.Blocks) with
-        | Some lookup when blockLookupCacheRetainable lookup ->
-            let mutable entry = Unchecked.defaultof<BlockLookupEntry>
-            if lookup.EntriesById.TryGetValue(blockId, &entry) then Some entry.TopBlock else None
-        | _ -> None
+        match tryGetBlockLookup doc.Blocks with
+        | ValueSome lookup ->
+            match tryFindBlockLookupEntry lookup blockId with
+            | ValueSome entry -> Some entry.TopBlock
+            | ValueNone -> None
+        | ValueNone -> None
     let scan () =
         let rec loop remaining =
             match remaining with
@@ -1821,14 +1888,13 @@ let private tryFindTopBlockUntil doc blockId =
 
 let private tryFindTopBlockWithIndexUntil doc blockId =
     let tryCached () =
-        match blockLookupCache |> List.tryFind (blockLookupCacheMatches doc.Blocks) with
-        | Some lookup when blockLookupCacheRetainable lookup ->
-            let mutable entry = Unchecked.defaultof<BlockLookupEntry>
-            if lookup.EntriesById.TryGetValue(blockId, &entry) then
+        match tryGetBlockLookup doc.Blocks with
+        | ValueSome lookup ->
+            match tryFindBlockLookupEntry lookup blockId with
+            | ValueSome entry ->
                 Some (entry.TopBlock, entry.TopIndex)
-            else
-                None
-        | _ -> None
+            | ValueNone -> None
+        | ValueNone -> None
     let scan () =
         let rec loop index remaining =
             match remaining with
@@ -1842,18 +1908,17 @@ let private tryFindTopBlockWithIndexUntil doc blockId =
 
 let private tryFindAdjacentTopBlock doc blockId offset =
     let tryCached () =
-        match blockLookupCache |> List.tryFind (blockLookupCacheMatches doc.Blocks) with
-        | Some lookup when blockLookupCacheRetainable lookup ->
-            let mutable entry = Unchecked.defaultof<BlockLookupEntry>
-            if lookup.EntriesById.TryGetValue(blockId, &entry) then
+        match tryGetBlockLookup doc.Blocks with
+        | ValueSome lookup ->
+            match tryFindBlockLookupEntry lookup blockId with
+            | ValueSome entry ->
                 let index = entry.TopIndex + offset
                 if index >= 0 && index < lookup.TopBlocks.Length then
                     Some lookup.TopBlocks.[index]
                 else
                     None
-            else
-                None
-        | _ -> None
+            | ValueNone -> None
+        | ValueNone -> None
     let scanNext () =
         let rec loop remaining =
             match remaining with
@@ -2420,6 +2485,8 @@ type private ParagraphLookupCache = {
 }
 
 let mutable private paragraphLookupCache: ParagraphLookupCache list = []
+let private paragraphLookupCacheByBlocks = Dictionary<Block list, ParagraphLookupCache>(blockLookupBlocksComparer)
+let private paragraphLookupFastSlots = Array.zeroCreate<ParagraphLookupCache> 256
 let private paragraphLookupCacheMaxEntries = 64
 let private paragraphLookupCacheMaxTotalEntries = 200000
 let private paragraphLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
@@ -2433,6 +2500,31 @@ let private paragraphLookupCacheRetainable (cached: ParagraphLookupCache) =
     && cached.SourceParagraphCount <= paragraphLookupCacheMaxTotalSourceParagraphs
     && cached.SourceTextCharCount <= paragraphLookupCacheMaxTotalSourceTextChars
 
+let private setParagraphLookupCache entries =
+    paragraphLookupCache <- entries
+    paragraphLookupCacheByBlocks.Clear()
+    clearArray paragraphLookupFastSlots
+    for entry in entries do
+        paragraphLookupCacheByBlocks.[entry.CachedBlocks] <- entry
+        let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(entry.CachedBlocks) &&& (paragraphLookupFastSlots.Length - 1)
+        paragraphLookupFastSlots.[slot] <- entry
+
+let private tryGetParagraphLookup blocks =
+    let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks) &&& (paragraphLookupFastSlots.Length - 1)
+    let fast = paragraphLookupFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && obj.ReferenceEquals(fast.CachedBlocks, blocks)
+       && paragraphLookupCacheRetainable fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<ParagraphLookupCache>
+        if paragraphLookupCacheByBlocks.TryGetValue(blocks, &cached)
+           && paragraphLookupCacheRetainable cached then
+            paragraphLookupFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private paragraphLookupSourceTextCharCountFor entryCount sourceParagraphCount blocks =
     if entryCount > paragraphLookupCacheMaxTotalEntries
        || sourceParagraphCount > paragraphLookupCacheMaxTotalSourceParagraphs then
@@ -2444,13 +2536,15 @@ let private paragraphLookupSourceTextCharCountFor entryCount sourceParagraphCoun
             blocks
 
 let private tryParagraphLookupSourceMetricsFromBlockLookup blocks =
-    match blockLookupCache |> List.tryFind (blockLookupCacheMatches blocks) with
-    | Some cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
-    | None -> ValueNone
+    match tryGetBlockLookup blocks with
+    | ValueSome cached -> ValueSome (struct (cached.SourceParagraphCount, cached.SourceTextCharCount))
+    | ValueNone -> ValueNone
 
 let private rememberParagraphLookup cached =
     if not (paragraphLookupCacheRetainable cached) then
-        paragraphLookupCache <- paragraphLookupCache |> List.filter (paragraphLookupCacheMatches cached.CachedBlocks >> not)
+        paragraphLookupCache
+        |> List.filter (paragraphLookupCacheMatches cached.CachedBlocks >> not)
+        |> setParagraphLookupCache
     else
         let trim entries =
             let rec loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc remaining =
@@ -2475,11 +2569,12 @@ let private rememberParagraphLookup cached =
                     else
                         loop keptCount keptEntries keptSourceParagraphs keptSourceTextChars acc tail
             loop 0 0 0 0 [] entries
-        paragraphLookupCache <-
+        let entries =
             (cached
              :: (paragraphLookupCache
                  |> List.filter (paragraphLookupCacheMatches cached.CachedBlocks >> not)))
             |> trim
+        setParagraphLookupCache entries
 
 let private addParagraphLookup (paragraphs: Dictionary<BlockId, ParagraphBlock>) (paragraph: ParagraphBlock) =
     if not (paragraphs.ContainsKey paragraph.Id) then
@@ -2612,23 +2707,31 @@ let private paragraphLookup (doc: Document) =
         }
         rememberParagraphLookup cached
         paragraphs
-    match paragraphLookupCache |> List.tryFind (paragraphLookupCacheMatches doc.Blocks) with
-    | Some cached when paragraphLookupCacheRetainable cached ->
-        cached.Paragraphs
-    | Some cached ->
-        rememberParagraphLookup cached
-        build ()
-    | None ->
-        build ()
+    match tryGetParagraphLookup doc.Blocks with
+    | ValueSome cached -> cached.Paragraphs
+    | ValueNone -> build ()
 
 /// Find an editable paragraph anywhere in the document, including table cells.
-let findParagraph (doc: Document) paragraphId =
+let private findParagraphFromParagraphLookup (doc: Document) paragraphId =
     let paragraphs = paragraphLookup doc
     let mutable paragraph = Unchecked.defaultof<ParagraphBlock>
     if paragraphs.TryGetValue(paragraphId, &paragraph) then
         Some paragraph
     else
         None
+
+let findParagraph (doc: Document) paragraphId =
+    let topLevel =
+        match tryGetBlockLookup doc.Blocks with
+        | ValueSome lookup ->
+            match tryFindBlockLookupEntry lookup paragraphId with
+            | ValueSome entry ->
+                entry.TopParagraphResult
+            | ValueNone -> None
+        | ValueNone -> None
+    match topLevel with
+    | Some paragraph -> Some paragraph
+    | None -> findParagraphFromParagraphLookup doc paragraphId
 
 let private tryReplaceTopLevelParagraphBeforeNestedContent doc paragraphId newPara =
     let prefix = ResizeArray<Block>()
@@ -3943,8 +4046,9 @@ let private tryGetTableCellParagraphInRow colIndex (row: TableRow) =
 /// Find block index by ID
 let findBlockIndex doc blockId =
     let lookup = blockLookup doc.Blocks
-    let mutable entry = Unchecked.defaultof<BlockLookupEntry>
-    if lookup.EntriesById.TryGetValue(blockId, &entry) then Some entry.TopIndex else None
+    match tryFindBlockLookupEntry lookup blockId with
+    | ValueSome entry -> Some entry.TopIndex
+    | ValueNone -> None
 
 type private NormalizedRangeCacheKey = {
     AnchorBlockId: BlockId
@@ -4874,23 +4978,22 @@ let moveCursorToLineStart doc =
 
 let private findCursorParagraph doc blockId =
     let tryCachedBlockLookup () =
-        match blockLookupCache |> List.tryFind (blockLookupCacheMatches doc.Blocks) with
-        | Some cached when blockLookupCacheRetainable cached ->
-            let mutable entry = Unchecked.defaultof<BlockLookupEntry>
-            if cached.EntriesById.TryGetValue(blockId, &entry) then
+        match tryGetBlockLookup doc.Blocks with
+        | ValueSome cached ->
+            match tryFindBlockLookupEntry cached blockId with
+            | ValueSome entry ->
                 match entry.TopBlock with
                 | Paragraph p when p.Id = blockId -> Some p
                 | Heading (_, p) when p.Id = blockId -> Some p
                 | _ -> None
-            else
-                None
-        | _ -> None
+            | ValueNone -> None
+        | ValueNone -> None
     let tryCachedParagraphLookup () =
-        match paragraphLookupCache |> List.tryFind (paragraphLookupCacheMatches doc.Blocks) with
-        | Some cached when paragraphLookupCacheRetainable cached ->
+        match tryGetParagraphLookup doc.Blocks with
+        | ValueSome cached ->
             let mutable paragraph = Unchecked.defaultof<ParagraphBlock>
             if cached.Paragraphs.TryGetValue(blockId, &paragraph) then Some paragraph else None
-        | _ -> None
+        | ValueNone -> None
     match tryCachedBlockLookup () with
     | Some para -> Some para
     | None ->
