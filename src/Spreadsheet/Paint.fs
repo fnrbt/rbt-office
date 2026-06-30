@@ -270,6 +270,14 @@ let private tryGetRenderTimeTableStyleCache tables =
         else
             ValueNone
 
+let private renderTimeTableStyleCacheWithoutMatching tables =
+    let mutable cached = Unchecked.defaultof<RenderTimeTableStyleCacheEntry>
+    if renderTimeTableStyleCacheByTables.TryGetValue(tables, &cached) then
+        renderTimeTableStyleCache
+        |> List.filter (renderTimeTableStyleCacheEntryMatches tables >> not)
+    else
+        renderTimeTableStyleCache
+
 let private renderTimeOptionStringCharCount (value: string option) =
     match value with
     | Some text -> text.Length
@@ -323,7 +331,9 @@ let private rememberRenderTimeTableStyle tables hasRenderTimeStyle =
           SourceTextCharCount = renderTimeTableSourceTextCharCountFor tableCount tables
           HasRenderTimeStyle = hasRenderTimeStyle }
     if not (renderTimeTableStyleCacheEntryRetainable entry) then
-        ()
+        let entries = renderTimeTableStyleCacheWithoutMatching tables
+        if not (obj.ReferenceEquals(entries, renderTimeTableStyleCache)) then
+            setRenderTimeTableStyleCache entries
     else
         let trim entries =
             let rec loop keptCount keptTables keptSourceTextChars acc remaining =
@@ -345,9 +355,7 @@ let private rememberRenderTimeTableStyle tables hasRenderTimeStyle =
                     else
                         loop keptCount keptTables keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        entry
-        :: (renderTimeTableStyleCache
-            |> List.filter (renderTimeTableStyleCacheEntryMatches tables >> not))
+        entry :: renderTimeTableStyleCacheWithoutMatching tables
         |> trim
         |> setRenderTimeTableStyleCache
     hasRenderTimeStyle
@@ -795,6 +803,15 @@ let private sparseDefaultPaintCacheEntryMatches (entry: SparseDefaultPaintCacheE
     && cached.Geometry = entry.Geometry
     && sparseSameMeasurer cached.Measurer entry.Measurer
 
+let private sparseDefaultPaintCacheWithoutMatching entry =
+    let key = sparseDefaultPaintCacheKeyFromEntry entry
+    let mutable cached = Unchecked.defaultof<SparseDefaultPaintCacheEntry>
+    if sparseDefaultPaintCacheByKey.TryGetValue(key, &cached) then
+        sparseDefaultPaintCache
+        |> List.filter (fun cached -> not (sparseDefaultPaintCacheEntryMatches entry cached))
+    else
+        sparseDefaultPaintCache
+
 let private sparsePaintItemTextCharCount item =
     match item with
     | DrawText text -> text.Text.Length
@@ -818,7 +835,9 @@ let private rememberSparseDefaultPaintCacheEntry entry =
     if entry.ItemCount > sparseDefaultPaintCacheMaxTotalItems
        || entry.TextCharCount > sparseDefaultPaintCacheMaxTotalTextChars
        || entry.SourceCellCount > sparseDefaultPaintCacheMaxTotalSourceCells then
-        ()
+        let entries = sparseDefaultPaintCacheWithoutMatching entry
+        if not (obj.ReferenceEquals(entries, sparseDefaultPaintCache)) then
+            setSparseDefaultPaintCache entries
     else
         let trim entries =
             let rec loop keptCount keptItems keptTextChars keptSourceCells acc remaining =
@@ -842,10 +861,7 @@ let private rememberSparseDefaultPaintCacheEntry entry =
                     else
                         loop keptCount keptItems keptTextChars keptSourceCells acc tail
             loop 0 0 0 0 [] entries
-        let remaining =
-            sparseDefaultPaintCache
-            |> List.filter (fun cached -> not (sparseDefaultPaintCacheEntryMatches entry cached))
-        (entry :: remaining)
+        (entry :: sparseDefaultPaintCacheWithoutMatching entry)
         |> trim
         |> setSparseDefaultPaintCache
 
