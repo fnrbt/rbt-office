@@ -241,12 +241,44 @@ type private FormulaPresenceCacheEntry = {
 }
 
 let mutable private formulaPresenceCache: FormulaPresenceCacheEntry list = []
+let private formulaPresenceCellsComparer =
+    { new System.Collections.Generic.IEqualityComparer<Map<CellAddress, CellData>> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = referenceHash value }
+let private formulaPresenceCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, FormulaPresenceCacheEntry>(formulaPresenceCellsComparer)
+let private formulaPresenceFastSlots = Array.zeroCreate<FormulaPresenceCacheEntry> 256
 let private formulaPresenceCacheMaxEntries = 64
 let private formulaPresenceCacheMaxTotalCells = 500000
 let private formulaPresenceCacheMaxTotalSourceTextChars = 5000000
 
 let private formulaPresenceCacheEntryMatches cells (entry: FormulaPresenceCacheEntry) =
     obj.ReferenceEquals(entry.Cells, cells)
+
+let private setFormulaPresenceCache entries =
+    formulaPresenceCache <- entries
+    formulaPresenceCacheByCells.Clear()
+    clearArray formulaPresenceFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<FormulaPresenceCacheEntry>
+        if not (formulaPresenceCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            formulaPresenceCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells formulaPresenceFastSlots.Length
+            formulaPresenceFastSlots.[slot] <- entry
+
+let private tryGetFormulaPresenceCache cells =
+    let slot = referenceSlot cells formulaPresenceFastSlots.Length
+    let fast = formulaPresenceFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && formulaPresenceCacheEntryMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<FormulaPresenceCacheEntry>
+        if formulaPresenceCacheByCells.TryGetValue(cells, &cached) then
+            formulaPresenceFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private formulaPresenceCacheEntryRetainable (entry: FormulaPresenceCacheEntry) =
     entry.CellCount <= formulaPresenceCacheMaxTotalCells
@@ -374,7 +406,9 @@ let private rememberCellsFormulaPresenceWithSourceTextCharCount cells formulaCou
         HasFormulas = hasFormulas
     }
     if not (formulaPresenceCacheEntryRetainable entry) then
-        formulaPresenceCache <- formulaPresenceCache |> List.filter (formulaPresenceCacheEntryMatches cells >> not)
+        formulaPresenceCache
+        |> List.filter (formulaPresenceCacheEntryMatches cells >> not)
+        |> setFormulaPresenceCache
     else
         let trim entries =
             let rec loop keptCount keptCells keptSourceTextChars acc remaining =
@@ -396,11 +430,11 @@ let private rememberCellsFormulaPresenceWithSourceTextCharCount cells formulaCou
                     else
                         loop keptCount keptCells keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        formulaPresenceCache <-
-            (entry
-             :: (formulaPresenceCache
-                 |> List.filter (formulaPresenceCacheEntryMatches cells >> not)))
-            |> trim
+        (entry
+         :: (formulaPresenceCache
+             |> List.filter (formulaPresenceCacheEntryMatches cells >> not)))
+        |> trim
+        |> setFormulaPresenceCache
 
 let private rememberCellsFormulaPresence cells formulaCount hasFormulas =
     rememberCellsFormulaPresenceWithSourceTextCharCount cells formulaCount hasFormulas (formulaPresenceSourceTextCharCount cells)
@@ -428,14 +462,16 @@ let private adjustedFormulaPresenceSourceTextCharCountAfterRemove cachedSourceTe
         max 0 (cachedSourceTextCharCount - removedSourceTextCharCount)
 
 let private cachedCellsHaveFormulaCells cells =
-    match formulaPresenceCache |> List.tryFind (formulaPresenceCacheEntryMatches cells) with
-    | Some cached ->
+    match tryGetFormulaPresenceCache cells with
+    | ValueSome cached ->
         Some cached.HasFormulas
-    | None ->
+    | ValueNone ->
         None
 
 let private cachedFormulaPresence cells =
-    formulaPresenceCache |> List.tryFind (formulaPresenceCacheEntryMatches cells)
+    match tryGetFormulaPresenceCache cells with
+    | ValueSome cached -> Some cached
+    | ValueNone -> None
 
 let rememberCellsHaveFormulaCells cells hasFormulas =
     let count = if hasFormulas then None else Some 0

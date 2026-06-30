@@ -483,6 +483,18 @@ check "native export csv cache reuses"
     (obj.ReferenceEquals(exportCsvText, exportCsvTextAgain))
     true
 
+let formulaPresenceCells =
+    [ { Row = 0; Col = 0 }, cell (CellValue.Number 1.0)
+      { Row = 1; Col = 0 }, cell (CellValue.String "plain") ]
+    |> Map.ofList
+
+check "native formula presence cache value"
+    (cellsHaveFormulaCells formulaPresenceCells)
+    false
+check "native formula presence cache count"
+    (cellsFormulaCountIfKnown formulaPresenceCells)
+    (Some 0)
+
 if isNull setFocus || isNull extendFocus || isNull startEditing || isNull commitEdit then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor helpers" "native editor reflection"
