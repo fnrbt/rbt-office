@@ -5808,10 +5808,16 @@ let private trimCaptionIdMetricsCache entries =
                 loop keptCount keptBlocks keptSourceTextChars acc tail
     loop 0 0 0 [] entries
 
+let private captionIdMetricsCacheWithoutMatching blocks label =
+    if captionIdMetricsCache |> List.exists (captionIdMetricsCacheMatches blocks label) then
+        captionIdMetricsCache
+        |> List.filter (fun entry -> not (captionIdMetricsCacheMatches blocks label entry))
+    else
+        captionIdMetricsCache
+
 let private rememberCaptionIdMetrics cached =
     let withoutMatching =
-        captionIdMetricsCache
-        |> List.filter (fun entry -> not (captionIdMetricsCacheMatches cached.SourceBlocks cached.SourceLabel entry))
+        captionIdMetricsCacheWithoutMatching cached.SourceBlocks cached.SourceLabel
     if not (captionIdMetricsCacheRetainable cached) then
         captionIdMetricsCache <- withoutMatching
     else
@@ -5907,9 +5913,16 @@ let private tryParseBookmarkId value =
         | false, _ -> ValueNone
     | None -> ValueNone
 
+let private bookmarkIdMetricsCacheWithoutMatching blocks =
+    if bookmarkIdMetricsCache |> List.exists (bookmarkIdMetricsCacheMatches blocks) then
+        bookmarkIdMetricsCache
+        |> List.filter (bookmarkIdMetricsCacheMatches blocks >> not)
+    else
+        bookmarkIdMetricsCache
+
 let private rememberBookmarkIdMetrics cached =
     if not (bookmarkIdMetricsCacheRetainable cached) then
-        bookmarkIdMetricsCache <- bookmarkIdMetricsCache |> List.filter (bookmarkIdMetricsCacheMatches cached.SourceBlocks >> not)
+        bookmarkIdMetricsCache <- bookmarkIdMetricsCacheWithoutMatching cached.SourceBlocks
     else
         let trim entries =
             let rec loop keptCount keptBlocks keptSourceTextChars acc remaining =
@@ -5932,9 +5945,7 @@ let private rememberBookmarkIdMetrics cached =
                         loop keptCount keptBlocks keptSourceTextChars acc tail
             loop 0 0 0 [] entries
         bookmarkIdMetricsCache <-
-            (cached
-             :: (bookmarkIdMetricsCache
-                 |> List.filter (bookmarkIdMetricsCacheMatches cached.SourceBlocks >> not)))
+            (cached :: bookmarkIdMetricsCacheWithoutMatching cached.SourceBlocks)
             |> trim
 
 let private bookmarkIdMetrics doc =
@@ -6019,9 +6030,16 @@ let private tryParseRevisionId value =
         | false, _ -> ValueNone
     | None -> ValueNone
 
+let private revisionIdMetricsCacheWithoutMatching blocks =
+    if revisionIdMetricsCache |> List.exists (revisionIdMetricsCacheMatches blocks) then
+        revisionIdMetricsCache
+        |> List.filter (revisionIdMetricsCacheMatches blocks >> not)
+    else
+        revisionIdMetricsCache
+
 let private rememberRevisionIdMetrics cached =
     if not (revisionIdMetricsCacheRetainable cached) then
-        revisionIdMetricsCache <- revisionIdMetricsCache |> List.filter (revisionIdMetricsCacheMatches cached.SourceBlocks >> not)
+        revisionIdMetricsCache <- revisionIdMetricsCacheWithoutMatching cached.SourceBlocks
     else
         let trim entries =
             let rec loop keptCount keptBlocks keptSourceTextChars acc remaining =
@@ -6044,9 +6062,7 @@ let private rememberRevisionIdMetrics cached =
                         loop keptCount keptBlocks keptSourceTextChars acc tail
             loop 0 0 0 [] entries
         revisionIdMetricsCache <-
-            (cached
-             :: (revisionIdMetricsCache
-                 |> List.filter (revisionIdMetricsCacheMatches cached.SourceBlocks >> not)))
+            (cached :: revisionIdMetricsCacheWithoutMatching cached.SourceBlocks)
             |> trim
 
 let private revisionIdMetrics doc =
