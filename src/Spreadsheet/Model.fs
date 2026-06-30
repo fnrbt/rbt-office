@@ -2328,6 +2328,13 @@ let private tryGetSortIdentityCache cells =
         else
             ValueNone
 
+let private removeSortIdentityCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<SortIdentityCache>
+    if sortIdentityCacheByCells.TryGetValue(cells, &cached) then
+        sortIdentityCache
+        |> List.filter (sortIdentityCacheMatches cells >> not)
+        |> setSortIdentityCache
+
 let private sortIdentityCacheRetainable (cached: SortIdentityCache) =
     cached.CellCount <= sortIdentityCacheMaxTotalCells
     && cached.SourceTextCharCount <= sortIdentityCacheMaxTotalSourceTextChars
@@ -2340,9 +2347,7 @@ let private sortIdentitySourceTextCharCount cells =
 
 let private rememberSortIdentityCache cached =
     if not (sortIdentityCacheRetainable cached) then
-        sortIdentityCache
-        |> List.filter (sortIdentityCacheMatches cached.Cells >> not)
-        |> setSortIdentityCache
+        removeSortIdentityCacheForCells cached.Cells
     else
         let trim (entries: SortIdentityCache list) =
             let rec loop keptCount keptCells keptSourceTextChars acc remaining =
@@ -2903,6 +2908,14 @@ let private tryGetFilterHiddenRowsCache cells rowCount =
         else
             ValueNone
 
+let private removeFilterHiddenRowsCacheForSource cells rowCount =
+    let key = cellRowCountReferenceKey cells rowCount
+    let mutable cached = Unchecked.defaultof<FilterHiddenRowsCache>
+    if filterHiddenRowsCacheBySource.TryGetValue(key, &cached) then
+        filterHiddenRowsCache
+        |> List.filter (filterHiddenRowsCacheMatches cells rowCount >> not)
+        |> setFilterHiddenRowsCache
+
 let private filterHiddenRowsCacheRetainable (cached: FilterHiddenRowsCache) =
     cached.Entries.Count > 0
     && cached.TotalRowCount <= filterHiddenRowsCacheMaxTotalRowCount
@@ -2925,9 +2938,7 @@ let private filterHiddenRowsSourceTextCharCountFor rowCount filterValues filterT
 
 let private rememberFilterHiddenRowsCache cached =
     if not (filterHiddenRowsCacheRetainable cached) then
-        filterHiddenRowsCache
-        |> List.filter (filterHiddenRowsCacheMatches cached.Cells cached.RowCount >> not)
-        |> setFilterHiddenRowsCache
+        removeFilterHiddenRowsCacheForSource cached.Cells cached.RowCount
     else
         let mutable keptCount = 1
         let mutable keptRows = cached.TotalRowCount
@@ -3243,6 +3254,13 @@ let private tryGetVisibleRowsCache cells =
         else
             ValueNone
 
+let private removeVisibleRowsCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<VisibleRowsCache>
+    if visibleRowsCacheByCells.TryGetValue(cells, &cached) then
+        visibleRowsCache
+        |> List.filter (visibleRowsCacheMatches cells >> not)
+        |> setVisibleRowsCache
+
 let private visibleRowsCacheRetainable (cached: VisibleRowsCache) =
     cached.Entries.Count > 0
     && cached.TotalRowCount <= visibleRowsCacheMaxTotalRowCount
@@ -3291,9 +3309,7 @@ let private visibleRowsCacheMetricsFor rowCount cells sourceRowCount filters =
 
 let private rememberVisibleRowsCache cached =
     if not (visibleRowsCacheRetainable cached) then
-        visibleRowsCache
-        |> List.filter (visibleRowsCacheMatches cached.Cells >> not)
-        |> setVisibleRowsCache
+        removeVisibleRowsCacheForCells cached.Cells
     else
         let mutable keptCount = 1
         let mutable keptRows = cached.TotalRowCount
@@ -3659,6 +3675,13 @@ let private tryGetTableColumnUniqueValuesCache cells =
         else
             ValueNone
 
+let private removeTableColumnUniqueValuesCacheForCells cells =
+    let mutable cached = Unchecked.defaultof<TableColumnUniqueValuesCache>
+    if tableColumnUniqueValuesCacheByCells.TryGetValue(cells, &cached) then
+        tableColumnUniqueValuesCache
+        |> List.filter (tableColumnUniqueValuesCacheMatches cells >> not)
+        |> setTableColumnUniqueValuesCache
+
 let private tableColumnUniqueValuesCacheRetainable (cached: TableColumnUniqueValuesCache) =
     cached.Entries.Count > 0
     && cached.TotalValueCount <= tableColumnUniqueValuesCacheMaxTotalValues
@@ -3678,9 +3701,7 @@ let private tableColumnUniqueValuesSourceTextCharCountFor valueCount valueTextCh
 
 let private rememberTableColumnUniqueValuesCache cached =
     if not (tableColumnUniqueValuesCacheRetainable cached) then
-        tableColumnUniqueValuesCache
-        |> List.filter (tableColumnUniqueValuesCacheMatches cached.Cells >> not)
-        |> setTableColumnUniqueValuesCache
+        removeTableColumnUniqueValuesCacheForCells cached.Cells
     else
         let mutable keptCount = 1
         let mutable keptValues = cached.TotalValueCount
