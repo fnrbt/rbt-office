@@ -2277,6 +2277,22 @@ let private tryGetDocumentPaintCommandsCache settings fontFamily (doc: Document)
         else
             ValueNone
 
+let private documentPaintCommandsCacheEntryRetainable (entry: DocumentPaintCommandsCacheEntry) =
+    entry.RetainedItemCount <= documentPaintCommandsCacheMaxTotalItems
+    && entry.RetainedSourceParagraphCount <= documentPaintCommandsCacheMaxTotalSourceParagraphs
+    && entry.RetainedSourceTextCharCount <= documentPaintCommandsCacheMaxTotalSourceTextChars
+    && entry.RetainedStyleCharCount <= documentPaintCommandsCacheMaxTotalStyleChars
+
+let private documentPaintCommandsCacheWithout settings fontFamily (doc: Document) cachedLayouts =
+    let key = documentPaintCommandsCacheKey settings fontFamily doc cachedLayouts
+    let mutable cached = Unchecked.defaultof<DocumentPaintCommandsCacheEntry>
+    if documentPaintCommandsCacheByKey.TryGetValue(key, &cached)
+       && documentPaintCacheEntryMatchesKey key cached then
+        documentPaintCommandsCache
+        |> List.filter (documentPaintCacheEntryMatches settings fontFamily doc cachedLayouts >> not)
+    else
+        documentPaintCommandsCache
+
 let private documentPaintTableSourceParagraphCount (table: TableBlock) =
     let mutable count = 0
     let mutable visitedItems = 0
@@ -3080,13 +3096,6 @@ let private rememberDocumentPaintCommands settings fontFamily (doc: Document) ca
                 retainedSourceTextCharCount
                 doc.Styles
     }
-    let rec removeMatching acc remaining =
-        match remaining with
-        | [] -> List.rev acc
-        | candidate :: tail when documentPaintCacheEntryMatches settings fontFamily doc cachedLayouts candidate ->
-            List.rev acc @ tail
-        | candidate :: tail ->
-            removeMatching (candidate :: acc) tail
     let trim entries =
         let rec loop remaining kept count totalItems totalSourceParagraphs totalSourceTextChars totalStyleChars =
             match remaining with
@@ -3116,9 +3125,14 @@ let private rememberDocumentPaintCommands settings fontFamily (doc: Document) ca
                 else
                     loop tail kept count totalItems totalSourceParagraphs totalSourceTextChars totalStyleChars
         loop entries [] 0 0 0 0 0
-    (entry :: removeMatching [] documentPaintCommandsCache)
-    |> trim
-    |> setDocumentPaintCommandsCache
+    if not (documentPaintCommandsCacheEntryRetainable entry) then
+        let entries = documentPaintCommandsCacheWithout settings fontFamily doc cachedLayouts
+        if not (obj.ReferenceEquals(entries, documentPaintCommandsCache)) then
+            setDocumentPaintCommandsCache entries
+    else
+        (entry :: documentPaintCommandsCacheWithout settings fontFamily doc cachedLayouts)
+        |> trim
+        |> setDocumentPaintCommandsCache
 
 let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
     let layouts, pages, layoutCount =
