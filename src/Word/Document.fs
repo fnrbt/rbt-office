@@ -3175,6 +3175,8 @@ let private setEditableParagraphEndpointsCache entries =
         let mutable existing = Unchecked.defaultof<EditableParagraphEndpointsCache>
         if not (editableParagraphEndpointsCacheByBlocks.TryGetValue(entry.EndpointSourceBlocks, &existing)) then
             editableParagraphEndpointsCacheByBlocks.[entry.EndpointSourceBlocks] <- entry
+            let slot = documentInfoSlot entry.EndpointSourceBlocks editableParagraphEndpointsFastSlots.Length
+            editableParagraphEndpointsFastSlots.[slot] <- entry
 
 let private tryGetEditableParagraphEndpointsCache blocks =
     let slot = documentInfoSlot blocks editableParagraphEndpointsFastSlots.Length
@@ -3288,6 +3290,8 @@ let private setOrderedEditableParagraphsCache entries =
         let mutable existing = Unchecked.defaultof<OrderedEditableParagraphsCache>
         if not (orderedEditableParagraphsCacheByBlocks.TryGetValue(entry.OrderedSourceBlocks, &existing)) then
             orderedEditableParagraphsCacheByBlocks.[entry.OrderedSourceBlocks] <- entry
+            let slot = documentInfoSlot entry.OrderedSourceBlocks orderedEditableParagraphsFastSlots.Length
+            orderedEditableParagraphsFastSlots.[slot] <- entry
 
 let private tryGetOrderedEditableParagraphsCache blocks =
     let slot = documentInfoSlot blocks orderedEditableParagraphsFastSlots.Length
@@ -3303,15 +3307,20 @@ let private tryGetOrderedEditableParagraphsCache blocks =
         else
             ValueNone
 
+let private removeOrderedEditableParagraphsCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<OrderedEditableParagraphsCache>
+    if orderedEditableParagraphsCacheByBlocks.TryGetValue(blocks, &cached) then
+        orderedEditableParagraphsCache
+        |> List.filter (orderedEditableParagraphsCacheMatches blocks >> not)
+        |> setOrderedEditableParagraphsCache
+
 let private orderedEditableParagraphsCacheRetainable (cached: OrderedEditableParagraphsCache) =
     cached.EntryCount <= orderedEditableParagraphsCacheMaxTotalEntries
     && cached.SourceTextCharCount <= orderedEditableParagraphsCacheMaxTotalSourceTextChars
 
 let private rememberOrderedEditableParagraphs cached =
     if not (orderedEditableParagraphsCacheRetainable cached) then
-        orderedEditableParagraphsCache
-        |> List.filter (orderedEditableParagraphsCacheMatches cached.OrderedSourceBlocks >> not)
-        |> setOrderedEditableParagraphsCache
+        removeOrderedEditableParagraphsCacheForBlocks cached.OrderedSourceBlocks
     else
         let trim entries =
             let rec loop keptCount keptEntries keptSourceTextChars acc remaining =
@@ -4348,6 +4357,8 @@ let private setNormalizedRangeCache entries =
         let mutable existing = Unchecked.defaultof<NormalizedRangeCache>
         if not (normalizedRangeCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
             normalizedRangeCacheByBlocks.[entry.SourceBlocks] <- entry
+            let slot = documentInfoSlot entry.SourceBlocks normalizedRangeFastSlots.Length
+            normalizedRangeFastSlots.[slot] <- entry
 
 let private tryGetNormalizedRangeCache blocks =
     let slot = documentInfoSlot blocks normalizedRangeFastSlots.Length
@@ -4363,6 +4374,13 @@ let private tryGetNormalizedRangeCache blocks =
         else
             ValueNone
 
+let private removeNormalizedRangeCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<NormalizedRangeCache>
+    if normalizedRangeCacheByBlocks.TryGetValue(blocks, &cached) then
+        normalizedRangeCache
+        |> List.filter (normalizedRangeCacheMatches blocks >> not)
+        |> setNormalizedRangeCache
+
 let private normalizedRangeCacheRetainable (cached: NormalizedRangeCache) =
     cached.Entries.Count > 0
     && cached.Entries.Count <= normalizedRangeCacheMaxEntries
@@ -4372,9 +4390,7 @@ let private normalizedRangeCacheRetainable (cached: NormalizedRangeCache) =
 
 let private rememberNormalizedRangeCache cached =
     if not (normalizedRangeCacheRetainable cached) then
-        normalizedRangeCache
-        |> List.filter (normalizedRangeCacheMatches cached.SourceBlocks >> not)
-        |> setNormalizedRangeCache
+        removeNormalizedRangeCacheForBlocks cached.SourceBlocks
     else
         let mutable keptCount = 1
         let mutable keptBlockIds = max 1 cached.TotalBlockIds
@@ -6515,6 +6531,8 @@ let private setFieldPresenceCache entries =
         let mutable existing = Unchecked.defaultof<FieldPresenceCache>
         if not (fieldPresenceCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
             fieldPresenceCacheByBlocks.[entry.SourceBlocks] <- entry
+            let slot = documentInfoSlot entry.SourceBlocks fieldPresenceFastSlots.Length
+            fieldPresenceFastSlots.[slot] <- entry
 
 let private tryGetFieldPresenceCache blocks =
     let slot = documentInfoSlot blocks fieldPresenceFastSlots.Length
@@ -6530,15 +6548,20 @@ let private tryGetFieldPresenceCache blocks =
         else
             ValueNone
 
+let private removeFieldPresenceCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<FieldPresenceCache>
+    if fieldPresenceCacheByBlocks.TryGetValue(blocks, &cached) then
+        fieldPresenceCache
+        |> List.filter (fieldPresenceCacheMatches blocks >> not)
+        |> setFieldPresenceCache
+
 let private fieldPresenceCacheRetainable (cached: FieldPresenceCache) =
     cached.SourceParagraphCount <= fieldPresenceCacheMaxTotalSourceParagraphs
     && cached.SourceTextCharCount <= fieldPresenceCacheMaxTotalSourceTextChars
 
 let private rememberFieldPresence cached =
     if not (fieldPresenceCacheRetainable cached) then
-        fieldPresenceCache
-        |> List.filter (fieldPresenceCacheMatches cached.SourceBlocks >> not)
-        |> setFieldPresenceCache
+        removeFieldPresenceCacheForBlocks cached.SourceBlocks
     else
         let trim (entries: FieldPresenceCache list) =
             let rec loop keptCount keptSourceParagraphs keptSourceTextChars acc remaining =
@@ -7115,6 +7138,8 @@ let private setFindTextCache entries =
         let mutable existing = Unchecked.defaultof<FindTextCache>
         if not (findTextCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
             findTextCacheByBlocks.[entry.SourceBlocks] <- entry
+            let slot = documentInfoSlot entry.SourceBlocks findTextFastSlots.Length
+            findTextFastSlots.[slot] <- entry
 
 let private tryGetFindTextCache blocks =
     let slot = documentInfoSlot blocks findTextFastSlots.Length
@@ -7130,11 +7155,16 @@ let private tryGetFindTextCache blocks =
         else
             ValueNone
 
+let private removeFindTextCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<FindTextCache>
+    if findTextCacheByBlocks.TryGetValue(blocks, &cached) then
+        findTextCache
+        |> List.filter (findTextCacheMatches blocks >> not)
+        |> setFindTextCache
+
 let private rememberFindTextCache cached =
     if not (findTextCacheRetainable cached) then
-        findTextCache
-        |> List.filter (findTextCacheMatches cached.SourceBlocks >> not)
-        |> setFindTextCache
+        removeFindTextCacheForBlocks cached.SourceBlocks
     else
         let mutable keptCount = 1
         let mutable keptResults = cached.TotalResultCount
@@ -8422,6 +8452,8 @@ let private setRevisionNavigationCache entries =
         let mutable existing = Unchecked.defaultof<RevisionNavigationCache>
         if not (revisionNavigationCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
             revisionNavigationCacheByBlocks.[entry.SourceBlocks] <- entry
+            let slot = documentInfoSlot entry.SourceBlocks revisionNavigationFastSlots.Length
+            revisionNavigationFastSlots.[slot] <- entry
 
 let private tryGetRevisionNavigationCache blocks =
     let slot = documentInfoSlot blocks revisionNavigationFastSlots.Length
@@ -8436,6 +8468,13 @@ let private tryGetRevisionNavigationCache blocks =
             ValueSome cached
         else
             ValueNone
+
+let private removeRevisionNavigationCacheForBlocks blocks =
+    let mutable cached = Unchecked.defaultof<RevisionNavigationCache>
+    if revisionNavigationCacheByBlocks.TryGetValue(blocks, &cached) then
+        revisionNavigationCache
+        |> List.filter (revisionNavigationCacheMatches blocks >> not)
+        |> setRevisionNavigationCache
 
 let private revisionNavigationCacheRetainable (cached: RevisionNavigationCache) =
     cached.SpanCount <= revisionNavigationCacheMaxTotalSpans
@@ -8454,9 +8493,7 @@ let private revisionNavigationSourceTextCharCountFor spanCount sourceParagraphCo
 
 let private rememberRevisionNavigation cached =
     if not (revisionNavigationCacheRetainable cached) then
-        revisionNavigationCache
-        |> List.filter (revisionNavigationCacheMatches cached.SourceBlocks >> not)
-        |> setRevisionNavigationCache
+        removeRevisionNavigationCacheForBlocks cached.SourceBlocks
     else
         let trim entries =
             let rec loop keptCount keptSpans keptParagraphs keptSourceTextChars acc remaining =
