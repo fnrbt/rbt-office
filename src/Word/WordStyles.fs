@@ -726,6 +726,20 @@ let private tryGetEffectiveBuffer
         else
             ValueNone
 
+let private effectiveBufferCacheEntryRetainable (entry: EffectiveBufferCacheEntry) =
+    entry.RetainedRunCount <= effectiveBufferCacheMaxRetainedRuns
+    && entry.RetainedCharCount <= effectiveBufferCacheMaxRetainedChars
+
+let private effectiveBufferCacheEntriesWithout rope runs paragraphStyle resolvedStyles =
+    let key = effectiveBufferCacheKey rope runs paragraphStyle resolvedStyles
+    let mutable cached = Unchecked.defaultof<EffectiveBufferCacheEntry>
+    if effectiveBufferCacheByKey.TryGetValue(key, &cached)
+       && effectiveBufferCacheEntryMatches rope runs paragraphStyle resolvedStyles cached then
+        effectiveBufferCache
+        |> List.filter (effectiveBufferCacheEntryMatches rope runs paragraphStyle resolvedStyles >> not)
+    else
+        effectiveBufferCache
+
 let private effectiveBufferRunCount (runs: Run list) =
     let mutable total = 0
     let mutable remaining = runs
@@ -865,10 +879,15 @@ let private rememberEffectiveBuffer
         RetainedRunCount = retainedRunCount
         RetainedCharCount = effectiveBufferRetainedCharCountFor retainedRunCount paragraphStyle resolvedStyles runs result
     }
-    entry
-    :: (effectiveBufferCache |> List.filter (effectiveBufferCacheEntryMatches rope runs paragraphStyle resolvedStyles >> not))
-    |> trimEffectiveBufferCache
-    |> setEffectiveBufferCache
+    if not (effectiveBufferCacheEntryRetainable entry) then
+        let entries = effectiveBufferCacheEntriesWithout rope runs paragraphStyle resolvedStyles
+        if not (obj.ReferenceEquals(entries, effectiveBufferCache)) then
+            setEffectiveBufferCache entries
+    else
+        entry
+        :: effectiveBufferCacheEntriesWithout rope runs paragraphStyle resolvedStyles
+        |> trimEffectiveBufferCache
+        |> setEffectiveBufferCache
     result
 
 let private effectiveBufferWith transformStyle (buffer: TextBuffer) =
