@@ -55,6 +55,13 @@ let private resizeArrayToList (items: ResizeArray<'T>) =
         result <- items.[i] :: result
     result
 
+let private clearArray (items: 'T array) =
+    for i = 0 to items.Length - 1 do
+        items.[i] <- Unchecked.defaultof<'T>
+
+let private referenceHash (value: obj) =
+    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value)
+
 let private appendItemWithCapacity capacity item items =
     let values = ResizeArray(max 1 capacity)
     for value in items do
@@ -85,6 +92,12 @@ type private TableNamesCacheEntry = {
     NameCharCount: int
     SourceItemCount: int
     Names: string list
+}
+
+[<Struct>]
+type private SheetNamesReferenceKey = {
+    Sheets: Map<SheetId, Sheet>
+    SheetOrder: SheetId list
 }
 
 let mutable private sheetNamesCache: SheetNamesCacheEntry list = []
@@ -126,6 +139,85 @@ let private sheetNamesCacheEntryMatches sheets sheetOrder (entry: SheetNamesCach
 
 let private tableNamesCacheEntryMatches tables (entry: TableNamesCacheEntry) =
     obj.ReferenceEquals(entry.Tables, tables)
+
+let private sheetNamesReferenceHash sheets sheetOrder =
+    (referenceHash sheets * 397) ^^^ referenceHash sheetOrder
+
+let private sheetNamesReferenceKey sheets sheetOrder : SheetNamesReferenceKey =
+    { Sheets = sheets
+      SheetOrder = sheetOrder }
+
+let private sheetNamesReferenceComparer =
+    { new IEqualityComparer<SheetNamesReferenceKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.Sheets, right.Sheets)
+            && obj.ReferenceEquals(left.SheetOrder, right.SheetOrder)
+
+        member _.GetHashCode(key) =
+            sheetNamesReferenceHash key.Sheets key.SheetOrder }
+
+let private tableNamesReferenceComparer =
+    { new IEqualityComparer<Map<string, Table>> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left, right)
+
+        member _.GetHashCode(value) =
+            referenceHash value }
+
+let private sheetNamesCacheBySource =
+    Dictionary<SheetNamesReferenceKey, SheetNamesCacheEntry>(sheetNamesReferenceComparer)
+let private sheetNamesFastSlots = Array.zeroCreate<SheetNamesCacheEntry> 256
+let private tableNamesCacheBySource =
+    Dictionary<Map<string, Table>, TableNamesCacheEntry>(tableNamesReferenceComparer)
+let private tableNamesFastSlots = Array.zeroCreate<TableNamesCacheEntry> 256
+
+let private setSheetNamesCache entries =
+    sheetNamesCache <- entries
+    sheetNamesCacheBySource.Clear()
+    clearArray sheetNamesFastSlots
+    for entry in entries do
+        let key = sheetNamesReferenceKey entry.Sheets entry.SheetOrder
+        let mutable existing = Unchecked.defaultof<SheetNamesCacheEntry>
+        if not (sheetNamesCacheBySource.TryGetValue(key, &existing)) then
+            sheetNamesCacheBySource.[key] <- entry
+
+let private setTableNamesCache entries =
+    tableNamesCache <- entries
+    tableNamesCacheBySource.Clear()
+    clearArray tableNamesFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<TableNamesCacheEntry>
+        if not (tableNamesCacheBySource.TryGetValue(entry.Tables, &existing)) then
+            tableNamesCacheBySource.[entry.Tables] <- entry
+
+let private tryGetSheetNamesCache sheets sheetOrder =
+    let slot = sheetNamesReferenceHash sheets sheetOrder &&& (sheetNamesFastSlots.Length - 1)
+    let fast = sheetNamesFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && sheetNamesCacheEntryMatches sheets sheetOrder fast then
+        ValueSome fast
+    else
+        let key = sheetNamesReferenceKey sheets sheetOrder
+        let mutable cached = Unchecked.defaultof<SheetNamesCacheEntry>
+        if sheetNamesCacheBySource.TryGetValue(key, &cached) then
+            sheetNamesFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private tryGetTableNamesCache tables =
+    let slot = referenceHash tables &&& (tableNamesFastSlots.Length - 1)
+    let fast = tableNamesFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && tableNamesCacheEntryMatches tables fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<TableNamesCacheEntry>
+        if tableNamesCacheBySource.TryGetValue(tables, &cached) then
+            tableNamesFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private tableNamesCacheEntryRetainable (entry: TableNamesCacheEntry) =
     entry.NameCount <= tableNamesCacheMaxTotalNames
@@ -512,13 +604,15 @@ let private rememberSheetNamesCacheEntryWithMetrics sheets sheetOrder sourceItem
         Names = names
     }
     if not (sheetNamesCacheEntryRetainable entry) then
-        sheetNamesCache <- sheetNamesCache |> List.filter (sheetNamesCacheEntryMatches sheets sheetOrder >> not)
+        sheetNamesCache
+        |> List.filter (sheetNamesCacheEntryMatches sheets sheetOrder >> not)
+        |> setSheetNamesCache
     else
-        sheetNamesCache <-
-            (entry
-             :: (sheetNamesCache
-                 |> List.filter (sheetNamesCacheEntryMatches sheets sheetOrder >> not)))
-            |> trimSheetNamesCache
+        (entry
+         :: (sheetNamesCache
+             |> List.filter (sheetNamesCacheEntryMatches sheets sheetOrder >> not)))
+        |> trimSheetNamesCache
+        |> setSheetNamesCache
     names
 
 let private rememberTableNamesCacheEntryWithMetrics tables sourceItemCount nameCount nameCharCount (names: string list) =
@@ -530,13 +624,15 @@ let private rememberTableNamesCacheEntryWithMetrics tables sourceItemCount nameC
         Names = names
     }
     if not (tableNamesCacheEntryRetainable entry) then
-        tableNamesCache <- tableNamesCache |> List.filter (tableNamesCacheEntryMatches tables >> not)
+        tableNamesCache
+        |> List.filter (tableNamesCacheEntryMatches tables >> not)
+        |> setTableNamesCache
     else
-        tableNamesCache <-
-            (entry
-             :: (tableNamesCache
-                 |> List.filter (tableNamesCacheEntryMatches tables >> not)))
-            |> trimTableNamesCache
+        (entry
+         :: (tableNamesCache
+             |> List.filter (tableNamesCacheEntryMatches tables >> not)))
+        |> trimTableNamesCache
+        |> setTableNamesCache
     names
 
 let private validSheetOrder (sheets: Map<SheetId, Sheet>) (order: SheetId list) =
@@ -835,10 +931,10 @@ let updateSheetModel (sheetId: SheetId) (model: SpreadsheetModel) (workbook: Wor
 
 /// Get all sheet names
 let getSheetNames (workbook: Workbook): (SheetId * string) list =
-    match sheetNamesCache |> List.tryFind (sheetNamesCacheEntryMatches workbook.Sheets workbook.SheetOrder) with
-    | Some cached ->
+    match tryGetSheetNamesCache workbook.Sheets workbook.SheetOrder with
+    | ValueSome cached ->
         cached.Names
-    | None ->
+    | ValueNone ->
         let names = ResizeArray<SheetId * string>(workbook.SheetOrder.Length)
         let mutable nameCharCount = 0
         let nameCountOverLimit () = names.Count > sheetNamesCacheMaxTotalNames
@@ -906,10 +1002,10 @@ let getSheetNames (workbook: Workbook): (SheetId * string) list =
 
 /// Get all table names
 let getTableNames (workbook: Workbook): string list =
-    match tableNamesCache |> List.tryFind (tableNamesCacheEntryMatches workbook.Tables) with
-    | Some cached ->
+    match tryGetTableNamesCache workbook.Tables with
+    | ValueSome cached ->
         cached.Names
-    | None ->
+    | ValueNone ->
         let names = ResizeArray<string>(workbook.Tables.Count)
         let mutable nameCharCount = 0
         let mutable sourceItemCount = 0
