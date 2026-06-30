@@ -2818,7 +2818,7 @@ let findParagraph (doc: Document) paragraphId =
             | ValueNone -> None
         | ValueNone -> None
     match topLevel with
-    | Some paragraph -> Some paragraph
+    | Some _ -> topLevel
     | None -> findParagraphFromParagraphLookup doc paragraphId
 
 let private tryReplaceTopLevelParagraphBeforeNestedContent doc paragraphId newPara =
@@ -6812,6 +6812,8 @@ type private FindTextCache = {
 }
 
 let mutable private findTextCache: FindTextCache list = []
+let private findTextCacheByBlocks = Dictionary<Block list, FindTextCache>(documentInfoBlocksComparer)
+let private findTextFastSlots = Array.zeroCreate<FindTextCache> 256
 let private findTextCacheMaxEntries = 64
 let private findTextCacheMaxSources = 64
 let private findTextCacheMaxResultCount = 200000
@@ -6883,9 +6885,34 @@ let private findTextCacheRetainable (cached: FindTextCache) =
     && cached.SourceParagraphCount <= findTextCacheMaxTotalSourceParagraphs
     && cached.SourceTextCharCount <= findTextCacheMaxTotalSourceTextChars
 
+let private setFindTextCache entries =
+    findTextCache <- entries
+    findTextCacheByBlocks.Clear()
+    clearArray findTextFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<FindTextCache>
+        if not (findTextCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            findTextCacheByBlocks.[entry.SourceBlocks] <- entry
+
+let private tryGetFindTextCache blocks =
+    let slot = documentInfoSlot blocks findTextFastSlots.Length
+    let fast = findTextFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && findTextCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<FindTextCache>
+        if findTextCacheByBlocks.TryGetValue(blocks, &cached) then
+            findTextFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private rememberFindTextCache cached =
     if not (findTextCacheRetainable cached) then
-        findTextCache <- findTextCache |> List.filter (findTextCacheMatches cached.SourceBlocks >> not)
+        findTextCache
+        |> List.filter (findTextCacheMatches cached.SourceBlocks >> not)
+        |> setFindTextCache
     else
         let mutable keptCount = 1
         let mutable keptResults = cached.TotalResultCount
@@ -6918,18 +6945,19 @@ let private rememberFindTextCache cached =
                     Some candidate
                 else
                     None)
-        findTextCache <- cached :: retained
+        cached :: retained
+        |> setFindTextCache
 
 let private cachedFindTextMatches query matchCase doc =
     let key = struct (query, matchCase)
-    match findTextCache |> List.tryFind (findTextCacheMatches doc.Blocks) with
-    | Some cached when findTextCacheRetainable cached ->
+    match tryGetFindTextCache doc.Blocks with
+    | ValueSome cached when findTextCacheRetainable cached ->
         let mutable entry = Unchecked.defaultof<FindTextCacheEntry>
         if cached.Entries.TryGetValue(key, &entry) then Some entry else None
-    | Some cached ->
+    | ValueSome cached ->
         rememberFindTextCache cached
         None
-    | None -> None
+    | ValueNone -> None
 
 let private removeFindTextCacheEntry key (cache: FindTextCache) =
     let mutable existing = Unchecked.defaultof<FindTextCacheEntry>
@@ -6986,11 +7014,11 @@ let private rememberFindTextMatchesWithSourceMetrics query matchCase doc matches
         MatchesList = matchesList
         ResultTextCharCount = findTextCacheResultTextCharCount matchCase matches
     }
-    match findTextCache |> List.tryFind (findTextCacheMatches doc.Blocks) with
-    | Some cached ->
+    match tryGetFindTextCache doc.Blocks with
+    | ValueSome cached ->
         addFindTextCacheEntry key entry cached
         rememberFindTextCache cached
-    | None ->
+    | ValueNone ->
         let entries = Dictionary<struct (string * bool), FindTextCacheEntry>()
         let order = Queue<struct (string * bool)>()
         let sourceParagraphCount =
