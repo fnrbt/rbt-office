@@ -407,6 +407,49 @@ check "native search cache reuses"
     (obj.ReferenceEquals(searchCacheResults, searchCacheResultsAgain))
     true
 
+let uniqueValuesCells =
+    [ { Row = 0; Col = 0 }, cell (CellValue.String "red")
+      { Row = 1; Col = 0 }, cell (CellValue.String "blue")
+      { Row = 2; Col = 0 }, cell (CellValue.String "")
+      { Row = 3; Col = 0 }, cell (CellValue.String "red") ]
+    |> Map.ofList
+
+let uniqueValuesModel = { createEmpty 4 1 with Cells = uniqueValuesCells }
+let uniqueValues = getColumnUniqueValues 0 uniqueValuesModel
+let uniqueValuesAgain = getColumnUniqueValues 0 uniqueValuesModel
+check "native column unique values cache value"
+    uniqueValues
+    [ ""; "blue"; "red" ]
+check "native column unique values reuses"
+    (obj.ReferenceEquals(uniqueValues, uniqueValuesAgain))
+    true
+
+let tableUniqueValuesCells =
+    [ { Row = 0; Col = 0 }, cell (CellValue.String "Color")
+      { Row = 1; Col = 0 }, cell (CellValue.String "red")
+      { Row = 2; Col = 0 }, cell (CellValue.String "blue")
+      { Row = 3; Col = 0 }, cell (CellValue.String "red") ]
+    |> Map.ofList
+let tableUniqueValuesTable =
+    { Name = "Colors"
+      StartRow = 1
+      StartCol = 1
+      EndRow = 4
+      EndCol = 1
+      HeaderRowCount = 1
+      Style = None
+      AutoFilter = None
+      HasTotals = false }
+let tableUniqueValuesModel = { createEmpty 4 1 with Cells = tableUniqueValuesCells; Tables = [ tableUniqueValuesTable ] }
+let tableUniqueValues = tableColumnUniqueValues tableUniqueValuesTable 0 tableUniqueValuesModel
+let tableUniqueValuesAgain = tableColumnUniqueValues tableUniqueValuesTable 0 tableUniqueValuesModel
+check "native table unique values cache value"
+    tableUniqueValues
+    [ "blue"; "red" ]
+check "native table unique values reuses"
+    (obj.ReferenceEquals(tableUniqueValues, tableUniqueValuesAgain))
+    true
+
 if isNull setFocus || isNull extendFocus || isNull startEditing || isNull commitEdit then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor helpers" "native editor reflection"

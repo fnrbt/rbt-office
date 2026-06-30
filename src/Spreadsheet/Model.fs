@@ -2052,6 +2052,9 @@ and private ColumnUniqueValuesCacheEntry = {
 }
 
 let mutable private columnUniqueValuesCache: ColumnUniqueValuesCache list = []
+let private columnUniqueValuesCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, ColumnUniqueValuesCache>(cellMapReferenceComparer)
+let private columnUniqueValuesFastSlots = Array.zeroCreate<ColumnUniqueValuesCache> 256
 let private columnUniqueValuesCacheMaxEntries = 64
 let private columnUniqueValuesCacheMaxSources = 64
 let private columnUniqueValuesCacheMaxTotalValues = 200000
@@ -2061,6 +2064,31 @@ let private columnUniqueValuesCacheMaxTotalSourceTextChars = 5000000
 
 let private columnUniqueValuesCacheMatches cells (cached: ColumnUniqueValuesCache) =
     obj.ReferenceEquals(cached.Cells, cells)
+
+let private setColumnUniqueValuesCache entries =
+    columnUniqueValuesCache <- entries
+    columnUniqueValuesCacheByCells.Clear()
+    clearArray columnUniqueValuesFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<ColumnUniqueValuesCache>
+        if not (columnUniqueValuesCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            columnUniqueValuesCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells columnUniqueValuesFastSlots.Length
+            columnUniqueValuesFastSlots.[slot] <- entry
+
+let private tryGetColumnUniqueValuesCache cells =
+    let slot = referenceSlot cells columnUniqueValuesFastSlots.Length
+    let fast = columnUniqueValuesFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && columnUniqueValuesCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<ColumnUniqueValuesCache>
+        if columnUniqueValuesCacheByCells.TryGetValue(cells, &cached) then
+            columnUniqueValuesFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private columnUniqueValuesCacheRetainable (cached: ColumnUniqueValuesCache) =
     cached.Entries.Count > 0
@@ -2081,7 +2109,9 @@ let private columnUniqueValuesSourceTextCharCountFor valueCount valueTextCharCou
 
 let private rememberColumnUniqueValuesCache cached =
     if not (columnUniqueValuesCacheRetainable cached) then
-        columnUniqueValuesCache <- columnUniqueValuesCache |> List.filter (columnUniqueValuesCacheMatches cached.Cells >> not)
+        columnUniqueValuesCache
+        |> List.filter (columnUniqueValuesCacheMatches cached.Cells >> not)
+        |> setColumnUniqueValuesCache
     else
         let mutable keptCount = 1
         let mutable keptValues = cached.TotalValueCount
@@ -2110,7 +2140,8 @@ let private rememberColumnUniqueValuesCache cached =
                     Some candidate
                 else
                     None)
-        columnUniqueValuesCache <- cached :: retained
+        cached :: retained
+        |> setColumnUniqueValuesCache
 
 let private removeColumnUniqueValuesCacheEntry col (cache: ColumnUniqueValuesCache) =
     let mutable existing = Unchecked.defaultof<ColumnUniqueValuesCacheEntry>
@@ -2316,14 +2347,14 @@ let private sortRowsAreIdentitySorted col ascending (cells: Map<CellAddress, Cel
 
 let private columnUniqueValuesCached includeBlanks col (model: SpreadsheetModel) =
     let tryCached () =
-        match columnUniqueValuesCache |> List.tryFind (columnUniqueValuesCacheMatches model.Cells) with
-        | Some cached ->
+        match tryGetColumnUniqueValuesCache model.Cells with
+        | ValueSome cached ->
             let mutable entry = Unchecked.defaultof<ColumnUniqueValuesCacheEntry>
             if cached.Entries.TryGetValue(col, &entry) then
                 Some (if includeBlanks then entry.ValuesWithBlanks else entry.ValuesWithoutBlanks)
             else
                 None
-        | None -> None
+        | ValueNone -> None
 
     match tryCached () with
     | Some values -> values
@@ -2358,9 +2389,9 @@ let private columnUniqueValuesCached includeBlanks col (model: SpreadsheetModel)
         let withoutBlanks = sortedStringSetValues valuesWithoutBlanks
         let valueCount = withBlanksCount + valuesWithoutBlanks.Count
         let cache =
-            match columnUniqueValuesCache |> List.tryFind (columnUniqueValuesCacheMatches model.Cells) with
-            | Some cached -> cached
-            | None ->
+            match tryGetColumnUniqueValuesCache model.Cells with
+            | ValueSome cached -> cached
+            | ValueNone ->
                 {
                 Cells = model.Cells
                 CellCount = max 1 model.Cells.Count
@@ -3459,6 +3490,9 @@ and private TableColumnUniqueValuesKey = {
 }
 
 let mutable private tableColumnUniqueValuesCache: TableColumnUniqueValuesCache list = []
+let private tableColumnUniqueValuesCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, TableColumnUniqueValuesCache>(cellMapReferenceComparer)
+let private tableColumnUniqueValuesFastSlots = Array.zeroCreate<TableColumnUniqueValuesCache> 256
 let private tableColumnUniqueValuesCacheMaxEntries = 64
 let private tableColumnUniqueValuesCacheMaxSources = 64
 let private tableColumnUniqueValuesCacheMaxTotalValues = 200000
@@ -3468,6 +3502,31 @@ let private tableColumnUniqueValuesCacheMaxTotalSourceTextChars = 5000000
 
 let private tableColumnUniqueValuesCacheMatches cells (cached: TableColumnUniqueValuesCache) =
     obj.ReferenceEquals(cached.Cells, cells)
+
+let private setTableColumnUniqueValuesCache entries =
+    tableColumnUniqueValuesCache <- entries
+    tableColumnUniqueValuesCacheByCells.Clear()
+    clearArray tableColumnUniqueValuesFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<TableColumnUniqueValuesCache>
+        if not (tableColumnUniqueValuesCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            tableColumnUniqueValuesCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells tableColumnUniqueValuesFastSlots.Length
+            tableColumnUniqueValuesFastSlots.[slot] <- entry
+
+let private tryGetTableColumnUniqueValuesCache cells =
+    let slot = referenceSlot cells tableColumnUniqueValuesFastSlots.Length
+    let fast = tableColumnUniqueValuesFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && tableColumnUniqueValuesCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<TableColumnUniqueValuesCache>
+        if tableColumnUniqueValuesCacheByCells.TryGetValue(cells, &cached) then
+            tableColumnUniqueValuesFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private tableColumnUniqueValuesCacheRetainable (cached: TableColumnUniqueValuesCache) =
     cached.Entries.Count > 0
@@ -3488,7 +3547,9 @@ let private tableColumnUniqueValuesSourceTextCharCountFor valueCount valueTextCh
 
 let private rememberTableColumnUniqueValuesCache cached =
     if not (tableColumnUniqueValuesCacheRetainable cached) then
-        tableColumnUniqueValuesCache <- tableColumnUniqueValuesCache |> List.filter (tableColumnUniqueValuesCacheMatches cached.Cells >> not)
+        tableColumnUniqueValuesCache
+        |> List.filter (tableColumnUniqueValuesCacheMatches cached.Cells >> not)
+        |> setTableColumnUniqueValuesCache
     else
         let mutable keptCount = 1
         let mutable keptValues = cached.TotalValueCount
@@ -3517,7 +3578,8 @@ let private rememberTableColumnUniqueValuesCache cached =
                     Some candidate
                 else
                     None)
-        tableColumnUniqueValuesCache <- cached :: retained
+        cached :: retained
+        |> setTableColumnUniqueValuesCache
 
 let private removeTableColumnUniqueValuesCacheEntry key (cache: TableColumnUniqueValuesCache) =
     let mutable existing = Unchecked.defaultof<TableColumnUniqueValuesCacheEntry>
@@ -3566,8 +3628,8 @@ let tableColumnUniqueValues (table: Table) (col: int) (model: SpreadsheetModel):
         HasTotals = table.HasTotals
         Column = col
     }
-    match tableColumnUniqueValuesCache |> List.tryFind (tableColumnUniqueValuesCacheMatches model.Cells) with
-    | Some cached ->
+    match tryGetTableColumnUniqueValuesCache model.Cells with
+    | ValueSome cached ->
         let mutable entry = Unchecked.defaultof<TableColumnUniqueValuesCacheEntry>
         if cached.Entries.TryGetValue(key, &entry) then
             entry.Values
@@ -3611,7 +3673,7 @@ let tableColumnUniqueValues (table: Table) (col: int) (model: SpreadsheetModel):
             } cached
             rememberTableColumnUniqueValuesCache cached
             result
-    | None ->
+    | ValueNone ->
         let dataStart = (table.StartRow - 1) + table.HeaderRowCount
         let dataEnd = (table.EndRow - 1) - (if table.HasTotals then 1 else 0)
         let dataRowCount = max 0 (dataEnd - dataStart + 1)
