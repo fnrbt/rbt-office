@@ -205,7 +205,7 @@ type private RunArrayCache = {
 
 let mutable private runArrayCache: RunArrayCache option = None
 let private runArrayCacheMaxEntries = 64
-let private runArrayCacheMaxTotalRuns = 200000
+let private runArrayCacheMaxTotalRuns = 100000
 let private runArrayCacheMaxTotalStringChars = 5000000
 
 let private runListReferenceComparer =
