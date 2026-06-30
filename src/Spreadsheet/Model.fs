@@ -6946,12 +6946,21 @@ type private ImportCsvCache = {
     SourceTextCharCount: int
 }
 
+[<Struct>]
+type private ImportCsvInputKey = {
+    CsvText: string
+    StartRow: int
+    StartCol: int
+    Cells: Map<CellAddress, CellData>
+}
+
 type private ImportCsvChanges = {
     OldCells: ResizeArray<CellAddress * CellData option>
     NewCells: ResizeArray<CellAddress * CellData option>
 }
 
 let mutable private importCsvCache: ImportCsvCache list = []
+let private importCsvFastSlots = Array.zeroCreate<ImportCsvCache> 256
 let private importCsvCacheMaxSources = 64
 let private importCsvCacheMaxTotalChars = 5000000
 let private importCsvCacheMaxTotalCells = 250000
@@ -6972,6 +6981,59 @@ let private importCsvCacheMatchesInput csvText startRow startCol cells (cached: 
     && cached.StartCol = startCol
     && (obj.ReferenceEquals(cached.SourceCells, cells)
         || obj.ReferenceEquals(cached.ResultCells, cells))
+
+let private importCsvInputHash csvText startRow startCol cells =
+    let csvHash = hash csvText
+    (((csvHash * 397) ^^^ startRow) * 397 ^^^ startCol) * 397 ^^^ referenceHash cells
+
+let private importCsvInputKey csvText startRow startCol cells : ImportCsvInputKey =
+    { CsvText = csvText
+      StartRow = startRow
+      StartCol = startCol
+      Cells = cells }
+
+let private importCsvInputComparer =
+    { new System.Collections.Generic.IEqualityComparer<ImportCsvInputKey> with
+        member _.Equals(left, right) =
+            left.CsvText = right.CsvText
+            && left.StartRow = right.StartRow
+            && left.StartCol = right.StartCol
+            && obj.ReferenceEquals(left.Cells, right.Cells)
+
+        member _.GetHashCode(key) =
+            importCsvInputHash key.CsvText key.StartRow key.StartCol key.Cells }
+
+let private importCsvCacheByInput =
+    System.Collections.Generic.Dictionary<ImportCsvInputKey, ImportCsvCache>(importCsvInputComparer)
+
+let private setImportCsvCache entries =
+    importCsvCache <- entries
+    importCsvCacheByInput.Clear()
+    clearArray importCsvFastSlots
+    let addInput (cells: Map<CellAddress, CellData>) (entry: ImportCsvCache) =
+        let key = importCsvInputKey entry.CsvText entry.StartRow entry.StartCol cells
+        let mutable existing = Unchecked.defaultof<ImportCsvCache>
+        if not (importCsvCacheByInput.TryGetValue(key, &existing)) then
+            importCsvCacheByInput.[key] <- entry
+    for entry in entries do
+        addInput entry.SourceCells entry
+        if not (obj.ReferenceEquals(entry.SourceCells, entry.ResultCells)) then
+            addInput entry.ResultCells entry
+
+let private tryGetImportCsvCache csvText startRow startCol cells =
+    let slot = importCsvInputHash csvText startRow startCol cells &&& (importCsvFastSlots.Length - 1)
+    let fast = importCsvFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && importCsvCacheMatchesInput csvText startRow startCol cells fast then
+        ValueSome fast
+    else
+        let key = importCsvInputKey csvText startRow startCol cells
+        let mutable cached = Unchecked.defaultof<ImportCsvCache>
+        if importCsvCacheByInput.TryGetValue(key, &cached) then
+            importCsvFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private importCsvCacheRetainable (cached: ImportCsvCache) =
     cached.CsvLength <= importCsvCacheMaxTotalChars
@@ -6998,9 +7060,9 @@ let private importCsvRetainedCellCount (cached: ImportCsvCache) =
 
 let private rememberImportCsv cached =
     if not (importCsvCacheRetainable cached) then
-        importCsvCache <-
-            importCsvCache
-            |> List.filter (importCsvCacheSameSource cached.CsvText cached.StartRow cached.StartCol cached.SourceCells >> not)
+        importCsvCache
+        |> List.filter (importCsvCacheSameSource cached.CsvText cached.StartRow cached.StartCol cached.SourceCells >> not)
+        |> setImportCsvCache
     else
         let trim entries =
             let rec loop keptCount keptChars keptCells keptSourceTextChars acc remaining =
@@ -7025,16 +7087,18 @@ let private rememberImportCsv cached =
                     else
                         loop keptCount keptChars keptCells keptSourceTextChars acc tail
             loop 0 0 0 0 [] entries
-        importCsvCache <-
-            (cached
-             :: (importCsvCache
-                 |> List.filter (importCsvCacheSameSource cached.CsvText cached.StartRow cached.StartCol cached.SourceCells >> not)))
-            |> trim
+        (cached
+         :: (importCsvCache
+             |> List.filter (importCsvCacheSameSource cached.CsvText cached.StartRow cached.StartCol cached.SourceCells >> not)))
+        |> trim
+        |> setImportCsvCache
 
 let private importCSVWithOptionalChanges (captureChanges: bool) (useCache: bool) (csvText: string) (startRow: int) (startCol: int) (model: SpreadsheetModel): SpreadsheetModel * ImportCsvChanges option =
     let cached =
         if useCache then
-            importCsvCache |> List.tryFind (importCsvCacheMatchesInput csvText startRow startCol model.Cells)
+            match tryGetImportCsvCache csvText startRow startCol model.Cells with
+            | ValueSome cached -> Some cached
+            | ValueNone -> None
         else
             None
 
