@@ -211,9 +211,10 @@ let private tryGetPrefixSizeCacheEntry (slot: PrefixSizeCacheSlot) overrides =
 
 let private rememberPrefixSizeCacheEntry (slot: PrefixSizeCacheSlot) (entry: PrefixSizeCacheEntry) =
     if not (prefixSizeCacheEntryRetainable entry) then
-        slot.Entries
-        |> List.filter (prefixSizeCacheEntryMatches entry.Source >> not)
-        |> setPrefixSizeCacheEntries slot
+        if slot.Entries |> List.exists (prefixSizeCacheEntryMatches entry.Source) then
+            slot.Entries
+            |> List.filter (prefixSizeCacheEntryMatches entry.Source >> not)
+            |> setPrefixSizeCacheEntries slot
     else
         let mutable keptCount = 1
         let mutable keptKeys = prefixSizeCacheEntryKeyCount entry
@@ -267,9 +268,10 @@ let private tryGetHiddenPrefixSizeCacheEntry overrides hiddenRows =
 
 let private rememberHiddenPrefixSizeCacheEntry (entry: HiddenPrefixSizeCacheEntry) =
     if not (hiddenPrefixSizeCacheEntryRetainable entry) then
-        hiddenPrefixSizeCache.Entries
-        |> List.filter (hiddenPrefixSizeCacheEntryMatches entry.Source entry.HiddenRows >> not)
-        |> setHiddenPrefixSizeCacheEntries
+        if hiddenPrefixSizeCache.Entries |> List.exists (hiddenPrefixSizeCacheEntryMatches entry.Source entry.HiddenRows) then
+            hiddenPrefixSizeCache.Entries
+            |> List.filter (hiddenPrefixSizeCacheEntryMatches entry.Source entry.HiddenRows >> not)
+            |> setHiddenPrefixSizeCacheEntries
     else
         let mutable keptCount = 1
         let mutable keptKeys = hiddenPrefixSizeCacheEntryKeyCount entry
@@ -1003,11 +1005,23 @@ let private tryGetHeadersCache model =
         else
             ValueNone
 
+let private removeVisibleCellsCacheForModel model =
+    let mutable cached = Unchecked.defaultof<VisibleCellsCache>
+    if visibleCellsCacheByModel.TryGetValue(model, &cached) then
+        visibleCellsCache
+        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, model)))
+        |> setVisibleCellsCache
+
+let private removeHeadersCacheForModel model =
+    let mutable cached = Unchecked.defaultof<HeadersCache>
+    if headersCacheByModel.TryGetValue(model, &cached) then
+        headersCache
+        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, model)))
+        |> setHeadersCache
+
 let private rememberVisibleCellsCache (cache: VisibleCellsCache) =
     if not (visibleCellsCacheRetainable cache) then
-        visibleCellsCache
-        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
-        |> setVisibleCellsCache
+        removeVisibleCellsCacheForModel cache.Model
     else
         let mutable keptCount = 1
         let mutable keptItems = cache.TotalItemCount
@@ -1036,9 +1050,7 @@ let private rememberVisibleCellsCache (cache: VisibleCellsCache) =
 
 let private rememberHeadersCache (cache: HeadersCache) =
     if not (headersCacheRetainable cache) then
-        headersCache
-        |> List.filter (fun cached -> not (obj.ReferenceEquals(cached.Model, cache.Model)))
-        |> setHeadersCache
+        removeHeadersCacheForModel cache.Model
     else
         let mutable keptCount = 1
         let mutable keptItems = cache.TotalItemCount
