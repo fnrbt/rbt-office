@@ -4190,6 +4190,8 @@ type private NormalizedRangeCache = {
 }
 
 let mutable private normalizedRangeCache: NormalizedRangeCache list = []
+let private normalizedRangeCacheByBlocks = Dictionary<Block list, NormalizedRangeCache>(documentInfoBlocksComparer)
+let private normalizedRangeFastSlots = Array.zeroCreate<NormalizedRangeCache> 256
 let private normalizedRangeCacheMaxEntries = 64
 let private normalizedRangeCacheMaxSources = 64
 let private normalizedRangeCacheMaxTotalBlockIds = 200000
@@ -4198,6 +4200,29 @@ let private normalizedRangeCacheMaxTotalSourceTextChars = documentSourceTextCach
 
 let private normalizedRangeCacheMatches blocks (cached: NormalizedRangeCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private setNormalizedRangeCache entries =
+    normalizedRangeCache <- entries
+    normalizedRangeCacheByBlocks.Clear()
+    clearArray normalizedRangeFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<NormalizedRangeCache>
+        if not (normalizedRangeCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            normalizedRangeCacheByBlocks.[entry.SourceBlocks] <- entry
+
+let private tryGetNormalizedRangeCache blocks =
+    let slot = documentInfoSlot blocks normalizedRangeFastSlots.Length
+    let fast = normalizedRangeFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && normalizedRangeCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<NormalizedRangeCache>
+        if normalizedRangeCacheByBlocks.TryGetValue(blocks, &cached) then
+            normalizedRangeFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private normalizedRangeCacheRetainable (cached: NormalizedRangeCache) =
     cached.Entries.Count > 0
@@ -4208,7 +4233,9 @@ let private normalizedRangeCacheRetainable (cached: NormalizedRangeCache) =
 
 let private rememberNormalizedRangeCache cached =
     if not (normalizedRangeCacheRetainable cached) then
-        normalizedRangeCache <- normalizedRangeCache |> List.filter (normalizedRangeCacheMatches cached.SourceBlocks >> not)
+        normalizedRangeCache
+        |> List.filter (normalizedRangeCacheMatches cached.SourceBlocks >> not)
+        |> setNormalizedRangeCache
     else
         let mutable keptCount = 1
         let mutable keptBlockIds = max 1 cached.TotalBlockIds
@@ -4233,7 +4260,8 @@ let private rememberNormalizedRangeCache cached =
                     Some candidate
                 else
                     None)
-        normalizedRangeCache <- cached :: retained
+        cached :: retained
+        |> setNormalizedRangeCache
 
 let private normalizedRangeKey (sel: Selection) = {
     AnchorBlockId = sel.Anchor.BlockId
@@ -4292,18 +4320,18 @@ let private addNormalizedRangeEntry key entry (cache: NormalizedRangeCache) =
             cache.TotalBlockIds <- current.BlockIdCount
 
 let private cachedNormalizedRange doc sel =
-    match normalizedRangeCache |> List.tryFind (normalizedRangeCacheMatches doc.Blocks) with
-    | Some cached when normalizedRangeCacheRetainable cached ->
+    match tryGetNormalizedRangeCache doc.Blocks with
+    | ValueSome cached when normalizedRangeCacheRetainable cached ->
         let key = normalizedRangeKey sel
         let mutable entry = Unchecked.defaultof<NormalizedRangeCacheEntry>
         if cached.Entries.TryGetValue(key, &entry) then
             Some (entry.StartPos, entry.EndPos, entry.BlockIds)
         else
             None
-    | Some cached ->
+    | ValueSome cached ->
         rememberNormalizedRangeCache cached
         None
-    | None -> None
+    | ValueNone -> None
 
 let private rememberNormalizedRange doc sel startPos endPos blockIds =
     let key = normalizedRangeKey sel
@@ -4314,9 +4342,9 @@ let private rememberNormalizedRange doc sel startPos endPos blockIds =
         BlockIdCount = blockIds.Length
     }
     let cache =
-        match normalizedRangeCache |> List.tryFind (normalizedRangeCacheMatches doc.Blocks) with
-        | Some cached -> cached
-        | None ->
+        match tryGetNormalizedRangeCache doc.Blocks with
+        | ValueSome cached -> cached
+        | ValueNone ->
             let sourceParagraphCount = normalizedRangeSourceParagraphCountFor entry.BlockIdCount doc.Blocks
             {
                 SourceBlocks = doc.Blocks
