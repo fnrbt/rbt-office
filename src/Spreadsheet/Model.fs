@@ -6442,26 +6442,44 @@ let private tryGetColorScaleApplyCache cells =
         else
             ValueNone
 
-let private removeDataBarApplyCacheForCells cells =
+let private dataBarApplyCacheWithoutCells cells =
     let mutable cached = Unchecked.defaultof<DataBarApplyCache>
     if dataBarApplyCacheByCells.TryGetValue(cells, &cached) then
         dataBarApplyCache
         |> List.filter (dataBarApplyCacheMatches cells >> not)
-        |> setDataBarApplyCache
+    else
+        dataBarApplyCache
 
-let private removeIconSetApplyCacheForCells cells =
+let private removeDataBarApplyCacheForCells cells =
+    let entries = dataBarApplyCacheWithoutCells cells
+    if not (obj.ReferenceEquals(entries, dataBarApplyCache)) then
+        setDataBarApplyCache entries
+
+let private iconSetApplyCacheWithoutCells cells =
     let mutable cached = Unchecked.defaultof<IconSetApplyCache>
     if iconSetApplyCacheByCells.TryGetValue(cells, &cached) then
         iconSetApplyCache
         |> List.filter (iconSetApplyCacheMatches cells >> not)
-        |> setIconSetApplyCache
+    else
+        iconSetApplyCache
 
-let private removeColorScaleApplyCacheForCells cells =
+let private removeIconSetApplyCacheForCells cells =
+    let entries = iconSetApplyCacheWithoutCells cells
+    if not (obj.ReferenceEquals(entries, iconSetApplyCache)) then
+        setIconSetApplyCache entries
+
+let private colorScaleApplyCacheWithoutCells cells =
     let mutable cached = Unchecked.defaultof<ColorScaleApplyCache>
     if colorScaleApplyCacheByCells.TryGetValue(cells, &cached) then
         colorScaleApplyCache
         |> List.filter (colorScaleApplyCacheMatches cells >> not)
-        |> setColorScaleApplyCache
+    else
+        colorScaleApplyCache
+
+let private removeColorScaleApplyCacheForCells cells =
+    let entries = colorScaleApplyCacheWithoutCells cells
+    if not (obj.ReferenceEquals(entries, colorScaleApplyCache)) then
+        setColorScaleApplyCache entries
 
 let private dataBarApplyCacheRetainable (cached: DataBarApplyCache) =
     cached.Entries.Count > 0
@@ -6508,8 +6526,7 @@ let private rememberDataBarApplyCache cached =
                         loop keptCount keptCells keptSourceTextChars keptKeyChars acc tail
             loop 0 0 0 0 [] entries
         (cached
-         :: (dataBarApplyCache
-             |> List.filter (dataBarApplyCacheMatches cached.Cells >> not)))
+         :: dataBarApplyCacheWithoutCells cached.Cells)
         |> trim
         |> setDataBarApplyCache
 
@@ -6533,8 +6550,7 @@ let private rememberIconSetApplyCache cached =
                         loop keptCount keptCells keptSourceTextChars acc tail
             loop 0 0 0 [] entries
         (cached
-         :: (iconSetApplyCache
-             |> List.filter (iconSetApplyCacheMatches cached.Cells >> not)))
+         :: iconSetApplyCacheWithoutCells cached.Cells)
         |> trim
         |> setIconSetApplyCache
 
@@ -6566,8 +6582,7 @@ let private rememberColorScaleApplyCache cached =
                         loop keptCount keptCells keptSourceTextChars keptKeyChars acc tail
             loop 0 0 0 0 [] entries
         (cached
-         :: (colorScaleApplyCache
-             |> List.filter (colorScaleApplyCacheMatches cached.Cells >> not)))
+         :: colorScaleApplyCacheWithoutCells cached.Cells)
         |> trim
         |> setColorScaleApplyCache
 

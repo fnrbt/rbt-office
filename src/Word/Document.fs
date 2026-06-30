@@ -6529,6 +6529,13 @@ type private FieldPresenceCache = {
     RequiresPageMap: bool
 }
 
+type private FieldPresenceScan = {
+    ScanSourceParagraphCount: int
+    ScanSourceTextCharCount: int
+    ScanHasFields: bool
+    ScanRequiresPageMap: bool
+}
+
 let mutable private fieldPresenceCache: FieldPresenceCache list = []
 let private fieldPresenceCacheByBlocks = Dictionary<Block list, FieldPresenceCache>(documentInfoBlocksComparer)
 let private fieldPresenceFastSlots = Array.zeroCreate<FieldPresenceCache> 256
@@ -6613,14 +6620,30 @@ let private fieldCodeRequiresPageMap code =
     | "TOC" :: _ -> true
     | _ -> false
 
-let private documentFieldRefreshRequirements doc =
-    match tryGetFieldPresenceCache doc.Blocks with
-    | ValueSome cached ->
-        struct (cached.HasFields, cached.RequiresPageMap)
-    | ValueNone ->
-        let mutable hasFields = false
-        let mutable requiresPageMap = false
-        iterEditableParagraphsUntil doc (fun para ->
+let private scanFieldPresence doc =
+    let maxSourceParagraphs = fieldPresenceCacheMaxTotalSourceParagraphs
+    let maxSourceTextChars = fieldPresenceCacheMaxTotalSourceTextChars
+    let maxVisitedItems = sourceStructureVisitedItemLimit maxSourceParagraphs
+    let sourceTextLimit = documentSourceTextCacheMaxTotalChars + 1
+    let mutable sourceParagraphCount = 0
+    let mutable sourceTextCharCount = 0
+    let mutable visitedItems = 0
+    let mutable hasFields = false
+    let mutable requiresPageMap = false
+
+    let canCountSource () =
+        sourceParagraphCount <= maxSourceParagraphs
+        && sourceTextCharCount <= maxSourceTextChars
+        && visitedItems <= maxVisitedItems
+
+    let visitSourceItem () =
+        visitedItems <- visitedItems + 1
+
+    let addSourceText value =
+        sourceTextCharCount <- documentAddCapped sourceTextCharCount value
+
+    let scanParagraphFields para =
+        if not requiresPageMap then
             let mutable remaining = para.Buffer.Runs
             while not requiresPageMap && not remaining.IsEmpty do
                 match remaining with
@@ -6635,20 +6658,115 @@ let private documentFieldRefreshRequirements doc =
                 | _ :: tail ->
                     remaining <- tail
                 | [] -> ()
-            not requiresPageMap)
-        let sourceParagraphCount = countSourceParagraphs doc.Blocks
+
+    let addParagraph scanFields para =
+        if canCountSource () then
+            visitSourceItem ()
+            sourceParagraphCount <- sourceParagraphCount + 1
+            addSourceText (documentParagraphSourceTextCharCount para)
+        if scanFields then
+            scanParagraphFields para
+
+    let addParagraphs scanFields (paragraphs: ParagraphBlock list) =
+        let mutable remaining = paragraphs
+        while not remaining.IsEmpty do
+            match remaining with
+            | paragraph :: tail ->
+                addParagraph scanFields paragraph
+                remaining <- tail
+            | [] -> ()
+
+    let addTable table =
+        let stack = Stack<TableBlock * bool>()
+        stack.Push((table, true))
+        while stack.Count > 0 do
+            let table, scanTableFields = stack.Pop()
+            if scanTableFields || canCountSource () then
+                if canCountSource () then
+                    visitSourceItem ()
+                    addSourceText (documentTableStringCharCount table)
+                let mutable rows = table.Rows
+                while not rows.IsEmpty do
+                    match rows with
+                    | row :: rowTail ->
+                        if scanTableFields || canCountSource () then
+                            if canCountSource () then
+                                visitSourceItem ()
+                                addSourceText (documentTableRowStringCharCount row)
+                            let mutable cells = row.Cells
+                            while not cells.IsEmpty do
+                                match cells with
+                                | cell :: cellTail ->
+                                    if scanTableFields || canCountSource () then
+                                        if canCountSource () then
+                                            visitSourceItem ()
+                                            addSourceText (documentTableCellStringCharCount cell)
+                                        addParagraphs scanTableFields cell.Content
+                                        let mutable nestedTables = cell.NestedTables
+                                        while not nestedTables.IsEmpty do
+                                            match nestedTables with
+                                            | nestedTable :: nestedTail ->
+                                                stack.Push((nestedTable, false))
+                                                nestedTables <- nestedTail
+                                            | [] -> ()
+                                    cells <- cellTail
+                                | [] -> ()
+                        rows <- rowTail
+                    | [] -> ()
+
+    let mutable remainingBlocks = doc.Blocks
+    while not remainingBlocks.IsEmpty do
+        match remainingBlocks with
+        | block :: tail ->
+            match block with
+            | Paragraph paragraph
+            | Heading (_, paragraph) ->
+                addParagraph true paragraph
+            | Table table ->
+                addTable table
+            | TextBox textBox ->
+                if canCountSource () then
+                    visitSourceItem ()
+                    addSourceText (documentTextBoxStringCharCount textBox)
+                addParagraphs true textBox.Content
+            remainingBlocks <- tail
+        | [] -> ()
+
+    let sourceParagraphCount =
+        if visitedItems > maxVisitedItems
+           || sourceStructureOverwhelmsParagraphs maxSourceParagraphs sourceParagraphCount visitedItems then
+            maxSourceParagraphs + 1
+        else
+            min sourceParagraphCount (maxSourceParagraphs + 1)
+
+    let sourceTextCharCount =
+        if sourceParagraphCount > maxSourceParagraphs
+           || visitedItems > maxVisitedItems then
+            sourceTextLimit
+        else
+            min sourceTextCharCount sourceTextLimit
+
+    {
+        ScanSourceParagraphCount = sourceParagraphCount
+        ScanSourceTextCharCount = sourceTextCharCount
+        ScanHasFields = hasFields
+        ScanRequiresPageMap = requiresPageMap
+    }
+
+let private documentFieldRefreshRequirements doc =
+    match tryGetFieldPresenceCache doc.Blocks with
+    | ValueSome cached ->
+        struct (cached.HasFields, cached.RequiresPageMap)
+    | ValueNone ->
+        let scan = scanFieldPresence doc
         rememberFieldPresence {
             SourceBlocks = doc.Blocks
-            SourceParagraphCount = sourceParagraphCount
-            SourceTextCharCount =
-                documentBlocksSourceTextCharCountFor
-                    fieldPresenceCacheMaxTotalSourceParagraphs
-                    sourceParagraphCount
-                    doc.Blocks
-            HasFields = hasFields
-            RequiresPageMap = requiresPageMap
+            SourceParagraphCount = scan.ScanSourceParagraphCount
+            SourceTextCharCount = scan.ScanSourceTextCharCount
+            HasFields = scan.ScanHasFields
+            RequiresPageMap = scan.ScanRequiresPageMap
         }
-        struct (hasFields, requiresPageMap)
+        struct (scan.ScanHasFields, scan.ScanRequiresPageMap)
 
 let private emptyPageMap = {
     PageCount = 1
