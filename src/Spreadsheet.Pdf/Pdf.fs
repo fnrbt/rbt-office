@@ -41,18 +41,34 @@ type RenderOptions = {
 
 /// Convert "#RRGGBB" / "RRGGBB" to a PDF RGB color in 0..1.
 let private parseHexColor (color: string) : PdfColor.Color =
-    let s = if color.StartsWith "#" then color.Substring 1 else color
-    let clean = if s.Length = 8 then s.Substring 2 else s
-    if clean.Length <> 6 then PdfColor.black
+    let hexDigit ch =
+        if ch >= '0' && ch <= '9' then int ch - int '0'
+        elif ch >= 'A' && ch <= 'F' then int ch - int 'A' + 10
+        elif ch >= 'a' && ch <= 'f' then int ch - int 'a' + 10
+        else -1
+    let byteAt index =
+        let hi = hexDigit color.[index]
+        let lo = hexDigit color.[index + 1]
+        if hi < 0 || lo < 0 then ValueNone else ValueSome ((hi <<< 4) ||| lo)
+    let start = if color.Length > 0 && color.[0] = '#' then 1 else 0
+    let length = color.Length - start
+    let first = if length = 8 then start + 2 else start
+    if length <> 6 && length <> 8 then PdfColor.black
     else
-        let byteOf (h: string) =
-            try float (Convert.ToByte(h, 16)) / 255.0 with _ -> 0.0
-        PdfColor.rgb (byteOf (clean.Substring(0, 2))) (byteOf (clean.Substring(2, 2))) (byteOf (clean.Substring(4, 2)))
+        match byteAt first, byteAt (first + 2), byteAt (first + 4) with
+        | ValueSome r, ValueSome g, ValueSome b -> PdfColor.rgb (float r / 255.0) (float g / 255.0) (float b / 255.0)
+        | _ -> PdfColor.black
 
 /// CSS pixels → PDF points. Excel widths flow in CSS px (1 px = 72/96 pt).
 let private pxToPt = 72.0 / 96.0
 
 let private px (v: float) = v * pxToPt
+
+let private resizeArrayToList (items: ResizeArray<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
 
 /// Pick the loaded TTF for the cell's (family, bold, italic) triple. Falls
 /// back to the family's regular weight, then to the default family's regular.
@@ -72,27 +88,40 @@ let private pickFace (options: RenderOptions) (familyName: string option) (bold:
 /// `faceByName` carries the parsed TrueTypeFont for each loaded face.
 let private pickCjkFallback
     (chain: FontFace list)
-    (faceByName: Map<string, PdfFont.TrueTypeFont>)
+    (tryGetFace: FontFace -> PdfFont.TrueTypeFont option)
     (bold: bool)
     (cp: int)
     : (FontFace * PdfFont.TrueTypeFont) option =
-    chain
-    |> List.filter (fun f -> f.Bold = bold || not (chain |> List.exists (fun g -> g.Bold = bold)))
-    |> List.tryPick (fun f ->
-        match Map.tryFind f.FaceName faceByName with
-        | Some ttf when ttf.Cmap.ContainsKey cp -> Some (f, ttf)
-        | _ -> None)
+    let hasRequestedWeight = chain |> List.exists (fun f -> f.Bold = bold)
+    let rec loop remaining =
+        match remaining with
+        | [] -> None
+        | f :: rest ->
+            if hasRequestedWeight && f.Bold <> bold then loop rest
+            else
+                match tryGetFace f with
+                | Some ttf when ttf.Cmap.ContainsKey cp -> Some (f, ttf)
+                | _ -> loop rest
+    loop chain
 
-/// Split `text` into contiguous (font, substring) segments where each
-/// substring's codepoints are covered by `font`'s cmap. Falls back through
-/// `cjk` for missing glyphs; uses `primary` for anything `primary` itself
-/// covers (and as a last resort when no fallback covers a codepoint).
-/// Mirrors SpreadsheetGrid.toRendererCommands so PDF and PNG outputs draw
-/// the same glyph stream for mixed-script text.
-let private segmentByFont
+let private fontCoversAllText (ttf: PdfFont.TrueTypeFont) (text: string) =
+    let mutable covered = true
+    let mutable i = 0
+    while covered && i < text.Length do
+        let ch = text.[i]
+        let cp, width =
+            if System.Char.IsHighSurrogate ch && i + 1 < text.Length && System.Char.IsLowSurrogate text.[i + 1] then
+                System.Char.ConvertToUtf32(ch, text.[i + 1]), 2
+            else int ch, 1
+        if not (ttf.Cmap.ContainsKey cp) then
+            covered <- false
+        i <- i + width
+    covered
+
+let private segmentMixedByFont
     (primary: FontFace * PdfFont.TrueTypeFont)
     (cjk: FontFace list)
-    (faceByName: Map<string, PdfFont.TrueTypeFont>)
+    (tryGetFace: FontFace -> PdfFont.TrueTypeFont option)
     (bold: bool)
     (text: string)
     : ((FontFace * PdfFont.TrueTypeFont) * string) list =
@@ -100,7 +129,7 @@ let private segmentByFont
     let fontFor cp =
         if primaryTtf.Cmap.ContainsKey cp then primary
         else
-            match pickCjkFallback cjk faceByName bold cp with
+            match pickCjkFallback cjk tryGetFace bold cp with
             | Some hit -> hit
             | None -> primary
     let result = System.Collections.Generic.List<(FontFace * PdfFont.TrueTypeFont) * string>()
@@ -126,7 +155,35 @@ let private segmentByFont
     match currentFace with
     | ValueSome f when buf.Length > 0 -> result.Add(f, buf.ToString())
     | _ -> ()
-    List.ofSeq result
+    resizeArrayToList result
+
+/// Split `text` into contiguous (font, substring) segments where each
+/// substring's codepoints are covered by `font`'s cmap. Falls back through
+/// `cjk` for missing glyphs; uses `primary` for anything `primary` itself
+/// covers (and as a last resort when no fallback covers a codepoint).
+/// Mirrors SpreadsheetGrid.toRendererCommands so PDF and PNG outputs draw
+/// the same glyph stream for mixed-script text.
+let private segmentByFont
+    (primary: FontFace * PdfFont.TrueTypeFont)
+    (cjk: FontFace list)
+    (tryGetFace: FontFace -> PdfFont.TrueTypeFont option)
+    (bold: bool)
+    (text: string)
+    : ((FontFace * PdfFont.TrueTypeFont) * string) list =
+    if text.Length = 0 then []
+    elif List.isEmpty cjk || fontCoversAllText (snd primary) text then [ primary, text ]
+    else segmentMixedByFont primary cjk tryGetFace bold text
+
+let private hexDigits = "0123456789ABCDEF".ToCharArray()
+
+let private appendHex4 (sb: System.Text.StringBuilder) value =
+    if value >= 0 && value <= 0xFFFF then
+        sb.Append(hexDigits.[(value >>> 12) &&& 0xF]) |> ignore
+        sb.Append(hexDigits.[(value >>> 8) &&& 0xF]) |> ignore
+        sb.Append(hexDigits.[(value >>> 4) &&& 0xF]) |> ignore
+        sb.Append(hexDigits.[value &&& 0xF]) |> ignore
+    else
+        sb.Append(value.ToString("X")) |> ignore
 
 /// Re-encode a substring as hex glyph IDs, applying a per-face subset
 /// remap when present. With an empty remap (face was full-embedded), the
@@ -134,15 +191,24 @@ let private segmentByFont
 /// translated to the post-subset numbering; missing entries collapse to
 /// GID 0 (.notdef), which prints as a missing-glyph box.
 let private toRemappedHex (ttf: PdfFont.TrueTypeFont) (remap: Map<int, int>) (text: string) =
-    let sb = System.Text.StringBuilder()
+    let sb = System.Text.StringBuilder(text.Length * 4)
     let isEmpty = Map.isEmpty remap
     for ch in text do
-        let origGid = ttf.Cmap.TryFind (int ch) |> Option.defaultValue 0
+        let origGid =
+            match ttf.Cmap.TryFind (int ch) with
+            | Some gid -> gid
+            | None -> 0
         let gid =
             if isEmpty then origGid
-            else remap.TryFind origGid |> Option.defaultValue 0
-        sb.AppendFormat("{0:X4}", gid) |> ignore
+            else
+                match remap.TryFind origGid with
+                | Some mapped -> mapped
+                | None -> 0
+        appendHex4 sb gid
     sb.ToString()
+
+let private tryGetMappedFace (faceByName: Map<string, PdfFont.TrueTypeFont>) (face: FontFace) =
+    Map.tryFind face.FaceName faceByName
 
 /// Page placement: where this page's content sits on the paper, what the
 /// page is sized at, and how content is scaled. translateItem bakes all
@@ -167,6 +233,184 @@ let private bwFill (bw: bool) (color: string) =
 
 let private bwStroke (bw: bool) (color: string) =
     if bw then "#000000" else color
+
+[<Struct>]
+type private HeaderFooterSegment = {
+    Face: FontFace
+    Ttf: PdfFont.TrueTypeFont
+    Text: string
+    WidthPt: float
+    FontSizePt: float
+    Color: string option
+    Underline: bool
+    DoubleUnderline: bool
+    Strikethrough: bool
+    BaselineDeltaPt: float
+}
+
+let private appendDrawTextOps
+    (options: RenderOptions)
+    (faceByName: Map<string, PdfFont.TrueTypeFont>)
+    (faceRemap: Map<string, Map<int, int>>)
+    (placement: Placement)
+    (ops: ResizeArray<PdfDraw.DrawOp>)
+    (t: PaintText) =
+    match pickFace options t.FontName t.Bold t.Italic with
+    | None -> ()
+    | Some primaryFace ->
+        match Map.tryFind primaryFace.FaceName faceByName with
+        | None -> ()
+        | Some primaryTtf ->
+            let sz v = v * pxToPt * placement.Scale
+            let xPt x = placement.LeftPtOffset + sz x
+            let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
+            // PaintText.FontSize is stored in points. Draw in PDF points,
+            // but use CSS-pixel metrics for layout because cell geometry is
+            // still page-local CSS px before translateItem applies pxToPt.
+            let fontPx = t.FontSize * 96.0 / 72.0
+            let fontSizePt = t.FontSize * placement.Scale
+            let singlePrimarySegment =
+                t.Text.Length > 0
+                && (List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf t.Text)
+            let segments =
+                if singlePrimarySegment then []
+                else segmentMixedByFont (primaryFace, primaryTtf) options.CjkFallback (tryGetMappedFace faceByName) t.Bold t.Text
+            let segmentWidthScale (ttf: PdfFont.TrueTypeFont) s =
+                float (PdfFont.getTextWidth ttf s) / float ttf.UnitsPerEm
+            let mutable totalWidthPt = 0.0
+            let mutable totalWidthPx = 0.0
+            if singlePrimarySegment then
+                let widthScale = segmentWidthScale primaryTtf t.Text
+                totalWidthPt <- totalWidthPt + widthScale * fontSizePt
+                totalWidthPx <- totalWidthPx + widthScale * fontPx
+            else
+                for (face, s) in segments do
+                    let ttf = snd face
+                    let widthScale = segmentWidthScale ttf s
+                    totalWidthPt <- totalWidthPt + widthScale * fontSizePt
+                    totalWidthPx <- totalWidthPx + widthScale * fontPx
+            let rectXPt = xPt t.Rect.X
+            let rectWidthPt = sz t.Rect.Width
+            let alignedXPt =
+                match t.Align with
+                | AlignLeft -> rectXPt
+                | AlignCenter -> rectXPt + (rectWidthPt - totalWidthPt) / 2.0
+                | AlignRight -> rectXPt + rectWidthPt - totalWidthPt
+            // Baseline from the primary font's win-metrics so a Calibri
+            // line with embedded CJK glyphs doesn't jitter when fallback
+            // ascents differ. Mirrors SpreadsheetGrid.toRendererCommands.
+            let scaleY = fontPx / float primaryTtf.UnitsPerEm
+            let ascent = float primaryTtf.WinAscent * scaleY
+            let descent = float primaryTtf.WinDescent * scaleY
+            let lineHeight = ascent + descent
+            let blockHeight = lineHeight * float t.LineCount
+            let blockTopY =
+                match t.VerticalAlign with
+                | VAlignTop -> t.Rect.Y
+                | VAlignMiddle -> t.Rect.Y + (t.Rect.Height - blockHeight) / 2.0
+                | VAlignBottom -> t.Rect.Y + t.Rect.Height - blockHeight
+            // Super/subscript shifts the baseline relative to the
+            // line's normal baseline. BaselineShift is page-local CSS px;
+            // yPdf converts it to PDF coords together with the baseline.
+            let baselineY = blockTopY + float t.LineIndex * lineHeight + ascent + t.BaselineShift
+            let textColor = parseHexColor (bwStroke placement.BlackAndWhite t.Color)
+            // Cell-text rotation (Excel `<alignment textRotation>`).
+            // 0 = horizontal, 1..90 = CCW degrees, 91..180 = CW degrees
+            // encoded as 90 + |angle|, 255 = stacked. We treat stacked
+            // as 0 here (per-glyph stacking would need a separate emit
+            // loop); 1..180 rotates the text around its anchor.
+            let useRotation = t.Rotation > 0 && t.Rotation <> 255
+            let angleRad =
+                if not useRotation then 0.0
+                elif t.Rotation <= 90 then float t.Rotation * System.Math.PI / 180.0
+                else -(float (t.Rotation - 90)) * System.Math.PI / 180.0
+            let cosT = if useRotation then System.Math.Cos angleRad else 1.0
+            let sinT = if useRotation then System.Math.Sin angleRad else 0.0
+            // Rotated-text placement, matching the native renderer + Excel
+            // (rule derived from tools/excel-parity/build-rotation-sweep.vbs):
+            // rotate the run about its baseline start, then position the
+            // rotated bounding box - RIGHT-aligned when 90 <= textRotation <
+            // 180, else LEFT-aligned, always BOTTOM-aligned. Computed in
+            // CSS px (y-down) then converted; the glyph loop below extends
+            // the run along the PDF (y-up) rotation from this anchor.
+            let anchorXPt, anchorYPt =
+                if not useRotation then alignedXPt, yPdf baselineY
+                else
+                    let thetaS =
+                        if t.Rotation <= 90 then -(float t.Rotation) * System.Math.PI / 180.0
+                        else float (t.Rotation - 90) * System.Math.PI / 180.0
+                    let cosS, sinS = System.Math.Cos thetaS, System.Math.Sin thetaS
+                    let ax0 = t.Rect.X + 4.0
+                    let ay0 = t.Rect.Y + t.Rect.Height - 2.0
+                    let rotPt x y =
+                        let dx, dy = x - ax0, y - ay0
+                        ax0 + dx * cosS - dy * sinS, ay0 + dx * sinS + dy * cosS
+                    let c1x, c1y = rotPt ax0 (ay0 - ascent)
+                    let c2x, c2y = rotPt (ax0 + totalWidthPx) (ay0 - ascent)
+                    let c3x, c3y = rotPt ax0 (ay0 + descent)
+                    let c4x, c4y = rotPt (ax0 + totalWidthPx) (ay0 + descent)
+                    let minX = min (min c1x c2x) (min c3x c4x)
+                    let maxX = max (max c1x c2x) (max c3x c4x)
+                    let maxY = max (max c1y c2y) (max c3y c4y)
+                    let rightAlign = t.Rotation >= 90 && t.Rotation < 180
+                    let shiftX =
+                        if rightAlign then (t.Rect.X + t.Rect.Width - 2.0) - maxX
+                        else (t.Rect.X + 2.0) - minX
+                    let shiftY = (t.Rect.Y + t.Rect.Height - 2.0) - maxY
+                    xPt (ax0 + shiftX), yPdf (ay0 + shiftY)
+            ops.Add PdfDraw.BeginText
+            ops.Add(PdfDraw.SetFillColor textColor)
+            let emitTextSegment faceName ttf s cumWidthPt =
+                let remap =
+                    match faceRemap.TryFind faceName with
+                    | Some found -> found
+                    | None -> Map.empty
+                let hex = toRemappedHex ttf remap s
+                ops.Add(PdfDraw.SetFont (faceName, fontSizePt))
+                // Position this segment's anchor in PDF coords.
+                // Without rotation: anchor + (cumWidth, 0).
+                // With rotation: anchor + cumWidth * (cos theta, sin theta).
+                let xAt = anchorXPt + cosT * cumWidthPt
+                let yAt = anchorYPt + sinT * cumWidthPt
+                ops.Add(PdfDraw.TextMatrix (cosT, sinT, -sinT, cosT, xAt, yAt))
+                ops.Add(PdfDraw.ShowTextHex hex)
+            let mutable cumWidthPt = 0.0
+            if singlePrimarySegment then
+                emitTextSegment primaryFace.FaceName primaryTtf t.Text 0.0
+            else
+                let mutable remainingSegments = segments
+                while not (List.isEmpty remainingSegments) do
+                    let face, s, nextSegments =
+                        match remainingSegments with
+                        | (face, s) :: rest -> face, s, rest
+                        | [] -> failwith "unreachable"
+                    let faceInfo, ttf = face
+                    emitTextSegment faceInfo.FaceName ttf s cumWidthPt
+                    if not (List.isEmpty nextSegments) then
+                        cumWidthPt <- cumWidthPt + segmentWidthScale ttf s * fontSizePt
+                    remainingSegments <- nextSegments
+            ops.Add PdfDraw.EndText
+            if t.Underline && totalWidthPt > 0.0 then
+                let underlineY = baselineY + max 1.0 (t.FontSize * 0.08)
+                ops.Add(PdfDraw.SetStrokeColor textColor)
+                ops.Add(PdfDraw.SetLineWidth (sz 1.0))
+                ops.Add(PdfDraw.SetDash ([], 0.0))
+                ops.Add(PdfDraw.MoveTo (alignedXPt, yPdf underlineY))
+                ops.Add(PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf underlineY))
+                ops.Add PdfDraw.Stroke
+                if t.UnderlineDouble then
+                    let underlineY2 = underlineY + max 2.0 (t.FontSize * 0.12)
+                    ops.Add(PdfDraw.MoveTo (alignedXPt, yPdf underlineY2))
+                    ops.Add(PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf underlineY2))
+                    ops.Add PdfDraw.Stroke
+            if t.Strikethrough && totalWidthPt > 0.0 then
+                let strikeY = baselineY - t.FontSize * 0.28
+                ops.Add(PdfDraw.SetStrokeColor textColor)
+                ops.Add(PdfDraw.SetLineWidth (sz 1.0))
+                ops.Add(PdfDraw.SetDash ([], 0.0))
+                ops.Add(PdfDraw.MoveTo (alignedXPt, yPdf strikeY))
+                ops.Add(PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf strikeY))
+                ops.Add PdfDraw.Stroke
 
 /// Convert one Paint item into a list of PDF draw ops. Coordinates flip from
 /// our top-left CSS-pixel space into PDF's bottom-left point space, with the
@@ -233,170 +477,69 @@ let private translateItem (options: RenderOptions) (faceByName: Map<string, PdfF
           PdfDraw.LineTo (xPt x2, yPdf y2)
           PdfDraw.Stroke ]
     | DrawText t ->
-        match pickFace options t.FontName t.Bold t.Italic with
-        | None -> []
-        | Some primaryFace ->
-            match Map.tryFind primaryFace.FaceName faceByName with
-            | Some primaryTtf ->
-                // PaintText.FontSize is stored in points. Draw in PDF points,
-                // but use CSS-pixel metrics for layout because cell geometry is
-                // still page-local CSS px before translateItem applies pxToPt.
-                let fontPx = t.FontSize * 96.0 / 72.0
-                let fontSizePt = t.FontSize * placement.Scale
-                let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback faceByName t.Bold t.Text
-                // Width in pt for each segment (uses its own font's UPM).
-                let segWidthPt (ttf: PdfFont.TrueTypeFont) (s: string) =
-                    float (PdfFont.getTextWidth ttf s) / float ttf.UnitsPerEm * fontSizePt
-                let segmentsWithWidth =
-                    segments |> List.map (fun (face, s) -> face, s, segWidthPt (snd face) s)
-                let totalWidthPt = segmentsWithWidth |> List.sumBy (fun (_, _, w) -> w)
-                let rectXPt = xPt t.Rect.X
-                let rectWidthPt = sz t.Rect.Width
-                let alignedXPt =
-                    match t.Align with
-                    | AlignLeft -> rectXPt
-                    | AlignCenter -> rectXPt + (rectWidthPt - totalWidthPt) / 2.0
-                    | AlignRight -> rectXPt + rectWidthPt - totalWidthPt
-                // Baseline from the primary font's win-metrics so a Calibri
-                // line with embedded CJK glyphs doesn't jitter when fallback
-                // ascents differ. Mirrors SpreadsheetGrid.toRendererCommands.
-                let scaleY = fontPx / float primaryTtf.UnitsPerEm
-                let ascent = float primaryTtf.WinAscent * scaleY
-                let descent = float primaryTtf.WinDescent * scaleY
-                let lineHeight = ascent + descent
-                let blockHeight = lineHeight * float t.LineCount
-                let blockTopY =
-                    match t.VerticalAlign with
-                    | VAlignTop -> t.Rect.Y
-                    | VAlignMiddle -> t.Rect.Y + (t.Rect.Height - blockHeight) / 2.0
-                    | VAlignBottom -> t.Rect.Y + t.Rect.Height - blockHeight
-                // Super/subscript shifts the baseline relative to the
-                // line's normal baseline. BaselineShift is page-local CSS px;
-                // yPdf converts it to PDF coords together with the baseline.
-                // No explicit nudge: the OS/2 winAscent metric maps directly
-                // to Excel's print baseline for the common Calibri 11
-                // workbooks (synthetic-print + header/footer fixtures all
-                // saw row-text drop into pixel alignment when we removed
-                // the historical -2.0 fudge from the earlier renderer).
-                // A residual ~1 px drift remains for some Calibri 12 cells
-                // (pandas-test1 col-B numbers, ~+0.3 body MAE), but the
-                // net MAE across the 8 print fixtures drops from 30.95 to
-                // 29.16 vs the fudged baseline.
-                let baselineY = blockTopY + float t.LineIndex * lineHeight + ascent + t.BaselineShift
-                let textColor = parseHexColor (bwStroke placement.BlackAndWhite t.Color)
-                // Cell-text rotation (Excel `<alignment textRotation>`).
-                // 0 = horizontal, 1..90 = CCW degrees, 91..180 = CW degrees
-                // encoded as 90 + |angle|, 255 = stacked. We treat stacked
-                // as 0 here (per-glyph stacking would need a separate emit
-                // loop); 1..180 rotates the text around its anchor.
-                let useRotation = t.Rotation > 0 && t.Rotation <> 255
-                let angleRad =
-                    if not useRotation then 0.0
-                    elif t.Rotation <= 90 then float t.Rotation * System.Math.PI / 180.0
-                    else -(float (t.Rotation - 90)) * System.Math.PI / 180.0
-                let cosT = if useRotation then System.Math.Cos angleRad else 1.0
-                let sinT = if useRotation then System.Math.Sin angleRad else 0.0
-                // Rotated-text placement, matching the native renderer + Excel
-                // (rule derived from tools/excel-parity/build-rotation-sweep.vbs):
-                // rotate the run about its baseline start, then position the
-                // rotated bounding box — RIGHT-aligned when 90 ≤ textRotation <
-                // 180, else LEFT-aligned, always BOTTOM-aligned. Computed in
-                // CSS px (y-down) then converted; the glyph loop below extends
-                // the run along the PDF (y-up) rotation from this anchor.
-                let anchorXPt, anchorYPt =
-                    if not useRotation then alignedXPt, yPdf baselineY
-                    else
-                        let thetaS =
-                            if t.Rotation <= 90 then -(float t.Rotation) * System.Math.PI / 180.0
-                            else float (t.Rotation - 90) * System.Math.PI / 180.0
-                        let cosS, sinS = System.Math.Cos thetaS, System.Math.Sin thetaS
-                        let totalWidthPx =
-                            segments
-                            |> List.sumBy (fun (face, s) ->
-                                float (PdfFont.getTextWidth (snd face) s) / float (snd face).UnitsPerEm * fontPx)
-                        let ax0 = t.Rect.X + 4.0
-                        let ay0 = t.Rect.Y + t.Rect.Height - 2.0
-                        let rotPt x y =
-                            let dx, dy = x - ax0, y - ay0
-                            ax0 + dx * cosS - dy * sinS, ay0 + dx * sinS + dy * cosS
-                        let corners =
-                            [ rotPt ax0 (ay0 - ascent)
-                              rotPt (ax0 + totalWidthPx) (ay0 - ascent)
-                              rotPt ax0 (ay0 + descent)
-                              rotPt (ax0 + totalWidthPx) (ay0 + descent) ]
-                        let minX = corners |> List.map fst |> List.min
-                        let maxX = corners |> List.map fst |> List.max
-                        let maxY = corners |> List.map snd |> List.max
-                        let rightAlign = t.Rotation >= 90 && t.Rotation < 180
-                        let shiftX =
-                            if rightAlign then (t.Rect.X + t.Rect.Width - 2.0) - maxX
-                            else (t.Rect.X + 2.0) - minX
-                        let shiftY = (t.Rect.Y + t.Rect.Height - 2.0) - maxY
-                        xPt (ax0 + shiftX), yPdf (ay0 + shiftY)
-                let glyphCmds =
-                    [ yield PdfDraw.BeginText
-                      yield PdfDraw.SetFillColor textColor
-                      let mutable cumWidthPt = 0.0
-                      for (face, s, w) in segmentsWithWidth do
-                          let faceName = (fst face).FaceName
-                          let _, ttf = face
-                          let remap = faceRemap.TryFind faceName |> Option.defaultValue Map.empty
-                          let hex = toRemappedHex ttf remap s
-                          yield PdfDraw.SetFont (faceName, fontSizePt)
-                          // Position this segment's anchor in PDF coords.
-                          // Without rotation: anchor + (cumWidth, 0).
-                          // With rotation: anchor + cumWidth × (cosθ, sinθ).
-                          let xAt = anchorXPt + cosT * cumWidthPt
-                          let yAt = anchorYPt + sinT * cumWidthPt
-                          yield PdfDraw.TextMatrix (cosT, sinT, -sinT, cosT, xAt, yAt)
-                          yield PdfDraw.ShowTextHex hex
-                          cumWidthPt <- cumWidthPt + w
-                      yield PdfDraw.EndText ]
-                let underlineCmds =
-                    if t.Underline && totalWidthPt > 0.0 then
-                        let underlineY = baselineY + max 1.0 (t.FontSize * 0.08)
-                        let single =
-                            [ PdfDraw.SetStrokeColor textColor
-                              PdfDraw.SetLineWidth (sz 1.0)
-                              PdfDraw.SetDash ([], 0.0)
-                              PdfDraw.MoveTo (alignedXPt, yPdf underlineY)
-                              PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf underlineY)
-                              PdfDraw.Stroke ]
-                        if t.UnderlineDouble then
-                            // Second parallel stroke ~2 pt below the first.
-                            let underlineY2 = underlineY + max 2.0 (t.FontSize * 0.12)
-                            single @
-                            [ PdfDraw.MoveTo (alignedXPt, yPdf underlineY2)
-                              PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf underlineY2)
-                              PdfDraw.Stroke ]
-                        else single
-                    else []
-                let strikeCmds =
-                    if t.Strikethrough && totalWidthPt > 0.0 then
-                        let strikeY = baselineY - t.FontSize * 0.28
-                        [ PdfDraw.SetStrokeColor textColor
-                          PdfDraw.SetLineWidth (sz 1.0)
-                          PdfDraw.SetDash ([], 0.0)
-                          PdfDraw.MoveTo (alignedXPt, yPdf strikeY)
-                          PdfDraw.LineTo (alignedXPt + totalWidthPt, yPdf strikeY)
-                          PdfDraw.Stroke ]
-                    else []
-                glyphCmds @ underlineCmds @ strikeCmds
-            | _ -> []
+        let ops = ResizeArray<PdfDraw.DrawOp>()
+        appendDrawTextOps options faceByName faceRemap placement ops t
+        resizeArrayToList ops
 
-/// Sum of column widths in an inclusive range.
-let private colSumPx (model: SpreadsheetModel) (startInc: int) (endInc: int) =
-    let mutable s = 0.0
-    for c in startInc .. endInc do
-        s <- s + (Map.tryFind c model.ColumnWidths |> Option.defaultValue 100.0)
-    s
+let private appendTranslatedItem (options: RenderOptions) (faceByName: Map<string, PdfFont.TrueTypeFont>) (faceResource: Map<string, string>) (faceRemap: Map<string, Map<int, int>>) (placement: Placement) (ops: ResizeArray<PdfDraw.DrawOp>) (item: PaintItem) =
+    let sz v = v * pxToPt * placement.Scale
+    let xPt x = placement.LeftPtOffset + sz x
+    let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
+    match item with
+    | FillRect (rect, color) ->
+        ops.Add(PdfDraw.SetFillColor (parseHexColor (bwFill placement.BlackAndWhite color)))
+        ops.Add(PdfDraw.Rect (xPt rect.X, yPdf (rect.Y + rect.Height), sz rect.Width, sz rect.Height))
+        ops.Add PdfDraw.Fill
+    | StrokeRect (rect, color, width) ->
+        ops.Add(PdfDraw.SetStrokeColor (parseHexColor (bwStroke placement.BlackAndWhite color)))
+        ops.Add(PdfDraw.SetLineWidth (sz width))
+        ops.Add(PdfDraw.SetDash ([], 0.0))
+        ops.Add(PdfDraw.Rect (xPt rect.X, yPdf (rect.Y + rect.Height), sz rect.Width, sz rect.Height))
+        ops.Add PdfDraw.Stroke
+    | GridLine (x1, y1, x2, y2, color, width) ->
+        ops.Add(PdfDraw.SetStrokeColor (parseHexColor (bwStroke placement.BlackAndWhite color)))
+        ops.Add(PdfDraw.SetLineWidth (sz width))
+        ops.Add(PdfDraw.SetDash ([], 0.0))
+        ops.Add(PdfDraw.MoveTo (xPt x1, yPdf y1))
+        ops.Add(PdfDraw.LineTo (xPt x2, yPdf y2))
+        ops.Add PdfDraw.Stroke
+    | DrawText t ->
+        appendDrawTextOps options faceByName faceRemap placement ops t
+    | _ ->
+        for op in translateItem options faceByName faceResource faceRemap placement item do
+            ops.Add op
 
-/// Sum of row heights in an inclusive range.
-let private rowSumPx (model: SpreadsheetModel) (startInc: int) (endInc: int) =
-    let mutable s = 0.0
-    for r in startInc .. endInc do
-        s <- s + (Map.tryFind r model.RowHeights |> Option.defaultValue 25.0)
-    s
+type private AxisGeometry = {
+    Size: int -> float
+    Sum: int -> int -> float
+}
+
+type private PrintGeometry = {
+    Col: AxisGeometry
+    Row: AxisGeometry
+}
+
+let private buildAxisGeometry defaultSize (sizes: Map<int, float>) maxIndex =
+    let upper = max 0 maxIndex
+    let prefix = Array.zeroCreate<float> (upper + 2)
+    for i in 0 .. upper do
+        prefix.[i + 1] <- prefix.[i] + (Map.tryFind i sizes |> Option.defaultValue defaultSize)
+    let size i =
+        if i >= 0 && i <= upper then prefix.[i + 1] - prefix.[i]
+        else Map.tryFind i sizes |> Option.defaultValue defaultSize
+    let sum startInc endInc =
+        if startInc > endInc || endInc < 0 then 0.0
+        elif startInc >= 0 && endInc <= upper then prefix.[endInc + 1] - prefix.[startInc]
+        else
+            let mutable s = 0.0
+            for i in max 0 startInc .. endInc do
+                s <- s + size i
+            s
+    { Size = size; Sum = sum }
+
+let private buildPrintGeometry (model: SpreadsheetModel) maxRow maxCol =
+    { Col = buildAxisGeometry 100.0 model.ColumnWidths maxCol
+      Row = buildAxisGeometry 25.0 model.RowHeights maxRow }
 
 /// Excel's live grid uses the floored screen MDW for explicit `<col width>`
 /// values, but its PDF print path lays those explicit widths out with the
@@ -405,20 +548,92 @@ let private rowSumPx (model: SpreadsheetModel) (startInc: int) (endInc: int) =
 /// pages. Seeded default-width columns are left alone; the default width is
 /// inferred as the most common width in the model's column map.
 /// Excel's print default for cell comments is "none" — comments don't
-/// appear in the printout regardless of the on-screen red marker. Strip
-/// `HasComment` flags from the cell formats unless `CellComments` opts in.
+/// appear in the printout regardless of the on-screen red marker. Keep the
+/// model immutable here; the print slice emitter drops the marker strokes
+/// instead of cloning large cell maps to clear `HasComment` flags.
 let private withCommentMarkersForPrint (model: SpreadsheetModel) : SpreadsheetModel =
-    match model.PageSetup.CellComments with
-    | CellCommentsAsDisplayed -> model
-    | CellCommentsNone | CellCommentsAtEnd ->
-        let cells =
-            model.Cells
-            |> Map.map (fun _ cd ->
-                if cd.Format.HasComment then { cd with Format = { cd.Format with HasComment = false } }
-                else cd)
-        { model with Cells = cells }
+    model
 
-let private withPrintColumnWidths (model: SpreadsheetModel) : SpreadsheetModel =
+let private directPrintDimensionRemapLimit = 100000
+
+let private printColumnWidthPx width =
+    let printScale = 15.0 / 14.0
+    if width <= 0.0 then width else width * printScale
+
+let private printRowHeightPx px =
+    if abs (px - 20.0) < 0.01 then 19.36      // Calibri 11 auto
+    elif abs (px - 21.0) < 0.01 then 20.64    // Calibri 12 auto
+    else px
+
+let private printDimensionBounds
+    (model: SpreadsheetModel)
+    (overlays: (int * int * float * float * PaintItem list) list) =
+    let mutable maxCol = 0
+    let mutable maxRow = 0
+    match model.PageSetup.PrintArea with
+    | Some printRange ->
+        maxCol <- max printRange.From.Col printRange.To.Col
+        maxRow <- max printRange.From.Row printRange.To.Row
+    | None ->
+        for KeyValue(addr, _) in model.Cells do
+            if addr.Col > maxCol then maxCol <- addr.Col
+            if addr.Row > maxRow then maxRow <- addr.Row
+    match model.PageSetup.RepeatCols with
+    | Some (a, b) -> maxCol <- max maxCol (max a b)
+    | None -> ()
+    match model.PageSetup.RepeatRows with
+    | Some (a, b) -> maxRow <- max maxRow (max a b)
+    | None -> ()
+    for row, col, _, _, _ in overlays do
+        maxRow <- max maxRow row
+        maxCol <- max maxCol col
+    Some maxCol, Some maxRow
+
+let private remapPrintDimensionDirect maxIndex remap (values: Map<int, float>) =
+    let mutable mapped = Map.empty
+    for index in 0 .. max 0 maxIndex do
+        match Map.tryFind index values with
+        | Some value -> mapped <- Map.add index (remap value) mapped
+        | None -> ()
+    mapped
+
+type private DirectPrintDimensionRemapCache = {
+    Source: WeakReference
+    MaxIndex: int
+    Mapped: Map<int, float>
+}
+
+let mutable private printColumnWidthDirectCache: DirectPrintDimensionRemapCache option = None
+let mutable private printRowHeightDirectCache: DirectPrintDimensionRemapCache option = None
+
+let private tryCachedPrintDimensionRemap values maxIndex cache =
+    match cache with
+    | Some cached when cached.MaxIndex = maxIndex ->
+        match cached.Source.Target with
+        | :? Map<int, float> as source when obj.ReferenceEquals(source, values) -> Some cached.Mapped
+        | _ -> None
+    | _ -> None
+
+let private rememberPrintDimensionRemap values maxIndex mapped =
+    { Source = WeakReference(values); MaxIndex = maxIndex; Mapped = mapped }
+
+let private remapPrintColumnWidthsDirect maxCol values =
+    match tryCachedPrintDimensionRemap values maxCol printColumnWidthDirectCache with
+    | Some mapped -> mapped
+    | None ->
+        let mapped = remapPrintDimensionDirect maxCol printColumnWidthPx values
+        printColumnWidthDirectCache <- Some (rememberPrintDimensionRemap values maxCol mapped)
+        mapped
+
+let private remapPrintRowHeightsDirect maxRow values =
+    match tryCachedPrintDimensionRemap values maxRow printRowHeightDirectCache with
+    | Some mapped -> mapped
+    | None ->
+        let mapped = remapPrintDimensionDirect maxRow printRowHeightPx values
+        printRowHeightDirectCache <- Some (rememberPrintDimensionRemap values maxRow mapped)
+        mapped
+
+let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : SpreadsheetModel =
     if Map.isEmpty model.ColumnWidths then model else
     // Excel's live grid lays columns out with the floored screen MDW (7 px for
     // Calibri 11), but its PDF print path uses the non-floored width (~7.5 px),
@@ -428,10 +643,12 @@ let private withPrintColumnWidths (model: SpreadsheetModel) : SpreadsheetModel =
     // this scale was applied only to explicit `<col>` widths, which left the
     // default columns ~5 px narrow and drifted every cell right of column A
     // leftward. Scale all positive widths.
-    let printScale = 15.0 / 14.0
     let widths =
-        model.ColumnWidths
-        |> Map.map (fun _ width -> if width <= 0.0 then width else width * printScale)
+        match maxPrintCol with
+        | Some maxCol when maxCol >= 0 && maxCol <= directPrintDimensionRemapLimit ->
+            remapPrintColumnWidthsDirect maxCol model.ColumnWidths
+        | _ ->
+            model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx width)
     { model with ColumnWidths = widths }
 
 /// Excel's print PDF renders Calibri-11 auto-derived rows at 19 px (14.25 pt)
@@ -459,18 +676,18 @@ let private withPrintColumnWidths (model: SpreadsheetModel) : SpreadsheetModel =
 /// it to 14.52 pt when Excel would honor the stored 15 pt. No fixture in
 /// the test corpus trips that; if one does, we'll need to thread per-row
 /// "auto vs explicit" flags through the model and key the remap off that.
-let private withPrintRowHeights (model: SpreadsheetModel) : SpreadsheetModel =
+let private withPrintRowHeights maxPrintRow (model: SpreadsheetModel) : SpreadsheetModel =
     if Map.isEmpty model.RowHeights then model else
     // Calibri 12 print pitch is similarly off — editor 21 px → print
     // ~20.64 px (= 15.48 pt). pandas-test1 rows positioned 1 px per row
     // below Excel because we used 21 px uniform while Excel's quantized
     // 20/21/21/21/21/20 pattern averages to ~20.64 px.
     let heights =
-        model.RowHeights
-        |> Map.map (fun _ px ->
-            if abs (px - 20.0) < 0.01 then 19.36      // Calibri 11 auto
-            elif abs (px - 21.0) < 0.01 then 20.64    // Calibri 12 auto
-            else px)
+        match maxPrintRow with
+        | Some maxRow when maxRow >= 0 && maxRow <= directPrintDimensionRemapLimit ->
+            remapPrintRowHeightsDirect maxRow model.RowHeights
+        | _ ->
+            model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)
     { model with RowHeights = heights }
 
 /// True when a paint item has degenerate (zero-size) geometry. With the
@@ -485,6 +702,7 @@ let private isDegenerate (item: PaintItem) : bool =
         // A real gridline has length in exactly one axis; only drop the
         // genuinely zero-length point.
         abs (x2 - x1) < 0.5 && abs (y2 - y1) < 0.5
+    | VecPath _ | VecGroup _ -> false
 
 /// The screen path emits a white fill for every cell even when the workbook
 /// has no explicit fill. In print those default fills would cover the
@@ -515,38 +733,110 @@ let private isInteractiveCellStroke (item: PaintItem) : bool =
         color.Equals("#a6a6a6", StringComparison.OrdinalIgnoreCase)
     | _ -> false
 
+let private commentMarkerStrokeKey (item: PaintItem) =
+    match item with
+    | GridLine (x1, y1, x2, y2, color, width) ->
+        if color.Equals("#C00000", StringComparison.OrdinalIgnoreCase)
+           && abs (width - 1.0) < 0.001
+           && abs (y2 - y1) < 0.01
+           && x2 >= x1
+           && x2 - x1 <= 5.1 then
+            Some (struct (
+                int64 (Math.Round(x1 * 1000.0)),
+                int64 (Math.Round(y1 * 1000.0)),
+                int64 (Math.Round(x2 * 1000.0)),
+                int64 (Math.Round(y2 * 1000.0))))
+        else
+            None
+    | _ -> None
+
+let private commentMarkerStrokeKeysForSlice
+    (geometry: PrintGeometry)
+    (model: SpreadsheetModel)
+    (rowStart: int) (rowEnd: int)
+    (colStart: int) (colEnd: int) =
+    match model.PageSetup.CellComments with
+    | CellCommentsAsDisplayed -> None
+    | CellCommentsNone | CellCommentsAtEnd ->
+        let keys = System.Collections.Generic.HashSet<struct (int64 * int64 * int64 * int64)>()
+        for row in max 0 rowStart .. rowEnd do
+            for col in max 0 colStart .. colEnd do
+                let addr: CellAddress = { Row = row; Col = col }
+                match Map.tryFind addr model.Cells with
+                | Some cell when cell.Format.HasComment ->
+                    let rightX = geometry.Col.Sum 0 col
+                    let topY = geometry.Row.Sum 0 (row - 1)
+                    let triSize = 5.0
+                    for k in 0 .. int triSize - 1 do
+                        let y = topY + float k + 0.5
+                        let leftX = rightX - (triSize - float k)
+                        keys.Add (struct (
+                            int64 (Math.Round(leftX * 1000.0)),
+                            int64 (Math.Round(y * 1000.0)),
+                            int64 (Math.Round(rightX * 1000.0)),
+                            int64 (Math.Round(y * 1000.0)))) |> ignore
+                | _ -> ()
+        Some keys
+
+let private shouldDropCommentMarkerForPrint
+    (commentMarkerKeys: System.Collections.Generic.HashSet<struct (int64 * int64 * int64 * int64)> option)
+    (item: PaintItem) =
+    match commentMarkerKeys, commentMarkerStrokeKey item with
+    | Some keys, Some key -> keys.Contains key
+    | _ -> false
+
 /// Shift every coordinate of a paint item by (dx, dy) CSS px. Used to map
 /// items from their absolute viewport position into page-local space.
 let private shiftItem (dx: float) (dy: float) (item: PaintItem) : PaintItem =
     let shiftRect (r: Rect) = { r with X = r.X + dx; Y = r.Y + dy }
+    let shiftSeg seg =
+        let mv x y = x + dx, y + dy
+        match seg with
+        | VMove (x, y) -> let a, b = mv x y in VMove (a, b)
+        | VLine (x, y) -> let a, b = mv x y in VLine (a, b)
+        | VCubic (x1, y1, x2, y2, x, y) ->
+            let a1, b1 = mv x1 y1
+            let a2, b2 = mv x2 y2
+            let a, b = mv x y
+            VCubic (a1, b1, a2, b2, a, b)
+        | VClose -> VClose
     match item with
     | FillRect (r, c) -> FillRect (shiftRect r, c)
     | StrokeRect (r, c, w) -> StrokeRect (shiftRect r, c, w)
     | DrawText t -> DrawText { t with Rect = shiftRect t.Rect }
     | GridLine (x1, y1, x2, y2, c, w) -> GridLine (x1 + dx, y1 + dy, x2 + dx, y2 + dy, c, w)
+    | VecPath (segs, fill, stroke) ->
+        let shifted = ResizeArray<VecSeg>(segs.Length)
+        for seg in segs do
+            shifted.Add(shiftSeg seg)
+        VecPath (resizeArrayToList shifted, fill, stroke)
+    | VecGroup ((a, b, c, d, e, f), children) ->
+        VecGroup ((a, b, c, d, e + dx, f + dy), children)
 
-/// Build the paint items for a contiguous (rowStart..rowEnd × colStart..colEnd)
+/// Iterate the paint items for a contiguous (rowStart..rowEnd × colStart..colEnd)
 /// slice of the model, shifted so the slice's top-left lands at page-local
 /// (offsetX, offsetY). Setting HeaderHeight / RowHeaderWidth to 0 in the
 /// viewport keeps the column-letter / row-number chrome out — we only want
 /// the body for print.
-let private sliceItems
+let private iterSliceItems
+    (geometry: PrintGeometry)
     (model: SpreadsheetModel)
     (measurer: TextMeasurer)
+    (includeText: bool)
     (rowStart: int) (rowEnd: int)
     (colStart: int) (colEnd: int)
     (offsetX: float) (offsetY: float)
-    : PaintItem list =
+    (emit: PaintItem -> unit) : unit =
     // Land the viewport on the exact rowStart..rowEnd / colStart..colEnd
     // rectangle. `visibleRange` now lands `startRow` on whatever row
     // contains `ScrollY` (top-of-cell semantics), so scrolling to the top
     // of `rowStart` picks `rowStart` cleanly; `Width`/`Height` exactly
     // matching the slice's content extents lets the end loop walk to
     // `rowEnd+1` and stop.
-    let scrollX = colSumPx model 0 (colStart - 1)
-    let scrollY = rowSumPx model 0 (rowStart - 1)
-    let width = colSumPx model colStart colEnd
-    let height = rowSumPx model rowStart rowEnd
+    let scrollX = geometry.Col.Sum 0 (colStart - 1)
+    let scrollY = geometry.Row.Sum 0 (rowStart - 1)
+    let width = geometry.Col.Sum colStart colEnd
+    let height = geometry.Row.Sum rowStart rowEnd
     let viewport =
         { ScrollX = scrollX
           ScrollY = scrollY
@@ -555,44 +845,74 @@ let private sliceItems
           HeaderHeight = 0.0
           RowHeaderWidth = 0.0
           Measurer = Some measurer }
-    buildPaintItems model viewport
-    |> List.filter (fun item ->
-        not (isDegenerate item)
-        && not (isDefaultPrintCellFill item)
-        && not (isInteractiveCellStroke item))
-    |> List.map (shiftItem (offsetX - scrollX) (offsetY - scrollY))
+    let dx = offsetX - scrollX
+    let dy = offsetY - scrollY
+    let commentMarkerKeys = commentMarkerStrokeKeysForSlice geometry model rowStart rowEnd colStart colEnd
+    iterPaintItems model viewport (fun item ->
+        if not (isDegenerate item)
+           && not (isDefaultPrintCellFill item)
+           && not (isInteractiveCellStroke item)
+           && not (shouldDropCommentMarkerForPrint commentMarkerKeys item)
+           && (includeText || match item with DrawText _ -> false | _ -> true) then
+            emit (shiftItem dx dy item))
+
+/// Build the paint items for a print slice.
+let private sliceItems
+    (geometry: PrintGeometry)
+    (model: SpreadsheetModel)
+    (measurer: TextMeasurer)
+    (rowStart: int) (rowEnd: int)
+    (colStart: int) (colEnd: int)
+    (offsetX: float) (offsetY: float)
+    : PaintItem list =
+    let rowCount = max 0 (rowEnd - rowStart + 1)
+    let colCount = max 0 (colEnd - colStart + 1)
+    let shifted = ResizeArray<PaintItem>(max 16 (rowCount * colCount + rowCount + colCount + 2))
+    iterSliceItems geometry model measurer true rowStart rowEnd colStart colEnd offsetX offsetY shifted.Add
+    resizeArrayToList shifted
 
 /// Near-black cell-boundary lines for a slice, used when
 /// `PrintOptions.GridLines` is on. Emits one vertical line at every
 /// column edge (left edges of `colStart..colEnd` plus the right edge of
 /// `colEnd`) and one horizontal at every row edge in the same fashion.
 /// Coordinates are page-local CSS px shifted by `(offsetX, offsetY)`.
+let private iterGridLineItems
+    (geometry: PrintGeometry)
+    (model: SpreadsheetModel)
+    (rowStart: int) (rowEnd: int)
+    (colStart: int) (colEnd: int)
+    (offsetX: float) (offsetY: float)
+    (emit: PaintItem -> unit) : unit =
+    if rowStart <= rowEnd && colStart <= colEnd then
+        let totalW = geometry.Col.Sum colStart colEnd
+        let totalH = geometry.Row.Sum rowStart rowEnd
+        // Excel's printed gridlines rasterize as near-black in the reference
+        // PDF, unlike the lighter screen grid used in the interactive view.
+        let color = "#000000"
+        let w = 1.0
+        let mutable x = 0.0
+        emit (GridLine (offsetX + x, offsetY, offsetX + x, offsetY + totalH, color, w))
+        for c in colStart .. colEnd do
+            x <- x + geometry.Col.Size c
+            emit (GridLine (offsetX + x, offsetY, offsetX + x, offsetY + totalH, color, w))
+        let mutable y = 0.0
+        emit (GridLine (offsetX, offsetY + y, offsetX + totalW, offsetY + y, color, w))
+        for r in rowStart .. rowEnd do
+            y <- y + geometry.Row.Size r
+            emit (GridLine (offsetX, offsetY + y, offsetX + totalW, offsetY + y, color, w))
+
 let private gridLineItems
+    (geometry: PrintGeometry)
     (model: SpreadsheetModel)
     (rowStart: int) (rowEnd: int)
     (colStart: int) (colEnd: int)
     (offsetX: float) (offsetY: float) : PaintItem list =
     if rowStart > rowEnd || colStart > colEnd then [] else
-    let totalW = colSumPx model colStart colEnd
-    let totalH = rowSumPx model rowStart rowEnd
-    // Excel's printed gridlines rasterize as near-black in the reference
-    // PDF, unlike the lighter screen grid used in the interactive view.
-    let color = "#000000"
-    let w = 1.0
-    let xs =
-        [ let mutable x = 0.0
-          yield x
-          for c in colStart .. colEnd do
-              x <- x + (Map.tryFind c model.ColumnWidths |> Option.defaultValue 100.0)
-              yield x ]
-    let ys =
-        [ let mutable y = 0.0
-          yield y
-          for r in rowStart .. rowEnd do
-              y <- y + (Map.tryFind r model.RowHeights |> Option.defaultValue 25.0)
-              yield y ]
-    [ for x in xs -> GridLine (offsetX + x, offsetY, offsetX + x, offsetY + totalH, color, w)
-      for y in ys -> GridLine (offsetX, offsetY + y, offsetX + totalW, offsetY + y, color, w) ]
+    let rowCount = max 0 (rowEnd - rowStart + 1)
+    let colCount = max 0 (colEnd - colStart + 1)
+    let items = ResizeArray<PaintItem>(rowCount + colCount + 2)
+    iterGridLineItems geometry model rowStart rowEnd colStart colEnd offsetX offsetY items.Add
+    resizeArrayToList items
 
 /// Splice `gridlines` into a band's paint stream before any remaining
 /// non-white cell fill / border / text. The print slice filter already
@@ -635,6 +955,7 @@ let private headingText (text: string) (rect: Rect) (align: TextAlign) (fontSize
 /// the page itself starts at 0,0). The strips' inner-padded text avoids
 /// touching the separator lines.
 let private headingItems
+    (geometry: PrintGeometry)
     (model: SpreadsheetModel)
     (slice: Pagination.PageSlice)
     (pagination: Pagination.Pagination)
@@ -644,16 +965,28 @@ let private headingItems
     // Column ranges to label: repeat cols (if any) followed by the slice's
     // body cols. Each emits its letter in the strip directly above the
     // matching column.
-    let repeatColRange = pagination.RepeatCols |> Option.toList |> List.collect (fun (a, b) -> [a .. b])
-    let bodyColRange = [ slice.ColStart .. slice.ColEnd ]
-    let allCols = repeatColRange @ bodyColRange
-    let repeatRowRange = pagination.RepeatRows |> Option.toList |> List.collect (fun (a, b) -> [a .. b])
-    let bodyRowRange = [ slice.RowStart .. slice.RowEnd ]
-    let allRows = repeatRowRange @ bodyRowRange
-    let colWidth c = Map.tryFind c model.ColumnWidths |> Option.defaultValue 100.0
-    let rowHeight r = Map.tryFind r model.RowHeights |> Option.defaultValue 25.0
-    let totalContentW = allCols |> List.sumBy colWidth
-    let totalContentH = allRows |> List.sumBy rowHeight
+    let allCols = ResizeArray<int>()
+    match pagination.RepeatCols with
+    | Some (a, b) when b >= a ->
+        for c in a .. b do allCols.Add c
+    | _ -> ()
+    for c in slice.ColStart .. slice.ColEnd do
+        allCols.Add c
+    let allRows = ResizeArray<int>()
+    match pagination.RepeatRows with
+    | Some (a, b) when b >= a ->
+        for r in a .. b do allRows.Add r
+    | _ -> ()
+    for r in slice.RowStart .. slice.RowEnd do
+        allRows.Add r
+    let colWidth c = geometry.Col.Size c
+    let rowHeight r = geometry.Row.Size r
+    let mutable totalContentW = 0.0
+    for c in allCols do
+        totalContentW <- totalContentW + colWidth c
+    let mutable totalContentH = 0.0
+    for r in allRows do
+        totalContentH <- totalContentH + rowHeight r
     let fontSize = 10.0
     let separator = "#000000"
     let colLetterItems =
@@ -708,110 +1041,168 @@ let private headingItems
 /// footer. Y is the PDF-space baseline (already accounting for the band).
 /// `xAlign` is one of `AlignLeft` / `AlignCenter` / `AlignRight`, applied
 /// against the printable-area span (leftPt → rightPt).
-let private sectionOps
+let private appendSectionOps
+    (ops: ResizeArray<PdfDraw.DrawOp>)
     (options: RenderOptions)
     (faceByName: Map<string, PdfFont.TrueTypeFont>)
     (faceResource: Map<string, string>)
     (faceRemap: Map<string, Map<int, int>>)
     (leftPt: float) (rightPt: float)
     (section: HeaderFooter.StyledSection) (defaultFontSizePt: float) (textScale: float) (baselineYPt: float)
-    (xAlign: TextAlign) : PdfDraw.DrawOp list =
-    if String.IsNullOrEmpty section.Text then [] else
+    (xAlign: TextAlign) =
     // Resolve face / size / color per H/F run. Excel lets section strings
     // switch style mid-run with codes like `&B`, `&"Arial,Italic"`, `&12`,
     // `&KFF0000`, `&U`, `&S`, `&X`, `&Y`; alignment still applies to the
     // total section width. Super/subscript shrinks the run's font size
     // to ~58% of the base; underline / strikethrough render as strokes.
-    let segmentsWithWidth =
-        [ for run in section.Runs do
+    let runSizeAndBaseline (run: HeaderFooter.StyledRun) =
+        let rawSizePt = run.FontSize |> Option.defaultValue defaultFontSizePt
+        let baseSizePt = rawSizePt * textScale
+        let scale =
+            if run.Superscript || run.Subscript then 0.58 else 1.0
+        let fontSizePt = baseSizePt * scale
+        let baselineDeltaPt =
+            if run.Superscript then baseSizePt * 0.33
+            elif run.Subscript then -baseSizePt * 0.20
+            else 0.0
+        fontSizePt, baselineDeltaPt
+    let appendTextRun faceName ttf text fontSizePt baselineDeltaPt color xPt =
+        let remap =
+            match faceRemap.TryFind faceName with
+            | Some found -> found
+            | None -> Map.empty
+        let hex = toRemappedHex ttf remap text
+        let fillColor =
+            match color with
+            | Some color -> parseHexColor color
+            | None -> PdfColor.black
+        ops.Add PdfDraw.BeginText
+        ops.Add(PdfDraw.SetFillColor fillColor)
+        ops.Add(PdfDraw.SetFont (faceName, fontSizePt))
+        ops.Add(PdfDraw.TextMatrix (1.0, 0.0, 0.0, 1.0, xPt, baselineYPt + baselineDeltaPt))
+        ops.Add(PdfDraw.ShowTextHex hex)
+        ops.Add PdfDraw.EndText
+    let startX totalWidthPt =
+        match xAlign with
+        | AlignLeft -> leftPt
+        | AlignCenter -> leftPt + ((rightPt - leftPt) - totalWidthPt) / 2.0
+        | AlignRight -> rightPt - totalWidthPt
+    let tryAppendSingleRun () =
+        match section.Runs with
+        | [ run ] when
+            not (String.IsNullOrEmpty run.Text)
+            && not run.Underline
+            && not run.DoubleUnderline
+            && not run.Strikethrough ->
+            match pickFace options run.FontName run.Bold run.Italic with
+            | None -> false
+            | Some primaryFace ->
+                match Map.tryFind primaryFace.FaceName faceByName with
+                | None -> false
+                | Some primaryTtf ->
+                    if List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf run.Text then
+                        let fontSizePt, baselineDeltaPt = runSizeAndBaseline run
+                        let widthPt = float (PdfFont.getTextWidth primaryTtf run.Text) / float primaryTtf.UnitsPerEm * fontSizePt
+                        appendTextRun primaryFace.FaceName primaryTtf run.Text fontSizePt baselineDeltaPt run.Color (startX widthPt)
+                        true
+                    else false
+        | _ -> false
+    if not (String.IsNullOrEmpty section.Text) && not (tryAppendSingleRun ()) then
+        let segmentsWithWidth = ResizeArray<HeaderFooterSegment>()
+        let mutable totalWidthPt = 0.0
+        let addSegment face ttf text fontSizePt color underline doubleUnderline strikethrough baselineDeltaPt =
+            let widthPt = float (PdfFont.getTextWidth ttf text) / float ttf.UnitsPerEm * fontSizePt
+            segmentsWithWidth.Add {
+                Face = face
+                Ttf = ttf
+                Text = text
+                WidthPt = widthPt
+                FontSizePt = fontSizePt
+                Color = color
+                Underline = underline
+                DoubleUnderline = doubleUnderline
+                Strikethrough = strikethrough
+                BaselineDeltaPt = baselineDeltaPt
+            }
+            totalWidthPt <- totalWidthPt + widthPt
+        for run in section.Runs do
             if not (String.IsNullOrEmpty run.Text) then
                 // Excel scales H/F text by the page's print scale (the
                 // `&NN` size code carries the *un*scaled value). Apply the
                 // scale uniformly here so the &NN baseline still works.
-                let rawSizePt = run.FontSize |> Option.defaultValue defaultFontSizePt
-                let baseSizePt = rawSizePt * textScale
-                let scale =
-                    if run.Superscript || run.Subscript then 0.58 else 1.0
-                let fontSizePt = baseSizePt * scale
-                let baselineDeltaPt =
-                    if run.Superscript then baseSizePt * 0.33
-                    elif run.Subscript then -baseSizePt * 0.20
-                    else 0.0
+                let fontSizePt, baselineDeltaPt = runSizeAndBaseline run
                 match pickFace options run.FontName run.Bold run.Italic with
                 | None -> ()
                 | Some primaryFace ->
                     match Map.tryFind primaryFace.FaceName faceByName with
                     | None -> ()
                     | Some primaryTtf ->
-                        let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback faceByName run.Bold run.Text
-                        for (face, s) in segments do
-                            let ttf = snd face
-                            let w = float (PdfFont.getTextWidth ttf s) / float ttf.UnitsPerEm * fontSizePt
-                            yield face, s, w, fontSizePt, run.Color, run.Underline, run.DoubleUnderline, run.Strikethrough, baselineDeltaPt ]
-    if List.isEmpty segmentsWithWidth then [] else
-    let totalWidthPt = segmentsWithWidth |> List.sumBy (fun (_, _, w, _, _, _, _, _, _) -> w)
-    let startXPt =
-        match xAlign with
-        | AlignLeft -> leftPt
-        | AlignCenter -> leftPt + ((rightPt - leftPt) - totalWidthPt) / 2.0
-        | AlignRight -> rightPt - totalWidthPt
-    // Track per-segment decoration spans so we can emit underline /
-    // strikethrough strokes after the text ops (PDF needs path ops outside
-    // any text object).
-    let decorations =
-        let acc = System.Collections.Generic.List<float * float * float * float * bool * bool * bool * string option>()
-        let mutable cursor = startXPt
-        for (_, _, w, fontSizePt, color, ul, du, st, _) in segmentsWithWidth do
-            acc.Add (cursor, w, fontSizePt, 0.0, ul, du, st, color)
-            cursor <- cursor + w
-        acc |> List.ofSeq
-    let textOps =
-        [ yield PdfDraw.BeginText
-          let mutable cursorXPt = startXPt
-          for (face, s, w, fontSizePt, color, _, _, _, baselineDelta) in segmentsWithWidth do
-              let faceName = (fst face).FaceName
-              let _, ttf = face
-              let remap = faceRemap.TryFind faceName |> Option.defaultValue Map.empty
-              let hex = toRemappedHex ttf remap s
-              yield PdfDraw.SetFillColor (color |> Option.map parseHexColor |> Option.defaultValue PdfColor.black)
-              yield PdfDraw.SetFont (faceName, fontSizePt)
-              yield PdfDraw.TextMatrix (1.0, 0.0, 0.0, 1.0, cursorXPt, baselineYPt + baselineDelta)
-              yield PdfDraw.ShowTextHex hex
-              cursorXPt <- cursorXPt + w
-          yield PdfDraw.EndText ]
-    let decorationOps =
-        [ for (x, w, fontSizePt, _, ul, du, st, color) in decorations do
-            let strokeColor = color |> Option.map parseHexColor |> Option.defaultValue PdfColor.black
-            let lineWidth = max 0.5 (fontSizePt * 0.05)
-            if ul then
-                let yUL = baselineYPt - fontSizePt * 0.12
-                yield PdfDraw.SetStrokeColor strokeColor
-                yield PdfDraw.SetLineWidth lineWidth
-                yield PdfDraw.SetDash ([], 0.0)
-                yield PdfDraw.MoveTo (x, yUL)
-                yield PdfDraw.LineTo (x + w, yUL)
-                yield PdfDraw.Stroke
-            if du then
-                let yU1 = baselineYPt - fontSizePt * 0.08
-                let yU2 = baselineYPt - fontSizePt * 0.18
-                yield PdfDraw.SetStrokeColor strokeColor
-                yield PdfDraw.SetLineWidth lineWidth
-                yield PdfDraw.SetDash ([], 0.0)
-                yield PdfDraw.MoveTo (x, yU1)
-                yield PdfDraw.LineTo (x + w, yU1)
-                yield PdfDraw.Stroke
-                yield PdfDraw.MoveTo (x, yU2)
-                yield PdfDraw.LineTo (x + w, yU2)
-                yield PdfDraw.Stroke
-            if st then
-                let yST = baselineYPt + fontSizePt * 0.28
-                yield PdfDraw.SetStrokeColor strokeColor
-                yield PdfDraw.SetLineWidth lineWidth
-                yield PdfDraw.SetDash ([], 0.0)
-                yield PdfDraw.MoveTo (x, yST)
-                yield PdfDraw.LineTo (x + w, yST)
-                yield PdfDraw.Stroke ]
-    textOps @ decorationOps
+                        if List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf run.Text then
+                            addSegment primaryFace primaryTtf run.Text fontSizePt run.Color run.Underline run.DoubleUnderline run.Strikethrough baselineDeltaPt
+                        else
+                            for (face, text) in segmentMixedByFont (primaryFace, primaryTtf) options.CjkFallback (tryGetMappedFace faceByName) run.Bold run.Text do
+                                addSegment (fst face) (snd face) text fontSizePt run.Color run.Underline run.DoubleUnderline run.Strikethrough baselineDeltaPt
+        if segmentsWithWidth.Count > 0 then
+            let startXPt = startX totalWidthPt
+            ops.Add PdfDraw.BeginText
+            let mutable cursorXPt = startXPt
+            for segment in segmentsWithWidth do
+                let faceName = segment.Face.FaceName
+                let remap =
+                    match faceRemap.TryFind faceName with
+                    | Some found -> found
+                    | None -> Map.empty
+                let hex = toRemappedHex segment.Ttf remap segment.Text
+                let fillColor =
+                    match segment.Color with
+                    | Some color -> parseHexColor color
+                    | None -> PdfColor.black
+                ops.Add(PdfDraw.SetFillColor fillColor)
+                ops.Add(PdfDraw.SetFont (faceName, segment.FontSizePt))
+                ops.Add(PdfDraw.TextMatrix (1.0, 0.0, 0.0, 1.0, cursorXPt, baselineYPt + segment.BaselineDeltaPt))
+                ops.Add(PdfDraw.ShowTextHex hex)
+                cursorXPt <- cursorXPt + segment.WidthPt
+            ops.Add PdfDraw.EndText
+
+            // Decorations must be emitted after EndText; PDF path ops cannot appear
+            // inside a text object.
+            let mutable decorationXPt = startXPt
+            for segment in segmentsWithWidth do
+                if segment.Underline || segment.DoubleUnderline || segment.Strikethrough then
+                    let strokeColor =
+                        match segment.Color with
+                        | Some color -> parseHexColor color
+                        | None -> PdfColor.black
+                    let lineWidth = max 0.5 (segment.FontSizePt * 0.05)
+                    if segment.Underline then
+                        let yUL = baselineYPt - segment.FontSizePt * 0.12
+                        ops.Add(PdfDraw.SetStrokeColor strokeColor)
+                        ops.Add(PdfDraw.SetLineWidth lineWidth)
+                        ops.Add(PdfDraw.SetDash ([], 0.0))
+                        ops.Add(PdfDraw.MoveTo (decorationXPt, yUL))
+                        ops.Add(PdfDraw.LineTo (decorationXPt + segment.WidthPt, yUL))
+                        ops.Add PdfDraw.Stroke
+                    if segment.DoubleUnderline then
+                        let yU1 = baselineYPt - segment.FontSizePt * 0.08
+                        let yU2 = baselineYPt - segment.FontSizePt * 0.18
+                        ops.Add(PdfDraw.SetStrokeColor strokeColor)
+                        ops.Add(PdfDraw.SetLineWidth lineWidth)
+                        ops.Add(PdfDraw.SetDash ([], 0.0))
+                        ops.Add(PdfDraw.MoveTo (decorationXPt, yU1))
+                        ops.Add(PdfDraw.LineTo (decorationXPt + segment.WidthPt, yU1))
+                        ops.Add PdfDraw.Stroke
+                        ops.Add(PdfDraw.MoveTo (decorationXPt, yU2))
+                        ops.Add(PdfDraw.LineTo (decorationXPt + segment.WidthPt, yU2))
+                        ops.Add PdfDraw.Stroke
+                    if segment.Strikethrough then
+                        let yST = baselineYPt + segment.FontSizePt * 0.28
+                        ops.Add(PdfDraw.SetStrokeColor strokeColor)
+                        ops.Add(PdfDraw.SetLineWidth lineWidth)
+                        ops.Add(PdfDraw.SetDash ([], 0.0))
+                        ops.Add(PdfDraw.MoveTo (decorationXPt, yST))
+                        ops.Add(PdfDraw.LineTo (decorationXPt + segment.WidthPt, yST))
+                        ops.Add PdfDraw.Stroke
+                decorationXPt <- decorationXPt + segment.WidthPt
 
 /// Render a workbook page to PDF bytes. Drives 2D pagination off the
 /// model's PageSetup: each page slice is built into a viewport, shifted
@@ -833,16 +1224,35 @@ let private sectionOps
 /// consistent with the cell content around them.
 let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
                 (overlays: (int * int * float * float * PaintItem list) list) : byte[] =
-    let model = model |> withCommentMarkersForPrint |> withPrintColumnWidths |> withPrintRowHeights
+    let maxPrintCol, maxPrintRow = printDimensionBounds model overlays
+    let model =
+        model
+        |> withCommentMarkersForPrint
+        |> withPrintColumnWidths maxPrintCol
+        |> withPrintRowHeights maxPrintRow
     let builder = PdfDoc.create ()
 
     let parsed = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
-    let parseFace (face: FontFace) =
-        try parsed.[face.FaceName] <- PdfFont.parseTrueType face.Data
-        with _ -> ()
-    for face in options.Fonts do parseFace face
-    for face in options.CjkFallback do parseFace face
-    let parsedMap = parsed |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+    let failedFaces = System.Collections.Generic.HashSet<string>()
+    let tryGetParsedFace (face: FontFace) =
+        let mutable cached = Unchecked.defaultof<PdfFont.TrueTypeFont>
+        if parsed.TryGetValue(face.FaceName, &cached) then
+            Some cached
+        elif failedFaces.Contains face.FaceName then
+            None
+        else
+            try
+                let ttf = PdfFont.parseTrueType face.Data
+                parsed.[face.FaceName] <- ttf
+                Some ttf
+            with _ ->
+                failedFaces.Add face.FaceName |> ignore
+                None
+    for face in options.Fonts do
+        tryGetParsedFace face |> ignore
+    let canDrawText =
+        options.Fonts
+        |> List.exists (fun face -> parsed.ContainsKey face.FaceName)
 
     let measurePdf (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool) : float =
         let approx () = float text.Length * 7.0
@@ -851,12 +1261,17 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
         | Some primaryFace ->
             match parsed.TryGetValue primaryFace.FaceName with
             | true, primaryTtf ->
-                let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback parsedMap bold text
-                segments
-                |> List.sumBy (fun (face, s) ->
-                    let _, ttf = face
+                let scaleWidth (ttf: PdfFont.TrueTypeFont) s =
                     let widthUnits = PdfFont.getTextWidth ttf s
-                    float widthUnits / float ttf.UnitsPerEm * fontPt * 96.0 / 72.0)
+                    float widthUnits / float ttf.UnitsPerEm * fontPt * 96.0 / 72.0
+                if text.Length = 0 then 0.0
+                elif List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf text then
+                    scaleWidth primaryTtf text
+                else
+                    let mutable total = 0.0
+                    for (face, s) in segmentMixedByFont (primaryFace, primaryTtf) options.CjkFallback tryGetParsedFace bold text do
+                        total <- total + scaleWidth (snd face) s
+                    total
             | _ -> approx ()
 
     // Compute pagination from PageSetup. Empty workbook → one blank page.
@@ -871,18 +1286,42 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
     let headerMarginPt = ps.Margins.Header * 72.0
     let footerMarginPt = ps.Margins.Footer * 72.0
 
-    let totalPages = max 1 (List.length pagination.Pages)
+    let pages = pagination.Pages |> List.toArray
+    let totalPages = max 1 pages.Length
+    let maxColIndex =
+        let mutable maxCol = 0
+        for page in pages do
+            maxCol <- max maxCol page.ColEnd
+        match pagination.RepeatCols with
+        | Some (_, b) -> maxCol <- max maxCol b
+        | None -> ()
+        for _, fc, _, _, _ in overlays do
+            maxCol <- max maxCol fc
+        maxCol
+    let maxRowIndex =
+        let mutable maxRow = 0
+        for page in pages do
+            maxRow <- max maxRow page.RowEnd
+        match pagination.RepeatRows with
+        | Some (_, b) -> maxRow <- max maxRow b
+        | None -> ()
+        for fr, _, _, _, _ in overlays do
+            maxRow <- max maxRow fr
+        maxRow
+    let geometry = buildPrintGeometry model maxRowIndex maxColIndex
     let repeatColsWidthPx =
         pagination.RepeatCols
-        |> Option.map (fun (a, b) -> colSumPx model a b)
+        |> Option.map (fun (a, b) -> geometry.Col.Sum a b)
         |> Option.defaultValue 0.0
     let repeatRowsHeightPx =
         pagination.RepeatRows
-        |> Option.map (fun (a, b) -> rowSumPx model a b)
+        |> Option.map (fun (a, b) -> geometry.Row.Sum a b)
         |> Option.defaultValue 0.0
 
-    // Build every page's paint items up-front. We need them to drive font
-    // subsetting before we can emit ops.
+    // Page items are streamed. When fonts are available, glyph collection
+    // makes a first pass over the pages so font subsetting can run before
+    // PDF pages are emitted, but we avoid retaining every page's PaintItem
+    // list at once.
     let printGridLines = ps.Options.GridLines
     let printHeadings = ps.Options.Headings
     // When PrintOptions.Headings is on, every content band shifts right /
@@ -891,84 +1330,106 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
     // per-page area by the same amounts, so manual breaks land in the
     // right place.
     let headingsColPx, headingsRowPx = Pagination.headingsOffsets ps
-    let assembleBand (rowStart: int) (rowEnd: int) (colStart: int) (colEnd: int) (offsetX: float) (offsetY: float) =
-        let content =
-            sliceItems model measurePdf rowStart rowEnd colStart colEnd offsetX offsetY
-        if printGridLines then
-            let gridlines = gridLineItems model rowStart rowEnd colStart colEnd offsetX offsetY
-            withGridlines gridlines content
-        else content
-    let pageItems : PaintItem list array =
-        let pages = pagination.Pages
-        Array.init (max 1 (List.length pages)) (fun i ->
-            if i >= List.length pages then [] else
-            let slice = pages.[i]
-            // Body: rows × cols of the slice, offset by repeat band sizes.
-            let body =
-                assembleBand
-                    slice.RowStart slice.RowEnd
-                    slice.ColStart slice.ColEnd
-                    (headingsColPx + repeatColsWidthPx) (headingsRowPx + repeatRowsHeightPx)
-            // Repeat-rows band (above body, full width): repeat rows × slice cols.
-            let repeatRows =
-                match pagination.RepeatRows with
-                | Some (rs, re) when re >= rs ->
-                    assembleBand
-                        rs re
-                        slice.ColStart slice.ColEnd
-                        (headingsColPx + repeatColsWidthPx) headingsRowPx
-                | _ -> []
-            // Repeat-cols band (left of body, full height): slice rows × repeat cols.
-            let repeatCols =
-                match pagination.RepeatCols with
-                | Some (cs, ce) when ce >= cs ->
-                    assembleBand
-                        slice.RowStart slice.RowEnd
-                        cs ce
-                        headingsColPx (headingsRowPx + repeatRowsHeightPx)
-                | _ -> []
-            // Repeat corner (top-left): repeat rows × repeat cols.
-            let repeatCorner =
-                match pagination.RepeatRows, pagination.RepeatCols with
-                | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs ->
-                    assembleBand rs re cs ce headingsColPx headingsRowPx
-                | _ -> []
-            let headings =
-                if printHeadings then headingItems model slice pagination else []
-            body @ repeatRows @ repeatCols @ repeatCorner @ headings)
-
-    // Inject anchored overlays (charts/sparklines) onto the page whose slice
-    // contains each anchor cell, offset into that page's content band. Done
-    // before GID collection so overlay text fonts get subset too.
-    let pageItems =
-        if List.isEmpty overlays then pageItems
+    let overlaysByPage =
+        if List.isEmpty overlays || pages.Length = 0 then
+            [||]
         else
-            let pages = pagination.Pages |> List.toArray
-            let baseX = headingsColPx + repeatColsWidthPx
-            let baseY = headingsRowPx + repeatRowsHeightPx
             // An overlay anchored beyond the data's print range (charts usually
             // sit beside/below it) still belongs to the page whose vertical
             // slice spans its anchor row; if none does, the first page.
             let pageOf (fr: int) =
-                pages |> Array.tryFindIndex (fun s -> fr >= s.RowStart && fr <= s.RowEnd)
-                |> Option.defaultValue 0
-            pageItems
-            |> Array.mapi (fun i items ->
-                if i >= pages.Length then items
+                let mutable found = -1
+                let mutable i = 0
+                while found < 0 && i < pages.Length do
+                    let s = pages.[i]
+                    if fr >= s.RowStart && fr <= s.RowEnd then
+                        found <- i
+                    i <- i + 1
+                if found >= 0 then found else 0
+            let byPage = Array.init pages.Length (fun _ -> ResizeArray<_>())
+            for fr, fc, fox, foy, locItems in overlays do
+                let pageIndex = pageOf fr
+                if pageIndex >= 0 && pageIndex < pages.Length then
+                    byPage.[pageIndex].Add(fr, fc, fox, foy, locItems)
+            byPage
+
+    let appendBand (emit: PaintItem -> unit)
+                   (rowStart: int) (rowEnd: int)
+                   (colStart: int) (colEnd: int)
+                   (offsetX: float) (offsetY: float) =
+        if printGridLines then
+            let mutable sawContent = false
+            let mutable addedGrid = false
+            let addGrid () =
+                if not addedGrid then
+                    iterGridLineItems geometry model rowStart rowEnd colStart colEnd offsetX offsetY emit
+                    addedGrid <- true
+            iterSliceItems geometry model measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY (fun item ->
+                if not sawContent then
+                    sawContent <- true
+                    match item with
+                    | FillRect _ ->
+                        emit item
+                        addGrid ()
+                    | _ ->
+                        addGrid ()
+                        emit item
                 else
-                    let slice = pages.[i]
-                    let colStartPx = colSumPx model 0 (slice.ColStart - 1)
-                    let rowStartPx = rowSumPx model 0 (slice.RowStart - 1)
-                    let added =
-                        overlays |> List.choose (fun (fr, fc, fox, foy, locItems) ->
-                            if pageOf fr = i then
-                                let gx = colSumPx model 0 (fc - 1) + fox
-                                let gy = rowSumPx model 0 (fr - 1) + foy
-                                let tx = baseX + (gx - colStartPx)
-                                let ty = baseY + (gy - rowStartPx)
-                                Some (VecGroup ((1.0, 0.0, 0.0, 1.0, tx, ty), locItems))
-                            else None)
-                    items @ added)
+                    emit item)
+            if not sawContent then
+                addGrid ()
+        else
+            iterSliceItems geometry model measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY emit
+
+    let emitPageItems (i: int) (emit: PaintItem -> unit) =
+        if i < pages.Length then
+            let slice = pages.[i]
+            // Body: rows × cols of the slice, offset by repeat band sizes.
+            appendBand
+                emit
+                slice.RowStart slice.RowEnd
+                slice.ColStart slice.ColEnd
+                (headingsColPx + repeatColsWidthPx) (headingsRowPx + repeatRowsHeightPx)
+            // Repeat-rows band (above body, full width): repeat rows × slice cols.
+            match pagination.RepeatRows with
+            | Some (rs, re) when re >= rs ->
+                appendBand
+                    emit
+                    rs re
+                    slice.ColStart slice.ColEnd
+                    (headingsColPx + repeatColsWidthPx) headingsRowPx
+            | _ -> ()
+            // Repeat-cols band (left of body, full height): slice rows × repeat cols.
+            match pagination.RepeatCols with
+            | Some (cs, ce) when ce >= cs ->
+                appendBand
+                    emit
+                    slice.RowStart slice.RowEnd
+                    cs ce
+                    headingsColPx (headingsRowPx + repeatRowsHeightPx)
+            | _ -> ()
+            // Repeat corner (top-left): repeat rows × repeat cols.
+            match pagination.RepeatRows, pagination.RepeatCols with
+            | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs ->
+                appendBand emit rs re cs ce headingsColPx headingsRowPx
+            | _ -> ()
+            if printHeadings then
+                for item in headingItems geometry model slice pagination do
+                    emit item
+            // Inject anchored overlays (charts/sparklines) onto the page whose slice
+            // contains each anchor cell, offset into that page's content band. Done
+            // before GID collection so overlay text fonts get subset too.
+            if i < overlaysByPage.Length && overlaysByPage.[i].Count > 0 then
+                let baseX = headingsColPx + repeatColsWidthPx
+                let baseY = headingsRowPx + repeatRowsHeightPx
+                let colStartPx = geometry.Col.Sum 0 (slice.ColStart - 1)
+                let rowStartPx = geometry.Row.Sum 0 (slice.RowStart - 1)
+                for fr, fc, fox, foy, locItems in overlaysByPage.[i] do
+                    let gx = geometry.Col.Sum 0 (fc - 1) + fox
+                    let gy = geometry.Row.Sum 0 (fr - 1) + foy
+                    let tx = baseX + (gx - colStartPx)
+                    let ty = baseY + (gy - rowStartPx)
+                    emit (VecGroup ((1.0, 0.0, 0.0, 1.0, tx, ty), locItems))
 
     // Collect used GIDs across every page's items, plus header / footer
     // sections (so their glyphs land in the subset too).
@@ -982,8 +1443,24 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
                 usedGids.[faceName] <- s
                 s
         for ch in text do
-            let gid = ttf.Cmap.TryFind (int ch) |> Option.defaultValue 0
+            let gid =
+                match ttf.Cmap.TryFind (int ch) with
+                | Some found -> found
+                | None -> 0
             set.Add gid |> ignore
+    let recordTextGids bold italic fontName text =
+        if not (String.IsNullOrEmpty text) then
+            match pickFace options fontName bold italic with
+            | None -> ()
+            | Some primaryFace ->
+                match parsed.TryGetValue primaryFace.FaceName with
+                | true, primaryTtf ->
+                    if List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf text then
+                        recordGids primaryFace.FaceName primaryTtf text
+                    else
+                        for (face, s) in segmentMixedByFont (primaryFace, primaryTtf) options.CjkFallback tryGetParsedFace bold text do
+                            recordGids (fst face).FaceName (snd face) s
+                | _ -> ()
     let recordStyled (section: HeaderFooter.StyledSection) =
         for run in section.Runs do
             if not (String.IsNullOrEmpty run.Text) then
@@ -992,24 +1469,24 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
                 | Some primaryFace ->
                     match parsed.TryGetValue primaryFace.FaceName with
                     | true, primaryTtf ->
-                        let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback parsedMap run.Bold run.Text
-                        for (face, s) in segments do
-                            recordGids (fst face).FaceName (snd face) s
+                        if List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf run.Text then
+                            recordGids primaryFace.FaceName primaryTtf run.Text
+                        else
+                            for (face, s) in segmentMixedByFont (primaryFace, primaryTtf) options.CjkFallback tryGetParsedFace run.Bold run.Text do
+                                recordGids (fst face).FaceName (snd face) s
                     | _ -> ()
-    for items in pageItems do
-        for item in items do
-            match item with
-            | DrawText t ->
-                match pickFace options t.FontName t.Bold t.Italic with
-                | Some primaryFace ->
-                    match parsed.TryGetValue primaryFace.FaceName with
-                    | true, primaryTtf ->
-                        let segments = segmentByFont (primaryFace, primaryTtf) options.CjkFallback parsedMap t.Bold t.Text
-                        for (face, s) in segments do
-                            recordGids (fst face).FaceName (snd face) s
-                    | _ -> ()
-                | None -> ()
-            | _ -> ()
+    let recordPaintTextGids (t: PaintText) =
+        recordTextGids t.Bold t.Italic t.FontName t.Text
+    let rec recordPaintItemGids item =
+        match item with
+        | DrawText t -> recordPaintTextGids t
+        | VecGroup (_, children) ->
+            for child in children do
+                recordPaintItemGids child
+        | _ -> ()
+    if canDrawText then
+        for pageIdx in 0 .. totalPages - 1 do
+            emitPageItems pageIdx recordPaintItemGids
 
     // Pick the (header, footer) variant for a 1-indexed page number. When
     // DifferentFirst is set, page 1 uses FirstHeader/FirstFooter; when
@@ -1023,6 +1500,17 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
         elif hf.DifferentOddEven && pageNum1 % 2 = 0 then hf.EvenHeader, hf.EvenFooter
         else hf.OddHeader, hf.OddFooter
 
+    let headerFooterTemplateCache = System.Collections.Generic.Dictionary<string, HeaderFooter.Template>()
+    let parsedHeaderFooter raw =
+        match headerFooterTemplateCache.TryGetValue raw with
+        | true, template -> template
+        | false, _ ->
+            let template = HeaderFooter.parse raw
+            headerFooterTemplateCache.[raw] <- template
+            template
+    let resolveHeaderFooter ctx raw =
+        HeaderFooter.resolveTemplate ctx (parsedHeaderFooter raw)
+
     // Build header/footer page contexts and pre-resolve all text so we
     // can register its glyphs for subsetting before embedding fonts.
     // `&P` honors `firstPageNumber` when `useFirstPageNumber` is set;
@@ -1031,7 +1519,7 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
     let firstPageOffset =
         if ps.UseFirstPageNumber then ps.FirstPageNumber - 1 else 0
     let resolvedHFs =
-        [ for pageIdx in 0 .. totalPages - 1 ->
+        Array.init totalPages (fun pageIdx ->
             let ctx : HeaderFooter.PageContext =
                 { PageNumber = pageIdx + 1 + firstPageOffset
                   TotalPages = totalPages
@@ -1040,14 +1528,22 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
                   FilePath = ""
                   Now = DateTime.Now }
             let headerRaw, footerRaw = pickHeaderFooter (pageIdx + 1)
-            let header = headerRaw |> Option.map (HeaderFooter.resolve ctx)
-            let footer = footerRaw |> Option.map (HeaderFooter.resolve ctx)
-            header, footer ]
+            let header = headerRaw |> Option.map (resolveHeaderFooter ctx)
+            let footer = footerRaw |> Option.map (resolveHeaderFooter ctx)
+            header, footer)
     for (header, footer) in resolvedHFs do
-        for section in [ header; footer ] |> List.choose id do
+        match header with
+        | Some section ->
             recordStyled section.Left
             recordStyled section.Center
             recordStyled section.Right
+        | None -> ()
+        match footer with
+        | Some section ->
+            recordStyled section.Left
+            recordStyled section.Center
+            recordStyled section.Right
+        | None -> ()
 
     let faceRemap = System.Collections.Generic.Dictionary<string, Map<int, int>>()
     let embedFace (face: FontFace) =
@@ -1056,7 +1552,11 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
         | true, _ ->
             let used =
                 match usedGids.TryGetValue face.FaceName with
-                | true, s -> Set.ofSeq s
+                | true, s ->
+                    let mutable gids = Set.empty
+                    for gid in s do
+                        gids <- Set.add gid gids
+                    gids
                 | _ -> Set.empty
             if Set.isEmpty used then () else
             try
@@ -1074,19 +1574,31 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
     for face in options.Fonts do embedFace face
     for face in options.CjkFallback do embedFace face
 
-    let faceTtfMap = parsedMap
-    let faceResourceMap =
-        [ for face in options.Fonts @ options.CjkFallback do
-            match PdfDoc.getEmbeddedFont builder face.FaceName with
-            | Some ef -> yield face.FaceName, ef.Name
-            | None -> () ]
-        |> Map.ofList
-    let faceRemapMap = faceRemap |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+    let mutable faceTtfMap = Map.empty
+    for KeyValue(name, ttf) in parsed do
+        faceTtfMap <- Map.add name ttf faceTtfMap
+    let mutable faceResourceMap = Map.empty
+    for face in options.Fonts do
+        match PdfDoc.getEmbeddedFont builder face.FaceName with
+        | Some ef -> faceResourceMap <- Map.add face.FaceName ef.Name faceResourceMap
+        | None -> ()
+    for face in options.CjkFallback do
+        match PdfDoc.getEmbeddedFont builder face.FaceName with
+        | Some ef -> faceResourceMap <- Map.add face.FaceName ef.Name faceResourceMap
+        | None -> ()
+    let mutable faceRemapMap = Map.empty
+    for KeyValue(name, remap) in faceRemap do
+        faceRemapMap <- Map.add name remap faceRemapMap
 
     let loadedFaceNames =
-        (options.Fonts @ options.CjkFallback)
-        |> List.map (fun f -> f.FaceName)
-        |> List.filter faceResourceMap.ContainsKey
+        let result = ResizeArray<string>()
+        for face in options.Fonts do
+            if faceResourceMap.ContainsKey face.FaceName then
+                result.Add face.FaceName
+        for face in options.CjkFallback do
+            if faceResourceMap.ContainsKey face.FaceName then
+                result.Add face.FaceName
+        resizeArrayToList result
 
     // Header/footer ops live in PDF coords directly. Excel scales H/F text
     // by the page's print scale when `headerFooter/@scaleWithDoc` is true
@@ -1103,14 +1615,15 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
     let printableLeftPt = leftMarginPt
     let printableRightPt = pageWidthPt - rightMarginPt
     let maxSectionFontSize (section: HeaderFooter.StyledSection) =
-        section.Runs
-        |> List.filter (fun run -> not (String.IsNullOrEmpty run.Text))
-        |> List.map (fun run -> (run.FontSize |> Option.defaultValue hfFontSizePt) * hfTextScale)
-        |> List.fold max hfScaledFontSizePt
+        let mutable maxFontSize = hfScaledFontSizePt
+        for run in section.Runs do
+            if not (String.IsNullOrEmpty run.Text) then
+                let fontSize = (run.FontSize |> Option.defaultValue hfFontSizePt) * hfTextScale
+                if fontSize > maxFontSize then
+                    maxFontSize <- fontSize
+        maxFontSize
     let maxHeaderFooterFontSize (section: HeaderFooter.Section) =
-        [ section.Left; section.Center; section.Right ]
-        |> List.map maxSectionFontSize
-        |> List.fold max hfScaledFontSizePt
+        max (max (maxSectionFontSize section.Left) (maxSectionFontSize section.Center)) (maxSectionFontSize section.Right)
     let headerBaselineYPt (section: HeaderFooter.Section) =
         // Excel anchors header text from the top header margin. Large H/F
         // runs therefore push the baseline down; a fixed 10 pt baseline puts
@@ -1130,37 +1643,34 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
         // margin baseline. A fixed lift matches both normal 10 pt footers
         // and the synthetic 16 pt mixed-run footer crop.
         footerMarginPt + 4.5
-    let renderSection (section: HeaderFooter.Section) (baselineYPt: float) =
-        sectionOps options faceTtfMap faceResourceMap faceRemapMap
+    let appendStyledSectionOps (ops: ResizeArray<PdfDraw.DrawOp>) styled baselineYPt xAlign =
+        appendSectionOps ops options faceTtfMap faceResourceMap faceRemapMap
             printableLeftPt printableRightPt
-            section.Left hfFontSizePt hfTextScale baselineYPt AlignLeft
-        @ sectionOps options faceTtfMap faceResourceMap faceRemapMap
-            printableLeftPt printableRightPt
-            section.Center hfFontSizePt hfTextScale baselineYPt AlignCenter
-        @ sectionOps options faceTtfMap faceResourceMap faceRemapMap
-            printableLeftPt printableRightPt
-            section.Right hfFontSizePt hfTextScale baselineYPt AlignRight
+            styled hfFontSizePt hfTextScale baselineYPt xAlign
+    let appendHeaderFooterOps ops (section: HeaderFooter.Section) baselineYPt =
+        appendStyledSectionOps ops section.Left baselineYPt AlignLeft
+        appendStyledSectionOps ops section.Center baselineYPt AlignCenter
+        appendStyledSectionOps ops section.Right baselineYPt AlignRight
 
     // Emit one PDF page per page slice (or one blank page when the
     // pagination is empty).
     let printableWidthPt = pageWidthPt - leftMarginPt - rightMarginPt
     let printableHeightPt = pageHeightPt - topMarginPt - bottomMarginPt
     for pageIdx in 0 .. totalPages - 1 do
-        let items = pageItems.[pageIdx]
         // Per-page content extent in points, accounting for heading strips
         // and repeat bands. Excel centers each page individually against its
         // own filled area, so a partly-filled last page still centers on
         // what's actually drawn rather than the full printable rectangle.
         let leftPtOffset, topPtOffset =
-            if pagination.Pages.IsEmpty then leftMarginPt, topMarginPt
+            if pages.Length = 0 then leftMarginPt, topMarginPt
             else
-                let slice = pagination.Pages.[pageIdx]
+                let slice = pages.[pageIdx]
                 let bodyWidthPx =
                     headingsColPx + repeatColsWidthPx
-                    + colSumPx model slice.ColStart slice.ColEnd
+                    + geometry.Col.Sum slice.ColStart slice.ColEnd
                 let bodyHeightPx =
                     headingsRowPx + repeatRowsHeightPx
-                    + rowSumPx model slice.RowStart slice.RowEnd
+                    + geometry.Row.Sum slice.RowStart slice.RowEnd
                 let bodyWidthPt = bodyWidthPx * pxToPt * pagination.Scale
                 let bodyHeightPt = bodyHeightPx * pxToPt * pagination.Scale
                 let extraLeft =
@@ -1178,15 +1688,48 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
               PageHeightPt = pageHeightPt
               Scale = pagination.Scale
               BlackAndWhite = ps.BlackAndWhite }
-        let contentOps =
-            items |> List.collect (translateItem options faceTtfMap faceResourceMap faceRemapMap placement)
+        let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
+        let sz v = v * pxToPt * placement.Scale
+        let xPt x = placement.LeftPtOffset + sz x
+        let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
+        let mutable gridBatchActive = false
+        let mutable gridBatchColor = ""
+        let mutable gridBatchWidth = 0.0
+        let flushGridBatch () =
+            if gridBatchActive then
+                ops.Add PdfDraw.Stroke
+                gridBatchActive <- false
+        let appendGridLine x1 y1 x2 y2 color width =
+            let color = bwStroke placement.BlackAndWhite color
+            if not gridBatchActive || gridBatchColor <> color || gridBatchWidth <> width then
+                flushGridBatch ()
+                ops.Add(PdfDraw.SetStrokeColor (parseHexColor color))
+                ops.Add(PdfDraw.SetLineWidth (sz width))
+                ops.Add(PdfDraw.SetDash ([], 0.0))
+                gridBatchActive <- true
+                gridBatchColor <- color
+                gridBatchWidth <- width
+            ops.Add(PdfDraw.MoveTo (xPt x1, yPdf y1))
+            ops.Add(PdfDraw.LineTo (xPt x2, yPdf y2))
+        let appendItem item =
+            match item with
+            | GridLine (x1, y1, x2, y2, color, width) ->
+                appendGridLine x1 y1 x2 y2 color width
+            | _ ->
+                flushGridBatch ()
+                appendTranslatedItem options faceTtfMap faceResourceMap faceRemapMap placement ops item
+        emitPageItems pageIdx appendItem
+        flushGridBatch ()
         let header, footer = resolvedHFs.[pageIdx]
-        let headerOps =
-            header |> Option.map (fun s -> renderSection s (headerBaselineYPt s)) |> Option.defaultValue []
-        let footerOps =
-            footer |> Option.map (fun s -> renderSection s footerBaselineYPt) |> Option.defaultValue []
-        let ops = contentOps @ headerOps @ footerOps
-        PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames [] ops |> ignore
+        match header with
+        | Some section ->
+            appendHeaderFooterOps ops section (headerBaselineYPt section)
+        | None -> ()
+        match footer with
+        | Some section ->
+            appendHeaderFooterOps ops section footerBaselineYPt
+        | None -> ()
+        PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames [] (resizeArrayToList ops) |> ignore
 
     PdfDoc.toBytes builder
 
@@ -1204,6 +1747,9 @@ let sceneToBytes (widthPx: float) (heightPx: float) (items: PaintItem list) : by
         { LeftPtOffset = 0.0; TopPtOffset = 0.0; PageHeightPt = pageHeightPt
           Scale = 1.0; BlackAndWhite = false }
     let opts = { DefaultFontFamily = "Calibri"; Fonts = []; CjkFallback = []; SheetName = ""; FileName = "" }
-    let ops = items |> List.collect (translateItem opts Map.empty Map.empty Map.empty placement)
-    PdfDoc.addPage builder (pageWidthPt, pageHeightPt) [] [] ops |> ignore
+    let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
+    for item in items do
+        for op in translateItem opts Map.empty Map.empty Map.empty placement item do
+            ops.Add op
+    PdfDoc.addPage builder (pageWidthPt, pageHeightPt) [] [] (resizeArrayToList ops) |> ignore
     PdfDoc.toBytes builder

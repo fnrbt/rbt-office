@@ -3,6 +3,7 @@ module Main
 open Fable.Core
 open Fable.Core.JsInterop
 open ZipInterop
+open System.Collections.Generic
 
 // Public API for DOCX reading
 module Word =
@@ -461,6 +462,13 @@ module ExcelWriter =
 
 // Public API for XLSX reading
 module Excel =
+    type private CellRangeBounds = {
+        RowMin: int
+        RowMax: int
+        ColMin: int
+        ColMax: int
+    }
+
     let private columnIndex (letters: string) =
         let mutable acc = 0
         for ch in letters do
@@ -469,33 +477,124 @@ module Excel =
         acc - 1
 
     let private refToCoord (ref: string) =
-        let clean = ref.Replace("$", "")
-        let letters = clean |> Seq.takeWhile System.Char.IsLetter |> Seq.toArray |> System.String
-        let digits = clean |> Seq.skipWhile System.Char.IsLetter |> Seq.toArray |> System.String
-        match System.Int32.TryParse digits with
-        | true, row when letters.Length > 0 -> Some (row - 1, columnIndex letters)
-        | _ -> None
+        let mutable index = 0
+        let mutable col = 0
+        let mutable row = 0
+        let mutable hasCol = false
+        let mutable hasRow = false
+        let mutable inRow = false
+        let mutable valid = not (System.String.IsNullOrWhiteSpace ref)
+        while valid && index < ref.Length do
+            let ch = ref.[index]
+            if ch = '$' then
+                ()
+            elif System.Char.IsLetter ch && not inRow then
+                hasCol <- true
+                let digit = int (System.Char.ToUpperInvariant ch) - int 'A' + 1
+                if digit < 1 || digit > 26 || col > (System.Int32.MaxValue - digit) / 26 then
+                    valid <- false
+                else
+                    col <- col * 26 + digit
+            elif System.Char.IsDigit ch then
+                inRow <- true
+                hasRow <- true
+                let digit = int ch - int '0'
+                if row > (System.Int32.MaxValue - digit) / 10 then
+                    valid <- false
+                else
+                    row <- row * 10 + digit
+            else
+                valid <- false
+            index <- index + 1
+        if valid && hasCol && hasRow && row > 0 && col > 0 then Some (row - 1, col - 1)
+        else None
 
-    let private rangeContains (row: int) (col: int) (range: string) =
+    let private tryParseRangeBounds (range: string) =
         let parts = range.Split(':')
         match parts.Length with
         | 1 ->
             refToCoord parts.[0]
-            |> Option.exists (fun (r, c) -> r = row && c = col)
+            |> Option.map (fun (r, c) -> { RowMin = r; RowMax = r; ColMin = c; ColMax = c })
         | 2 ->
             match refToCoord parts.[0], refToCoord parts.[1] with
             | Some (r1, c1), Some (r2, c2) ->
-                row >= min r1 r2 && row <= max r1 r2
-                && col >= min c1 c2 && col <= max c1 c2
-            | _ -> false
-        | _ -> false
+                Some {
+                    RowMin = min r1 r2
+                    RowMax = max r1 r2
+                    ColMin = min c1 c2
+                    ColMax = max c1 c2
+                }
+            | _ -> None
+        | _ -> None
+
+    let private rangeBoundsContains row col range =
+        row >= range.RowMin
+        && row <= range.RowMax
+        && col >= range.ColMin
+        && col <= range.ColMax
+
+    let private rangeContains (row: int) (col: int) (range: string) =
+        tryParseRangeBounds range
+        |> Option.exists (rangeBoundsContains row col)
 
     let private rangeListContains row col (ranges: string) =
         ranges.Split([| ' ' |], System.StringSplitOptions.RemoveEmptyEntries)
         |> Array.exists (rangeContains row col)
 
+    let private listDropdownRangeBounds (sheet: XlsxReader.Worksheet) =
+        let ranges = ResizeArray<CellRangeBounds>()
+        for validation in sheet.DataValidations do
+            if validation.ValidationType = "list" then
+                for range in validation.Range.Split([| ' ' |], System.StringSplitOptions.RemoveEmptyEntries) do
+                    match tryParseRangeBounds range with
+                    | Some bounds -> ranges.Add bounds
+                    | None -> ()
+        ranges.ToArray()
+
+    let private rangeBoundsArrayContains row col (ranges: CellRangeBounds array) =
+        let mutable found = false
+        let mutable index = 0
+        while not found && index < ranges.Length do
+            if rangeBoundsContains row col ranges.[index] then
+                found <- true
+            index <- index + 1
+        found
+
     let private optString (value: string option) =
         value |> Option.defaultValue null
+
+    let private objField name (value: obj) =
+#if FABLE_COMPILER
+        name ==> value
+#else
+        name, value
+#endif
+
+    let private objFromFields fields : obj =
+#if FABLE_COMPILER
+        createObj fields
+#else
+        let result = Dictionary<string, obj>()
+        for name, value in fields do
+            result.[name] <- value
+        box result
+#endif
+
+    let private addField (fields: ResizeArray<_>) name value =
+        fields.Add(objField name value)
+
+    let private addFieldWhen (fields: ResizeArray<_>) condition name value =
+        if condition then addField fields name value
+
+    let private addFieldOption (fields: ResizeArray<_>) name value =
+        match value with
+        | Some v -> addField fields name (box v)
+        | None -> ()
+
+    let private addFieldObjOption (fields: ResizeArray<_>) name value =
+        match value with
+        | Some v -> addField fields name v
+        | None -> ()
 
     let private cellRefText (cellRef: XlsxReader.CellReference) =
         sprintf "%s%d" cellRef.Column cellRef.Row
@@ -508,9 +607,9 @@ module Excel =
     let private borderObj (side: XlsxReader.CellBorderSide option) : obj =
         match side with
         | Some s ->
-            createObj [
-                "style" ==> s.Style
-                "color" ==> optString s.Color
+            objFromFields [
+                objField "style" s.Style
+                objField "color" (optString s.Color)
             ]
         | None -> null
 
@@ -523,21 +622,23 @@ module Excel =
         | None -> null
 
     let private richRunObj (text: string, props: XlsxReader.RunProps) =
-        createObj [
-            "text" ==> text
-            if props.Bold then "bold" ==> true
-            if props.Italic then "italic" ==> true
-            if props.Underline then "underline" ==> true
-            if props.UnderlineDouble then "underlineDouble" ==> true
-            if props.Strikethrough then "strikethrough" ==> true
-            "color" ==> cssColor props.Color
-            "fontName" ==> optString props.FontName
-            "fontSize" ==> optFloat props.FontSize
-            match props.VertAlign with
-            | XlsxReader.VertAlignSuperscript -> "vertAlign" ==> "superscript"
-            | XlsxReader.VertAlignSubscript -> "vertAlign" ==> "subscript"
-            | XlsxReader.VertAlignBaseline -> ()
-        ]
+        let fields = ResizeArray()
+        addField fields "text" text
+        addFieldWhen fields props.Bold "bold" true
+        addFieldWhen fields props.Italic "italic" true
+        addFieldWhen fields props.Underline "underline" true
+        addFieldWhen fields props.UnderlineDouble "underlineDouble" true
+        addFieldWhen fields props.Strikethrough "strikethrough" true
+        let color = cssColor props.Color
+        if not (isNull color) then
+            addField fields "color" color
+        addFieldOption fields "fontName" props.FontName
+        addFieldObjOption fields "fontSize" (props.FontSize |> Option.map box)
+        match props.VertAlign with
+        | XlsxReader.VertAlignSuperscript -> addField fields "vertAlign" "superscript"
+        | XlsxReader.VertAlignSubscript -> addField fields "vertAlign" "subscript"
+        | XlsxReader.VertAlignBaseline -> ()
+        objFromFields fields
 
     let private richRunsForCell (workbook: XlsxReader.Workbook) (cell: XlsxReader.Cell) =
         let lift runs =
@@ -553,6 +654,22 @@ module Excel =
                      && not (List.isEmpty workbook.SharedStringRuns.[idx]) ->
                 lift workbook.SharedStringRuns.[idx]
             | _ -> [||]
+
+    let private richRunsObjForCell (workbook: XlsxReader.Workbook) (cell: XlsxReader.Cell) =
+        let lift runs =
+            match runs with
+            | _ :: _ :: _ -> box (runs |> List.map richRunObj |> List.toArray)
+            | _ -> null
+        if not (List.isEmpty cell.InlineRuns) then
+            lift cell.InlineRuns
+        else
+            match cell.Value with
+            | XlsxReader.SharedString idx
+                when idx >= 0
+                     && idx < workbook.SharedStringRuns.Length
+                     && not (List.isEmpty workbook.SharedStringRuns.[idx]) ->
+                lift workbook.SharedStringRuns.[idx]
+            | _ -> null
 
     let private cellFormula (cell: XlsxReader.Cell) =
         match cell.Value with
@@ -576,48 +693,85 @@ module Excel =
 
     let private commentAtCoord row col (sheet: XlsxReader.Worksheet) =
         sheet.Comments
-        |> List.tryFind (fun c ->
+                |> List.tryFind (fun c ->
             c.CellRef.Row - 1 = row
             && columnIndex c.CellRef.Column = col)
+
+    let private addStyleFields fields (style: XlsxReader.CellStyle option) =
+        match style with
+        | Some s ->
+            addFieldWhen fields s.Bold "bold" true
+            addFieldWhen fields s.Italic "italic" true
+            addFieldWhen fields s.Underline "underline" true
+            addFieldWhen fields s.UnderlineDouble "underlineDouble" true
+            addFieldWhen fields s.Strikethrough "strikethrough" true
+            addFieldOption fields "fontName" s.FontName
+            addFieldOption fields "fontColor" s.FontColor
+            addFieldOption fields "fillColor" s.FillColor
+            addFieldObjOption fields "fontSize" (s.FontSize |> Option.map box)
+            addFieldOption fields "numberFormat" s.NumberFormat
+            addFieldOption fields "horizontalAlign" s.HorizontalAlign
+            addFieldOption fields "verticalAlign" s.VerticalAlign
+            addFieldWhen fields s.WrapText "wrapText" true
+            addFieldObjOption fields "borderTop" (s.BorderTop |> Option.map (fun side -> borderObj (Some side)))
+            addFieldObjOption fields "borderBottom" (s.BorderBottom |> Option.map (fun side -> borderObj (Some side)))
+            addFieldObjOption fields "borderLeft" (s.BorderLeft |> Option.map (fun side -> borderObj (Some side)))
+            addFieldObjOption fields "borderRight" (s.BorderRight |> Option.map (fun side -> borderObj (Some side)))
+            addFieldObjOption fields "borderDiagonal" (s.BorderDiagonal |> Option.map (fun side -> borderObj (Some side)))
+            addFieldWhen fields s.DiagonalUp "diagonalUp" true
+            addFieldWhen fields s.DiagonalDown "diagonalDown" true
+        | None -> ()
+
+    let private styleObj (style: XlsxReader.CellStyle option) =
+        let fields = ResizeArray()
+        addStyleFields fields style
+        objFromFields fields
+
+    let private effectiveStyleIndex (workbook: XlsxReader.Workbook) (cell: XlsxReader.Cell) =
+        match cell.StyleIndex with
+        | Some idx when idx >= 0 && idx < workbook.Styles.Length -> idx
+        | None when workbook.Styles.Length > 0 && cell.Style.IsSome -> 0
+        | _ -> -1
+
+    let private commentCoordSet (sheet: XlsxReader.Worksheet) =
+        let comments = HashSet<struct (int * int)>()
+        for comment in sheet.Comments do
+            let row = comment.CellRef.Row - 1
+            let col = columnIndex comment.CellRef.Column
+            if row >= 0 && col >= 0 then
+                comments.Add(struct (row, col)) |> ignore
+        comments
+
+    let private cellWithStyleObjWithFlags (workbook: XlsxReader.Workbook option) (c: XlsxReader.Cell) hasComment hasListDropdown : obj =
+        let style = c.Style
+        let fields = ResizeArray()
+        addField fields "ref" (cellRefText c.Reference)
+        match workbook with
+        | Some wb ->
+            let value = cellValueObj wb c
+            if not (isNull value) then
+                addField fields "value" value
+        | None -> ()
+        let formula = cellFormula c
+        if not (isNull formula) then
+            addField fields "formula" formula
+        match style with
+        | Some _ -> addStyleFields fields style
+        | None -> ()
+        addFieldWhen fields hasComment "hasComment" true
+        addFieldWhen fields hasListDropdown "hasListDropdown" true
+        match workbook with
+        | Some wb ->
+            let richRuns = richRunsForCell wb c
+            if richRuns.Length > 0 then
+                addField fields "richRuns" richRuns
+        | None -> ()
+        objFromFields fields
 
     let private cellWithStyleObj (workbook: XlsxReader.Workbook option) (sheet: XlsxReader.Worksheet) (c: XlsxReader.Cell) : obj =
         let row = c.Reference.Row - 1
         let col = columnIndex c.Reference.Column
-        let style = c.Style
-        createObj [
-            "ref" ==> cellRefText c.Reference
-            "value" ==>
-                (match workbook with
-                 | Some wb -> cellValueObj wb c
-                 | None -> null)
-            "formula" ==> cellFormula c
-            "bold" ==> (style |> Option.map (fun s -> s.Bold) |> Option.defaultValue false)
-            "italic" ==> (style |> Option.map (fun s -> s.Italic) |> Option.defaultValue false)
-            "underline" ==> (style |> Option.map (fun s -> s.Underline) |> Option.defaultValue false)
-            "underlineDouble" ==> (style |> Option.map (fun s -> s.UnderlineDouble) |> Option.defaultValue false)
-            "strikethrough" ==> (style |> Option.map (fun s -> s.Strikethrough) |> Option.defaultValue false)
-            "fontName" ==> (style |> Option.bind (fun s -> s.FontName) |> optString)
-            "fontColor" ==> (style |> Option.bind (fun s -> s.FontColor) |> optString)
-            "fillColor" ==> (style |> Option.bind (fun s -> s.FillColor) |> optString)
-            "fontSize" ==> (style |> Option.bind (fun s -> s.FontSize) |> optFloat)
-            "numberFormat" ==> (style |> Option.bind (fun s -> s.NumberFormat) |> optString)
-            "horizontalAlign" ==> (style |> Option.bind (fun s -> s.HorizontalAlign) |> optString)
-            "verticalAlign" ==> (style |> Option.bind (fun s -> s.VerticalAlign) |> optString)
-            "wrapText" ==> (style |> Option.map (fun s -> s.WrapText) |> Option.defaultValue false)
-            "borderTop" ==> (style |> Option.bind (fun s -> s.BorderTop) |> borderObj)
-            "borderBottom" ==> (style |> Option.bind (fun s -> s.BorderBottom) |> borderObj)
-            "borderLeft" ==> (style |> Option.bind (fun s -> s.BorderLeft) |> borderObj)
-            "borderRight" ==> (style |> Option.bind (fun s -> s.BorderRight) |> borderObj)
-            "borderDiagonal" ==> (style |> Option.bind (fun s -> s.BorderDiagonal) |> borderObj)
-            "diagonalUp" ==> (style |> Option.map (fun s -> s.DiagonalUp) |> Option.defaultValue false)
-            "diagonalDown" ==> (style |> Option.map (fun s -> s.DiagonalDown) |> Option.defaultValue false)
-            "hasComment" ==> (commentAtCoord row col sheet |> Option.isSome)
-            "hasListDropdown" ==> listDropdownAt row col sheet
-            "richRuns" ==>
-                (match workbook with
-                 | Some wb -> richRunsForCell wb c
-                 | None -> [||])
-        ]
+        cellWithStyleObjWithFlags workbook c (commentAtCoord row col sheet |> Option.isSome) (listDropdownAt row col sheet)
 
     /// Load an XLSX file from array buffer or blob
     let load = XlsxReader.load
@@ -633,20 +787,41 @@ module Excel =
     /// Convert worksheet to 2D array
     let toArray = XlsxReader.sheetToArray
 
+    /// Used range dimensions as one-based row/column counts.
+    let dimensions (sheet: XlsxReader.Worksheet) =
+        let mutable rowCount = 0
+        let mutable colCount = 0
+        for row in sheet.Rows do
+            if row.Index > rowCount then
+                rowCount <- row.Index
+            for cell in row.Cells do
+                let col = columnIndex cell.Reference.Column + 1
+                if col > colCount then
+                    colCount <- col
+        objFromFields [
+            objField "rowCount" (box rowCount)
+            objField "colCount" (box colCount)
+        ]
+
+    let private findCellByRef (cellRef: XlsxReader.CellReference) (sheet: XlsxReader.Worksheet) =
+        sheet.Rows
+        |> List.tryFind (fun row -> row.Index = cellRef.Row)
+        |> Option.bind (fun row ->
+            row.Cells
+            |> List.tryFind (fun cell -> cell.Reference = cellRef))
+
     /// Get cell value at reference (e.g., "A1")
     let cellAt (ref: string) (sheet: XlsxReader.Worksheet) =
         let cellRef = XlsxReader.Xlsx.parseCellRef ref
-        sheet.Rows
-        |> List.collect (fun r -> r.Cells)
-        |> List.tryFind (fun c -> c.Reference = cellRef)
+        sheet
+        |> findCellByRef cellRef
         |> Option.map (fun c -> c.Value)
 
     /// Get cell with style at reference
     let cellWithStyleAt (ref: string) (sheet: XlsxReader.Worksheet) : obj =
         let cellRef = XlsxReader.Xlsx.parseCellRef ref
-        sheet.Rows
-        |> List.collect (fun r -> r.Cells)
-        |> List.tryFind (fun c -> c.Reference = cellRef)
+        sheet
+        |> findCellByRef cellRef
         |> Option.map (cellWithStyleObj None sheet)
         |> Option.defaultValue null
 
@@ -654,17 +829,109 @@ module Excel =
     /// This avoids the browser importer's old coordinate-by-coordinate scan,
     /// which is pathological for wide style-only sheets.
     let cellsWithStyle (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
-        sheet.Rows
-        |> List.collect (fun r -> r.Cells)
-        |> List.map (cellWithStyleObj (Some workbook) sheet)
-        |> List.toArray
+        let comments = commentCoordSet sheet
+        let dropdownRanges = listDropdownRangeBounds sheet
+        let cells = ResizeArray<obj>()
+        for row in sheet.Rows do
+            for cell in row.Cells do
+                let rowIndex = cell.Reference.Row - 1
+                let colIndex = columnIndex cell.Reference.Column
+                let hasComment =
+                    rowIndex >= 0
+                    && colIndex >= 0
+                    && comments.Contains(struct (rowIndex, colIndex))
+                let hasListDropdown =
+                    rowIndex >= 0
+                    && colIndex >= 0
+                    && rangeBoundsArrayContains rowIndex colIndex dropdownRanges
+                cells.Add(cellWithStyleObjWithFlags (Some workbook) cell hasComment hasListDropdown)
+        cells.ToArray()
+
+    /// Compact cell stream for importers. Slots are:
+    /// row0, col0, value, formula, styleIndex, hasComment, hasListDropdown, richRuns.
+    let cellsCompact (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
+        let comments = commentCoordSet sheet
+        let dropdownRanges = listDropdownRangeBounds sheet
+        let cells = ResizeArray<obj>()
+        for row in sheet.Rows do
+            for cell in row.Cells do
+                let rowIndex = cell.Reference.Row - 1
+                let colIndex = columnIndex cell.Reference.Column
+                let hasComment =
+                    rowIndex >= 0
+                    && colIndex >= 0
+                    && comments.Contains(struct (rowIndex, colIndex))
+                let hasListDropdown =
+                    rowIndex >= 0
+                    && colIndex >= 0
+                    && rangeBoundsArrayContains rowIndex colIndex dropdownRanges
+                cells.Add(box [|
+                    box rowIndex
+                    box colIndex
+                    cellValueObj workbook cell
+                    box (cellFormula cell)
+                    box (effectiveStyleIndex workbook cell)
+                    box hasComment
+                    box hasListDropdown
+                    richRunsObjForCell workbook cell
+                |])
+        cells.ToArray()
+
+    /// Columnar compact cell stream for importers. This avoids one tiny
+    /// array/object per cell when importing very large sheets.
+    let cellsColumnar (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
+        let comments = commentCoordSet sheet
+        let dropdownRanges = listDropdownRangeBounds sheet
+        let rows = ResizeArray<int>()
+        let cols = ResizeArray<int>()
+        let values = ResizeArray<obj>()
+        let formulas = ResizeArray<obj>()
+        let styleIndexes = ResizeArray<int>()
+        let hasComments = ResizeArray<bool>()
+        let hasListDropdowns = ResizeArray<bool>()
+        let richRuns = ResizeArray<obj>()
+        for row in sheet.Rows do
+            for cell in row.Cells do
+                let rowIndex = cell.Reference.Row - 1
+                let colIndex = columnIndex cell.Reference.Column
+                let hasComment =
+                    rowIndex >= 0
+                    && colIndex >= 0
+                    && comments.Contains(struct (rowIndex, colIndex))
+                let hasListDropdown =
+                    rowIndex >= 0
+                    && colIndex >= 0
+                    && rangeBoundsArrayContains rowIndex colIndex dropdownRanges
+                rows.Add rowIndex
+                cols.Add colIndex
+                values.Add(cellValueObj workbook cell)
+                formulas.Add(box (cellFormula cell))
+                styleIndexes.Add(effectiveStyleIndex workbook cell)
+                hasComments.Add hasComment
+                hasListDropdowns.Add hasListDropdown
+                richRuns.Add(richRunsObjForCell workbook cell)
+        objFromFields [
+            objField "rows" (box (rows.ToArray()))
+            objField "cols" (box (cols.ToArray()))
+            objField "values" (box (values.ToArray()))
+            objField "formulas" (box (formulas.ToArray()))
+            objField "styleIndexes" (box (styleIndexes.ToArray()))
+            objField "hasComments" (box (hasComments.ToArray()))
+            objField "hasListDropdowns" (box (hasListDropdowns.ToArray()))
+            objField "richRuns" (box (richRuns.ToArray()))
+        ]
+
+    let styleAt (index: int) (workbook: XlsxReader.Workbook) =
+        if index >= 0 && index < workbook.Styles.Length then
+            styleObj (Some workbook.Styles.[index])
+        else
+            null
 
     /// Get per-run rich text for a cell. Returns an empty JS array for plain cells.
     let richRunsAt (ref: string) (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
         let cellRef = XlsxReader.Xlsx.parseCellRef ref
-        sheet.Rows
-        |> List.collect (fun r -> r.Cells)
-        |> List.tryFind (fun c -> c.Reference = cellRef)
+        sheet
+        |> findCellByRef cellRef
         |> Option.map (richRunsForCell workbook)
         |> Option.defaultValue [||]
 
@@ -682,25 +949,56 @@ module Excel =
         | None -> null
 
     /// Effective column width in Excel character units.
+    let private defaultColumnWidth (sheet: XlsxReader.Worksheet) =
+        match sheet.Format.DefaultColWidth with
+        | Some width -> width
+        | None ->
+            match sheet.Format.BaseColWidth with
+            | Some width -> width + 1.0
+            | None -> 8.43
+
     let columnWidth (col: int) (sheet: XlsxReader.Worksheet) =
         let col1 = col + 1
         match sheet.Columns |> List.tryFind (fun c -> col1 >= c.Index && col1 <= c.MaxIndex) with
         | Some c when c.Hidden -> 0.0
         | Some c -> c.Width |> Option.defaultValue 0.0
-        | None ->
-            match sheet.Format.DefaultColWidth with
-            | Some width -> width
-            | None ->
-                match sheet.Format.BaseColWidth with
-                | Some width -> width + 1.0
-                | None -> 8.43
+        | None -> defaultColumnWidth sheet
+
+    /// Effective column widths in Excel character units for zero-based columns [0, count).
+    let columnWidths (count: int) (sheet: XlsxReader.Worksheet) =
+        let count = max 0 count
+        let widths = Array.create count (defaultColumnWidth sheet)
+        for column in sheet.Columns do
+            let first = max 0 (column.Index - 1)
+            let last = min (count - 1) (column.MaxIndex - 1)
+            if first <= last then
+                let width = if column.Hidden then 0.0 else column.Width |> Option.defaultValue 0.0
+                for col = first to last do
+                    widths.[col] <- width
+        widths
 
     /// Effective row height in points.
+    let private defaultRowHeight (sheet: XlsxReader.Worksheet) =
+        sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
+
+    let private effectiveRowHeight (sheet: XlsxReader.Worksheet) (row: XlsxReader.Row) =
+        row.Height |> Option.orElse sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
+
     let rowHeight (row: int) (sheet: XlsxReader.Worksheet) =
         let row1 = row + 1
         match sheet.Rows |> List.tryFind (fun r -> r.Index = row1) with
-        | Some r -> r.Height |> Option.orElse sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
-        | None -> sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
+        | Some r -> effectiveRowHeight sheet r
+        | None -> defaultRowHeight sheet
+
+    /// Effective row heights in points for zero-based rows [0, count).
+    let rowHeights (count: int) (sheet: XlsxReader.Worksheet) =
+        let count = max 0 count
+        let heights = Array.create count (defaultRowHeight sheet)
+        for row in sheet.Rows do
+            let index = row.Index - 1
+            if index >= 0 && index < count then
+                heights.[index] <- effectiveRowHeight sheet row
+        heights
 
     /// Get merged cells from worksheet
     let mergedCells (sheet: XlsxReader.Worksheet) =
@@ -782,13 +1080,19 @@ let api () = {|
         sheetNames = Excel.sheetNames
         sheet = Excel.sheet
         toArray = Excel.toArray
+        dimensions = Excel.dimensions
         cellAt = Excel.cellAt
         cellWithStyleAt = Excel.cellWithStyleAt
         cellsWithStyle = Excel.cellsWithStyle
+        cellsCompact = Excel.cellsCompact
+        cellsColumnar = Excel.cellsColumnar
+        styleAt = Excel.styleAt
         richRunsAt = Excel.richRunsAt
         commentAt = Excel.commentAt
         columnWidth = Excel.columnWidth
+        columnWidths = Excel.columnWidths
         rowHeight = Excel.rowHeight
+        rowHeights = Excel.rowHeights
         mergedCells = Excel.mergedCells
         columns = Excel.columns
         styles = Excel.styles

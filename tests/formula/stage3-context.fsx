@@ -1,5 +1,5 @@
 #r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office-spreadsheet/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
 
 open RedBat.Spreadsheet.Model
 open RedBat.Spreadsheet.Formula
@@ -64,6 +64,7 @@ let e x = CellValue.Error x
 check "xsheet-cell"   "=Sheet2!A1"               (n 99.0)
 check "xsheet-add"    "=Sheet2!A1+B1"            (n 109.0)        // 99 + Sheet1!B1
 check "xsheet-range"  "=SUM(Sheet2!A2:A4)"       (n 6.0)
+check "xsheet-range-scalar" "=Sheet2!A2:A4"       (n 1.0)
 check "xsheet-avg"    "=AVERAGE(Sheet2!A2:A4)"   (n 2.0)
 check "xsheet-bad"    "=NoSuchSheet!A1"          (e "REF!")
 check "xsheet-ci"     "=sheet2!A1"               (n 99.0)         // sheet name match is case-insensitive
@@ -95,6 +96,7 @@ check "name-ci"       "=mycell"                  (n 99.0)         // names are c
 check "name-local"    "=LocalCell"               (n 20.0)         // unqualified ref → active model
 check "name-in-expr"  "=MyCell+LocalCell"        (n 119.0)
 check "name-range"    "=SUM(MyRange)"            (n 6.0)          // name standing in for a range
+check "name-range-scalar" "=MyRange"             (n 1.0)
 check "name-range-avg" "=AVERAGE(MyRange)"       (n 2.0)
 check "name-chain"    "=Alias"                   (n 99.0)         // Alias → MyCell → Sheet2!A1
 check "name-cyclic"   "=CycA"                    (e "NAME?")      // cycle guard
@@ -105,7 +107,7 @@ check "name-unknown"  "=NoSuchName"              (e "NAME?")
 check "name-scoped-local"  "=Shared"             (n 30.0)         // sheet1-local Shared → B3
 // resolving with a different (or no) sheet scope falls back to the global.
 let sharedExpr = match parseFormula "=Shared" with Ok x -> x | _ -> Number 0.0
-match eval sharedExpr { Model = model; Workbook = wb; Sheet = Some "sheet2"; CurrentCell = None } with
+match eval sharedExpr { Model = model; Workbook = wb; Sheet = Some "sheet2"; CriteriaCache = None; CurrentCell = None } with
 | CellValue.Number 10.0 -> pass <- pass + 1
 | got -> fail <- fail + 1; printfn "FAIL name-scoped-global  expected 10  got %A" got
 

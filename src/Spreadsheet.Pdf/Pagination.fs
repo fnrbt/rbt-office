@@ -49,6 +49,148 @@ type Pagination = {
     RepeatCols: (int * int) option
 }
 
+type private PaginationCache = {
+    Cells: Map<CellAddress, CellData>
+    RowHeights: Map<int, float>
+    ColumnWidths: Map<int, float>
+    PageSetup: PageSetup
+    CellCount: int
+    RowHeightCount: int
+    ColumnWidthCount: int
+    SourceTextCharCount: int
+    Pagination: Pagination
+}
+
+let mutable private paginationCache: PaginationCache list = []
+let private paginationCacheMaxSources = 4
+let private paginationCacheMaxTotalCells = 250000
+let private paginationCacheMaxTotalRowHeights = 200000
+let private paginationCacheMaxTotalColumnWidths = 200000
+let private paginationCacheMaxTotalSourceTextChars = 5000000
+
+let private paginationCacheMatches (model: SpreadsheetModel) (cached: PaginationCache) =
+    obj.ReferenceEquals(cached.Cells, model.Cells)
+    && obj.ReferenceEquals(cached.RowHeights, model.RowHeights)
+    && obj.ReferenceEquals(cached.ColumnWidths, model.ColumnWidths)
+    && cached.PageSetup = model.PageSetup
+
+let private optionStringCharCount (value: string option) =
+    match value with
+    | Some value -> value.Length
+    | None -> 0
+
+let private paginationSourceTextAddCapped amount total =
+    if amount <= 0 then total
+    elif total > paginationCacheMaxTotalSourceTextChars
+         || amount > paginationCacheMaxTotalSourceTextChars - total then
+        paginationCacheMaxTotalSourceTextChars + 1
+    else
+        total + amount
+
+let private headerFooterStringCharCount (headerFooter: HeaderFooter) =
+    0
+    |> paginationSourceTextAddCapped (optionStringCharCount headerFooter.OddHeader)
+    |> paginationSourceTextAddCapped (optionStringCharCount headerFooter.OddFooter)
+    |> paginationSourceTextAddCapped (optionStringCharCount headerFooter.EvenHeader)
+    |> paginationSourceTextAddCapped (optionStringCharCount headerFooter.EvenFooter)
+    |> paginationSourceTextAddCapped (optionStringCharCount headerFooter.FirstHeader)
+    |> paginationSourceTextAddCapped (optionStringCharCount headerFooter.FirstFooter)
+
+let private borderStringCharCount (border: BorderStyle option) =
+    match border with
+    | Some border -> border.Style.Length + optionStringCharCount border.Color
+    | None -> 0
+
+let rec private cellValueStringCharCount = function
+    | CellValue.String value
+    | CellValue.Error value -> value.Length
+    | CellValue.Formula (formula, cachedValue) -> formula.Length + cellValueStringCharCount cachedValue
+    | CellValue.Empty
+    | CellValue.Number _
+    | CellValue.Boolean _ -> 0
+
+let private cellFormatStringCharCount (format: CellFormat) =
+    optionStringCharCount format.FontName
+    + optionStringCharCount format.TextColor
+    + optionStringCharCount format.BgColor
+    + optionStringCharCount format.HorizontalAlign
+    + optionStringCharCount format.VerticalAlign
+    + optionStringCharCount format.NumberFormat
+    + borderStringCharCount format.BorderTop
+    + borderStringCharCount format.BorderBottom
+    + borderStringCharCount format.BorderLeft
+    + borderStringCharCount format.BorderRight
+    + borderStringCharCount format.BorderDiagonal
+    + (match format.DataBar with Some (_, color) -> color.Length | None -> 0)
+
+let private cellCommentStringCharCount (comment: CellComment option) =
+    match comment with
+    | Some comment -> comment.Text.Length + optionStringCharCount comment.Author
+    | None -> 0
+
+let private cellDataStringCharCount (cell: CellData) =
+    cellValueStringCharCount cell.Value
+    + cellFormatStringCharCount cell.Format
+    + cellCommentStringCharCount cell.Comment
+
+let private sourceTextCharCount (pageSetup: PageSetup) (cells: Map<CellAddress, CellData>) =
+    let mutable total = headerFooterStringCharCount pageSetup.HeaderFooter
+    for KeyValue(_, cell) in cells do
+        if total <= paginationCacheMaxTotalSourceTextChars then
+            total <- paginationSourceTextAddCapped (cellDataStringCharCount cell) total
+    total
+
+let private sourceTextCharCountFor cellCount rowHeightCount columnWidthCount pageSetup cells =
+    if cellCount > paginationCacheMaxTotalCells
+       || rowHeightCount > paginationCacheMaxTotalRowHeights
+       || columnWidthCount > paginationCacheMaxTotalColumnWidths then
+        paginationCacheMaxTotalSourceTextChars + 1
+    else
+        sourceTextCharCount pageSetup cells
+
+let private paginationCacheEntryRetainable (cached: PaginationCache) =
+    cached.CellCount <= paginationCacheMaxTotalCells
+    && cached.RowHeightCount <= paginationCacheMaxTotalRowHeights
+    && cached.ColumnWidthCount <= paginationCacheMaxTotalColumnWidths
+    && cached.SourceTextCharCount <= paginationCacheMaxTotalSourceTextChars
+
+let private rememberPaginationCache cached =
+    let trim entries =
+        let rec loop keptCount keptCells keptRowHeights keptColumnWidths keptTextChars acc remaining =
+            match remaining with
+            | [] -> List.rev acc
+            | candidate :: tail ->
+                let candidateCells = max 1 candidate.CellCount
+                let candidateRowHeights = max 1 candidate.RowHeightCount
+                let candidateColumnWidths = max 1 candidate.ColumnWidthCount
+                let candidateTextChars = max 1 candidate.SourceTextCharCount
+                if paginationCacheEntryRetainable candidate
+                   && keptCount < paginationCacheMaxSources
+                   && keptCells + candidateCells <= paginationCacheMaxTotalCells
+                   && keptRowHeights + candidateRowHeights <= paginationCacheMaxTotalRowHeights
+                   && keptColumnWidths + candidateColumnWidths <= paginationCacheMaxTotalColumnWidths
+                   && keptTextChars + candidateTextChars <= paginationCacheMaxTotalSourceTextChars then
+                    loop
+                        (keptCount + 1)
+                        (keptCells + candidateCells)
+                        (keptRowHeights + candidateRowHeights)
+                        (keptColumnWidths + candidateColumnWidths)
+                        (keptTextChars + candidateTextChars)
+                        (candidate :: acc)
+                        tail
+                else
+                    loop keptCount keptCells keptRowHeights keptColumnWidths keptTextChars acc tail
+        loop 0 0 0 0 0 [] entries
+    paginationCache <-
+        (cached
+         :: (paginationCache
+             |> List.filter (fun existing ->
+                 not (obj.ReferenceEquals(existing.Cells, cached.Cells)
+                      && obj.ReferenceEquals(existing.RowHeights, cached.RowHeights)
+                      && obj.ReferenceEquals(existing.ColumnWidths, cached.ColumnWidths)
+                      && existing.PageSetup = cached.PageSetup))))
+        |> trim
+
 let private colWidthPx (model: SpreadsheetModel) (col: int) : float =
     Map.tryFind col model.ColumnWidths |> Option.defaultValue 100.0
 
@@ -59,6 +201,18 @@ let private rangeSum (sizes: int -> float) (startInc: int) (endInc: int) : float
     let mutable s = 0.0
     for i in startInc .. endInc do s <- s + sizes i
     s
+
+let private resizeArrayToList (items: ResizeArray<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
+let private breakSet (breaks: int list) =
+    let mutable result = Set.empty
+    for breakIndex in breaks do
+        result <- Set.add (breakIndex - 1) result
+    result
 
 /// Bounding box of every non-empty cell. Empty model collapses to A1 so
 /// downstream code has a non-degenerate range to work with.
@@ -91,7 +245,7 @@ let private axisBreaks
     (available: float)
     : (int * int) list =
     if startInc > endInc then [] else
-    let result = System.Collections.Generic.List<int * int>()
+    let result = ResizeArray<int * int>()
     let mutable pageStart = startInc
     let mutable acc = 0.0
     for i in startInc .. endInc do
@@ -109,18 +263,19 @@ let private axisBreaks
         else
             acc <- acc + sz
     if pageStart <= endInc then result.Add(pageStart, endInc)
-    List.ofSeq result
+    resizeArrayToList result
 
 /// Convert the model's PageSetup into the full pagination. Repeat rows /
 /// cols steal space from every page (so the available area shrinks);
 /// `Scale` applies *after* break computation, so a small scale means more
 /// content fits and breaks land later — we honor that by inflating the
 /// available size by 1/scale before computing the breaks.
-let paginate (model: SpreadsheetModel) : Pagination =
+let private paginateUncached (model: SpreadsheetModel) : Pagination =
     let ps = model.PageSetup
     let printRange =
-        ps.PrintArea
-        |> Option.defaultValue (usedRange model)
+        match ps.PrintArea with
+        | Some range -> range
+        | None -> usedRange model
 
     let leftPt = ps.Margins.Left * 72.0
     let rightPt = ps.Margins.Right * 72.0
@@ -167,8 +322,8 @@ let paginate (model: SpreadsheetModel) : Pagination =
     let effW = availableW / scale
     let effH = availableH / scale
 
-    let manualRow = ps.ManualRowBreaks |> List.map (fun b -> b - 1) |> Set.ofList
-    let manualCol = ps.ManualColBreaks |> List.map (fun b -> b - 1) |> Set.ofList
+    let manualRow = breakSet ps.ManualRowBreaks
+    let manualCol = breakSet ps.ManualColBreaks
 
     // Body range excludes the repeat rows / cols — they ride along on every
     // page separately. Without this the first row / column would render
@@ -191,18 +346,45 @@ let paginate (model: SpreadsheetModel) : Pagination =
     // row-pages of the first column-slice before the next column-slice;
     // OverThenDown inverts the outer/inner loops.
     let pages =
+        let result = ResizeArray<PageSlice>()
         match ps.PageOrder with
         | DownThenOver ->
-            [ for (cs, ce) in colRanges do
-                for (rs, re) in rowRanges ->
-                    { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce } ]
+            for (cs, ce) in colRanges do
+                for (rs, re) in rowRanges do
+                    result.Add { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce }
         | OverThenDown ->
-            [ for (rs, re) in rowRanges do
-                for (cs, ce) in colRanges ->
-                    { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce } ]
+            for (rs, re) in rowRanges do
+                for (cs, ce) in colRanges do
+                    result.Add { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce }
+        resizeArrayToList result
 
-    { Pages = pages
-      PrintBounds = printRange
-      Scale = scale
-      RepeatRows = ps.RepeatRows
-      RepeatCols = ps.RepeatCols }
+    let result =
+        { Pages = pages
+          PrintBounds = printRange
+          Scale = scale
+          RepeatRows = ps.RepeatRows
+          RepeatCols = ps.RepeatCols }
+    result
+
+let paginate (model: SpreadsheetModel) : Pagination =
+    match paginationCache |> List.tryFind (paginationCacheMatches model) with
+    | Some cached ->
+        rememberPaginationCache cached
+        cached.Pagination
+    | None ->
+        let result = paginateUncached model
+        let cellCount = Map.count model.Cells
+        let rowHeightCount = Map.count model.RowHeights
+        let columnWidthCount = Map.count model.ColumnWidths
+        rememberPaginationCache {
+            Cells = model.Cells
+            RowHeights = model.RowHeights
+            ColumnWidths = model.ColumnWidths
+            PageSetup = model.PageSetup
+            CellCount = cellCount
+            RowHeightCount = rowHeightCount
+            ColumnWidthCount = columnWidthCount
+            SourceTextCharCount = sourceTextCharCountFor cellCount rowHeightCount columnWidthCount model.PageSetup model.Cells
+            Pagination = result
+        }
+        result

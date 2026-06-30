@@ -10,14 +10,18 @@ open RedBat.Word.Document
 // Arcs are emitted as cubic beziers (kappa approximation), so a single DrawShape
 // path primitive covers every renderer (canvas / PDF / native).
 
-/// Cubic-bezier approximation of the elliptical arc on centre (cx,cy), radii
-/// (rx,ry), sweeping angle a0->a1 (radians, y-down). Splits into <=90° pieces.
-/// The caller is assumed to already sit at the arc's start point.
-let private arcSegs cx cy rx ry a0 a1 : PathSeg list =
+let private resizeArrayToList (items: ResizeArray<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
+let private prependArcSegs cx cy rx ry a0 a1 (tail: PathSeg list) =
     let total = a1 - a0
     let steps = max 1 (int (ceil (abs total / (Math.PI / 2.0))))
     let dq = total / float steps
-    [ for i in 0 .. steps - 1 ->
+    let mutable result = tail
+    for i = steps - 1 downto 0 do
         let s0 = a0 + dq * float i
         let s1 = s0 + dq
         let k = (4.0 / 3.0) * tan ((s1 - s0) / 4.0)
@@ -25,27 +29,29 @@ let private arcSegs cx cy rx ry a0 a1 : PathSeg list =
         let p0y = cy + ry * sin s0
         let p1x = cx + rx * cos s1
         let p1y = cy + ry * sin s1
-        PCubic(p0x - k * rx * sin s0, p0y + k * ry * cos s0,
-               p1x + k * rx * sin s1, p1y - k * ry * cos s1,
-               p1x, p1y) ]
+        result <-
+            PCubic(p0x - k * rx * sin s0, p0y + k * ry * cos s0,
+                   p1x + k * rx * sin s1, p1y - k * ry * cos s1,
+                   p1x, p1y) :: result
+    result
 
 /// Full ellipse path inside the box.
 let private ellipsePath w h : PathSeg list =
     let cx, cy, rx, ry = w / 2.0, h / 2.0, w / 2.0, h / 2.0
-    PMove(cx + rx, cy) :: arcSegs cx cy rx ry 0.0 (2.0 * Math.PI) @ [ PClose ]
+    PMove(cx + rx, cy) :: prependArcSegs cx cy rx ry 0.0 (2.0 * Math.PI) [ PClose ]
 
 /// Rounded rectangle with corner radius r.
 let private roundRectPath w h r : PathSeg list =
     let r = max 0.0 (min r (min w h / 2.0))
-    [ PMove(r, 0.0); PLine(w - r, 0.0) ]
-    @ arcSegs (w - r) r r r (-Math.PI / 2.0) 0.0
-    @ [ PLine(w, h - r) ]
-    @ arcSegs (w - r) (h - r) r r 0.0 (Math.PI / 2.0)
-    @ [ PLine(r, h) ]
-    @ arcSegs r (h - r) r r (Math.PI / 2.0) Math.PI
-    @ [ PLine(0.0, r) ]
-    @ arcSegs r r r r Math.PI (3.0 * Math.PI / 2.0)
-    @ [ PClose ]
+    let tail = [ PClose ]
+    let tail = prependArcSegs r r r r Math.PI (3.0 * Math.PI / 2.0) tail
+    let tail = PLine(0.0, r) :: tail
+    let tail = prependArcSegs r (h - r) r r (Math.PI / 2.0) Math.PI tail
+    let tail = PLine(r, h) :: tail
+    let tail = prependArcSegs (w - r) (h - r) r r 0.0 (Math.PI / 2.0) tail
+    let tail = PLine(w, h - r) :: tail
+    let tail = prependArcSegs (w - r) r r r (-Math.PI / 2.0) 0.0 tail
+    PMove(r, 0.0) :: PLine(w - r, 0.0) :: tail
 
 let private rectPath w h : PathSeg list =
     [ PMove(0.0, 0.0); PLine(w, 0.0); PLine(w, h); PLine(0.0, h); PClose ]
@@ -53,25 +59,40 @@ let private rectPath w h : PathSeg list =
 let private poly (pts: (float * float) list) : PathSeg list =
     match pts with
     | [] -> []
-    | (x0, y0) :: rest -> PMove(x0, y0) :: (rest |> List.map PLine) @ [ PClose ]
+    | (x0, y0) :: rest ->
+        let path = ResizeArray<PathSeg>(pts.Length + 1)
+        path.Add(PMove(x0, y0))
+        for x, y in rest do
+            path.Add(PLine(x, y))
+        path.Add PClose
+        resizeArrayToList path
 
 /// Regular n-gon inscribed in the box, first vertex at `startAngle`.
 let private regularPolygon n w h startAngle : PathSeg list =
     let cx, cy, rx, ry = w / 2.0, h / 2.0, w / 2.0, h / 2.0
-    [ for i in 0 .. n - 1 ->
-        let a = startAngle + 2.0 * Math.PI * float i / float n
-        (cx + rx * cos a, cy + ry * sin a) ]
-    |> poly
+    if n <= 0 then []
+    else
+        let mutable path = [ PClose ]
+        for i = n - 1 downto 0 do
+            let a = startAngle + 2.0 * Math.PI * float i / float n
+            let x, y = cx + rx * cos a, cy + ry * sin a
+            path <- (if i = 0 then PMove(x, y) else PLine(x, y)) :: path
+        path
 
 /// n-point star, alternating outer/inner radius (innerRatio of the box radius).
 let private starPath points w h innerRatio : PathSeg list =
     let cx, cy, rx, ry = w / 2.0, h / 2.0, w / 2.0, h / 2.0
     let start = -Math.PI / 2.0
-    [ for i in 0 .. 2 * points - 1 ->
-        let a = start + Math.PI * float i / float points
-        let r = if i % 2 = 0 then 1.0 else innerRatio
-        (cx + rx * r * cos a, cy + ry * r * sin a) ]
-    |> poly
+    let pointCount = 2 * points
+    if pointCount <= 0 then []
+    else
+        let mutable path = [ PClose ]
+        for i = pointCount - 1 downto 0 do
+            let a = start + Math.PI * float i / float points
+            let r = if i % 2 = 0 then 1.0 else innerRatio
+            let x, y = cx + rx * r * cos a, cy + ry * r * sin a
+            path <- (if i = 0 then PMove(x, y) else PLine(x, y)) :: path
+        path
 
 // Block arrows ---------------------------------------------------------------
 let private rightArrow w h : PathSeg list =
@@ -125,6 +146,41 @@ let private bevelPath w h : PathSeg list =
     // outer rectangle (the inner highlight is a renderer detail we skip)
     rectPath w h
 
+type private PresetPathCacheEntry = {
+    Preset: string
+    Width: float
+    Height: float
+    Path: PathSeg list
+}
+
+let mutable private presetPathCache: PresetPathCacheEntry list = []
+let private presetPathCacheMaxEntries = 128
+let private presetPathCacheMaxTotalPresetChars = 1000000
+
+let private presetPathCacheMatches preset w h cached =
+    cached.Preset = preset && cached.Width = w && cached.Height = h
+
+let private rememberPresetPath entry =
+    if entry.Preset.Length <= presetPathCacheMaxTotalPresetChars then
+        let trim entries =
+            let rec loop remaining kept count totalPresetChars =
+                match remaining with
+                | [] -> List.rev kept
+                | candidate :: rest ->
+                    let presetChars = max 1 candidate.Preset.Length
+                    let nextTotalPresetChars = totalPresetChars + presetChars
+                    if count < presetPathCacheMaxEntries
+                       && nextTotalPresetChars <= presetPathCacheMaxTotalPresetChars then
+                        loop rest (candidate :: kept) (count + 1) nextTotalPresetChars
+                    else
+                        loop rest kept count totalPresetChars
+            loop entries [] 0 0
+        presetPathCache <-
+            entry
+            :: (presetPathCache
+                |> List.filter (presetPathCacheMatches entry.Preset entry.Width entry.Height >> not))
+            |> trim
+
 /// Presets we render as their true geometry (everything else uses the rect
 /// fallback). Used only for diagnostics/coverage reporting.
 let knownPresets =
@@ -142,7 +198,7 @@ let knownPresets =
 let isKnownPreset (preset: string) : bool = knownPresets.Contains preset
 
 /// Path for a named OOXML preset in the box (w,h). Falls back to a rectangle.
-let presetPath (preset: string) (w: float) (h: float) : PathSeg list =
+let private presetPathUncached (preset: string) (w: float) (h: float) : PathSeg list =
     match preset with
     | "rect" | "rectangle" | "flowChartProcess" | "flowChartPredefinedProcess"
     | "flowChartInternalStorage" -> rectPath w h
@@ -188,6 +244,14 @@ let presetPath (preset: string) (w: float) (h: float) : PathSeg list =
     | "flowChartDocument" -> rectPath w h
     | "round" | "pie" -> ellipsePath w h
     | _ -> rectPath w h
+
+let presetPath (preset: string) (w: float) (h: float) : PathSeg list =
+    match presetPathCache |> List.tryFind (presetPathCacheMatches preset w h) with
+    | Some cached -> cached.Path
+    | None ->
+        let path = presetPathUncached preset w h
+        rememberPresetPath { Preset = preset; Width = w; Height = h; Path = path }
+        path
 
 /// Scale a custom path from its own coordinate space into the box (w,h).
 let private scaleCustom (segs: PathSeg list) coordW coordH w h : PathSeg list =

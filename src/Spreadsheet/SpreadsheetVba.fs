@@ -10,7 +10,18 @@ open RedBat.Spreadsheet.Model
 let private getProp (_source: obj) (_name: string): obj = jsNative
 
 let private eq (left: string) (right: string) =
-    left.ToLowerInvariant() = right.ToLowerInvariant()
+    if left.Length <> right.Length then
+        false
+    else
+        let mutable index = 0
+        let mutable equal = true
+        while equal && index < left.Length do
+            let l = left.[index]
+            let r = right.[index]
+            if l <> r && System.Char.ToUpperInvariant l <> System.Char.ToUpperInvariant r then
+                equal <- false
+            index <- index + 1
+        equal
 
 type private HostObject(typeName: string, getMember: string -> Value option, setMember: string -> Value -> bool, callMethod: string -> Value array -> Value option) =
     interface IHostObject with
@@ -76,24 +87,54 @@ let private propInt name (source: obj) =
     | VString s -> match System.Int32.TryParse(s) with true, i -> i | _ -> 0
     | _ -> 0
 
-let private normalizeAddress (address: string) =
-    let noSheet =
-        match address.LastIndexOf("!") with
-        | -1 -> address
-        | idx -> address.Substring(idx + 1)
-    noSheet.Replace("$", "").ToUpperInvariant()
+let private parseAddressSpan (address: string) startIndex endExclusive =
+    if startIndex >= endExclusive then
+        None
+    else
+        let mutable sheetEnd = -1
+        let mutable sheetIndex = endExclusive - 1
+        while sheetEnd < 0 && sheetIndex >= startIndex do
+            if address.[sheetIndex] = '!' then
+                sheetEnd <- sheetIndex
+            sheetIndex <- sheetIndex - 1
+        let mutable index = if sheetEnd >= startIndex then sheetEnd + 1 else startIndex
+        let mutable col = 0
+        let mutable row = 0
+        let mutable hasCol = false
+        let mutable hasRow = false
+        let mutable inRow = false
+        let mutable valid = true
+        while valid && index < endExclusive do
+            let c = address.[index]
+            if c = '$' then
+                ()
+            elif System.Char.IsDigit c then
+                inRow <- true
+                hasRow <- true
+                row <- row * 10 + int c - int '0'
+            elif System.Char.IsLetter c && not inRow then
+                hasCol <- true
+                let upper = System.Char.ToUpperInvariant c
+                col <- col * 26 + int upper - int 'A' + 1
+            else
+                valid <- false
+            index <- index + 1
+        if valid && hasCol && hasRow && row > 0 && col > 0 then
+            Some (row - 1, col - 1)
+        else
+            None
 
 let private parseRangeRef (reference: string) =
-    let parts = reference.Split(':')
-    let parse part = parseCellRef (normalizeAddress part)
-    match parts with
-    | [| one |] ->
-        parse one |> Option.map (fun (r, c) -> r, c, r, c)
-    | [| first; last |] ->
-        match parse first, parse last with
+    let colon = reference.IndexOf(':')
+    if colon < 0 then
+        parseAddressSpan reference 0 reference.Length
+        |> Option.map (fun (r, c) -> r, c, r, c)
+    elif colon = reference.LastIndexOf(':') then
+        match parseAddressSpan reference 0 colon, parseAddressSpan reference (colon + 1) reference.Length with
         | Some (r1, c1), Some (r2, c2) -> Some (min r1 r2, min c1 c2, max r1 r2, max c1 c2)
         | _ -> None
-    | _ -> None
+    else
+        None
 
 let private formatCellAddress row col rowAbsolute columnAbsolute =
     sprintf "%s%s%s%d"
@@ -127,7 +168,15 @@ type CellSnapshot = {
     Text: string
 }
 
+type private SnapshotCells = {
+    All: unit -> CellSnapshot array
+    TryCell: int -> int -> CellSnapshot option
+}
+
 let private pxToPt (value: float) = value * 72.0 / 96.0
+
+let private cellKey row col =
+    ((int64 row) <<< 32) ||| int64 col
 
 let private cellValueRepr = function
     | CellValue.Empty -> ""
@@ -141,75 +190,116 @@ let private cellFormulaRepr = function
     | CellValue.Formula (expr, _) -> "=" + expr
     | _ -> ""
 
-let private snapshotFromModelWithViewport (model: SpreadsheetModel) (viewport: RedBat.Spreadsheet.Layout.Viewport) =
-    let maxRow, maxCol =
-        let mutable mr = 0
-        let mutable mc = 0
-        for KeyValue(addr, _) in model.Cells do
-            mr <- max mr addr.Row
-            mc <- max mc addr.Col
-        for merge in model.MergedCells do
-            mr <- max mr merge.EndRow
-            mc <- max mc merge.EndCol
-        min (model.RowCount - 1) mr, min (model.ColCount - 1) mc
+let private modelSnapshotBounds (model: SpreadsheetModel) =
+    match usedBounds model with
+    | Some (row, col) -> min (model.RowCount - 1) row, min (model.ColCount - 1) col
+    | None -> 0, 0
 
-    [|
-        for row in 0 .. maxRow do
-            for col in 0 .. maxCol do
-                let isMergedTrailing =
-                    model.MergedCells
-                    |> List.exists (fun m ->
-                        row >= m.StartRow && row <= m.EndRow &&
-                        col >= m.StartCol && col <= m.EndCol &&
-                        not (row = m.StartRow && col = m.StartCol))
-                if not isMergedTrailing then
-                    let addr = { Row = row; Col = col }
-                    let merge =
-                        model.MergedCells
-                        |> List.tryFind (fun m ->
-                            row >= m.StartRow && row <= m.EndRow &&
-                            col >= m.StartCol && col <= m.EndCol)
-                    let rect =
-                        match merge with
-                        | Some m when row = m.StartRow && col = m.StartCol -> RedBat.Spreadsheet.Layout.mergedRect model viewport m
-                        | _ -> RedBat.Spreadsheet.Layout.cellRect model viewport row col
-                    let cellData = getCell addr model
-                    let value = getCellValue addr model
-                    let format = cellData |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
-                    let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
-                    let displayText = RedBat.Spreadsheet.CellText.cellDisplayText None rect.Width format value
-                    let mergedRows, mergedCols =
-                        match merge with
-                        | Some m -> m.EndRow - m.StartRow + 1, m.EndCol - m.StartCol + 1
-                        | None -> 1, 1
-                    yield {
-                        Row = row + 1
-                        Column = col + 1
-                        Address = columnToLetter col + string (row + 1)
-                        X = pxToPt (rect.X - viewport.RowHeaderWidth)
-                        Y = pxToPt (rect.Y - viewport.HeaderHeight)
-                        Width = pxToPt rect.Width
-                        Height = pxToPt rect.Height
-                        MergedRows = mergedRows
-                        MergedCols = mergedCols
-                        RowHeight = pxToPt (getRowHeight row model)
-                        ColumnWidth = pxToPt (getColumnWidth col model)
-                        WrapText = format.WrapText
-                        HAlign = format.HorizontalAlign |> Option.defaultValue "general"
-                        VAlign = format.VerticalAlign |> Option.defaultValue "bottom"
-                        FontName = format.FontName |> Option.defaultValue "Calibri"
-                        FontSize = fontPt
-                        Bold = format.Bold
-                        Italic = format.Italic
-                        NumberFormat = format.NumberFormat |> Option.defaultValue "General"
-                        Formula = cellFormulaRepr value
-                        Value = cellValueRepr value
-                        Text = displayText
-                    }
+let private findMergeAt row col (model: SpreadsheetModel) =
+    let mutable result = ValueNone
+    let mutable remaining = model.MergedCells
+    while result.IsNone && not remaining.IsEmpty do
+        let merge = remaining.Head
+        if row >= merge.StartRow && row <= merge.EndRow &&
+           col >= merge.StartCol && col <= merge.EndCol then
+            result <- ValueSome merge
+        remaining <- remaining.Tail
+    result
+
+let private emitModelSnapshotCell (model: SpreadsheetModel) (viewport: RedBat.Spreadsheet.Layout.Viewport) row col merge =
+    let addr = { Row = row; Col = col }
+    let rect =
+        match merge with
+        | ValueSome m -> RedBat.Spreadsheet.Layout.mergedRect model viewport m
+        | ValueNone -> RedBat.Spreadsheet.Layout.cellRect model viewport row col
+    let cellData = getCell addr model
+    let value = getCellValue addr model
+    let format = cellData |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
+    let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+    let displayText = RedBat.Spreadsheet.CellText.cellDisplayText None rect.Width format value
+    let mergedRows, mergedCols =
+        match merge with
+        | ValueSome m -> m.EndRow - m.StartRow + 1, m.EndCol - m.StartCol + 1
+        | ValueNone -> 1, 1
+    {
+        Row = row + 1
+        Column = col + 1
+        Address = columnToLetter col + string (row + 1)
+        X = pxToPt (rect.X - viewport.RowHeaderWidth)
+        Y = pxToPt (rect.Y - viewport.HeaderHeight)
+        Width = pxToPt rect.Width
+        Height = pxToPt rect.Height
+        MergedRows = mergedRows
+        MergedCols = mergedCols
+        RowHeight = pxToPt (getRowHeight row model)
+        ColumnWidth = pxToPt (getColumnWidth col model)
+        WrapText = format.WrapText
+        HAlign = format.HorizontalAlign |> Option.defaultValue "general"
+        VAlign = format.VerticalAlign |> Option.defaultValue "bottom"
+        FontName = format.FontName |> Option.defaultValue "Calibri"
+        FontSize = fontPt
+        Bold = format.Bold
+        Italic = format.Italic
+        NumberFormat = format.NumberFormat |> Option.defaultValue "General"
+        Formula = cellFormulaRepr value
+        Value = cellValueRepr value
+        Text = displayText
+    }
+
+let private snapshotFromModelWithViewport (model: SpreadsheetModel) (viewport: RedBat.Spreadsheet.Layout.Viewport) =
+    let maxRow, maxCol = modelSnapshotBounds model
+
+    if List.isEmpty model.MergedCells then
+        [|
+            for row in 0 .. maxRow do
+                for col in 0 .. maxCol do
+                    yield emitModelSnapshotCell model viewport row col ValueNone
+        |]
+    else
+        let mergedByCell = System.Collections.Generic.Dictionary<int64, MergedCell>()
+        for merge in model.MergedCells do
+            let r0 = max 0 merge.StartRow
+            let c0 = max 0 merge.StartCol
+            let r1 = min maxRow merge.EndRow
+            let c1 = min maxCol merge.EndCol
+            for row in r0 .. r1 do
+                for col in c0 .. c1 do
+                    mergedByCell.[cellKey row col] <- merge
+
+        [|
+            for row in 0 .. maxRow do
+                for col in 0 .. maxCol do
+                    match mergedByCell.TryGetValue(cellKey row col) with
+                    | true, m when row = m.StartRow && col = m.StartCol ->
+                        yield emitModelSnapshotCell model viewport row col (ValueSome m)
+                    | true, _ ->
+                        ()
+                    | false, _ ->
+                        yield emitModelSnapshotCell model viewport row col ValueNone
     |]
 
 let snapshotFromModel (model: SpreadsheetModel) =
     snapshotFromModelWithViewport model (RedBat.Spreadsheet.Layout.defaultViewport 100000.0 100000.0)
+
+let private snapshotCellsFromModel (model: SpreadsheetModel) =
+    let viewport = RedBat.Spreadsheet.Layout.defaultViewport 100000.0 100000.0
+    let all = lazy (snapshotFromModelWithViewport model viewport)
+    let maxRow, maxCol = modelSnapshotBounds model
+    {
+        All = fun () -> all.Force()
+        TryCell =
+            fun row col ->
+                if row < 0 || col < 0 || row > maxRow || col > maxCol then
+                    None
+                else
+                    match findMergeAt row col model with
+                    | ValueSome merge when row = merge.StartRow && col = merge.StartCol ->
+                        Some (emitModelSnapshotCell model viewport row col (ValueSome merge))
+                    | ValueSome _ ->
+                        None
+                    | ValueNone ->
+                        Some (emitModelSnapshotCell model viewport row col ValueNone)
+    }
 
 let private snapshot (spreadsheet: Spreadsheet.Spreadsheet) =
     spreadsheet.GetVbaLayoutCells()
@@ -223,18 +313,33 @@ let private cellsInRange (spreadsheet: Spreadsheet.Spreadsheet) startRow startCo
         row >= startRow + 1 && row <= endRow + 1 && col >= startCol + 1 && col <= endCol + 1)
 
 let rec private rangeObject (spreadsheet: Spreadsheet.Spreadsheet) startRow startCol endRow endCol =
-    let cells () = cellsInRange spreadsheet startRow startCol endRow endCol
-    let firstCell () = cells () |> Array.tryHead
+    let cellsCache = lazy (cellsInRange spreadsheet startRow startCol endRow endCol)
+    let cells () = cellsCache.Force()
+    let firstCellCache = lazy (cells () |> Array.tryHead)
+    let firstCell () = firstCellCache.Force()
 
-    let aggregateBounds () =
+    let boundsCache = lazy (
         let cells = cells ()
         if cells.Length = 0 then 0.0, 0.0, 0.0, 0.0
         else
-            let left = cells |> Array.map (propFloat "x") |> Array.min
-            let top = cells |> Array.map (propFloat "y") |> Array.min
-            let right = cells |> Array.map (fun c -> propFloat "x" c + propFloat "width" c) |> Array.max
-            let bottom = cells |> Array.map (fun c -> propFloat "y" c + propFloat "height" c) |> Array.max
+            let first = cells.[0]
+            let mutable left = propFloat "x" first
+            let mutable top = propFloat "y" first
+            let mutable right = left + propFloat "width" first
+            let mutable bottom = top + propFloat "height" first
+            for i = 1 to cells.Length - 1 do
+                let cell = cells.[i]
+                let x = propFloat "x" cell
+                let y = propFloat "y" cell
+                let r = x + propFloat "width" cell
+                let b = y + propFloat "height" cell
+                if x < left then left <- x
+                if y < top then top <- y
+                if r > right then right <- r
+                if b > bottom then bottom <- b
             left, top, right - left, bottom - top
+    )
+    let aggregateBounds () = boundsCache.Force()
 
     let formatAddress rowAbsolute columnAbsolute =
         let first = formatCellAddress (startRow + 1) (startCol + 1) rowAbsolute columnAbsolute
@@ -330,9 +435,20 @@ let private worksheetObject (spreadsheet: Spreadsheet.Spreadsheet) =
                 if cells.Length = 0 then
                     Some (rangeObject spreadsheet 0 0 0 0)
                 else
-                    let rows = cells |> Array.map (propInt "row")
-                    let cols = cells |> Array.map (propInt "column")
-                    Some (rangeObject spreadsheet ((Array.min rows) - 1) ((Array.min cols) - 1) ((Array.max rows) - 1) ((Array.max cols) - 1))
+                    let first = cells.[0]
+                    let mutable minRow = propInt "row" first
+                    let mutable maxRow = minRow
+                    let mutable minCol = propInt "column" first
+                    let mutable maxCol = minCol
+                    for i = 1 to cells.Length - 1 do
+                        let cell = cells.[i]
+                        let row = propInt "row" cell
+                        let col = propInt "column" cell
+                        if row < minRow then minRow <- row
+                        if row > maxRow then maxRow <- row
+                        if col < minCol then minCol <- col
+                        if col > maxCol then maxCol <- col
+                    Some (rangeObject spreadsheet (minRow - 1) (minCol - 1) (maxRow - 1) (maxCol - 1))
             elif eq name "Cells" then
                 Some (rangeObject spreadsheet 0 0 1048575 16383)
             else None)
@@ -427,25 +543,109 @@ let runVbs (spreadsheet: Spreadsheet.Spreadsheet) (source: string) =
         |> FsVb.RunOptions.withHostGlobals (hostGlobalsVbs spreadsheet)
     FsVb.runSource options source
 
-let private cellsInSnapshot (snapshot: unit -> CellSnapshot array) startRow startCol endRow endCol =
-    snapshot ()
-    |> Array.filter (fun cell ->
-        cell.Row >= startRow + 1 && cell.Row <= endRow + 1 &&
-        cell.Column >= startCol + 1 && cell.Column <= endCol + 1)
+let private snapshotCells (snapshot: unit -> CellSnapshot array) =
+    let mutable allCache: CellSnapshot array voption = ValueNone
+    let all () =
+        match allCache with
+        | ValueSome cells -> cells
+        | ValueNone ->
+            let cells = snapshot ()
+            allCache <- ValueSome cells
+            cells
+    let buildIndex () =
+        let index = System.Collections.Generic.Dictionary<int64, CellSnapshot>()
+        for cell in all () do
+            index.[cellKey (cell.Row - 1) (cell.Column - 1)] <- cell
+        index
+    let mutable lookupCount = 0
+    let mutable byCell: System.Collections.Generic.Dictionary<int64, CellSnapshot> voption = ValueNone
+    let linearFind row col =
+        let cells = all ()
+        let row1 = row + 1
+        let col1 = col + 1
+        let mutable found = ValueNone
+        let mutable index = 0
+        while found.IsNone && index < cells.Length do
+            let cell = cells.[index]
+            if cell.Row = row1 && cell.Column = col1 then
+                found <- ValueSome cell
+            index <- index + 1
+        match found with
+        | ValueSome cell -> Some cell
+        | ValueNone -> None
+    {
+        All = all
+        TryCell =
+            fun row col ->
+                match byCell with
+                | ValueSome index ->
+                    match index.TryGetValue(cellKey row col) with
+                    | true, cell -> Some cell
+                    | false, _ -> None
+                | ValueNone ->
+                    lookupCount <- lookupCount + 1
+                    if lookupCount >= 8 && (all ()).Length >= 32 then
+                        let index = buildIndex ()
+                        byCell <- ValueSome index
+                        match index.TryGetValue(cellKey row col) with
+                        | true, cell -> Some cell
+                        | false, _ -> None
+                    else
+                        linearFind row col
+    }
 
-let rec private rangeObjectForSnapshot (sheetName: string) (snapshot: unit -> CellSnapshot array) startRow startCol endRow endCol =
-    let cells () = cellsInSnapshot snapshot startRow startCol endRow endCol
-    let firstCell () = cells () |> Array.tryHead
+let private cellsInSnapshot (snapshot: SnapshotCells) startRow startCol endRow endCol =
+    if startRow = endRow && startCol = endCol then
+        match snapshot.TryCell startRow startCol with
+        | Some cell -> [| cell |]
+        | None -> [||]
+    else
+        let cells = snapshot.All ()
+        let startRow1 = startRow + 1
+        let startCol1 = startCol + 1
+        let endRow1 = endRow + 1
+        let endCol1 = endCol + 1
+        let result = ResizeArray<CellSnapshot>()
+        for cell in cells do
+            if cell.Row >= startRow1 && cell.Row <= endRow1 &&
+               cell.Column >= startCol1 && cell.Column <= endCol1 then
+                result.Add cell
+        result.ToArray()
 
-    let aggregateBounds () =
-        let cells = cells ()
-        if cells.Length = 0 then 0.0, 0.0, 0.0, 0.0
+let rec private rangeObjectForSnapshot (sheetName: string) (snapshot: SnapshotCells) startRow startCol endRow endCol =
+    let isSingleCell = startRow = endRow && startCol = endCol
+    let cellsCache = lazy (cellsInSnapshot snapshot startRow startCol endRow endCol)
+    let cells () = cellsCache.Force()
+    let firstCellCache = lazy (
+        if isSingleCell then snapshot.TryCell startRow startCol
+        else cells () |> Array.tryHead)
+    let firstCell () = firstCellCache.Force()
+
+    let boundsCache = lazy (
+        if isSingleCell then
+            match firstCell () with
+            | Some cell -> cell.X, cell.Y, cell.Width, cell.Height
+            | None -> 0.0, 0.0, 0.0, 0.0
         else
-            let left = cells |> Array.map _.X |> Array.min
-            let top = cells |> Array.map _.Y |> Array.min
-            let right = cells |> Array.map (fun c -> c.X + c.Width) |> Array.max
-            let bottom = cells |> Array.map (fun c -> c.Y + c.Height) |> Array.max
-            left, top, right - left, bottom - top
+            let cells = cells ()
+            if cells.Length = 0 then 0.0, 0.0, 0.0, 0.0
+            else
+                let first = cells.[0]
+                let mutable left = first.X
+                let mutable top = first.Y
+                let mutable right = first.X + first.Width
+                let mutable bottom = first.Y + first.Height
+                for i = 1 to cells.Length - 1 do
+                    let cell = cells.[i]
+                    let r = cell.X + cell.Width
+                    let b = cell.Y + cell.Height
+                    if cell.X < left then left <- cell.X
+                    if cell.Y < top then top <- cell.Y
+                    if r > right then right <- r
+                    if b > bottom then bottom <- b
+                left, top, right - left, bottom - top
+    )
+    let aggregateBounds () = boundsCache.Force()
 
     let formatAddress rowAbsolute columnAbsolute =
         let first = formatCellAddress (startRow + 1) (startCol + 1) rowAbsolute columnAbsolute
@@ -525,18 +725,25 @@ let rec private rangeObjectForSnapshot (sheetName: string) (snapshot: unit -> Ce
                 Some (rangeObjectForSnapshot sheetName snapshot startRow startCol (startRow + rows - 1) (startCol + cols - 1))
             else None)
 
-and private usedRangeObjectForSnapshot (sheetName: string) (snapshot: unit -> CellSnapshot array) =
-    let cells = snapshot ()
+and private usedRangeObjectForSnapshot (sheetName: string) (snapshot: SnapshotCells) =
+    let cells = snapshot.All ()
     if cells.Length = 0 then
         rangeObjectForSnapshot sheetName snapshot 0 0 0 0
     else
-        rangeObjectForSnapshot sheetName snapshot
-            ((cells |> Array.map _.Row |> Array.min) - 1)
-            ((cells |> Array.map _.Column |> Array.min) - 1)
-            ((cells |> Array.map _.Row |> Array.max) - 1)
-            ((cells |> Array.map _.Column |> Array.max) - 1)
+        let first = cells.[0]
+        let mutable minRow = first.Row
+        let mutable maxRow = first.Row
+        let mutable minCol = first.Column
+        let mutable maxCol = first.Column
+        for i = 1 to cells.Length - 1 do
+            let cell = cells.[i]
+            if cell.Row < minRow then minRow <- cell.Row
+            if cell.Row > maxRow then maxRow <- cell.Row
+            if cell.Column < minCol then minCol <- cell.Column
+            if cell.Column > maxCol then maxCol <- cell.Column
+        rangeObjectForSnapshot sheetName snapshot (minRow - 1) (minCol - 1) (maxRow - 1) (maxCol - 1)
 
-and private worksheetObjectForSnapshot (sheetName: string) (snapshot: unit -> CellSnapshot array) =
+and private worksheetObjectForSnapshot (sheetName: string) (snapshot: SnapshotCells) =
     host "Excel.Worksheet"
         (fun (name: string) ->
             if eq name "Name" then Some (VString sheetName)
@@ -609,7 +816,7 @@ let private createObjectFunctionForSnapshot sheetName snapshot =
                 else Some VNothing
             else None)
 
-let hostGlobalsForSnapshot sheetName snapshot =
+let private hostGlobalsForSnapshotCells sheetName snapshot =
     Map.ofList [
         "Application", applicationObjectForSnapshot sheetName snapshot
         "ActiveWorkbook", workbookObjectForSnapshot sheetName snapshot
@@ -618,9 +825,17 @@ let hostGlobalsForSnapshot sheetName snapshot =
         "Cells", cellsFunctionForSnapshot sheetName snapshot
     ]
 
+let hostGlobalsForSnapshot sheetName snapshot =
+    snapshotCells snapshot
+    |> hostGlobalsForSnapshotCells sheetName
+
+let private hostGlobalsForSnapshotCellsVbs sheetName source =
+    hostGlobalsForSnapshotCells sheetName source
+    |> Map.add "CreateObject" (createObjectFunctionForSnapshot sheetName source)
+
 let hostGlobalsForSnapshotVbs sheetName snapshot =
-    hostGlobalsForSnapshot sheetName snapshot
-    |> Map.add "CreateObject" (createObjectFunctionForSnapshot sheetName snapshot)
+    snapshotCells snapshot
+    |> hostGlobalsForSnapshotCellsVbs sheetName
 
 // ---- Writable model-backed host (cross-platform: native + web) -------------
 // `runOnModel` runs a macro with READ+WRITE Range/Cells/Worksheet/Application
@@ -753,7 +968,157 @@ let private hostGlobalsRW cells sheetName =
 // performance cache, so events firing on every edit don't re-lex/parse/compile.
 let private vbaHostNames = [ "Application"; "ActiveWorkbook"; "ActiveSheet"; "Range"; "Cells" ]
 let private vbaParseOpts = FsVb.ParseOptions.withHostGlobals vbaHostNames FsVb.ParseOptions.vba
+let private bytecodeCacheMaxEntries = 64
+let private bytecodeCacheMaxTotalRetainedUnits = 1000000
 let private bytecodeCache = System.Collections.Generic.Dictionary<string, Bytecode.BytecodeProgram>()
+let private bytecodeCacheOrder = System.Collections.Generic.Queue<string>()
+let private bytecodeCacheRetainedUnits = System.Collections.Generic.Dictionary<string, int>()
+let mutable private bytecodeCacheTotalRetainedUnits = 0
+
+let private addRetainedUnits left right =
+    if left > bytecodeCacheMaxTotalRetainedUnits then
+        left
+    else
+        let right = max 0 right
+        if right > bytecodeCacheMaxTotalRetainedUnits - left then bytecodeCacheMaxTotalRetainedUnits + 1
+        else left + right
+
+let private retainedUnitsOverBudget total =
+    total > bytecodeCacheMaxTotalRetainedUnits
+
+let private stringRetainedUnits (value: string) =
+    if isNull value then 0 else value.Length
+
+let rec private valueRetainedUnits value =
+    match value with
+    | VString text -> addRetainedUnits 1 (stringRetainedUnits text)
+    | VArray values ->
+        let mutable total = addRetainedUnits 1 values.Length
+        let mutable index = 0
+        while not (retainedUnitsOverBudget total) && index < values.Length do
+            total <- addRetainedUnits total (valueRetainedUnits values.[index])
+            index <- index + 1
+        total
+    | VObject obj ->
+        addRetainedUnits 1 (stringRetainedUnits obj.ClassName)
+    | VHostObject host ->
+        addRetainedUnits 1 (stringRetainedUnits host.TypeName)
+    | _ -> 1
+
+let private opcodeRetainedUnits opcode =
+    match opcode with
+    | Bytecode.GetMember name
+    | Bytecode.SetMember name
+    | Bytecode.TypeCheck name
+    | Bytecode.CallBuiltin (name, _)
+    | Bytecode.CallMethod (name, _) ->
+        addRetainedUnits 1 (stringRetainedUnits name)
+    | _ -> 1
+
+let private instructionRetainedUnits (instruction: Bytecode.Instruction) =
+    addRetainedUnits 16 (opcodeRetainedUnits instruction.Opcode)
+
+let private instructionArrayRetainedUnits (instructions: Bytecode.Instruction array) =
+    let mutable total = instructions.Length
+    let mutable index = 0
+    while not (retainedUnitsOverBudget total) && index < instructions.Length do
+        total <- addRetainedUnits total (instructionRetainedUnits instructions.[index])
+        index <- index + 1
+    total
+
+let private stringArrayRetainedUnits (values: string array) =
+    let mutable total = values.Length
+    let mutable index = 0
+    while not (retainedUnitsOverBudget total) && index < values.Length do
+        total <- addRetainedUnits total (stringRetainedUnits values.[index])
+        index <- index + 1
+    total
+
+let private stringIntMapRetainedUnits (values: Map<string, int>) =
+    let mutable total = Map.count values
+    use entries = (values :> seq<_>).GetEnumerator()
+    while not (retainedUnitsOverBudget total) && entries.MoveNext() do
+        let (KeyValue(name, _)) = entries.Current
+        total <- addRetainedUnits total (stringRetainedUnits name)
+    total
+
+let private functionRetainedUnits (func: Bytecode.FunctionDef) =
+    let mutable total = addRetainedUnits 1 (stringRetainedUnits func.Name)
+    total <- addRetainedUnits total func.ByRefParams.Length
+    total <- addRetainedUnits total (instructionArrayRetainedUnits func.Code)
+    total
+
+let private classRetainedUnits (classDef: Bytecode.ClassDef) =
+    let mutable total = addRetainedUnits 1 (stringRetainedUnits classDef.Name)
+    total <- addRetainedUnits total (stringArrayRetainedUnits classDef.Fields)
+    total <- addRetainedUnits total (stringIntMapRetainedUnits classDef.Methods)
+    total <- addRetainedUnits total (stringIntMapRetainedUnits classDef.PropertyGetters)
+    total <- addRetainedUnits total (stringIntMapRetainedUnits classDef.PropertyLetters)
+    total <- addRetainedUnits total (stringIntMapRetainedUnits classDef.PropertySetters)
+    total
+
+let private bytecodeProgramRetainedUnits sourceLength (bytecode: Bytecode.BytecodeProgram) =
+    let mutable total = max 1 sourceLength
+    if not (retainedUnitsOverBudget total) then
+        total <- addRetainedUnits total (instructionArrayRetainedUnits bytecode.Code)
+    if not (retainedUnitsOverBudget total) then
+        total <- addRetainedUnits total bytecode.Constants.Length
+    let mutable constantIndex = 0
+    while not (retainedUnitsOverBudget total) && constantIndex < bytecode.Constants.Length do
+        total <- addRetainedUnits total (valueRetainedUnits bytecode.Constants.[constantIndex])
+        constantIndex <- constantIndex + 1
+    if not (retainedUnitsOverBudget total) then
+        total <- addRetainedUnits total bytecode.Globals
+    if not (retainedUnitsOverBudget total) then
+        total <- addRetainedUnits total (stringArrayRetainedUnits bytecode.GlobalNames)
+    if not (retainedUnitsOverBudget total) then
+        total <- addRetainedUnits total bytecode.Functions.Length
+    let mutable functionIndex = 0
+    while not (retainedUnitsOverBudget total) && functionIndex < bytecode.Functions.Length do
+        total <- addRetainedUnits total (functionRetainedUnits bytecode.Functions.[functionIndex])
+        functionIndex <- functionIndex + 1
+    if not (retainedUnitsOverBudget total) then
+        total <- addRetainedUnits total bytecode.Classes.Length
+    let mutable classIndex = 0
+    while not (retainedUnitsOverBudget total) && classIndex < bytecode.Classes.Length do
+        total <- addRetainedUnits total (classRetainedUnits bytecode.Classes.[classIndex])
+        classIndex <- classIndex + 1
+    total
+
+let private removeBytecodeCacheEntry source =
+    match bytecodeCacheRetainedUnits.TryGetValue source with
+    | true, units ->
+        bytecodeCacheTotalRetainedUnits <- max 0 (bytecodeCacheTotalRetainedUnits - units)
+        bytecodeCacheRetainedUnits.Remove source |> ignore
+    | _ -> ()
+    bytecodeCache.Remove source |> ignore
+
+let private addBytecodeCache (source: string) bytecode =
+    let retainedUnits = bytecodeProgramRetainedUnits source.Length bytecode
+    if retainedUnits > bytecodeCacheMaxTotalRetainedUnits then
+        removeBytecodeCacheEntry source
+    else
+        if bytecodeCache.ContainsKey source then
+            removeBytecodeCacheEntry source
+        else
+            bytecodeCacheOrder.Enqueue source
+        bytecodeCache.[source] <- bytecode
+        bytecodeCacheRetainedUnits.[source] <- retainedUnits
+        bytecodeCacheTotalRetainedUnits <- bytecodeCacheTotalRetainedUnits + retainedUnits
+        while (bytecodeCache.Count > bytecodeCacheMaxEntries || bytecodeCacheTotalRetainedUnits > bytecodeCacheMaxTotalRetainedUnits)
+              && bytecodeCacheOrder.Count > 0 do
+            let oldest = bytecodeCacheOrder.Dequeue()
+            if oldest <> source then
+                removeBytecodeCacheEntry oldest
+        if bytecodeCache.Count > bytecodeCacheMaxEntries || bytecodeCacheTotalRetainedUnits > bytecodeCacheMaxTotalRetainedUnits then
+            let current = bytecodeCache.[source]
+            bytecodeCache.Clear()
+            bytecodeCacheOrder.Clear()
+            bytecodeCacheRetainedUnits.Clear()
+            bytecodeCacheOrder.Enqueue source
+            bytecodeCache.[source] <- current
+            bytecodeCacheRetainedUnits.[source] <- retainedUnits
+            bytecodeCacheTotalRetainedUnits <- retainedUnits
 
 /// Compile a macro module to bytecode, caching the result by source text.
 let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
@@ -761,7 +1126,9 @@ let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
     | true, bc -> Result.Ok bc
     | _ ->
         match FsVb.compileSource vbaParseOpts source with
-        | Result.Ok (_, bc) -> bytecodeCache.[source] <- bc; Result.Ok bc
+        | Result.Ok (_, bc) ->
+            addBytecodeCache source bc
+            Result.Ok bc
         | Result.Error e -> Result.Error (sprintf "%A" e)
 
 /// Execute an already-compiled program against a model with read+write host
@@ -850,16 +1217,26 @@ let runSnapshotVbs sheetName snapshot source =
         |> FsVb.RunOptions.withHostGlobals (hostGlobalsForSnapshotVbs sheetName snapshot)
     FsVb.runSource options source
 
+let private runSnapshotCells sheetName snapshot source =
+    let options =
+        FsVb.RunOptions.vba
+        |> FsVb.RunOptions.withHostGlobals (hostGlobalsForSnapshotCells sheetName snapshot)
+    FsVb.runSource options source
+
+let private runSnapshotCellsVbs sheetName snapshot source =
+    let options =
+        FsVb.RunOptions.vbScript
+        |> FsVb.RunOptions.withHostGlobals (hostGlobalsForSnapshotCellsVbs sheetName snapshot)
+    FsVb.runSource options source
+
 let runModelWithSheetName sheetName (model: SpreadsheetModel) source =
-    let cells = lazy (snapshotFromModel model)
-    runSnapshot sheetName (fun () -> cells.Force()) source
+    runSnapshotCells sheetName (snapshotCellsFromModel model) source
 
 let runModel (model: SpreadsheetModel) source =
     runModelWithSheetName "Sheet1" model source
 
 let runModelWithSheetNameVbs sheetName (model: SpreadsheetModel) source =
-    let cells = lazy (snapshotFromModel model)
-    runSnapshotVbs sheetName (fun () -> cells.Force()) source
+    runSnapshotCellsVbs sheetName (snapshotCellsFromModel model) source
 
 let runModelVbs (model: SpreadsheetModel) source =
     runModelWithSheetNameVbs "Sheet1" model source

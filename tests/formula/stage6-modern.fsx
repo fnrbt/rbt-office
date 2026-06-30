@@ -17,6 +17,8 @@ open RedBat.Spreadsheet.Formula
 //   I1:I3 (col8) returns   : A B C
 //   K1:K4 (col10) dup keys : 1 2 2 3
 //   L1:L4 (col11) returns  : w x y z
+//   N1:N5 (col13) desc keys: 5 4 3 2 1
+//   O1:O5 (col14) returns  : e d c b a
 let cell v = { Value = v; Format = defaultFormat; Comment = None }
 let nC r c v = ({ Row = r; Col = c }, cell (CellValue.Number v))
 let sC r c v = ({ Row = r; Col = c }, cell (CellValue.String v))
@@ -28,7 +30,9 @@ let cells =
       sC 0 7 "apple"; sC 1 7 "banana"; sC 2 7 "cherry"
       sC 0 8 "A"; sC 1 8 "B"; sC 2 8 "C"
       nC 0 10 1.0; nC 1 10 2.0; nC 2 10 2.0; nC 3 10 3.0
-      sC 0 11 "w"; sC 1 11 "x"; sC 2 11 "y"; sC 3 11 "z" ]
+      sC 0 11 "w"; sC 1 11 "x"; sC 2 11 "y"; sC 3 11 "z"
+      nC 0 13 5.0; nC 1 13 4.0; nC 2 13 3.0; nC 3 13 2.0; nC 4 13 1.0
+      sC 0 14 "e"; sC 1 14 "d"; sC 2 14 "c"; sC 3 14 "b"; sC 4 14 "a" ]
     |> Map.ofList
 let model = { createEmpty 100 26 with Cells = cells }
 
@@ -64,6 +68,12 @@ check "xlookup-larger"    "=XLOOKUP(3.5,D1:D5,E1:E5,\"x\",1)"   (s "d")
 check "xlookup-wildcard"  "=XLOOKUP(\"ban*\",H1:H3,I1:I3,\"x\",2)" (s "B")
 check "xlookup-dup-first" "=XLOOKUP(2,K1:K4,L1:L4)"             (s "x")
 check "xlookup-dup-last"  "=XLOOKUP(2,K1:K4,L1:L4,\"x\",0,-1)"  (s "y")
+check "xlookup-bin-exact" "=XLOOKUP(3,D1:D5,E1:E5,\"x\",0,2)"    (s "c")
+check "xlookup-bin-small" "=XLOOKUP(3.5,D1:D5,E1:E5,\"x\",-1,2)" (s "c")
+check "xlookup-bin-large" "=XLOOKUP(3.5,D1:D5,E1:E5,\"x\",1,2)"  (s "d")
+check "xlookup-bind-exact" "=XLOOKUP(3,N1:N5,O1:O5,\"x\",0,-2)"  (s "c")
+check "xlookup-bind-small" "=XLOOKUP(3.5,N1:N5,O1:O5,\"x\",-1,-2)" (s "c")
+check "xlookup-bind-large" "=XLOOKUP(3.5,N1:N5,O1:O5,\"x\",1,-2)" (s "d")
 
 // ----- XMATCH -----
 check "xmatch-exact"      "=XMATCH(3,D1:D5)"                    (n 3.0)
@@ -72,6 +82,12 @@ check "xmatch-larger"     "=XMATCH(3.5,D1:D5,1)"                (n 4.0)
 check "xmatch-wildcard"   "=XMATCH(\"ban*\",H1:H3,2)"           (n 2.0)
 check "xmatch-na"         "=XMATCH(99,D1:D5)"                   (e "N/A")
 check "xmatch-dup-last"   "=XMATCH(2,K1:K4,0,-1)"               (n 3.0)
+check "xmatch-bin-exact"  "=XMATCH(3,D1:D5,0,2)"                (n 3.0)
+check "xmatch-bin-small"  "=XMATCH(3.5,D1:D5,-1,2)"             (n 3.0)
+check "xmatch-bin-large"  "=XMATCH(3.5,D1:D5,1,2)"              (n 4.0)
+check "xmatch-bind-exact" "=XMATCH(3,N1:N5,0,-2)"               (n 3.0)
+check "xmatch-bind-small" "=XMATCH(3.5,N1:N5,-1,-2)"            (n 3.0)
+check "xmatch-bind-large" "=XMATCH(3.5,N1:N5,1,-2)"             (n 2.0)
 
 // ----- LET -----
 check "let-basic"     "=LET(x,5,x+1)"                            (n 6.0)
@@ -81,6 +97,28 @@ check "let-countif"   "=LET(rng,A1:A6,COUNTIF(rng,\"X\"))"       (n 3.0)
 check "let-chain"     "=LET(a,2,b,a+1,c,b+1,a+b+c)"              (n 9.0)
 check "let-sumifs"    "=LET(v,B1:B6,cat,A1:A6,SUMIFS(v,cat,\"X\"))" (n 90.0)
 check "let-reuse"     "=LET(r,B1:B6,SUM(r)/COUNT(r))"            (n 35.0)
+let longLetTermCount = 60000
+let longLetFormula =
+    "=LET(x,1," + String.concat "+" [ for _ in 1 .. longLetTermCount -> "x" ] + ")"
+let longLetSw = System.Diagnostics.Stopwatch.StartNew()
+let longLetResult = evaluateFormula longLetFormula model None
+longLetSw.Stop()
+if longLetResult = n (float longLetTermCount) && longLetSw.Elapsed.TotalMilliseconds < 2000.0 then
+    pass <- pass + 1
+else
+    fail <- fail + 1
+    printfn "FAIL %-22s  expected %A in under 2000 ms got %A in %.0f ms" "let-long-subst" (n (float longLetTermCount)) longLetResult longLetSw.Elapsed.TotalMilliseconds
+let wideLetArgCount = 200000
+let wideLetFunctionArgFormula =
+    "=LET(x,1,SUM(" + String.concat "," (Array.create wideLetArgCount "x") + "))"
+let wideLetFunctionArgSw = System.Diagnostics.Stopwatch.StartNew()
+let wideLetFunctionArgResult = evaluateFormula wideLetFunctionArgFormula model None
+wideLetFunctionArgSw.Stop()
+if wideLetFunctionArgResult = n (float wideLetArgCount) && wideLetFunctionArgSw.Elapsed.TotalMilliseconds < 3000.0 then
+    pass <- pass + 1
+else
+    fail <- fail + 1
+    printfn "FAIL %-22s  expected %A in under 3000 ms got %A in %.0f ms" "let-wide-fn-args" (n (float wideLetArgCount)) wideLetFunctionArgResult wideLetFunctionArgSw.Elapsed.TotalMilliseconds
 check "let-bad-arity" "=LET(x,5)"                                (e "VALUE!")
 
 printfn ""

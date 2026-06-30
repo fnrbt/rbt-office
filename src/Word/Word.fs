@@ -3,6 +3,7 @@ namespace RedBat.Word
 #if FABLE_COMPILER
 
 module API =
+    open System.Collections.Generic
     open Fable.Core
     open Fable.Core.JsInterop
     open Browser.Types
@@ -20,6 +21,15 @@ module API =
         Handler: Inp.InputHandler
         mutable Doc: Doc.Document
     }
+
+    let private layoutsForEditor (editor: Editor) =
+        Ren.cachedLayouts editor.Handler.RenderContext editor.Doc
+        |> Option.defaultWith (fun () -> Ren.layoutDocument editor.Handler.RenderContext editor.Doc)
+
+    let private commitDocumentUpdate (editor: Editor) newDoc =
+        if not (obj.ReferenceEquals(newDoc, editor.Doc)) then
+            Inp.updateDocument editor.Handler newDoc
+            editor.Doc <- newDoc
 
     let initializeCanvasWithChange (canvas: HTMLCanvasElement) (afterChange: unit -> unit) =
         let doc = Doc.empty
@@ -77,15 +87,18 @@ module API =
 
     let setTextMeasurer (editor: Editor) (measureText: Layout.TextMeasurer) =
         editor.Handler.RenderContext.TextMeasurer <- Some measureText
+        Ren.clearLayoutCache editor.Handler.RenderContext
         Ren.render editor.Handler.RenderContext editor.Doc
 
     let setTextMeasurers (editor: Editor) (measureText: Layout.TextMeasurer) (measureRange: Layout.TextRangeMeasurer) =
         editor.Handler.RenderContext.TextMeasurer <- Some measureText
         editor.Handler.RenderContext.TextRangeMeasurer <- Some measureRange
+        Ren.clearLayoutCache editor.Handler.RenderContext
         Ren.render editor.Handler.RenderContext editor.Doc
 
     let setTextRangeMeasurer (editor: Editor) (measureRange: Layout.TextRangeMeasurer) =
         editor.Handler.RenderContext.TextRangeMeasurer <- Some measureRange
+        Ren.clearLayoutCache editor.Handler.RenderContext
         Ren.render editor.Handler.RenderContext editor.Doc
 
     let setTextPathPainter (editor: Editor) (paintText: string -> Paint.TextPaintStyle -> float -> float -> float -> bool) =
@@ -100,6 +113,7 @@ module API =
         editor.Handler.RenderContext.TextMeasurer <- None
         editor.Handler.RenderContext.TextRangeMeasurer <- None
         editor.Handler.RenderContext.TextPathPainter <- None
+        Ren.clearLayoutCache editor.Handler.RenderContext
         Ren.render editor.Handler.RenderContext editor.Doc
 
     let getCachedLayouts (editor: Editor) =
@@ -136,8 +150,7 @@ module API =
         let startOffset = anchor?StartOffset |> unbox<int>
         let endOffset = anchor?EndOffset |> unbox<int>
         let newDoc = Doc.setSelection { BlockId = blockId; Offset = startOffset } { BlockId = blockId; Offset = endOffset } editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let getSelection (editor: Editor) =
         match editor.Doc.Selection with
@@ -152,9 +165,11 @@ module API =
             ]
 
     let clearSelection (editor: Editor) =
-        let newDoc = { editor.Doc with Selection = None }
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        match editor.Doc.Selection with
+        | None -> ()
+        | Some _ ->
+            let newDoc = { editor.Doc with Selection = None }
+            commitDocumentUpdate editor newDoc
 
     let getImageHitTest (editor: Editor) (x: float) (y: float) =
         match Ren.hitTestForImage editor.Handler.RenderContext editor.Doc x y with
@@ -170,15 +185,14 @@ module API =
             ]
 
     let getLayoutSegments (editor: Editor) =
-        Ren.layoutDocument editor.Handler.RenderContext editor.Doc
-        |> List.collect (fun layout ->
-            layout.Lines
-            |> List.collect (fun line ->
+        let result = ResizeArray<obj>()
+        for layout in layoutsForEditor editor do
+            for line in layout.Lines do
                 let alignOffset = Layout.alignmentOffset layout line
-                line.Segments
-                |> List.map (function
+                for segment in line.Segments do
+                    match segment with
                     | Layout.TextSegment (text, style, x, width, startOffset) ->
-                        createObj [
+                        result.Add(createObj [
                             "Kind" ==> "text"
                             "Text" ==> text
                             "BlockId" ==> layout.BlockId
@@ -193,9 +207,9 @@ module API =
                             "Italic" ==> style.Italic
                             "Underline" ==> style.Underline
                             "Color" ==> style.Color
-                        ]
+                        ])
                     | Layout.ImageSegment (_, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, _, _, _, _) ->
-                        createObj [
+                        result.Add(createObj [
                             "Kind" ==> "image"
                             "BlockId" ==> layout.BlockId
                             "StartOffset" ==> startOffset
@@ -206,9 +220,9 @@ module API =
                             "Floating" ==> floating
                             "Wrap" ==> wrap
                             "RelativeHeight" ==> relativeHeight
-                        ]
+                        ])
                     | Layout.MathSegment (_, style, x, width, ascent, descent, startOffset, _) ->
-                        createObj [
+                        result.Add(createObj [
                             "Kind" ==> "math"
                             "BlockId" ==> layout.BlockId
                             "StartOffset" ==> startOffset
@@ -218,8 +232,8 @@ module API =
                             "Height" ==> (ascent + descent)
                             "FontFamily" ==> style.FontFamily
                             "FontSize" ==> style.FontSize
-                        ])) )
-        |> List.toArray
+                        ])
+        result.ToArray()
 
     type private ParagraphLayoutContext = {
         ParagraphIndex: int
@@ -232,6 +246,539 @@ module API =
         InTextBox: bool
     }
 
+    type private ParagraphMapCache = {
+        CachedBlocks: Doc.Block list
+        EntryCount: int
+        SourceParagraphCount: int
+        SourceTextCharCount: int
+        Paragraphs: Dictionary<string, Doc.ParagraphBlock>
+    }
+
+    type private ParagraphContextCache = {
+        CachedBlocks: Doc.Block list
+        EntryCount: int
+        SourceParagraphCount: int
+        SourceTextCharCount: int
+        Contexts: Dictionary<string, ParagraphLayoutContext>
+    }
+
+    type private SectionNumberCache = {
+        CachedBlocks: Doc.Block list
+        EntryCount: int
+        SourceParagraphCount: int
+        SourceTextCharCount: int
+        Sections: Dictionary<string, int>
+    }
+
+    let mutable private paragraphMapCache: ParagraphMapCache list = []
+    let mutable private paragraphContextCache: ParagraphContextCache list = []
+    let mutable private sectionNumberCache: SectionNumberCache list = []
+    let private wordApiCacheMaxSources = 8
+    let private wordApiCacheMaxTotalEntries = 200000
+    let private wordApiCacheMaxTotalSourceParagraphs = 100000
+    let private wordApiCacheMaxTotalSourceTextChars = 5000000
+
+    let private wordApiTableParagraphCount (table: Doc.TableBlock) =
+        let mutable count = 0
+        let mutable visitedItems = 0
+        let canContinue () =
+            count <= wordApiCacheMaxTotalSourceParagraphs
+            && visitedItems <= wordApiCacheMaxTotalSourceParagraphs
+        let visitItem () =
+            visitedItems <- visitedItems + 1
+        let addParagraphs (paragraphs: Doc.ParagraphBlock list) =
+            let mutable remaining = paragraphs
+            while canContinue () && not remaining.IsEmpty do
+                count <- count + 1
+                remaining <- remaining.Tail
+        let tables = Stack<Doc.TableBlock>()
+        tables.Push table
+        while canContinue () && tables.Count > 0 do
+            let table = tables.Pop()
+            visitItem ()
+            let mutable rows = table.Rows
+            while canContinue () && not rows.IsEmpty do
+                let row = rows.Head
+                visitItem ()
+                let mutable cells = row.Cells
+                while canContinue () && not cells.IsEmpty do
+                    let cell = cells.Head
+                    visitItem ()
+                    addParagraphs cell.Content
+                    let mutable nestedTables = cell.NestedTables
+                    while canContinue () && not nestedTables.IsEmpty do
+                        tables.Push nestedTables.Head
+                        nestedTables <- nestedTables.Tail
+                    cells <- cells.Tail
+                rows <- rows.Tail
+        if visitedItems > wordApiCacheMaxTotalSourceParagraphs then
+            wordApiCacheMaxTotalSourceParagraphs + 1
+        else
+            min count (wordApiCacheMaxTotalSourceParagraphs + 1)
+
+    let private wordApiParagraphListCount (paragraphs: Doc.ParagraphBlock list) =
+        let mutable count = 0
+        let mutable remaining = paragraphs
+        while count <= wordApiCacheMaxTotalSourceParagraphs && not remaining.IsEmpty do
+            count <- count + 1
+            remaining <- remaining.Tail
+        min count (wordApiCacheMaxTotalSourceParagraphs + 1)
+
+    let private wordApiBlockParagraphCount = function
+        | Doc.Paragraph _
+        | Doc.Heading _ ->
+            1
+        | Doc.Table table ->
+            wordApiTableParagraphCount table
+        | Doc.TextBox textBox ->
+            wordApiParagraphListCount textBox.Content
+
+    let private wordApiSourceParagraphCount (blocks: Doc.Block list) =
+        let mutable count = 0
+        let mutable seen = 0
+        let mutable remaining = blocks
+        while count <= wordApiCacheMaxTotalSourceParagraphs
+              && seen <= wordApiCacheMaxTotalSourceParagraphs
+              && not remaining.IsEmpty do
+            count <- count + wordApiBlockParagraphCount remaining.Head
+            seen <- seen + 1
+            remaining <- remaining.Tail
+        if seen > wordApiCacheMaxTotalSourceParagraphs then
+            wordApiCacheMaxTotalSourceParagraphs + 1
+        else
+            min count (wordApiCacheMaxTotalSourceParagraphs + 1)
+
+    let private wordApiSourceParagraphCountFor entryCount blocks =
+        if entryCount > wordApiCacheMaxTotalEntries then
+            wordApiCacheMaxTotalSourceParagraphs + 1
+        else
+            wordApiSourceParagraphCount blocks
+
+    // These API caches retain full block graphs, so count style/metadata strings
+    // as well as visible text before deciding whether a source can be cached.
+    let private wordApiAddCapped total value =
+        if total > wordApiCacheMaxTotalSourceTextChars then
+            total
+        else
+            let value = max 0 value
+            let remaining = wordApiCacheMaxTotalSourceTextChars - total
+            if value > remaining then wordApiCacheMaxTotalSourceTextChars + 1
+            else total + value
+
+    let private wordApiOptionStringCharCount (value: string option) =
+        match value with
+        | Some value -> value.Length
+        | None -> 0
+
+    let private wordApiTextStyleStringCharCount (style: TextBuf.TextStyle) =
+        let mutable total = 0
+        let add value =
+            total <- wordApiAddCapped total (wordApiOptionStringCharCount value)
+        add style.Style
+        add style.UnderlineStyle
+        add style.UnderlineColor
+        add style.EmphasisMark
+        add style.FontFamily
+        add style.Color
+        add style.Highlight
+        add style.Hyperlink
+        add style.CommentId
+        add style.CommentText
+        add style.CommentAuthor
+        add style.CommentDate
+        add style.NoteId
+        add style.NoteType
+        add style.NoteText
+        add style.BookmarkStartId
+        add style.BookmarkName
+        add style.BookmarkEndId
+        add style.FieldCode
+        add style.FieldResult
+        add style.EquationXml
+        add style.RevisionId
+        add style.RevisionType
+        add style.RevisionAuthor
+        add style.RevisionDate
+        add style.VertAlign
+        total
+
+    let private wordApiImageStringCharCount (image: TextBuf.ImageRun) =
+        let mutable total = image.Src.Length
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.Alt)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.Name)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.Title)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.Wrap)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.PositionHRelativeFrom)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.PositionVRelativeFrom)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.RelativeHeight)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.CropLeft)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.CropTop)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.CropRight)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount image.CropBottom)
+        total
+
+    let private wordApiRunStringCharCount = function
+        | TextBuf.Text textRun -> wordApiTextStyleStringCharCount textRun.Style
+        | TextBuf.Image image -> wordApiImageStringCharCount image
+
+    let private wordApiBufferSourceTextCharCount (buffer: TextBuf.TextBuffer) =
+        let mutable total = TextBuf.length buffer
+        let mutable seen = 0
+        let mutable runs = buffer.Runs
+        while total <= wordApiCacheMaxTotalSourceTextChars
+              && seen <= wordApiCacheMaxTotalSourceParagraphs
+              && not runs.IsEmpty do
+            total <- wordApiAddCapped total (wordApiRunStringCharCount runs.Head)
+            seen <- seen + 1
+            runs <- runs.Tail
+        if seen > wordApiCacheMaxTotalSourceParagraphs then
+            wordApiCacheMaxTotalSourceTextChars + 1
+        else
+            total
+
+    let private wordApiParagraphBorderStringCharCount (border: Doc.ParagraphBorder option) =
+        match border with
+        | Some border ->
+            let mutable total = 0
+            total <- wordApiAddCapped total (wordApiOptionStringCharCount border.Style)
+            total <- wordApiAddCapped total (wordApiOptionStringCharCount border.Color)
+            total
+        | None -> 0
+
+    let private wordApiParagraphBordersStringCharCount (borders: Doc.ParagraphBorders option) =
+        match borders with
+        | Some borders ->
+            let mutable total = 0
+            total <- wordApiAddCapped total (wordApiParagraphBorderStringCharCount borders.Top)
+            total <- wordApiAddCapped total (wordApiParagraphBorderStringCharCount borders.Right)
+            total <- wordApiAddCapped total (wordApiParagraphBorderStringCharCount borders.Bottom)
+            total <- wordApiAddCapped total (wordApiParagraphBorderStringCharCount borders.Left)
+            total
+        | None -> 0
+
+    let private wordApiTabStopStringCharCount (tabStop: Doc.TabStop) =
+        wordApiAddCapped tabStop.Alignment.Length (wordApiOptionStringCharCount tabStop.Leader)
+
+    let private wordApiParagraphMetadataStringCharCount (metadata: Doc.BlockMetadata) =
+        let mutable total = 0
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.Style)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.ContentControlId)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.ContentControlTag)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.ContentControlAlias)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.ListId)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.ListNumberFormat)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.ListLevelText)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.RightTabLeader)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.LineSpacingRule)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.BackgroundColor)
+        total <- wordApiAddCapped total (wordApiParagraphBordersStringCharCount metadata.ParagraphBorders)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount metadata.SectionBreak)
+        let mutable seen = 0
+        let mutable tabStops = metadata.TabStops
+        while total <= wordApiCacheMaxTotalSourceTextChars
+              && seen <= wordApiCacheMaxTotalSourceParagraphs
+              && not tabStops.IsEmpty do
+            total <- wordApiAddCapped total (wordApiTabStopStringCharCount tabStops.Head)
+            seen <- seen + 1
+            tabStops <- tabStops.Tail
+        let mutable headerReferences = metadata.HeaderReferences
+        while total <= wordApiCacheMaxTotalSourceTextChars
+              && seen <= wordApiCacheMaxTotalSourceParagraphs
+              && not headerReferences.IsEmpty do
+            let kind, relationshipId = headerReferences.Head
+            total <- wordApiAddCapped total kind.Length
+            total <- wordApiAddCapped total relationshipId.Length
+            seen <- seen + 1
+            headerReferences <- headerReferences.Tail
+        let mutable footerReferences = metadata.FooterReferences
+        while total <= wordApiCacheMaxTotalSourceTextChars
+              && seen <= wordApiCacheMaxTotalSourceParagraphs
+              && not footerReferences.IsEmpty do
+            let kind, relationshipId = footerReferences.Head
+            total <- wordApiAddCapped total kind.Length
+            total <- wordApiAddCapped total relationshipId.Length
+            seen <- seen + 1
+            footerReferences <- footerReferences.Tail
+        if seen > wordApiCacheMaxTotalSourceParagraphs then
+            wordApiCacheMaxTotalSourceTextChars + 1
+        else
+            total
+
+    let private wordApiParagraphSourceTextCharCount (paragraph: Doc.ParagraphBlock) =
+        let mutable total = paragraph.Id.Length
+        total <- wordApiAddCapped total (wordApiBufferSourceTextCharCount paragraph.Buffer)
+        total <- wordApiAddCapped total (wordApiParagraphMetadataStringCharCount paragraph.Metadata)
+        total
+
+    let private wordApiTableBorderStringCharCount (border: Doc.TableBorder option) =
+        match border with
+        | Some border ->
+            let mutable total = 0
+            total <- wordApiAddCapped total (wordApiOptionStringCharCount border.Style)
+            total <- wordApiAddCapped total (wordApiOptionStringCharCount border.Color)
+            total
+        | None -> 0
+
+    let private wordApiTableBordersStringCharCount (borders: Doc.TableBorders option) =
+        match borders with
+        | Some borders ->
+            let mutable total = 0
+            total <- wordApiAddCapped total (wordApiTableBorderStringCharCount borders.Top)
+            total <- wordApiAddCapped total (wordApiTableBorderStringCharCount borders.Right)
+            total <- wordApiAddCapped total (wordApiTableBorderStringCharCount borders.Bottom)
+            total <- wordApiAddCapped total (wordApiTableBorderStringCharCount borders.Left)
+            total <- wordApiAddCapped total (wordApiTableBorderStringCharCount borders.InsideH)
+            total <- wordApiAddCapped total (wordApiTableBorderStringCharCount borders.InsideV)
+            total
+        | None -> 0
+
+    let private wordApiShadingStringCharCount (shading: Doc.Shading option) =
+        match shading with
+        | Some shading ->
+            let mutable total = 0
+            total <- wordApiAddCapped total (wordApiOptionStringCharCount shading.Pattern)
+            total <- wordApiAddCapped total (wordApiOptionStringCharCount shading.ForegroundColor)
+            total <- wordApiAddCapped total (wordApiOptionStringCharCount shading.BackgroundColor)
+            total
+        | None -> 0
+
+    let private wordApiTableStringCharCount (table: Doc.TableBlock) =
+        let mutable total = table.Id.Length
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount table.Alignment)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount table.BackgroundColor)
+        total <- wordApiAddCapped total (wordApiShadingStringCharCount table.Shading)
+        total <- wordApiAddCapped total (wordApiTableBordersStringCharCount table.Borders)
+        total
+
+    let private wordApiTableRowStringCharCount (row: Doc.TableRow) =
+        let mutable total = 0
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount row.HeightRule)
+        total <- wordApiAddCapped total (wordApiTableBordersStringCharCount row.BordersOverride)
+        total
+
+    let private wordApiTableCellStringCharCount (cell: Doc.TableCell) =
+        let mutable total = 0
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount cell.BackgroundColor)
+        total <- wordApiAddCapped total (wordApiShadingStringCharCount cell.Shading)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount cell.BorderColor)
+        total <- wordApiAddCapped total (wordApiTableBordersStringCharCount cell.Borders)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount cell.VerticalAlignment)
+        total
+
+    let private wordApiPathSegmentsStringCharCount (segments: Doc.PathSeg list) =
+        let mutable total = 0
+        let mutable seen = 0
+        let mutable remaining = segments
+        while total <= wordApiCacheMaxTotalSourceTextChars
+              && seen <= wordApiCacheMaxTotalSourceParagraphs
+              && not remaining.IsEmpty do
+            total <- wordApiAddCapped total 1
+            seen <- seen + 1
+            remaining <- remaining.Tail
+        if seen > wordApiCacheMaxTotalSourceParagraphs then
+            wordApiCacheMaxTotalSourceTextChars + 1
+        else
+            total
+
+    let private wordApiShapeGeometryStringCharCount = function
+        | Doc.GeoRect -> 0
+        | Doc.GeoPreset preset -> preset.Length
+        | Doc.GeoCustom (segments, _, _) -> wordApiPathSegmentsStringCharCount segments
+
+    let private wordApiGradientStringCharCount (gradient: Doc.GradientSpec option) =
+        match gradient with
+        | Some gradient ->
+            let mutable total = 0
+            let mutable seen = 0
+            let mutable stops = gradient.Stops
+            while total <= wordApiCacheMaxTotalSourceTextChars
+                  && seen <= wordApiCacheMaxTotalSourceParagraphs
+                  && not stops.IsEmpty do
+                total <- wordApiAddCapped total stops.Head.Color.Length
+                seen <- seen + 1
+                stops <- stops.Tail
+            if seen > wordApiCacheMaxTotalSourceParagraphs then
+                wordApiCacheMaxTotalSourceTextChars + 1
+            else
+                total
+        | None -> 0
+
+    let private wordApiTextBoxStringCharCount (textBox: Doc.TextBoxBlock) =
+        let mutable total = textBox.Id.Length
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount textBox.PositionHRelativeFrom)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount textBox.PositionVRelativeFrom)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount textBox.FillColor)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount textBox.BorderColor)
+        total <- wordApiAddCapped total (wordApiOptionStringCharCount textBox.RelativeHeight)
+        total <- wordApiAddCapped total (wordApiShapeGeometryStringCharCount textBox.Geometry)
+        total <- wordApiAddCapped total (wordApiGradientStringCharCount textBox.Gradient)
+        total
+
+    let private wordApiSourceTextCharCount (blocks: Doc.Block list) =
+        let limit = wordApiCacheMaxTotalSourceTextChars + 1
+        let mutable total = 0
+        let mutable visitedItems = 0
+        let canContinue () =
+            total <= wordApiCacheMaxTotalSourceTextChars
+            && visitedItems <= wordApiCacheMaxTotalSourceParagraphs
+        let visitItem () =
+            visitedItems <- visitedItems + 1
+        let addParagraph (para: Doc.ParagraphBlock) =
+            if canContinue () then
+                visitItem ()
+                total <- wordApiAddCapped total (wordApiParagraphSourceTextCharCount para)
+        let addTable (table: Doc.TableBlock) =
+            let tables = Stack<Doc.TableBlock>()
+            tables.Push table
+            while canContinue () && tables.Count > 0 do
+                let table = tables.Pop()
+                visitItem ()
+                total <- wordApiAddCapped total (wordApiTableStringCharCount table)
+                let mutable rows = table.Rows
+                while canContinue () && not rows.IsEmpty do
+                    let row = rows.Head
+                    visitItem ()
+                    total <- wordApiAddCapped total (wordApiTableRowStringCharCount row)
+                    let mutable cells = row.Cells
+                    while canContinue () && not cells.IsEmpty do
+                        let cell = cells.Head
+                        visitItem ()
+                        total <- wordApiAddCapped total (wordApiTableCellStringCharCount cell)
+                        let mutable paragraphs = cell.Content
+                        while canContinue () && not paragraphs.IsEmpty do
+                            addParagraph paragraphs.Head
+                            paragraphs <- paragraphs.Tail
+                        let mutable nestedTables = cell.NestedTables
+                        while canContinue () && not nestedTables.IsEmpty do
+                            tables.Push nestedTables.Head
+                            nestedTables <- nestedTables.Tail
+                        cells <- cells.Tail
+                    rows <- rows.Tail
+        let mutable remaining = blocks
+        while canContinue () && not remaining.IsEmpty do
+            match remaining.Head with
+            | Doc.Paragraph para
+            | Doc.Heading (_, para) ->
+                addParagraph para
+            | Doc.Table table ->
+                addTable table
+            | Doc.TextBox textBox ->
+                visitItem ()
+                total <- wordApiAddCapped total (wordApiTextBoxStringCharCount textBox)
+                let mutable paragraphs = textBox.Content
+                while canContinue () && not paragraphs.IsEmpty do
+                    addParagraph paragraphs.Head
+                    paragraphs <- paragraphs.Tail
+            remaining <- remaining.Tail
+        if visitedItems > wordApiCacheMaxTotalSourceParagraphs then
+            limit
+        else
+            min total limit
+
+    let private wordApiSourceTextCharCountFor entryCount sourceParagraphCount blocks =
+        if entryCount > wordApiCacheMaxTotalEntries
+           || sourceParagraphCount > wordApiCacheMaxTotalSourceParagraphs then
+            wordApiCacheMaxTotalSourceTextChars + 1
+        else
+            wordApiSourceTextCharCount blocks
+
+    let private paragraphMapCacheMatches blocks (cached: ParagraphMapCache) =
+        obj.ReferenceEquals(cached.CachedBlocks, blocks)
+
+    let private paragraphContextCacheMatches blocks (cached: ParagraphContextCache) =
+        obj.ReferenceEquals(cached.CachedBlocks, blocks)
+
+    let private sectionNumberCacheMatches blocks (cached: SectionNumberCache) =
+        obj.ReferenceEquals(cached.CachedBlocks, blocks)
+
+    let private wordApiCacheRetainable entryCount sourceParagraphCount sourceTextCharCount =
+        entryCount <= wordApiCacheMaxTotalEntries
+        && sourceParagraphCount <= wordApiCacheMaxTotalSourceParagraphs
+        && sourceTextCharCount <= wordApiCacheMaxTotalSourceTextChars
+
+    let private wordApiCacheTrim currentEntryCount currentSourceParagraphCount currentSourceTextCharCount entryCount sourceParagraphCount sourceTextCharCount isRetainable entries =
+        let mutable keptCount = 1
+        let mutable keptEntries = max 1 currentEntryCount
+        let mutable keptParagraphs = max 1 currentSourceParagraphCount
+        let mutable keptTextChars = max 1 currentSourceTextCharCount
+        entries
+        |> List.choose (fun candidate ->
+            let candidateEntries = max 1 (entryCount candidate)
+            let candidateParagraphs = max 1 (sourceParagraphCount candidate)
+            let candidateTextChars = max 1 (sourceTextCharCount candidate)
+            if isRetainable candidate
+               && keptCount < wordApiCacheMaxSources
+               && keptEntries + candidateEntries <= wordApiCacheMaxTotalEntries
+               && keptParagraphs + candidateParagraphs <= wordApiCacheMaxTotalSourceParagraphs
+               && keptTextChars + candidateTextChars <= wordApiCacheMaxTotalSourceTextChars then
+                keptCount <- keptCount + 1
+                keptEntries <- keptEntries + candidateEntries
+                keptParagraphs <- keptParagraphs + candidateParagraphs
+                keptTextChars <- keptTextChars + candidateTextChars
+                Some candidate
+            else
+                None)
+
+    let private paragraphMapCacheRetainable (cached: ParagraphMapCache) =
+        wordApiCacheRetainable cached.EntryCount cached.SourceParagraphCount cached.SourceTextCharCount
+
+    let private paragraphContextCacheRetainable (cached: ParagraphContextCache) =
+        wordApiCacheRetainable cached.EntryCount cached.SourceParagraphCount cached.SourceTextCharCount
+
+    let private sectionNumberCacheRetainable (cached: SectionNumberCache) =
+        wordApiCacheRetainable cached.EntryCount cached.SourceParagraphCount cached.SourceTextCharCount
+
+    let private rememberParagraphMapCache (cached: ParagraphMapCache) =
+        if not (paragraphMapCacheRetainable cached) then
+            paragraphMapCache <- paragraphMapCache |> List.filter (paragraphMapCacheMatches cached.CachedBlocks >> not)
+        else
+            let retained =
+                paragraphMapCache
+                |> List.filter (paragraphMapCacheMatches cached.CachedBlocks >> not)
+                |> wordApiCacheTrim
+                    cached.EntryCount
+                    cached.SourceParagraphCount
+                    cached.SourceTextCharCount
+                    (fun entry -> entry.EntryCount)
+                    (fun entry -> entry.SourceParagraphCount)
+                    (fun entry -> entry.SourceTextCharCount)
+                    paragraphMapCacheRetainable
+            paragraphMapCache <- cached :: retained
+
+    let private rememberParagraphContextCache (cached: ParagraphContextCache) =
+        if not (paragraphContextCacheRetainable cached) then
+            paragraphContextCache <- paragraphContextCache |> List.filter (paragraphContextCacheMatches cached.CachedBlocks >> not)
+        else
+            let retained =
+                paragraphContextCache
+                |> List.filter (paragraphContextCacheMatches cached.CachedBlocks >> not)
+                |> wordApiCacheTrim
+                    cached.EntryCount
+                    cached.SourceParagraphCount
+                    cached.SourceTextCharCount
+                    (fun entry -> entry.EntryCount)
+                    (fun entry -> entry.SourceParagraphCount)
+                    (fun entry -> entry.SourceTextCharCount)
+                    paragraphContextCacheRetainable
+            paragraphContextCache <- cached :: retained
+
+    let private rememberSectionNumberCache (cached: SectionNumberCache) =
+        if not (sectionNumberCacheRetainable cached) then
+            sectionNumberCache <- sectionNumberCache |> List.filter (sectionNumberCacheMatches cached.CachedBlocks >> not)
+        else
+            let retained =
+                sectionNumberCache
+                |> List.filter (sectionNumberCacheMatches cached.CachedBlocks >> not)
+                |> wordApiCacheTrim
+                    cached.EntryCount
+                    cached.SourceParagraphCount
+                    cached.SourceTextCharCount
+                    (fun entry -> entry.EntryCount)
+                    (fun entry -> entry.SourceParagraphCount)
+                    (fun entry -> entry.SourceTextCharCount)
+                    sectionNumberCacheRetainable
+            sectionNumberCache <- cached :: retained
+
     let private jsOpt value =
         match value with
         | Some actual -> box actual
@@ -243,39 +790,76 @@ module API =
     let private pageForYInDoc (doc: Doc.Document) y =
         int (floor (max 0.0 y / pageStride doc)) + 1
 
+    let private pageCountFromLines (doc: Doc.Document) (layouts: Layout.BlockLayout list) =
+        let mutable pageCount = 1
+        for layout in layouts do
+            for line in layout.Lines do
+                pageCount <- max pageCount (pageForYInDoc doc (line.Y + line.Height))
+        pageCount
+
     let private pageTopForYInDoc (doc: Doc.Document) y =
         floor (max 0.0 y / pageStride doc) * pageStride doc
 
-    let private paragraphsInBlock = function
-        | Doc.Paragraph para
-        | Doc.Heading (_, para) -> [para]
-        | Doc.Table table ->
-            table.Rows
-            |> List.collect (fun row -> row.Cells)
-            |> List.collect (fun cell -> cell.Content)
-        | Doc.TextBox textBox -> textBox.Content
+    let private buildParagraphMap (doc: Doc.Document) =
+        let paragraphs = Dictionary<string, Doc.ParagraphBlock>()
+        for block in doc.Blocks do
+            match block with
+            | Doc.Paragraph para
+            | Doc.Heading (_, para) ->
+                paragraphs.[para.Id] <- para
+            | Doc.Table table ->
+                for row in table.Rows do
+                    for cell in row.Cells do
+                        for para in cell.Content do
+                            paragraphs.[para.Id] <- para
+            | Doc.TextBox textBox ->
+                for para in textBox.Content do
+                    paragraphs.[para.Id] <- para
+        paragraphs
 
     let private paragraphMap (doc: Doc.Document) =
-        doc.Blocks
-        |> List.collect paragraphsInBlock
-        |> List.map (fun para -> para.Id, para)
-        |> Map.ofList
+        match paragraphMapCache |> List.tryFind (paragraphMapCacheMatches doc.Blocks) with
+        | Some cached -> cached.Paragraphs
+        | None ->
+            let paragraphs = buildParagraphMap doc
+            let sourceParagraphCount = wordApiSourceParagraphCountFor paragraphs.Count doc.Blocks
+            rememberParagraphMapCache ({
+                CachedBlocks = doc.Blocks
+                EntryCount = paragraphs.Count
+                SourceParagraphCount = sourceParagraphCount
+                SourceTextCharCount = wordApiSourceTextCharCountFor paragraphs.Count sourceParagraphCount doc.Blocks
+                Paragraphs = paragraphs
+            }: ParagraphMapCache)
+            paragraphs
+
+    let private tryFindParagraph paragraphMap paragraphId =
+        match (paragraphMap: Dictionary<string, Doc.ParagraphBlock>).TryGetValue paragraphId with
+        | true, paragraph -> Some paragraph
+        | false, _ -> None
+
+    let private tryFindDictionary key (dictionary: Dictionary<'K, 'V>) =
+        match dictionary.TryGetValue key with
+        | true, value -> Some value
+        | false, _ -> None
 
     let private maxVisualColumns (table: Doc.TableBlock) =
-        table.Rows
-        |> List.map (fun row -> row.Cells |> List.sumBy (fun cell -> max 1 cell.ColSpan))
-        |> function
-            | [] -> 0
-            | values -> List.max values
+        let mutable maxColumns = 0
+        for row in table.Rows do
+            let mutable columns = 0
+            for cell in row.Cells do
+                columns <- columns + max 1 cell.ColSpan
+            if columns > maxColumns then
+                maxColumns <- columns
+        maxColumns
 
-    let private paragraphContexts (doc: Doc.Document) =
+    let private buildParagraphContexts (doc: Doc.Document) =
         let mutable paragraphIndex = 0
         let mutable tableIndex = 0
-        let mutable pairs: (string * ParagraphLayoutContext) list = []
+        let contexts = Dictionary<string, ParagraphLayoutContext>()
 
         let addContext (para: Doc.ParagraphBlock) (context: ParagraphLayoutContext) =
             paragraphIndex <- paragraphIndex + 1
-            pairs <- (para.Id, { context with ParagraphIndex = paragraphIndex }) :: pairs
+            contexts.[para.Id] <- { context with ParagraphIndex = paragraphIndex }
 
         for block in doc.Blocks do
             match block with
@@ -325,37 +909,55 @@ module API =
                         InTextBox = true
                     }
 
-        pairs |> Map.ofList
+        contexts
 
-    let private tableParagraphIds (table: Doc.TableBlock) =
-        table.Rows
-        |> List.collect (fun row ->
-            row.Cells
-            |> List.collect (fun cell -> cell.Content |> List.map _.Id))
+    let private paragraphContexts (doc: Doc.Document) =
+        match paragraphContextCache |> List.tryFind (paragraphContextCacheMatches doc.Blocks) with
+        | Some cached -> cached.Contexts
+        | None ->
+            let contexts = buildParagraphContexts doc
+            let sourceParagraphCount = wordApiSourceParagraphCountFor contexts.Count doc.Blocks
+            rememberParagraphContextCache ({
+                CachedBlocks = doc.Blocks
+                EntryCount = contexts.Count
+                SourceParagraphCount = sourceParagraphCount
+                SourceTextCharCount = wordApiSourceTextCharCountFor contexts.Count sourceParagraphCount doc.Blocks
+                Contexts = contexts
+            }: ParagraphContextCache)
+            contexts
 
     let private canonicalTableYFromLayouts settings measureText measureRange doc (layouts: Layout.BlockLayout list) (table: Doc.TableBlock) =
-        let layoutById = layouts |> List.map (fun layout -> layout.BlockId, layout) |> Map.ofList
-        let actualContentY =
-            tableParagraphIds table
-            |> List.choose (fun id -> layoutById |> Map.tryFind id |> Option.map _.Y)
+        let layoutById = Dictionary<string, Layout.BlockLayout>()
+        for layout in layouts do
+            if not (layoutById.ContainsKey layout.BlockId) then
+                layoutById.[layout.BlockId] <- layout
 
-        match actualContentY with
-        | [] -> None
-        | values ->
+        let mutable firstActualContentY = System.Double.PositiveInfinity
+        for row in table.Rows do
+            for cell in row.Cells do
+                for para in cell.Content do
+                    match layoutById.TryGetValue para.Id with
+                    | true, layout -> firstActualContentY <- min firstActualContentY layout.Y
+                    | false, _ -> ()
+
+        if System.Double.IsPositiveInfinity firstActualContentY then
+            None
+        else
             let planAtZero = Layout.buildTableLayoutPlanForDocumentAt settings measureText measureRange doc table 0.0
             let resolveAlignmentHeight = Layout.tableCellVerticalAlignmentHeightResolverForPlan planAtZero
-            let plannedContentY =
-                planAtZero.Rows
-                |> List.collect (fun row ->
-                    row.Measurement.CellGroups
-                    |> List.mapi (fun groupIndex group ->
-                        let alignmentHeight = resolveAlignmentHeight row.RowIndex groupIndex row.Height
-                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment alignmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
-                        group.Layouts |> List.map (fun layout -> layout.Y + offset))
-                    |> List.collect id)
-            match plannedContentY with
-            | [] -> None
-            | plannedValues -> Some ((values |> List.min) - (plannedValues |> List.min))
+            let mutable firstPlannedContentY = System.Double.PositiveInfinity
+            for row in planAtZero.Rows do
+                let mutable groupIndex = 0
+                for group in row.Measurement.CellGroups do
+                    let alignmentHeight = resolveAlignmentHeight row.RowIndex groupIndex row.Height
+                    let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment alignmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
+                    for layout in group.Layouts do
+                        firstPlannedContentY <- min firstPlannedContentY (layout.Y + offset)
+                    groupIndex <- groupIndex + 1
+            if System.Double.IsPositiveInfinity firstPlannedContentY then
+                None
+            else
+                Some (firstActualContentY - firstPlannedContentY)
 
     let private strokeGeometry (stroke: WordLayout.Table.PrintStroke option) =
         match stroke with
@@ -372,19 +974,21 @@ module API =
         let settings = Ren.layoutSettings ctx editor.Doc
         let measureText = Ren.measureWithContext ctx
         let measureRange = Ren.measureRangeWithContext ctx
-        let layouts = Ren.layoutDocument ctx editor.Doc
-        let layoutsById = layouts |> List.groupBy _.BlockId |> Map.ofList
+        let layouts = layoutsForEditor editor
+        let layoutsById = Dictionary<string, Layout.BlockLayout>()
+        for layout in layouts do
+            if not (layoutsById.ContainsKey layout.BlockId) then
+                layoutsById.[layout.BlockId] <- layout
         let mutable currentY = editor.Doc.PageSetup.MarginTop
         let mutable tableIndex = 0
-        let mutable rows: obj list = []
-        let mutable cells: obj list = []
-        let mutable segments: obj list = []
+        let rows = ResizeArray<obj>()
+        let cells = ResizeArray<obj>()
+        let segments = ResizeArray<obj>()
 
         let paragraphEndY (para: Doc.ParagraphBlock) =
-            layoutsById
-            |> Map.tryFind para.Id
-            |> Option.bind List.tryHead
-            |> Option.map (fun layout -> layout.Y + layout.Height)
+            match layoutsById.TryGetValue para.Id with
+            | true, layout -> Some (layout.Y + layout.Height)
+            | false, _ -> None
 
         for block in editor.Doc.Blocks do
             match block with
@@ -400,78 +1004,71 @@ module API =
                     |> Option.defaultValue currentY
                 let plan = Layout.buildTableLayoutPlanForDocumentAt settings measureText measureRange editor.Doc table tableY
 
-                rows <-
-                    rows @ (
-                        plan.Rows
-                        |> List.map (fun row ->
-                            createObj [
-                                "Kind" ==> "table-row"
-                                "Table" ==> tableIndex
-                                "Row" ==> (row.RowIndex + 1)
-                                "Y" ==> row.Y
-                                "PageY" ==> (row.Y - pageTopForYInDoc editor.Doc row.Y)
-                                "Height" ==> row.Height
-                                "FragmentCount" ==> row.Fragments.Length
-                                "IsHeader" ==> row.IsHeader
-                                "CanSplit" ==> row.CanSplit
-                            ]))
+                for row in plan.Rows do
+                    rows.Add(createObj [
+                        "Kind" ==> "table-row"
+                        "Table" ==> tableIndex
+                        "Row" ==> (row.RowIndex + 1)
+                        "Y" ==> row.Y
+                        "PageY" ==> (row.Y - pageTopForYInDoc editor.Doc row.Y)
+                        "Height" ==> row.Height
+                        "FragmentCount" ==> row.Fragments.Length
+                        "IsHeader" ==> row.IsHeader
+                        "CanSplit" ==> row.CanSplit
+                    ])
 
                 let cellFragments = Layout.tableCellFragmentPlans plan
-                cells <-
-                    cells @ (
-                        cellFragments
-                        |> List.map (fun cell ->
-                            createObj [
-                                "Kind" ==> "table-cell"
-                                "Table" ==> tableIndex
-                                "Row" ==> (cell.RowIndex + 1)
-                                "Cell" ==> (cell.CellIndex + 1)
-                                "StartColumn" ==> (cell.StartColumn + 1)
-                                "ColumnSpan" ==> cell.ColumnSpan
-                                "RowSpan" ==> cell.RowSpan
-                                "Page" ==> cell.Page
-                                "X" ==> cell.CellX
-                                "Y" ==> cell.CellY
-                                "PageY" ==> (cell.CellY - pageTopForYInDoc editor.Doc cell.CellY)
-                                "Width" ==> cell.CellWidth
-                                "Height" ==> cell.CellHeight
-                                "BorderTop" ==> strokeGeometry cell.BorderTop
-                                "BorderRight" ==> strokeGeometry cell.BorderRight
-                                "BorderBottom" ==> strokeGeometry cell.BorderBottom
-                                "BorderLeft" ==> strokeGeometry cell.BorderLeft
-                            ]))
+                for cell in cellFragments do
+                    cells.Add(createObj [
+                        "Kind" ==> "table-cell"
+                        "Table" ==> tableIndex
+                        "Row" ==> (cell.RowIndex + 1)
+                        "Cell" ==> (cell.CellIndex + 1)
+                        "StartColumn" ==> (cell.StartColumn + 1)
+                        "ColumnSpan" ==> cell.ColumnSpan
+                        "RowSpan" ==> cell.RowSpan
+                        "Page" ==> cell.Page
+                        "X" ==> cell.CellX
+                        "Y" ==> cell.CellY
+                        "PageY" ==> (cell.CellY - pageTopForYInDoc editor.Doc cell.CellY)
+                        "Width" ==> cell.CellWidth
+                        "Height" ==> cell.CellHeight
+                        "BorderTop" ==> strokeGeometry cell.BorderTop
+                        "BorderRight" ==> strokeGeometry cell.BorderRight
+                        "BorderBottom" ==> strokeGeometry cell.BorderBottom
+                        "BorderLeft" ==> strokeGeometry cell.BorderLeft
+                    ])
 
-                segments <-
-                    segments @ (
-                        cellFragments
-                        |> Layout.tableCellFragmentBorderCells
-                        |> RedBat.BorderGrid.resolve
-                        |> List.map (fun segment ->
-                            createObj [
-                                "Kind" ==> "table-border-segment"
-                                "Table" ==> tableIndex
-                                "X1" ==> segment.X1
-                                "Y1" ==> segment.Y1
-                                "X2" ==> segment.X2
-                                "Y2" ==> segment.Y2
-                                "PageY1" ==> (segment.Y1 - pageTopForYInDoc editor.Doc segment.Y1)
-                                "PageY2" ==> (segment.Y2 - pageTopForYInDoc editor.Doc segment.Y2)
-                                "Color" ==> segment.Stroke.Color
-                                "Width" ==> segment.Stroke.Width
-                                "Style" ==> segment.Stroke.Style
-                            ]))
+                for segment in cellFragments |> Layout.tableCellFragmentBorderCells |> RedBat.BorderGrid.resolve do
+                    segments.Add(createObj [
+                        "Kind" ==> "table-border-segment"
+                        "Table" ==> tableIndex
+                        "X1" ==> segment.X1
+                        "Y1" ==> segment.Y1
+                        "X2" ==> segment.X2
+                        "Y2" ==> segment.Y2
+                        "PageY1" ==> (segment.Y1 - pageTopForYInDoc editor.Doc segment.Y1)
+                        "PageY2" ==> (segment.Y2 - pageTopForYInDoc editor.Doc segment.Y2)
+                        "Color" ==> segment.Stroke.Color
+                        "Width" ==> segment.Stroke.Width
+                        "Style" ==> segment.Stroke.Style
+                    ])
 
                 currentY <- plan.NextY
             | Doc.TextBox _ -> ()
 
-        (rows @ cells @ segments) |> List.toArray
+        let result = ResizeArray<obj>(rows.Count + cells.Count + segments.Count)
+        for item in rows do result.Add item
+        for item in cells do result.Add item
+        for item in segments do result.Add item
+        result.ToArray()
 
-    let private sectionNumbersByParagraphId (doc: Doc.Document) =
+    let private buildSectionNumbersByParagraphId (doc: Doc.Document) =
         let mutable section = 1
-        let mutable pairs: (string * int) list = []
+        let sections = Dictionary<string, int>()
 
         let addParagraph (para: Doc.ParagraphBlock) =
-            pairs <- (para.Id, section) :: pairs
+            sections.[para.Id] <- section
 
         for block in doc.Blocks do
             match block with
@@ -479,12 +1076,31 @@ module API =
             | Doc.Heading (_, para) ->
                 addParagraph para
                 if para.Metadata.SectionBreak.IsSome then section <- section + 1
-            | Doc.Table _
-            | Doc.TextBox _ ->
-                for para in paragraphsInBlock block do
+            | Doc.Table table ->
+                for row in table.Rows do
+                    for cell in row.Cells do
+                        for para in cell.Content do
+                            addParagraph para
+            | Doc.TextBox textBox ->
+                for para in textBox.Content do
                     addParagraph para
 
-        pairs |> Map.ofList
+        sections
+
+    let private sectionNumbersByParagraphId (doc: Doc.Document) =
+        match sectionNumberCache |> List.tryFind (sectionNumberCacheMatches doc.Blocks) with
+        | Some cached -> cached.Sections
+        | None ->
+            let sections = buildSectionNumbersByParagraphId doc
+            let sourceParagraphCount = wordApiSourceParagraphCountFor sections.Count doc.Blocks
+            rememberSectionNumberCache ({
+                CachedBlocks = doc.Blocks
+                EntryCount = sections.Count
+                SourceParagraphCount = sourceParagraphCount
+                SourceTextCharCount = wordApiSourceTextCharCountFor sections.Count sourceParagraphCount doc.Blocks
+                Sections = sections
+            }: SectionNumberCache)
+            sections
 
     let private measureRangeForEditor (editor: Editor) =
         match editor.Handler.RenderContext.TextRangeMeasurer with
@@ -507,17 +1123,22 @@ module API =
 
     let private lineLeft pageLeft (layout: Layout.BlockLayout) (line: Layout.MeasuredLine) =
         let alignOffset = Layout.alignmentOffset layout line
-        line.Segments
-        |> List.choose (function
-            | Layout.TextSegment (_, _, x, width, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width)
-            | Layout.ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width)
-            | Layout.MathSegment (_, _, x, width, _, _, _, _) -> Some (pageLeft + x + alignOffset, pageLeft + x + alignOffset + width))
-        |> function
-            | [] -> pageLeft + alignOffset, line.Width
-            | bounds ->
-                let left = bounds |> List.map fst |> List.min
-                let right = bounds |> List.map snd |> List.max
-                left, max 0.0 (right - left)
+        let mutable hasBounds = false
+        let mutable left = System.Double.PositiveInfinity
+        let mutable right = System.Double.NegativeInfinity
+        let addBounds x width =
+            let x0 = pageLeft + x + alignOffset
+            let x1 = x0 + width
+            if x0 < left then left <- x0
+            if x1 > right then right <- x1
+            hasBounds <- true
+        for segment in line.Segments do
+            match segment with
+            | Layout.TextSegment (_, _, x, width, _) -> addBounds x width
+            | Layout.ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) -> addBounds x width
+            | Layout.MathSegment (_, _, x, width, _, _, _, _) -> addBounds x width
+        if hasBounds then left, max 0.0 (right - left)
+        else pageLeft + alignOffset, line.Width
 
     let private isTableContext context =
         context |> Option.bind _.TableIndex |> Option.isSome
@@ -534,46 +1155,53 @@ module API =
         else
             pageLeft, pageTopForYInDoc doc line.Y + doc.PageSetup.MarginTop
 
-    let private rangeBounds (doc: Doc.Document) (layouts: Layout.BlockLayout list) (measureRange: Layout.TextRangeMeasurer) (blockId: string) (startOffset: int) (endOffset: int) =
+    let private rangeBounds (doc: Doc.Document) (tryFindLayout: string -> Layout.BlockLayout option) (measureRange: Layout.TextRangeMeasurer) (blockId: string) (startOffset: int) (endOffset: int) =
         let pageLeft = doc.PageSetup.MarginLeft
-        match layouts |> List.tryFind (fun layout -> layout.BlockId = blockId) with
+        match tryFindLayout blockId with
         | None -> None
         | Some layout ->
             let maxOffset = Layout.maxOffsetInLayout layout
             let startOffset = max 0 (min startOffset maxOffset)
             let endOffset = max startOffset (min endOffset maxOffset)
-            let fragments =
-                if startOffset = endOffset then
-                    let line = Layout.lineForOffset layout startOffset
-                    let alignOffset = Layout.alignmentOffset layout line
-                    let x = pageLeft + alignOffset + Layout.xForOffsetWithRange measureRange line startOffset
-                    [x, line.Y, x, line.Y + line.Height]
+            let mutable found = false
+            let mutable left = 0.0
+            let mutable top = 0.0
+            let mutable right = 0.0
+            let mutable bottom = 0.0
+            let includeFragment x1 y1 x2 y2 =
+                if found then
+                    if x1 < left then left <- x1
+                    if y1 < top then top <- y1
+                    if x2 > right then right <- x2
+                    if y2 > bottom then bottom <- y2
                 else
-                    layout.Lines
-                    |> List.choose (fun line ->
-                        let lineStart = max startOffset line.StartOffset
-                        let lineEnd = min endOffset line.EndOffset
-                        if lineEnd < lineStart || lineEnd <= line.StartOffset || lineStart >= line.EndOffset then
-                            None
-                        else
-                            let alignOffset = Layout.alignmentOffset layout line
-                            let x1 = pageLeft + alignOffset + Layout.xForOffsetWithRange measureRange line lineStart
-                            let x2 = pageLeft + alignOffset + Layout.xForOffsetWithRange measureRange line lineEnd
-                            Some (min x1 x2, line.Y, max x1 x2, line.Y + line.Height))
+                    found <- true
+                    left <- x1
+                    top <- y1
+                    right <- x2
+                    bottom <- y2
 
-            match fragments with
-            | [] -> None
-            | _ ->
-                let left = fragments |> List.map (fun (x1, _, _, _) -> x1) |> List.min
-                let top = fragments |> List.map (fun (_, y1, _, _) -> y1) |> List.min
-                let right = fragments |> List.map (fun (_, _, x2, _) -> x2) |> List.max
-                let bottom = fragments |> List.map (fun (_, _, _, y2) -> y2) |> List.max
-                Some (left, top, right - left, bottom - top)
+            if startOffset = endOffset then
+                let line = Layout.lineForOffset layout startOffset
+                let alignOffset = Layout.alignmentOffset layout line
+                let x = pageLeft + alignOffset + Layout.xForOffsetWithRange measureRange line startOffset
+                includeFragment x line.Y x (line.Y + line.Height)
+            else
+                for line in layout.Lines do
+                    let lineStart = max startOffset line.StartOffset
+                    let lineEnd = min endOffset line.EndOffset
+                    if not (lineEnd < lineStart || lineEnd <= line.StartOffset || lineStart >= line.EndOffset) then
+                        let alignOffset = Layout.alignmentOffset layout line
+                        let x1 = pageLeft + alignOffset + Layout.xForOffsetWithRange measureRange line lineStart
+                        let x2 = pageLeft + alignOffset + Layout.xForOffsetWithRange measureRange line lineEnd
+                        includeFragment (min x1 x2) line.Y (max x1 x2) (line.Y + line.Height)
+
+            if found then Some (left, top, right - left, bottom - top) else None
 
     let getRangeBounds (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
-        let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+        let tryFindLayout = Ren.layoutLookupFor editor.Handler.RenderContext editor.Doc
         let measureRange = measureRangeForEditor editor
-        match rangeBounds editor.Doc layouts measureRange blockId startOffset endOffset with
+        match rangeBounds editor.Doc tryFindLayout measureRange blockId startOffset endOffset with
         | None -> null
         | Some (x, y, width, height) ->
             let pageTop = pageTopForYInDoc editor.Doc y
@@ -590,8 +1218,22 @@ module API =
                 "Page" ==> pageForYInDoc editor.Doc y
             ]
 
-    let private countWords (text: string) =
-        text.Split([| ' '; '\t'; '\r'; '\n' |], System.StringSplitOptions.RemoveEmptyEntries).Length
+    let private isWordSeparator c =
+        c = ' ' || c = '\t' || c = '\r' || c = '\n'
+
+    let private countWordsInRange (text: string) start length =
+        let endIndex = min text.Length (start + length)
+        let mutable count = 0
+        let mutable inWord = false
+        let mutable i = max 0 start
+        while i < endIndex do
+            if isWordSeparator text.[i] then
+                inWord <- false
+            elif not inWord then
+                count <- count + 1
+                inWord <- true
+            i <- i + 1
+        count
 
     let private markerColumnOffset (metadata: Doc.BlockMetadata) =
         let markerLengthWithSeparator (marker: string) =
@@ -633,48 +1275,54 @@ module API =
             let text = TextBuf.toString para.Buffer
             let boundedStart = max 0 (min startOffset text.Length)
             let boundedEnd = max boundedStart (min endOffset text.Length)
-            let rangeText = text.Substring(boundedStart, boundedEnd - boundedStart)
-            let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
-            let context = paragraphContexts editor.Doc |> Map.tryFind blockId
+            let rangeLength = boundedEnd - boundedStart
+            let layouts = layoutsForEditor editor
+            let context = paragraphContexts editor.Doc |> tryFindDictionary blockId
             let isInTable = context |> Option.bind _.TableIndex |> Option.isSome
-            let rangeLines =
-                layouts
-                |> List.filter (fun layout -> layout.BlockId = blockId)
-                |> List.collect (fun layout -> layout.Lines)
-                |> List.filter (fun line ->
-                    if boundedStart = boundedEnd then boundedStart >= line.StartOffset && boundedStart <= line.EndOffset
-                    else boundedStart < line.EndOffset && boundedEnd > line.StartOffset)
-            let pages =
-                rangeLines
-                |> List.map (fun line -> pageForYInDoc editor.Doc line.Y)
-                |> List.distinct
+            let mutable rangeLineCount = 0
+            let pages = HashSet<int>()
+            if not isInTable then
+                for layout in layouts do
+                    if layout.BlockId = blockId then
+                        for line in layout.Lines do
+                            let overlaps =
+                                if boundedStart = boundedEnd then
+                                    boundedStart >= line.StartOffset && boundedStart <= line.EndOffset
+                                else
+                                    boundedStart < line.EndOffset && boundedEnd > line.StartOffset
+                            if overlaps then
+                                rangeLineCount <- rangeLineCount + 1
+                                pages.Add(pageForYInDoc editor.Doc line.Y) |> ignore
 
             createObj [
-                "Lines" ==> (if isInTable then 0 else rangeLines.Length)
-                "Pages" ==> (if isInTable then 0 else pages.Length)
+                "Lines" ==> rangeLineCount
+                "Pages" ==> pages.Count
                 "Paragraphs" ==> 1
-                "Words" ==> countWords rangeText
-                "Characters" ==> rangeText.Length
-                "CharactersWithSpaces" ==> rangeText.Length
+                "Words" ==> countWordsInRange text boundedStart rangeLength
+                "Characters" ==> rangeLength
+                "CharactersWithSpaces" ==> rangeLength
             ]
 
     let private pageLineNumber (doc: Doc.Document) (layouts: Layout.BlockLayout list) (targetLayout: Layout.BlockLayout) (targetLine: Layout.MeasuredLine) =
         let page = pageForYInDoc doc targetLine.Y
-        layouts
-        |> List.collect (fun layout ->
-            layout.Lines
-            |> List.map (fun line ->
-                let left, _ = lineLeft doc.PageSetup.MarginLeft layout line
-                layout.BlockId, line.StartOffset, line.EndOffset, line.Y, left, line))
-        |> List.filter (fun (_, _, _, y, _, _) -> pageForYInDoc doc y = page)
-        |> List.sortBy (fun (_, _, _, y, left, _) -> y, left)
-        |> List.tryFindIndex (fun (blockId, startOffset, endOffset, y, _, _) ->
-            blockId = targetLayout.BlockId &&
-            startOffset = targetLine.StartOffset &&
-            endOffset = targetLine.EndOffset &&
-            y = targetLine.Y)
-        |> Option.map ((+) 1)
-        |> Option.defaultValue 0
+        let targetLeft, _ = lineLeft doc.PageSetup.MarginLeft targetLayout targetLine
+        let mutable beforeCount = 0
+        let mutable equalBeforeTarget = 0
+        let mutable foundTarget = false
+        for layout in layouts do
+            for line in layout.Lines do
+                if pageForYInDoc doc line.Y = page then
+                    let left, _ = lineLeft doc.PageSetup.MarginLeft layout line
+                    if line.Y < targetLine.Y || (line.Y = targetLine.Y && left < targetLeft) then
+                        beforeCount <- beforeCount + 1
+                    elif line.Y = targetLine.Y && left = targetLeft && not foundTarget then
+                        if layout.BlockId = targetLayout.BlockId &&
+                           line.StartOffset = targetLine.StartOffset &&
+                           line.EndOffset = targetLine.EndOffset then
+                            foundTarget <- true
+                        else
+                            equalBeforeTarget <- equalBeforeTarget + 1
+        if foundTarget then beforeCount + equalBeforeTarget + 1 else 0
 
     // Word/PDF range positions use a text-top coordinate for large default-spaced
     // runs; our layout line keeps the line-box top for rendering and pagination.
@@ -689,32 +1337,27 @@ module API =
         && metadata.ContextualSpacing.IsNone
 
     let private wordVerticalPositionTop applyTextTopOffset (line: Layout.MeasuredLine) =
-        let fontSize =
-            line.Segments
-            |> List.choose (function
-                | Layout.TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.printFontSize style)
-                | Layout.ImageSegment _ -> None
-                | Layout.MathSegment (_, style, _, _, _, _, _, _) -> Some (WordLayout.Text.printFontSize style))
-            |> function
-                | [] -> 0.0
-                | sizes -> List.max sizes
+        let mutable fontSize = 0.0
+        for segment in line.Segments do
+            match segment with
+            | Layout.TextSegment (_, style, _, _, _)
+            | Layout.MathSegment (_, style, _, _, _, _, _, _) ->
+                fontSize <- max fontSize (WordLayout.Text.printFontSize style)
+            | Layout.ImageSegment _ -> ()
         if applyTextTopOffset && fontSize >= wordVerticalTextTopOffsetMinFontSize then
             line.Y + fontSize * wordVerticalTextTopOffsetFactor
         else line.Y
 
     let getRangeInformation (editor: Editor) (blockId: string) (startOffset: int) (endOffset: int) =
-        let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+        let layouts = layoutsForEditor editor
+        let tryFindLayout = Ren.layoutLookupFor editor.Handler.RenderContext editor.Doc
         let contexts = paragraphContexts editor.Doc
         let sections = sectionNumbersByParagraphId editor.Doc
         let paragraphs = paragraphMap editor.Doc
         let measureRange = measureRangeForEditor editor
-        let pageCount =
-            layouts
-            |> List.collect (fun layout -> layout.Lines)
-            |> List.map (fun line -> pageForYInDoc editor.Doc (line.Y + line.Height))
-            |> List.fold max 1
+        let pageCount = pageCountFromLines editor.Doc layouts
 
-        match layouts |> List.tryFind (fun layout -> layout.BlockId = blockId) with
+        match tryFindLayout blockId with
         | None -> null
         | Some layout ->
             let offset = startOffset
@@ -723,7 +1366,7 @@ module API =
             let x = editor.Doc.PageSetup.MarginLeft + alignOffset + Layout.xForOffsetWithRange measureRange line offset
             let page = pageForYInDoc editor.Doc line.Y
             let pageTop = pageTopForYInDoc editor.Doc line.Y
-            let context = contexts |> Map.tryFind blockId
+            let context = contexts |> tryFindDictionary blockId
             let isInTable = context.IsSome && context.Value.TableIndex.IsSome
             // Word's VBA Information API reports the unaligned cell content origin,
             // ignoring center/bottom vertical alignment; subtract the applied offset to match.
@@ -731,7 +1374,7 @@ module API =
             let pageY = wordTop - pageTop
             let boundaryLeft, boundaryTop =
                 textBoundaryOrigin editor.Doc editor.Doc.PageSetup.MarginLeft layout line context
-            let bounds = rangeBounds editor.Doc layouts measureRange blockId startOffset endOffset
+            let bounds = rangeBounds editor.Doc tryFindLayout measureRange blockId startOffset endOffset
 
             createObj [
                 "BlockId" ==> blockId
@@ -739,13 +1382,13 @@ module API =
                 "EndOffset" ==> endOffset
                 "wdActiveEndAdjustedPageNumber" ==> page
                 "wdActiveEndPageNumber" ==> page
-                "wdActiveEndSectionNumber" ==> (sections |> Map.tryFind blockId |> Option.defaultValue 1)
+                "wdActiveEndSectionNumber" ==> (sections |> tryFindDictionary blockId |> Option.defaultValue 1)
                 "wdNumberOfPagesInDocument" ==> pageCount
                 "wdHorizontalPositionRelativeToPage" ==> x
                 "wdVerticalPositionRelativeToPage" ==> pageY
                 "wdHorizontalPositionRelativeToTextBoundary" ==> (x - boundaryLeft)
                 "wdVerticalPositionRelativeToTextBoundary" ==> (max 0.0 (wordTop - boundaryTop))
-                "wdFirstCharacterColumnNumber" ==> firstCharacterColumn (paragraphs |> Map.tryFind blockId) line offset
+                "wdFirstCharacterColumnNumber" ==> firstCharacterColumn (tryFindParagraph paragraphs blockId) line offset
                 "wdFirstCharacterLineNumber" ==> pageLineNumber editor.Doc layouts layout line
                 "wdWithInTable" ==> isInTable
                 "wdStartOfRangeRowNumber" ==> (context |> Option.bind _.RowIndex |> jsOpt)
@@ -781,67 +1424,63 @@ module API =
 
     let getLayoutLines (editor: Editor) =
         let pageLeft = editor.Doc.PageSetup.MarginLeft
-        let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+        let layouts = layoutsForEditor editor
         let contexts = paragraphContexts editor.Doc
         let sections = sectionNumbersByParagraphId editor.Doc
         let paragraphs = paragraphMap editor.Doc
-        let pageCount =
-            layouts
-            |> List.collect (fun layout -> layout.Lines)
-            |> List.map (fun line -> pageForYInDoc editor.Doc (line.Y + line.Height))
-            |> List.fold max 1
-        let mutable pageLineCounts = Map.empty<int, int>
+        let pageCount = pageCountFromLines editor.Doc layouts
+        let pageLineCounts = Dictionary<int, int>()
 
         let nextPageLine page =
-            let value = (pageLineCounts |> Map.tryFind page |> Option.defaultValue 0) + 1
-            pageLineCounts <- pageLineCounts |> Map.add page value
+            let value =
+                match pageLineCounts.TryGetValue page with
+                | true, count -> count + 1
+                | false, _ -> 1
+            pageLineCounts.[page] <- value
             value
 
-        layouts
-        |> List.mapi (fun layoutIndex layout ->
-            layout.Lines
-            |> List.mapi (fun lineIndex line ->
+        let result = ResizeArray<obj>()
+        let mutable layoutIndex = 0
+        for layout in layouts do
+            let mutable lineIndex = 0
+            for line in layout.Lines do
                 let alignOffset = Layout.alignmentOffset layout line
-                let segments =
-                    line.Segments
-                    |> List.map (function
-                        | Layout.TextSegment (text, _, x, width, startOffset) ->
-                            createObj [
-                                "Kind" ==> "text"
-                                "Text" ==> text
-                                "StartOffset" ==> startOffset
-                                "X" ==> (pageLeft + x + alignOffset)
-                                "Width" ==> width
-                            ]
-                        | Layout.ImageSegment (_, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, _, _, _, _) ->
-                            createObj [
-                                "Kind" ==> "image"
-                                "Text" ==> "\uFFFC"
-                                "StartOffset" ==> startOffset
-                                "X" ==> (pageLeft + x + alignOffset)
-                                "Y" ==> (line.Y + yOffset)
-                                "Width" ==> width
-                                "Height" ==> height
-                                "Floating" ==> floating
-                                "Wrap" ==> wrap
-                                "RelativeHeight" ==> relativeHeight
-                            ]
-                        | Layout.MathSegment (_, _, x, width, _, _, startOffset, _) ->
-                            createObj [
-                                "Kind" ==> "math"
-                                "Text" ==> "\uFFFC"
-                                "StartOffset" ==> startOffset
-                                "X" ==> (pageLeft + x + alignOffset)
-                                "Width" ==> width
-                            ])
-
-                let text =
-                    line.Segments
-                    |> List.map (function
-                        | Layout.TextSegment (text, _, _, _, _) -> text
-                        | Layout.ImageSegment _ -> "\uFFFC"
-                        | Layout.MathSegment _ -> "\uFFFC")
-                    |> String.concat ""
+                let segments = ResizeArray<obj>()
+                let text = System.Text.StringBuilder()
+                for segment in line.Segments do
+                    match segment with
+                    | Layout.TextSegment (segmentText, _, x, width, startOffset) ->
+                        text.Append segmentText |> ignore
+                        segments.Add(createObj [
+                            "Kind" ==> "text"
+                            "Text" ==> segmentText
+                            "StartOffset" ==> startOffset
+                            "X" ==> (pageLeft + x + alignOffset)
+                            "Width" ==> width
+                        ])
+                    | Layout.ImageSegment (_, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, _, _, _, _) ->
+                        text.Append "\uFFFC" |> ignore
+                        segments.Add(createObj [
+                            "Kind" ==> "image"
+                            "Text" ==> "\uFFFC"
+                            "StartOffset" ==> startOffset
+                            "X" ==> (pageLeft + x + alignOffset)
+                            "Y" ==> (line.Y + yOffset)
+                            "Width" ==> width
+                            "Height" ==> height
+                            "Floating" ==> floating
+                            "Wrap" ==> wrap
+                            "RelativeHeight" ==> relativeHeight
+                        ])
+                    | Layout.MathSegment (_, _, x, width, _, _, startOffset, _) ->
+                        text.Append "\uFFFC" |> ignore
+                        segments.Add(createObj [
+                            "Kind" ==> "math"
+                            "Text" ==> "\uFFFC"
+                            "StartOffset" ==> startOffset
+                            "X" ==> (pageLeft + x + alignOffset)
+                            "Width" ==> width
+                        ])
 
                 let x, width =
                     lineLeft pageLeft layout line
@@ -849,21 +1488,21 @@ module API =
                 let page = pageForYInDoc editor.Doc line.Y
                 let pageTop = pageTopForYInDoc editor.Doc line.Y
                 let pageLine = nextPageLine page
-                let context = contexts |> Map.tryFind layout.BlockId
+                let context = contexts |> tryFindDictionary layout.BlockId
                 let isInTable = context |> Option.bind _.TableIndex |> Option.isSome
                 let boundaryLeft, boundaryTop =
                     textBoundaryOrigin editor.Doc pageLeft layout line context
                 // Match Word's VBA Information API, which reports the unaligned cell
                 // content origin regardless of center/bottom vertical alignment.
                 let wordTop = wordVerticalPositionTop (not isInTable && usesDefaultWordRangeTopOffset layout.Metadata) line - layout.VAlignOffset
-                createObj [
+                result.Add(createObj [
                     "Kind" ==> "line"
                     "BlockId" ==> layout.BlockId
                     "BlockIndex" ==> layoutIndex
                     "LineIndex" ==> lineIndex
                     "Page" ==> page
                     "AdjustedPage" ==> page
-                    "Section" ==> (sections |> Map.tryFind layout.BlockId |> Option.defaultValue 1)
+                    "Section" ==> (sections |> tryFindDictionary layout.BlockId |> Option.defaultValue 1)
                     "PageCount" ==> pageCount
                     "X" ==> x
                     "Y" ==> wordTop
@@ -876,7 +1515,7 @@ module API =
                     "HorizontalPositionRelativeToTextBoundary" ==> (x - boundaryLeft)
                     "VerticalPositionRelativeToTextBoundary" ==> (max 0.0 (wordTop - boundaryTop))
                     "FirstCharacterLineNumber" ==> pageLine
-                    "FirstCharacterColumnNumber" ==> firstCharacterColumn (paragraphs |> Map.tryFind layout.BlockId) line line.StartOffset
+                    "FirstCharacterColumnNumber" ==> firstCharacterColumn (tryFindParagraph paragraphs layout.BlockId) line line.StartOffset
                     "StartOffset" ==> line.StartOffset
                     "EndOffset" ==> line.EndOffset
                     "BlockY" ==> layout.Y
@@ -901,27 +1540,30 @@ module API =
                     "RevisionMarking" ==> editor.Handler.TrackChanges
                     "RangeLines" ==> (if isInTable then 0 else 1)
                     "RangePages" ==> (if isInTable then 0 else 1)
-                    "Text" ==> text
-                    "Segments" ==> segments
+                    "Text" ==> (text.ToString())
+                    "Segments" ==> (segments.ToArray())
                 ])
-            )
-        |> List.collect id
-        |> List.toArray
+                lineIndex <- lineIndex + 1
+            layoutIndex <- layoutIndex + 1
+        result.ToArray()
 
     let getVbaLayoutLines (editor: Editor) =
         getLayoutLines editor
 
     /// Find literal text matches across editable paragraphs.
     let findText (editor: Editor) (query: string) (matchCase: bool) =
-        Doc.findText query matchCase editor.Doc
-        |> List.map (fun matchInfo ->
-            createObj [
-                "BlockId" ==> matchInfo.BlockId
-                "Start" ==> matchInfo.Start
-                "End" ==> matchInfo.End
-                "Text" ==> matchInfo.Text
-            ])
-        |> List.toArray
+        let matches = Doc.findTextArray query matchCase editor.Doc
+        let result = Array.zeroCreate<obj> matches.Length
+        for i = 0 to matches.Length - 1 do
+            let matchInfo = matches.[i]
+            result.[i] <-
+                createObj [
+                    "BlockId" ==> matchInfo.BlockId
+                    "Start" ==> matchInfo.Start
+                    "End" ==> matchInfo.End
+                    "Text" ==> matchInfo.Text
+                ]
+        result
 
     let getRevisionInfos (editor: Editor) =
         Doc.revisionInfos editor.Doc
@@ -946,22 +1588,20 @@ module API =
             Text = matchObj?Text |> unbox<string>
         }
         let newDoc = Doc.selectFindMatch matchInfo editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let selectRevisionInfo (editor: Editor) (revisionObj: obj) =
         let blockId = revisionObj?BlockId |> unbox<string>
         let startOffset = revisionObj?Start |> unbox<int>
         let endOffset = revisionObj?End |> unbox<int>
         let newDoc = Doc.setSelection { BlockId = blockId; Offset = startOffset } { BlockId = blockId; Offset = endOffset } editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Replace all literal text matches across editable paragraphs.
     let replaceAllText (editor: Editor) (query: string) (replacement: string) (matchCase: bool) =
         let (newDoc, count) = Doc.replaceAllText query replacement matchCase editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        if count > 0 then
+            commitDocumentUpdate editor newDoc
         count
     
     /// Insert text at cursor
@@ -969,31 +1609,29 @@ module API =
         let newDoc =
             if editor.Handler.TrackChanges then Doc.insertTrackedText editor.Handler.TrackChangesAuthor editor.Handler.TrackChangesDate text editor.Doc
             else Doc.insertText text editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let insertFieldAt (editor: Editor) (fieldCode: string) (result: string) =
         let newDoc = Doc.insertField fieldCode result editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let private pageNumberForY (doc: Doc.Document) y =
-        let stride = doc.PageSetup.PageHeight + WordLayout.Page.gap
-        int (floor (max 0.0 y / stride)) + 1
+        pageForYInDoc doc y
 
     let private displayPageNumberForPhysicalPage (restartPoints: (int * int) list) physicalPage =
-        restartPoints
-        |> List.filter (fun (restartPhysicalPage, _) -> restartPhysicalPage <= physicalPage)
-        |> List.tryLast
-        |> Option.map (fun (restartPhysicalPage, restartDisplayPage) -> restartDisplayPage + physicalPage - restartPhysicalPage)
-        |> Option.defaultValue physicalPage
+        let mutable displayPage = physicalPage
+        for restartPhysicalPage, restartDisplayPage in restartPoints do
+            if restartPhysicalPage <= physicalPage then
+                displayPage <- restartDisplayPage + physicalPage - restartPhysicalPage
+        displayPage
 
     let private pageMapFromLayout (editor: Editor) =
-        let layouts = Ren.layoutDocument editor.Handler.RenderContext editor.Doc
+        let layouts = layoutsForEditor editor
+        let paragraphs = paragraphMap editor.Doc
         let restartPoints =
             layouts
             |> List.choose (fun layout ->
-                Doc.findParagraph editor.Doc layout.BlockId
+                tryFindParagraph paragraphs layout.BlockId
                 |> Option.bind (fun para ->
                     para.Metadata.SectionPageNumberStart
                     |> Option.map (fun start -> pageNumberForY editor.Doc layout.Y, max 1 start)))
@@ -1004,167 +1642,123 @@ module API =
             |> pageNumberForY editor.Doc
             |> displayPageNumberForPhysicalPage restartPoints
 
-        let fieldAnchors =
-            layouts
-            |> List.collect (fun layout ->
-                layout.Lines
-                |> List.collect (fun line ->
-                    line.Segments
-                    |> List.choose (function
-                        | Layout.TextSegment (_, style, _, _, startOffset) ->
-                            style.FieldCode
-                            |> Option.map (fun code ->
-                                ({
-                                    PageFieldBlockId = layout.BlockId
-                                    PageFieldStartOffset = startOffset
-                                    PageFieldCode = code
-                                    PageNumber = displayPageNumberForY line.Y
-                                }: Doc.PageFieldAnchor))
-                        | Layout.ImageSegment _ -> None
-                        | Layout.MathSegment _ -> None)))
-        let bookmarkAnchors =
-            layouts
-            |> List.collect (fun layout ->
-                layout.Lines
-                |> List.collect (fun line ->
-                    line.Segments
-                    |> List.choose (function
-                        | Layout.TextSegment (_, style, _, _, startOffset) ->
-                            style.BookmarkName
-                            |> Option.map (fun name ->
-                                ({
-                                    PageBookmarkName = name
-                                    PageBookmarkBlockId = layout.BlockId
-                                    PageBookmarkStartOffset = startOffset
-                                    PageNumber = displayPageNumberForY line.Y
-                                }: Doc.PageBookmarkAnchor))
-                        | Layout.ImageSegment _ -> None
-                        | Layout.MathSegment _ -> None)))
-            |> List.distinctBy (fun anchor -> anchor.PageBookmarkName)
-        let blockAnchors =
-            layouts
-            |> List.map (fun layout ->
-                ({
-                    PageBlockId = layout.BlockId
-                    PageNumber = displayPageNumberForY layout.Y
-                }: Doc.PageBlockAnchor))
-        let pageCount =
-            layouts
-            |> List.map (fun layout -> pageNumberForY editor.Doc (layout.Y + layout.Height))
-            |> List.fold max 1
+        let fieldAnchors = ResizeArray<Doc.PageFieldAnchor>()
+        let bookmarkAnchors = ResizeArray<Doc.PageBookmarkAnchor>()
+        let blockAnchors = ResizeArray<Doc.PageBlockAnchor>()
+        let seenBookmarks = HashSet<string>()
+        for layout in layouts do
+            blockAnchors.Add {
+                PageBlockId = layout.BlockId
+                PageNumber = displayPageNumberForY layout.Y
+            }
+            for line in layout.Lines do
+                let pageNumber = displayPageNumberForY line.Y
+                for segment in line.Segments do
+                    match segment with
+                    | Layout.TextSegment (_, style, _, _, startOffset) ->
+                        match style.FieldCode with
+                        | Some code ->
+                            fieldAnchors.Add {
+                                PageFieldBlockId = layout.BlockId
+                                PageFieldStartOffset = startOffset
+                                PageFieldCode = code
+                                PageNumber = pageNumber
+                            }
+                        | None -> ()
+                        match style.BookmarkName with
+                        | Some name when seenBookmarks.Add name ->
+                            bookmarkAnchors.Add {
+                                PageBookmarkName = name
+                                PageBookmarkBlockId = layout.BlockId
+                                PageBookmarkStartOffset = startOffset
+                                PageNumber = pageNumber
+                            }
+                        | _ -> ()
+                    | Layout.ImageSegment _
+                    | Layout.MathSegment _ -> ()
+        let mutable pageCount = 1
+        for layout in layouts do
+            pageCount <- max pageCount (pageNumberForY editor.Doc (layout.Y + layout.Height))
         let pageMap: Doc.PageMap = {
             PageCount = pageCount
-            BlockAnchors = blockAnchors
-            Fields = fieldAnchors
-            Bookmarks = bookmarkAnchors
+            BlockAnchors = List.ofSeq blockAnchors
+            Fields = List.ofSeq fieldAnchors
+            Bookmarks = List.ofSeq bookmarkAnchors
         }
         pageMap
 
     let refreshFields (editor: Editor) =
         let newDoc = Doc.refreshFieldsWithPageMap (pageMapFromLayout editor) editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let insertEquation (editor: Editor) (equationText: string) =
         let newDoc = Doc.insertEquation equationText editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
     
     /// Set document content
     let setContent (editor: Editor) (text: string) =
-        let doc: Doc.Document = {
-            Blocks = [
-                Doc.Paragraph {
-                    Id = "block-0"
-                    Buffer = TextBuf.ofString text
-                    Metadata = Doc.defaultMetadata
-                }
-            ]
-            Selection = Some {
-                Anchor = { BlockId = "block-0"; Offset = text.Length }
-                Focus = { BlockId = "block-0"; Offset = text.Length }
-            }
-            PageSetup = Doc.defaultPageSetup
-            Styles = []
-            Headers = []
-            Footers = []
-            HeaderParts = []
-            FooterParts = []
-        }
-        Inp.updateDocument editor.Handler doc
-        editor.Doc <- doc
+        let doc = Doc.setPlainTextContent text editor.Doc
+        commitDocumentUpdate editor doc
     
     /// Toggle bold on selection
     let toggleBold (editor: Editor) =
         let newDoc = Doc.toggleBold editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
     
     /// Toggle italic on selection
     let toggleItalic (editor: Editor) =
         let newDoc = Doc.toggleItalic editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
     
     /// Toggle underline on selection
     let toggleUnderline (editor: Editor) =
         let newDoc = Doc.toggleUnderline editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Toggle all caps on selection
     let toggleAllCaps (editor: Editor) =
         let newDoc = Doc.toggleAllCaps editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Toggle small caps on selection
     let toggleSmallCaps (editor: Editor) =
         let newDoc = Doc.toggleSmallCaps editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Set numbered-list marker format on current block
     let setNumberFormat (editor: Editor) (format: string) =
         let newDoc = Doc.setNumberFormat format editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Toggle strikethrough on selection
     let toggleStrike (editor: Editor) =
         let newDoc = Doc.toggleStrike editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Clear direct character formatting on selection
     let clearFormatting (editor: Editor) =
         let newDoc = Doc.clearFormatting editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Set vertical alignment on selection
     let setVertAlignFor (editor: Editor) (align: string) =
         let newDoc = Doc.setVertAlign (if isNull (box align) || align = "" || align = "baseline" then None else Some align) editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Set text color on selection
     let setColorFor (editor: Editor) (color: string) =
         let newDoc = Doc.setColor (if isNull (box color) || color = "" then None else Some color) editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Set highlight color on selection
     let setHighlightFor (editor: Editor) (color: string) =
         let newDoc = Doc.setHighlight (if isNull (box color) || color = "" || color = "none" then None else Some color) editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Set hyperlink on selection
     let setHyperlinkFor (editor: Editor) (target: string) =
         let newDoc = Doc.setHyperlink (if isNull (box target) || target = "" then None else Some target) editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Set comment metadata on selection
     let setCommentFor (editor: Editor) (commentId: string) (commentText: string) (author: string) (date: string) =
@@ -1173,8 +1767,7 @@ module API =
         let authorOpt = if isNull (box author) || author = "" then None else Some author
         let dateOpt = if isNull (box date) || date = "" then None else Some date
         let newDoc = Doc.setComment commentIdOpt commentTextOpt authorOpt dateOpt editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Set footnote/endnote metadata on selection
     let setNoteFor (editor: Editor) (noteId: string) (noteType: string) (noteText: string) =
@@ -1182,18 +1775,15 @@ module API =
         let noteTypeOpt = if isNull (box noteType) || noteType = "" then None else Some noteType
         let noteTextOpt = if isNull (box noteText) || noteText = "" then None else Some noteText
         let newDoc = Doc.setNote noteIdOpt noteTypeOpt noteTextOpt editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setBookmarkFor (editor: Editor) (bookmarkName: string) =
         let newDoc = Doc.setBookmark bookmarkName editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setContentControlFor (editor: Editor) (controlId: string) (tag: string) (alias: string) =
         let newDoc = Doc.setContentControl controlId tag alias editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let getBookmarkInfos (editor: Editor) =
         Doc.bookmarkInfos editor.Doc
@@ -1209,18 +1799,15 @@ module API =
 
     let selectBookmark (editor: Editor) (bookmarkId: string) =
         let newDoc = Doc.selectBookmark bookmarkId editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let removeBookmark (editor: Editor) (bookmarkId: string) =
         let newDoc = Doc.removeBookmark bookmarkId editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let renameBookmark (editor: Editor) (bookmarkId: string) (bookmarkName: string) =
         let newDoc = Doc.renameBookmark bookmarkId bookmarkName editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let getContentControlInfos (editor: Editor) =
         Doc.contentControlInfos editor.Doc
@@ -1235,114 +1822,94 @@ module API =
 
     let selectContentControl (editor: Editor) (controlId: string) =
         let newDoc = Doc.selectContentControl controlId editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let removeContentControl (editor: Editor) (controlId: string) =
         let newDoc = Doc.removeContentControl controlId editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let updateContentControl (editor: Editor) (controlId: string) (newControlId: string) (tag: string) (alias: string) =
         let newDoc = Doc.updateContentControl controlId newControlId tag alias editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setParagraphStyleFor (editor: Editor) (styleId: string) =
         let newDoc = Doc.setParagraphStyle styleId editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setCharacterStyleFor (editor: Editor) (styleId: string) =
         let newDoc = Doc.setCharacterStyle styleId editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let getStyleCatalog (editor: Editor) =
         Docx.exportStylesToEditor editor.Doc.Styles
 
     let setRevisionFor (editor: Editor) (revisionType: string) (revisionId: string) (author: string) (date: string) =
         let newDoc = Doc.setRevision revisionType revisionId author date editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let acceptSelectedRevision (editor: Editor) =
         let newDoc = Doc.acceptSelectedRevision editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let rejectSelectedRevision (editor: Editor) =
         let newDoc = Doc.rejectSelectedRevision editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let acceptAllRevisions (editor: Editor) =
         let newDoc = Doc.acceptAllRevisions editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let rejectAllRevisions (editor: Editor) =
         let newDoc = Doc.rejectAllRevisions editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let selectNextRevision (editor: Editor) =
         let newDoc = Doc.selectNextRevision editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let selectPreviousRevision (editor: Editor) =
         let newDoc = Doc.selectPreviousRevision editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
     
     /// Set font size on selection
     let setFontSizeFor (editor: Editor) (size: float) =
         let newDoc = Doc.setFontSize size editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
     
     /// Set font family on selection
     let setFontFamilyFor (editor: Editor) (family: string) =
         let newDoc = Doc.setFontFamily family editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Apply Heading 1-3 to the current block
     let setHeadingLevel (editor: Editor) (level: int) =
         let newDoc = Doc.setHeadingLevel level editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Convert the current heading block back to a normal paragraph
     let clearHeading (editor: Editor) =
         let newDoc = Doc.clearHeading editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
     
     /// Select all text
     let selectAll (editor: Editor) =
         let newDoc = Doc.selectAll editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Align left
     let alignLeft (editor: Editor) =
         let newDoc = Doc.alignLeft editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Align center
     let alignCenter (editor: Editor) =
         let newDoc = Doc.alignCenter editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Align right
     let alignRight (editor: Editor) =
         let newDoc = Doc.alignRight editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Insert image at cursor
     let insertImage (editor: Editor) (src: string) (width: float) (height: float) (alt: string) =
@@ -1350,72 +1917,60 @@ module API =
         let heightOpt = if height > 0.0 then Some height else None
         let altOpt = if isNull (box alt) || alt = "" then None else Some alt
         let newDoc = Doc.insertImageAtCursor src widthOpt heightOpt altOpt editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let resizeCurrentImage (editor: Editor) (width: float) (height: float) =
         let newDoc = Doc.resizeImageNearCursor width height editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Insert a table row after the row containing the current selection
     let insertTableRowAfter (editor: Editor) =
         let newDoc = Doc.insertTableRowAfterSelection editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Insert a table column after the column containing the current selection
     let insertTableColumnAfter (editor: Editor) =
         let newDoc = Doc.insertTableColumnAfterSelection editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Delete the table row containing the current selection
     let deleteTableRow (editor: Editor) =
         let newDoc = Doc.deleteSelectedTableRow editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Delete the table column containing the current selection
     let deleteTableColumn (editor: Editor) =
         let newDoc = Doc.deleteSelectedTableColumn editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let insertTable (editor: Editor) (rows: int) (columns: int) =
         let newDoc = Doc.insertTable rows columns editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let insertTextBox (editor: Editor) (text: string) =
         let newDoc = Doc.insertTextBox text editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let insertCaption (editor: Editor) (label: string) (captionText: string) =
         let newDoc = Doc.insertCaption label captionText editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let insertCrossReferenceToLatestCaption (editor: Editor) (label: string) =
         let beforeDoc = editor.Doc
         let newDoc = Doc.insertCrossReferenceToLatestCaption label editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
-        newDoc <> beforeDoc
+        commitDocumentUpdate editor newDoc
+        not (obj.ReferenceEquals(newDoc, beforeDoc))
 
     let setCurrentTextBoxStyle (editor: Editor) (x: float) (y: float) (width: float) (height: float) (fillColor: string) (borderColor: string) (borderWidth: float) =
         let newDoc = Doc.setCurrentTextBoxStyle x y width height fillColor borderColor borderWidth editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setSelectedTableCellStyle (editor: Editor) (backgroundColor: string) (cellWidth: float) (borderColor: string) (borderWidth: float) (verticalAlignment: string) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) =
         let optionalCellWidth = if cellWidth > 0.0 then Some cellWidth else None
         let optionalWidth = if borderWidth > 0.0 then Some borderWidth else None
         let optionalPadding value = if value >= 0.0 then Some value else None
         let newDoc = Doc.setSelectedTableCellStyle (optionalText backgroundColor) optionalCellWidth (optionalText borderColor) optionalWidth (optionalText verticalAlignment) (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setSelectedTableCellStyleWithShading (editor: Editor) (backgroundColor: string) (shadingPattern: string) (shadingForegroundColor: string) (cellWidth: float) (borderColor: string) (borderWidth: float) (verticalAlignment: string) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) =
         let optionalCellWidth = if cellWidth > 0.0 then Some cellWidth else None
@@ -1439,47 +1994,39 @@ module API =
             elif shading.IsSome then None
             else background
         let newDoc = Doc.setSelectedTableCellStyleWithShading fillColor shading optionalCellWidth (optionalText borderColor) optionalWidth (optionalText verticalAlignment) (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setCurrentTableCellMargins (editor: Editor) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) =
         let optionalPadding value = if value >= 0.0 then Some value else None
         let newDoc = Doc.setCurrentTableCellMargins (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setCurrentTableCellMarginsAndSpacing (editor: Editor) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) (cellSpacing: float) =
         let optionalPadding value = if value >= 0.0 then Some value else None
         let optionalSpacing value = if value >= 0.0 then Some value else None
         let newDoc = Doc.setCurrentTableCellMarginsAndSpacing (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) (optionalSpacing cellSpacing) editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Align justify
     let alignJustify (editor: Editor) =
         let newDoc = Doc.alignJustify editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let toggleBulletList (editor: Editor) =
         let newDoc = Doc.toggleBulletList editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let toggleNumberedList (editor: Editor) =
         let newDoc = Doc.toggleNumberedList editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let increaseIndent (editor: Editor) =
         let newDoc = Doc.increaseIndent editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let decreaseIndent (editor: Editor) =
         let newDoc = Doc.decreaseIndent editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let applyParagraphStyle (editor: Editor) (alignment: string) (indentLeft: float) (indentRight: float) (spacingBefore: float) (spacingAfter: float) (lineSpacing: float) (fontSize: float) (firstLineIndent: float option) (backgroundColor: string) =
         let alignmentValue =
@@ -1493,8 +2040,7 @@ module API =
             |> Doc.setCurrentParagraphStyle alignmentValue (Some indentLeft) (Some indentRight) (Some spacingBefore) (Some spacingAfter) (Some lineSpacing) firstLineIndent (optionalText backgroundColor)
             |> Doc.selectAll
             |> Doc.setFontSize fontSize
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setSectionBreak (editor: Editor) (kind: string) =
         let sectionBreak =
@@ -1503,35 +2049,29 @@ module API =
             | "none" -> None
             | _ -> Some "nextPage"
         let newDoc = Doc.setCurrentSectionBreak sectionBreak editor.Doc
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Import document from EditorParagraphs (Office.Formats format)
     /// Use with: Office.Formats processors.forEditor() output
     let importFromDocx (editor: Editor) (editorParagraphs: obj array) =
         let newDoc = Docx.importFromEditor editorParagraphs
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let importFromDocxWithHeaderFooters (editor: Editor) (editorParagraphs: obj array) (headerParagraphs: obj array) (footerParagraphs: obj array) =
         let newDoc = Docx.importFromEditorWithHeaderFooters editorParagraphs headerParagraphs footerParagraphs
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let importFromDocxWithHeaderFooterParts (editor: Editor) (editorParagraphs: obj array) (headerParts: obj array) (footerParts: obj array) =
         let newDoc = Docx.importFromEditorWithHeaderFooterParts editorParagraphs headerParts footerParts
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let importFromDocxWithPageSetupAndHeaderFooterParts (editor: Editor) (editorParagraphs: obj array) (pageSetup: obj) (headerParts: obj array) (footerParts: obj array) =
         let newDoc = Docx.importFromEditorWithPageSetupAndHeaderFooterParts editorParagraphs pageSetup headerParts footerParts
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let importFromDocxPackage (editor: Editor) (package: obj) =
         let newDoc = Docx.importFromEditorPackage package
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     let setPageSetup (editor: Editor) (pageWidth: float) (pageHeight: float) (marginLeft: float) (marginRight: float) (marginTop: float) (marginBottom: float) (headerDistance: float) (footerDistance: float) =
         let setup: Doc.PageSetup = {
@@ -1548,9 +2088,8 @@ module API =
             Columns = editor.Doc.PageSetup.Columns
             SectionStart = editor.Doc.PageSetup.SectionStart
         }
-        let newDoc = { editor.Doc with PageSetup = setup }
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        let newDoc = Doc.setPageSetup setup editor.Doc
+        commitDocumentUpdate editor newDoc
 
     let setPageSetupOptions (editor: Editor) (pageWidth: float) (pageHeight: float) (marginLeft: float) (marginRight: float) (marginTop: float) (marginBottom: float) (headerDistance: float) (footerDistance: float) (differentFirstPage: bool) (evenAndOddHeaders: bool) =
         let setup: Doc.PageSetup = {
@@ -1567,9 +2106,8 @@ module API =
             Columns = editor.Doc.PageSetup.Columns
             SectionStart = editor.Doc.PageSetup.SectionStart
         }
-        let newDoc = { editor.Doc with PageSetup = setup }
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        let newDoc = Doc.setPageSetup setup editor.Doc
+        commitDocumentUpdate editor newDoc
 
     let getPageSetup (editor: Editor) =
         let setup = editor.Doc.PageSetup
@@ -1605,15 +2143,19 @@ module API =
 
     let private upsertPart prefix kind text parts =
         let remaining = parts |> List.filter (fun (part: Doc.HeaderFooterPart) -> part.Kind <> kind || part.RelationshipId.IsSome)
-        if System.String.IsNullOrWhiteSpace text then remaining
-        else
-            { Kind = kind; RelationshipId = None; Blocks = [Doc.Paragraph (paragraphFromText (sprintf "%s-%s" prefix kind) text)] } :: remaining
+        let nextParts =
+            if System.String.IsNullOrWhiteSpace text then remaining
+            else
+                { Kind = kind; RelationshipId = None; Blocks = [Doc.Paragraph (paragraphFromText (sprintf "%s-%s" prefix kind) text)] } :: remaining
+        if nextParts = parts then parts else nextParts
 
     let private upsertReferencedPart prefix relationshipId text parts =
         let remaining = parts |> List.filter (fun (part: Doc.HeaderFooterPart) -> part.RelationshipId <> Some relationshipId)
-        if System.String.IsNullOrWhiteSpace text then remaining
-        else
-            { Kind = "default"; RelationshipId = Some relationshipId; Blocks = [Doc.Paragraph (paragraphFromText (sprintf "%s-%s" prefix relationshipId) text)] } :: remaining
+        let nextParts =
+            if System.String.IsNullOrWhiteSpace text then remaining
+            else
+                { Kind = "default"; RelationshipId = Some relationshipId; Blocks = [Doc.Paragraph (paragraphFromText (sprintf "%s-%s" prefix relationshipId) text)] } :: remaining
+        if nextParts = parts then parts else nextParts
 
     let private tableCell id text : Doc.TableCell =
         { Content = [paragraphFromText id text]
@@ -1666,7 +2208,8 @@ module API =
         let otherParts = parts |> List.filter (fun (part: Doc.HeaderFooterPart) -> not (part.Kind = "default" && part.RelationshipId.IsNone))
         let existingBlocks = defaultPart |> Option.map _.Blocks |> Option.defaultValue [] |> List.filter (isTableId tableId >> not)
         let blocks = if hasTable then existingBlocks @ [Doc.Table (twoCellTable tableId left right)] else existingBlocks
-        if blocks.IsEmpty then otherParts else { Kind = "default"; RelationshipId = None; Blocks = blocks } :: otherParts
+        let nextParts = if blocks.IsEmpty then otherParts else { Kind = "default"; RelationshipId = None; Blocks = blocks } :: otherParts
+        if nextParts = parts then parts else nextParts
 
     let private isImageParagraphId id = function
         | Doc.Paragraph para -> para.Id = id
@@ -1678,7 +2221,8 @@ module API =
         let otherParts = parts |> List.filter (fun (part: Doc.HeaderFooterPart) -> not (part.Kind = "default" && part.RelationshipId.IsNone))
         let existingBlocks = defaultPart |> Option.map _.Blocks |> Option.defaultValue [] |> List.filter (isImageParagraphId paragraphId >> not)
         let blocks = if hasImage then existingBlocks @ [Doc.Paragraph (imageParagraph paragraphId src alt width height)] else existingBlocks
-        if blocks.IsEmpty then otherParts else { Kind = "default"; RelationshipId = None; Blocks = blocks } :: otherParts
+        let nextParts = if blocks.IsEmpty then otherParts else { Kind = "default"; RelationshipId = None; Blocks = blocks } :: otherParts
+        if nextParts = parts then parts else nextParts
 
     let private tableText tableId cellIndex parts =
         parts
@@ -1713,6 +2257,12 @@ module API =
         |> Option.defaultValue ""
 
     let setHeaderFooterText (editor: Editor) defaultHeader defaultFooter firstHeader firstFooter evenHeader evenFooter =
+        let defaultHeaderParagraphs =
+            let next = if System.String.IsNullOrWhiteSpace defaultHeader then [] else [paragraphFromText "header-default" defaultHeader]
+            if next = editor.Doc.Headers then editor.Doc.Headers else next
+        let defaultFooterParagraphs =
+            let next = if System.String.IsNullOrWhiteSpace defaultFooter then [] else [paragraphFromText "footer-default" defaultFooter]
+            if next = editor.Doc.Footers then editor.Doc.Footers else next
         let headerParts =
             editor.Doc.HeaderParts
             |> upsertPart "header" "default" defaultHeader
@@ -1723,15 +2273,20 @@ module API =
             |> upsertPart "footer" "default" defaultFooter
             |> upsertPart "footer" "first" firstFooter
             |> upsertPart "footer" "even" evenFooter
-        let newDoc = {
-            editor.Doc with
-                HeaderParts = headerParts
-                FooterParts = footerParts
-                Headers = if System.String.IsNullOrWhiteSpace defaultHeader then [] else [paragraphFromText "header-default" defaultHeader]
-                Footers = if System.String.IsNullOrWhiteSpace defaultFooter then [] else [paragraphFromText "footer-default" defaultFooter]
-        }
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        let newDoc =
+            if obj.ReferenceEquals(headerParts, editor.Doc.HeaderParts)
+                && obj.ReferenceEquals(footerParts, editor.Doc.FooterParts)
+                && obj.ReferenceEquals(defaultHeaderParagraphs, editor.Doc.Headers)
+                && obj.ReferenceEquals(defaultFooterParagraphs, editor.Doc.Footers) then
+                editor.Doc
+            else {
+                editor.Doc with
+                    HeaderParts = headerParts
+                    FooterParts = footerParts
+                    Headers = defaultHeaderParagraphs
+                    Footers = defaultFooterParagraphs
+            }
+        commitDocumentUpdate editor newDoc
 
     let getHeaderFooterText (editor: Editor) =
         createObj [
@@ -1756,13 +2311,18 @@ module API =
         ]
 
     let setHeaderFooterTableText (editor: Editor) defaultHeaderLeft defaultHeaderRight defaultFooterLeft defaultFooterRight =
-        let newDoc = {
-            editor.Doc with
-                HeaderParts = editor.Doc.HeaderParts |> upsertDefaultTable "default-header-table" defaultHeaderLeft defaultHeaderRight
-                FooterParts = editor.Doc.FooterParts |> upsertDefaultTable "default-footer-table" defaultFooterLeft defaultFooterRight
-        }
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        let headerParts = editor.Doc.HeaderParts |> upsertDefaultTable "default-header-table" defaultHeaderLeft defaultHeaderRight
+        let footerParts = editor.Doc.FooterParts |> upsertDefaultTable "default-footer-table" defaultFooterLeft defaultFooterRight
+        let newDoc =
+            if obj.ReferenceEquals(headerParts, editor.Doc.HeaderParts)
+                && obj.ReferenceEquals(footerParts, editor.Doc.FooterParts) then
+                editor.Doc
+            else {
+                editor.Doc with
+                    HeaderParts = headerParts
+                    FooterParts = footerParts
+            }
+        commitDocumentUpdate editor newDoc
 
     let private parseFloat fallback (value: string) =
         match System.Double.TryParse(value: string) with
@@ -1770,13 +2330,18 @@ module API =
         | false, _ -> fallback
 
     let setHeaderFooterImageText (editor: Editor) defaultHeaderSrc defaultHeaderAlt defaultHeaderWidth defaultHeaderHeight defaultFooterSrc defaultFooterAlt defaultFooterWidth defaultFooterHeight =
-        let newDoc = {
-            editor.Doc with
-                HeaderParts = editor.Doc.HeaderParts |> upsertDefaultImage "default-header-image" defaultHeaderSrc defaultHeaderAlt (parseFloat 96.0 defaultHeaderWidth) (parseFloat 48.0 defaultHeaderHeight)
-                FooterParts = editor.Doc.FooterParts |> upsertDefaultImage "default-footer-image" defaultFooterSrc defaultFooterAlt (parseFloat 96.0 defaultFooterWidth) (parseFloat 48.0 defaultFooterHeight)
-        }
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        let headerParts = editor.Doc.HeaderParts |> upsertDefaultImage "default-header-image" defaultHeaderSrc defaultHeaderAlt (parseFloat 96.0 defaultHeaderWidth) (parseFloat 48.0 defaultHeaderHeight)
+        let footerParts = editor.Doc.FooterParts |> upsertDefaultImage "default-footer-image" defaultFooterSrc defaultFooterAlt (parseFloat 96.0 defaultFooterWidth) (parseFloat 48.0 defaultFooterHeight)
+        let newDoc =
+            if obj.ReferenceEquals(headerParts, editor.Doc.HeaderParts)
+                && obj.ReferenceEquals(footerParts, editor.Doc.FooterParts) then
+                editor.Doc
+            else {
+                editor.Doc with
+                    HeaderParts = headerParts
+                    FooterParts = footerParts
+            }
+        commitDocumentUpdate editor newDoc
 
     let setCurrentSectionHeaderFooterText (editor: Editor) headerText footerText =
         let headerRelationshipId = "section-header-current"
@@ -1786,10 +2351,13 @@ module API =
         let headerRefs = if System.String.IsNullOrWhiteSpace headerText then [] else ["default", headerRelationshipId]
         let footerRefs = if System.String.IsNullOrWhiteSpace footerText then [] else ["default", footerRelationshipId]
         let newDoc =
-            { editor.Doc with HeaderParts = headerParts; FooterParts = footerParts }
+            if obj.ReferenceEquals(headerParts, editor.Doc.HeaderParts)
+                && obj.ReferenceEquals(footerParts, editor.Doc.FooterParts) then
+                editor.Doc
+            else
+                { editor.Doc with HeaderParts = headerParts; FooterParts = footerParts }
             |> Doc.setCurrentHeaderFooterReferences headerRefs footerRefs
-        Inp.updateDocument editor.Handler newDoc
-        editor.Doc <- newDoc
+        commitDocumentUpdate editor newDoc
 
     /// Export document to EditorParagraphs (Office.Formats format)
     /// Use with: Office.Formats WordWriter.writeFromEditor()

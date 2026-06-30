@@ -5,22 +5,16 @@ namespace RedBat.Spreadsheet
 /// ShellState/ShellActions records that both the Fable and native shell
 /// renderers consume.
 module Ui =
+    open System.Collections.Generic
     open RedBat.Office.Ui
 
-    // Re-export the generic spec types so consumers that read them off the
-    // Spreadsheet UI module keep working.
-    type ChoiceSpec = RedBat.Office.Ui.ChoiceSpec
-    type ButtonSpec = RedBat.Office.Ui.ButtonSpec
-    type SelectSpec = RedBat.Office.Ui.SelectSpec
-    type InputSpec = RedBat.Office.Ui.InputSpec
-    type InputKind = RedBat.Office.Ui.InputKind
-    type ToolbarControlSpec = RedBat.Office.Ui.ToolbarControlSpec
-    type ToolbarRowSpec = RedBat.Office.Ui.ToolbarRowSpec
-    type MenuItemSpec = RedBat.Office.Ui.MenuItemSpec
-    type MenuSpec = RedBat.Office.Ui.MenuSpec
-    type ChromeSpec = RedBat.Office.Ui.ChromeSpec
-
     let choice = RedBat.Office.Ui.choice
+
+    let private resizeArrayToList (items: ResizeArray<'T>) =
+        let mutable result = []
+        for i = items.Count - 1 downto 0 do
+            result <- items.[i] :: result
+        result
 
     /// Flat, white-first chrome palette — same Google-Sheets / OnlyOffice
     /// language the Word shell adopted in the chrome refresh. Top == Bottom
@@ -636,27 +630,38 @@ module Ui =
     /// checked = no filter). `apply` receives the set of values to keep
     /// visible. A live preview shows how many values are selected.
     let filterDialog (columnLabel: string) (uniqueValues: string list) (apply: Set<string> -> unit) : DialogSpec =
-        let total = List.length uniqueValues
-        let idOf i = sprintf "v%d" i
+        let ids = ResizeArray<string>()
+        let fields = ResizeArray<DialogField>()
+        let mutable index = 0
+        for value in uniqueValues do
+            let id = sprintf "v%d" index
+            ids.Add id
+            fields.Add(dialogCheckbox id value true)
+            index <- index + 1
+        let total = ids.Count
         let checkedCount (values: Map<string, string>) =
-            [ 0 .. total - 1 ] |> List.filter (fun i -> Map.tryFind (idOf i) values = Some "true") |> List.length
+            let mutable count = 0
+            for i in 0 .. total - 1 do
+                if Map.tryFind ids.[i] values = Some "true" then
+                    count <- count + 1
+            count
+        fields.Add(dialogComputed "preview" "Selected" (fun values -> sprintf "%d of %d values" (checkedCount values) total))
         {
             TestId = "xl-dlg-filter"
             Title = sprintf "Filter: %s" columnLabel
             Subtitle = Some "Uncheck values to hide their rows."
-            Fields =
-                (uniqueValues |> List.mapi (fun i v -> dialogCheckbox (idOf i) v true))
-                @ [ dialogComputed "preview" "Selected" (fun values -> sprintf "%d of %d values" (checkedCount values) total) ]
+            Fields = resizeArrayToList fields
             Tabs = []
             Buttons = [
                 dialogCancel
                 dialogButton "dlg-filter-ok" "Apply" true (fun values ->
-                    uniqueValues
-                    |> List.mapi (fun i v -> i, v)
-                    |> List.filter (fun (i, _) -> Map.tryFind (idOf i) values = Some "true")
-                    |> List.map snd
-                    |> Set.ofList
-                    |> apply
+                    let mutable selected = Set.empty
+                    let mutable index = 0
+                    for value in uniqueValues do
+                        if index < ids.Count && Map.tryFind ids.[index] values = Some "true" then
+                            selected <- Set.add value selected
+                        index <- index + 1
+                    apply selected
                     true)
             ]
         }

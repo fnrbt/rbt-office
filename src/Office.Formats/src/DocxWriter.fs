@@ -4,27 +4,31 @@ open Fable.Core.JsInterop
 open XmlGenerator
 open ZipWriter
 open ZipInterop
+open System.Text
+
+let private appendEscaped (sb: StringBuilder) (text: string) =
+    for ch in text do
+        match ch with
+        | '&' -> sb.Append("&amp;") |> ignore
+        | '<' -> sb.Append("&lt;") |> ignore
+        | '>' -> sb.Append("&gt;") |> ignore
+        | '"' -> sb.Append("&quot;") |> ignore
+        | '\'' -> sb.Append("&apos;") |> ignore
+        | _ -> sb.Append(ch) |> ignore
 
 /// Generate minimal document.xml with plain text paragraphs
 let generateDocumentXml (paragraphs: string list) : string =
-    let paraElements =
-        paragraphs
-        |> List.map (fun text ->
-            let run = element "w:r" [] [
-                elementWithText "w:t" [("xml:space", "preserve")] text
-            ]
-            element "w:p" [] [run]
-        )
-        |> String.concat ""
-
-    let body = element "w:body" [] [paraElements]
-
-    let doc =
-        element "w:document"
-            [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships)]
-            [body]
-
-    document doc
+    let sb = StringBuilder()
+    sb.Append(declaration).Append('\n') |> ignore
+    sb.Append("<w:document xmlns:w=\"").Append(Namespaces.word)
+        .Append("\" xmlns:r=\"").Append(Namespaces.relationships).Append("\">") |> ignore
+    sb.Append("<w:body>") |> ignore
+    for text in paragraphs do
+        sb.Append("<w:p><w:r><w:t xml:space=\"preserve\">") |> ignore
+        appendEscaped sb text
+        sb.Append("</w:t></w:r></w:p>") |> ignore
+    sb.Append("</w:body></w:document>") |> ignore
+    sb.ToString()
 
 /// Generate [Content_Types].xml
 let generateContentTypes () : string =

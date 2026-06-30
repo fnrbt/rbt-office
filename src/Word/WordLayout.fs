@@ -1,6 +1,7 @@
 module RedBat.Word.WordLayout
 
 open System
+open System.Collections.Generic
 open RedBat.Word.Document
 open RedBat.Word.TextBuffer
 
@@ -21,6 +22,81 @@ let printScale = {
     DefaultCellPadding = 0.0
     DefaultColumnWidth = 140.0
 }
+
+let private equalsIgnoreCase (left: string) (right: string) =
+    String.Equals(left, right, StringComparison.OrdinalIgnoreCase)
+
+let private optionEqualsIgnoreCase expected value =
+    match value with
+    | Some actual -> equalsIgnoreCase actual expected
+    | None -> false
+
+let private resizeArrayToList (items: ResizeArray<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
+let private arrayToList (items: 'T[]) =
+    let mutable result = []
+    for i = items.Length - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
+let private listToIndexedArray (items: 'T list) =
+    let result = ResizeArray<int * 'T>()
+    let mutable index = 0
+    let mutable remaining = items
+    while not remaining.IsEmpty do
+        match remaining with
+        | item :: tail ->
+            result.Add((index, item))
+            index <- index + 1
+            remaining <- tail
+        | [] -> ()
+    result.ToArray()
+
+let private trimOrDefault fallback (value: string) =
+    if isNull value then fallback
+    else
+        let mutable start = 0
+        let mutable finish = value.Length - 1
+        while start <= finish && Char.IsWhiteSpace value.[start] do
+            start <- start + 1
+        while finish >= start && Char.IsWhiteSpace value.[finish] do
+            finish <- finish - 1
+        if start > finish then fallback
+        elif start = 0 && finish = value.Length - 1 then value
+        else value.Substring(start, finish - start + 1)
+
+let private mimeEquals (expected: string) (mime: string) =
+    if isNull mime then false
+    else
+        let mutable finish = 0
+        let mutable stop = false
+        while not stop && finish < mime.Length do
+            if mime.[finish] = ';' then stop <- true
+            else finish <- finish + 1
+
+        let mutable start = 0
+        let mutable last = finish - 1
+        while start <= last && Char.IsWhiteSpace mime.[start] do
+            start <- start + 1
+        while last >= start && Char.IsWhiteSpace mime.[last] do
+            last <- last - 1
+
+        let length = last - start + 1
+        if length <> expected.Length then false
+        else
+            let mutable index = 0
+            let mutable equal = true
+            while equal && index < length do
+                let left = mime.[start + index]
+                let right = expected.[index]
+                if left <> right && Char.ToUpperInvariant left <> Char.ToUpperInvariant right then
+                    equal <- false
+                index <- index + 1
+            equal
 
 module Page =
     let gap = 28.0
@@ -58,18 +134,327 @@ module Page =
             | Table _
             | TextBox _ -> None)
 
-    let private partBlocks kind (parts: HeaderFooterPart list) =
-        parts
-        |> List.tryFind (fun part -> part.Kind = kind)
-        |> Option.map _.Blocks
+    type private HeaderFooterPartLookup = {
+        Parts: HeaderFooterPart list
+        PartCount: int
+        PartParagraphCount: int
+        PartTextCharCount: int
+        ByKind: Dictionary<string, HeaderFooterPart>
+        ByRelationshipId: Dictionary<string, HeaderFooterPart>
+    }
 
-    let private partBlocksForReferences kind refs (parts: HeaderFooterPart list) =
-        refs
-        |> List.tryPick (fun (refKind, relationshipId) ->
-            if refKind = kind then
-                parts |> List.tryFind (fun part -> part.RelationshipId = Some relationshipId)
-            else None)
-        |> Option.map _.Blocks
+    let mutable private headerFooterPartLookupCache: HeaderFooterPartLookup list = []
+    let private headerFooterPartLookupCacheMaxEntries = 64
+    let private headerFooterPartLookupCacheMaxTotalParts = 200000
+    let private headerFooterPartLookupCacheMaxTotalPartParagraphs = 100000
+    let private headerFooterPartLookupCacheMaxTotalPartTextChars = 5000000
+
+    let private addHeaderFooterPartTextChars value total =
+        let limit = headerFooterPartLookupCacheMaxTotalPartTextChars
+        if total > limit then total
+        else min (limit + 1) (total + max 0 value)
+
+    let private countHeaderFooterTableParagraphs (table: TableBlock) =
+        let mutable count = 0
+        let mutable visitedItems = 0
+        let canContinue () =
+            count <= headerFooterPartLookupCacheMaxTotalPartParagraphs
+            && visitedItems <= headerFooterPartLookupCacheMaxTotalPartParagraphs
+        let visitItem () =
+            visitedItems <- visitedItems + 1
+        let addParagraphs (paragraphs: ParagraphBlock list) =
+            let mutable remaining = paragraphs
+            while canContinue () && not remaining.IsEmpty do
+                count <- count + 1
+                remaining <- remaining.Tail
+        let tables = Stack<TableBlock>()
+        tables.Push table
+        while canContinue () && tables.Count > 0 do
+            let table = tables.Pop()
+            visitItem ()
+            let mutable rows = table.Rows
+            while canContinue () && not rows.IsEmpty do
+                let row = rows.Head
+                visitItem ()
+                let mutable cells = row.Cells
+                while canContinue () && not cells.IsEmpty do
+                    let cell = cells.Head
+                    visitItem ()
+                    addParagraphs cell.Content
+                    let mutable nestedTables = cell.NestedTables
+                    while canContinue () && not nestedTables.IsEmpty do
+                        tables.Push nestedTables.Head
+                        nestedTables <- nestedTables.Tail
+                    cells <- cells.Tail
+                rows <- rows.Tail
+        if visitedItems > headerFooterPartLookupCacheMaxTotalPartParagraphs then
+            headerFooterPartLookupCacheMaxTotalPartParagraphs + 1
+        else
+            min count (headerFooterPartLookupCacheMaxTotalPartParagraphs + 1)
+
+    let private countHeaderFooterParagraphs (paragraphs: ParagraphBlock list) =
+        let mutable count = 0
+        let mutable remaining = paragraphs
+        while count <= headerFooterPartLookupCacheMaxTotalPartParagraphs && not remaining.IsEmpty do
+            count <- count + 1
+            remaining <- remaining.Tail
+        min count (headerFooterPartLookupCacheMaxTotalPartParagraphs + 1)
+
+    let private countHeaderFooterBlockParagraphs (block: Block) =
+        match block with
+        | Paragraph _
+        | Heading _ ->
+            1
+        | Table table ->
+            countHeaderFooterTableParagraphs table
+        | TextBox textBox ->
+            countHeaderFooterParagraphs textBox.Content
+
+    let private countHeaderFooterPartParagraphs (parts: HeaderFooterPart list) =
+        let mutable count = 0
+        let mutable remainingParts = parts
+        while count <= headerFooterPartLookupCacheMaxTotalPartParagraphs && not remainingParts.IsEmpty do
+            let mutable blocks = remainingParts.Head.Blocks
+            while count <= headerFooterPartLookupCacheMaxTotalPartParagraphs && not blocks.IsEmpty do
+                count <- count + countHeaderFooterBlockParagraphs blocks.Head
+                blocks <- blocks.Tail
+            remainingParts <- remainingParts.Tail
+        min count (headerFooterPartLookupCacheMaxTotalPartParagraphs + 1)
+
+    let private countHeaderFooterPartParagraphsFor partCount parts =
+        if partCount > headerFooterPartLookupCacheMaxTotalParts then
+            headerFooterPartLookupCacheMaxTotalPartParagraphs + 1
+        else
+            countHeaderFooterPartParagraphs parts
+
+    let private countHeaderFooterPartMetadataTextChars (parts: HeaderFooterPart list) =
+        let limit = headerFooterPartLookupCacheMaxTotalPartTextChars + 1
+        let mutable total = 0
+        let mutable remainingParts = parts
+        while total <= headerFooterPartLookupCacheMaxTotalPartTextChars && not remainingParts.IsEmpty do
+            let part = remainingParts.Head
+            total <- addHeaderFooterPartTextChars part.Kind.Length total
+            match part.RelationshipId with
+            | Some relationshipId ->
+                total <- addHeaderFooterPartTextChars relationshipId.Length total
+            | None -> ()
+            remainingParts <- remainingParts.Tail
+        min total limit
+
+    let private countHeaderFooterPartMetadataTextCharsFor partCount parts =
+        if partCount > headerFooterPartLookupCacheMaxTotalParts then
+            headerFooterPartLookupCacheMaxTotalPartTextChars + 1
+        else
+            countHeaderFooterPartMetadataTextChars parts
+
+    let private countHeaderFooterPartBlocksTextChars initialTextChars (parts: HeaderFooterPart list) =
+        let limit = headerFooterPartLookupCacheMaxTotalPartTextChars + 1
+        let mutable total = initialTextChars
+        let mutable visitedItems = 0
+        let canContinue () =
+            total <= headerFooterPartLookupCacheMaxTotalPartTextChars
+            && visitedItems <= headerFooterPartLookupCacheMaxTotalPartParagraphs
+        let visitItem () =
+            visitedItems <- visitedItems + 1
+        let addParagraph paragraph =
+            if canContinue () then
+                visitItem ()
+                total <- addHeaderFooterPartTextChars (length paragraph.Buffer) total
+        let addTable table =
+            let tables = Stack<TableBlock>()
+            tables.Push table
+            while tables.Count > 0 && canContinue () do
+                let table = tables.Pop()
+                visitItem ()
+                let mutable rows = table.Rows
+                while canContinue () && not rows.IsEmpty do
+                    let row = rows.Head
+                    visitItem ()
+                    let mutable cells = row.Cells
+                    while canContinue () && not cells.IsEmpty do
+                        let cell = cells.Head
+                        visitItem ()
+                        let mutable paragraphs = cell.Content
+                        while canContinue () && not paragraphs.IsEmpty do
+                            addParagraph paragraphs.Head
+                            paragraphs <- paragraphs.Tail
+                        let mutable nestedTables = cell.NestedTables
+                        while canContinue () && not nestedTables.IsEmpty do
+                            tables.Push nestedTables.Head
+                            nestedTables <- nestedTables.Tail
+                        cells <- cells.Tail
+                    rows <- rows.Tail
+        let mutable remainingParts = parts
+        while canContinue () && not remainingParts.IsEmpty do
+            let mutable blocks = remainingParts.Head.Blocks
+            while canContinue () && not blocks.IsEmpty do
+                match blocks.Head with
+                | Paragraph paragraph
+                | Heading (_, paragraph) ->
+                    addParagraph paragraph
+                | Table table ->
+                    addTable table
+                | TextBox textBox ->
+                    visitItem ()
+                    let mutable paragraphs = textBox.Content
+                    while canContinue () && not paragraphs.IsEmpty do
+                        addParagraph paragraphs.Head
+                        paragraphs <- paragraphs.Tail
+                blocks <- blocks.Tail
+            remainingParts <- remainingParts.Tail
+        min total limit
+
+    let private countHeaderFooterPartTextCharsFor partCount partParagraphCount metadataTextCharCount parts =
+        if partCount > headerFooterPartLookupCacheMaxTotalParts
+           || partParagraphCount > headerFooterPartLookupCacheMaxTotalPartParagraphs
+           || metadataTextCharCount > headerFooterPartLookupCacheMaxTotalPartTextChars then
+            headerFooterPartLookupCacheMaxTotalPartTextChars + 1
+        else
+            countHeaderFooterPartBlocksTextChars metadataTextCharCount parts
+
+    let private headerFooterPartLookupCacheMatches parts (cached: HeaderFooterPartLookup) =
+        obj.ReferenceEquals(cached.Parts, parts)
+
+    let private headerFooterPartLookupRetainable entry =
+        entry.PartCount <= headerFooterPartLookupCacheMaxTotalParts
+        && entry.PartParagraphCount <= headerFooterPartLookupCacheMaxTotalPartParagraphs
+        && entry.PartTextCharCount <= headerFooterPartLookupCacheMaxTotalPartTextChars
+
+    let private trimHeaderFooterPartLookupCache entries =
+        let rec loop remaining kept count totalParts totalPartParagraphs totalPartTextChars =
+            match remaining with
+            | [] -> List.rev kept
+            | entry :: rest ->
+                let partCount = max 1 entry.PartCount
+                let partParagraphCount = max 1 entry.PartParagraphCount
+                let partTextCharCount = max 1 entry.PartTextCharCount
+                let nextTotalParts = totalParts + partCount
+                let nextTotalPartParagraphs = totalPartParagraphs + partParagraphCount
+                let nextTotalPartTextChars = totalPartTextChars + partTextCharCount
+                if headerFooterPartLookupRetainable entry
+                   && count < headerFooterPartLookupCacheMaxEntries
+                   && nextTotalParts <= headerFooterPartLookupCacheMaxTotalParts
+                   && nextTotalPartParagraphs <= headerFooterPartLookupCacheMaxTotalPartParagraphs
+                   && nextTotalPartTextChars <= headerFooterPartLookupCacheMaxTotalPartTextChars then
+                    loop
+                        rest
+                        (entry :: kept)
+                        (count + 1)
+                        nextTotalParts
+                        nextTotalPartParagraphs
+                        nextTotalPartTextChars
+                else
+                    loop rest kept count totalParts totalPartParagraphs totalPartTextChars
+        loop entries [] 0 0 0 0
+
+    let private rememberHeaderFooterPartLookup cached =
+        if not (headerFooterPartLookupRetainable cached) then
+            headerFooterPartLookupCache <-
+                headerFooterPartLookupCache
+                |> List.filter (headerFooterPartLookupCacheMatches cached.Parts >> not)
+        else
+            headerFooterPartLookupCache <-
+                cached
+                :: (headerFooterPartLookupCache |> List.filter (headerFooterPartLookupCacheMatches cached.Parts >> not))
+                |> trimHeaderFooterPartLookupCache
+
+    let private countHeaderFooterPartsCapped (parts: HeaderFooterPart list) =
+        let mutable count = 0
+        let mutable remaining = parts
+        while count <= headerFooterPartLookupCacheMaxTotalParts && not remaining.IsEmpty do
+            count <- count + 1
+            remaining <- remaining.Tail
+        count
+
+    let private cachedPartLookup (parts: HeaderFooterPart list) =
+        match headerFooterPartLookupCache |> List.tryFind (headerFooterPartLookupCacheMatches parts) with
+        | Some cached -> Some cached
+        | None ->
+            let partCount = countHeaderFooterPartsCapped parts
+            let partMetadataTextCharCount = countHeaderFooterPartMetadataTextCharsFor partCount parts
+            if partCount > headerFooterPartLookupCacheMaxTotalParts
+               || partMetadataTextCharCount > headerFooterPartLookupCacheMaxTotalPartTextChars then
+                None
+            else
+                let byKind = Dictionary<string, HeaderFooterPart>()
+                let byRelationshipId = Dictionary<string, HeaderFooterPart>()
+                for part in parts do
+                    if not (byKind.ContainsKey part.Kind) then
+                        byKind.[part.Kind] <- part
+                    match part.RelationshipId with
+                    | Some relationshipId when not (byRelationshipId.ContainsKey relationshipId) ->
+                        byRelationshipId.[relationshipId] <- part
+                    | _ -> ()
+                let partParagraphCount =
+                    if partMetadataTextCharCount > headerFooterPartLookupCacheMaxTotalPartTextChars then
+                        headerFooterPartLookupCacheMaxTotalPartParagraphs + 1
+                    else
+                        countHeaderFooterPartParagraphsFor partCount parts
+                let cached = {
+                    Parts = parts
+                    PartCount = partCount
+                    PartParagraphCount = partParagraphCount
+                    PartTextCharCount = countHeaderFooterPartTextCharsFor partCount partParagraphCount partMetadataTextCharCount parts
+                    ByKind = byKind
+                    ByRelationshipId = byRelationshipId
+                }
+                rememberHeaderFooterPartLookup cached
+                if headerFooterPartLookupRetainable cached then Some cached else None
+
+    let private firstPartBlocksByKind kind (parts: HeaderFooterPart list) =
+        let mutable result = None
+        let mutable remaining = parts
+        while result.IsNone && not remaining.IsEmpty do
+            let part = remaining.Head
+            if part.Kind = kind then
+                result <- Some part.Blocks
+            remaining <- remaining.Tail
+        result
+
+    let private firstPartBlocksByRelationshipId relationshipId (parts: HeaderFooterPart list) =
+        let mutable result = None
+        let mutable remaining = parts
+        while result.IsNone && not remaining.IsEmpty do
+            let part = remaining.Head
+            match part.RelationshipId with
+            | Some value when value = relationshipId ->
+                result <- Some part.Blocks
+            | _ -> ()
+            remaining <- remaining.Tail
+        result
+
+    let private partBlocks kind (parts: HeaderFooterPart list) =
+        match cachedPartLookup parts with
+        | Some lookup ->
+            let mutable part = Unchecked.defaultof<HeaderFooterPart>
+            if lookup.ByKind.TryGetValue(kind, &part) then Some part.Blocks else None
+        | None ->
+            firstPartBlocksByKind kind parts
+
+    let private partBlocksForReferences kind (refs: (string * string) list) (parts: HeaderFooterPart list) =
+        let mutable result = None
+        match cachedPartLookup parts with
+        | Some lookup ->
+            let mutable remaining = refs
+            while result.IsNone && not remaining.IsEmpty do
+                match remaining with
+                | (refKind, relationshipId) :: tail ->
+                    if refKind = kind then
+                        let mutable part = Unchecked.defaultof<HeaderFooterPart>
+                        if lookup.ByRelationshipId.TryGetValue(relationshipId, &part) then
+                            result <- Some part.Blocks
+                    remaining <- tail
+                | [] -> ()
+        | None ->
+            let mutable remaining = refs
+            while result.IsNone && not remaining.IsEmpty do
+                match remaining with
+                | (refKind, relationshipId) :: tail ->
+                    if refKind = kind then
+                        result <- firstPartBlocksByRelationshipId relationshipId parts
+                    remaining <- tail
+                | [] -> ()
+        result
 
     let private partParagraphs kind parts =
         partBlocks kind parts |> Option.map paragraphsFromBlocks
@@ -106,10 +491,14 @@ module Page =
         partParagraphsForReferences kind refs doc.FooterParts
 
     let defaultHeaderBlocks (doc: Document) =
-        partBlocks "default" doc.HeaderParts |> Option.defaultValue (doc.Headers |> List.map Paragraph)
+        match partBlocks "default" doc.HeaderParts with
+        | Some blocks -> blocks
+        | None -> doc.Headers |> List.map Paragraph
 
     let defaultFooterBlocks (doc: Document) =
-        partBlocks "default" doc.FooterParts |> Option.defaultValue (doc.Footers |> List.map Paragraph)
+        match partBlocks "default" doc.FooterParts with
+        | Some blocks -> blocks
+        | None -> doc.Footers |> List.map Paragraph
 
     let firstHeaderBlocks (doc: Document) =
         if doc.PageSetup.DifferentFirstPage then partBlocks "first" doc.HeaderParts |> Option.defaultValue [] else []
@@ -142,28 +531,64 @@ module Page =
     let minBodyTop paddingTop fontSize pageTop =
         pageTop + max paddingTop (fontSize * 2.0)
 
+    let private headerParagraphCountLimit = headerFooterPartLookupCacheMaxTotalPartParagraphs
+
+    let private addHeaderParagraphCount total value =
+        if total > headerParagraphCountLimit then total
+        else min (headerParagraphCountLimit + 1) (total + max 0 value)
+
+    let private paragraphListCount (paragraphs: ParagraphBlock list) =
+        let mutable count = 0
+        let mutable remaining = paragraphs
+        while count <= headerParagraphCountLimit && not remaining.IsEmpty do
+            count <- count + 1
+            remaining <- remaining.Tail
+        min count (headerParagraphCountLimit + 1)
+
     let private blockParagraphCount = function
         | Paragraph _
         | Heading _ -> 1
         | Table table ->
-            table.Rows
-            |> List.sumBy (fun row -> row.Cells |> List.sumBy (fun cell -> cell.Content.Length))
-        | TextBox textBox -> textBox.Content.Length
+            let mutable count = 0
+            let mutable rows = table.Rows
+            while count <= headerParagraphCountLimit && not rows.IsEmpty do
+                let mutable cells = rows.Head.Cells
+                while count <= headerParagraphCountLimit && not cells.IsEmpty do
+                    count <- addHeaderParagraphCount count (paragraphListCount cells.Head.Content)
+                    cells <- cells.Tail
+                rows <- rows.Tail
+            min count (headerParagraphCountLimit + 1)
+        | TextBox textBox ->
+            paragraphListCount textBox.Content
 
-    let private firstPageHeaderBlocks (doc: Document) =
+    let private blockListParagraphCount (blocks: Block list) =
+        let mutable count = 0
+        let mutable remaining = blocks
+        while count <= headerParagraphCountLimit && not remaining.IsEmpty do
+            count <- addHeaderParagraphCount count (blockParagraphCount remaining.Head)
+            remaining <- remaining.Tail
+        min count (headerParagraphCountLimit + 1)
+
+    let private defaultHeaderParagraphCount (doc: Document) =
+        match partBlocks "default" doc.HeaderParts with
+        | Some blocks -> blockListParagraphCount blocks
+        | None -> paragraphListCount doc.Headers
+
+    let private firstPageHeaderParagraphCount (doc: Document) =
         if doc.PageSetup.DifferentFirstPage then
-            let first = firstHeaderBlocks doc
-            if first.IsEmpty then defaultHeaderBlocks doc else first
+            match partBlocks "first" doc.HeaderParts with
+            | Some first when not first.IsEmpty -> blockListParagraphCount first
+            | _ -> defaultHeaderParagraphCount doc
         else
-            defaultHeaderBlocks doc
+            defaultHeaderParagraphCount doc
 
     let bodyTopWithRunningHeader (doc: Document) =
-        let headers = firstPageHeaderBlocks doc
-        if headers.IsEmpty then
+        let paragraphCount = firstPageHeaderParagraphCount doc
+        if paragraphCount = 0 then
             doc.PageSetup.MarginTop
         else
             let headerLinePitch = 30.0
-            let headerDepth = headers |> List.sumBy blockParagraphCount |> float |> (*) headerLinePitch
+            let headerDepth = float paragraphCount * headerLinePitch
             max doc.PageSetup.MarginTop (doc.PageSetup.HeaderDistance + headerDepth)
 
     let advanceToNextPage pageHeight paddingTop y =
@@ -359,11 +784,10 @@ module Image =
     let assetId index = sprintf "word-image-%d" index
 
     let assetKindForMime (mime: string) =
-        match mime.Split(';').[0].Trim().ToLowerInvariant() with
-        | "image/png" -> Some 1
-        | "image/jpeg" -> Some 2
-        | "image/gif" -> Some 5
-        | _ -> None
+        if mimeEquals "image/png" mime then Some 1
+        elif mimeEquals "image/jpeg" mime then Some 2
+        elif mimeEquals "image/gif" mime then Some 5
+        else None
 
     let tryDataUrlBytes (decodeBase64: string -> string) (src: string) =
         let marker = ";base64,"
@@ -458,10 +882,32 @@ module Text =
     let canvasUnderlineOffset = 2.0
     let canvasStrikethroughOffset (style: TextStyle) = printFontSize style / 3.0
 
+let private trimmedEqualsIgnoreCase (value: string) (expected: string) =
+    if isNull value then false
+    else
+        let mutable start = 0
+        let mutable finish = value.Length - 1
+        while start <= finish && Char.IsWhiteSpace value.[start] do
+            start <- start + 1
+        while finish >= start && Char.IsWhiteSpace value.[finish] do
+            finish <- finish - 1
+        let length = finish - start + 1
+        if length <> expected.Length then false
+        else
+            let mutable index = 0
+            let mutable equal = true
+            while equal && index < length do
+                let left = value.[start + index]
+                let right = expected.[index]
+                if left <> right && Char.ToUpperInvariant left <> Char.ToUpperInvariant right then
+                    equal <- false
+                index <- index + 1
+            equal
+
 module Font =
     let normalizeFamily (fontFamily: string option) =
         match fontFamily with
-        | Some family when family.Trim() <> "" -> family.Trim()
+        | Some family -> trimOrDefault "Calibri" family
         | _ -> "Calibri"
 
     let exactFace (style: TextStyle) =
@@ -473,11 +919,25 @@ module Font =
         | false, false -> family
 
     let knownWordFamily (family: string) =
-        match family.Trim().ToLowerInvariant() with
-        | "aptos" | "aptos display" | "aptos body" | "arial" | "arialmt" | "calibri" | "calibri light" | "helvetica" | "inter" | "segoe ui"
-        | "cambria" | "georgia" | "times" | "times new roman"
-        | "consolas" | "courier" | "courier new" | "symbol" | "wingdings" -> true
-        | _ -> false
+        trimmedEqualsIgnoreCase family "aptos"
+        || trimmedEqualsIgnoreCase family "aptos display"
+        || trimmedEqualsIgnoreCase family "aptos body"
+        || trimmedEqualsIgnoreCase family "arial"
+        || trimmedEqualsIgnoreCase family "arialmt"
+        || trimmedEqualsIgnoreCase family "calibri"
+        || trimmedEqualsIgnoreCase family "calibri light"
+        || trimmedEqualsIgnoreCase family "helvetica"
+        || trimmedEqualsIgnoreCase family "inter"
+        || trimmedEqualsIgnoreCase family "segoe ui"
+        || trimmedEqualsIgnoreCase family "cambria"
+        || trimmedEqualsIgnoreCase family "georgia"
+        || trimmedEqualsIgnoreCase family "times"
+        || trimmedEqualsIgnoreCase family "times new roman"
+        || trimmedEqualsIgnoreCase family "consolas"
+        || trimmedEqualsIgnoreCase family "courier"
+        || trimmedEqualsIgnoreCase family "courier new"
+        || trimmedEqualsIgnoreCase family "symbol"
+        || trimmedEqualsIgnoreCase family "wingdings"
 
     let stripSuffix (suffix: string) (value: string) =
         if value.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) then Some (value.Substring(0, value.Length - suffix.Length)) else None
@@ -565,8 +1025,8 @@ module Numbering =
             .Replace("\uF0A7", "▪")
 
     let markerLineBoxFactor (style: TextStyle) =
-        match style.FontFamily |> Option.map (fun family -> family.Trim().ToLowerInvariant()) with
-        | Some "symbol" | Some "wingdings" -> Some 1.27
+        match style.FontFamily with
+        | Some family when trimmedEqualsIgnoreCase family "symbol" || trimmedEqualsIgnoreCase family "wingdings" -> Some 1.27
         | _ -> None
 
     let romanNumeral value =
@@ -591,12 +1051,11 @@ module Numbering =
         chars |> Array.ofList |> System.String
 
     let formatNumber (format: string option) value =
-        match format |> Option.map (fun text -> text.ToLowerInvariant()) with
-        | Some "lowerletter" -> alphaNumber false value
-        | Some "upperletter" -> alphaNumber true value
-        | Some "lowerroman" -> romanNumeral value |> fun text -> text.ToLowerInvariant()
-        | Some "upperroman" -> romanNumeral value
-        | _ -> string value
+        if optionEqualsIgnoreCase "lowerletter" format then alphaNumber false value
+        elif optionEqualsIgnoreCase "upperletter" format then alphaNumber true value
+        elif optionEqualsIgnoreCase "lowerroman" format then romanNumeral value |> fun text -> text.ToLowerInvariant()
+        elif optionEqualsIgnoreCase "upperroman" format then romanNumeral value
+        else string value
 
     let counterKey (metadata: BlockMetadata) =
         (metadata.ListId |> Option.defaultValue "", metadata.ListLevel)
@@ -666,6 +1125,14 @@ module Table =
         InsideV: PrintStroke option
     }
 
+    let private emptyCellPrintBorders =
+        { Top = None
+          Right = None
+          Bottom = None
+          Left = None
+          InsideH = None
+          InsideV = None }
+
     type ResolvedCell = {
         Cell: TableCell
         SourceCellIndex: int
@@ -678,6 +1145,13 @@ module Table =
     type ResolvedRow = {
         Source: TableRow
         Cells: ResolvedCell list
+        IsHeader: bool
+        CanSplit: bool
+    }
+
+    type private ResolvedRowWork = {
+        Source: TableRow
+        Cells: ResolvedCell[]
         IsHeader: bool
         CanSplit: bool
     }
@@ -818,27 +1292,61 @@ module Table =
 
     let positionedCells (row: TableRow) =
         let mutable currentColumn = max 0 row.GridBefore
-        row.Cells
-        |> List.map (fun cell ->
+        let positioned = ResizeArray<PositionedCell>()
+        for cell in row.Cells do
             let span = cellSpan cell
-            let positioned = {
+            positioned.Add {
                 Cell = cell
                 StartColumn = currentColumn
                 Span = span
             }
             currentColumn <- currentColumn + span
-            positioned)
+        resizeArrayToList positioned
+
+    let private indexedPositionedCells (row: TableRow) =
+        let mutable currentColumn = max 0 row.GridBefore
+        let positioned = ResizeArray<int * PositionedCell>()
+        let mutable sourceCellIndex = 0
+        for cell in row.Cells do
+            let span = cellSpan cell
+            positioned.Add(
+                sourceCellIndex,
+                {
+                    Cell = cell
+                    StartColumn = currentColumn
+                    Span = span
+                })
+            currentColumn <- currentColumn + span
+            sourceCellIndex <- sourceCellIndex + 1
+        positioned.ToArray()
 
     let private cellContentIsEmpty (content: ParagraphBlock list) =
-        content
-        |> List.forall (fun para -> String.IsNullOrWhiteSpace(TextBuffer.toString para.Buffer))
+        let mutable empty = true
+        let mutable remaining = content
+        while empty && not remaining.IsEmpty do
+            match remaining with
+            | para :: tail ->
+                if not (TextBuffer.isWhiteSpace para.Buffer) then
+                    empty <- false
+                remaining <- tail
+            | [] -> ()
+        empty
 
     let distributeVerticalMergeContent (rows: TableRow list) =
-        let cellRows = rows |> List.map (fun row -> row.Cells |> List.toArray) |> List.toArray
-        let positionedRows =
-            rows
-            |> List.map (positionedCells >> List.indexed >> List.toArray)
-            |> List.toArray
+        let rowArray = rows |> List.toArray
+        let cellRows = Array.zeroCreate<TableCell[]> rowArray.Length
+        let positionedRows = Array.zeroCreate<(int * PositionedCell)[]> rowArray.Length
+        let continueMergeByStart = Array.zeroCreate<System.Collections.Generic.Dictionary<int, int>> rowArray.Length
+        for rowIndex = 0 to rowArray.Length - 1 do
+            let row = rowArray.[rowIndex]
+            cellRows.[rowIndex] <- row.Cells |> List.toArray
+            let positioned = indexedPositionedCells row
+            positionedRows.[rowIndex] <- positioned
+            let continuations = System.Collections.Generic.Dictionary<int, int>(positioned.Length)
+            for sourceCellIndex, positionedCell in positioned do
+                if positionedCell.Cell.VerticalMerge = Some ContinueMerge then
+                    continuations.[positionedCell.StartColumn] <- sourceCellIndex
+            continueMergeByStart.[rowIndex] <- continuations
 
         let setCellContent rowIndex sourceCellIndex content =
             let cell = cellRows.[rowIndex].[sourceCellIndex]
@@ -847,23 +1355,24 @@ module Table =
         for rowIndex in 0 .. positionedRows.Length - 1 do
             for sourceCellIndex, positioned in positionedRows.[rowIndex] do
                 let cell = cellRows.[rowIndex].[sourceCellIndex]
-                if cell.VerticalMerge = Some RestartMerge && cell.Content.Length > 1 then
-                    let continuationCells =
-                        [rowIndex + 1 .. positionedRows.Length - 1]
-                        |> List.takeWhile (fun nextRowIndex ->
-                            positionedRows.[nextRowIndex]
-                            |> Array.exists (fun (_, nextPositioned) ->
-                                nextPositioned.StartColumn = positioned.StartColumn
-                                && nextPositioned.Cell.VerticalMerge = Some ContinueMerge))
-                        |> List.choose (fun nextRowIndex ->
-                            positionedRows.[nextRowIndex]
-                            |> Array.tryFind (fun (_, nextPositioned) ->
-                                nextPositioned.StartColumn = positioned.StartColumn
-                                && nextPositioned.Cell.VerticalMerge = Some ContinueMerge)
-                            |> Option.map (fun (nextSourceCellIndex, _) -> nextRowIndex, nextSourceCellIndex))
+                if cell.VerticalMerge = Some RestartMerge
+                   && (match cell.Content with | _ :: _ :: _ -> true | _ -> false) then
+                    let continuationCells = ResizeArray<int * int>()
+                    let mutable lastContinuation = ValueNone
+                    let mutable nextRowIndex = rowIndex + 1
+                    let mutable keepGoing = true
+                    while keepGoing && nextRowIndex < positionedRows.Length do
+                        let mutable foundSourceCellIndex = 0
+                        if continueMergeByStart.[nextRowIndex].TryGetValue(positioned.StartColumn, &foundSourceCellIndex) then
+                            let continuation = nextRowIndex, foundSourceCellIndex
+                            continuationCells.Add continuation
+                            lastContinuation <- ValueSome continuation
+                            nextRowIndex <- nextRowIndex + 1
+                        else
+                            keepGoing <- false
 
                     match cell.Content with
-                    | first :: rest when not continuationCells.IsEmpty ->
+                    | first :: rest when continuationCells.Count > 0 ->
                         setCellContent rowIndex sourceCellIndex [first]
                         let mutable remaining = rest
                         for nextRowIndex, nextSourceCellIndex in continuationCells do
@@ -876,18 +1385,20 @@ module Table =
                                 setCellContent nextRowIndex nextSourceCellIndex nextContent
                                 remaining <- tail
                             | [] -> ()
-                        match remaining, List.tryLast continuationCells with
+                        match remaining, lastContinuation with
                         | [], _ -> ()
-                        | extra, Some (lastRowIndex, lastSourceCellIndex) ->
+                        | extra, ValueSome (lastRowIndex, lastSourceCellIndex) ->
                             let lastCell = cellRows.[lastRowIndex].[lastSourceCellIndex]
                             setCellContent lastRowIndex lastSourceCellIndex (lastCell.Content @ extra)
-                        | extra, None ->
+                        | extra, ValueNone ->
                             let currentCell = cellRows.[rowIndex].[sourceCellIndex]
                             setCellContent rowIndex sourceCellIndex (currentCell.Content @ extra)
                     | _ -> ()
 
-        rows
-        |> List.mapi (fun rowIndex row -> { row with Cells = cellRows.[rowIndex] |> Array.toList })
+        let resolved = ResizeArray<TableRow>(rowArray.Length)
+        for rowIndex = 0 to rowArray.Length - 1 do
+            resolved.Add({ rowArray.[rowIndex] with Cells = arrayToList cellRows.[rowIndex] })
+        resizeArrayToList resolved
 
     let outerCellInsets scale (table: TableBlock) =
         table.Rows
@@ -900,17 +1411,16 @@ module Table =
         |> Option.defaultValue (0.0, 0.0)
 
     let rowColumnCount (row: TableRow) =
-        let endOfCells =
-            positionedCells row
-            |> List.tryLast
-            |> Option.map (fun positioned -> positioned.StartColumn + positioned.Span)
-            |> Option.defaultValue (max 0 row.GridBefore)
-        endOfCells + (max 0 row.GridAfter)
+        let mutable currentColumn = max 0 row.GridBefore
+        for cell in row.Cells do
+            currentColumn <- currentColumn + cellSpan cell
+        currentColumn + (max 0 row.GridAfter)
 
     let columnCount (table: TableBlock) =
-        table.Rows
-        |> List.map rowColumnCount
-        |> List.fold max 0
+        let mutable columns = 0
+        for row in table.Rows do
+            columns <- max columns (rowColumnCount row)
+        columns
 
     let cellPreferredWidth scale availableWidth (cell: TableCell) =
         match cell.PreferredWidth with
@@ -918,16 +1428,23 @@ module Table =
         | None -> cell.Width |> Option.bind (preferredWidthFromLegacyValue >> resolvePreferredWidth scale availableWidth)
 
     let private explicitColumnWidths scale maxWidth columnCount table =
-        [0 .. columnCount - 1]
-        |> List.map (fun columnIndex ->
-            table.Rows
-            |> List.tryPick (fun row ->
-                positionedCells row
-                |> List.tryPick (fun positioned ->
-                    if columnIndex >= positioned.StartColumn && columnIndex < positioned.StartColumn + positioned.Span then
-                        positioned.Cell |> cellPreferredWidth scale maxWidth |> Option.map (fun width -> width / float positioned.Span)
-                    else
-                        None)))
+        let widths: float option array = Array.create columnCount None
+        for row in table.Rows do
+            let mutable currentColumn = max 0 row.GridBefore
+            for cell in row.Cells do
+                let span = cellSpan cell
+                match cellPreferredWidth scale maxWidth cell with
+                | Some width ->
+                    let perColumnWidth = width / float span
+                    let lastColumn = min columnCount (currentColumn + span)
+                    let mutable columnIndex = max 0 currentColumn
+                    while columnIndex < lastColumn do
+                        if widths.[columnIndex].IsNone then
+                            widths.[columnIndex] <- Some perColumnWidth
+                        columnIndex <- columnIndex + 1
+                | None -> ()
+                currentColumn <- currentColumn + span
+        arrayToList widths
 
     let tableColumnWidths scale maxWidth table =
         let columns = columnCount table
@@ -952,14 +1469,19 @@ module Table =
                     gridWidths |> List.truncate columns |> List.map Some
                 else
                     explicitColumnWidths scale maxWidth columns table
-            let explicitTotal = explicitWidths |> List.choose id |> List.sum
+            let explicitWidthArray = explicitWidths |> List.toArray
+            let mutable explicitTotal = 0.0
+            let mutable missingCount = 0
+            for width in explicitWidthArray do
+                match width with
+                | Some value -> explicitTotal <- explicitTotal + value
+                | None -> missingCount <- missingCount + 1
 
             if explicitTotal <= 0.0 then
                 match targetWidth with
                 | Some width -> List.replicate columns (width / float columns)
                 | None -> List.replicate columns scale.DefaultColumnWidth
             else
-                let missingCount = explicitWidths |> List.filter Option.isNone |> List.length
                 let missingWidth =
                     if missingCount = 0 then 0.0
                     else
@@ -967,20 +1489,62 @@ module Table =
                         | Some width -> max 24.0 ((width - explicitTotal) / float missingCount)
                         | None -> scale.DefaultColumnWidth
 
-                let widths = explicitWidths |> List.map (Option.defaultValue missingWidth)
+                let widths = ResizeArray<float>(columns)
+                let mutable total = 0.0
+                for width in explicitWidthArray do
+                    let resolved = defaultArg width missingWidth
+                    widths.Add resolved
+                    total <- total + resolved
                 match targetWidth with
                 | Some width ->
-                    let total = widths |> List.sum
-                    if total > 0.0 && abs (total - width) > 0.01 then widths |> List.map (fun columnWidth -> columnWidth * width / total)
-                    else widths
-                | None -> widths
+                    if total > 0.0 && abs (total - width) > 0.01 then
+                        let scaleFactor = width / total
+                        for i = 0 to widths.Count - 1 do
+                            widths.[i] <- widths.[i] * scaleFactor
+                    resizeArrayToList widths
+                | None -> resizeArrayToList widths
 
     let spannedWidth (columnWidths: float list) start span fallback =
-        [start .. start + span - 1]
-        |> List.sumBy (fun index -> columnWidths |> List.tryItem index |> Option.defaultValue fallback)
+        let mutable total = 0.0
+        let mutable remaining = span
+        let mutable index = start
+        let mutable widths = columnWidths
+
+        while remaining > 0 && index < 0 do
+            total <- total + fallback
+            index <- index + 1
+            remaining <- remaining - 1
+
+        while index > 0 do
+            match widths with
+            | _ :: rest ->
+                widths <- rest
+                index <- index - 1
+            | [] -> index <- 0
+
+        while remaining > 0 do
+            match widths with
+            | width :: rest ->
+                total <- total + width
+                widths <- rest
+            | [] ->
+                total <- total + fallback
+            remaining <- remaining - 1
+
+        total
 
     let startOffset (columnWidths: float list) columnIndex =
-        columnWidths |> List.take columnIndex |> List.sum
+        let mutable total = 0.0
+        let mutable remaining = columnIndex
+        let mutable widths = columnWidths
+        while remaining > 0 do
+            match widths with
+            | width :: rest ->
+                total <- total + width
+                widths <- rest
+                remaining <- remaining - 1
+            | [] -> remaining <- 0
+        total
 
     let spacedStartOffset (columnWidths: float list) spacing columnIndex =
         startOffset columnWidths columnIndex + spacing
@@ -1024,16 +1588,9 @@ module Table =
         0.0
 
     let rowMinHeight scale lineHeight (row: TableRow) =
-        match row.HeightRule |> Option.map (fun rule -> rule.ToLowerInvariant()) with
-        | Some "atleast"
-        | Some "exact" ->
-            row.Height
-            |> Option.map (normalizeLength scale)
-            |> Option.defaultValue (defaultRowHeight lineHeight)
-        | _ ->
-            row.Height
-            |> Option.map (normalizeLength scale)
-            |> Option.defaultValue (defaultRowHeight lineHeight)
+        row.Height
+        |> Option.map (normalizeLength scale)
+        |> Option.defaultValue (defaultRowHeight lineHeight)
 
     let emptyTableAdvance (lineHeight: float) =
         lineHeight + afterSpacing
@@ -1152,15 +1709,18 @@ module Table =
               InsideV = printBorderStrokeFromBorder borders.InsideV None None }
 
     let collapsedHorizontalBorderExtent (table: TableBlock) (row: TableRow) =
-        row.BordersOverride
-        |> Option.orElse table.Borders
-        |> tablePrintBorders
-        |> fun borders ->
-            [ borders.Top; borders.Bottom; borders.InsideH ]
-            |> List.choose (Option.map _.Width)
-            |> function
-                | [] -> 0.0
-                | widths -> List.max widths
+        let borders = row.BordersOverride |> Option.orElse table.Borders |> tablePrintBorders
+        let mutable width = 0.0
+        match borders.Top with
+        | Some border -> width <- max width border.Width
+        | None -> ()
+        match borders.Bottom with
+        | Some border -> width <- max width border.Width
+        | None -> ()
+        match borders.InsideH with
+        | Some border -> width <- max width border.Width
+        | None -> ()
+        width
 
     let private cellPrintBordersWithTableFallback tableBorders rowIndex rowCount columnCount (positioned: PositionedCell) cell =
         let cellBorders = cellPrintBorders cell
@@ -1173,8 +1733,51 @@ module Table =
           InsideV = None }
 
     let private tableCellContentIsEmpty (cell: TableCell) =
-        cell.Content
-        |> List.forall (fun para -> String.IsNullOrWhiteSpace(TextBuffer.toString para.Buffer))
+        cellContentIsEmpty cell.Content
+
+    let private cellHasPrintBorderInput (cell: TableCell) =
+        cell.BorderColor.IsSome
+        || cell.BorderWidth.IsSome
+        || cell.Borders.IsSome
+
+    let private tableHasPrintBorderInput (table: TableBlock) =
+        let mutable found = table.Borders.IsSome
+        let mutable remainingRows = table.Rows
+        while not found && not remainingRows.IsEmpty do
+            match remainingRows with
+            | row :: rowTail ->
+                if row.BordersOverride.IsSome then
+                    found <- true
+                else
+                    let mutable remainingCells = row.Cells
+                    while not found && not remainingCells.IsEmpty do
+                        match remainingCells with
+                        | cell :: cellTail ->
+                            if cellHasPrintBorderInput cell then
+                                found <- true
+                            remainingCells <- cellTail
+                        | [] -> ()
+                    remainingRows <- rowTail
+            | [] -> ()
+        found
+
+    let private tableHasVerticalMerge (table: TableBlock) =
+        let mutable found = false
+        let mutable remainingRows = table.Rows
+        while not found && not remainingRows.IsEmpty do
+            match remainingRows with
+            | row :: rowTail ->
+                let mutable remainingCells = row.Cells
+                while not found && not remainingCells.IsEmpty do
+                    match remainingCells with
+                    | cell :: cellTail ->
+                        if cell.VerticalMerge.IsSome then
+                            found <- true
+                        remainingCells <- cellTail
+                    | [] -> ()
+                remainingRows <- rowTail
+            | [] -> ()
+        found
 
     let private suppressEmptyVerticalMergeRestartTopBorder rowIndex (cell: TableCell) (borders: CellPrintBorders) =
         match cell.VerticalMerge with
@@ -1201,111 +1804,205 @@ module Table =
             if borderWeight (Some secondBorder) > borderWeight (Some firstBorder) then Some secondBorder, true
             else Some firstBorder, false
 
-    let private setCellBorders rowIndex cellIndex borders (rows: ResizeArray<ResolvedRow>) =
-        let row = rows.[rowIndex]
-        let cells = row.Cells |> List.toArray
-        cells.[cellIndex] <- { cells.[cellIndex] with Borders = borders }
-        rows.[rowIndex] <- { row with Cells = cells |> Array.toList }
-
     let private collapseResolvedBorders (rows: ResolvedRow list) =
-        let mutable mutableRows = rows |> ResizeArray
-        let overlaps firstStart firstSpan secondStart secondSpan =
-            firstStart < secondStart + secondSpan && secondStart < firstStart + firstSpan
+        let rowArray = rows |> List.toArray
+        let cellRows = Array.zeroCreate<ResolvedCell[]> rowArray.Length
+        for rowIndex = 0 to rowArray.Length - 1 do
+            cellRows.[rowIndex] <- rowArray.[rowIndex].Cells |> List.toArray
 
-        for rowIndex in 0 .. mutableRows.Count - 1 do
-            let cells = mutableRows.[rowIndex].Cells
+        let setCellBorders rowIndex cellIndex borders =
+            let cells = cellRows.[rowIndex]
+            cells.[cellIndex] <- { cells.[cellIndex] with Borders = borders }
+
+        let cellIndexByStart (cells: ResolvedCell[]) =
+            let index = Dictionary<int, int>(cells.Length)
+            for cellIndex = 0 to cells.Length - 1 do
+                index.[cells.[cellIndex].StartColumn] <- cellIndex
+            index
+
+        let cellIndexByExactSpan (cells: ResolvedCell[]) =
+            let index = Dictionary<struct (int * int), int>(cells.Length)
+            for cellIndex = 0 to cells.Length - 1 do
+                let cell = cells.[cellIndex]
+                index.[struct (cell.StartColumn, cell.ColSpan)] <- cellIndex
+            index
+
+        let exactSpanIndexes = Array.zeroCreate<Dictionary<struct (int * int), int>> cellRows.Length
+        let exactSpanIndexFor rowIndex =
+            let existing = exactSpanIndexes.[rowIndex]
+            if obj.ReferenceEquals(existing, null) then
+                let created = cellIndexByExactSpan cellRows.[rowIndex]
+                exactSpanIndexes.[rowIndex] <- created
+                created
+            else
+                existing
+
+        for rowIndex in 0 .. cellRows.Length - 1 do
+            let cells = cellRows.[rowIndex]
+            let rightIndexByStart = cellIndexByStart cells
 
             for leftIndex in 0 .. cells.Length - 1 do
-                let left = mutableRows.[rowIndex].Cells.[leftIndex]
-                for rightIndex in 0 .. cells.Length - 1 do
-                    let right = mutableRows.[rowIndex].Cells.[rightIndex]
-                    if left.StartColumn + left.ColSpan = right.StartColumn then
-                        let currentLeft = mutableRows.[rowIndex].Cells.[leftIndex]
-                        let currentRight = mutableRows.[rowIndex].Cells.[rightIndex]
-                        let winner, rightWins = resolveBorderConflictWithWinner currentLeft.Borders.Right currentRight.Borders.Left
-                        if rightWins then
-                            setCellBorders rowIndex leftIndex { currentLeft.Borders with Right = None; InsideH = None; InsideV = None } mutableRows
-                            setCellBorders rowIndex rightIndex { currentRight.Borders with Left = winner; InsideH = None; InsideV = None } mutableRows
-                        else
-                            setCellBorders rowIndex leftIndex { currentLeft.Borders with Right = winner; InsideH = None; InsideV = None } mutableRows
-                            setCellBorders rowIndex rightIndex { currentRight.Borders with Left = None; InsideH = None; InsideV = None } mutableRows
+                let left = cells.[leftIndex]
+                let mutable rightIndex = 0
+                if rightIndexByStart.TryGetValue(left.StartColumn + left.ColSpan, &rightIndex) then
+                    let currentLeft = cells.[leftIndex]
+                    let currentRight = cells.[rightIndex]
+                    let winner, rightWins = resolveBorderConflictWithWinner currentLeft.Borders.Right currentRight.Borders.Left
+                    if rightWins then
+                        setCellBorders rowIndex leftIndex { currentLeft.Borders with Right = None; InsideH = None; InsideV = None }
+                        setCellBorders rowIndex rightIndex { currentRight.Borders with Left = winner; InsideH = None; InsideV = None }
+                    else
+                        setCellBorders rowIndex leftIndex { currentLeft.Borders with Right = winner; InsideH = None; InsideV = None }
+                        setCellBorders rowIndex rightIndex { currentRight.Borders with Left = None; InsideH = None; InsideV = None }
 
-            for upperIndex in 0 .. mutableRows.[rowIndex].Cells.Length - 1 do
-                let upper = mutableRows.[rowIndex].Cells.[upperIndex]
+            for upperIndex in 0 .. cells.Length - 1 do
+                let upper = cells.[upperIndex]
                 let lowerRowIndex = rowIndex + upper.RowSpan
-                if lowerRowIndex < mutableRows.Count then
-                    for lowerIndex in 0 .. mutableRows.[lowerRowIndex].Cells.Length - 1 do
-                        let lower = mutableRows.[lowerRowIndex].Cells.[lowerIndex]
-                        if overlaps upper.StartColumn upper.ColSpan lower.StartColumn lower.ColSpan then
-                            // Only None-out a side when the two cells share the
-                            // exact same column range.  For partial overlap
-                            // (one cell extends beyond the other — common with
-                            // gridBefore/gridAfter offsets), keep both: the
-                            // protruding portion still needs a border, and
-                            // painting both at the shared y is visually
-                            // identical to painting just one.
-                            let lowerSpansSame = upper.StartColumn = lower.StartColumn && upper.ColSpan = lower.ColSpan
-                            let currentUpper = mutableRows.[rowIndex].Cells.[upperIndex]
-                            let currentLower = mutableRows.[lowerRowIndex].Cells.[lowerIndex]
-                            let winner, lowerWins = resolveBorderConflictWithWinner currentUpper.Borders.Bottom currentLower.Borders.Top
-                            if not lowerSpansSame then
-                                // Partial overlap: keep both borders intact.
-                                ()
-                            elif lowerWins then
-                                setCellBorders rowIndex upperIndex { currentUpper.Borders with Bottom = None; InsideH = None; InsideV = None } mutableRows
-                                setCellBorders lowerRowIndex lowerIndex { currentLower.Borders with Top = winner; InsideH = None; InsideV = None } mutableRows
-                            else
-                                setCellBorders rowIndex upperIndex { currentUpper.Borders with Bottom = winner; InsideH = None; InsideV = None } mutableRows
-                                setCellBorders lowerRowIndex lowerIndex { currentLower.Borders with Top = None; InsideH = None; InsideV = None } mutableRows
+                if lowerRowIndex < cellRows.Length then
+                    let lowerIndexBySpan = exactSpanIndexFor lowerRowIndex
+                    let mutable lowerIndex = 0
+                    if lowerIndexBySpan.TryGetValue(struct (upper.StartColumn, upper.ColSpan), &lowerIndex) then
+                        let currentUpper = cells.[upperIndex]
+                        let currentLower = cellRows.[lowerRowIndex].[lowerIndex]
+                        let winner, lowerWins = resolveBorderConflictWithWinner currentUpper.Borders.Bottom currentLower.Borders.Top
+                        if lowerWins then
+                            setCellBorders rowIndex upperIndex { currentUpper.Borders with Bottom = None; InsideH = None; InsideV = None }
+                            setCellBorders lowerRowIndex lowerIndex { currentLower.Borders with Top = winner; InsideH = None; InsideV = None }
+                        else
+                            setCellBorders rowIndex upperIndex { currentUpper.Borders with Bottom = winner; InsideH = None; InsideV = None }
+                            setCellBorders lowerRowIndex lowerIndex { currentLower.Borders with Top = None; InsideH = None; InsideV = None }
 
-        mutableRows |> Seq.toList
+        let resolved = ResizeArray<ResolvedRow>(rowArray.Length)
+        for rowIndex = 0 to rowArray.Length - 1 do
+            resolved.Add({ rowArray.[rowIndex] with Cells = arrayToList cellRows.[rowIndex] })
+        resizeArrayToList resolved
 
-    let private setResolvedCellRowSpan rowIndex cellIndex rowSpan (rows: ResizeArray<ResolvedRow>) =
-        let row = rows.[rowIndex]
-        let cells = row.Cells |> List.toArray
+    let private hasResolvedBorders (rows: ResolvedRow list) =
+        let mutable found = false
+        let mutable remainingRows = rows
+        while not found && not remainingRows.IsEmpty do
+            match remainingRows with
+            | row :: rowTail ->
+                let mutable remainingCells = row.Cells
+                while not found && not remainingCells.IsEmpty do
+                    match remainingCells with
+                    | cell :: cellTail ->
+                        let borders = cell.Borders
+                        if borders.Top.IsSome
+                           || borders.Right.IsSome
+                           || borders.Bottom.IsSome
+                           || borders.Left.IsSome
+                           || borders.InsideH.IsSome
+                           || borders.InsideV.IsSome then
+                            found <- true
+                        remainingCells <- cellTail
+                    | [] -> ()
+                remainingRows <- rowTail
+            | [] -> ()
+        found
+
+    let private setResolvedCellRowSpan rowIndex cellIndex rowSpan (rows: ResizeArray<ResolvedRowWork>) =
+        let cells = rows.[rowIndex].Cells
         cells.[cellIndex] <- { cells.[cellIndex] with RowSpan = rowSpan }
-        rows.[rowIndex] <- { row with Cells = cells |> Array.toList }
 
     let private resolveRows scale (table: TableBlock) =
         let rows = table.Rows
         let rowCount = rows.Length
-        let columns = columnCount table
-        let resolvedRows = ResizeArray<ResolvedRow>()
-        let mutable activeMerges = Map.empty<int, int * int * int>
+        let hasPrintBorderInput = tableHasPrintBorderInput table
+        let hasVerticalMerge = tableHasVerticalMerge table
 
-        rows
-        |> List.iteri (fun rowIndex row ->
-            let resolvedCells = ResizeArray<ResolvedCell>()
-            let effectiveTableBorders = row.BordersOverride |> Option.orElse table.Borders
+        let resolveBorderlessRows () =
+            let resolvedRows = ResizeArray<ResolvedRow>(rowCount)
+            for row in rows do
+                let resolvedCells = ResizeArray<ResolvedCell>()
+                let mutable sourceCellIndex = 0
+                let mutable currentColumn = max 0 row.GridBefore
+                for cell in row.Cells do
+                    let span = cellSpan cell
+                    resolvedCells.Add(
+                        { Cell = cell
+                          SourceCellIndex = sourceCellIndex
+                          StartColumn = currentColumn
+                          ColSpan = span
+                          RowSpan = 1
+                          Borders = emptyCellPrintBorders })
+                    currentColumn <- currentColumn + span
+                    sourceCellIndex <- sourceCellIndex + 1
+                resolvedRows.Add(
+                    { Source = row
+                      Cells = resizeArrayToList resolvedCells
+                      IsHeader = row.IsHeader
+                      CanSplit = row.CanSplit |> Option.defaultValue true })
+            resizeArrayToList resolvedRows
 
-            positionedCells row
-            |> List.iteri (fun sourceCellIndex positioned ->
-                let cell = positioned.Cell
-                let borders =
-                    cellPrintBordersWithTableFallback effectiveTableBorders rowIndex rowCount columns positioned cell
-                    |> suppressEmptyVerticalMergeRestartTopBorder rowIndex cell
-                match cell.VerticalMerge with
-                | Some ContinueMerge ->
-                    match activeMerges |> Map.tryFind positioned.StartColumn with
-                    | Some (rowIndex, cellIndex, rowSpan) ->
-                        let nextSpan = rowSpan + 1
-                        setResolvedCellRowSpan rowIndex cellIndex nextSpan resolvedRows
-                        activeMerges <- activeMerges |> Map.add positioned.StartColumn (rowIndex, cellIndex, nextSpan)
-                    | None ->
-                        resolvedCells.Add({ Cell = cell; SourceCellIndex = sourceCellIndex; StartColumn = positioned.StartColumn; ColSpan = positioned.Span; RowSpan = 1; Borders = borders })
-                | _ ->
-                    let resolvedCell = { Cell = cell; SourceCellIndex = sourceCellIndex; StartColumn = positioned.StartColumn; ColSpan = positioned.Span; RowSpan = 1; Borders = borders }
-                    let cellIndex = resolvedCells.Count
-                    resolvedCells.Add(resolvedCell)
+        let resolveGeneralRows () =
+            let columns = if hasPrintBorderInput then columnCount table else 0
+            let resolvedRows = ResizeArray<ResolvedRowWork>()
+            let activeMerges = Dictionary<int, struct (int * int * int)>()
+
+            rows
+            |> List.iteri (fun rowIndex row ->
+                let resolvedCells = ResizeArray<ResolvedCell>()
+                let effectiveTableBorders = row.BordersOverride |> Option.orElse table.Borders
+
+                let mutable sourceCellIndex = 0
+                let mutable currentColumn = max 0 row.GridBefore
+                for cell in row.Cells do
+                    let span = cellSpan cell
+                    let positioned =
+                        {
+                            Cell = cell
+                            StartColumn = currentColumn
+                            Span = span
+                        }
+                    let borders =
+                        if hasPrintBorderInput then
+                            cellPrintBordersWithTableFallback effectiveTableBorders rowIndex rowCount columns positioned cell
+                            |> suppressEmptyVerticalMergeRestartTopBorder rowIndex cell
+                        else
+                            emptyCellPrintBorders
                     match cell.VerticalMerge with
-                    | Some RestartMerge -> activeMerges <- activeMerges |> Map.add positioned.StartColumn (resolvedRows.Count, cellIndex, 1)
-                    | _ -> activeMerges <- activeMerges |> Map.remove positioned.StartColumn)
+                    | Some ContinueMerge ->
+                        let mutable activeMerge = Unchecked.defaultof<struct (int * int * int)>
+                        if activeMerges.TryGetValue(positioned.StartColumn, &activeMerge) then
+                            let struct (restartRowIndex, cellIndex, rowSpan) = activeMerge
+                            let nextSpan = rowSpan + 1
+                            setResolvedCellRowSpan restartRowIndex cellIndex nextSpan resolvedRows
+                            activeMerges.[positioned.StartColumn] <- struct (restartRowIndex, cellIndex, nextSpan)
+                        else
+                            resolvedCells.Add({ Cell = cell; SourceCellIndex = sourceCellIndex; StartColumn = positioned.StartColumn; ColSpan = positioned.Span; RowSpan = 1; Borders = borders })
+                    | _ ->
+                        let resolvedCell = { Cell = cell; SourceCellIndex = sourceCellIndex; StartColumn = positioned.StartColumn; ColSpan = positioned.Span; RowSpan = 1; Borders = borders }
+                        let cellIndex = resolvedCells.Count
+                        resolvedCells.Add(resolvedCell)
+                        match cell.VerticalMerge with
+                        | Some RestartMerge -> activeMerges.[positioned.StartColumn] <- struct (resolvedRows.Count, cellIndex, 1)
+                        | _ -> activeMerges.Remove positioned.StartColumn |> ignore
+                    currentColumn <- currentColumn + span
+                    sourceCellIndex <- sourceCellIndex + 1
 
-            resolvedRows.Add({ Source = row; Cells = resolvedCells |> Seq.toList; IsHeader = row.IsHeader; CanSplit = row.CanSplit |> Option.defaultValue true }))
+                resolvedRows.Add({ Source = row; Cells = resolvedCells.ToArray(); IsHeader = row.IsHeader; CanSplit = row.CanSplit |> Option.defaultValue true }))
 
-        let rows = resolvedRows |> Seq.toList
-        let hasCellSpacing = table.Rows |> List.exists (fun row -> rowCellSpacing scale table row > 0.0)
-        if hasCellSpacing then rows else collapseResolvedBorders rows
+            let rows =
+                let result = ResizeArray<ResolvedRow>(resolvedRows.Count)
+                for row in resolvedRows do
+                    result.Add({ Source = row.Source; Cells = arrayToList row.Cells; IsHeader = row.IsHeader; CanSplit = row.CanSplit })
+                resizeArrayToList result
+            let mutable hasCellSpacing = false
+            let mutable remaining = table.Rows
+            while not hasCellSpacing && not remaining.IsEmpty do
+                match remaining with
+                | row :: tail ->
+                    if rowCellSpacing scale table row > 0.0 then
+                        hasCellSpacing <- true
+                    remaining <- tail
+                | [] -> ()
+            if hasCellSpacing || not hasPrintBorderInput || not (hasResolvedBorders rows) then rows else collapseResolvedBorders rows
+
+        if not hasPrintBorderInput && not hasVerticalMerge then
+            resolveBorderlessRows ()
+        else
+            resolveGeneralRows ()
 
     let resolveTable scale maxWidth (table: TableBlock) =
         let rows = resolveRows scale table

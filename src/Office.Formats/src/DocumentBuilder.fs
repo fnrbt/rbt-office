@@ -112,7 +112,7 @@ type DocumentBuilder(state: DocumentBuilderState) =
             LineSpacing = options.LineSpacing
         }
 
-        state.Paragraphs <- state.Paragraphs @ [para]
+        state.Paragraphs <- para :: state.Paragraphs
         this
 
     /// Add a paragraph with multiple runs
@@ -130,13 +130,14 @@ type DocumentBuilder(state: DocumentBuilderState) =
             LineSpacing = None
         }
 
-        state.Paragraphs <- state.Paragraphs @ [para]
+        state.Paragraphs <- para :: state.Paragraphs
         this
 
     /// Save the document to a blob
     member this.Save() =
         let paraObjects =
             state.Paragraphs
+            |> List.rev
             |> List.map (fun para ->
                 createObj [
                     "Runs" ==> (para.Runs |> List.toArray)

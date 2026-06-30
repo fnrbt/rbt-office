@@ -6,6 +6,19 @@ open ZipInterop
 open Fable.Core.JsInterop
 open System
 
+let inline private (==>) name value =
+    name, box value
+
+let private objFromFields fields : obj =
+#if FABLE_COMPILER
+    createObj fields
+#else
+    let result = System.Collections.Generic.Dictionary<string, obj>()
+    for name, value in fields do
+        result.[name] <- value
+    box result
+#endif
+
 // DOCX domain model
 type RunProperties = {
     Style: string option
@@ -475,28 +488,52 @@ module Docx =
     let inline wElem name node = Ns.childNs name node
     let inline wElems name node = Ns.descendantsNs name node
 
-    let private escapeXml (text: string) =
-        text
-            .Replace("&", "&amp;")
-            .Replace("<", "&lt;")
-            .Replace(">", "&gt;")
-            .Replace("\"", "&quot;")
-            .Replace("'", "&apos;")
+    let private appendEscapedXml (builder: System.Text.StringBuilder) (text: string) =
+        if not (String.IsNullOrEmpty text) then
+            let mutable segmentStart = 0
+            for i = 0 to text.Length - 1 do
+                let replacement =
+                    match text.[i] with
+                    | '&' -> ValueSome "&amp;"
+                    | '<' -> ValueSome "&lt;"
+                    | '>' -> ValueSome "&gt;"
+                    | '"' -> ValueSome "&quot;"
+                    | '\'' -> ValueSome "&apos;"
+                    | _ -> ValueNone
+                match replacement with
+                | ValueSome escaped ->
+                    if i > segmentStart then
+                        builder.Append(text, segmentStart, i - segmentStart) |> ignore
+                    builder.Append(escaped) |> ignore
+                    segmentStart <- i + 1
+                | ValueNone -> ()
+            if segmentStart < text.Length then
+                builder.Append(text, segmentStart, text.Length - segmentStart) |> ignore
 
-    let rec xmlToString node =
+    let rec private appendXmlTo (builder: System.Text.StringBuilder) node =
         match node with
-        | XmlDsl.Text text -> escapeXml text
-        | XmlDsl.Empty -> ""
+        | XmlDsl.Text text ->
+            appendEscapedXml builder text
+        | XmlDsl.Empty -> ()
         | XmlDsl.Element(name, attrs, children) ->
-            let attrText =
-                attrs
-                |> Map.toList
-                |> List.map (fun (key, value) -> sprintf "%s=\"%s\"" key (escapeXml value))
-                |> String.concat " "
-            let attrPart = if attrText = "" then "" else " " + attrText
+            builder.Append('<').Append(name) |> ignore
+            for KeyValue(key, value) in attrs do
+                builder.Append(' ').Append(key).Append("=\"") |> ignore
+                appendEscapedXml builder value
+                builder.Append('"') |> ignore
             match children with
-            | [] -> sprintf "<%s%s/>" name attrPart
-            | _ -> sprintf "<%s%s>%s</%s>" name attrPart (children |> List.map xmlToString |> String.concat "") name
+            | [] ->
+                builder.Append("/>") |> ignore
+            | _ ->
+                builder.Append('>') |> ignore
+                for child in children do
+                    appendXmlTo builder child
+                builder.Append("</").Append(name).Append('>') |> ignore
+
+    let xmlToString node =
+        let builder = System.Text.StringBuilder()
+        appendXmlTo builder node
+        builder.ToString()
 
     let attr attrName node =
         Xml.attr attrName node
@@ -1087,9 +1124,9 @@ module Docx =
 
     type private ComplexFieldState = {
         Properties: RunProperties
-        CodeParts: string list
-        ResultRuns: Run list
-        CollectingResult: bool
+        CodeParts: ResizeArray<string>
+        ResultRuns: ResizeArray<Run>
+        mutable CollectingResult: bool
     }
 
     let private textFromRun (run: Run) =
@@ -1108,19 +1145,26 @@ module Docx =
 
     let private appendRun (output: Run list) (stack: ComplexFieldState list) (run: Run) =
         match stack with
-        | [] -> output @ [run], stack
+        | [] -> run :: output, stack
         | current :: rest ->
-            output, { current with ResultRuns = current.ResultRuns @ [run] } :: rest
+            current.ResultRuns.Add run
+            output, stack
 
     let private completeFieldRun (field: ComplexFieldState) : Run =
-        let code = field.CodeParts |> String.concat "" |> fun value -> value.Trim()
-        let result = field.ResultRuns |> List.map textFromRun |> String.concat ""
+        let codeBuilder = System.Text.StringBuilder()
+        for part in field.CodeParts do
+            codeBuilder.Append part |> ignore
+        let code = codeBuilder.ToString().Trim()
+        let resultBuilder = System.Text.StringBuilder()
+        for run in field.ResultRuns do
+            resultBuilder.Append(textFromRun run) |> ignore
+        let result = resultBuilder.ToString()
         let props =
-            field.ResultRuns
-            |> List.tryHead
-            |> Option.map (fun run -> run.Properties)
-            |> Option.defaultValue field.Properties
-        let firstResult = field.ResultRuns |> List.tryHead
+            if field.ResultRuns.Count > 0 then field.ResultRuns.[0].Properties
+            else field.Properties
+        let firstResult =
+            if field.ResultRuns.Count > 0 then Some field.ResultRuns.[0]
+            else None
         {
             Content = FieldRef {
                 FieldType = fieldTypeFromCode code
@@ -1141,9 +1185,13 @@ module Docx =
         match stack with
         | [] -> output, stack
         | current :: rest ->
-            let output, rest =
-                current.ResultRuns
-                |> List.fold (fun (currentOutput, currentStack) run -> appendRun currentOutput currentStack run) (output, rest)
+            let mutable currentOutput = output
+            let mutable currentStack = rest
+            for run in current.ResultRuns do
+                let nextOutput, nextStack = appendRun currentOutput currentStack run
+                currentOutput <- nextOutput
+                currentStack <- nextStack
+            let output, rest = currentOutput, currentStack
             output, rest
 
     let private collapseComplexFieldTokens (tokens: RunToken list) =
@@ -1157,15 +1205,15 @@ module Docx =
                 output <- newOutput
                 stack <- newStack
             | FieldBeginToken props ->
-                stack <- { Properties = props; CodeParts = []; ResultRuns = []; CollectingResult = false } :: stack
+                stack <- { Properties = props; CodeParts = ResizeArray<string>(); ResultRuns = ResizeArray<Run>(); CollectingResult = false } :: stack
             | FieldInstructionToken code ->
                 match stack with
                 | current :: rest when not current.CollectingResult ->
-                    stack <- { current with CodeParts = current.CodeParts @ [code] } :: rest
+                    current.CodeParts.Add code
                 | _ -> ()
             | FieldSeparateToken ->
                 match stack with
-                | current :: rest -> stack <- { current with CollectingResult = true } :: rest
+                | current :: _ -> current.CollectingResult <- true
                 | [] -> ()
             | FieldEndToken ->
                 match stack with
@@ -1182,34 +1230,35 @@ module Docx =
             output <- newOutput
             stack <- newStack
 
-        output
+        List.rev output
 
     let private attachRunMarkers (runs: Run list) =
-        let mutable pendingStarts: BookmarkReference list = []
+        let mutable pendingStart: BookmarkReference option = None
         let mutable pendingRenderedPageBreak = false
         let output = ResizeArray<Run>()
 
         let attachStart run =
             let withBookmark =
-                match pendingStarts with
-                | [] -> run
-                | first :: _ -> { run with BookmarkStart = Some first }
+                match pendingStart with
+                | None -> run
+                | Some first -> { run with BookmarkStart = Some first }
             if pendingRenderedPageBreak then { withBookmark with RenderedPageBreakBefore = true } else withBookmark
 
         for run in runs do
             match run.Content with
             | BookmarkStart bookmark ->
-                pendingStarts <- pendingStarts @ [bookmark]
+                if pendingStart.IsNone then
+                    pendingStart <- Some bookmark
             | BookmarkEnd id ->
                 if output.Count > 0 then
                     let previous = output.[output.Count - 1]
                     output.[output.Count - 1] <- { previous with BookmarkEnd = Some id }
-                pendingStarts <- []
+                pendingStart <- None
             | RenderedPageBreak ->
                 pendingRenderedPageBreak <- true
             | _ ->
                 output.Add(attachStart run)
-                pendingStarts <- []
+                pendingStart <- None
                 pendingRenderedPageBreak <- false
 
         output |> Seq.toList
@@ -3071,7 +3120,7 @@ let private wordShadingColorToEditor (color: string option) =
     | value -> wordColorToCss value
 
 let private wordShadingToEditor (shading: Shading) =
-    createObj [
+    objFromFields [
         "Pattern" ==> shading.Pattern
         "ForegroundColor" ==> wordShadingColorToEditor shading.Color
         "BackgroundColor" ==> wordShadingColorToEditor shading.Fill
@@ -3126,7 +3175,7 @@ let private borderWidthToPoints (border: BorderStyle option) =
 
 let private borderToEditor (border: BorderStyle option) =
     border
-    |> Option.map (fun value -> createObj [
+    |> Option.map (fun value -> objFromFields [
         "Style" ==> value.BorderType
         "Color" ==> borderColorToCss border
         "Width" ==> borderWidthToPoints border
@@ -3180,7 +3229,7 @@ let private paragraphBorderAdvanceToLayoutPx (border: ParagraphBorder option) =
 
 let private paragraphBorderToEditor (border: ParagraphBorder option) =
     border
-    |> Option.map (fun value -> createObj [
+    |> Option.map (fun value -> objFromFields [
         "Style" ==> value.Style
         "Color" ==> paragraphBorderColorToCss border
         "Width" ==> paragraphBorderWidthToPoints border
@@ -3189,7 +3238,7 @@ let private paragraphBorderToEditor (border: ParagraphBorder option) =
 
 let private paragraphBordersToEditor (borders: ParagraphBorders option) =
     borders
-    |> Option.map (fun value -> createObj [
+    |> Option.map (fun value -> objFromFields [
         "Top" ==> paragraphBorderToEditor value.Top
         "Right" ==> paragraphBorderToEditor value.Right
         "Bottom" ==> paragraphBorderToEditor value.Bottom
@@ -3198,7 +3247,7 @@ let private paragraphBordersToEditor (borders: ParagraphBorders option) =
 
 let private bordersToEditor (borders: CellBorders option) =
     borders
-    |> Option.map (fun value -> createObj [
+    |> Option.map (fun value -> objFromFields [
         "Top" ==> borderToEditor value.Top
         "Right" ==> borderToEditor value.Right
         "Bottom" ==> borderToEditor value.Bottom
@@ -3228,7 +3277,7 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
         "RightTabLeader" ==> props.RightTabLeader
         "TabStops" ==> (props.TabStops
                         |> List.map (fun (pos, align, leader) ->
-                            createObj [ "Position" ==> wordTwipsToPoints (Some pos); "Alignment" ==> align; "Leader" ==> leader ])
+                            objFromFields [ "Position" ==> wordTwipsToPoints (Some pos); "Alignment" ==> align; "Leader" ==> leader ])
                         |> List.toArray)
         "Rtl" ==> (props.Rtl |> Option.defaultValue false)
         "SpacingBefore" ==> (if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore |> Option.orElse missingSpacingFallback)
@@ -3293,7 +3342,7 @@ let private isPureEmptyParagraph (para: Paragraph) =
 
 let private referenceObjects (refs: HeaderFooterReference list) =
     refs
-    |> List.map (fun ref -> createObj [ "Kind" ==> ref.Kind; "RelationshipId" ==> ref.RelationshipId ])
+    |> List.map (fun ref -> objFromFields [ "Kind" ==> ref.Kind; "RelationshipId" ==> ref.RelationshipId ])
     |> List.toArray
 
 let private emptyRunProperties = {
@@ -3611,17 +3660,16 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
             let effectiveParaProps = resolvedParagraphProperties styleMap para.Properties
             let paragraphFontSize =
                 let fallback = paragraphMarkFontSize styleMap effectiveParaProps para
-                let runSizes =
-                    para.Runs
-                    |> List.choose (fun run ->
-                        match run.Content with
-                        | Text _
-                        | Link _
-                        | FieldRef _ ->
-                            let runProps = resolvedRunProperties styleMap effectiveParaProps run.Properties
-                            Some (wordFontSizeToPoints runProps.FontSize)
-                        | _ -> None)
-                if List.isEmpty runSizes then fallback else List.reduce max runSizes
+                let mutable maxSize = fallback
+                for run in para.Runs do
+                    match run.Content with
+                    | Text _
+                    | Link _
+                    | FieldRef _ ->
+                        let runProps = resolvedRunProperties styleMap effectiveParaProps run.Properties
+                        maxSize <- max maxSize (wordFontSizeToPoints runProps.FontSize)
+                    | _ -> ()
+                maxSize
             let pageBreakAfter =
                 para.Runs
                 |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
@@ -3641,7 +3689,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                     match run.Content with
                     | Text text ->
                         // Text run
-                        Some (createObj ([
+                        Some (objFromFields ([
                             "Text" ==> text
                             "Style" ==> run.Properties.Style
                             "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -3674,7 +3722,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             images
                             |> Map.tryFind img.RelationshipId
                             |> Option.defaultValue img.RelationshipId  // Fallback to relId if not found
-                        Some (createObj [
+                        Some (objFromFields [
                             "IsImage" ==> true
                             "ImageSrc" ==> imageSrc
                             "ImageLinked" ==> img.Linked
@@ -3708,7 +3756,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                         ])
                     | Link link ->
                         // Hyperlink as text run with link property
-                        Some (createObj ([
+                        Some (objFromFields ([
                             "Text" ==> link.Text
                             "Style" ==> link.Properties.Style
                             "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -3733,7 +3781,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "Hyperlink" ==> link.Target
                         ] @ bookmarkRunProps run))
                         | CommentReference id ->
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> (sprintf "[Comment %s]" id)
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -3752,7 +3800,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             // Render the reference as its superscript mark number
                             // (Word writes note ids sequentially) in the normal
                             // text colour, matching the native/PDF path.
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> noteMark note.NoteType note.Id
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -3771,7 +3819,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
                             ])
                         | BookmarkStart bookmark ->
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> ""
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -3786,7 +3834,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "BookmarkName" ==> bookmark.Name
                             ])
                         | BookmarkEnd id ->
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> ""
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -3800,7 +3848,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "BookmarkEndId" ==> id
                             ])
                         | FieldRef field ->
-                            Some (createObj ([
+                            Some (objFromFields ([
                                 "Text" ==> (field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
                                 "Style" ==> run.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -3830,7 +3878,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "RevisionDate" ==> run.RevisionDate
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> "[Equation]"
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -3875,7 +3923,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 documentDefaultMissingSpacingToZero
                 || directParagraphFormattingResetsMissingSpacing para.Properties
 
-            Some (createObj ([
+            Some (objFromFields ([
                 "Type" ==> itemType
                 "HeadingLevel" ==> headingLevel
                 "Runs" ==> editorRuns
@@ -3921,7 +3969,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                         let effectiveRunProps = resolvedRunProperties styleMap effectiveParaProps run.Properties
                         match run.Content with
                         | Text text ->
-                            Some (createObj ([
+                            Some (objFromFields ([
                                 "Text" ==> text
                                 "Style" ==> run.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -3952,7 +4000,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 images
                                 |> Map.tryFind img.RelationshipId
                                 |> Option.defaultValue img.RelationshipId
-                            Some (createObj [
+                            Some (objFromFields [
                                 "IsImage" ==> true
                                 "ImageSrc" ==> imageSrc
                                 "ImageLinked" ==> img.Linked
@@ -3986,7 +4034,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             ])
                         | Link link ->
                             let effectiveLinkProps = resolvedRunProperties styleMap effectiveParaProps link.Properties
-                            Some (createObj ([
+                            Some (objFromFields ([
                                 "Text" ==> link.Text
                                 "Style" ==> link.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveLinkProps.Bold
@@ -4011,7 +4059,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Hyperlink" ==> link.Target
                             ] @ bookmarkRunProps run))
                         | CommentReference id ->
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> (sprintf "[Comment %s]" id)
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -4030,7 +4078,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             // Render the reference as its superscript mark number
                             // (Word writes note ids sequentially) in the normal
                             // text colour, matching the native/PDF path.
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> noteMark note.NoteType note.Id
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -4049,7 +4097,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
                             ])
                         | BookmarkStart bookmark ->
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> ""
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -4064,7 +4112,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "BookmarkName" ==> bookmark.Name
                             ])
                         | BookmarkEnd id ->
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> ""
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -4078,7 +4126,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "BookmarkEndId" ==> id
                             ])
                         | FieldRef field ->
-                            Some (createObj ([
+                            Some (objFromFields ([
                                 "Text" ==> (field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
                                 "Style" ==> run.Properties.Style
                                 "Bold" ==> effectiveOnOff effectiveRunProps.Bold
@@ -4107,7 +4155,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "RevisionDate" ==> run.RevisionDate
                             ] @ bookmarkRunProps run))
                         | EquationXml xml ->
-                            Some (createObj [
+                            Some (objFromFields [
                                 "Text" ==> "[Equation]"
                                 "Bold" ==> false
                                 "Italic" ==> false
@@ -4144,7 +4192,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
 
                 let layoutParaProps = { effectiveParaProps with ParagraphBorders = para.Properties.ParagraphBorders }
 
-                createObj ([
+                objFromFields ([
                     "Runs" ==> editorRuns
                     "Style" ==> effectiveParaProps.Style
                     "StyleKeepNext" ==> effectiveParaProps.KeepNext
@@ -4290,7 +4338,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                     cell.Properties
                     |> Option.bind (fun props -> props.VerticalAlignment)
 
-                createObj [
+                objFromFields [
                     "Paragraphs" ==> cellParagraphs
                     "NestedTables" ==> nestedTables
                     "NestedTableAnchors" ==> (cell.NestedTableAnchors |> List.toArray)
@@ -4324,7 +4372,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                         convertCell rowIndex styledCell)
                     |> List.toArray
 
-                createObj [
+                objFromFields [
                     "Cells" ==> cells
                     "IsHeader" ==> (row.IsHeader || (rowStyle |> Option.bind (fun props -> props.IsHeader) |> Option.defaultValue false))
                     "Height" ==> row.Height
@@ -4354,7 +4402,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 |> Option.orElseWith (fun () -> tableStyleProperties |> Option.bind (fun props -> props.Shading))
                 |> Option.map wordShadingToEditor
 
-            Some (createObj [
+            Some (objFromFields [
                 "Type" ==> "Table"
                 "Rows" ==> rows
                 "PreferredWidth" ==> table.Width
@@ -4380,12 +4428,45 @@ let private applyNumberingDefinitions (numberingDefinitions: NumberingDefinition
     let optionalStringValue (value: obj) =
         if isMissing value then None
         else
-            match unbox<string> value with
-            | null | "" -> None
-            | text -> Some text
+            match value with
+            | :? (string option) as value -> value |> Option.bind (function null | "" -> None | text -> Some text)
+            | :? string as value ->
+                match value with
+                | null | "" -> None
+                | text -> Some text
+            | _ ->
+                match unbox<string> value with
+                | null | "" -> None
+                | text -> Some text
+    let optionalIntValue (value: obj) =
+        if isMissing value then None
+        else
+            match value with
+            | :? (int option) as value -> value
+            | :? int as value -> Some value
+            | _ -> Some (unbox<int> value)
     let intValue fallback (value: obj) =
-        if isMissing value then fallback else unbox<int> value
+        optionalIntValue value |> Option.defaultValue fallback
     let stringValue fallback (value: obj) = optionalStringValue value |> Option.defaultValue fallback
+    let getProp (item: obj) name : obj =
+#if FABLE_COMPILER
+        item?(name)
+#else
+        match item with
+        | :? System.Collections.Generic.IDictionary<string, obj> as fields ->
+            match fields.TryGetValue name with
+            | true, value -> value
+            | false, _ -> null
+        | _ -> null
+#endif
+    let setProp (item: obj) name value =
+#if FABLE_COMPILER
+        item?(name) <- value
+#else
+        match item with
+        | :? System.Collections.Generic.IDictionary<string, obj> as fields -> fields.[name] <- box value
+        | _ -> ()
+#endif
 
     let numberingMap =
         numberingDefinitions
@@ -4397,51 +4478,51 @@ let private applyNumberingDefinitions (numberingDefinitions: NumberingDefinition
         |> Map.ofList
 
     let applyToParagraph (item: obj) =
-        let listId = optionalStringValue (item?ListId)
-        let listLevel = intValue 0 (item?ListLevel)
-        let styleId = optionalStringValue (item?Style)
+        let listId = optionalStringValue (getProp item "ListId")
+        let listLevel = intValue 0 (getProp item "ListLevel")
+        let styleId = optionalStringValue (getProp item "Style")
         let listDefinition =
             match listId with
             | Some id -> Map.tryFind (id, max 0 (listLevel - 1)) numberingMap
             | None -> styleId |> Option.bind (fun id -> Map.tryFind id styleNumberingMap)
         match listDefinition with
         | Some def when def.NumberFormat = "bullet" ->
-            item?ListId <- def.NumId
-            item?ListLevel <- def.Level + 1
-            item?ListStyle <- "bullet"
-            item?ListNumberFormat <- def.NumberFormat
-            item?ListLevelText <- def.LevelText
-            item?ListStart <- def.Start
+            setProp item "ListId" def.NumId
+            setProp item "ListLevel" (def.Level + 1)
+            setProp item "ListStyle" "bullet"
+            setProp item "ListNumberFormat" def.NumberFormat
+            setProp item "ListLevelText" def.LevelText
+            setProp item "ListStart" def.Start
         | Some def ->
-            item?ListId <- def.NumId
-            item?ListLevel <- def.Level + 1
-            item?ListStyle <- "numbered"
-            item?ListNumberFormat <- def.NumberFormat
-            item?ListLevelText <- def.LevelText
-            item?ListStart <- def.Start
+            setProp item "ListId" def.NumId
+            setProp item "ListLevel" (def.Level + 1)
+            setProp item "ListStyle" "numbered"
+            setProp item "ListNumberFormat" def.NumberFormat
+            setProp item "ListLevelText" def.LevelText
+            setProp item "ListStart" def.Start
         | None -> ()
         match listDefinition with
         | Some def ->
-            if isMissing item?IndentLeft then item?IndentLeft <- wordTwipsToPoints def.IndentLeft
-            if isMissing item?FirstLineIndent then
+            if isMissing (getProp item "IndentLeft") then setProp item "IndentLeft" (wordTwipsToPoints def.IndentLeft)
+            if isMissing (getProp item "FirstLineIndent") then
                 let firstLineIndent =
                     match wordTwipsToPoints def.FirstLineIndent, wordTwipsToPoints def.HangingIndent with
                     | Some firstLine, _ -> Some firstLine
                     | None, Some hanging -> Some -hanging
                     | None, None -> None
-                item?FirstLineIndent <- firstLineIndent
-            if isMissing item?RightTabPosition then item?RightTabPosition <- wordTwipsToPoints def.RightTabPosition
+                setProp item "FirstLineIndent" firstLineIndent
+            if isMissing (getProp item "RightTabPosition") then setProp item "RightTabPosition" (wordTwipsToPoints def.RightTabPosition)
         | None -> ()
         item
 
     let rec apply item =
-        let itemType = item?Type |> stringValue "Paragraph"
+        let itemType = getProp item "Type" |> stringValue "Paragraph"
         if itemType = "Table" then
-            let rows = item?Rows |> unbox<obj array>
+            let rows = getProp item "Rows" |> unbox<obj array>
             for row in rows do
-                let cells = row?Cells |> unbox<obj array>
+                let cells = getProp row "Cells" |> unbox<obj array>
                 for cell in cells do
-                    let paragraphs = cell?Paragraphs |> unbox<obj array>
+                    let paragraphs = getProp cell "Paragraphs" |> unbox<obj array>
                     for para in paragraphs do
                         applyToParagraph para |> ignore
             item
@@ -4484,7 +4565,7 @@ let toEditorParagraphsWithStylesThemeAndNumbering (theme: Theme option) (content
 let toEditorHeaderFooters (items: HeaderFooter list) (images: Map<string, string>) : obj array =
     items
     |> List.map (fun item ->
-        createObj [
+        objFromFields [
             "Type" ==> item.Type
             "RelationshipId" ==> item.RelationshipId
             "Paragraphs" ==> toEditorParagraphs (item.Content |> List.map Para) images
@@ -4494,7 +4575,7 @@ let toEditorHeaderFooters (items: HeaderFooter list) (images: Map<string, string
 let toEditorHeaderFootersWithStyles (items: HeaderFooter list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
     items
     |> List.map (fun item ->
-        createObj [
+        objFromFields [
             "Type" ==> item.Type
             "RelationshipId" ==> item.RelationshipId
             "Paragraphs" ==> toEditorParagraphsWithStyles (item.Content |> List.map Para) images styles
@@ -4504,7 +4585,7 @@ let toEditorHeaderFootersWithStyles (items: HeaderFooter list) (images: Map<stri
 let toEditorHeaderFootersWithStylesAndTheme (theme: Theme option) (items: HeaderFooter list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
     items
     |> List.map (fun item ->
-        createObj [
+        objFromFields [
             "Type" ==> item.Type
             "RelationshipId" ==> item.RelationshipId
             "Paragraphs" ==> toEditorParagraphsWithStylesAndTheme theme (item.Content |> List.map Para) images styles
@@ -4513,9 +4594,9 @@ let toEditorHeaderFootersWithStylesAndTheme (theme: Theme option) (items: Header
 
 let toEditorPageSetup (doc: WordDocument) : obj =
     match doc.PageSetup with
-    | None -> createObj []
+    | None -> objFromFields []
     | Some setup ->
-        createObj [
+        objFromFields [
             "PageWidth" ==> setup.PageWidth
             "PageHeight" ==> setup.PageHeight
             "MarginLeft" ==> setup.MarginLeft
@@ -4529,6 +4610,6 @@ let toEditorPageSetup (doc: WordDocument) : obj =
             "ColumnCount" ==> (setup.Columns |> Option.map (fun c -> c.Count) |> Option.defaultValue 1)
             "ColumnSpace" ==> (setup.Columns |> Option.map (fun c -> c.Gap) |> Option.defaultValue 0.0)
             "ColumnSeparator" ==> (setup.Columns |> Option.map (fun c -> c.Separator) |> Option.defaultValue false)
-            "ColumnWidths" ==> (setup.Columns |> Option.map (fun c -> c.Widths |> List.map (fun (w, s) -> createObj [ "W" ==> w; "S" ==> s ]) |> Array.ofList) |> Option.defaultValue [||])
+            "ColumnWidths" ==> (setup.Columns |> Option.map (fun c -> c.Widths |> List.map (fun (w, s) -> objFromFields [ "W" ==> w; "S" ==> s ]) |> Array.ofList) |> Option.defaultValue [||])
             "SectionStart" ==> setup.SectionStart
         ]

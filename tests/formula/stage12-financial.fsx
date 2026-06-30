@@ -32,6 +32,43 @@ approxT "irr"   "=IRR(A1:A3)"              0.063940   1e-5
 approx  "sln"   "=SLN(10000,1000,5)"       1800.0
 // round-trip: PV of the payment stream recovers the principal (positive)
 approxT "pmt-roundtrip" "=PV(0.1/12,60,PMT(0.1/12,60,10000))" 10000.0 1e-4
+let sparseNpvModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.Number 100.0)
+              { Row = 19999; Col = 0 }, cell (CellValue.Number 100.0)
+              { Row = 0; Col = 1 }, cell (CellValue.Number 10.0)
+              { Row = 19999; Col = 1 }, cell (CellValue.Number 20.0) ]
+            |> Map.ofList }
+match evaluateFormula "=NPV(0.1,A1:A20000)" sparseNpvModel None with
+| CellValue.Number value when abs (value - (100.0 / 1.1 + 100.0 / 1.21)) < 1e-9 -> pass <- pass + 1
+| got -> fail <- fail + 1; printfn "FAIL %-20s %-34s expected sparse blank NPV got %A" "npv-sparse" "=NPV(0.1,A1:A20000)" got
+let checkSparseNpv label formula expected =
+    match evaluateFormula formula sparseNpvModel None with
+    | CellValue.Number value when abs (value - expected) < 1e-6 -> pass <- pass + 1
+    | got -> fail <- fail + 1; printfn "FAIL %-20s %-34s expected %.10f got %A" label formula expected got
+checkSparseNpv "npv-sparse-plus" "=NPV(0.1,A1:A20000+1)" 100.9090909
+checkSparseNpv "npv-sparse-scale" "=NPV(0.1,A1:A20000*2)" 181.8181818
+checkSparseNpv "npv-sparse-product" "=NPV(0.1,A1:A20000*B1:B20000)" 909.0909091
+checkSparseNpv "npv-sparse-unary" "=NPV(0.1,-A1:A20000)" -90.90909091
+let sparseIrrModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.Number -100.0)
+              { Row = 9999; Col = 0 }, cell (CellValue.Number 50.0)
+              { Row = 19999; Col = 0 }, cell (CellValue.Number 60.0)
+              { Row = 0; Col = 1 }, cell (CellValue.Number 10.0)
+              { Row = 9999; Col = 1 }, cell (CellValue.Number 20.0)
+              { Row = 19999; Col = 1 }, cell (CellValue.Number 30.0) ]
+            |> Map.ofList }
+let checkSparseIrrError label formula =
+    match evaluateFormula formula sparseIrrModel None with
+    | CellValue.Error "NUM!" -> pass <- pass + 1
+    | got -> fail <- fail + 1; printfn "FAIL %-20s %-34s expected NUM! got %A" label formula got
+checkSparseIrrError "irr-sparse-plus" "=IRR(A1:A20000+1)"
+checkSparseIrrError "irr-sparse-scale" "=IRR(A1:A20000*2)"
+checkSparseIrrError "irr-sparse-product" "=IRR(A1:A20000*B1:B20000)"
+checkSparseIrrError "irr-sparse-unary" "=IRR(-A1:A20000)"
 
 printfn ""
 printfn "Stage 12 financial tests: %d passed, %d failed" pass fail

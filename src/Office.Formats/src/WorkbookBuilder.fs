@@ -11,7 +11,7 @@ type SheetBuilder(name: string) =
     /// Add a row with formatted cells
     member this.AddRow(cells: FormattedCell list) =
         let row = { Cells = cells }
-        rows <- rows @ [row]
+        rows <- row :: rows
         this
 
     /// Add a simple row from strings
@@ -22,12 +22,12 @@ type SheetBuilder(name: string) =
     /// Add a merged cell range
     member this.AddMergedRange(startRow: int, startCol: int, endRow: int, endCol: int) =
         let range = createMergedRange startRow startCol endRow endCol
-        mergedCells <- mergedCells @ [range]
+        mergedCells <- range :: mergedCells
         this
 
     /// Get the built sheet
     member this.Build() : FormattedSheet =
-        { Name = name; Rows = rows; MergedCells = mergedCells }
+        { Name = name; Rows = List.rev rows; MergedCells = List.rev mergedCells }
 
 /// Workbook builder
 type WorkbookBuilder() =
@@ -38,7 +38,7 @@ type WorkbookBuilder() =
         let sheetBuilder = SheetBuilder(name)
         buildAction sheetBuilder
         let sheet = sheetBuilder.Build()
-        sheets <- sheets @ [sheet]
+        sheets <- sheet :: sheets
         this
 
     /// Add a simple sheet from 2D array
@@ -49,12 +49,12 @@ type WorkbookBuilder() =
                 { Cells = rowData |> List.map simpleCell }
             )
         let sheet = { Name = name; Rows = rows; MergedCells = [] }
-        sheets <- sheets @ [sheet]
+        sheets <- sheet :: sheets
         this
 
     /// Save the workbook to a blob
     member this.Save() =
-        writeFormattedXlsx sheets
+        writeFormattedXlsx (List.rev sheets)
 
 /// Create a new workbook builder
 let create () = WorkbookBuilder()

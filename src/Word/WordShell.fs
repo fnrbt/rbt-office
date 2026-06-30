@@ -37,7 +37,7 @@ module Shell =
 
     let private selectValue (event: Event) = (event.target :?> HTMLSelectElement).value
 
-    let private renderToolbarButton (buttonSpec: WordUi.ButtonSpec) =
+    let private renderToolbarButton (buttonSpec: ButtonSpec) =
         let isActive () = buttonSpec.IsActive |> Option.map (fun active -> active()) |> Option.defaultValue false
         button [ cls "word-tool-button"
                  clsR (fun () -> activeClass (isActive()))
@@ -46,7 +46,7 @@ module Shell =
                  attrR "aria-pressed" (fun () -> onOff (isActive()))
                  onClick (fun _ -> buttonSpec.Action()) ] [ text buttonSpec.Label ]
 
-    let private renderToolbarSelect (selectSpec: WordUi.SelectSpec) =
+    let private renderToolbarSelect (selectSpec: SelectSpec) =
         select [ cls "word-tool-select"
                  attr "data-testid" selectSpec.TestId
                  propR "value" (fun () -> box (selectSpec.Value()))
@@ -56,7 +56,7 @@ module Shell =
                 |> List.map (fun choice -> option [ attr "value" choice.Value ] [ text choice.Label ]))
         ]
 
-    let private renderToolbarInput (inputSpec: WordUi.InputSpec) =
+    let private renderToolbarInput (inputSpec: InputSpec) =
         let inputType =
             match inputSpec.Kind with
             | NumberInput -> "number"
@@ -80,13 +80,13 @@ module Shell =
         | ToolbarInput inputSpec -> renderToolbarInput inputSpec
         | ToolbarSeparator -> div [ cls "word-toolbar-separator" ] []
 
-    let private renderToolbarRow (rowSpec: WordUi.ToolbarRowSpec) =
+    let private renderToolbarRow (rowSpec: ToolbarRowSpec) =
         div [ cls "word-toolbar-row"; attr "data-toolbar-row" rowSpec.Label ] [
             div [ cls "word-toolbar-grip" ] []
             yield! rowSpec.Controls |> List.map renderToolbarControl
         ]
 
-    let private renderMenu (isOpen: Signal<bool>) closeAll (menuSpec: WordUi.MenuSpec) =
+    let private renderMenu (isOpen: Signal<bool>) closeAll (menuSpec: MenuSpec) =
         let toggleMenu () =
             let next = not isOpen.Value
             closeAll()
@@ -193,7 +193,7 @@ module Shell =
                 | Some editor ->
                     editor.Doc.Styles
                     |> List.filter (fun style -> style.StyleType = "paragraph")
-                    |> List.map (fun style -> WordUi.choice style.Id (style.Name |> Option.defaultValue style.Id))
+                    |> List.map (fun style -> choice style.Id (style.Name |> Option.defaultValue style.Id))
             (WordUi.paragraphStyles @ catalogStyles)
             |> List.distinctBy (fun choice -> choice.Value)
 
@@ -205,7 +205,7 @@ module Shell =
                 | Some editor ->
                     editor.Doc.Styles
                     |> List.filter (fun style -> style.StyleType = "character")
-                    |> List.map (fun style -> WordUi.choice style.Id (style.Name |> Option.defaultValue style.Id))
+                    |> List.map (fun style -> choice style.Id (style.Name |> Option.defaultValue style.Id))
             (WordUi.choice "" "Character style" :: catalogStyles)
             |> List.distinctBy (fun choice -> choice.Value)
 

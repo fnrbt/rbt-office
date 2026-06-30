@@ -8,6 +8,15 @@ module RedBat.Spreadsheet.Pdf.HeaderFooter
 /// Pure string logic with no PDF-specific dependencies, so it could be
 /// lifted into a cross-document `Office.Pdf` shared layer later.
 
+let private resizeArrayToList (items: System.Collections.Generic.List<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
+let private containsIgnoreCase (needle: string) (value: string) =
+    value.IndexOf(needle, System.StringComparison.OrdinalIgnoreCase) >= 0
+
 /// Per-page substitution context. The emitter fills this in for each page
 /// before resolving the header/footer.
 type PageContext = {
@@ -61,12 +70,72 @@ type Section = {
     Right: StyledSection
 }
 
+type Template = {
+    LeftRaw: string
+    CenterRaw: string
+    RightRaw: string
+}
+
+let private plainRun (text: string) : StyledRun =
+    { Text = text
+      FontName = None
+      FontSize = None
+      Bold = false
+      Italic = false
+      Color = None
+      Underline = false
+      DoubleUnderline = false
+      Strikethrough = false
+      Superscript = false
+      Subscript = false }
+
+let private plainSection (text: string) : StyledSection =
+    { Text = text
+      FontName = None
+      FontSize = None
+      Bold = false
+      Italic = false
+      Runs =
+        if System.String.IsNullOrEmpty text then []
+        else [ plainRun text ] }
+
+let private tryResolvePlainSection (ctx: PageContext) (raw: string) : StyledSection option =
+    if System.String.IsNullOrEmpty raw then
+        Some (plainSection "")
+    else
+        let firstCode = raw.IndexOf '&'
+        if firstCode < 0 then
+            Some (plainSection raw)
+        else
+            let text = System.Text.StringBuilder(raw.Length)
+            let append (value: obj) =
+                text.Append(string value) |> ignore
+            let mutable i = 0
+            let mutable supported = true
+            while supported && i < raw.Length do
+                if raw.[i] = '&' && i + 1 < raw.Length then
+                    match raw.[i + 1] with
+                    | '&' -> text.Append '&' |> ignore; i <- i + 2
+                    | 'P' -> append ctx.PageNumber; i <- i + 2
+                    | 'N' -> append ctx.TotalPages; i <- i + 2
+                    | 'A' -> append ctx.SheetName; i <- i + 2
+                    | 'F' -> append ctx.FileName; i <- i + 2
+                    | 'Z' -> append ctx.FilePath; i <- i + 2
+                    | 'D' -> append (ctx.Now.ToString("M/d/yyyy", System.Globalization.CultureInfo.InvariantCulture)); i <- i + 2
+                    | 'T' -> append (ctx.Now.ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture)); i <- i + 2
+                    | _ -> supported <- false
+                else
+                    text.Append raw.[i] |> ignore
+                    i <- i + 1
+            if supported then Some (plainSection (text.ToString()))
+            else None
+
 /// Walk a section's raw string, substituting field codes (`&P`, `&A`, …)
 /// and turning formatting codes into styled runs. A `&"Font,Style"` carries
 /// the family and an optional style tag (`Regular`, `Bold`, `Italic`,
 /// `BoldItalic`); `&NN` changes size; `&B` / `&I` toggle weight / slant;
 /// `&Kxxxxxx` changes text color.
-let private resolveSection (ctx: PageContext) (raw: string) : StyledSection =
+let private resolveStyledSection (ctx: PageContext) (raw: string) : StyledSection =
     let text = System.Text.StringBuilder(raw.Length)
     let runText = System.Text.StringBuilder(raw.Length)
     let runs = System.Collections.Generic.List<StyledRun>()
@@ -179,9 +248,8 @@ let private resolveSection (ctx: PageContext) (raw: string) : StyledSection =
                 let style = if parts.Length > 1 then parts.[1] else ""
                 if family.Length > 0 then fontName <- Some family
                 if style.Length > 0 then
-                    let styleLow = style.ToLowerInvariant()
-                    bold <- styleLow.Contains "bold"
-                    italic <- styleLow.Contains "italic"
+                    bold <- containsIgnoreCase "bold" style
+                    italic <- containsIgnoreCase "italic" style
                 if i < raw.Length then i <- i + 1
             | c when System.Char.IsDigit c ->
                 // &NN font-size code (1- or 3-digit; up to 409 in spec).
@@ -201,7 +269,7 @@ let private resolveSection (ctx: PageContext) (raw: string) : StyledSection =
             appendText raw.[i]
             i <- i + 1
     flushRun ()
-    let runList = List.ofSeq runs
+    let runList = resizeArrayToList runs
     let firstRun =
         runList
         |> List.tryFind (fun r -> not (System.String.IsNullOrEmpty r.Text))
@@ -211,6 +279,11 @@ let private resolveSection (ctx: PageContext) (raw: string) : StyledSection =
       Bold = firstRun |> Option.map (fun r -> r.Bold) |> Option.defaultValue false
       Italic = firstRun |> Option.map (fun r -> r.Italic) |> Option.defaultValue false
       Runs = runList }
+
+let private resolveSection (ctx: PageContext) (raw: string) : StyledSection =
+    match tryResolvePlainSection ctx raw with
+    | Some section -> section
+    | None -> resolveStyledSection ctx raw
 
 /// Split an Excel header/footer string on the `&L`/`&C`/`&R` section
 /// markers. Text before any marker is treated as the center section,
@@ -242,8 +315,16 @@ let private parseSections (raw: string) : string * string * string =
 
 /// Resolve an Excel header/footer template to its three sections with
 /// every supported field code substituted for the given page.
-let resolve (ctx: PageContext) (raw: string) : Section =
+let parse (raw: string) : Template =
     let l, c, r = parseSections raw
-    { Left = resolveSection ctx l
-      Center = resolveSection ctx c
-      Right = resolveSection ctx r }
+    { LeftRaw = l
+      CenterRaw = c
+      RightRaw = r }
+
+let resolveTemplate (ctx: PageContext) (template: Template) : Section =
+    { Left = resolveSection ctx template.LeftRaw
+      Center = resolveSection ctx template.CenterRaw
+      Right = resolveSection ctx template.RightRaw }
+
+let resolve (ctx: PageContext) (raw: string) : Section =
+    resolveTemplate ctx (parse raw)

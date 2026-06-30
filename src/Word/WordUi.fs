@@ -6,28 +6,7 @@ namespace RedBat.Word
 module Ui =
     open RedBat.Office.Ui
 
-    // Re-export the generic spec types so consumers that look them up via
-    // RedBat.Word.Ui keep working. RedBat.Office.Ui is the authoritative home.
-    type ChoiceSpec = RedBat.Office.Ui.ChoiceSpec
-    type ButtonSpec = RedBat.Office.Ui.ButtonSpec
-    type SelectSpec = RedBat.Office.Ui.SelectSpec
-    type InputSpec = RedBat.Office.Ui.InputSpec
-    type InputKind = RedBat.Office.Ui.InputKind
-    type ToolbarControlSpec = RedBat.Office.Ui.ToolbarControlSpec
-    type ToolbarRowSpec = RedBat.Office.Ui.ToolbarRowSpec
-    type MenuItemSpec = RedBat.Office.Ui.MenuItemSpec
-    type MenuSpec = RedBat.Office.Ui.MenuSpec
-    type ChromeSpec = RedBat.Office.Ui.ChromeSpec
-
-    /// Helper re-exports so external code keeps using `WordUi.choice`.
     let choice = RedBat.Office.Ui.choice
-
-    /// Generic chrome uses DocumentTrackWidth; Word's older paths called this
-    /// the ruler track width.
-    let inline rulerTrackWidth (spec: ChromeSpec) = spec.DocumentTrackWidth
-    /// Older Word code referenced `chrome.RulerTrackWidth`. Alias kept for the
-    /// existing call sites that read it through `WordUi.chrome.RulerTrackWidth`.
-    let inline RulerTrackWidth (spec: ChromeSpec) = spec.DocumentTrackWidth
 
     let chrome : ChromeSpec = {
         WindowWidth = 1100.0

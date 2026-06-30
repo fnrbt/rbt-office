@@ -47,6 +47,12 @@ let private timingStart () = if traceTimingEnabled then nowMs () else 0.0
 let private traceElapsed label start =
     if traceTimingEnabled then trace (sprintf "%s %.1fms" label (nowMs () - start))
 
+let private resizeArrayToList (items: ResizeArray<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
 type FontFace = {
     FaceName: string
     Family: string
@@ -87,19 +93,156 @@ type PaintPlan = {
     ImageUses: ImageUse list
 }
 
+[<Struct>]
+type private TextStyleCacheKey = {
+    FontFamily: string
+    FontSize: float
+    Bold: bool
+    Italic: bool
+    SmallCaps: bool
+    AllCaps: bool
+    CharacterSpacing: float
+}
+
+[<Struct>]
+type private TextCacheKey = {
+    Style: TextStyleCacheKey
+    Text: string
+}
+
+[<Struct>]
+type private PdfRunCacheKey = {
+    FaceName: string
+    Style: TextStyleCacheKey
+    WidthKey: int64
+    Text: string
+}
+
+[<Struct>]
+type private RemappedPairCacheKey = {
+    FontName: string
+    Pairs: (int * int)[]
+}
+
+let private remappedPairCacheKeyComparer =
+    { new System.Collections.Generic.IEqualityComparer<RemappedPairCacheKey> with
+        member _.Equals(left, right) =
+            left.FontName = right.FontName
+            && obj.ReferenceEquals(left.Pairs, right.Pairs)
+
+        member _.GetHashCode(key) =
+            (hash key.FontName * 397)
+            ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Pairs) }
+
 type private TextContext = {
     FontSet: RedBat.Word.ShaperText.FontSet
     FontBytes: Map<string, byte[]>
+    PdfFontCache: System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>
     DefaultFamily: string
     mutable PdfFonts: Map<string, PdfFont.TrueTypeFont>
     GlyphText: System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>
-    ShapeCache: System.Collections.Generic.Dictionary<string, (Text.Engine.TextFont * Text.Engine.ShapedText) option>
-    PdfRunCache: System.Collections.Generic.Dictionary<string, (float * float * (int * int)[] * (int * string)[]) list>
+    ShapeCache: System.Collections.Generic.Dictionary<TextCacheKey, (Text.Engine.TextFont * Text.Engine.ShapedText) option>
+    PdfRunCache: System.Collections.Generic.Dictionary<PdfRunCacheKey, (float * float * (int * int)[] * (int * string)[]) list>
+    GlyphUsagePairCache: System.Collections.Generic.Dictionary<RemappedPairCacheKey, unit>
+    ColorCache: System.Collections.Generic.Dictionary<string, PdfColor.Color>
     ExternalShapeText: (string -> TextStyle -> (Text.Engine.TextFont * Text.Engine.ShapedText) option) option
     mutable TextOpCount: int
     mutable TextShapeMs: float
     mutable TextRunMs: float
     mutable TextAllocMs: float
+}
+
+type private GlyphUsage = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<int>>
+
+[<Struct>]
+type private FontFaceCacheKey = {
+    FaceName: string
+    Family: string
+    Bold: bool
+    Italic: bool
+    Data: byte[]
+}
+
+type private FontContextCacheKey = {
+    DefaultFamily: string
+    Faces: FontFaceCacheKey[]
+}
+
+type private FontContextCacheValue = {
+    FontSet: RedBat.Word.ShaperText.FontSet
+    FontBytes: Map<string, byte[]>
+    PdfFonts: System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>
+}
+
+let private fontContextCacheKeyComparer =
+    { new System.Collections.Generic.IEqualityComparer<FontContextCacheKey> with
+        member _.Equals(left, right) =
+            left.DefaultFamily = right.DefaultFamily
+            && left.Faces.Length = right.Faces.Length
+            && (
+                let mutable same = true
+                let mutable i = 0
+                while same && i < left.Faces.Length do
+                    let a = left.Faces.[i]
+                    let b = right.Faces.[i]
+                    same <-
+                        a.FaceName = b.FaceName
+                        && a.Family = b.Family
+                        && a.Bold = b.Bold
+                        && a.Italic = b.Italic
+                        && Object.ReferenceEquals(a.Data, b.Data)
+                    i <- i + 1
+                same)
+
+        member _.GetHashCode(key) =
+            let mutable h = hash key.DefaultFamily
+            for face in key.Faces do
+                h <- h * 397 ^^^ hash face.FaceName
+                h <- h * 397 ^^^ hash face.Family
+                h <- h * 397 ^^^ hash face.Bold
+                h <- h * 397 ^^^ hash face.Italic
+                h <- h * 397 ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(face.Data)
+            h }
+
+let private fontContextCache = System.Collections.Generic.Dictionary<FontContextCacheKey, FontContextCacheValue>(fontContextCacheKeyComparer)
+let private fontContextCacheLimit = 8
+let private fontContextCacheMaxTotalFontBytes = 32L * 1024L * 1024L
+let mutable private fontContextCacheRetainedFontBytes = 0L
+
+let private fontContextCacheKeyByteCount (key: FontContextCacheKey) =
+    let mutable total = 0L
+    for face in key.Faces do
+        total <- total + int64 face.Data.Length
+    total
+
+let private clearFontContextCache () =
+    fontContextCache.Clear()
+    fontContextCacheRetainedFontBytes <- 0L
+    Text.Engine.clearCaches ()
+
+let private textStyleCacheKey (style: TextStyle) = {
+    FontFamily = defaultArg style.FontFamily ""
+    FontSize = style.FontSize
+    Bold = style.Bold
+    Italic = style.Italic
+    SmallCaps = style.SmallCaps
+    AllCaps = style.AllCaps
+    CharacterSpacing = style.CharacterSpacing
+}
+
+let private textCacheKey text style = {
+    Style = textStyleCacheKey style
+    Text = text
+}
+
+let private pdfWidthCacheKey width =
+    int64 (Math.Round(width * 10000.0))
+
+let private pdfRunCacheKey faceName text width style = {
+    FaceName = faceName
+    Style = textStyleCacheKey style
+    WidthKey = pdfWidthCacheKey width
+    Text = text
 }
 
 let private paintStyleToTextStyle (style: WordPaint.TextPaintStyle) : TextStyle =
@@ -118,28 +261,61 @@ let private paintStyleToTextStyle (style: WordPaint.TextPaintStyle) : TextStyle 
         VertAlign = style.VertAlign }
 
 let private createTextContext (options: RenderOptions) =
-    let shaperFaces =
-        options.Fonts
-        |> List.map (fun face ->
-            ({ Family = face.Family
-               Bold = face.Bold
-               Italic = face.Italic
-               Data = face.Data }: RedBat.Word.ShaperText.FontFace))
+    let key = {
+        DefaultFamily = options.DefaultFontFamily
+        Faces =
+            options.Fonts
+            |> List.map (fun face ->
+                { FaceName = face.FaceName
+                  Family = face.Family
+                  Bold = face.Bold
+                  Italic = face.Italic
+                  Data = face.Data })
+            |> List.toArray
+    }
+    let fontContext =
+        lock fontContextCache (fun () ->
+            let mutable cached = Unchecked.defaultof<FontContextCacheValue>
+            if fontContextCache.TryGetValue(key, &cached) then
+                cached
+            else
+                let keyByteCount = fontContextCacheKeyByteCount key
+                if fontContextCache.Count >= fontContextCacheLimit
+                   || (fontContextCache.Count > 0
+                       && fontContextCacheRetainedFontBytes + keyByteCount > fontContextCacheMaxTotalFontBytes) then
+                    clearFontContextCache ()
+                let shaperFaces =
+                    options.Fonts
+                    |> List.map (fun face ->
+                        ({ Family = face.Family
+                           Bold = face.Bold
+                           Italic = face.Italic
+                           Data = face.Data }: RedBat.Word.ShaperText.FontFace))
+                let value = {
+                    FontSet = RedBat.Word.ShaperText.createFontSet options.DefaultFontFamily shaperFaces
+                    FontBytes = options.Fonts |> List.map (fun face -> face.FaceName, face.Data) |> Map.ofList
+                    PdfFonts = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
+                }
+                fontContextCache.[key] <- value
+                fontContextCacheRetainedFontBytes <- fontContextCacheRetainedFontBytes + keyByteCount
+                value)
     {
-        FontSet = RedBat.Word.ShaperText.createFontSet options.DefaultFontFamily shaperFaces
-        FontBytes = options.Fonts |> List.map (fun face -> face.FaceName, face.Data) |> Map.ofList
+        FontSet = fontContext.FontSet
+        FontBytes = fontContext.FontBytes
+        PdfFontCache = fontContext.PdfFonts
         DefaultFamily = options.DefaultFontFamily
         PdfFonts = Map.empty
         GlyphText = System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>()
-        ShapeCache = System.Collections.Generic.Dictionary<string, (Text.Engine.TextFont * Text.Engine.ShapedText) option>()
-        PdfRunCache = System.Collections.Generic.Dictionary<string, (float * float * (int * int)[] * (int * string)[]) list>()
+        ShapeCache = System.Collections.Generic.Dictionary<TextCacheKey, (Text.Engine.TextFont * Text.Engine.ShapedText) option>()
+        PdfRunCache = System.Collections.Generic.Dictionary<PdfRunCacheKey, (float * float * (int * int)[] * (int * string)[]) list>()
+        GlyphUsagePairCache = System.Collections.Generic.Dictionary<RemappedPairCacheKey, unit>(remappedPairCacheKeyComparer)
+        ColorCache = System.Collections.Generic.Dictionary<string, PdfColor.Color>()
         ExternalShapeText = options.ShapeText
         TextOpCount = 0
         TextShapeMs = 0.0
         TextRunMs = 0.0
         TextAllocMs = 0.0
     }
-
 let private fallbackFaceName (textContext: TextContext) (style: WordPaint.TextPaintStyle) =
     // Mirror WordModelLayout.Font.exactFace's naming scheme, but anchored on
     // the FontSet's DefaultFamily.  Used when the requested face (e.g.
@@ -159,10 +335,21 @@ let private tryGetPdfFont (textContext: TextContext) faceName =
     match Map.tryFind faceName textContext.PdfFonts with
     | Some font -> Some font
     | None ->
-        match Map.tryFind faceName textContext.FontBytes with
+        let resolved =
+            lock textContext.PdfFontCache (fun () ->
+                let mutable cachedFont = Unchecked.defaultof<PdfFont.TrueTypeFont>
+                if textContext.PdfFontCache.TryGetValue(faceName, &cachedFont) then
+                    Some cachedFont
+                else
+                    match Map.tryFind faceName textContext.FontBytes with
+                    | None -> None
+                    | Some bytes ->
+                        let font = PdfFont.parseTrueType bytes
+                        textContext.PdfFontCache.[faceName] <- font
+                        Some font)
+        match resolved with
         | None -> None
-        | Some bytes ->
-            let font = PdfFont.parseTrueType bytes
+        | Some font ->
             textContext.PdfFonts <- textContext.PdfFonts |> Map.add faceName font
             Some font
 
@@ -176,19 +363,8 @@ let private tryGetPdfFontWithFallback (textContext: TextContext) (style: WordPai
             tryGetPdfFont textContext fallback
             |> Option.map (fun font -> fallback, font)
 
-let private textStyleKey (style: TextStyle) =
-    String.concat "|" [
-        defaultArg style.FontFamily ""
-        string style.FontSize
-        if style.Bold then "b" else ""
-        if style.Italic then "i" else ""
-        if style.SmallCaps then "sc" else ""
-        if style.AllCaps then "ac" else ""
-        string style.CharacterSpacing
-    ]
-
 let private shapeTextCached (textContext: TextContext) text style =
-    let key = textStyleKey style + "|" + text
+    let key = textCacheKey text style
     match textContext.ShapeCache.TryGetValue key with
     | true, value -> value
     | false, _ ->
@@ -200,49 +376,8 @@ let private shapeTextCached (textContext: TextContext) text style =
         textContext.ShapeCache.[key] <- value
         value
 
-let createMeasurer (options: RenderOptions) : WordCanvasLayout.TextMeasurer =
-    match options.MeasureText with
-    | Some measureText -> measureText
-    | None ->
-        let fontSet =
-            options.Fonts
-            |> List.map (fun face ->
-                ({ Family = face.Family
-                   Bold = face.Bold
-                   Italic = face.Italic
-                   Data = face.Data }: RedBat.Word.ShaperText.FontFace))
-            |> RedBat.Word.ShaperText.createFontSet options.DefaultFontFamily
-        let measure = RedBat.Word.ShaperText.createMeasurer fontSet
-        let cache = System.Collections.Generic.Dictionary<string, float>()
-        fun text style ->
-            // Measure at the effective rendered size: superscript/subscript draw
-            // at FontSize*0.7 (the render uses printFontSize), so the layout width
-            // must match or the PDF horizontalScale stretches the glyphs.
-            let style =
-                match style.VertAlign with
-                | Some "superscript" | Some "subscript" -> { style with FontSize = style.FontSize * 0.7 }
-                | _ -> style
-            let key =
-                String.concat "|" [
-                    defaultArg style.FontFamily ""
-                    string style.FontSize
-                    if style.Bold then "b" else ""
-                    if style.Italic then "i" else ""
-                    if style.SmallCaps then "sc" else ""
-                    if style.AllCaps then "ac" else ""
-                    string style.CharacterSpacing
-                    text
-                ]
-            match cache.TryGetValue key with
-            | true, value -> value
-            | false, _ ->
-                if cache.Count > textCacheLimit then cache.Clear()
-                let value = measure text style
-                cache.[key] <- value
-                value
-
 let private createContextMeasurer (textContext: TextContext) : WordCanvasLayout.TextMeasurer =
-    let cache = System.Collections.Generic.Dictionary<string, float>()
+    let cache = System.Collections.Generic.Dictionary<TextCacheKey, float>()
     fun text style ->
         // Measure superscript/subscript at the effective rendered size
         // (FontSize*0.7, what printFontSize/embeddedTextOps draw) so the layout
@@ -252,7 +387,7 @@ let private createContextMeasurer (textContext: TextContext) : WordCanvasLayout.
             match style.VertAlign with
             | Some "superscript" | Some "subscript" -> { style with FontSize = style.FontSize * 0.7 }
             | _ -> style
-        let key = textStyleKey style + "|" + text
+        let key = textCacheKey text style
         match cache.TryGetValue key with
         | true, value -> value
         | false, _ ->
@@ -263,6 +398,11 @@ let private createContextMeasurer (textContext: TextContext) : WordCanvasLayout.
                 | None -> 0.0
             cache.[key] <- value
             value
+
+let createMeasurer (options: RenderOptions) : WordCanvasLayout.TextMeasurer =
+    match options.MeasureText with
+    | Some measureText -> measureText
+    | None -> createTextContext options |> createContextMeasurer
 
 let private createContextRangeMeasurer (textContext: TextContext) : WordCanvasLayout.TextRangeMeasurer =
     // Match the browser renderer (Renderer.fs uses rangeMeasurerFromTextMeasurer)
@@ -285,6 +425,7 @@ let private createContextRangeMeasurer (textContext: TextContext) : WordCanvasLa
         let startIndex = max 0 (min text.Length start)
         let endIndex = max startIndex (min text.Length (start + length))
         if endIndex = startIndex then 0.0
+        elif startIndex = 0 && endIndex = text.Length then measureText text style
         else measureText (text.Substring(startIndex, endIndex - startIndex)) style
 
 let private controlWhitespaceAt (text: string) index =
@@ -295,22 +436,27 @@ let private controlWhitespaceAt (text: string) index =
         | _ -> false
 
 let private clusterTextMappings (text: string) (glyphs: Text.Engine.PositionedGlyph[]) =
-    let clusters =
-        glyphs
-        |> Array.map (fun glyph -> max 0 (min text.Length glyph.Cluster))
-        |> Array.distinct
-        |> Array.sort
-    let clusterEnd cluster =
-        clusters
-        |> Array.tryFind (fun next -> next > cluster)
-        |> Option.defaultValue text.Length
-    let seen = System.Collections.Generic.HashSet<int>()
-    [| for glyph in glyphs do
+    let clusterSet = System.Collections.Generic.HashSet<int>()
+    let clusters = System.Collections.Generic.List<int>()
+    for glyph in glyphs do
         let cluster = max 0 (min text.Length glyph.Cluster)
-        if seen.Add cluster then
-            let finish = clusterEnd cluster
-            if finish > cluster && not (controlWhitespaceAt text cluster) then
-                yield glyph.GlyphId, text.Substring(cluster, finish - cluster) |]
+        if not (controlWhitespaceAt text cluster) && clusterSet.Add cluster then
+            clusters.Add cluster
+    clusters.Sort()
+    let clusterEnds = System.Collections.Generic.Dictionary<int, int>(clusters.Count)
+    for i = 0 to clusters.Count - 1 do
+        let finish = if i + 1 < clusters.Count then clusters.[i + 1] else text.Length
+        clusterEnds.[clusters.[i]] <- finish
+    let seen = System.Collections.Generic.HashSet<int>()
+    let mappings = System.Collections.Generic.List<int * string>(clusters.Count)
+    for glyph in glyphs do
+        let cluster = max 0 (min text.Length glyph.Cluster)
+        if not (controlWhitespaceAt text cluster) && seen.Add cluster then
+            match clusterEnds.TryGetValue cluster with
+            | true, finish when finish > cluster ->
+                mappings.Add(glyph.GlyphId, text.Substring(cluster, finish - cluster))
+            | _ -> ()
+    mappings.ToArray()
 
 let private addGlyphTextMappings (textContext: TextContext) faceName (mappings: (int * string)[]) =
     if mappings.Length > 0 then
@@ -325,48 +471,152 @@ let private addGlyphTextMappings (textContext: TextContext) faceName (mappings: 
 let private rendererPdfFaceName (style: WordPaint.TextPaintStyle) =
     paintStyleToTextStyle style |> WordModelLayout.Font.exactFace
 
+let private equalsOrdinalIgnoreCase (left: string) (right: string) =
+    String.Equals(left, right, StringComparison.OrdinalIgnoreCase)
+
+let private containsOrdinalIgnoreCase (value: string) (needle: string) =
+    value.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0
+
+let private hexValue (ch: char) =
+    if ch >= '0' && ch <= '9' then int ch - int '0'
+    elif ch >= 'A' && ch <= 'F' then int ch - int 'A' + 10
+    elif ch >= 'a' && ch <= 'f' then int ch - int 'a' + 10
+    else -1
+
+let private parseHexByteAt (text: string) index =
+    if index + 1 >= text.Length then 0.0
+    else
+        let hi = hexValue text.[index]
+        let lo = hexValue text.[index + 1]
+        if hi < 0 || lo < 0 then 0.0 else float ((hi <<< 4) ||| lo) / 255.0
+
+let private parseHex4At (text: string) index =
+    let mutable value = 0
+    let mutable valid = true
+    let mutable offset = 0
+    while valid && offset < 4 do
+        let digit = hexValue text.[index + offset]
+        if digit < 0 then valid <- false
+        else value <- (value <<< 4) ||| digit
+        offset <- offset + 1
+    if valid then value else Convert.ToInt32(text.Substring(index, 4), 16)
+
+let private hexDigits = "0123456789ABCDEF".ToCharArray()
+
+let private appendHex4 (sb: StringBuilder) value =
+    if value >= 0 && value <= 0xFFFF then
+        sb.Append(hexDigits.[(value >>> 12) &&& 0xF]) |> ignore
+        sb.Append(hexDigits.[(value >>> 8) &&& 0xF]) |> ignore
+        sb.Append(hexDigits.[(value >>> 4) &&& 0xF]) |> ignore
+        sb.Append(hexDigits.[value &&& 0xF]) |> ignore
+    else
+        sb.Append(value.ToString("X")) |> ignore
+
+let private skipWhitespace (text: string) finish index =
+    let mutable i = index
+    while i < finish && Char.IsWhiteSpace text.[i] do
+        i <- i + 1
+    i
+
+let private parseCssNumberAt (text: string) start finish =
+    let mutable i = skipWhitespace text finish start
+    let mutable sign = 1.0
+    if i < finish && text.[i] = '-' then
+        sign <- -1.0
+        i <- i + 1
+    elif i < finish && text.[i] = '+' then
+        i <- i + 1
+    let mutable whole = 0.0
+    let mutable fraction = 0.0
+    let mutable scale = 1.0
+    let mutable sawDigit = false
+    while i < finish && text.[i] >= '0' && text.[i] <= '9' do
+        sawDigit <- true
+        whole <- whole * 10.0 + float (int text.[i] - int '0')
+        i <- i + 1
+    if i < finish && text.[i] = '.' then
+        i <- i + 1
+        while i < finish && text.[i] >= '0' && text.[i] <= '9' do
+            sawDigit <- true
+            scale <- scale * 10.0
+            fraction <- fraction + float (int text.[i] - int '0') / scale
+            i <- i + 1
+    struct (sign * (whole + fraction), i, sawDigit)
+
+let private tryRgbColor (value: string) =
+    let start = value.IndexOf('(')
+    let finish = value.IndexOf(')')
+    if start < 0 || finish <= start then
+        None
+    else
+        let mutable i = start + 1
+        let readChannel requireComma =
+            if requireComma then
+                i <- skipWhitespace value finish i
+                if i < finish && value.[i] = ',' then
+                    i <- i + 1
+                    true
+                else
+                    false
+            else
+                true
+        if not (readChannel false) then
+            None
+        else
+            let struct (r, nextR, okR) = parseCssNumberAt value i finish
+            i <- nextR
+            if not okR || not (readChannel true) then
+                None
+            else
+                let struct (g, nextG, okG) = parseCssNumberAt value i finish
+                i <- nextG
+                if not okG || not (readChannel true) then
+                    None
+                else
+                    let struct (b, nextB, okB) = parseCssNumberAt value i finish
+                    i <- skipWhitespace value finish nextB
+                    if okB && i = finish then
+                        Some (PdfColor.rgb (max 0.0 (min 1.0 (r / 255.0))) (max 0.0 (min 1.0 (g / 255.0))) (max 0.0 (min 1.0 (b / 255.0))))
+                    else
+                        None
+
 let private pdfColor (value: string) =
     let value =
         if String.IsNullOrWhiteSpace(value) then "#000000"
         else
-            match value.Trim().ToLowerInvariant() with
-            | "black" -> "#000000"
-            | "blue" -> "#0000FF"
-            | "cyan" -> "#00FFFF"
-            | "green" -> "#00FF00"
-            | "magenta" -> "#FF00FF"
-            | "red" -> "#FF0000"
-            | "yellow" -> "#FFFF00"
-            | "white" -> "#FFFFFF"
-            | "darkblue" -> "#000080"
-            | "darkcyan" -> "#008080"
-            | "darkgreen" -> "#008000"
-            | "darkmagenta" -> "#800080"
-            | "darkred" -> "#800000"
-            | "darkyellow" -> "#808000"
-            | "darkgray" -> "#808080"
-            | "lightgray" -> "#C0C0C0"
-            | _ -> value.Trim()
-    let parseHexByte (text: string) =
-        match Byte.TryParse(text, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture) with
-        | true, b -> float b / 255.0
-        | false, _ -> 0.0
+            let trimmed = value.Trim()
+            if equalsOrdinalIgnoreCase trimmed "black" then "#000000"
+            elif equalsOrdinalIgnoreCase trimmed "blue" then "#0000FF"
+            elif equalsOrdinalIgnoreCase trimmed "cyan" then "#00FFFF"
+            elif equalsOrdinalIgnoreCase trimmed "green" then "#00FF00"
+            elif equalsOrdinalIgnoreCase trimmed "magenta" then "#FF00FF"
+            elif equalsOrdinalIgnoreCase trimmed "red" then "#FF0000"
+            elif equalsOrdinalIgnoreCase trimmed "yellow" then "#FFFF00"
+            elif equalsOrdinalIgnoreCase trimmed "white" then "#FFFFFF"
+            elif equalsOrdinalIgnoreCase trimmed "darkblue" then "#000080"
+            elif equalsOrdinalIgnoreCase trimmed "darkcyan" then "#008080"
+            elif equalsOrdinalIgnoreCase trimmed "darkgreen" then "#008000"
+            elif equalsOrdinalIgnoreCase trimmed "darkmagenta" then "#800080"
+            elif equalsOrdinalIgnoreCase trimmed "darkred" then "#800000"
+            elif equalsOrdinalIgnoreCase trimmed "darkyellow" then "#808000"
+            elif equalsOrdinalIgnoreCase trimmed "darkgray" then "#808080"
+            elif equalsOrdinalIgnoreCase trimmed "lightgray" then "#C0C0C0"
+            else trimmed
     if value.StartsWith("#") && value.Length >= 7 then
-        PdfColor.rgb (parseHexByte value.[1..2]) (parseHexByte value.[3..4]) (parseHexByte value.[5..6])
-    elif value.StartsWith("rgb") then
-        let start = value.IndexOf('(')
-        let finish = value.IndexOf(')')
-        if start >= 0 && finish > start then
-            let parts = value.Substring(start + 1, finish - start - 1).Split(',') |> Array.map (fun s -> s.Trim())
-            if parts.Length >= 3 then
-                let channel i =
-                    match Double.TryParse(parts.[i], Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
-                    | true, n -> max 0.0 (min 1.0 (n / 255.0))
-                    | false, _ -> 0.0
-                PdfColor.rgb (channel 0) (channel 1) (channel 2)
-            else PdfColor.black
-        else PdfColor.black
+        PdfColor.rgb (parseHexByteAt value 1) (parseHexByteAt value 3) (parseHexByteAt value 5)
+    elif value.StartsWith("rgb", StringComparison.OrdinalIgnoreCase) then
+        tryRgbColor value |> Option.defaultValue PdfColor.black
     else PdfColor.black
+
+let private cachedPdfColor (textContext: TextContext) (value: string) =
+    let key = if isNull value then "" else value
+    let mutable color = Unchecked.defaultof<PdfColor.Color>
+    if textContext.ColorCache.TryGetValue(key, &color) then
+        color
+    else
+        color <- pdfColor value
+        textContext.ColorCache.[key] <- color
+        color
 
 /// Build PDF path-construction ops for a shape path. `yPdf` flips to PDF space.
 /// Quadratics are promoted to cubics (PDF has no quad operator).
@@ -386,7 +636,7 @@ let private pdfShapeOps (yPdf: float -> float) (segs: PathSeg list) =
             let c2y = y + 2.0 / 3.0 * (qy - y)
             ops.Add(PdfDraw.CurveTo(c1x, yPdf c1y, c2x, yPdf c2y, x, yPdf y)); cx <- x; cy <- y
         | PClose -> ops.Add(PdfDraw.ClosePath)
-    List.ofSeq ops
+    resizeArrayToList ops
 
 /// FsPdf has no axial-shading op exposed here, so a gradient is approximated by
 /// the stop nearest the midpoint (a solid). True gradients are a PDF follow-up.
@@ -400,19 +650,46 @@ let private pdfFontName (style: WordPaint.TextPaintStyle) =
     | false, true -> "Helvetica-Oblique"
     | false, false -> "Helvetica"
 
-let private glyphKernPairs (font: PdfFont.TrueTypeFont) (fontSize: float) characterSpacing (glyphs: Text.Engine.PositionedGlyph[]) =
-    glyphs
-    |> Array.mapi (fun index glyph ->
-        let baseWidthFu =
-            if glyph.GlyphId >= 0 && glyph.GlyphId < font.GlyphWidths.Length then font.GlyphWidths.[glyph.GlyphId]
-            else font.GlyphWidths.[0]
-        let baseWidthPt = float baseWidthFu / float font.UnitsPerEm * fontSize
-        let actualAdvancePt = glyph.XAdv + if index < glyphs.Length - 1 then characterSpacing else 0.0
-        let diff = baseWidthPt - actualAdvancePt
-        let kern = int (Math.Round(diff / fontSize * 1000.0))
-        glyph.GlyphId, kern)
+let private glyphKernPairs (text: string) (font: PdfFont.TrueTypeFont) (fontSize: float) characterSpacing (glyphs: Text.Engine.PositionedGlyph[]) =
+    let mutable count = 0
+    let mutable firstX = 0.0
+    let mutable firstY = 0.0
+    for glyph in glyphs do
+        if not (controlWhitespaceAt text glyph.Cluster) then
+            if count = 0 then
+                firstX <- glyph.X
+                firstY <- glyph.Y
+            count <- count + 1
+    if count = 0 then None else
+    let pairs = Array.zeroCreate<int * int> count
+    let mutable writeIndex = 0
+    for glyph in glyphs do
+        if not (controlWhitespaceAt text glyph.Cluster) then
+            let baseWidthFu =
+                if glyph.GlyphId >= 0 && glyph.GlyphId < font.GlyphWidths.Length then font.GlyphWidths.[glyph.GlyphId]
+                else font.GlyphWidths.[0]
+            let baseWidthPt = float baseWidthFu / float font.UnitsPerEm * fontSize
+            let actualAdvancePt = glyph.XAdv + if writeIndex < count - 1 then characterSpacing else 0.0
+            let diff = baseWidthPt - actualAdvancePt
+            let kern = int (Math.Round(diff / fontSize * 1000.0))
+            pairs.[writeIndex] <- glyph.GlyphId, kern
+            writeIndex <- writeIndex + 1
+    Some (firstX, firstY, pairs)
 
-let private embeddedTextOps (textContext: TextContext) pageTop pageHeight text (style: WordPaint.TextPaintStyle) x baseline width =
+let private recordFontUse (usage: GlyphUsage) name =
+    if not (usage.ContainsKey name) then
+        usage.[name] <- System.Collections.Generic.HashSet<int>()
+
+let private recordGlyphPairs (textContext: TextContext) (usage: GlyphUsage) name (pairs: (int * int)[]) =
+    let key = { FontName = name; Pairs = pairs }
+    if not (textContext.GlyphUsagePairCache.ContainsKey key) then
+        textContext.GlyphUsagePairCache.[key] <- ()
+        recordFontUse usage name
+        let set = usage.[name]
+        for gid, _ in pairs do
+            set.Add gid |> ignore
+
+let private addEmbeddedTextOps (ops: ResizeArray<PdfDraw.DrawOp>) (textContext: TextContext) (usage: GlyphUsage) pageTop pageHeight text (style: WordPaint.TextPaintStyle) x baseline width =
     let yPdf y = pageHeight - (y - pageTop)
     let textStyle = paintStyleToTextStyle style
     let requestedFace = rendererPdfFaceName style
@@ -424,7 +701,7 @@ let private embeddedTextOps (textContext: TextContext) pageTop pageHeight text (
     | Some (faceName, pdfFont), Some (_, shapedText) ->
         let spacedAdvance = shapedText.TotalAdvance + TextBuffer.characterSpacingAdvance text textStyle
         let horizontalScale = if width > 0.0 && spacedAdvance > 0.0 then width / spacedAdvance else 1.0
-        let cacheKey = sprintf "%s|%s|%.4f|%s" faceName (textStyleKey textStyle) width text
+        let cacheKey = pdfRunCacheKey faceName text width textStyle
         let runStart = timingStart ()
         let runs =
             match textContext.PdfRunCache.TryGetValue cacheKey with
@@ -434,34 +711,39 @@ let private embeddedTextOps (textContext: TextContext) pageTop pageHeight text (
                 let value =
                     shapedText.Runs
                     |> List.choose (fun run ->
-                        let glyphs = run.Glyphs |> Array.filter (fun glyph -> not (controlWhitespaceAt text glyph.Cluster))
-                        if glyphs.Length = 0 then None
-                        else Some (glyphs.[0].X, glyphs.[0].Y, glyphKernPairs pdfFont style.FontSize style.CharacterSpacing glyphs, clusterTextMappings text glyphs))
+                        match glyphKernPairs text pdfFont style.FontSize style.CharacterSpacing run.Glyphs with
+                        | Some (firstX, firstY, pairs) ->
+                            Some (firstX, firstY, pairs, clusterTextMappings text run.Glyphs)
+                        | None -> None)
                 textContext.PdfRunCache.[cacheKey] <- value
                 value
         if traceTimingEnabled then textContext.TextRunMs <- textContext.TextRunMs + (nowMs () - runStart)
         let allocStart = timingStart ()
-        let textRuns =
-            runs
-            |> List.collect (fun (runDx, runDy, pairs, mappings) ->
-                addGlyphTextMappings textContext faceName mappings
-                [ PdfDraw.BeginText
-                  PdfDraw.SetFillColor (pdfColor style.Color)
-                  PdfDraw.SetFont (faceName, style.FontSize)
-                  PdfDraw.TextMatrix (horizontalScale, 0.0, 0.0, 1.0, x + runDx, yPdf (baseline - runDy))
-                  PdfDraw.ShowTextHexWithKern pairs
-                  PdfDraw.EndText ])
+        for runDx, runDy, pairs, mappings in runs do
+            addGlyphTextMappings textContext faceName mappings
+            recordGlyphPairs textContext usage faceName pairs
+            ops.Add PdfDraw.BeginText
+            ops.Add(PdfDraw.SetFillColor (cachedPdfColor textContext style.Color))
+            ops.Add(PdfDraw.SetFont (faceName, style.FontSize))
+            ops.Add(PdfDraw.TextMatrix (horizontalScale, 0.0, 0.0, 1.0, x + runDx, yPdf (baseline - runDy)))
+            ops.Add(PdfDraw.ShowTextHexWithKern pairs)
+            ops.Add PdfDraw.EndText
         if traceTimingEnabled then
             textContext.TextOpCount <- textContext.TextOpCount + 1
             textContext.TextAllocMs <- textContext.TextAllocMs + (nowMs () - allocStart)
-        if textRuns.IsEmpty then [] else textRuns
     | _ ->
-        [ PdfDraw.BeginText
-          PdfDraw.SetFillColor (pdfColor style.Color)
-          PdfDraw.SetFont (pdfFontName style, style.FontSize)
-          PdfDraw.TextMatrix (1.0, 0.0, 0.0, 1.0, x, yPdf baseline)
-          PdfDraw.ShowText text
-          PdfDraw.EndText ]
+        recordFontUse usage (pdfFontName style)
+        ops.Add PdfDraw.BeginText
+        ops.Add(PdfDraw.SetFillColor (cachedPdfColor textContext style.Color))
+        ops.Add(PdfDraw.SetFont (pdfFontName style, style.FontSize))
+        ops.Add(PdfDraw.TextMatrix (1.0, 0.0, 0.0, 1.0, x, yPdf baseline))
+        ops.Add(PdfDraw.ShowText text)
+        ops.Add PdfDraw.EndText
+
+let private embeddedTextOps (textContext: TextContext) (usage: GlyphUsage) pageTop pageHeight text (style: WordPaint.TextPaintStyle) x baseline width =
+    let ops = ResizeArray<PdfDraw.DrawOp>(6)
+    addEmbeddedTextOps ops textContext usage pageTop pageHeight text style x baseline width
+    resizeArrayToList ops
 
 let private commandBounds = function
     | WordPaint.DrawText (_, _, x, baseline, width) -> Some (x, baseline - 24.0, x + max 1.0 width, baseline + 4.0)
@@ -480,10 +762,17 @@ let private intersectsPage pageTop pageHeight command =
 
 // Index of the page whose [Top, Top+Height) band contains y (clamped).
 let private pageIndexForY (pages: WordCanvasLayout.PageInfo[]) y =
-    let mutable idx = 0
-    for p in 0 .. pages.Length - 1 do
-        if y >= pages.[p].Top - 0.01 then idx <- p
-    idx
+    if pages.Length = 0 then 0 else
+    let target = y + 0.01
+    let mutable lo = 0
+    let mutable hi = pages.Length
+    while lo < hi do
+        let mid = lo + (hi - lo) / 2
+        if pages.[mid].Top <= target then
+            lo <- mid + 1
+        else
+            hi <- mid
+    max 0 (lo - 1)
 
 let private commandPageRange (pages: WordCanvasLayout.PageInfo[]) command =
     match commandBounds command with
@@ -493,8 +782,11 @@ let private commandPageRange (pages: WordCanvasLayout.PageInfo[]) command =
         let lastPage = pageIndexForY pages (max 0.0 y2)
         if lastPage < firstPage then None else Some (firstPage, lastPage)
 
-let private bucketCommandsByPage (pages: WordCanvasLayout.PageInfo[]) commands =
-    let buckets = Array.init pages.Length (fun _ -> ResizeArray<WordPaint.PaintCommand>())
+let private bucketCommandsByPage (pages: WordCanvasLayout.PageInfo[]) (commands: WordPaint.PaintCommand list) =
+    let bucketCapacity =
+        if pages.Length = 0 then 0
+        else max 4 (commands.Length / pages.Length + 1)
+    let buckets = Array.init pages.Length (fun _ -> ResizeArray<WordPaint.PaintCommand>(bucketCapacity))
     for command in commands do
         match commandPageRange pages command with
         | None -> ()
@@ -517,7 +809,7 @@ let private mergePaintCommands commands =
                 when priorStyle = style && nearlyEqual priorBaseline baseline && nearlyEqual (priorX + priorWidth) x ->
                 merged.[lastIndex] <- WordPaint.DrawText (priorText + text, priorStyle, priorX, priorBaseline, priorWidth + width)
             | _ -> merged.Add(command)
-    List.ofSeq merged
+    resizeArrayToList merged
 
 let private dashPattern lineWidth = function
     | 1 -> [lineWidth; lineWidth]
@@ -533,49 +825,50 @@ let private cropValue (value: string option) =
         | false, _ -> 0.0
     | None -> 0.0
 
-let private pdfOpsForCommand (textContext: TextContext) (imageNames: Map<string, string>) pageTop pageHeight =
+let private pdfOpsForCommand (textContext: TextContext) (usage: GlyphUsage) (imageNames: Map<string, string>) pageTop pageHeight =
     let yPdf y = pageHeight - (y - pageTop)
     function
     | WordPaint.DrawText (text, style, x, baseline, width) ->
-        embeddedTextOps textContext pageTop pageHeight text style x baseline width
+        embeddedTextOps textContext usage pageTop pageHeight text style x baseline width
     | WordPaint.DrawUnderline (color, lineStyle, x, y, width) ->
-        let ls = (lineStyle: string).ToLowerInvariant()
-        let heavy = ls.Contains("heavy") || ls = "thick"
+        let heavy = containsOrdinalIgnoreCase lineStyle "heavy" || equalsOrdinalIgnoreCase lineStyle "thick"
         let flat dy = [ PdfDraw.MoveTo (x, yPdf (y + dy)); PdfDraw.LineTo (x + width, yPdf (y + dy)); PdfDraw.Stroke ]
         let dashed pattern = PdfDraw.SetDash (pattern, 0.0) :: flat 0.0 @ [ PdfDraw.SetDash ([], 0.0) ]
         let wavy dy =
-            let mutable ops = [ PdfDraw.MoveTo (x, yPdf (y + dy)) ]
+            let ops = ResizeArray<PdfDraw.DrawOp>()
+            ops.Add(PdfDraw.MoveTo (x, yPdf (y + dy)))
             let mutable cx = x
             let mutable up = true
             while cx < x + width do
                 let nx = min (x + width) (cx + 2.0)
-                ops <- ops @ [ PdfDraw.LineTo (nx, yPdf (y + dy + (if up then -1.3 else 1.3))) ]
+                ops.Add(PdfDraw.LineTo (nx, yPdf (y + dy + (if up then -1.3 else 1.3))))
                 cx <- nx
                 up <- not up
-            ops @ [ PdfDraw.Stroke ]
+            ops.Add(PdfDraw.Stroke)
+            resizeArrayToList ops
         let body =
-            if ls.Contains("wav") then wavy 0.0 @ (if ls.Contains("double") then wavy 2.6 else [])
-            elif ls.Contains("dotdotdash") || ls.Contains("dashdotdot") then dashed [4.0;2.0;1.0;2.0;1.0;2.0]
-            elif ls.Contains("dotdash") || ls.Contains("dashdot") then dashed [4.0;2.0;1.0;2.0]
-            elif ls.Contains("dash") then dashed [4.0;2.0]
-            elif ls.Contains("dot") then dashed [1.0;2.0]
-            elif ls = "double" then flat 0.0 @ flat 2.0
+            if containsOrdinalIgnoreCase lineStyle "wav" then wavy 0.0 @ (if containsOrdinalIgnoreCase lineStyle "double" then wavy 2.6 else [])
+            elif containsOrdinalIgnoreCase lineStyle "dotdotdash" || containsOrdinalIgnoreCase lineStyle "dashdotdot" then dashed [4.0;2.0;1.0;2.0;1.0;2.0]
+            elif containsOrdinalIgnoreCase lineStyle "dotdash" || containsOrdinalIgnoreCase lineStyle "dashdot" then dashed [4.0;2.0;1.0;2.0]
+            elif containsOrdinalIgnoreCase lineStyle "dash" then dashed [4.0;2.0]
+            elif containsOrdinalIgnoreCase lineStyle "dot" then dashed [1.0;2.0]
+            elif equalsOrdinalIgnoreCase lineStyle "double" then flat 0.0 @ flat 2.0
             else flat 0.0
-        [ PdfDraw.SetStrokeColor (pdfColor color)
+        [ PdfDraw.SetStrokeColor (cachedPdfColor textContext color)
           PdfDraw.SetLineWidth (if heavy then 2.0 else 1.0)
           PdfDraw.SetDash ([], 0.0) ] @ body
     | WordPaint.FillRect (color, x, y, width, height) ->
-        [ PdfDraw.SetFillColor (pdfColor color)
+        [ PdfDraw.SetFillColor (cachedPdfColor textContext color)
           PdfDraw.Rect (x, yPdf (y + height), width, height)
           PdfDraw.Fill ]
     | WordPaint.StrokeRect (color, lineWidth, x, y, width, height) ->
-        [ PdfDraw.SetStrokeColor (pdfColor color)
+        [ PdfDraw.SetStrokeColor (cachedPdfColor textContext color)
           PdfDraw.SetLineWidth lineWidth
           PdfDraw.SetDash ([], 0.0)
           PdfDraw.Rect (x, yPdf (y + height), width, height)
           PdfDraw.Stroke ]
     | WordPaint.StrokeLine (color, lineWidth, dashStyle, dashOffset, x1, y1, x2, y2) ->
-        [ PdfDraw.SetStrokeColor (pdfColor color)
+        [ PdfDraw.SetStrokeColor (cachedPdfColor textContext color)
           PdfDraw.SetLineWidth lineWidth
           PdfDraw.SetDash (dashPattern lineWidth dashStyle, dashOffset)
           PdfDraw.MoveTo (x1, yPdf y1)
@@ -589,8 +882,8 @@ let private pdfOpsForCommand (textContext: TextContext) (imageNames: Map<string,
             | WordPaint.FillSolid c -> Some c
             | WordPaint.FillGradient g -> gradientSolid g
         let colorOps =
-            (fillColor |> Option.map (fun c -> [ PdfDraw.SetFillColor (pdfColor c) ]) |> Option.defaultValue [])
-            @ (stroke |> Option.map (fun c -> [ PdfDraw.SetStrokeColor (pdfColor c); PdfDraw.SetLineWidth strokeWidth; PdfDraw.SetDash ([], 0.0) ]) |> Option.defaultValue [])
+            (fillColor |> Option.map (fun c -> [ PdfDraw.SetFillColor (cachedPdfColor textContext c) ]) |> Option.defaultValue [])
+            @ (stroke |> Option.map (fun c -> [ PdfDraw.SetStrokeColor (cachedPdfColor textContext c); PdfDraw.SetLineWidth strokeWidth; PdfDraw.SetDash ([], 0.0) ]) |> Option.defaultValue [])
         let paintOp =
             match fillColor.IsSome, stroke.IsSome with
             | true, true -> [ PdfDraw.FillAndStroke ]
@@ -642,62 +935,70 @@ let private addImages (builder: PdfDoc.DocBuilder) (images: ImageResource list) 
         image.Source, name)
     |> Map.ofList
 
-let private collectPdfGlyphUsage (opsByPage: PdfDraw.DrawOp list list) =
-    let usage = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<int>>()
-    let ensure name =
-        if not (usage.ContainsKey name) then usage.[name] <- System.Collections.Generic.HashSet<int>()
-    for ops in opsByPage do
-        let mutable currentFont = ""
-        for op in ops do
-            match op with
-            | PdfDraw.SetFont (name, _) ->
-                currentFont <- name
-                ensure name
-            | PdfDraw.ShowTextHex hex when currentFont <> "" ->
-                ensure currentFont
-                let set = usage.[currentFont]
-                let mutable i = 0
-                while i + 4 <= hex.Length do
-                    set.Add(Convert.ToInt32(hex.Substring(i, 4), 16)) |> ignore
-                    i <- i + 4
-            | PdfDraw.ShowTextHexWithKern pairs when currentFont <> "" ->
-                ensure currentFont
-                let set = usage.[currentFont]
-                for gid, _ in pairs do set.Add(gid) |> ignore
-            | _ -> ()
-    usage |> Seq.map (fun kv -> kv.Key, Set.ofSeq kv.Value) |> Map.ofSeq
+let private glyphUsageToMap (usage: GlyphUsage) =
+    let mutable result = Map.empty
+    for KeyValue(name, gids) in usage do
+        let mutable gidSet = Set.empty
+        for gid in gids do
+            gidSet <- Set.add gid gidSet
+        result <- Map.add name gidSet result
+    result
 
-let private remapPdfGlyphOps (remaps: Map<string, Map<int, int>>) (ops: PdfDraw.DrawOp list) =
+let private remapAndScalePageOps
+    (remappedPairCache: System.Collections.Generic.Dictionary<RemappedPairCacheKey, (int * int)[]>)
+    (remaps: Map<string, Map<int, int>>)
+    scale
+    (ops: PdfDraw.DrawOp list) =
     let remapHex remap (hex: string) =
         let sb = StringBuilder(hex.Length)
         let mutable i = 0
         while i + 4 <= hex.Length do
-            let oldGid = Convert.ToInt32(hex.Substring(i, 4), 16)
-            let newGid = Map.tryFind oldGid remap |> Option.defaultValue 0
-            sb.AppendFormat("{0:X4}", newGid) |> ignore
+            let oldGid = parseHex4At hex i
+            let newGid =
+                match Map.tryFind oldGid remap with
+                | Some gid -> gid
+                | None -> 0
+            appendHex4 sb newGid
             i <- i + 4
         sb.ToString()
 
+    let remapPairs remap (pairs: (int * int)[]) =
+        let mapped = Array.zeroCreate<int * int> pairs.Length
+        for i = 0 to pairs.Length - 1 do
+            let gid, kern = pairs.[i]
+            let mappedGid =
+                match Map.tryFind gid remap with
+                | Some value -> value
+                | None -> 0
+            mapped.[i] <- mappedGid, kern
+        mapped
+
+    let mappedOps = ResizeArray<PdfDraw.DrawOp>(List.length ops + 2)
+    mappedOps.Add PdfDraw.SaveState
+    mappedOps.Add(PdfDraw.Transform (scale, 0.0, 0.0, scale, 0.0, 0.0))
+    let mutable currentFontName = ""
     let mutable currentRemap = Map.empty<int, int>
-    ops
-    |> List.map (fun op ->
+    let mutable hasRemap = false
+    for op in ops do
         match op with
         | PdfDraw.SetFont (name, _) ->
+            currentFontName <- name
             currentRemap <- Map.tryFind name remaps |> Option.defaultValue Map.empty
-            op
-        | PdfDraw.ShowTextHex hex when not (Map.isEmpty currentRemap) ->
-            PdfDraw.ShowTextHex (remapHex currentRemap hex)
-        | PdfDraw.ShowTextHexWithKern pairs when not (Map.isEmpty currentRemap) ->
-            pairs
-            |> Array.map (fun (gid, kern) -> Map.tryFind gid currentRemap |> Option.defaultValue 0, kern)
-            |> PdfDraw.ShowTextHexWithKern
-        | _ -> op)
-
-let private scalePageOps scale ops =
-    [ yield PdfDraw.SaveState
-      yield PdfDraw.Transform (scale, 0.0, 0.0, scale, 0.0, 0.0)
-      yield! ops
-      yield PdfDraw.RestoreState ]
+            hasRemap <- not (Map.isEmpty currentRemap)
+            mappedOps.Add op
+        | PdfDraw.ShowTextHex hex when hasRemap ->
+            mappedOps.Add(PdfDraw.ShowTextHex (remapHex currentRemap hex))
+        | PdfDraw.ShowTextHexWithKern pairs when hasRemap ->
+            let key = { FontName = currentFontName; Pairs = pairs }
+            let mutable mappedPairs = Unchecked.defaultof<(int * int)[]>
+            if not (remappedPairCache.TryGetValue(key, &mappedPairs)) then
+                mappedPairs <- remapPairs currentRemap pairs
+                remappedPairCache.[key] <- mappedPairs
+            mappedOps.Add(PdfDraw.ShowTextHexWithKern mappedPairs)
+        | _ ->
+            mappedOps.Add op
+    mappedOps.Add PdfDraw.RestoreState
+    resizeArrayToList mappedOps
 
 let collectPaintCommandsWithLayouts defaultFontFamily (measureText: WordCanvasLayout.TextMeasurer) (measureRange: WordCanvasLayout.TextRangeMeasurer) (doc: Document) (cachedLayouts: WordCanvasLayout.BlockLayout list option) =
     let lineHeight = 21.0
@@ -727,11 +1028,14 @@ let collectPaintCommands defaultFontFamily (measureText: WordCanvasLayout.TextMe
     collectPaintCommandsWithLayouts defaultFontFamily measureText measureRange doc None
 
 let private imageSourcesFromCommands commands =
-    commands
-    |> List.choose (function
-        | WordPaint.DrawImage (src, _, _, _, _, _, _, _, _) when not (String.IsNullOrWhiteSpace src) -> Some src
-        | _ -> None)
-    |> List.distinct
+    let sources = ResizeArray<string>()
+    let seen = System.Collections.Generic.HashSet<string>()
+    for command in commands do
+        match command with
+        | WordPaint.DrawImage (src, _, _, _, _, _, _, _, _) when not (String.IsNullOrWhiteSpace src) ->
+            if seen.Add src then sources.Add src
+        | _ -> ()
+    resizeArrayToList sources
 
 let private imageUsesFromCommands commands =
     commands
@@ -740,10 +1044,37 @@ let private imageUsesFromCommands commands =
             Some { Source = src; Width = max 1.0 width; Height = max 1.0 height }
         | _ -> None)
 
+let private usedImageSourcesForPlan planSources commands =
+    let used = System.Collections.Generic.HashSet<string>()
+    let add source =
+        if not (String.IsNullOrWhiteSpace source) then
+            used.Add source |> ignore
+    for source in planSources do
+        add source
+    for command in commands do
+        match command with
+        | WordPaint.DrawImage (src, _, _, _, _, _, _, _, _) -> add src
+        | _ -> ()
+    used
+
+let private usedImagesForPlan (usedSources: System.Collections.Generic.HashSet<string>) (images: ImageResource list) =
+    let seen = System.Collections.Generic.HashSet<string>()
+    let mutable kept = []
+    for image in List.rev images do
+        if not (String.IsNullOrWhiteSpace image.Source)
+           && usedSources.Contains image.Source
+           && seen.Add image.Source then
+            kept <- image :: kept
+    kept
+
 let private collectPaintPlanWithCachedLayouts (cachedLayouts: WordCanvasLayout.BlockLayout list option) (options: RenderOptions) (doc: Document) =
-    let textContext = createTextContext options
-    let measureText = createContextMeasurer textContext
-    let measureRange = createContextRangeMeasurer textContext
+    let measureText, measureRange =
+        match options.MeasureText with
+        | Some measureText ->
+            measureText, WordCanvasLayout.rangeMeasurerFromTextMeasurer measureText
+        | None ->
+            let textContext = createTextContext options
+            createContextMeasurer textContext, createContextRangeMeasurer textContext
     let settings, commands, pages = collectPaintCommandsWithLayouts options.DefaultFontFamily measureText measureRange doc cachedLayouts
     { Settings = settings
       Commands = commands
@@ -773,62 +1104,71 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
     let pageCount = pages.Length
     trace (sprintf "toBytes:paintPlan commands=%d pages=%d" commands.Length pageCount)
     let builder = PdfDoc.create()
-    let imageNames = addImages builder options.Images
+    let usedImageSources = usedImageSourcesForPlan plan.ImageSources commands
+    let images = usedImagesForPlan usedImageSources options.Images
+    let imageNames = addImages builder images
     let commandBuckets = bucketCommandsByPage pages commands
+    let glyphUsage = GlyphUsage()
     trace "toBytes:pageOps:start"
     let pageOps =
         [ for pageIndex in 0 .. pageCount - 1 do
             let info = pages.[pageIndex]
-            let ops = ResizeArray<PdfDraw.DrawOp>()
+            let commandsOnPage = commandBuckets.[pageIndex]
+            let ops = ResizeArray<PdfDraw.DrawOp>(max 16 (3 + commandsOnPage.Count * 8))
             ops.Add(PdfDraw.SetFillColor PdfColor.white)
             ops.Add(PdfDraw.Rect (0.0, 0.0, info.Width, info.Height))
             ops.Add(PdfDraw.Fill)
-            for command in commandBuckets.[pageIndex] do
+            for command in commandsOnPage do
                 if intersectsPage info.Top info.Height command then
-                    ops.AddRange(pdfOpsForCommand textContext imageNames info.Top info.Height command)
-            yield List.ofSeq ops ]
+                    match command with
+                    | WordPaint.DrawText (text, style, x, baseline, width) ->
+                        addEmbeddedTextOps ops textContext glyphUsage info.Top info.Height text style x baseline width
+                    | _ ->
+                        ops.AddRange(pdfOpsForCommand textContext glyphUsage imageNames info.Top info.Height command)
+            yield resizeArrayToList ops ]
     trace (sprintf "toBytes:pageOps:done pages=%d" pageOps.Length)
     if traceTimingEnabled then
         trace (sprintf "toBytes:textOps:summary commands=%d shapeMs=%.1f runMs=%.1f allocMs=%.1f runCache=%d shapeCache=%d" textContext.TextOpCount textContext.TextShapeMs textContext.TextRunMs textContext.TextAllocMs textContext.PdfRunCache.Count textContext.ShapeCache.Count)
 
     trace "toBytes:glyphUsage:start"
-    let usage = collectPdfGlyphUsage pageOps
+    let usage = glyphUsageToMap glyphUsage
     trace (sprintf "toBytes:glyphUsage:done fonts=%d" (Map.count usage))
     let mutable remaps = Map.empty<string, Map<int, int>>
     trace "toBytes:subset:start"
-    let usedEmbeddedFontNames =
-        usage
-        |> Map.toList
-        |> List.choose (fun (fontName, gids) ->
-            match Map.tryFind fontName textContext.FontBytes with
-            | Some bytes when not (Set.isEmpty gids) ->
-                let remap =
-                    try
-                        PdfDoc.loadFontBytesSubset builder fontName bytes gids
-                    with _ ->
-                        PdfDoc.loadFontBytes builder fontName bytes |> ignore
-                        Map.empty
-                remaps <- remaps |> Map.add fontName remap
-                Some fontName
-            | _ -> None)
-    trace (sprintf "toBytes:subset:done fonts=%d" usedEmbeddedFontNames.Length)
+    let usedEmbeddedFontNames = ResizeArray<string>()
+    for KeyValue(fontName, gids) in usage do
+        match Map.tryFind fontName textContext.FontBytes with
+        | Some bytes when not (Set.isEmpty gids) ->
+            let remap =
+                try
+                    PdfDoc.loadFontBytesSubset builder fontName bytes gids
+                with _ ->
+                    PdfDoc.loadFontBytes builder fontName bytes |> ignore
+                    Map.empty
+            remaps <- remaps |> Map.add fontName remap
+            usedEmbeddedFontNames.Add fontName
+        | _ -> ()
+    trace (sprintf "toBytes:subset:done fonts=%d" usedEmbeddedFontNames.Count)
 
-    let pageFonts =
-        [ yield! usedEmbeddedFontNames
-          yield!
-              usage
-              |> Map.keys
-              |> Seq.filter (fun name -> not (Map.containsKey name textContext.FontBytes)) ]
-        |> List.distinct
+    let pageFontBuffer = ResizeArray<string>(Map.count usage)
+    pageFontBuffer.AddRange usedEmbeddedFontNames
+    for KeyValue(fontName, _) in usage do
+        if not (Map.containsKey fontName textContext.FontBytes) then
+            pageFontBuffer.Add fontName
+    let pageFonts = resizeArrayToList pageFontBuffer
 
     trace "toBytes:addPages:start"
-    let usedImages = imageNames |> Map.toList |> List.map snd
+    let usedImageBuffer = ResizeArray<string>(Map.count imageNames)
+    for KeyValue(_, name) in imageNames do
+        usedImageBuffer.Add name
+    let usedImages = resizeArrayToList usedImageBuffer
+    let remappedPairCache = System.Collections.Generic.Dictionary<RemappedPairCacheKey, (int * int)[]>(remappedPairCacheKeyComparer)
     pageOps
     |> List.iteri (fun pageIndex ops ->
         let info = pages.[pageIndex]
         let pageScale = pdfScaleForPageWidth info.Width
         let pageSize = info.Width * pageScale, info.Height * pageScale
-        PdfDoc.addPage builder pageSize pageFonts usedImages (ops |> remapPdfGlyphOps remaps |> scalePageOps pageScale) |> ignore)
+        PdfDoc.addPage builder pageSize pageFonts usedImages (remapAndScalePageOps remappedPairCache remaps pageScale ops) |> ignore)
     trace "toBytes:addPages:done"
 
     trace "toBytes:serialize:start"

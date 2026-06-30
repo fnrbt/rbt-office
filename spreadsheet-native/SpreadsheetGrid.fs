@@ -814,10 +814,61 @@ let private textMeasureCacheOrder = System.Collections.Generic.Queue<TextMeasure
 let private textMeasureCacheMaxEntries = 200000
 let private textMeasureCacheMaxTotalTextChars = 5000000
 let private textMeasureCacheMaxSingleTextChars = 32768
+let private textMeasureFastFontNameMaxChars = 256
 let mutable private textMeasureCacheTotalTextChars = 0
+let mutable private textMeasureLastSet = false
+let mutable private textMeasureLastText = ""
+let mutable private textMeasureLastFontPt = 0.0
+let mutable private textMeasureLastFontName: string option = None
+let mutable private textMeasureLastBold = false
+let mutable private textMeasureLastItalic = false
+let mutable private textMeasureLastWidth = 0.0
 
 let private textMeasureCacheKeyChars key =
     key.Text.Length + key.Family.Length
+
+let private sameMeasureString (left: string) (right: string) =
+    obj.ReferenceEquals(left, right) || left = right
+
+let private sameMeasureStringOption (left: string option) (right: string option) =
+    match left, right with
+    | None, None -> true
+    | Some left, Some right -> sameMeasureString left right
+    | _ -> false
+
+let private measureFontNameRetainable (fontName: string option) =
+    match fontName with
+    | Some value -> value.Length <= textMeasureFastFontNameMaxChars
+    | None -> true
+
+let private textMeasureFastKeyRetainable (text: string) (fontName: string option) =
+    text.Length <= textMeasureCacheMaxSingleTextChars
+    && measureFontNameRetainable fontName
+
+let private tryLastTextMeasure (text: string) fontPt (fontName: string option) bold italic =
+    if textMeasureLastSet
+       && textMeasureLastFontPt = fontPt
+       && textMeasureLastBold = bold
+       && textMeasureLastItalic = italic
+       && sameMeasureString textMeasureLastText text
+       && sameMeasureStringOption textMeasureLastFontName fontName then
+        ValueSome textMeasureLastWidth
+    else
+        ValueNone
+
+let private rememberLastTextMeasure (text: string) fontPt (fontName: string option) bold italic width =
+    if textMeasureFastKeyRetainable text fontName then
+        textMeasureLastSet <- true
+        textMeasureLastText <- text
+        textMeasureLastFontPt <- fontPt
+        textMeasureLastFontName <- fontName
+        textMeasureLastBold <- bold
+        textMeasureLastItalic <- italic
+        textMeasureLastWidth <- width
+    elif textMeasureLastSet
+         && sameMeasureString textMeasureLastText text
+         && sameMeasureStringOption textMeasureLastFontName fontName then
+        textMeasureLastSet <- false
 
 let private trimTextMeasureCache () =
     while (textMeasureCache.Count > textMeasureCacheMaxEntries
@@ -840,13 +891,19 @@ let private rememberTextMeasure key width =
 let private measureText
     (text: string) (fontPt: float)
     (fontName: string option) (bold: bool) (italic: bool) : float =
-    let family = familyKey fontName
-    let key = { Text = text; FontPt = fontPt; Family = family; Bold = bold; Italic = italic }
-    match textMeasureCache.TryGetValue key with
-    | true, width -> width
-    | false, _ ->
-        let width = measureTextUncached text fontPt family bold italic
-        rememberTextMeasure key width
+    match tryLastTextMeasure text fontPt fontName bold italic with
+    | ValueSome width -> width
+    | ValueNone ->
+        let family = familyKey fontName
+        let key = { Text = text; FontPt = fontPt; Family = family; Bold = bold; Italic = italic }
+        let width =
+            match textMeasureCache.TryGetValue key with
+            | true, width -> width
+            | false, _ ->
+                let width = measureTextUncached text fontPt family bold italic
+                rememberTextMeasure key width
+                width
+        rememberLastTextMeasure text fontPt fontName bold italic width
         width
 
 let private viewportOfCore scrollX scrollY width height : Viewport =

@@ -1,5 +1,7 @@
 module RedBat.Word.Docx
 
+open System.Text
+open System.Collections.Generic
 open Fable.Core
 open Fable.Core.JsInterop
 open RedBat.Word.Document
@@ -451,8 +453,8 @@ let private metadataFromEditor (item: obj) =
 let private editorRunsToBuffer (runs: obj array) : TextBuffer =
     // Build full text and create runs
     let mutable currentOffset = 0
-    let mutable textParts = []
-    let mutable bufferRuns = []
+    let textParts = StringBuilder()
+    let bufferRuns = ResizeArray<Run>()
 
     for i in 0 .. runs.Length - 1 do
         let run = jsArrayGet runs i  // Use JS array access
@@ -491,10 +493,10 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
             let cropBottom = optionalString (run?ImageCropBottom)
 
             // Add placeholder character to text
-            textParts <- textParts @ [TextBuffer.objectReplacementChar]
+            textParts.Append(TextBuffer.objectReplacementChar) |> ignore
 
             // Create image run
-            bufferRuns <- bufferRuns @ [Image {
+            bufferRuns.Add(Image {
                 Start = currentOffset
                 Src = src
                 Linked = linked
@@ -525,7 +527,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 CropTop = cropTop
                 CropRight = cropRight
                 CropBottom = cropBottom
-            }]
+            })
 
             currentOffset <- currentOffset + 1
         else
@@ -614,25 +616,23 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                     VertAlign = vertAlign
                 }
 
-                textParts <- textParts @ [text]
+                textParts.Append(text) |> ignore
                 if style.RenderedPageBreakBefore && text.Length > 1 then
-                    bufferRuns <- bufferRuns @ [
-                        Text { Start = currentOffset; Length = 1; Style = style }
-                        Text { Start = currentOffset + 1; Length = text.Length - 1; Style = { style with RenderedPageBreakBefore = false } }
-                    ]
+                    bufferRuns.Add(Text { Start = currentOffset; Length = 1; Style = style })
+                    bufferRuns.Add(Text { Start = currentOffset + 1; Length = text.Length - 1; Style = { style with RenderedPageBreakBefore = false } })
                 else
-                    bufferRuns <- bufferRuns @ [Text {
+                    bufferRuns.Add(Text {
                         Start = currentOffset
                         Length = text.Length
                         Style = style
-                    }]
+                    })
 
                 currentOffset <- currentOffset + text.Length
 
-    let fullText = String.concat "" textParts
+    let fullText = textParts.ToString()
     let rope = Rope.ofString fullText
 
-    { Rope = rope; Runs = bufferRuns }
+    { Rope = rope; Runs = List.ofSeq bufferRuns }
 
 let private paragraphFromEditor (item: obj) =
     let runs = item?Runs |> unbox<obj array>
@@ -765,79 +765,100 @@ let private runStyleFromEditor (run: obj) =
         WidowControl = None
     })
 
-let rec private stylesFromItem (item: obj) =
+let private addStyleIfNew (styles: ResizeArray<NamedStyle>) (seen: Dictionary<string, Dictionary<string, unit>>) style =
+    let mutable ids = Unchecked.defaultof<Dictionary<string, unit>>
+    if not (seen.TryGetValue(style.StyleType, &ids)) then
+        ids <- Dictionary<string, unit>()
+        seen.[style.StyleType] <- ids
+    if not (ids.ContainsKey style.Id) then
+        ids.[style.Id] <- ()
+        styles.Add style
+
+let rec private collectStylesFromItem (styles: ResizeArray<NamedStyle>) (seen: Dictionary<string, Dictionary<string, unit>>) (item: obj) =
     match item?Type |> stringOrDefault "Paragraph" with
     | "TextBox" when not (isNullOrUndefined item?Paragraphs) ->
-        item?Paragraphs |> unbox<obj array> |> Array.toList |> List.collect stylesFromItem
+        let paragraphs = item?Paragraphs |> unbox<obj array>
+        for paragraph in paragraphs do
+            collectStylesFromItem styles seen paragraph
     | "Table" when not (isNullOrUndefined item?Rows) ->
-        item?Rows
-        |> unbox<obj array>
-        |> Array.toList
-        |> List.collect (fun row ->
-            if isNullOrUndefined row?Cells then []
-            else
-                row?Cells
-                |> unbox<obj array>
-                |> Array.toList
-                |> List.collect (fun cell ->
-                    let paragraphStyles =
-                        if isNullOrUndefined cell?Paragraphs then []
-                        else cell?Paragraphs |> unbox<obj array> |> Array.toList |> List.collect stylesFromItem
-                    let nestedStyles =
-                        if isNullOrUndefined cell?NestedTables then []
-                        else cell?NestedTables |> unbox<obj array> |> Array.toList |> List.collect stylesFromItem
-                    paragraphStyles @ nestedStyles))
+        let rows = item?Rows |> unbox<obj array>
+        for row in rows do
+            if not (isNullOrUndefined row?Cells) then
+                let cells = row?Cells |> unbox<obj array>
+                for cell in cells do
+                    if not (isNullOrUndefined cell?Paragraphs) then
+                        let paragraphs = cell?Paragraphs |> unbox<obj array>
+                        for paragraph in paragraphs do
+                            collectStylesFromItem styles seen paragraph
+                    if not (isNullOrUndefined cell?NestedTables) then
+                        let nestedTables = cell?NestedTables |> unbox<obj array>
+                        for nestedTable in nestedTables do
+                            collectStylesFromItem styles seen nestedTable
     | _ ->
-        let runStyles =
-            if isNullOrUndefined item?Runs then []
-            else item?Runs |> unbox<obj array> |> Array.toList |> List.choose runStyleFromEditor
-        (paragraphStyleFromEditor item |> Option.toList) @ runStyles
+        paragraphStyleFromEditor item |> Option.iter (addStyleIfNew styles seen)
+        if not (isNullOrUndefined item?Runs) then
+            let runs = item?Runs |> unbox<obj array>
+            for run in runs do
+                runStyleFromEditor run |> Option.iter (addStyleIfNew styles seen)
 
 let private stylesFromEditor (items: obj array) =
-    items |> Array.toList |> List.collect stylesFromItem |> List.distinctBy (fun style -> style.StyleType, style.Id)
+    let styles = ResizeArray<NamedStyle>()
+    let seen = Dictionary<string, Dictionary<string, unit>>()
+    for item in items do
+        collectStylesFromItem styles seen item
+    List.ofSeq styles
 
-let private stylesFromCatalog (items: obj array) =
-    items
-    |> Array.toList
-    |> List.choose (fun item ->
-        let styleId = optionalString (item?StyleId) |> Option.orElse (optionalString (item?Id)) |> Option.orElse (optionalString (item?Style))
-        styleId
-        |> Option.map (fun id -> {
-            Id = id
-            Name = optionalString (item?Name) |> Option.orElse (optionalString (item?StyleName))
-            StyleType = optionalString (item?StyleType) |> Option.defaultValue "paragraph"
-            IsDefault = optionalBool (item?IsDefaultStyle) |> Option.orElse (optionalBool (item?IsDefault)) |> Option.defaultValue false
-            BasedOn = optionalString (item?BasedOn) |> Option.orElse (optionalString (item?BasedOnStyle))
-            Next = optionalString (item?Next) |> Option.orElse (optionalString (item?NextStyle))
-            Linked = optionalString (item?Linked) |> Option.orElse (optionalString (item?LinkedStyle))
-            IsQuickStyle = optionalBool (item?IsQuickStyle) |> Option.defaultValue false
-            Aliases = optionalString (item?StyleAliases) |> Option.orElse (optionalString (item?Aliases))
-            UiPriority = optionalInt (item?StyleUiPriority)
-            SemiHidden = optionalBool (item?StyleSemiHidden) |> Option.defaultValue false
-            UnhideWhenUsed = optionalBool (item?StyleUnhideWhenUsed) |> Option.defaultValue false
-            Text = styleTextFromEditor item
-            TextBold = styleTextBoldFromEditor item
-            TextItalic = styleTextItalicFromEditor item
-            TextUnderline = styleTextUnderlineFromEditor item
-            TextAllCaps = styleTextAllCapsFromEditor item
-            TextSmallCaps = styleTextSmallCapsFromEditor item
-            TextStrike = styleTextStrikeFromEditor item
-            SpacingBefore = optionalFloat (item?StyleSpacingBefore)
-            SpacingAfter = optionalFloat (item?StyleSpacingAfter)
-            ContextualSpacing = optionalBool (item?StyleContextualSpacing)
-            LineSpacing = optionalFloat (item?StyleLineSpacing)
-            LineSpacingRule = optionalString (item?StyleLineRule) |> Option.orElse (optionalString (item?StyleLineSpacingRule))
-            Alignment = optionalString (item?StyleAlignment) |> Option.map alignmentFromString
-            IndentLeft = optionalFloat (item?StyleIndentLeft)
-            IndentRight = optionalFloat (item?StyleIndentRight)
-            FirstLineIndent = optionalFloat (item?StyleFirstLineIndent)
-            BackgroundColor = optionalString (item?StyleBackgroundColor)
-            OutlineLevel = optionalInt (item?StyleOutlineLevel)
-            KeepNext = optionalBool (item?StyleKeepNext)
-            KeepLines = optionalBool (item?StyleKeepLines)
-            PageBreakBefore = optionalBool (item?StylePageBreakBefore)
-            WidowControl = optionalBool (item?StyleWidowControl)
-        }))
+let private styleFromCatalog item =
+    let styleId = optionalString (item?StyleId) |> Option.orElse (optionalString (item?Id)) |> Option.orElse (optionalString (item?Style))
+    styleId
+    |> Option.map (fun id -> {
+        Id = id
+        Name = optionalString (item?Name) |> Option.orElse (optionalString (item?StyleName))
+        StyleType = optionalString (item?StyleType) |> Option.defaultValue "paragraph"
+        IsDefault = optionalBool (item?IsDefaultStyle) |> Option.orElse (optionalBool (item?IsDefault)) |> Option.defaultValue false
+        BasedOn = optionalString (item?BasedOn) |> Option.orElse (optionalString (item?BasedOnStyle))
+        Next = optionalString (item?Next) |> Option.orElse (optionalString (item?NextStyle))
+        Linked = optionalString (item?Linked) |> Option.orElse (optionalString (item?LinkedStyle))
+        IsQuickStyle = optionalBool (item?IsQuickStyle) |> Option.defaultValue false
+        Aliases = optionalString (item?StyleAliases) |> Option.orElse (optionalString (item?Aliases))
+        UiPriority = optionalInt (item?StyleUiPriority)
+        SemiHidden = optionalBool (item?StyleSemiHidden) |> Option.defaultValue false
+        UnhideWhenUsed = optionalBool (item?StyleUnhideWhenUsed) |> Option.defaultValue false
+        Text = styleTextFromEditor item
+        TextBold = styleTextBoldFromEditor item
+        TextItalic = styleTextItalicFromEditor item
+        TextUnderline = styleTextUnderlineFromEditor item
+        TextAllCaps = styleTextAllCapsFromEditor item
+        TextSmallCaps = styleTextSmallCapsFromEditor item
+        TextStrike = styleTextStrikeFromEditor item
+        SpacingBefore = optionalFloat (item?StyleSpacingBefore)
+        SpacingAfter = optionalFloat (item?StyleSpacingAfter)
+        ContextualSpacing = optionalBool (item?StyleContextualSpacing)
+        LineSpacing = optionalFloat (item?StyleLineSpacing)
+        LineSpacingRule = optionalString (item?StyleLineRule) |> Option.orElse (optionalString (item?StyleLineSpacingRule))
+        Alignment = optionalString (item?StyleAlignment) |> Option.map alignmentFromString
+        IndentLeft = optionalFloat (item?StyleIndentLeft)
+        IndentRight = optionalFloat (item?StyleIndentRight)
+        FirstLineIndent = optionalFloat (item?StyleFirstLineIndent)
+        BackgroundColor = optionalString (item?StyleBackgroundColor)
+        OutlineLevel = optionalInt (item?StyleOutlineLevel)
+        KeepNext = optionalBool (item?StyleKeepNext)
+        KeepLines = optionalBool (item?StyleKeepLines)
+        PageBreakBefore = optionalBool (item?StylePageBreakBefore)
+        WidowControl = optionalBool (item?StyleWidowControl)
+    })
+
+let private collectStylesFromCatalog (styles: ResizeArray<NamedStyle>) (seen: Dictionary<string, Dictionary<string, unit>>) (items: obj array) =
+    for item in items do
+        styleFromCatalog item |> Option.iter (addStyleIfNew styles seen)
+
+let private mergeCatalogAndInferredStyles (catalog: obj array) (inferred: NamedStyle list) =
+    let styles = ResizeArray<NamedStyle>()
+    let seen = Dictionary<string, Dictionary<string, unit>>()
+    collectStylesFromCatalog styles seen catalog
+    for style in inferred do
+        addStyleIfNew styles seen style
+    List.ofSeq styles
 
 let private styleToEditor (style: NamedStyle) =
     createObj [
@@ -1095,10 +1116,7 @@ let importFromEditor (editorParagraphs: obj array) : Document =
 
 let importFromEditorWithStyles (editorParagraphs: obj array) (styleCatalog: obj array) : Document =
     let doc = importFromEditor editorParagraphs
-    let styles =
-        (stylesFromCatalog styleCatalog @ doc.Styles)
-        |> List.distinctBy (fun style -> style.StyleType, style.Id)
-    { doc with Styles = styles }
+    { doc with Styles = mergeCatalogAndInferredStyles styleCatalog doc.Styles }
 
 let importFromEditorWithHeaderFooters (editorParagraphs: obj array) (headerParagraphs: obj array) (footerParagraphs: obj array) : Document =
     let doc = importFromEditor editorParagraphs
@@ -1130,10 +1148,7 @@ let importFromEditorPackage (package: obj) : Document =
     let footerParts = optionalArray (package?FooterParts)
     let doc = importFromEditorWithHeaderFooterParts paragraphs headerParts footerParts
     let doc =
-        let importedStyles =
-            (stylesFromCatalog styles @ doc.Styles)
-            |> List.distinctBy (fun style -> style.StyleType, style.Id)
-        { doc with Styles = importedStyles }
+        { doc with Styles = mergeCatalogAndInferredStyles styles doc.Styles }
     if isNullOrUndefined package?PageSetup then doc else { doc with PageSetup = pageSetupFromEditor package?PageSetup }
 
 /// Export Word document to EditorParagraphs for Office.Formats

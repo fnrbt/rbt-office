@@ -345,11 +345,11 @@ let private shellActions
                 else
                     let model = Editor.activeModel state
                     let hits = searchCells q matchCase model
-                    if hits.IsEmpty then
+                    if hits.Length = 0 then
                         status.Value <- sprintf "No matches for \"%s\"" q
                         ""
                     else
-                        let target = List.head hits
+                        let target = hits.[0]
                         Editor.applyChangeNoHistory state (fun m -> { m with Selection = SingleCell (target.Row, target.Col) }) |> ignore
                         status.Value <- sprintf "Match 1 of %d for \"%s\"" hits.Length q
                         "")
@@ -572,7 +572,7 @@ let private shellActions
             Editor.applyChange state (sortByColumn c false) |> ignore
         ToggleFilter = openFilterDialog
         ClearFilter = fun () ->
-            Editor.applyChange state (fun m -> { m with Filters = Map.empty }) |> ignore
+            Editor.applyChange state (fun m -> { m with Filters = Map.empty; FilterHiddenRows = [||] }) |> ignore
             status.Value <- "Filters cleared"
         ToggleFreezePanes = fun () ->
             Editor.applyChange state (fun m ->

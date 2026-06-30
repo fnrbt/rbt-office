@@ -113,24 +113,32 @@ let getFileBytesNative (archive: ZipArchive) (path: string) : byte[] option =
 let loadArchiveNative (_data: byte[]) : ZipArchive =
     failwith "Native ZIP loading is unavailable in Fable"
 #else
+let private readEntryBytesNative (entry: System.IO.Compression.ZipArchiveEntry) =
+    use entryStream = entry.Open()
+    let initialCapacity =
+        if entry.Length > 0L && entry.Length <= int64 Int32.MaxValue then int entry.Length else 0
+    use ms =
+        if initialCapacity > 0 then new MemoryStream(initialCapacity)
+        else new MemoryStream()
+    entryStream.CopyTo(ms)
+    ms.ToArray()
+
 let loadArchiveNative (data: byte[]) : ZipArchive =
-    use stream = new MemoryStream(data)
-    use zip = new System.IO.Compression.ZipArchive(stream, ZipArchiveMode.Read, leaveOpen = true)
+    let stream = new MemoryStream(data, writable = false)
+    let zip = new System.IO.Compression.ZipArchive(stream, ZipArchiveMode.Read, leaveOpen = false)
+    let readLock = obj()
     let entries =
         zip.Entries
         |> Seq.filter (fun entry -> not (entry.FullName.EndsWith("/")))
         |> Seq.map (fun entry ->
             let name = normalizePath entry.FullName
-            use entryStream = entry.Open()
-            use ms = new MemoryStream()
-            entryStream.CopyTo(ms)
-            let bytes = ms.ToArray()
+            let bytes = lazy (lock readLock (fun () -> readEntryBytesNative entry))
             let file = {
                 Name = name
                 GetText = fun () -> failwith "JSZip text loading is unavailable on native .NET"
                 GetArrayBuffer = fun () -> failwith "JSZip binary loading is unavailable on native .NET"
-                GetTextNative = Some (fun () -> System.Text.Encoding.UTF8.GetString(bytes))
-                GetBytesNative = Some (fun () -> bytes)
+                GetTextNative = Some (fun () -> System.Text.Encoding.UTF8.GetString(bytes.Value))
+                GetBytesNative = Some (fun () -> bytes.Value)
             }
             name, file)
         |> Map.ofSeq

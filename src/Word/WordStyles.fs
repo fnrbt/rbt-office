@@ -3,6 +3,12 @@ module RedBat.Word.WordStyles
 open RedBat.Word.Document
 open RedBat.Word.TextBuffer
 
+let private resizeArrayToList (items: ResizeArray<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
 type ParagraphStyle = {
     Text: TextStyle
     SpacingBefore: float option
@@ -27,6 +33,17 @@ let private styleMap (doc: Document) =
 
 let private documentDefaults (doc: Document) =
     doc.Styles |> List.tryFind (fun style -> style.StyleType = "defaults")
+
+type DocumentStyleContext = {
+    Styles: Map<(string * string), NamedStyle>
+    ResolvedParagraphStyles: Map<string, NamedStyle>
+    ResolvedCharacterStyles: Map<string, NamedStyle>
+    NormalStyle: ParagraphStyle
+    DefaultParagraphStyle: ParagraphStyle
+    ParagraphStyles: Map<string, ParagraphStyle>
+    Defaults: NamedStyle option
+    DefaultParagraphStyleId: string option
+}
 
 let private mergeTextStyle (baseStyle: TextStyle) (overrideStyle: TextStyle) =
     {
@@ -129,11 +146,22 @@ let private defaultParagraphStyleId (styles: Map<(string * string), NamedStyle>)
     |> Seq.tryPick (fun ((styleType, styleId), named) ->
         if styleType = "paragraph" && named.IsDefault then Some styleId else None)
 
-let private applyNamedParagraphStyle (styles: Map<(string * string), NamedStyle>) (metadata: BlockMetadata) (paragraphStyle: ParagraphStyle) =
+let private resolvedStyleMap (styles: Map<(string * string), NamedStyle>) styleType =
+    styles
+    |> Map.toSeq
+    |> Seq.choose (fun ((candidateType, styleId), _) ->
+        if candidateType = styleType then
+            resolveNamedStyle styles styleType styleId
+            |> Option.map (fun resolved -> styleId, resolved)
+        else
+            None)
+    |> Map.ofSeq
+
+let private applyNamedParagraphStyleWithDefault (styles: Map<(string * string), NamedStyle>) defaultStyleId (metadata: BlockMetadata) (paragraphStyle: ParagraphStyle) =
     let effectiveStyleId =
         match metadata.Style with
         | Some _ as explicit -> explicit
-        | None -> defaultParagraphStyleId styles
+        | None -> defaultStyleId
     match effectiveStyleId |> Option.bind (resolveNamedStyle styles "paragraph") with
     | None -> paragraphStyle
     | Some named ->
@@ -154,6 +182,35 @@ let private applyNamedParagraphStyle (styles: Map<(string * string), NamedStyle>
             KeepNext = named.KeepNext |> Option.orElse paragraphStyle.KeepNext
             KeepLines = named.KeepLines |> Option.orElse paragraphStyle.KeepLines
             WidowControl = named.WidowControl |> Option.orElse paragraphStyle.WidowControl }
+
+let private applyResolvedParagraphStyleWithDefault (resolvedStyles: Map<string, NamedStyle>) defaultStyleId (metadata: BlockMetadata) (paragraphStyle: ParagraphStyle) =
+    let effectiveStyleId =
+        match metadata.Style with
+        | Some _ as explicit -> explicit
+        | None -> defaultStyleId
+    match effectiveStyleId |> Option.bind (fun styleId -> Map.tryFind styleId resolvedStyles) with
+    | None -> paragraphStyle
+    | Some named ->
+        { paragraphStyle with
+            Text = mergeNamedTextStyle paragraphStyle.Text named
+            SpacingBefore = named.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore
+            SpacingAfter = named.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter
+            ContextualSpacing = named.ContextualSpacing |> Option.orElse paragraphStyle.ContextualSpacing
+            LineSpacing = named.LineSpacing |> Option.orElse paragraphStyle.LineSpacing
+            LineSpacingRule = named.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule
+            Alignment = named.Alignment |> Option.orElse paragraphStyle.Alignment
+            IndentLeft = named.IndentLeft |> Option.orElse paragraphStyle.IndentLeft
+            IndentRight = named.IndentRight |> Option.orElse paragraphStyle.IndentRight
+            FirstLineIndent = named.FirstLineIndent |> Option.orElse paragraphStyle.FirstLineIndent
+            BackgroundColor = named.BackgroundColor |> Option.orElse paragraphStyle.BackgroundColor
+            OutlineLevel = named.OutlineLevel |> Option.orElse paragraphStyle.OutlineLevel
+            PageBreakBefore = named.PageBreakBefore |> Option.orElse paragraphStyle.PageBreakBefore
+            KeepNext = named.KeepNext |> Option.orElse paragraphStyle.KeepNext
+            KeepLines = named.KeepLines |> Option.orElse paragraphStyle.KeepLines
+            WidowControl = named.WidowControl |> Option.orElse paragraphStyle.WidowControl }
+
+let private applyNamedParagraphStyle (styles: Map<(string * string), NamedStyle>) metadata paragraphStyle =
+    applyNamedParagraphStyleWithDefault styles (defaultParagraphStyleId styles) metadata paragraphStyle
 
 let normal = {
     Text = { TextBuffer.defaultStyle with FontFamily = Some "Calibri" }
@@ -196,6 +253,212 @@ let private applyDocumentDefaults doc (paragraphStyle: ParagraphStyle) : Paragra
             KeepLines = defaults.KeepLines |> Option.orElse paragraphStyle.KeepLines
             WidowControl = defaults.WidowControl |> Option.orElse paragraphStyle.WidowControl }
 
+let private applyDocumentDefaultsFrom defaults (paragraphStyle: ParagraphStyle) : ParagraphStyle =
+    match defaults with
+    | None -> paragraphStyle
+    | Some defaults ->
+        { paragraphStyle with
+            Text = mergeNamedTextStyle paragraphStyle.Text defaults
+            SpacingBefore = defaults.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore
+            SpacingAfter = defaults.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter
+            ContextualSpacing = defaults.ContextualSpacing |> Option.orElse paragraphStyle.ContextualSpacing
+            LineSpacing = defaults.LineSpacing |> Option.orElse paragraphStyle.LineSpacing
+            LineSpacingRule = defaults.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule
+            Alignment = defaults.Alignment |> Option.orElse paragraphStyle.Alignment
+            IndentLeft = defaults.IndentLeft |> Option.orElse paragraphStyle.IndentLeft
+            IndentRight = defaults.IndentRight |> Option.orElse paragraphStyle.IndentRight
+            FirstLineIndent = defaults.FirstLineIndent |> Option.orElse paragraphStyle.FirstLineIndent
+            BackgroundColor = defaults.BackgroundColor |> Option.orElse paragraphStyle.BackgroundColor
+            OutlineLevel = defaults.OutlineLevel |> Option.orElse paragraphStyle.OutlineLevel
+            PageBreakBefore = defaults.PageBreakBefore |> Option.orElse paragraphStyle.PageBreakBefore
+            KeepNext = defaults.KeepNext |> Option.orElse paragraphStyle.KeepNext
+            KeepLines = defaults.KeepLines |> Option.orElse paragraphStyle.KeepLines
+            WidowControl = defaults.WidowControl |> Option.orElse paragraphStyle.WidowControl }
+
+type private StyleContextCacheEntry = {
+    CachedStyles: NamedStyle list
+    StyleCount: int
+    StyleCharCount: int
+    Context: DocumentStyleContext
+}
+
+type private StyleContextCache = {
+    Entries: StyleContextCacheEntry list
+}
+
+let mutable private styleContextCache = { Entries = [] }
+let private styleContextCacheMaxEntries = 64
+let private styleContextCacheMaxTotalStyles = 200000
+let private styleContextCacheMaxTotalStyleChars = 5000000
+
+let private styleContextAddCapped limit value total =
+    if total > limit then total
+    else
+        let value = max 0 value
+        if value > limit - total then limit + 1 else total + value
+
+let private styleContextCacheEntryMatches styles (entry: StyleContextCacheEntry) =
+    obj.ReferenceEquals(entry.CachedStyles, styles)
+
+let private styleContextCacheEntryRetainable (entry: StyleContextCacheEntry) =
+    entry.StyleCount <= styleContextCacheMaxTotalStyles
+    && entry.StyleCharCount <= styleContextCacheMaxTotalStyleChars
+
+let private textStyleStringCharCountFor limit (style: RedBat.Word.TextBuffer.TextStyle option) =
+    match style with
+    | None -> 0
+    | Some style ->
+        let mutable total = 0
+        let add (value: string option) =
+            match value with
+            | Some value -> total <- styleContextAddCapped limit value.Length total
+            | None -> ()
+        add style.Style
+        add style.UnderlineStyle
+        add style.UnderlineColor
+        add style.EmphasisMark
+        add style.FontFamily
+        add style.Color
+        add style.Highlight
+        add style.Hyperlink
+        add style.CommentId
+        add style.CommentText
+        add style.CommentAuthor
+        add style.CommentDate
+        add style.NoteId
+        add style.NoteType
+        add style.NoteText
+        add style.BookmarkStartId
+        add style.BookmarkName
+        add style.BookmarkEndId
+        add style.FieldCode
+        add style.FieldResult
+        add style.EquationXml
+        add style.RevisionId
+        add style.RevisionType
+        add style.RevisionAuthor
+        add style.RevisionDate
+        add style.VertAlign
+        total
+
+let private textStyleStringCharCount style =
+    textStyleStringCharCountFor styleContextCacheMaxTotalStyleChars style
+
+let private namedStyleStringCharCountFor limit (style: NamedStyle) =
+    let mutable total = 0
+    total <- styleContextAddCapped limit style.Id.Length total
+    total <- styleContextAddCapped limit style.StyleType.Length total
+    let add (value: string option) =
+        match value with
+        | Some value -> total <- styleContextAddCapped limit value.Length total
+        | None -> ()
+    add style.Name
+    add style.BasedOn
+    add style.Next
+    add style.Linked
+    add style.Aliases
+    add style.LineSpacingRule
+    add style.BackgroundColor
+    styleContextAddCapped limit (textStyleStringCharCountFor limit style.Text) total
+
+let private namedStyleStringCharCount style =
+    namedStyleStringCharCountFor styleContextCacheMaxTotalStyleChars style
+
+let private styleListStringCharCount (styles: NamedStyle list) =
+    let mutable total = 0
+    let mutable seen = 0
+    let mutable remaining = styles
+    while total <= styleContextCacheMaxTotalStyleChars
+          && seen <= styleContextCacheMaxTotalStyles
+          && not remaining.IsEmpty do
+        total <- styleContextAddCapped styleContextCacheMaxTotalStyleChars (namedStyleStringCharCount remaining.Head) total
+        seen <- seen + 1
+        remaining <- remaining.Tail
+    total
+
+let private styleListCount (styles: NamedStyle list) =
+    let mutable count = 0
+    let mutable remaining = styles
+    while count <= styleContextCacheMaxTotalStyles && not remaining.IsEmpty do
+        count <- count + 1
+        remaining <- remaining.Tail
+    count
+
+let private rememberStyleContext styles context =
+    let entry = {
+        CachedStyles = styles
+        StyleCount = styleListCount styles
+        StyleCharCount = styleListStringCharCount styles
+        Context = context
+    }
+    if not (styleContextCacheEntryRetainable entry) then
+        styleContextCache <-
+            { Entries =
+                styleContextCache.Entries
+                |> List.filter (styleContextCacheEntryMatches styles >> not) }
+    else
+        let trim entries =
+            let rec loop keptCount keptStyles keptStyleChars acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let candidateStyles = max 1 candidate.StyleCount
+                    let candidateStyleChars = max 1 candidate.StyleCharCount
+                    if styleContextCacheEntryRetainable candidate
+                       && keptCount < styleContextCacheMaxEntries
+                       && keptStyles + candidateStyles <= styleContextCacheMaxTotalStyles
+                       && keptStyleChars + candidateStyleChars <= styleContextCacheMaxTotalStyleChars then
+                        loop
+                            (keptCount + 1)
+                            (keptStyles + candidateStyles)
+                            (keptStyleChars + candidateStyleChars)
+                            (candidate :: acc)
+                            tail
+                    else
+                        loop keptCount keptStyles keptStyleChars acc tail
+            loop 0 0 0 [] entries
+        styleContextCache <-
+            { Entries =
+                entry
+                :: (styleContextCache.Entries
+                    |> List.filter (styleContextCacheEntryMatches styles >> not))
+                |> trim }
+    context
+
+let private buildStyleContext (doc: Document) =
+    let styles = styleMap doc
+    let resolvedParagraphStyles = resolvedStyleMap styles "paragraph"
+    let defaultParagraphStyleId = defaultParagraphStyleId styles
+    let defaults = documentDefaults doc
+    let normalStyle = normal |> applyDocumentDefaultsFrom defaults
+    let styleMetadata styleId =
+        { defaultMetadata with Style = Some styleId }
+    let paragraphStyles =
+        resolvedParagraphStyles
+        |> Map.toSeq
+        |> Seq.map (fun (styleId, _) ->
+            styleId,
+            applyResolvedParagraphStyleWithDefault resolvedParagraphStyles defaultParagraphStyleId (styleMetadata styleId) normalStyle)
+        |> Map.ofSeq
+    {
+        Styles = styles
+        ResolvedParagraphStyles = resolvedParagraphStyles
+        ResolvedCharacterStyles = resolvedStyleMap styles "character"
+        NormalStyle = normalStyle
+        DefaultParagraphStyle = applyResolvedParagraphStyleWithDefault resolvedParagraphStyles defaultParagraphStyleId defaultMetadata normalStyle
+        ParagraphStyles = paragraphStyles
+        Defaults = defaults
+        DefaultParagraphStyleId = defaultParagraphStyleId
+    }
+
+let styleContext (doc: Document) =
+    match styleContextCache.Entries |> List.tryFind (styleContextCacheEntryMatches doc.Styles) with
+    | Some cached ->
+        cached.Context
+    | None ->
+        let context = buildStyleContext doc
+        rememberStyleContext doc.Styles context
+
 let private headingText size = {
     TextBuffer.defaultStyle with
         Bold = true
@@ -216,22 +479,38 @@ let forBlock = function
     | Table _
     | TextBox _ -> normal
 
-let forBlockInDocument (doc: Document) block =
-    let styles = styleMap doc
-    let baseStyle =
-        match block with
-        | Heading (_, para) when para.Metadata.Style |> Option.bind (resolveNamedStyle styles "paragraph") |> Option.isSome ->
-            normal |> applyDocumentDefaults doc
-        | _ ->
-            forBlock block |> applyDocumentDefaults doc
+let forBlockInContext (context: DocumentStyleContext) block =
     match block with
-    | Paragraph para
-    | Heading (_, para) -> applyNamedParagraphStyle styles para.Metadata baseStyle
+    | Paragraph para ->
+        match para.Metadata.Style with
+        | Some styleId -> context.ParagraphStyles |> Map.tryFind styleId |> Option.defaultValue context.NormalStyle
+        | None -> context.DefaultParagraphStyle
+    | Heading (level, para) ->
+        match para.Metadata.Style with
+        | Some styleId ->
+            match context.ParagraphStyles |> Map.tryFind styleId with
+            | Some style -> style
+            | None ->
+                heading level
+                |> applyDocumentDefaultsFrom context.Defaults
+                |> applyResolvedParagraphStyleWithDefault context.ResolvedParagraphStyles context.DefaultParagraphStyleId para.Metadata
+        | None ->
+            forBlock block
+            |> applyDocumentDefaultsFrom context.Defaults
+            |> applyResolvedParagraphStyleWithDefault context.ResolvedParagraphStyles context.DefaultParagraphStyleId para.Metadata
     | Table _
-    | TextBox _ -> baseStyle
+    | TextBox _ -> context.NormalStyle
+
+let forBlockInDocument (doc: Document) block =
+    forBlockInContext (styleContext doc) block
 
 let forTableCellParagraphInDocument (doc: Document) (para: ParagraphBlock) =
     let style = forBlockInDocument doc (Paragraph para)
+    { style with
+        SpacingBefore = Some 0.0 }
+
+let forTableCellParagraphInContext (context: DocumentStyleContext) (para: ParagraphBlock) =
+    let style = forBlockInContext context (Paragraph para)
     { style with
         SpacingBefore = Some 0.0 }
 
@@ -259,29 +538,360 @@ let effectiveTextStyle (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
             Highlight = runStyle.Highlight |> Option.orElse paragraphStyle.Text.Highlight
     }
 
-let effectiveTextStyleInDocument (doc: Document) (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
-    let styles = styleMap doc
+let private effectiveTextStyleWithStyles (styles: Map<(string * string), NamedStyle>) (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
     let styledRun =
         match runStyle.Style |> Option.bind (resolveNamedStyle styles "character") |> Option.bind (fun style -> style.Text) with
         | Some namedText -> mergeTextStyle namedText runStyle
         | None -> runStyle
     effectiveTextStyle paragraphStyle styledRun
 
-let effectiveBuffer paragraphStyle (buffer: TextBuffer) =
-    { buffer with
-        Runs =
-            buffer.Runs
-            |> List.map (function
-                | Text run -> Text { run with Style = effectiveTextStyle paragraphStyle run.Style }
-                | Image image -> Image image) }
+let private effectiveTextStyleWithResolved (resolvedStyles: Map<string, NamedStyle>) (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
+    let styledRun =
+        match runStyle.Style |> Option.bind (fun styleId -> Map.tryFind styleId resolvedStyles) |> Option.bind (fun style -> style.Text) with
+        | Some namedText -> mergeTextStyle namedText runStyle
+        | None -> runStyle
+    effectiveTextStyle paragraphStyle styledRun
 
-let effectiveBufferInDocument doc paragraphStyle (buffer: TextBuffer) =
-    { buffer with
-        Runs =
-            buffer.Runs
-            |> List.map (function
-                | Text run -> Text { run with Style = effectiveTextStyleInDocument doc paragraphStyle run.Style }
-                | Image image -> Image image) }
+let effectiveTextStyleInDocument (doc: Document) (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
+    let context = styleContext doc
+    effectiveTextStyleWithResolved context.ResolvedCharacterStyles paragraphStyle runStyle
+
+let effectiveTextStyleInContext (context: DocumentStyleContext) (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
+    effectiveTextStyleWithResolved context.ResolvedCharacterStyles paragraphStyle runStyle
+
+type private EffectiveBufferCacheEntry = {
+    SourceRope: RedBat.Word.Rope.Rope
+    SourceRuns: Run list
+    ParagraphStyle: ParagraphStyle
+    ResolvedCharacterStyles: Map<string, NamedStyle> option
+    Result: TextBuffer
+    RetainedRunCount: int
+    RetainedCharCount: int
+}
+
+let mutable private effectiveBufferCache: EffectiveBufferCacheEntry list = []
+let private effectiveBufferCacheMaxEntries = 64
+let private effectiveBufferCacheMaxRetainedRuns = 200000
+let private effectiveBufferCacheMaxRetainedChars = 5000000
+
+let private effectiveBufferAddCapped limit value total =
+    if total > limit then total
+    else
+        let value = max 0 value
+        if value > limit - total then limit + 1 else total + value
+
+let private resolvedCharacterStylesMatch (left: Map<string, NamedStyle> option) (right: Map<string, NamedStyle> option) =
+    match left, right with
+    | None, None -> true
+    | Some a, Some b -> obj.ReferenceEquals(a, b)
+    | _ -> false
+
+let private effectiveBufferCacheEntryMatches
+    (rope: RedBat.Word.Rope.Rope)
+    (runs: Run list)
+    (paragraphStyle: ParagraphStyle)
+    (resolvedStyles: Map<string, NamedStyle> option)
+    (entry: EffectiveBufferCacheEntry) =
+    obj.ReferenceEquals(entry.SourceRope, rope)
+    && obj.ReferenceEquals(entry.SourceRuns, runs)
+    && (obj.ReferenceEquals(entry.ParagraphStyle, paragraphStyle) || entry.ParagraphStyle = paragraphStyle)
+    && resolvedCharacterStylesMatch entry.ResolvedCharacterStyles resolvedStyles
+
+let private effectiveBufferRunCount (runs: Run list) =
+    let mutable total = 0
+    let mutable remaining = runs
+    while total <= effectiveBufferCacheMaxRetainedRuns && not remaining.IsEmpty do
+        total <- effectiveBufferAddCapped effectiveBufferCacheMaxRetainedRuns 1 total
+        remaining <- remaining.Tail
+    total
+
+let private effectiveBufferRetainedRunCount (runs: Run list) (result: TextBuffer) =
+    let sourceRunCount = effectiveBufferRunCount runs
+    if obj.ReferenceEquals(runs, result.Runs) then sourceRunCount
+    elif sourceRunCount > effectiveBufferCacheMaxRetainedRuns then sourceRunCount
+    else effectiveBufferAddCapped effectiveBufferCacheMaxRetainedRuns (effectiveBufferRunCount result.Runs) sourceRunCount
+
+let private imageRunStringCharCountFor limit (image: ImageRun) =
+    let mutable total = 0
+    total <- effectiveBufferAddCapped limit image.Src.Length total
+    let add (value: string option) =
+        match value with
+        | Some value -> total <- effectiveBufferAddCapped limit value.Length total
+        | None -> ()
+    add image.Alt
+    add image.Name
+    add image.Title
+    add image.Wrap
+    add image.PositionHRelativeFrom
+    add image.PositionVRelativeFrom
+    add image.RelativeHeight
+    add image.CropLeft
+    add image.CropTop
+    add image.CropRight
+    add image.CropBottom
+    total
+
+let private effectiveBufferRunStringCharCount maxRetainedChars (runs: Run list) =
+    let limit = maxRetainedChars + 1
+    let mutable total = 0
+    let mutable seen = 0
+    let mutable remaining = runs
+    while total <= maxRetainedChars
+          && seen <= effectiveBufferCacheMaxRetainedRuns
+          && not remaining.IsEmpty do
+        total <-
+            effectiveBufferAddCapped
+                maxRetainedChars
+                (match remaining.Head with
+                 | Text textRun -> textStyleStringCharCountFor maxRetainedChars (Some textRun.Style)
+                 | Image image -> imageRunStringCharCountFor maxRetainedChars image)
+                total
+        seen <- seen + 1
+        remaining <- remaining.Tail
+    min total limit
+
+let private paragraphStyleStringCharCountFor limit (style: ParagraphStyle) =
+    let mutable total = textStyleStringCharCountFor limit (Some style.Text)
+    let add (value: string option) =
+        match value with
+        | Some value -> total <- effectiveBufferAddCapped limit value.Length total
+        | None -> ()
+    add style.LineSpacingRule
+    add style.BackgroundColor
+    total
+
+let private resolvedCharacterStylesStringCharCount maxRetainedChars (resolvedStyles: Map<string, NamedStyle> option) =
+    match resolvedStyles with
+    | None -> 0
+    | Some styles when styles.Count = 0 -> 0
+    | Some styles when styles.Count > effectiveBufferCacheMaxRetainedRuns -> maxRetainedChars + 1
+    | Some styles ->
+        let limit = maxRetainedChars + 1
+        let mutable total = 0
+        let mutable seen = 0
+        use entries = (styles :> seq<_>).GetEnumerator()
+        while total <= maxRetainedChars
+              && seen <= effectiveBufferCacheMaxRetainedRuns
+              && entries.MoveNext() do
+            let entry = entries.Current
+            total <- effectiveBufferAddCapped maxRetainedChars entry.Key.Length total
+            total <- effectiveBufferAddCapped maxRetainedChars (namedStyleStringCharCountFor maxRetainedChars entry.Value) total
+            seen <- seen + 1
+        if seen > effectiveBufferCacheMaxRetainedRuns then limit else min total limit
+
+let private effectiveBufferRetainedCharCount
+    (paragraphStyle: ParagraphStyle)
+    (resolvedStyles: Map<string, NamedStyle> option)
+    runs
+    (result: TextBuffer) =
+    let limit = effectiveBufferCacheMaxRetainedChars
+    let mutable total = length result
+    if total <= limit then
+        total <- effectiveBufferAddCapped limit (effectiveBufferRunStringCharCount limit runs) total
+    if total <= limit && not (obj.ReferenceEquals(runs, result.Runs)) then
+        total <- effectiveBufferAddCapped limit (effectiveBufferRunStringCharCount limit result.Runs) total
+    if total <= limit then
+        total <- effectiveBufferAddCapped limit (paragraphStyleStringCharCountFor limit paragraphStyle) total
+    if total <= limit then
+        total <- effectiveBufferAddCapped limit (resolvedCharacterStylesStringCharCount limit resolvedStyles) total
+    total
+
+let private effectiveBufferRetainedCharCountFor retainedRunCount paragraphStyle resolvedStyles runs result =
+    if retainedRunCount > effectiveBufferCacheMaxRetainedRuns
+       || length result > effectiveBufferCacheMaxRetainedChars then
+        effectiveBufferCacheMaxRetainedChars + 1
+    else
+        effectiveBufferRetainedCharCount paragraphStyle resolvedStyles runs result
+
+let private trimEffectiveBufferCache entries =
+    let rec loop remaining kept count retainedRuns retainedChars =
+        match remaining with
+        | [] -> List.rev kept
+        | entry :: rest ->
+            let entryRuns = max 1 entry.RetainedRunCount
+            let entryChars = max 1 entry.RetainedCharCount
+            let nextRetainedRuns = retainedRuns + entryRuns
+            let nextRetainedChars = retainedChars + entryChars
+            if count < effectiveBufferCacheMaxEntries
+               && nextRetainedRuns <= effectiveBufferCacheMaxRetainedRuns
+               && nextRetainedChars <= effectiveBufferCacheMaxRetainedChars then
+                loop rest (entry :: kept) (count + 1) nextRetainedRuns nextRetainedChars
+            else
+                loop rest kept count retainedRuns retainedChars
+    loop entries [] 0 0 0
+
+let private rememberEffectiveBuffer
+    (rope: RedBat.Word.Rope.Rope)
+    (runs: Run list)
+    (paragraphStyle: ParagraphStyle)
+    (resolvedStyles: Map<string, NamedStyle> option)
+    (result: TextBuffer) =
+    let retainedRunCount = effectiveBufferRetainedRunCount runs result
+    let entry = {
+        SourceRope = rope
+        SourceRuns = runs
+        ParagraphStyle = paragraphStyle
+        ResolvedCharacterStyles = resolvedStyles
+        Result = result
+        RetainedRunCount = retainedRunCount
+        RetainedCharCount = effectiveBufferRetainedCharCountFor retainedRunCount paragraphStyle resolvedStyles runs result
+    }
+    effectiveBufferCache <-
+        entry
+        :: (effectiveBufferCache |> List.filter (effectiveBufferCacheEntryMatches rope runs paragraphStyle resolvedStyles >> not))
+        |> trimEffectiveBufferCache
+    result
+
+let private effectiveBufferWith transformStyle (buffer: TextBuffer) =
+    match buffer.Runs with
+    | [] -> buffer
+    | [ Text textRun ] ->
+        let style = transformStyle textRun.Style
+        if style = textRun.Style then
+            buffer
+        else
+            { buffer with Runs = [ Text { textRun with Style = style } ] }
+    | [ Image _ ] -> buffer
+    | _ ->
+        let mutable runs = Unchecked.defaultof<ResizeArray<Run>>
+        let mutable changed = false
+        let copyOriginalPrefix count =
+            runs <- ResizeArray<Run>()
+            let mutable index = 0
+            let mutable remaining = buffer.Runs
+            while index < count do
+                match remaining with
+                | original :: tail ->
+                    runs.Add original
+                    remaining <- tail
+                    index <- index + 1
+                | [] -> index <- count
+            changed <- true
+        let ensureChanged prefixCount =
+            if not changed then
+                copyOriginalPrefix prefixCount
+        let mutable cache0Set = false
+        let mutable cache0Input = TextBuffer.defaultStyle
+        let mutable cache0Output = TextBuffer.defaultStyle
+        let mutable cache1Set = false
+        let mutable cache1Input = TextBuffer.defaultStyle
+        let mutable cache1Output = TextBuffer.defaultStyle
+        let mutable cache2Set = false
+        let mutable cache2Input = TextBuffer.defaultStyle
+        let mutable cache2Output = TextBuffer.defaultStyle
+        let mutable cache3Set = false
+        let mutable cache3Input = TextBuffer.defaultStyle
+        let mutable cache3Output = TextBuffer.defaultStyle
+        let mutable cacheCount = 0
+        let transformedStyle style =
+            if cache0Set && (obj.ReferenceEquals(cache0Input, style) || cache0Input = style) then
+                cache0Output
+            elif cache1Set && (obj.ReferenceEquals(cache1Input, style) || cache1Input = style) then
+                cache1Output
+            elif cache2Set && (obj.ReferenceEquals(cache2Input, style) || cache2Input = style) then
+                cache2Output
+            elif cache3Set && (obj.ReferenceEquals(cache3Input, style) || cache3Input = style) then
+                cache3Output
+            else
+                let transformed = transformStyle style
+                match cacheCount with
+                | 0 ->
+                    cache0Set <- true
+                    cache0Input <- style
+                    cache0Output <- transformed
+                    cacheCount <- 1
+                | 1 ->
+                    cache1Set <- true
+                    cache1Input <- style
+                    cache1Output <- transformed
+                    cacheCount <- 2
+                | 2 ->
+                    cache2Set <- true
+                    cache2Input <- style
+                    cache2Output <- transformed
+                    cacheCount <- 3
+                | 3 ->
+                    cache3Set <- true
+                    cache3Input <- style
+                    cache3Output <- transformed
+                    cacheCount <- 4
+                | _ ->
+                    cache0Input <- style
+                    cache0Output <- transformed
+                transformed
+        let mutable hasPendingText = false
+        let mutable pendingIndex = 0
+        let mutable pendingStart = 0
+        let mutable pendingLength = 0
+        let mutable pendingStyle = TextBuffer.defaultStyle
+        let flushPendingText () =
+            if changed && hasPendingText then
+                runs.Add(Text { Start = pendingStart; Length = pendingLength; Style = pendingStyle })
+            hasPendingText <- false
+        let startPendingText index (run: TextRun) style =
+            pendingIndex <- index
+            pendingStart <- run.Start
+            pendingLength <- run.Length
+            pendingStyle <- style
+            hasPendingText <- true
+        let addText index (run: TextRun) style =
+            if hasPendingText && pendingStart + pendingLength = run.Start && (obj.ReferenceEquals(pendingStyle, style) || pendingStyle = style) then
+                ensureChanged pendingIndex
+                pendingLength <- pendingLength + run.Length
+                changed <- true
+            else
+                if changed then
+                    flushPendingText ()
+                    startPendingText index run style
+                elif style <> run.Style then
+                    ensureChanged index
+                    hasPendingText <- false
+                    startPendingText index run style
+                else
+                    startPendingText index run style
+        let mutable index = 0
+        for run in buffer.Runs do
+            match run with
+            | Text textRun ->
+                let style = transformedStyle textRun.Style
+                addText index textRun style
+            | Image image ->
+                if changed then
+                    flushPendingText ()
+                    runs.Add(Image image)
+                else
+                    hasPendingText <- false
+            index <- index + 1
+        if changed then
+            flushPendingText ()
+            { buffer with Runs = resizeArrayToList runs }
+        else
+            buffer
+
+let private effectiveBufferCached
+    (resolvedStyles: Map<string, NamedStyle> option)
+    (paragraphStyle: ParagraphStyle)
+    (buffer: TextBuffer) =
+    match effectiveBufferCache |> List.tryFind (effectiveBufferCacheEntryMatches buffer.Rope buffer.Runs paragraphStyle resolvedStyles) with
+    | Some cached ->
+        cached.Result
+    | None ->
+        let transformStyle =
+            match resolvedStyles with
+            | Some styles -> effectiveTextStyleWithResolved styles paragraphStyle
+            | None -> effectiveTextStyle paragraphStyle
+        let result = effectiveBufferWith transformStyle buffer
+        rememberEffectiveBuffer buffer.Rope buffer.Runs paragraphStyle resolvedStyles result
+
+let effectiveBuffer (paragraphStyle: ParagraphStyle) (buffer: TextBuffer) =
+    effectiveBufferCached None paragraphStyle buffer
+
+let effectiveBufferInDocument (doc: Document) (paragraphStyle: ParagraphStyle) (buffer: TextBuffer) =
+    let context = styleContext doc
+    effectiveBufferCached (Some context.ResolvedCharacterStyles) paragraphStyle buffer
+
+let effectiveBufferInContext (context: DocumentStyleContext) (paragraphStyle: ParagraphStyle) (buffer: TextBuffer) =
+    effectiveBufferCached (Some context.ResolvedCharacterStyles) paragraphStyle buffer
 
 // DocumentProcessors.twipsToPoints stores SpacingBefore/SpacingAfter as
 // points (twips / 20). Layout runs in CSS-pixels at 96 DPI (margins came

@@ -54,7 +54,7 @@ let setValue (el: Element) (value: string): unit = jsNative
 let getValue (el: Element): string = jsNative
 
 [<Emit("$0.checked = $1")>]
-let setChecked (el: Element) (checked: bool): unit = jsNative
+let setChecked (el: Element) (isChecked: bool): unit = jsNative
 
 [<Emit("$0.checked")>]
 let getChecked (el: Element): bool = jsNative

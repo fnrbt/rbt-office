@@ -70,6 +70,17 @@ check "max ignores text"            (ev "=MAX(A1:A5)")    (n 15.0)
 check "count numbers only"          (ev "=COUNT(A1:A5)")  (n 2.0)   // 5,15 (bool/text excluded)
 check "counta non-empty"            (ev "=COUNTA(A1:A5)") (n 5.0)   // 5,txt,true,15,"" — Excel counts "" as non-empty
 check "countblank empty+emptystr"   (ev "=COUNTBLANK(A1:A5)") (n 1.0) // "" counts as blank too (Excel quirk)
+let sparseBlankModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.Number 1.0)
+              { Row = 9999; Col = 0 }, cell (CellValue.String "")
+              { Row = 14999; Col = 0 }, cell CellValue.Empty
+              { Row = 19999; Col = 0 }, cell (CellValue.String "x") ]
+            |> Map.ofList }
+let evSparseBlank f = evaluateFormula f sparseBlankModel None
+check "countblank sparse range"     (evSparseBlank "=COUNTBLANK(A1:A20000)") (n 19998.0)
+check "countblank sparse + scalar"  (evSparseBlank "=COUNTBLANK(A1:A20000,\"\")") (n 19999.0)
 check "sum propagates error"        (ev "=SUM(B1:B2)")    (e "DIV/0!")
 check "count propagates error"      (ev "=COUNT(B1:B2)")  (e "DIV/0!")
 check "sum empty range = 0"         (ev "=SUM(Z1:Z9)")    (n 0.0)
@@ -124,6 +135,185 @@ check "50k VLOOKUP"   r_vlookup  (n 80000.0)
 check "50k XLOOKUP"   r_xlookup  (n 80000.0)
 check "50k XMATCH"    r_xmatch   (n 40000.0)
 printfn "  (8 criteria/lookup calls over 50k rows in %d ms)" sw2.ElapsedMilliseconds
+
+let sparseCriteriaModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.String "match")
+              { Row = 0; Col = 1 }, cell (CellValue.Number 10.0)
+              { Row = 9999; Col = 0 }, cell (CellValue.Number 0.0)
+              { Row = 9999; Col = 1 }, cell (CellValue.Number 20.0)
+              { Row = 14999; Col = 0 }, cell (CellValue.String "other")
+              { Row = 14999; Col = 1 }, cell (CellValue.Number 30.0)
+              { Row = 19999; Col = 0 }, cell (CellValue.String "match") ]
+            |> Map.ofList }
+let evSparseCriteria f = evaluateFormula f sparseCriteriaModel None
+check "countif sparse text"  (evSparseCriteria "=COUNTIF(A1:A20000,\"match\")") (n 2.0)
+check "countif sparse zero"  (evSparseCriteria "=COUNTIF(A1:A20000,0)") (n 19997.0)
+check "countif sparse blank" (evSparseCriteria "=COUNTIF(A1:A20000,\"\")") (n 19996.0)
+check "sumif sparse text"    (evSparseCriteria "=SUMIF(A1:A20000,\"match\",B1:B20000)") (n 10.0)
+check "sumif sparse zero"    (evSparseCriteria "=SUMIF(A1:A20000,0,B1:B20000)") (n 20.0)
+check "sumif sparse blank"   (evSparseCriteria "=SUMIF(A1:A20000,\"\",B1:B20000)") (n 0.0)
+check "averageif sparse text" (evSparseCriteria "=AVERAGEIF(A1:A20000,\"match\",B1:B20000)") (n 5.0)
+check "countifs sparse driver" (evSparseCriteria "=COUNTIFS(A1:A20000,\"match\",B1:B20000,\">0\")") (n 1.0)
+check "sumifs sparse driver" (evSparseCriteria "=SUMIFS(B1:B20000,A1:A20000,\"match\",B1:B20000,\">0\")") (n 10.0)
+check "maxifs sparse driver" (evSparseCriteria "=MAXIFS(B1:B20000,A1:A20000,\"match\",B1:B20000,\">0\")") (n 10.0)
+check "minifs sparse driver" (evSparseCriteria "=MINIFS(B1:B20000,A1:A20000,\"match\",B1:B20000,\">0\")") (n 10.0)
+check "averageifs sparse driver" (evSparseCriteria "=AVERAGEIFS(B1:B20000,A1:A20000,\"match\",B1:B20000,\">0\")") (n 10.0)
+
+let denseSumSparseCriteriaModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ for r in 0 .. 19999 do
+                yield { Row = r; Col = 1 }, cell (CellValue.Number 1.0)
+              yield { Row = 0; Col = 0 }, cell (CellValue.String "skip")
+              yield { Row = 9999; Col = 0 }, cell (CellValue.String "skip")
+              yield { Row = 19999; Col = 0 }, cell (CellValue.String "skip") ]
+            |> Map.ofList }
+check "countif sparse blank dense unrelated" (evaluateFormula "=COUNTIF(A1:A20000,\"\")" denseSumSparseCriteriaModel None) (n 19997.0)
+check "sumif sparse blank dense sum" (evaluateFormula "=SUMIF(A1:A20000,\"\",B1:B20000)" denseSumSparseCriteriaModel None) (n 19997.0)
+check "averageif sparse blank dense avg" (evaluateFormula "=AVERAGEIF(A1:A20000,\"\",B1:B20000)" denseSumSparseCriteriaModel None) (n 1.0)
+check "countif sparse text dense unrelated" (evaluateFormula "=COUNTIF(A1:A20000,\"skip\")" denseSumSparseCriteriaModel None) (n 3.0)
+check "sumif sparse text dense sum" (evaluateFormula "=SUMIF(A1:A20000,\"skip\",B1:B20000)" denseSumSparseCriteriaModel None) (n 3.0)
+check "averageif sparse text dense avg" (evaluateFormula "=AVERAGEIF(A1:A20000,\"skip\",B1:B20000)" denseSumSparseCriteriaModel None) (n 1.0)
+
+let sparseAvgSparseCriteriaModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 1 }, cell (CellValue.Number 10.0)
+              { Row = 9999; Col = 1 }, cell (CellValue.Number 20.0)
+              { Row = 19999; Col = 1 }, cell (CellValue.Number 30.0)
+              { Row = 0; Col = 0 }, cell (CellValue.String "skip")
+              { Row = 19999; Col = 0 }, cell (CellValue.String "skip") ]
+            |> Map.ofList }
+check "averageif sparse blank sparse avg" (evaluateFormula "=AVERAGEIF(A1:A20000,\"\",B1:B20000)" sparseAvgSparseCriteriaModel None) (n 20.0)
+
+let denseValueSparseIfsCriteriaModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ for r in 0 .. 19999 do
+                yield { Row = r; Col = 2 }, cell (CellValue.Number 1.0)
+              yield { Row = 0; Col = 0 }, cell (CellValue.String "skip")
+              yield { Row = 9999; Col = 0 }, cell (CellValue.String "skip")
+              yield { Row = 19999; Col = 0 }, cell (CellValue.String "skip")
+              yield { Row = 10; Col = 1 }, cell (CellValue.String "skip")
+              yield { Row = 10000; Col = 1 }, cell (CellValue.String "skip")
+              yield { Row = 19998; Col = 1 }, cell (CellValue.String "skip") ]
+            |> Map.ofList }
+check "sumifs sparse blank dense values" (evaluateFormula "=SUMIFS(C1:C20000,A1:A20000,\"\",B1:B20000,\"\")" denseValueSparseIfsCriteriaModel None) (n 19994.0)
+check "countifs sparse blank dense values" (evaluateFormula "=COUNTIFS(A1:A20000,\"\",B1:B20000,\"\")" denseValueSparseIfsCriteriaModel None) (n 19994.0)
+check "averageifs sparse blank dense values" (evaluateFormula "=AVERAGEIFS(C1:C20000,A1:A20000,\"\",B1:B20000,\"\")" denseValueSparseIfsCriteriaModel None) (n 1.0)
+check "countifs sparse text dense values" (evaluateFormula "=COUNTIFS(A1:A20000,\"skip\",C1:C20000,\">0\")" denseValueSparseIfsCriteriaModel None) (n 3.0)
+check "sumifs sparse text dense values" (evaluateFormula "=SUMIFS(C1:C20000,A1:A20000,\"skip\",C1:C20000,\">0\")" denseValueSparseIfsCriteriaModel None) (n 3.0)
+check "averageifs sparse text dense values" (evaluateFormula "=AVERAGEIFS(C1:C20000,A1:A20000,\"skip\",C1:C20000,\">0\")" denseValueSparseIfsCriteriaModel None) (n 1.0)
+check "maxifs sparse text dense values" (evaluateFormula "=MAXIFS(C1:C20000,A1:A20000,\"skip\",C1:C20000,\">0\")" denseValueSparseIfsCriteriaModel None) (n 1.0)
+check "minifs sparse text dense values" (evaluateFormula "=MINIFS(C1:C20000,A1:A20000,\"skip\",C1:C20000,\">0\")" denseValueSparseIfsCriteriaModel None) (n 1.0)
+
+let sparseValueSparseIfsCriteriaModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 2 }, cell (CellValue.Number 10.0)
+              { Row = 4999; Col = 2 }, cell (CellValue.Number 20.0)
+              { Row = 9999; Col = 2 }, cell (CellValue.Number 30.0)
+              { Row = 14999; Col = 2 }, cell (CellValue.Number 40.0)
+              { Row = 19999; Col = 2 }, cell (CellValue.Number 50.0)
+              { Row = 0; Col = 0 }, cell (CellValue.String "skip")
+              { Row = 19999; Col = 0 }, cell (CellValue.String "skip")
+              { Row = 4999; Col = 1 }, cell (CellValue.String "skip") ]
+            |> Map.ofList }
+check "sumifs sparse blank sparse values" (evaluateFormula "=SUMIFS(C1:C20000,A1:A20000,\"\",B1:B20000,\"\")" sparseValueSparseIfsCriteriaModel None) (n 70.0)
+check "averageifs sparse blank sparse values" (evaluateFormula "=AVERAGEIFS(C1:C20000,A1:A20000,\"\",B1:B20000,\"\")" sparseValueSparseIfsCriteriaModel None) (n 35.0)
+check "maxifs sparse blank sparse values" (evaluateFormula "=MAXIFS(C1:C20000,A1:A20000,\"\",B1:B20000,\"\")" sparseValueSparseIfsCriteriaModel None) (n 40.0)
+check "minifs sparse blank sparse values" (evaluateFormula "=MINIFS(C1:C20000,A1:A20000,\"\",B1:B20000,\"\")" sparseValueSparseIfsCriteriaModel None) (n 30.0)
+
+let sparseProductModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.Number 2.0)
+              { Row = 9999; Col = 0 }, cell (CellValue.Number 3.0)
+              { Row = 19999; Col = 0 }, cell (CellValue.Number 4.0)
+              { Row = 0; Col = 1 }, cell (CellValue.Number 5.0)
+              { Row = 9999; Col = 1 }, cell (CellValue.Number 6.0)
+              { Row = 19999; Col = 1 }, cell (CellValue.Number 7.0)
+              { Row = 0; Col = 2 }, cell (CellValue.Number 11.0)
+              { Row = 9999; Col = 2 }, cell (CellValue.Number 13.0)
+              { Row = 19999; Col = 2 }, cell (CellValue.Number 17.0) ]
+            |> Map.ofList }
+let evSparseProduct f = evaluateFormula f sparseProductModel None
+check "sumproduct sparse" (evSparseProduct "=SUMPRODUCT(A1:A20000,B1:B20000)") (n 56.0)
+check "sumproduct sparse three ranges" (evSparseProduct "=SUMPRODUCT(A1:A20000,B1:B20000,C1:C20000)") (n 820.0)
+
+let sparseLookupModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.String "first")
+              { Row = 9999; Col = 0 }, cell (CellValue.String "needle")
+              { Row = 19999; Col = 0 }, cell (CellValue.String "last")
+              { Row = 0; Col = 1 }, cell (CellValue.Number 1.0)
+              { Row = 9999; Col = 1 }, cell (CellValue.Number 42.0)
+              { Row = 19999; Col = 1 }, cell (CellValue.Number 99.0) ]
+            |> Map.ofList }
+let evSparseLookup f = evaluateFormula f sparseLookupModel None
+check "match sparse exact" (evSparseLookup "=MATCH(\"needle\",A1:A20000,0)") (n 10000.0)
+check "xmatch sparse exact" (evSparseLookup "=XMATCH(\"needle\",A1:A20000,0)") (n 10000.0)
+check "xlookup sparse exact" (evSparseLookup "=XLOOKUP(\"needle\",A1:A20000,B1:B20000)") (n 42.0)
+check "vlookup sparse exact" (evSparseLookup "=VLOOKUP(\"needle\",A1:B20000,2,FALSE)") (n 42.0)
+let crowdedSparseLookupModel =
+    { sparseLookupModel with
+        Cells =
+            [ yield! sparseLookupModel.Cells |> Map.toList
+              for r in 0 .. 19999 do
+                  yield { Row = r; Col = 2 }, cell (CellValue.Number (float r))
+                  yield { Row = r; Col = 3 }, cell (CellValue.Number (float (r * 2))) ]
+            |> Map.ofList }
+let evCrowdedSparseLookup f = evaluateFormula f crowdedSparseLookupModel None
+check "match crowded sparse first" (evCrowdedSparseLookup "=MATCH(\"first\",A1:A20000,0)") (n 1.0)
+check "match crowded sparse exact" (evCrowdedSparseLookup "=MATCH(\"needle\",A1:A20000,0)") (n 10000.0)
+check "vlookup crowded sparse exact" (evCrowdedSparseLookup "=VLOOKUP(\"needle\",A1:B20000,2,FALSE)") (n 42.0)
+let sparseHLookupModel =
+    { createEmpty 4 2000 with
+        Cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.String "first")
+              { Row = 0; Col = 999 }, cell (CellValue.String "needle")
+              { Row = 0; Col = 1999 }, cell (CellValue.String "last")
+              { Row = 1; Col = 0 }, cell (CellValue.Number 1.0)
+              { Row = 1; Col = 999 }, cell (CellValue.Number 42.0)
+              { Row = 1; Col = 1999 }, cell (CellValue.Number 99.0) ]
+            |> Map.ofList }
+let evSparseHLookup f = evaluateFormula f sparseHLookupModel None
+check "hlookup sparse exact" (evSparseHLookup "=HLOOKUP(\"needle\",A1:BXX2,2,FALSE)") (n 42.0)
+let sparseApproxLookupModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.Number 10.0)
+              { Row = 9999; Col = 0 }, cell (CellValue.Number 42.0)
+              { Row = 19999; Col = 0 }, cell (CellValue.Number 90.0)
+              { Row = 0; Col = 1 }, cell (CellValue.Number 100.0)
+              { Row = 9999; Col = 1 }, cell (CellValue.Number 420.0)
+              { Row = 19999; Col = 1 }, cell (CellValue.Number 900.0) ]
+            |> Map.ofList }
+let evSparseApproxLookup f = evaluateFormula f sparseApproxLookupModel None
+check "xmatch sparse next smaller" (evSparseApproxLookup "=XMATCH(50,A1:A20000,-1)") (n 10000.0)
+check "xlookup sparse next smaller" (evSparseApproxLookup "=XLOOKUP(50,A1:A20000,B1:B20000,\"x\",-1)") (n 420.0)
+check "xlookup sparse next larger" (evSparseApproxLookup "=XLOOKUP(50,A1:A20000,B1:B20000,\"x\",1)") (n 900.0)
+
+let sparseFilterModel =
+    { createEmpty 20010 4 with
+        Cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.Number 1.0)
+              { Row = 0; Col = 1 }, cell (CellValue.Number 10.0)
+              { Row = 9999; Col = 0 }, cell (CellValue.Number 2.0)
+              { Row = 9999; Col = 1 }, cell (CellValue.Number 20.0)
+              { Row = 19999; Col = 0 }, cell (CellValue.Number 3.0)
+              { Row = 19999; Col = 1 }, cell (CellValue.Number 30.0)
+              { Row = 9999; Col = 2 }, cell (CellValue.Boolean true) ]
+            |> Map.ofList }
+let arrSparseFilter f =
+    match parseFormula f with
+    | Ok expr -> evalArray expr { Model = sparseFilterModel; Workbook = None; Sheet = None; CriteriaCache = None; CurrentCell = None }
+    | Result.Error e -> [| [| CellValue.Error e |] |]
+check "filter sparse include rows" (arrSparseFilter "=FILTER(A1:B20000,C1:C20000)") [| [| n 2.0; n 20.0 |] |]
+check "filter sparse include empty" (arrSparseFilter "=FILTER(A1:B20000,D1:D20000,\"none\")") [| [| CellValue.String "none" |] |]
 
 printfn ""
 printfn "Stage 7 streaming tests: %d passed, %d failed" pass fail

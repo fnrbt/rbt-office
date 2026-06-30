@@ -17,6 +17,7 @@ type Rope =
 and NodeInfo = {
     Length: int       // Total character count
     Lines: int        // Number of newlines
+    TrailingColumn: int // Characters after the last newline in this subtree
     Height: int       // Tree height for balancing
 }
 
@@ -29,7 +30,12 @@ let rec length = function
 /// Get line count (number of newlines)
 let rec lines = function
     | Empty -> 0
-    | Leaf s -> s |> Seq.filter ((=) '\n') |> Seq.length
+    | Leaf s ->
+        let mutable count = 0
+        for i = 0 to s.Length - 1 do
+            if s.[i] = '\n' then
+                count <- count + 1
+        count
     | Node (_, _, info) -> info.Lines
 
 /// Get height for balancing
@@ -38,12 +44,53 @@ let height = function
     | Leaf _ -> 1
     | Node (_, _, info) -> info.Height
 
+let private trailingColumnInString (s: string) =
+    let mutable index = s.Length - 1
+    let mutable found = false
+    while not found && index >= 0 do
+        if s.[index] = '\n' then
+            found <- true
+        else
+            index <- index - 1
+    if found then s.Length - index - 1 else s.Length
+
+let private trailingColumn rope =
+    let rec loop = function
+        | Empty -> 0
+        | Leaf s -> trailingColumnInString s
+        | Node (left, right, _) ->
+            if lines right > 0 then
+                loop right
+            else
+                loop left + length right
+    loop rope
+
+let private trailingColumnFast = function
+    | Empty -> 0
+    | Leaf s -> trailingColumnInString s
+    | Node (_, _, info) -> info.TrailingColumn
+
+let private advanceLineCol line col rope =
+    let newlineCount = lines rope
+    if newlineCount = 0 then
+        struct (line, col + length rope)
+    else
+        struct (line + newlineCount, trailingColumnFast rope)
+
 /// Create node info
-let mkInfo left right = {
-    Length = length left + length right
-    Lines = lines left + lines right
-    Height = 1 + max (height left) (height right)
-}
+let mkInfo left right =
+    let rightLines = lines right
+    let trailing =
+        if rightLines > 0 then
+            trailingColumnFast right
+        else
+            trailingColumnFast left + length right
+    {
+        Length = length left + length right
+        Lines = lines left + rightLines
+        TrailingColumn = trailing
+        Height = 1 + max (height left) (height right)
+    }
 
 /// Create balanced node
 let mkNode left right =
@@ -85,31 +132,73 @@ let ofString (s: string) =
     if String.IsNullOrEmpty(s) then Empty
     elif s.Length <= MAX_LEAF then Leaf s
     else
-        // Split into chunks
-        let rec split acc start =
-            if start >= s.Length then acc
-            else
-                let len = min MAX_LEAF (s.Length - start)
-                let chunk = s.Substring(start, len)
-                split (Leaf chunk :: acc) (start + len)
+        let chunks = ResizeArray<Rope>()
+        let mutable start = 0
+        while start < s.Length do
+            let len = min MAX_LEAF (s.Length - start)
+            chunks.Add(Leaf (s.Substring(start, len)))
+            start <- start + len
 
-        // Build balanced tree from chunks
-        let chunks = split [] 0 |> List.rev
-        let rec buildTree = function
-            | [] -> Empty
-            | [x] -> x
-            | xs ->
-                let mid = xs.Length / 2
-                let left = xs |> List.take mid |> buildTree
-                let right = xs |> List.skip mid |> buildTree
+        let rec buildTree start count =
+            if count <= 0 then Empty
+            elif count = 1 then chunks.[start]
+            else
+                let mid = count / 2
+                let left = buildTree start mid
+                let right = buildTree (start + mid) (count - mid)
                 mkNode left right
-        buildTree chunks
+        buildTree 0 chunks.Count
 
 /// Convert rope to string
-let rec toString = function
+let toString rope =
+    match rope with
     | Empty -> ""
     | Leaf s -> s
-    | Node (left, right, _) -> toString left + toString right
+    | Node _ ->
+        let totalLength = length rope
+        let sb = Text.StringBuilder(totalLength)
+        let rec append = function
+            | Empty -> ()
+            | Leaf s -> sb.Append(s) |> ignore
+            | Node (left, right, _) ->
+                append left
+                append right
+        append rope
+        sb.ToString()
+
+let appendToStringBuilder (sb: Text.StringBuilder) rope =
+    let rec append = function
+        | Empty -> ()
+        | Leaf s -> sb.Append(s) |> ignore
+        | Node (left, right, _) ->
+            append left
+            append right
+    append rope
+
+let appendSliceToStringBuilder (sb: Text.StringBuilder) start len rope =
+    if len > 0 then
+        let rec appendSlice start len rope =
+            if len > 0 then
+                match rope with
+                | Empty -> ()
+                | Leaf s ->
+                    if start <= 0 && len >= s.Length then
+                        sb.Append(s) |> ignore
+                    elif start < s.Length then
+                        let actualStart = max 0 start
+                        let actualLen = min len (s.Length - actualStart)
+                        if actualLen > 0 then
+                            sb.Append(s, actualStart, actualLen) |> ignore
+                | Node (left, right, _) ->
+                    let leftLen = length left
+                    if start >= leftLen then
+                        appendSlice (start - leftLen) len right
+                    elif start + len <= leftLen then
+                        appendSlice start len left
+                    else
+                        appendSlice start (leftLen - start) left
+                        appendSlice 0 (len - leftLen + start) right
+        appendSlice start len rope
 
 /// Insert text at position
 let rec insert pos (text: string) rope =
@@ -164,7 +253,7 @@ let rec delete start len rope =
                 balance (delete start leftDel left) (delete 0 rightDel right)
 
 /// Get substring
-let rec slice start len rope =
+let slice start len rope =
     if len <= 0 then ""
     else
         match rope with
@@ -176,21 +265,58 @@ let rec slice start len rope =
                 let actualStart = max 0 start
                 let actualLen = min len (s.Length - actualStart)
                 s.Substring(actualStart, actualLen)
-        | Node (left, right, info) ->
-            let leftLen = length left
-            if start >= leftLen then
-                slice (start - leftLen) len right
-            elif start + len <= leftLen then
-                slice start len left
-            else
-                let leftPart = slice start (leftLen - start) left
-                let rightPart = slice 0 (len - leftLen + start) right
-                leftPart + rightPart
+        | Node _ ->
+            let sb = Text.StringBuilder(min len (length rope))
+            let rec appendSlice start len rope =
+                if len > 0 then
+                    match rope with
+                    | Empty -> ()
+                    | Leaf s ->
+                        if start <= 0 && len >= s.Length then
+                            sb.Append(s) |> ignore
+                        elif start < s.Length then
+                            let actualStart = max 0 start
+                            let actualLen = min len (s.Length - actualStart)
+                            if actualLen > 0 then
+                                sb.Append(s, actualStart, actualLen) |> ignore
+                    | Node (left, right, _) ->
+                        let leftLen = length left
+                        if start >= leftLen then
+                            appendSlice (start - leftLen) len right
+                        elif start + len <= leftLen then
+                            appendSlice start len left
+                        else
+                            appendSlice start (leftLen - start) left
+                            appendSlice 0 (len - leftLen + start) right
+            appendSlice start len rope
+            sb.ToString()
+
+/// Get a rope containing the requested slice, preserving existing leaves that
+/// are fully inside the slice.
+let sliceRope start len rope =
+    if len <= 0 then Empty
+    else
+        let total = length rope
+        let boundedStart = max 0 (min start total)
+        let boundedEnd = max boundedStart (min total (boundedStart + len))
+        if boundedStart = 0 && boundedEnd = total then
+            rope
+        else
+            let trimmedRight = delete boundedEnd (total - boundedEnd) rope
+            delete 0 boundedStart trimmedRight
 
 /// Get character at position
 let charAt pos rope =
     if pos < 0 || pos >= length rope then None
-    else Some (slice pos 1 rope).[0]
+    else
+        let rec loop pos = function
+            | Empty -> None
+            | Leaf s -> Some s.[pos]
+            | Node (left, right, _) ->
+                let leftLen = length left
+                if pos < leftLen then loop pos left
+                else loop (pos - leftLen) right
+        loop pos rope
 
 /// Convert position to line/column
 let positionToLineCol pos rope =
@@ -211,7 +337,7 @@ let positionToLineCol pos rope =
             if pos < leftLen then
                 loop pos line col left
             else
-                let (line', col') = loop leftLen line col left
+                let struct (line', col') = advanceLineCol line col left
                 loop (pos - leftLen) line' col' right
     loop pos 0 0 rope
 
@@ -224,9 +350,11 @@ let lineColToPosition line col rope =
             let mutable line' = currentLine
             let mutable col' = currentCol
             let mutable pos' = 0
-            for i = 0 to s.Length - 1 do
+            let mutable found = ValueNone
+            let mutable i = 0
+            while ValueOption.isNone found && i < s.Length do
                 if line' = targetLine && col' = targetCol then
-                    ()
+                    found <- ValueSome pos'
                 elif s.[i] = '\n' then
                     line' <- line' + 1
                     col' <- 0
@@ -234,30 +362,15 @@ let lineColToPosition line col rope =
                 else
                     col' <- col' + 1
                     pos' <- pos' + 1
-            currentPos + pos'
+                i <- i + 1
+            match found with
+            | ValueSome pos -> currentPos + pos
+            | ValueNone -> currentPos + pos'
         | Node (left, right, _) ->
-            let leftLines = lines left
-            if targetLine < currentLine + leftLines then
+            let struct (leftEndLine, leftEndCol) = advanceLineCol currentLine currentCol left
+            if targetLine < leftEndLine || (targetLine = leftEndLine && targetCol <= leftEndCol) then
                 loop targetLine targetCol currentLine currentCol currentPos left
             else
                 let leftLen = length left
-                // Scan left to get final line/col
-                let rec scanLeft l c rope =
-                    match rope with
-                    | Empty -> (l, c)
-                    | Leaf s ->
-                        let mutable line'' = l
-                        let mutable col'' = c
-                        for ch in s do
-                            if ch = '\n' then
-                                line'' <- line'' + 1
-                                col'' <- 0
-                            else
-                                col'' <- col'' + 1
-                        (line'', col'')
-                    | Node (left, right, _) ->
-                        let (line'', col'') = scanLeft l c left
-                        scanLeft line'' col'' right
-                let (line', col') = scanLeft currentLine currentCol left
-                loop targetLine targetCol line' col' (currentPos + leftLen) right
+                loop targetLine targetCol leftEndLine leftEndCol (currentPos + leftLen) right
     loop line col 0 0 0 rope

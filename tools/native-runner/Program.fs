@@ -23,6 +23,9 @@ let private fullPath (path: string) =
 let private existingFile path =
     if File.Exists path then Some path else None
 
+#if NATIVE_RUNNER_MAIN
+// Only the screenshot harness needs a Composit font; gating this keeps the importer toolkit-free so
+// it can be compiled into the WordImport library (consumed by wisp-word) without dragging in widgets.
 let private findWordFont () =
     [
         Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
@@ -37,6 +40,7 @@ let private findWordFont () =
 let private initWordFont () =
     findWordFont ()
     |> Option.iter Composit.Ui.Layout.initFont
+#endif
 
 let private parseFloat (value: string option) =
     value
@@ -302,13 +306,19 @@ let private paraBorders (value: DocxReader.ParagraphBorders option) : RedBat.Wor
         Left = paraBorder b.Left
     })
 
+let private styleIsNone (style: string option) =
+    match style with
+    | Some value ->
+        String.Equals(value, "none", StringComparison.OrdinalIgnoreCase)
+        || String.Equals(value, "nil", StringComparison.OrdinalIgnoreCase)
+    | None -> false
+
 let private paragraphBorderAdvanceToLayoutPx (value: DocxReader.ParagraphBorder option) =
     value
     |> Option.bind (fun border ->
-        match border.Style |> Option.map (fun style -> style.ToLowerInvariant()) with
-        | Some "none"
-        | Some "nil" -> None
-        | _ ->
+        if styleIsNone border.Style then
+            None
+        else
             let widthPt = parseFloat border.Width |> Option.map (fun size -> size / 8.0) |> Option.defaultValue 0.5
             let spacePt = parseFloat border.Space |> Option.defaultValue 0.0
             Some ((spacePt + widthPt * 2.0) * 96.0 / 72.0))

@@ -33,9 +33,120 @@ let private traceSlow label start =
 let private traceTableLayout label =
     if traceTimingEnabled then trace ("table:" + label)
 
+let private resizeArrayToList (items: ResizeArray<'T>) =
+    let mutable result = []
+    for i = items.Count - 1 downto 0 do
+        result <- items.[i] :: result
+    result
+
+let private hasNonWhitespace (text: string) =
+    let mutable index = 0
+    let mutable found = false
+    while not found && index < text.Length do
+        if not (System.Char.IsWhiteSpace text.[index]) then
+            found <- true
+        index <- index + 1
+    found
+
+let private paragraphContentMetrics paragraphStyle metadata (buffer: TextBuffer.TextBuffer) =
+    let mutable foundText = false
+    let mutable contentFontSize = 0.0
+    let mutable contentTextStyle = paragraphStyle.Text
+    for run in buffer.Runs do
+        match run with
+        | Text textRun ->
+            let displaySize = WordLayout.Text.displayFontSize textRun.Style
+            if not foundText || displaySize > contentFontSize then
+                foundText <- true
+                contentFontSize <- displaySize
+                contentTextStyle <- textRun.Style
+        | Image _ -> ()
+    if foundText then
+        contentFontSize, contentTextStyle
+    else
+        metadata.ParagraphMarkFontSize |> Option.defaultValue paragraphStyle.Text.FontSize,
+        paragraphStyle.Text
+
 let private snippet (text: string) =
-    let clean = text.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim()
-    if clean.Length > 48 then clean.Substring(0, 48) else clean
+    let mutable start = 0
+    let mutable finish = text.Length - 1
+    while start <= finish && System.Char.IsWhiteSpace text.[start] do
+        start <- start + 1
+    while finish >= start && System.Char.IsWhiteSpace text.[finish] do
+        finish <- finish - 1
+    if start > finish then ""
+    else
+        let sb = System.Text.StringBuilder(min 48 (finish - start + 1))
+        let mutable index = start
+        while index <= finish && sb.Length < 48 do
+            match text.[index] with
+            | '\r' | '\n' | '\t' -> sb.Append(' ') |> ignore
+            | ch -> sb.Append(ch) |> ignore
+            index <- index + 1
+        sb.ToString()
+
+let private isAllWhitespace (text: string) =
+    let mutable index = 0
+    let mutable allWhitespace = true
+    while allWhitespace && index < text.Length do
+        if not (System.Char.IsWhiteSpace text.[index]) then
+            allWhitespace <- false
+        index <- index + 1
+    allWhitespace
+
+let private trimmedEqualsIgnoreCase (value: string) (expected: string) =
+    if isNull value then false
+    else
+        let mutable start = 0
+        let mutable finish = value.Length - 1
+        while start <= finish && System.Char.IsWhiteSpace value.[start] do
+            start <- start + 1
+        while finish >= start && System.Char.IsWhiteSpace value.[finish] do
+            finish <- finish - 1
+        let length = finish - start + 1
+        if length <> expected.Length then false
+        else
+            let mutable index = 0
+            let mutable equal = true
+            while equal && index < length do
+                let left = value.[start + index]
+                let right = expected.[index]
+                if left <> right && System.Char.ToUpperInvariant left <> System.Char.ToUpperInvariant right then
+                    equal <- false
+                index <- index + 1
+            equal
+
+let private equalsIgnoreCase (left: string) (right: string) =
+    System.String.Equals(left, right, System.StringComparison.OrdinalIgnoreCase)
+
+let private optionEqualsIgnoreCase expected value =
+    match value with
+    | Some actual -> equalsIgnoreCase actual expected
+    | None -> false
+
+let private hasDigitsFrom (start: int) (value: string) =
+    let mutable index = start
+    let mutable hasDigit = start < value.Length
+    let mutable valid = hasDigit
+    while valid && index < value.Length do
+        if not (System.Char.IsDigit value.[index]) then
+            valid <- false
+        index <- index + 1
+    hasDigit && valid
+
+let private asciiSingleCharStrings =
+    Array.init 256 (fun code -> string (char code))
+
+let private sliceText (text: string) start length =
+    if length = 1 then
+        let ch = text.[start]
+        let code = int ch
+        if code >= 0 && code < asciiSingleCharStrings.Length then
+            asciiSingleCharStrings.[code]
+        else
+            text.Substring(start, length)
+    else
+        text.Substring(start, length)
 
 module Eq = RedBat.Word.Math
 
@@ -56,6 +167,20 @@ type MeasuredLine = {
     StartOffset: int
     EndOffset: int
 }
+
+let private lineStartsAfterWrapObstacle (line: MeasuredLine) =
+    let mutable foundSegment = false
+    let mutable minX = 0.0
+    for segment in line.Segments do
+        let x =
+            match segment with
+            | TextSegment (_, _, x, _, _)
+            | ImageSegment (_, x, _, _, _, _, _, _, _, _, _, _, _)
+            | MathSegment (_, _, x, _, _, _, _, _) -> x
+        if not foundSegment || x < minX then
+            foundSegment <- true
+            minX <- x
+    foundSegment && minX > 0.01
 
 /// Layout result for a block.
 type BlockLayout = {
@@ -106,6 +231,40 @@ type TableRowMeasurement = {
     Traces: string list
 }
 
+let private sortedTableRowBlockLines (measurement: TableRowMeasurement) =
+    let lines = ResizeArray<BlockId * MeasuredLine>()
+    for group in measurement.CellGroups do
+        for layout in group.Layouts do
+            for line in layout.Lines do
+                lines.Add(layout.BlockId, line)
+    let result = lines.ToArray()
+    Array.sortInPlaceWith
+        (fun (_, (firstLine: MeasuredLine)) (_, (secondLine: MeasuredLine)) ->
+            compare
+                (firstLine.Y, firstLine.StartOffset, firstLine.EndOffset)
+                (secondLine.Y, secondLine.StartOffset, secondLine.EndOffset))
+        result
+    result
+
+let private tableRowMeasurementLineSummary (measurement: TableRowMeasurement) =
+    let blockIds = ResizeArray<BlockId>()
+    let seenBlockIds = System.Collections.Generic.HashSet<BlockId>()
+    let mutable lineCount = 0
+    let mutable contentTopValue = System.Double.PositiveInfinity
+    let mutable contentBottomValue = System.Double.NegativeInfinity
+    for group in measurement.CellGroups do
+        for layout in group.Layouts do
+            for line in layout.Lines do
+                lineCount <- lineCount + 1
+                if line.Y < contentTopValue then contentTopValue <- line.Y
+                let lineBottom = line.Y + line.Height
+                if lineBottom > contentBottomValue then contentBottomValue <- lineBottom
+                if seenBlockIds.Add layout.BlockId then
+                    blockIds.Add layout.BlockId
+    let contentTop = if lineCount = 0 then None else Some contentTopValue
+    let contentBottom = if lineCount = 0 then None else Some contentBottomValue
+    lineCount, contentTop, contentBottom, resizeArrayToList blockIds
+
 type TableRowFragmentPlan = {
     Page: int
     RowPlanY: float
@@ -125,6 +284,7 @@ type TableRowFragmentPlan = {
 
 type TableLayoutPlanRow = {
     RowIndex: int
+    Row: TableRow
     IsHeader: bool
     CanSplit: bool
     Y: float
@@ -141,6 +301,7 @@ type TableLayoutPlan = {
     OuterLeft: float
     OuterRight: float
     ColumnWidths: float list
+    ResolvedRows: Lazy<WordLayout.Table.ResolvedRow array>
     HeaderRowCount: int
     Rows: TableLayoutPlanRow list
     NextY: float
@@ -166,6 +327,8 @@ type TableCellFragmentPlan = {
     CellY: float
     CellHeight: float
     CellSpacing: float
+    CellBackgroundColor: string option
+    CellShading: Shading option
     PaddingTop: float
     PaddingBottom: float
     ContentY: float
@@ -177,30 +340,70 @@ type TableCellFragmentPlan = {
 }
 
 let private rowSpanHeightAt (rowHeights: float array) rowIndex rowSpan fallback =
-    [rowIndex .. rowIndex + max 1 rowSpan - 1]
-    |> List.sumBy (fun index -> rowHeights |> Array.tryItem index |> Option.defaultValue 0.0)
-    |> max fallback
+    let span = max 1 rowSpan
+    let last = min rowHeights.Length (rowIndex + span)
+    let mutable total = 0.0
+    let mutable index = max 0 rowIndex
+    while index < last do
+        total <- total + rowHeights.[index]
+        index <- index + 1
+    max total fallback
 
-let private resolvedCellRowSpan (resolvedRows: WordLayout.Table.ResolvedRow array) rowIndex sourceCellIndex =
-    resolvedRows
-    |> Array.tryItem rowIndex
-    |> Option.bind (fun row ->
-        row.Cells
-        |> List.tryFind (fun cell -> cell.SourceCellIndex = sourceCellIndex)
-        |> Option.map _.RowSpan)
-    |> Option.defaultValue 1
+let private tablePlanRowHeights (plan: TableLayoutPlan) =
+    let rowHeights = ResizeArray<float>()
+    for row in plan.Rows do
+        rowHeights.Add row.Height
+    rowHeights.ToArray()
 
-let private tableCellVerticalAlignmentHeight resolvedRows rowHeights rowIndex sourceCellIndex fallback =
-    let rowSpan = resolvedCellRowSpan resolvedRows rowIndex sourceCellIndex
-    rowSpanHeightAt rowHeights rowIndex rowSpan fallback
+let private rowHeightPrefix (rowHeights: float array) =
+    let prefix = Array.zeroCreate<float> (rowHeights.Length + 1)
+    for index = 0 to rowHeights.Length - 1 do
+        prefix.[index + 1] <- prefix.[index] + rowHeights.[index]
+    prefix
+
+let private rowSpanHeightFromPrefix (prefix: float array) rowIndex rowSpan fallback =
+    if prefix.Length <= 1 then
+        fallback
+    else
+        let start = max 0 (min rowIndex (prefix.Length - 1))
+        let finish = min (prefix.Length - 1) (start + max 1 rowSpan)
+        max (prefix.[finish] - prefix.[start]) fallback
+
+let private resolvedCellRowSpanLookup (resolvedRows: WordLayout.Table.ResolvedRow array) =
+    let lookup = Array.init resolvedRows.Length (fun _ -> [||])
+    for rowIndex = 0 to resolvedRows.Length - 1 do
+        let mutable maxSourceCellIndex = -1
+        for cell in resolvedRows.[rowIndex].Cells do
+            if cell.SourceCellIndex > maxSourceCellIndex then
+                maxSourceCellIndex <- cell.SourceCellIndex
+        if maxSourceCellIndex >= 0 then
+            let rowLookup = Array.zeroCreate<int> (maxSourceCellIndex + 1)
+            for cell in resolvedRows.[rowIndex].Cells do
+                rowLookup.[cell.SourceCellIndex] <- cell.RowSpan
+            lookup.[rowIndex] <- rowLookup
+    lookup
+
+let private resolvedCellRowSpanFromLookup (lookup: int array array) rowIndex sourceCellIndex =
+    if rowIndex < 0 || rowIndex >= lookup.Length then
+        1
+    else
+        let rowLookup = lookup.[rowIndex]
+        if sourceCellIndex < 0 || sourceCellIndex >= rowLookup.Length then
+            1
+        else
+            let rowSpan = rowLookup.[sourceCellIndex]
+            if rowSpan > 0 then rowSpan else 1
+
+let private tableCellVerticalAlignmentHeightFromLookup rowSpanLookup rowHeightPrefix rowIndex sourceCellIndex fallback =
+    let rowSpan = resolvedCellRowSpanFromLookup rowSpanLookup rowIndex sourceCellIndex
+    rowSpanHeightFromPrefix rowHeightPrefix rowIndex rowSpan fallback
 
 let tableCellVerticalAlignmentHeightResolverForPlan (plan: TableLayoutPlan) =
-    let resolvedRows =
-        WordLayout.Table.resolveTable WordLayout.canvasScale (Some plan.TableMaxWidth) plan.Table
-        |> fun resolved -> resolved.BodyRows |> List.toArray
-    let rowHeights = plan.Rows |> List.map _.Height |> List.toArray
+    let rowHeights = tablePlanRowHeights plan
+    let rowHeightPrefix = rowHeightPrefix rowHeights
+    let rowSpanLookup = resolvedCellRowSpanLookup plan.ResolvedRows.Value
     fun rowIndex sourceCellIndex fallback ->
-        tableCellVerticalAlignmentHeight resolvedRows rowHeights rowIndex sourceCellIndex fallback
+        tableCellVerticalAlignmentHeightFromLookup rowSpanLookup rowHeightPrefix rowIndex sourceCellIndex fallback
 
 let tableCellVerticalAlignmentHeightForPlan (plan: TableLayoutPlan) rowIndex sourceCellIndex fallback =
     let resolveHeight = tableCellVerticalAlignmentHeightResolverForPlan plan
@@ -238,11 +441,17 @@ let private pageFitTolerance = 0.5
 let private applyRenderedPageBreakHint settings y (para: ParagraphBlock) =
     y
 
+let private shiftLinesY delta lines =
+    let result = ResizeArray<MeasuredLine>()
+    for line in lines do
+        result.Add { line with Y = line.Y + delta }
+    resizeArrayToList result
+
 let private moveLayoutToY newY (layout: BlockLayout) =
     let delta = newY - layout.Y
     { layout with
         Y = layout.Y + delta
-        Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + delta }) }
+        Lines = shiftLinesY delta layout.Lines }
 
 let private paginateBlock settings y blockHeight =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
@@ -266,46 +475,134 @@ let noteWrapChars (settings: LayoutSettings) =
 
 let wrapNoteText settings (text: string) =
     let maxChars = noteWrapChars settings
-    let words = text.Split([| ' '; '\t'; '\r'; '\n' |], System.StringSplitOptions.RemoveEmptyEntries) |> Array.toList
-    let rec loop current lines remaining =
-        match remaining with
-        | [] ->
-            match current with
-            | "" -> List.rev lines
-            | value -> List.rev (value :: lines)
-        | word :: rest ->
-            if current = "" then loop word lines rest
-            elif current.Length + 1 + word.Length <= maxChars then loop (current + " " + word) lines rest
-            else loop word (current :: lines) rest
-    match words with
-    | [] -> [text]
-    | _ -> loop "" [] words
+    let lines = System.Collections.Generic.List<string>()
+    let mutable current = System.Text.StringBuilder()
+    let mutable currentLen = 0
+    let mutable wordStart = -1
+    let mutable sawWord = false
+
+    let appendWord start length =
+        for i = start to start + length - 1 do
+            current.Append(text.[i]) |> ignore
+
+    let flushWord wordStart wordLen =
+        sawWord <- true
+        if currentLen = 0 then
+            appendWord wordStart wordLen
+            currentLen <- wordLen
+        elif currentLen + 1 + wordLen <= maxChars then
+            current.Append(' ') |> ignore
+            appendWord wordStart wordLen
+            currentLen <- currentLen + 1 + wordLen
+        else
+            lines.Add(current.ToString())
+            current <- System.Text.StringBuilder()
+            appendWord wordStart wordLen
+            currentLen <- wordLen
+
+    for i = 0 to text.Length - 1 do
+        match text.[i] with
+        | ' ' | '\t' | '\r' | '\n' ->
+            if wordStart >= 0 then
+                flushWord wordStart (i - wordStart)
+                wordStart <- -1
+        | _ ->
+            if wordStart < 0 then wordStart <- i
+    if wordStart >= 0 then
+        flushWord wordStart (text.Length - wordStart)
+
+    if not sawWord then [text]
+    else
+        if currentLen > 0 then
+            lines.Add(current.ToString())
+        resizeArrayToList lines
 
 let noteLineCount settings (text: string) =
-    wrapNoteText settings text |> List.length
+    let maxChars = noteWrapChars settings
+    let mutable lineCount = 0
+    let mutable currentLen = 0
+    let mutable wordStart = -1
+    let flushWord wordLen =
+        if currentLen = 0 then
+            currentLen <- wordLen
+        elif currentLen + 1 + wordLen <= maxChars then
+            currentLen <- currentLen + 1 + wordLen
+        else
+            lineCount <- lineCount + 1
+            currentLen <- wordLen
+    for i = 0 to text.Length - 1 do
+        match text.[i] with
+        | ' ' | '\t' | '\r' | '\n' ->
+            if wordStart >= 0 then
+                flushWord (i - wordStart)
+                wordStart <- -1
+        | _ ->
+            if wordStart < 0 then wordStart <- i
+    if wordStart >= 0 then
+        flushWord (text.Length - wordStart)
+    if currentLen = 0 then 1 else lineCount + 1
 
-let private footnotesInLine (line: MeasuredLine) =
-    line.Segments
-    |> List.choose (function
+let private lineHasNoteType noteTypeName (line: MeasuredLine) =
+    let mutable found = false
+    for segment in line.Segments do
+        if not found then
+            match segment with
+            | TextSegment (_, style, _, _, _) ->
+                match style.NoteId, style.NoteType, style.NoteText with
+                | Some _, noteType, Some text when (noteType |> Option.defaultValue "footnote") = noteTypeName && text <> "" ->
+                    found <- true
+                | _ -> ()
+            | ImageSegment _ | MathSegment _ -> ()
+    found
+
+let private layoutHasNoteType noteTypeName (layout: BlockLayout) =
+    let mutable found = false
+    for line in layout.Lines do
+        if not found && lineHasNoteType noteTypeName line then
+            found <- true
+    found
+
+let private notesInLine noteTypeName (line: MeasuredLine) =
+    let mutable seen = Unchecked.defaultof<System.Collections.Generic.HashSet<string>>
+    let mutable notes = Unchecked.defaultof<ResizeArray<string * string>>
+    let mutable hasNotes = false
+    for segment in line.Segments do
+        match segment with
         | TextSegment (_, style, _, _, _) ->
             match style.NoteId, style.NoteType, style.NoteText with
-            | Some id, noteType, Some text when noteType |> Option.defaultValue "footnote" = "footnote" && text <> "" -> Some (id, text)
-            | _ -> None
-        | ImageSegment _ -> None
-        | MathSegment _ -> None)
-    |> List.distinctBy fst
+            | Some id, noteType, Some text when (noteType |> Option.defaultValue "footnote") = noteTypeName && text <> "" ->
+                if not hasNotes then
+                    seen <- System.Collections.Generic.HashSet<string>()
+                    notes <- ResizeArray<string * string>()
+                    hasNotes <- true
+                if seen.Add id then
+                    notes.Add(id, text)
+            | _ -> ()
+        | ImageSegment _ | MathSegment _ -> ()
+    if hasNotes then resizeArrayToList notes else []
+
+let private footnotesInLine (line: MeasuredLine) =
+    notesInLine "footnote" line
+
+let private appendNewNotes (existing: (string * string) list) (additions: (string * string) list) =
+    match additions with
+    | [] -> existing
+    | _ ->
+        let seen = System.Collections.Generic.HashSet<string>()
+        for id, _ in existing do
+            seen.Add id |> ignore
+        let merged = ResizeArray<string * string>(existing.Length + additions.Length)
+        merged.AddRange existing
+        let mutable changed = false
+        for id, text in additions do
+            if seen.Add id then
+                merged.Add(id, text)
+                changed <- true
+        if changed then resizeArrayToList merged else existing
 
 /// Endnotes (collected at the end of the document) found on a line, in order.
 let private endnotesInLine (line: MeasuredLine) =
-    line.Segments
-    |> List.choose (function
-        | TextSegment (_, style, _, _, _) ->
-            match style.NoteId, style.NoteType, style.NoteText with
-            | Some id, Some "endnote", Some text when text <> "" -> Some (id, text)
-            | _ -> None
-        | ImageSegment _ -> None
-        | MathSegment _ -> None)
-    |> List.distinctBy fst
+    notesInLine "endnote" line
 
 /// BlockId prefix for the synthetic footnote-area paragraphs laid out at the
 /// bottom of each page. Paint recognises these to render them and the separator.
@@ -355,10 +652,13 @@ let private addLayoutFootnotes settings (footnotesByPage: Map<int, (string * str
     layout.Lines
     |> List.fold (fun acc line ->
         let pageIndex = pageIndexForY settings line.Y
-        let footnotes =
-            (acc |> Map.tryFind pageIndex |> Option.defaultValue []) @ footnotesInLine line
-            |> List.distinctBy fst
-        acc |> Map.add pageIndex footnotes) footnotesByPage
+        let lineFootnotes = footnotesInLine line
+        if lineFootnotes.IsEmpty then
+            acc
+        else
+            let existing = acc |> Map.tryFind pageIndex |> Option.defaultValue []
+            let footnotes = appendNewNotes existing lineFootnotes
+            if LanguagePrimitives.PhysicalEquality footnotes existing then acc else acc |> Map.add pageIndex footnotes) footnotesByPage
 
 let private contentBottomWithFootnotes settings footnotesByPage y =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
@@ -373,14 +673,30 @@ let private paginateBlockWithFootnotes settings footnotesByPage y blockHeight =
     if y > contentTop && y + blockHeight > contentBottom + pageFitTolerance then advanceToNextPage settings y else y
 
 let private lineVisibleFitHeight line =
-    line.Segments
-    |> List.choose (function
-        | TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.printFontSize style)
-        | ImageSegment (_, _, yOffset, _, height, _, floating, _, _, _, _, _, _) -> if floating then None else Some (height + max 0.0 yOffset)
-        | MathSegment (_, _, _, _, ascent, descent, _, _) -> Some (ascent + descent))
-    |> function
-        | [] -> line.Height
-        | sizes -> List.max sizes
+    let mutable visibleHeight = 0.0
+    let mutable hasVisibleSegment = false
+    for segment in line.Segments do
+        let candidate =
+            match segment with
+            | TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.printFontSize style)
+            | ImageSegment (_, _, yOffset, _, height, _, floating, _, _, _, _, _, _) ->
+                if floating then None else Some (height + max 0.0 yOffset)
+            | MathSegment (_, _, _, _, ascent, descent, _, _) -> Some (ascent + descent)
+        match candidate with
+        | Some height ->
+            hasVisibleSegment <- true
+            if height > visibleHeight then visibleHeight <- height
+        | _ -> ()
+    if hasVisibleSegment then visibleHeight else line.Height
+
+let private tryLastLine lines =
+    match lines with
+    | [] -> None
+    | first :: rest ->
+        let mutable last = first
+        for line in rest do
+            last <- line
+        Some last
 
 let private paragraphVisibleFitHeight (paragraphStyle: ParagraphStyle) (layout: BlockLayout) =
     if layout.Metadata.ListStyle = Numbered then
@@ -397,8 +713,9 @@ let private paragraphVisibleFitHeight (paragraphStyle: ParagraphStyle) (layout: 
         // including after-spacing, to fit on the page.
         | [_] -> layout.Height
         | _ ->
-            let lastLine = layout.Lines |> List.last
-            max 0.0 ((lastLine.Y - layout.Y) + lineVisibleFitHeight lastLine)
+            match tryLastLine layout.Lines with
+            | Some lastLine -> max 0.0 ((lastLine.Y - layout.Y) + lineVisibleFitHeight lastLine)
+            | None -> max 0.0 (layout.Height - spacingAfter)
 
 let private paginateTableRow settings (row: TableRow) y rowHeight =
     let canSplit = row.CanSplit |> Option.defaultValue true
@@ -413,28 +730,28 @@ let private paginateTableRowWithFootnotes settings footnotesByPage (row: TableRo
     let remaining = max 0.0 (contentBottom - y)
     if canSplit && y < contentBottom && rowHeight > remaining then y else paginateBlockWithFootnotes settings footnotesByPage y rowHeight
 
-let private tableRowLocalLines (measurement: TableRowMeasurement) =
-    measurement.CellGroups
-    |> List.collect (fun group -> group.Layouts)
-    |> List.collect (fun layout -> layout.Lines)
-
 let private splitTableRowNeedsNextPage settings rowY contentBottom (measurement: TableRowMeasurement) =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
     let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-    let lines = tableRowLocalLines measurement
-    if lines.IsEmpty || rowY <= contentTop + pageFitTolerance then
+    if rowY <= contentTop + pageFitTolerance then
         false
     else
-        lines
-        |> List.exists (fun line -> rowY + line.Y + lineVisibleFitHeight line <= contentBottom + pageFitTolerance)
-        |> not
+        let mutable hasLines = false
+        let mutable anyLineFits = false
+        for group in measurement.CellGroups do
+            for layout in group.Layouts do
+                for line in layout.Lines do
+                    hasLines <- true
+                    if rowY + line.Y + lineVisibleFitHeight line <= contentBottom + pageFitTolerance then
+                        anyLineFits <- true
+        hasLines && not anyLineFits
 
 let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
     let shiftToNextPage (firstY: float) (lines: MeasuredLine list) : MeasuredLine list =
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) firstY
         let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
         let delta = nextY - firstY
-        lines |> List.map (fun line -> { line with Y = line.Y + delta })
+        shiftLinesY delta lines
 
     match lines with
     | first :: second :: _ ->
@@ -445,7 +762,13 @@ let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
         if first.Y > contentTop && lineFits first && not (lineFits second) then
             shiftToNextPage first.Y lines
         else
-            let fitCount = lines |> List.takeWhile lineFits |> List.length
+            let mutable fitCount = 0
+            let mutable stillFitting = true
+            for line in lines do
+                if stillFitting && lineFits line then
+                    fitCount <- fitCount + 1
+                else
+                    stillFitting <- false
             if first.Y > contentTop && lines.Length <= 4 && fitCount = lines.Length - 1 then
                 shiftToNextPage first.Y lines
             else
@@ -453,26 +776,27 @@ let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
     | _ -> lines
 
 let private lineHasRenderedPageBreakBefore (line: MeasuredLine) =
-    line.Segments
-    |> List.exists (function
-        | TextSegment (_, style, _, _, _) -> style.RenderedPageBreakBefore
-        | ImageSegment _ -> false
-        | MathSegment _ -> false)
+    let rec loop segments =
+        match segments with
+        | [] -> false
+        | TextSegment (_, style, _, _, _) :: _ when style.RenderedPageBreakBefore -> true
+        | _ :: rest -> loop rest
+
+    loop line.Segments
 
 let private paginateLines settings widowControl (lines: MeasuredLine list) =
     let mutable delta = 0.0
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
     let lines = if widowControl then moveWidowParagraphToNextPage settings lines else lines
-    lines
-    |> List.map (fun line ->
+    let pagedLines = ResizeArray<MeasuredLine>()
+    for line in lines do
         let shiftedY = line.Y + delta
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) shiftedY
         let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
         let pageIndex = pageIndexForY settings shiftedY
         let lineFootnotes = footnotesInLine line
-        let pageFootnotes =
-            (footnotesByPage |> Map.tryFind pageIndex |> Option.defaultValue []) @ lineFootnotes
-            |> List.distinctBy fst
+        let pageExistingFootnotes = footnotesByPage |> Map.tryFind pageIndex |> Option.defaultValue []
+        let pageFootnotes = appendNewNotes pageExistingFootnotes lineFootnotes
         let contentBottom =
             WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
             - footnoteReserveHeight settings pageFootnotes
@@ -481,22 +805,27 @@ let private paginateLines settings widowControl (lines: MeasuredLine list) =
             let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
             delta <- delta + (nextY - shiftedY)
             let nextPageIndex = pageIndexForY settings nextY
-            let nextPageFootnotes =
-                (footnotesByPage |> Map.tryFind nextPageIndex |> Option.defaultValue []) @ lineFootnotes
-                |> List.distinctBy fst
-            footnotesByPage <- footnotesByPage |> Map.add nextPageIndex nextPageFootnotes
-            { line with Y = nextY }
+            let nextPageExistingFootnotes = footnotesByPage |> Map.tryFind nextPageIndex |> Option.defaultValue []
+            let nextPageFootnotes = appendNewNotes nextPageExistingFootnotes lineFootnotes
+            if not (LanguagePrimitives.PhysicalEquality nextPageFootnotes nextPageExistingFootnotes) then
+                footnotesByPage <- footnotesByPage |> Map.add nextPageIndex nextPageFootnotes
+            pagedLines.Add { line with Y = nextY }
         else
-            footnotesByPage <- footnotesByPage |> Map.add pageIndex pageFootnotes
-            { line with Y = shiftedY })
+            if not (LanguagePrimitives.PhysicalEquality pageFootnotes pageExistingFootnotes) then
+                footnotesByPage <- footnotesByPage |> Map.add pageIndex pageFootnotes
+            pagedLines.Add { line with Y = shiftedY }
+    resizeArrayToList pagedLines
 
 let private linesSpanPages settings (lines: MeasuredLine list) =
     match lines with
     | [] -> false
     | first :: _ ->
         let firstPage = WordLayout.Page.pageTopForY (pageHeight settings) first.Y
-        lines
-        |> List.exists (fun line -> WordLayout.Page.pageTopForY (pageHeight settings) line.Y <> firstPage)
+        let mutable spansPages = false
+        for line in lines do
+            if not spansPages && WordLayout.Page.pageTopForY (pageHeight settings) line.Y <> firstPage then
+                spansPages <- true
+        spansPages
 
 type TextMeasurer = string -> TextBuffer.TextStyle -> float
 type TextRangeMeasurer = string -> TextBuffer.TextStyle -> int -> int -> float
@@ -510,6 +839,56 @@ let rangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : TextRangeMeasure
 
 let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
     WordLayout.Table.tableColumnWidths WordLayout.canvasScale (Some maxWidth) tableBlock
+
+let private columnWidthPrefix (columnWidths: float list) =
+    let widths = columnWidths |> List.toArray
+    let prefix = Array.zeroCreate<float> (widths.Length + 1)
+    for i = 0 to widths.Length - 1 do
+        prefix.[i + 1] <- prefix.[i] + widths.[i]
+    prefix
+
+type internal TableColumnMetrics = {
+    Prefix: float[]
+    Count: int
+    FallbackWidth: float
+}
+
+let internal tableColumnMetrics tableMaxWidth columnWidths =
+    let prefix = columnWidthPrefix columnWidths
+    let count = prefix.Length - 1
+    {
+        Prefix = prefix
+        Count = count
+        FallbackWidth = if count = 0 then tableMaxWidth else tableMaxWidth / float count
+    }
+
+let private startOffsetFromPrefix (prefix: float[]) columnIndex =
+    if columnIndex <= 0 then 0.0
+    else prefix.[min columnIndex (prefix.Length - 1)]
+
+let private spannedWidthFromPrefix (prefix: float[]) start span fallback =
+    let widthCount = prefix.Length - 1
+    let mutable total = 0.0
+    let mutable remaining = span
+    let mutable index = start
+    while remaining > 0 && index < 0 do
+        total <- total + fallback
+        index <- index + 1
+        remaining <- remaining - 1
+    if remaining > 0 && index < widthCount then
+        let finish = min widthCount (index + remaining)
+        total <- total + prefix.[finish] - prefix.[index]
+        remaining <- remaining - (finish - index)
+        index <- finish
+    if remaining > 0 then
+        total <- total + fallback * float remaining
+    total
+
+let private spacedStartOffsetFromPrefix prefix spacing columnIndex =
+    startOffsetFromPrefix prefix columnIndex + spacing
+
+let private spacedSpannedWidthFromPrefix prefix spacing start span fallback =
+    max 0.0 (spannedWidthFromPrefix prefix start span fallback - spacing * 2.0)
 
 // Word line boxes include font leading beyond the nominal font size. Auto
 // w:line multiples (eg 259/276) still need this Calibri-leading factor.
@@ -534,19 +913,19 @@ let private tableCellLineBoxFontSize fontSize =
     fontSize
 
 let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
-    match style.FontFamily |> Option.map (fun family -> family.Trim().ToLowerInvariant()) with
-    | Some "consolas"
-    | Some "courier new"
-    | Some "courier" -> monospaceLineBoxFactor
-    | Some "ubuntu" -> ubuntuLineBoxFactor
+    match style.FontFamily with
+    | Some family when trimmedEqualsIgnoreCase family "consolas"
+                       || trimmedEqualsIgnoreCase family "courier new"
+                       || trimmedEqualsIgnoreCase family "courier" -> monospaceLineBoxFactor
+    | Some family when trimmedEqualsIgnoreCase family "ubuntu" -> ubuntuLineBoxFactor
     | _ -> wordLineBoxFactor
 
 let private tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing (style: TextBuffer.TextStyle) =
     if not hasExplicitLineSpacing then
         tableCellDefaultLineBoxFactor
     else
-        match style.FontFamily |> Option.map (fun family -> family.Trim().ToLowerInvariant()) with
-        | Some "arial" -> arialTableCellExplicitLineBoxFactor
+        match style.FontFamily with
+        | Some family when trimmedEqualsIgnoreCase family "arial" -> arialTableCellExplicitLineBoxFactor
         | _ -> tableCellExplicitLineBoxFactor
 
 let private usesDefaultParagraphSpacing (metadata: BlockMetadata) =
@@ -556,15 +935,13 @@ let private isTocEntryStyle (metadata: BlockMetadata) =
     metadata.Style
     |> Option.exists (fun style ->
         style.StartsWith("TOC", System.StringComparison.OrdinalIgnoreCase)
-        && style.Length > 3
-        && (style.Substring(3) |> Seq.forall System.Char.IsDigit))
+        && hasDigitsFrom 3 style)
 
 let private isHeadingStyle (metadata: BlockMetadata) =
     metadata.Style
     |> Option.exists (fun style ->
         style.StartsWith("Heading", System.StringComparison.OrdinalIgnoreCase)
-        && style.Length > 7
-        && (style.Substring(7) |> Seq.forall System.Char.IsDigit))
+        && hasDigitsFrom 7 style)
 
 let private headingUsesDefaultLineBox (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
     let before = metadata.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore
@@ -600,14 +977,17 @@ let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize 
     | _ -> automatic
 
 let private lineMaxTextFontSize fallback (line: MeasuredLine) =
-    line.Segments
-    |> List.choose (function
-        | TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.displayFontSize style)
-        | ImageSegment _ -> None
-        | MathSegment _ -> None)
-    |> function
-        | [] -> fallback
-        | sizes -> List.max sizes
+    let mutable maxSize = fallback
+    let mutable foundText = false
+    for segment in line.Segments do
+        match segment with
+        | TextSegment (_, style, _, _, _) ->
+            let fontSize = WordLayout.Text.displayFontSize style
+            if not foundText || fontSize > maxSize then
+                maxSize <- fontSize
+                foundText <- true
+        | ImageSegment _ | MathSegment _ -> ()
+    maxSize
 
 let private startsAtPageContentTop settings y =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
@@ -636,10 +1016,8 @@ let private suppressLayoutPageTopBeforeSpacing settings paragraphStyle (layout: 
 let private paragraphBorderAdvance (border: ParagraphBorder option) =
     match border with
     | Some value ->
-        match value.Style |> Option.map (fun style -> style.ToLowerInvariant()) with
-        | Some "none"
-        | Some "nil" -> 0.0
-        | _ -> (value.Width |> Option.defaultValue 0.5 |> max 0.25) + (value.Space |> Option.defaultValue 0.0)
+        if optionEqualsIgnoreCase "none" value.Style || optionEqualsIgnoreCase "nil" value.Style then 0.0
+        else (value.Width |> Option.defaultValue 0.5 |> max 0.25) + (value.Space |> Option.defaultValue 0.0)
     | None -> 0.0
 
 let private paragraphBorderVerticalAdvance metadata =
@@ -702,18 +1080,22 @@ let private repositionRtl (line: MeasuredLine) : MeasuredLine =
     match line.Segments with
     | [] -> line
     | segs ->
-        let baseX = segs |> List.map segmentX |> List.min
-        let totalW = segs |> List.sumBy segmentWidth
+        let mutable baseX = System.Double.PositiveInfinity
+        let mutable totalW = 0.0
+        for segment in segs do
+            baseX <- min baseX (segmentX segment)
+            totalW <- totalW + segmentWidth segment
         let mutable cursor = baseX + totalW
-        let newSegs =
-            segs |> List.map (fun s ->
-                let w = segmentWidth s
-                cursor <- cursor - w
-                match s with
+        let newSegs = ResizeArray<Segment>()
+        for segment in segs do
+            let w = segmentWidth segment
+            cursor <- cursor - w
+            newSegs.Add(
+                match segment with
                 | TextSegment (t, st, _, ww, off) -> TextSegment (t, st, cursor, ww, off)
                 | ImageSegment (src, _, yOff, ww, h, off, fl, wr, rh, cl, ct, cr, cb) -> ImageSegment (src, cursor, yOff, ww, h, off, fl, wr, rh, cl, ct, cr, cb)
                 | MathSegment (p, st, _, ww, asc, desc, off, len) -> MathSegment (p, st, cursor, ww, asc, desc, off, len))
-        { line with Segments = newSegs }
+        { line with Segments = resizeArrayToList newSegs }
 
 /// Distribute the slack between a line's visible right edge and `rightEdge`
 /// across its inter-word gaps, returning the line with stretched segment x.
@@ -723,37 +1105,54 @@ let private repositionRtl (line: MeasuredLine) : MeasuredLine =
 /// paragraph's last line (Word never justifies it).
 let private justifyLineToEdge (rightEdge: float) (line: MeasuredLine) : MeasuredLine =
     let segs = line.Segments
-    let segCount = List.length segs
     let endsInStretchSpace = function
         | TextSegment (t, _, _, _, _) when t.Length > 0 -> t.[t.Length - 1] = ' '
         | _ -> false
     // A tab advances to a fixed stop and an image is atomic — neither stretches,
     // and a line containing one is left ragged (Word stretches only the spaces,
     // which this simple model doesn't isolate around the fixed element).
-    let hasTabOrImage =
-        segs |> List.exists (function
-            | ImageSegment _ -> true
-            | MathSegment _ -> true
-            | TextSegment (t, _, _, _, _) -> t.Contains("\t"))
-    let gapCount =
-        segs |> List.mapi (fun i s -> if i < segCount - 1 && endsInStretchSpace s then 1 else 0) |> List.sum
-    let baseX = match segs with [] -> 0.0 | _ -> segs |> List.map segmentX |> List.min
+    let mutable hasTabOrImage = false
+    let mutable gapCount = 0
+    let mutable baseX = System.Double.PositiveInfinity
+    let rec scan previous remaining =
+        match remaining with
+        | [] ->
+            previous |> Option.iter (fun segment ->
+                baseX <- min baseX (segmentX segment))
+        | segment :: rest ->
+            baseX <- min baseX (segmentX segment)
+            match previous with
+            | Some prior when endsInStretchSpace prior -> gapCount <- gapCount + 1
+            | _ -> ()
+            match segment with
+            | ImageSegment _ -> hasTabOrImage <- true
+            | MathSegment _ -> hasTabOrImage <- true
+            | TextSegment (t, _, _, _, _) when t.Contains("\t") -> hasTabOrImage <- true
+            | TextSegment _ -> ()
+            scan (Some segment) rest
+    scan None segs
+    let baseX = if System.Double.IsPositiveInfinity baseX then 0.0 else baseX
     let extra = rightEdge - (baseX + line.Width)
     if hasTabOrImage || gapCount = 0 || extra <= 0.5 then line
     else
         let perGap = extra / float gapCount
         let mutable shift = 0.0
-        let newSegs =
-            segs |> List.mapi (fun i s ->
-                let shifted =
-                    match s with
+        let newSegs = ResizeArray<Segment>()
+        let rec build remaining =
+            match remaining with
+            | [] -> ()
+            | segment :: rest ->
+                newSegs.Add(
+                    match segment with
                     | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + shift, w, off)
                     | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb) ->
                         ImageSegment (src, x + shift, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
-                    | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + shift, w, asc, desc, off, len)
-                if i < segCount - 1 && endsInStretchSpace s then shift <- shift + perGap
-                shifted)
-        { line with Segments = newSegs }
+                    | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + shift, w, asc, desc, off, len))
+                if (match rest with [] -> false | _ -> true) && endsInStretchSpace segment then
+                    shift <- shift + perGap
+                build rest
+        build segs
+        { line with Segments = resizeArrayToList newSegs }
 
 let emptyLine y height : MeasuredLine = {
     Segments = []
@@ -764,22 +1163,312 @@ let emptyLine y height : MeasuredLine = {
     EndOffset = 0
 }
 
-let lineForOffset (layout: BlockLayout) (offset: int) : MeasuredLine =
+let private maxLineBottom defaultValue (layouts: BlockLayout list) =
+    let mutable found = false
+    let mutable bottom = 0.0
+    for layout in layouts do
+        for line in layout.Lines do
+            let lineBottom = line.Y + line.Height
+            if not found || lineBottom > bottom then
+                found <- true
+                bottom <- lineBottom
+    if found then bottom else defaultValue
+
+let private maxLineBottomAndLayoutCount defaultValue (layouts: BlockLayout list) =
+    let mutable found = false
+    let mutable bottom = 0.0
+    let mutable layoutCount = 0
+    for layout in layouts do
+        layoutCount <- layoutCount + 1
+        for line in layout.Lines do
+            let lineBottom = line.Y + line.Height
+            if not found || lineBottom > bottom then
+                found <- true
+                bottom <- lineBottom
+    (if found then bottom else defaultValue), layoutCount
+
+type private LineArrayCacheEntry = {
+    Lines: MeasuredLine list
+    LineArray: MeasuredLine array
+    TextCharCount: int
+    mutable LastLineSet: bool
+    mutable LastOffset: int
+    mutable LastLine: MeasuredLine
+}
+
+let mutable private lineArrayCache: LineArrayCacheEntry list = []
+let mutable private lastLineArrayCacheEntry: LineArrayCacheEntry option = None
+let private lineArrayCacheThreshold = 32
+let private lineArrayCacheMaxEntries = 64
+let private lineArrayCacheMaxTotalLines = 200000
+let private lineArrayCacheMaxTotalTextChars = 5000000
+
+let private lineListExceeds threshold lines =
+    let rec loop count remaining =
+        count > threshold ||
+            match remaining with
+            | [] -> false
+            | _ :: tail -> loop (count + 1) tail
+    loop 0 lines
+
+let private lineArrayCacheEntryMatches lines (entry: LineArrayCacheEntry) =
+    obj.ReferenceEquals(entry.Lines, lines)
+
+let private clearLastLineArrayCacheEntry lines =
+    match lastLineArrayCacheEntry with
+    | Some entry when lineArrayCacheEntryMatches lines entry -> lastLineArrayCacheEntry <- None
+    | _ -> ()
+
+let private tryFindLineArrayCacheEntry lines =
+    match lastLineArrayCacheEntry with
+    | Some entry when lineArrayCacheEntryMatches lines entry -> Some entry
+    | _ ->
+        let mutable remaining = lineArrayCache
+        let mutable found = None
+        while found.IsNone && not remaining.IsEmpty do
+            let entry = remaining.Head
+            if lineArrayCacheEntryMatches lines entry then
+                lastLineArrayCacheEntry <- Some entry
+                found <- Some entry
+            remaining <- remaining.Tail
+        found
+
+let private lineArrayCacheOptionTextCharCount (value: string option) =
+    match value with
+    | Some value when not (isNull value) -> value.Length
+    | _ -> 0
+
+let private lineArrayCacheAddCapped value total =
+    if total > lineArrayCacheMaxTotalTextChars then
+        total
+    else
+        let value = max 0 value
+        let remaining = lineArrayCacheMaxTotalTextChars - total
+        if value > remaining then lineArrayCacheMaxTotalTextChars + 1
+        else total + value
+
+let private lineArrayCacheTextStyleStringCharCount (style: TextStyle) =
+    let mutable total = 0
+    let add (value: string option) =
+        total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount value) total
+    add style.Style
+    add style.UnderlineStyle
+    add style.UnderlineColor
+    add style.EmphasisMark
+    add style.FontFamily
+    add style.Color
+    add style.Highlight
+    add style.Hyperlink
+    add style.CommentId
+    add style.CommentText
+    add style.CommentAuthor
+    add style.CommentDate
+    add style.NoteId
+    add style.NoteType
+    add style.NoteText
+    add style.BookmarkStartId
+    add style.BookmarkName
+    add style.BookmarkEndId
+    add style.FieldCode
+    add style.FieldResult
+    add style.EquationXml
+    add style.RevisionId
+    add style.RevisionType
+    add style.RevisionAuthor
+    add style.RevisionDate
+    add style.VertAlign
+    total
+
+let private lineArrayCacheMathPrimsTextCharCount (prims: Eq.MathPrim list) =
+    let mutable total = 0
+    let mutable seen = 0
+    let mutable remaining = prims
+    while total <= lineArrayCacheMaxTotalTextChars
+          && seen <= lineArrayCacheMaxTotalLines
+          && not remaining.IsEmpty do
+        match remaining.Head with
+        | Eq.MGlyph (text, _, _, _, _) when not (isNull text) ->
+            total <- lineArrayCacheAddCapped text.Length total
+        | _ -> ()
+        seen <- seen + 1
+        remaining <- remaining.Tail
+    if seen > lineArrayCacheMaxTotalLines then
+        lineArrayCacheMaxTotalTextChars + 1
+    else
+        total
+
+let private lineArrayCacheImageTextCharCount
+    (src: string)
+    (wrap: string option)
+    (relativeHeight: string option)
+    (cropLeft: string option)
+    (cropTop: string option)
+    (cropRight: string option)
+    (cropBottom: string option) =
+    let mutable total = if isNull src then 0 else src.Length
+    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount wrap) total
+    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount relativeHeight) total
+    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount cropLeft) total
+    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount cropTop) total
+    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount cropRight) total
+    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount cropBottom) total
+    total
+
+let private lineArrayCacheSegmentTextCharCount segment =
+    match segment with
+    | TextSegment (text, style, _, _, _) ->
+        let mutable total = if isNull text then 0 else text.Length
+        total <- lineArrayCacheAddCapped (lineArrayCacheTextStyleStringCharCount style) total
+        total
+    | ImageSegment (src, _, _, _, _, _, _, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom) ->
+        lineArrayCacheImageTextCharCount src wrap relativeHeight cropLeft cropTop cropRight cropBottom
+    | MathSegment (prims, style, _, _, _, _, _, _) ->
+        let mutable total = lineArrayCacheTextStyleStringCharCount style
+        total <- lineArrayCacheAddCapped (lineArrayCacheMathPrimsTextCharCount prims) total
+        total
+
+let private lineArrayCacheTextCharCount (lines: MeasuredLine list) =
+    let limit = lineArrayCacheMaxTotalTextChars + 1
+    let mutable total = 0
+    let mutable remainingLines = lines
+    while total <= lineArrayCacheMaxTotalTextChars
+          && not remainingLines.IsEmpty do
+        let mutable remainingSegments = remainingLines.Head.Segments
+        while total <= lineArrayCacheMaxTotalTextChars
+              && not remainingSegments.IsEmpty do
+            total <- lineArrayCacheAddCapped (lineArrayCacheSegmentTextCharCount remainingSegments.Head) total
+            remainingSegments <- remainingSegments.Tail
+        remainingLines <- remainingLines.Tail
+    min total limit
+
+let private rememberLineArrayCacheEntry entry =
+    if entry.LineArray.Length > lineArrayCacheMaxTotalLines
+       || entry.TextCharCount > lineArrayCacheMaxTotalTextChars then
+        lineArrayCache <- lineArrayCache |> List.filter (lineArrayCacheEntryMatches entry.Lines >> not)
+        clearLastLineArrayCacheEntry entry.Lines
+    else
+        let mutable keptCount = 1
+        let mutable keptLines = entry.LineArray.Length
+        let mutable keptTextChars = max 1 entry.TextCharCount
+        let retained =
+            lineArrayCache
+            |> List.filter (lineArrayCacheEntryMatches entry.Lines >> not)
+            |> List.choose (fun candidate ->
+                let candidateLines = candidate.LineArray.Length
+                let candidateTextChars = max 1 candidate.TextCharCount
+                if keptCount < lineArrayCacheMaxEntries
+                   && keptLines + candidateLines <= lineArrayCacheMaxTotalLines
+                   && keptTextChars + candidateTextChars <= lineArrayCacheMaxTotalTextChars then
+                    keptCount <- keptCount + 1
+                    keptLines <- keptLines + candidateLines
+                    keptTextChars <- keptTextChars + candidateTextChars
+                    Some candidate
+                else
+                        None)
+        lineArrayCache <- entry :: retained
+        lastLineArrayCacheEntry <- Some entry
+
+let private cachedLineArrayEntry lines =
+    match tryFindLineArrayCacheEntry lines with
+    | Some entry ->
+        entry
+    | None ->
+        let lineArray = Array.ofList lines
+        let entry = {
+            Lines = lines
+            LineArray = lineArray
+            TextCharCount = lineArrayCacheTextCharCount lines
+            LastLineSet = false
+            LastOffset = 0
+            LastLine = Unchecked.defaultof<MeasuredLine>
+        }
+        rememberLineArrayCacheEntry entry
+        entry
+
+let private cachedLineArray lines =
+    (cachedLineArrayEntry lines).LineArray
+
+let private lineForOffsetArray (layout: BlockLayout) (lines: MeasuredLine array) (offset: int) =
+    if lines.Length = 0 then
+        emptyLine layout.Y layout.Height
+    elif offset <= lines.[0].StartOffset then
+        lines.[0]
+    else
+        let mutable low = 0
+        let mutable high = lines.Length
+        while low < high do
+            let mid = low + (high - low) / 2
+            if lines.[mid].EndOffset <= offset then
+                low <- mid + 1
+            else
+                high <- mid
+        if low >= lines.Length then
+            lines.[lines.Length - 1]
+        elif offset < lines.[low].StartOffset && low > 0 then
+            lines.[low - 1]
+        else
+            lines.[low]
+
+let private lineForOffsetCacheEntry layout entry offset =
+    if entry.LastLineSet && entry.LastOffset = offset then
+        entry.LastLine
+    else
+        let line = lineForOffsetArray layout entry.LineArray offset
+        entry.LastLineSet <- true
+        entry.LastOffset <- offset
+        entry.LastLine <- line
+        line
+
+let private lineForOffsetList (layout: BlockLayout) (offset: int) : MeasuredLine =
     match layout.Lines with
     | [] -> emptyLine layout.Y layout.Height
     | first :: _ when offset <= first.StartOffset -> first
-    | lines ->
-        match lines |> List.tryFind (fun line -> offset >= line.StartOffset && offset < line.EndOffset) with
-        | Some line -> line
+    | first :: rest ->
+        let mutable candidate = first
+        let mutable result = first
+        let mutable found = offset < first.EndOffset
+        let mutable remaining = rest
+        let mutable keepGoing = not found
+        while keepGoing do
+            match remaining with
+            | [] ->
+                result <- candidate
+                keepGoing <- false
+            | line :: tail ->
+                if offset < line.StartOffset then
+                    result <- candidate
+                    keepGoing <- false
+                elif offset < line.EndOffset then
+                    result <- line
+                    keepGoing <- false
+                else
+                    candidate <- line
+                    remaining <- tail
+        if found then first else result
+
+let lineForOffset (layout: BlockLayout) (offset: int) : MeasuredLine =
+    match lastLineArrayCacheEntry with
+    | Some entry when lineArrayCacheEntryMatches layout.Lines entry ->
+        lineForOffsetCacheEntry layout entry offset
+    | _ ->
+        match tryFindLineArrayCacheEntry layout.Lines with
+        | Some entry ->
+            lineForOffsetCacheEntry layout entry offset
         | None ->
-            match lines |> List.rev |> List.tryFind (fun line -> offset >= line.EndOffset) with
-            | Some line -> line
-            | None -> List.last lines
+            if lineListExceeds lineArrayCacheThreshold layout.Lines then
+                lineForOffsetCacheEntry layout (cachedLineArrayEntry layout.Lines) offset
+            else
+                lineForOffsetList layout offset
 
 let maxOffsetInLayout (layout: BlockLayout) =
     match layout.Lines with
     | [] -> 0
-    | lines -> lines |> List.map (fun l -> l.EndOffset) |> List.max
+    | first :: rest ->
+        let mutable maxOffset = first.EndOffset
+        for line in rest do
+            if line.EndOffset > maxOffset then
+                maxOffset <- line.EndOffset
+        maxOffset
 
 let xForOffsetWithRange (measureRange: TextRangeMeasurer) (line: MeasuredLine) (offset: int) =
     let mutable x = 0.0
@@ -811,63 +1500,97 @@ let xForOffsetWithRange (measureRange: TextRangeMeasurer) (line: MeasuredLine) (
 let xForOffset (measureText: TextMeasurer) (line: MeasuredLine) (offset: int) =
     xForOffsetWithRange (rangeMeasurerFromTextMeasurer measureText) line offset
 
+let private layoutContainsY mouseY (layout: BlockLayout) =
+    mouseY >= layout.Y && mouseY < layout.Y + layout.Height
+
+let private hitTestLayoutWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layout: BlockLayout) (mouseX: float) (mouseY: float) =
+    let mutable lineOpt = None
+    let mutable remaining = layout.Lines
+    while lineOpt.IsNone && not remaining.IsEmpty do
+        match remaining with
+        | line :: tail ->
+            if mouseY >= line.Y && mouseY < line.Y + line.Height then
+                lineOpt <- Some line
+            remaining <- tail
+        | [] -> ()
+
+    match lineOpt with
+    | None -> Some (layout.BlockId, 0)
+    | Some line ->
+        let relativeX = mouseX - paddingLeft - alignmentOffset layout line
+        let mutable offset = line.EndOffset
+        let mutable found = false
+
+        if relativeX <= 0.0 then
+            offset <- line.StartOffset
+            found <- true
+
+        for segment in line.Segments do
+            if not found then
+                match segment with
+                | TextSegment (text, style, x, width, startOffset) ->
+                    if relativeX <= x + width then
+                        let displayText = WordLayout.Text.displayText style text
+                        let displayStyle = WordLayout.Text.displayStyle style
+                        let mutable low = 0
+                        let mutable high = text.Length
+                        while low < high do
+                            let mid = (low + high) / 2
+                            let textWidth = measureRange displayText displayStyle 0 mid
+                            if x + textWidth < relativeX then
+                                low <- mid + 1
+                            else
+                                high <- mid
+                        offset <- startOffset + low
+                        found <- true
+                    else
+                        offset <- startOffset + text.Length
+
+                | ImageSegment (_, x, _, width, _, startOffset, _, _, _, _, _, _, _) ->
+                    if relativeX <= x + width then
+                        let midpoint = x + width / 2.0
+                        offset <- if relativeX < midpoint then startOffset else startOffset + 1
+                        found <- true
+                    else
+                        offset <- startOffset + 1
+
+                | MathSegment (_, _, x, width, _, _, startOffset, length) ->
+                    if relativeX <= x + width then
+                        let midpoint = x + width / 2.0
+                        offset <- if relativeX < midpoint then startOffset else startOffset + length
+                        found <- true
+                    else
+                        offset <- startOffset + length
+
+        Some (layout.BlockId, offset)
+
 let hitTestLayoutsWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout list) (mouseX: float) (mouseY: float) =
-    let blockOpt = layouts |> List.tryFind (fun layout ->
-        mouseY >= layout.Y && mouseY < layout.Y + layout.Height)
-
-    match blockOpt with
+    match layouts |> List.tryFind (layoutContainsY mouseY) with
     | None -> None
-    | Some layout ->
-        let lineOpt = layout.Lines |> List.tryFind (fun line ->
-            mouseY >= line.Y && mouseY < line.Y + line.Height)
+    | Some layout -> hitTestLayoutWithRange measureRange paddingLeft layout mouseX mouseY
 
-        match lineOpt with
-        | None -> Some (layout.BlockId, 0)
-        | Some line ->
-            let relativeX = mouseX - paddingLeft - alignmentOffset layout line
-            let mutable offset = line.EndOffset
-            let mutable found = false
+let hitTestLayoutArrayWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
+    let mutable low = 0
+    let mutable high = layouts.Length
+    while low < high do
+        let mid = (low + high) / 2
+        let layout = layouts.[mid]
+        if layout.Y + layout.Height <= mouseY then
+            low <- mid + 1
+        else
+            high <- mid
 
-            if relativeX <= 0.0 then
-                offset <- line.StartOffset
-                found <- true
+    let mutable index = low
+    while index > 0 && layouts.[index - 1].Y + layouts.[index - 1].Height > mouseY do
+        index <- index - 1
 
-            for segment in line.Segments do
-                if not found then
-                    match segment with
-                    | TextSegment (text, style, x, width, startOffset) ->
-                        if relativeX <= x + width then
-                            let mutable low = 0
-                            let mutable high = text.Length
-                            while low < high do
-                                let mid = (low + high) / 2
-                                let textWidth = measureRange (WordLayout.Text.displayText style text) (WordLayout.Text.displayStyle style) 0 mid
-                                if x + textWidth < relativeX then
-                                    low <- mid + 1
-                                else
-                                    high <- mid
-                            offset <- startOffset + low
-                            found <- true
-                        else
-                            offset <- startOffset + text.Length
-
-                    | ImageSegment (_, x, _, width, _, startOffset, _, _, _, _, _, _, _) ->
-                        if relativeX <= x + width then
-                            let midpoint = x + width / 2.0
-                            offset <- if relativeX < midpoint then startOffset else startOffset + 1
-                            found <- true
-                        else
-                            offset <- startOffset + 1
-
-                    | MathSegment (_, _, x, width, _, _, startOffset, length) ->
-                        if relativeX <= x + width then
-                            let midpoint = x + width / 2.0
-                            offset <- if relativeX < midpoint then startOffset else startOffset + length
-                            found <- true
-                        else
-                            offset <- startOffset + length
-
-            Some (layout.BlockId, offset)
+    let mutable result = None
+    while result.IsNone && index < layouts.Length && layouts.[index].Y <= mouseY do
+        let layout = layouts.[index]
+        if layoutContainsY mouseY layout then
+            result <- hitTestLayoutWithRange measureRange paddingLeft layout mouseX mouseY
+        index <- index + 1
+    result
 
 let hitTestLayouts (measureText: TextMeasurer) (paddingLeft: float) (layouts: BlockLayout list) (mouseX: float) (mouseY: float) =
     hitTestLayoutsWithRange (rangeMeasurerFromTextMeasurer measureText) paddingLeft layouts mouseX mouseY
@@ -891,23 +1614,63 @@ let hitTestForImageLayouts (paddingLeft: float) (layouts: BlockLayout list) (mou
                             | MathSegment _ -> ()
     result
 
+let private hitTestForImageLayout (paddingLeft: float) (layout: BlockLayout) (mouseX: float) (mouseY: float) : (BlockId * int * float * float * float * float) option =
+    let mutable result = None
+    for line in layout.Lines do
+        if result.IsNone then
+            let lineAlignmentOffset = alignmentOffset layout line
+            let relativeX = mouseX - paddingLeft - lineAlignmentOffset
+            for segment in line.Segments do
+                if result.IsNone then
+                    match segment with
+                    | ImageSegment (_, x, yOffset, width, height, startOffset, _, _, _, _, _, _, _) ->
+                        let imageY = line.Y + yOffset
+                        if mouseY >= imageY && mouseY <= imageY + height && relativeX >= x && relativeX <= x + width then
+                            result <- Some (layout.BlockId, startOffset, width, height, paddingLeft + x + lineAlignmentOffset, imageY)
+                    | TextSegment _ -> ()
+                    | MathSegment _ -> ()
+    result
+
+let hitTestForImageLayoutArray (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) : (BlockId * int * float * float * float * float) option =
+    let mutable low = 0
+    let mutable high = layouts.Length
+    while low < high do
+        let mid = (low + high) / 2
+        let layout = layouts.[mid]
+        if layout.Y + layout.Height < mouseY then
+            low <- mid + 1
+        else
+            high <- mid
+
+    let mutable index = low
+    while index > 0 && layouts.[index - 1].Y + layouts.[index - 1].Height >= mouseY do
+        index <- index - 1
+
+    let mutable result = None
+    while result.IsNone && index < layouts.Length && layouts.[index].Y <= mouseY do
+        result <- hitTestForImageLayout paddingLeft layouts.[index] mouseX mouseY
+        index <- index + 1
+    result
+
+let imageBoxInLayout (paddingLeft: float) (layout: BlockLayout) (offset: int) : (float * float * float * float) option =
+    let mutable result = None
+
+    for line in layout.Lines do
+        if result.IsNone then
+            let lineAlignmentOffset = alignmentOffset layout line
+            for segment in line.Segments do
+                if result.IsNone then
+                    match segment with
+                    | ImageSegment (_, segX, yOffset, width, height, startOffset, _, _, _, _, _, _, _) when startOffset = offset ->
+                        result <- Some (paddingLeft + segX + lineAlignmentOffset, line.Y + yOffset, width, height)
+                    | _ -> ()
+
+    result
+
 let imageBoxForOffset (paddingLeft: float) (layouts: BlockLayout list) (blockId: BlockId) (offset: int) : (float * float * float * float) option =
     match layouts |> List.tryFind (fun l -> l.BlockId = blockId) with
     | None -> None
-    | Some layout ->
-        let mutable result = None
-
-        for line in layout.Lines do
-            if result.IsNone then
-                let lineAlignmentOffset = alignmentOffset layout line
-                for segment in line.Segments do
-                    if result.IsNone then
-                        match segment with
-                        | ImageSegment (_, segX, yOffset, width, height, startOffset, _, _, _, _, _, _, _) when startOffset = offset ->
-                            result <- Some (paddingLeft + segX + lineAlignmentOffset, line.Y + yOffset, width, height)
-                        | _ -> ()
-
-        result
+    | Some layout -> imageBoxInLayout paddingLeft layout offset
 
 type FloatingObstacle = float * float * float * float
 type PlacedFloatingBox = WordLayout.Floating.Box
@@ -926,39 +1689,26 @@ let private visibleTokenLength (text: string) =
         length <- length - 1
     length
 
+let private visibleTokenLengthRange (text: string) start length =
+    let mutable visible = length
+    while visible > 0 && isWhitespaceChar text.[start + visible - 1] do
+        visible <- visible - 1
+    visible
+
+let private rangeContainsTab (text: string) start length =
+    let stop = start + length
+    let mutable index = start
+    let mutable found = false
+    while not found && index < stop do
+        if text.[index] = '\t' then
+            found <- true
+        index <- index + 1
+    found
+
 let private trailingSpaceFitSafety settings visibleLength =
     if visibleLength <= 3 then shortTrailingSpaceFitSafety else settings.LongTrailingSpaceFitSafety
 
-let private lineAlignmentWidth (measureRange: TextRangeMeasurer) (segments: Segment list) fallbackEnd =
-    let rec visibleEnd = function
-        | [] -> 0.0
-        | ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) :: _ -> x + width
-        | MathSegment (_, _, x, width, _, _, _, _) :: _ -> x + width
-        | TextSegment (text, style, x, width, _) :: rest ->
-            let visibleLength = visibleTokenLength text
-            if visibleLength = text.Length then
-                x + width
-            elif visibleLength > 0 then
-                let displayText = WordLayout.Text.displayText style text
-                let displayStyle = WordLayout.Text.displayStyle style
-                x + measureRange displayText displayStyle 0 visibleLength
-            else
-                visibleEnd rest
-
-    min fallbackEnd (visibleEnd (List.rev segments))
-
-let private hasMixedTextMetrics (segments: Segment list) =
-    let keys =
-        segments
-        |> List.choose (function
-            | TextSegment (_, style, _, _, _) -> Some (style.FontFamily, style.FontSize, style.Bold, style.Italic, style.VertAlign, style.SmallCaps)
-            | ImageSegment _ -> None
-            | MathSegment _ -> None)
-        |> List.distinct
-    keys.Length > 1
-
-let private wordWrapTokens (text: string) =
-    let tokens = ResizeArray<string>()
+let private iterWordWrapTokenRanges (text: string) (f: int -> int -> unit) =
     let mutable index = 0
     while index < text.Length do
         let start = index
@@ -967,11 +1717,11 @@ let private wordWrapTokens (text: string) =
                 index <- index + 2
             else
                 index <- index + 1
-            tokens.Add(text.Substring(start, index - start))
+            f start (index - start)
         elif isWhitespaceChar text.[index] then
             while index < text.Length && isWhitespaceChar text.[index] && text.[index] <> '\r' && text.[index] <> '\n' do
                 index <- index + 1
-            tokens.Add(text.Substring(start, index - start))
+            f start (index - start)
         else
             let mutable keepGoing = true
             while keepGoing && index < text.Length && not (isWhitespaceChar text.[index]) do
@@ -986,13 +1736,21 @@ let private wordWrapTokens (text: string) =
             // wide blob).
             while index < text.Length && isWhitespaceChar text.[index] && text.[index] <> '\r' && text.[index] <> '\n' && text.[index] <> '\t' do
                 index <- index + 1
-            tokens.Add(text.Substring(start, index - start))
-    tokens
+            f start (index - start)
 
 /// Layout buffer into lines with styled runs and images.
 let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     let mutable lines = []
-    let mutable currentSegments: Segment list = []
+    let currentSegments = ResizeArray<Segment>()
+    let mutable currentHasTextMetric = false
+    let mutable currentFirstFontFamily = None
+    let mutable currentFirstFontSize = 0.0
+    let mutable currentFirstBold = false
+    let mutable currentFirstItalic = false
+    let mutable currentFirstVertAlign = None
+    let mutable currentFirstSmallCaps = false
+    let mutable currentHasMixedTextMetrics = false
+    let mutable currentHasFlowContent = false
     let mutable currentX = 0.0
     let mutable y = minBodyTop settings 0.0
     let mutable flushedLineCount = 0
@@ -1000,35 +1758,62 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
     let mutable currentLineEnd = availableWidth
     let mutable floatObstacles = initialObstacles
     let mutable placedBoxes = initialPlacedBoxes
+    let placedImageSources = System.Collections.Generic.HashSet<string>()
 
-    let hasFlowContent segments =
-        segments
-        |> List.exists (function
-            | ImageSegment (_, _, _, _, _, _, floating, _, _, _, _, _, _) when floating -> false
-            | _ -> true)
+    let addPlacedImageSource (box: PlacedFloatingBox) =
+        match box.Kind with
+        | WordLayout.Floating.ImageBox image when image.Src <> "" ->
+            placedImageSources.Add image.Src |> ignore
+        | _ -> ()
 
-    let mergeIntervals intervals =
-        let sorted = intervals |> List.sortBy fst
-        let rec loop merged remaining =
-            match merged, remaining with
-            | _, [] -> List.rev merged
-            | [], interval :: rest -> loop [interval] rest
-            | (startX, endX) :: prior, (nextStart, nextEnd) :: rest when nextStart <= endX ->
-                loop ((startX, max endX nextEnd) :: prior) rest
-            | _, interval :: rest -> loop (interval :: merged) rest
-        loop [] sorted
+    for box in initialPlacedBoxes do
+        addPlacedImageSource box
+
+    let noteTextMetric style =
+        if not currentHasTextMetric then
+            currentHasTextMetric <- true
+            currentFirstFontFamily <- style.FontFamily
+            currentFirstFontSize <- style.FontSize
+            currentFirstBold <- style.Bold
+            currentFirstItalic <- style.Italic
+            currentFirstVertAlign <- style.VertAlign
+            currentFirstSmallCaps <- style.SmallCaps
+        elif not currentHasMixedTextMetrics
+             && (currentFirstFontFamily <> style.FontFamily
+                 || currentFirstFontSize <> style.FontSize
+                 || currentFirstBold <> style.Bold
+                 || currentFirstItalic <> style.Italic
+                 || currentFirstVertAlign <> style.VertAlign
+                 || currentFirstSmallCaps <> style.SmallCaps) then
+            currentHasMixedTextMetrics <- true
 
     let wrapIntervalsForY lineY =
         // Return the list of free (start, end) intervals at this line y, ordered
         // left-to-right. Empty list means the entire line is blocked.
         let globalLineY = contentY + (lineY - settings.PaddingTop)
         let lineBottom = globalLineY + settings.LineHeight
-        let active =
-            floatObstacles
-            |> List.filter (fun (_, top, _, height) -> lineBottom > top && globalLineY < top + height)
-            |> List.map (fun (x, _, width, _) -> x, x + width)
-            |> mergeIntervals
-
+        let active = ResizeArray<float * float>()
+        let addActiveInterval startX endX =
+            let mutable startX = startX
+            let mutable endX = endX
+            let mutable i = 0
+            let mutable inserted = false
+            while not inserted && i < active.Count do
+                let activeStart, activeEnd = active.[i]
+                if endX < activeStart then
+                    active.Insert(i, (startX, endX))
+                    inserted <- true
+                elif startX > activeEnd then
+                    i <- i + 1
+                else
+                    startX <- min startX activeStart
+                    endX <- max endX activeEnd
+                    active.RemoveAt i
+            if not inserted then
+                active.Add((startX, endX))
+        for (x, top, width, height) in floatObstacles do
+            if lineBottom > top && globalLineY < top + height then
+                addActiveInterval x (x + width)
         let mutable gaps = []
         let mutable cursor = 0.0
         for (oxStart, oxEnd) in active do
@@ -1041,12 +1826,15 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
     let nextObstacleClearY lineY =
         let globalLineY = contentY + (lineY - settings.PaddingTop)
         let lineBottom = globalLineY + settings.LineHeight
-        floatObstacles
-        |> List.choose (fun (_, top, _, height) ->
+        let mutable clearY = None
+        for (_, top, _, height) in floatObstacles do
             let bottom = top + height
-            if lineBottom > top && globalLineY < bottom then Some bottom else None)
-        |> List.sort
-        |> List.tryHead
+            if lineBottom > top && globalLineY < bottom then
+                match clearY with
+                | None -> clearY <- Some bottom
+                | Some current when bottom < current -> clearY <- Some bottom
+                | Some _ -> ()
+        clearY
 
     // Intervals at the current y that we have not yet started filling. The
     // currentX/currentLineEnd pair always reflects the interval being filled.
@@ -1063,40 +1851,116 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             currentLineEnd <- availableWidth
 
     let moveToWrappableLine () =
-        pendingIntervals <- wrapIntervalsForY y
-        private_setIntervalToFirst ()
-        while currentX >= currentLineEnd do
-            match nextObstacleClearY y with
-            | Some clearGlobalY ->
-                let clearY = settings.PaddingTop + (clearGlobalY - contentY)
-                if clearY > y + 0.01 then y <- clearY else y <- y + settings.LineHeight
-            | None ->
-                y <- y + settings.LineHeight
+        if floatObstacles.IsEmpty then
+            pendingIntervals <- []
+            currentX <- 0.0
+            currentLineEnd <- availableWidth
+        else
             pendingIntervals <- wrapIntervalsForY y
             private_setIntervalToFirst ()
+            while currentX >= currentLineEnd do
+                match nextObstacleClearY y with
+                | Some clearGlobalY ->
+                    let clearY = settings.PaddingTop + (clearGlobalY - contentY)
+                    if clearY > y + 0.01 then y <- clearY else y <- y + settings.LineHeight
+                | None ->
+                    y <- y + settings.LineHeight
+                pendingIntervals <- wrapIntervalsForY y
+                private_setIntervalToFirst ()
+
+    let coalescedSegmentList (segments: ResizeArray<Segment>) =
+        let output = ResizeArray<Segment>(segments.Count)
+        let mutable pendingText: System.Text.StringBuilder = null
+        let mutable pendingStyle = Unchecked.defaultof<TextBuffer.TextStyle>
+        let mutable pendingX = 0.0
+        let mutable pendingWidth = 0.0
+        let mutable pendingStart = 0
+        let flushPending () =
+            if not (isNull pendingText) then
+                output.Add(TextSegment (pendingText.ToString(), pendingStyle, pendingX, pendingWidth, pendingStart))
+                pendingText <- null
+                pendingWidth <- 0.0
+                pendingStart <- 0
+        for segment in segments do
+            match segment with
+            | TextSegment (text, style, x, width, startOffset)
+                when not (rangeContainsTab text 0 text.Length) ->
+                if not (isNull pendingText)
+                   && pendingStyle = style
+                   && pendingStart + pendingText.Length = startOffset
+                   && abs ((pendingX + pendingWidth) - x) < 0.01 then
+                    pendingText.Append(text) |> ignore
+                    pendingWidth <- pendingWidth + width
+                else
+                    flushPending ()
+                    pendingText <- System.Text.StringBuilder(text.Length)
+                    pendingText.Append(text) |> ignore
+                    pendingStyle <- style
+                    pendingX <- x
+                    pendingWidth <- width
+                    pendingStart <- startOffset
+            | _ ->
+                flushPending ()
+                output.Add segment
+        flushPending ()
+        resizeArrayToList output
 
     let flushLine () =
-        if not currentSegments.IsEmpty then
-            let segments = List.rev currentSegments
-            let hasInlineImage =
-                segments
-                |> List.exists (function
-                    | ImageSegment (_, _, _, _, _, _, floating, _, _, _, _, _, _) -> not floating
-                    | TextSegment _ -> false
-                    | MathSegment _ -> false)
+        if currentSegments.Count > 0 then
+            let scale = settings.LineHeight / settings.FontSize
+            let mutable hasInlineImage = false
+            let mutable segmentMaxHeight = 0.0
+            let mutable startOffset = 0
+            let mutable endOffset = 0
+            let mutable widthEnd = 0.0
+            let mutable isFirstSegment = true
+            for segment in currentSegments do
+                if isFirstSegment then
+                    startOffset <- segmentStart segment
+                    isFirstSegment <- false
+                endOffset <- segmentEnd segment
+                match segment with
+                | ImageSegment (_, _, _, _, _, _, floating, _, _, _, _, _, _) when not floating ->
+                    hasInlineImage <- true
+                | _ -> ()
+                match segment with
+                | ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _) ->
+                    widthEnd <- x + width
+                | MathSegment (_, _, x, width, _, _, _, _) ->
+                    widthEnd <- x + width
+                | TextSegment (text, style, x, width, _) ->
+                    let visibleLength = visibleTokenLength text
+                    if visibleLength = text.Length then
+                        widthEnd <- x + width
+                    elif visibleLength > 0 then
+                        let displayText = WordLayout.Text.displayText style text
+                        let displayStyle = WordLayout.Text.displayStyle style
+                        widthEnd <- x + measureRange displayText displayStyle 0 visibleLength
+                let height = segmentHeight scale segment
+                if height > segmentMaxHeight then
+                    segmentMaxHeight <- height
             let inlineImageDescent = if hasInlineImage then settings.FontSize * 0.27 else 0.0
-            let lineHeight =
-                (segments |> List.map (segmentHeight (settings.LineHeight / settings.FontSize)) |> List.max) + inlineImageDescent
-                |> max settings.LineHeight
-            lines <- lines @ [{
+            let lineHeight = max settings.LineHeight (segmentMaxHeight + inlineImageDescent)
+            let lineWidth = min currentX widthEnd
+            let segments = coalescedSegmentList currentSegments
+            lines <- {
                 Segments = segments
                 Y = y
-                Width = lineAlignmentWidth measureRange segments currentX
+                Width = lineWidth
                 Height = lineHeight
-                StartOffset = segments |> List.head |> segmentStart
-                EndOffset = segments |> List.last |> segmentEnd
-            }]
-            currentSegments <- []
+                StartOffset = startOffset
+                EndOffset = endOffset
+            } :: lines
+            currentSegments.Clear()
+            currentHasTextMetric <- false
+            currentFirstFontFamily <- None
+            currentFirstFontSize <- 0.0
+            currentFirstBold <- false
+            currentFirstItalic <- false
+            currentFirstVertAlign <- None
+            currentFirstSmallCaps <- false
+            currentHasMixedTextMetrics <- false
+            currentHasFlowContent <- false
             flushedLineCount <- flushedLineCount + 1
             match pendingIntervals with
             | _ :: _ ->
@@ -1109,27 +1973,37 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                 moveToWrappableLine ()
 
     let runs = buffer.Runs |> List.toArray
+    let fullText =
+        if runs.Length > 1 then ValueSome (TextBuffer.toString buffer)
+        else ValueNone
+    let runText (textRun: TextBuffer.TextRun) =
+        match fullText with
+        | ValueSome text ->
+            if textRun.Start = 0 && textRun.Length = text.Length then text
+            else sliceText text textRun.Start textRun.Length
+        | ValueNone ->
+            TextBuffer.trySliceNoCopy textRun.Start textRun.Length buffer
+            |> Option.defaultWith (fun () -> TextBuffer.slice textRun.Start textRun.Length buffer)
 
     let followingTextWidth runIndex currentTextStart (currentDisplayText: string) currentDisplayStyle =
         let mutable width = 0.0
         let addTextUntilBreak (displayText: string) displayStyle start =
             if start >= displayText.Length then false
             else
-                let text = displayText.Substring(start)
-                let stop =
-                    text
-                    |> Seq.tryFindIndex (fun ch -> ch = '\t' || ch = '\r' || ch = '\n')
-                    |> Option.defaultValue text.Length
-                if stop > 0 then
-                    width <- width + measureRange displayText displayStyle start stop
-                stop < text.Length
+                let mutable stop = start
+                while stop < displayText.Length && displayText.[stop] <> '\t' && displayText.[stop] <> '\r' && displayText.[stop] <> '\n' do
+                    stop <- stop + 1
+                let length = stop - start
+                if length > 0 then
+                    width <- width + measureRange displayText displayStyle start length
+                stop < displayText.Length
 
         let mutable index = runIndex
         let mutable keepGoing = true
         while keepGoing && index < runs.Length do
             match runs.[index] with
             | TextBuffer.Text nextRun ->
-                let rawText = TextBuffer.slice nextRun.Start nextRun.Length buffer
+                let rawText = runText nextRun
                 let displayText =
                     if index = runIndex then currentDisplayText
                     else WordLayout.Text.displayText nextRun.Style rawText
@@ -1144,19 +2018,28 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
 
     // Next non-bar tab stop strictly to the right of x.
     let nextTabStop x =
-        tabStops
-        |> List.filter (fun t -> t.Alignment <> "bar" && t.Position > x + 0.01)
-        |> List.sortBy (fun t -> t.Position)
-        |> List.tryHead
+        let mutable best: TabStop option = None
+        for stop in tabStops do
+            if stop.Alignment <> "bar" && stop.Position > x + 0.01 then
+                match best with
+                | None -> best <- Some stop
+                | Some current when stop.Position < current.Position -> best <- Some stop
+                | Some _ -> ()
+        best
 
     // Width of the immediate following text up to its decimal separator (for
     // decimal tabs) — that prefix's right edge lands on the tab stop.
     let followingWidthToDecimal currentTextStart (currentDisplayText: string) currentDisplayStyle =
-        let text = if currentTextStart < currentDisplayText.Length then currentDisplayText.Substring(currentTextStart) else ""
-        let breakIdx = text |> Seq.tryFindIndex (fun c -> c = '\t' || c = '\r' || c = '\n') |> Option.defaultValue text.Length
-        let seg = text.Substring(0, breakIdx)
-        let dotIdx = seg.IndexOf('.')
-        let upto = if dotIdx >= 0 then dotIdx else seg.Length
+        let mutable index = currentTextStart
+        let mutable dotIndex = -1
+        while index < currentDisplayText.Length
+              && currentDisplayText.[index] <> '\t'
+              && currentDisplayText.[index] <> '\r'
+              && currentDisplayText.[index] <> '\n' do
+            if dotIndex < 0 && currentDisplayText.[index] = '.' then
+                dotIndex <- index
+            index <- index + 1
+        let upto = if dotIndex >= 0 then dotIndex - currentTextStart else index - currentTextStart
         if upto > 0 then measureRange currentDisplayText currentDisplayStyle currentTextStart upto else 0.0
 
     let tabWidth runIndex currentTextStart (currentDisplayText: string) currentDisplayStyle =
@@ -1173,6 +2056,11 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
         | None ->
             max 12.0 (min defaultTab currentLineEnd - currentX)
 
+    let addTextSegment text style x width startOffset =
+        noteTextMetric style
+        currentHasFlowContent <- true
+        currentSegments.Add(TextSegment (text, style, x, width, startOffset))
+
     moveToWrappableLine ()
 
     for runIndex in 0 .. runs.Length - 1 do
@@ -1181,7 +2069,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
         | TextBuffer.Image imgRun ->
             let imgWidth, imgHeight = WordLayout.Image.canvasSize imgRun.Width imgRun.Height
 
-            if currentX + imgWidth > currentLineEnd && not currentSegments.IsEmpty then
+            if currentX + imgWidth > currentLineEnd && currentSegments.Count > 0 then
                 flushLine ()
 
             let rawFloatingBox = WordLayout.Floating.imageCanvasBox settings.PaddingLeft contentY currentX y settings.PaddingTop imgWidth imgHeight imgRun
@@ -1189,7 +2077,9 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             let imageX = if imgRun.Floating then floatingBox.X else currentX
             let yOffset = if imgRun.Floating then floatingBox.Y - (contentY + (y - settings.PaddingTop)) else 0.0
             let segment = ImageSegment (imgRun.Src, imageX, yOffset, imgWidth, imgHeight, imgRun.Start, imgRun.Floating, imgRun.Wrap, imgRun.RelativeHeight, imgRun.CropLeft, imgRun.CropTop, imgRun.CropRight, imgRun.CropBottom)
-            currentSegments <- segment :: currentSegments
+            currentSegments.Add segment
+            if not imgRun.Floating then
+                currentHasFlowContent <- true
             // The same float may have been pre-placed by an anchor-extended pass
             // earlier in the document layout. Detect that by matching the image
             // source against the existing placed boxes; in that case the
@@ -1197,10 +2087,8 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             // top, so just emit the ImageSegment and keep wrapping as before.
             let alreadyPlaced =
                 imgRun.Floating
-                && placedBoxes |> List.exists (fun b ->
-                    match b.Kind with
-                    | WordLayout.Floating.ImageBox other -> other.Src = imgRun.Src && other.Src <> ""
-                    | _ -> false)
+                && imgRun.Src <> ""
+                && placedImageSources.Contains imgRun.Src
             if imgRun.Floating && WordLayout.Floating.participatesInWrap floatingBox && not alreadyPlaced then
                 let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox availableWidth floatingBox
                 if WordLayout.Floating.wrapsTopAndBottom floatingBox.Wrap then
@@ -1222,7 +2110,9 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                 ()
             else
                 currentX <- currentX + imgWidth
-            if imgRun.Floating && not alreadyPlaced then placedBoxes <- floatingBox :: placedBoxes
+            if imgRun.Floating && not alreadyPlaced then
+                placedBoxes <- floatingBox :: placedBoxes
+                addPlacedImageSource floatingBox
 
         | TextBuffer.Text textRun when textRun.Style.Hidden ->
             // w:vanish — hidden text is not laid out and takes no space.
@@ -1237,22 +2127,25 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             let fallbackText (txt: string) =
                 let dispStyle = WordLayout.Text.displayStyle textRun.Style
                 let w = measureRange txt dispStyle 0 txt.Length
-                if currentX + w > currentLineEnd && not currentSegments.IsEmpty then flushLine ()
-                currentSegments <- TextSegment (txt, dispStyle, currentX, w, textRun.Start) :: currentSegments
+                if currentX + w > currentLineEnd && currentSegments.Count > 0 then flushLine ()
+                noteTextMetric dispStyle
+                currentSegments.Add(TextSegment (txt, dispStyle, currentX, w, textRun.Start))
+                currentHasFlowContent <- true
                 currentX <- currentX + w
             match boxResult with
             | Ok (Some box) when not box.Prims.IsEmpty ->
-                if currentX + box.Width > currentLineEnd && not currentSegments.IsEmpty then flushLine ()
-                currentSegments <- MathSegment (box.Prims, textRun.Style, currentX, box.Width, box.Ascent, box.Descent, textRun.Start, textRun.Length) :: currentSegments
+                if currentX + box.Width > currentLineEnd && currentSegments.Count > 0 then flushLine ()
+                currentSegments.Add(MathSegment (box.Prims, textRun.Style, currentX, box.Width, box.Ascent, box.Descent, textRun.Start, textRun.Length))
+                currentHasFlowContent <- true
                 currentX <- currentX + box.Width
             | Ok _ | Error _ ->
                 // Unparseable equation — fall back to the literal run text.
-                fallbackText (WordLayout.Text.displayText textRun.Style (TextBuffer.slice textRun.Start textRun.Length buffer))
+                fallbackText (WordLayout.Text.displayText textRun.Style (runText textRun))
         | TextBuffer.Text textRun ->
-            if textRun.Style.RenderedPageBreakBefore && not currentSegments.IsEmpty then
+            if textRun.Style.RenderedPageBreakBefore && currentSegments.Count > 0 then
                 flushLine ()
 
-            let runText = TextBuffer.slice textRun.Start textRun.Length buffer
+            let runText = runText textRun
             let displayRunText = WordLayout.Text.displayText textRun.Style runText
             let displayRunStyle = WordLayout.Text.displayStyle textRun.Style
             let mutable consumed = 0
@@ -1273,30 +2166,37 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                             high <- mid - 1
                     best
 
-            for textToAdd in wordWrapTokens runText do
-
-                if String.length textToAdd > 0 then
-                    if textToAdd = "\n" || textToAdd = "\r" || textToAdd = "\r\n" then
-                        let hadSegments = not currentSegments.IsEmpty
+            iterWordWrapTokenRanges runText (fun tokenStart tokenLength ->
+                if tokenLength > 0 then
+                    let isLineBreak =
+                        match tokenLength with
+                        | 1 -> runText.[tokenStart] = '\n' || runText.[tokenStart] = '\r'
+                        | 2 -> runText.[tokenStart] = '\r' && runText.[tokenStart + 1] = '\n'
+                        | _ -> false
+                    if isLineBreak then
+                        let hadSegments = currentSegments.Count > 0
                         flushLine ()
                         if not hadSegments then
                             y <- y + settings.LineHeight
                             moveToWrappableLine ()
-                        consumed <- consumed + textToAdd.Length
+                        consumed <- consumed + tokenLength
                     else
-                        let mutable remaining = textToAdd
-                        while remaining.Length > 0 do
-                            if currentSegments.IsEmpty && currentX >= currentLineEnd then
+                        let mutable remainingStart = 0
+                        let mutable remainingLength = tokenLength
+                        while remainingLength > 0 do
+                            if currentSegments.Count = 0 && currentX >= currentLineEnd then
                                 moveToWrappableLine ()
 
+                            let tokenOffset = tokenStart + remainingStart
+                            let hasTab = rangeContainsTab runText tokenOffset remainingLength
                             let width =
-                                if remaining.Contains("\t") then tabWidth runIndex (consumed + remaining.Length) displayRunText displayRunStyle
-                                else measureRange displayRunText displayRunStyle consumed remaining.Length
+                                if hasTab then tabWidth runIndex (consumed + remainingLength) displayRunText displayRunStyle
+                                else measureRange displayRunText displayRunStyle consumed remainingLength
                             let fitWidth =
-                                if remaining.Contains("\t") then width
+                                if hasTab then width
                                 else
-                                    let visibleLength = visibleTokenLength remaining
-                                    if visibleLength > 0 && visibleLength < remaining.Length then
+                                    let visibleLength = visibleTokenLengthRange runText tokenOffset remainingLength
+                                    if visibleLength > 0 && visibleLength < remainingLength then
                                         // Word fits the visible token; a trailing space may cross
                                         // the text boundary without forcing the word to the next line.
                                         let visibleWidth = measureRange displayRunText displayRunStyle consumed visibleLength
@@ -1305,8 +2205,8 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
 
                             let fullFitSafety =
                                 if settings.InTableCell then
-                                    if hasMixedTextMetrics currentSegments then max tableCellLineFitSafety mixedMetricsLineFitSafety else tableCellLineFitSafety
-                                elif hasMixedTextMetrics currentSegments then mixedMetricsLineFitSafety
+                                    if currentHasMixedTextMetrics then max tableCellLineFitSafety mixedMetricsLineFitSafety else tableCellLineFitSafety
+                                elif currentHasMixedTextMetrics then mixedMetricsLineFitSafety
                                 else lineFitSafety
 
                             let overflows = currentX + fitWidth > currentLineEnd - fullFitSafety
@@ -1314,36 +2214,41 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                             // whitespace), so a short word like "Float" that fits the strip
                             // but whose trailing space pushes it over still gets placed.
                             let visibleOverflows =
-                                let visibleLength = visibleTokenLength remaining
-                                if visibleLength > 0 && visibleLength < remaining.Length && not (remaining.Contains("\t")) then
+                                let visibleLength = visibleTokenLengthRange runText tokenOffset remainingLength
+                                if visibleLength > 0 && visibleLength < remainingLength && not hasTab then
                                     let vw = measureRange displayRunText displayRunStyle consumed visibleLength
                                     currentX + vw > currentLineEnd - fullFitSafety
                                 else overflows
-                            if overflows && hasFlowContent currentSegments then
+                            if overflows && currentHasFlowContent then
                                 flushLine ()
-                            elif visibleOverflows && not (hasFlowContent currentSegments) && not pendingIntervals.IsEmpty && not (remaining.Contains("\t")) then
+                            elif visibleOverflows && not currentHasFlowContent && not pendingIntervals.IsEmpty && not hasTab then
                                 // Narrow strip at this y can't hold the next whole word, but
                                 // there's another strip at the same y — leave this one empty
                                 // and try the next, matching Word's wrap-around-float behavior
                                 // instead of force-breaking the word inside the narrow strip.
                                 private_setIntervalToFirst ()
                             else
-                                let segmentText, segmentWidth =
-                                    if overflows && not (remaining.Contains("\t")) then
+                                let segmentLength, segmentWidth =
+                                    if overflows && not hasTab then
                                         let maxSegmentWidth = max 1.0 (currentLineEnd - currentX)
-                                        let take = fittingLength consumed remaining.Length maxSegmentWidth
-                                        remaining.Substring(0, take), measureRange displayRunText displayRunStyle consumed take
+                                        let take = fittingLength consumed remainingLength maxSegmentWidth
+                                        take, measureRange displayRunText displayRunStyle consumed take
                                     else
-                                        remaining, width
-                                let segment = TextSegment (segmentText, textRun.Style, currentX, segmentWidth, textRun.Start + consumed)
-                                currentSegments <- segment :: currentSegments
+                                        remainingLength, width
+                                let segmentText =
+                                    if tokenOffset = 0 && segmentLength = runText.Length then
+                                        runText
+                                    else
+                                        sliceText runText tokenOffset segmentLength
+                                addTextSegment segmentText textRun.Style currentX segmentWidth (textRun.Start + consumed)
                                 currentX <- currentX + segmentWidth
-                                consumed <- consumed + segmentText.Length
-                                remaining <- remaining.Substring(segmentText.Length)
-                                if remaining.Length > 0 then flushLine ()
+                                consumed <- consumed + segmentLength
+                                remainingStart <- remainingStart + segmentLength
+                                remainingLength <- remainingLength - segmentLength
+                                if remainingLength > 0 then flushLine ())
 
     flushLine ()
-    lines, floatObstacles, placedBoxes
+    List.rev lines, floatObstacles, placedBoxes
 
 let layoutLinesStyledWithObstacles (settings: LayoutSettings) (measureText: TextMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     layoutLinesStyledWithObstaclesWithRange settings (rangeMeasurerFromTextMeasurer measureText) buffer maxWidth contentY tabStops initialObstacles initialPlacedBoxes
@@ -1351,6 +2256,100 @@ let layoutLinesStyledWithObstacles (settings: LayoutSettings) (measureText: Text
 let layoutLinesStyled (settings: LayoutSettings) (measureText: TextMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) =
     let lines, _, _ = layoutLinesStyledWithObstacles settings measureText buffer maxWidth 0.0 [] [] []
     lines
+
+let private trySingleLineStyledNoObstacles (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+    if not tabStops.IsEmpty || not initialObstacles.IsEmpty || not initialPlacedBoxes.IsEmpty then
+        None
+    else
+        match buffer.Runs with
+        | [TextBuffer.Text textRun] when not textRun.Style.Hidden
+                                      && textRun.Style.EquationXml.IsNone
+                                      && not textRun.Style.RenderedPageBreakBefore ->
+            let rawText =
+                TextBuffer.trySliceNoCopy textRun.Start textRun.Length buffer
+                |> Option.defaultWith (fun () -> TextBuffer.slice textRun.Start textRun.Length buffer)
+            if rawText.Length = 0 || rangeContainsTab rawText 0 rawText.Length || rawText.Contains("\r") || rawText.Contains("\n") then
+                None
+            else
+                let displayText = WordLayout.Text.displayText textRun.Style rawText
+                let displayStyle = WordLayout.Text.displayStyle textRun.Style
+                let width = measureRange displayText displayStyle 0 displayText.Length
+                let availableWidth = max 1.0 maxWidth
+                let fitSafety = if settings.InTableCell then tableCellLineFitSafety else lineFitSafety
+                if width > availableWidth - fitSafety then
+                    None
+                else
+                    let segment = TextSegment (rawText, textRun.Style, 0.0, width, textRun.Start)
+                    let scale = settings.LineHeight / settings.FontSize
+                    let lineHeight = max settings.LineHeight (segmentHeight scale segment)
+                    let segments = [segment]
+                    let lineWidth =
+                        let visibleLength = visibleTokenLength rawText
+                        if visibleLength = rawText.Length then width
+                        elif visibleLength > 0 then measureRange displayText displayStyle 0 visibleLength
+                        else 0.0
+                    Some [{
+                        Segments = segments
+                        Y = minBodyTop settings 0.0
+                        Width = lineWidth
+                        Height = lineHeight
+                        StartOffset = textRun.Start
+                        EndOffset = textRun.Start + rawText.Length
+                    }]
+        | _ -> None
+
+let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (measureText: TextMeasurer) (maxWidth: float) (paragraphStyle: ParagraphStyle) (effectiveTextStyleForParagraph: ParagraphStyle -> TextBuffer.TextStyle -> TextBuffer.TextStyle) (para: ParagraphBlock) =
+    let metadata = WordStyles.effectiveMetadata paragraphStyle para.Metadata
+    if metadata.Rtl || not metadata.TabStops.IsEmpty then
+        None
+    else
+        let prefixOpt, _ = WordLayout.Numbering.markerAndCounters metadata Map.empty
+        if prefixOpt.IsSome then
+            None
+        else
+            let indent = WordLayout.Paragraph.leftIndent metadata
+            let rightIndent = WordLayout.Paragraph.rightIndent metadata
+            let firstLineIndent = WordLayout.Paragraph.firstLineIndent metadata
+            let spacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle metadata
+            let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle metadata
+            let lineSpacing = WordLayout.Paragraph.lineSpacing paragraphStyle metadata
+            let lineSpacingRule = WordStyles.lineSpacingRule paragraphStyle metadata
+            let hasExplicitLineSpacing =
+                metadata.LineSpacing.IsSome
+                || paragraphStyle.LineSpacing.IsSome
+                || metadata.LineSpacingRule.IsSome
+                || paragraphStyle.LineSpacingRule.IsSome
+            let defaultParagraphSpacing = usesDefaultParagraphSpacing metadata
+            let tocEntry = isTocEntryStyle metadata
+            let headingDefaultLineBox = headingUsesDefaultLineBox paragraphStyle metadata
+            let borderBefore, borderAfter = paragraphBorderVerticalAdvance metadata
+            let borderRight = paragraphBorderRightAdvance metadata
+            match para.Buffer.Runs with
+            | [TextBuffer.Text textRun] when not textRun.Style.Hidden
+                                          && textRun.Style.EquationXml.IsNone
+                                          && not textRun.Style.RenderedPageBreakBefore ->
+                let textStyle = effectiveTextStyleForParagraph paragraphStyle textRun.Style
+                let rawText =
+                    TextBuffer.trySliceNoCopy textRun.Start textRun.Length para.Buffer
+                    |> Option.defaultWith (fun () -> TextBuffer.slice textRun.Start textRun.Length para.Buffer)
+                if rawText.Length = 0 || rangeContainsTab rawText 0 rawText.Length || rawText.Contains("\r") || rawText.Contains("\n") then
+                    None
+                else
+                    let availableWidth = maxWidth - indent - rightIndent - max 0.0 firstLineIndent - borderRight
+                    let displayText = WordLayout.Text.displayText textStyle rawText
+                    let displayStyle = WordLayout.Text.displayStyle textStyle
+                    let width = measureText displayText displayStyle
+                    let fitSafety = if settings.InTableCell then tableCellLineFitSafety else lineFitSafety
+                    if width > max 1.0 availableWidth - fitSafety then
+                        None
+                    else
+                        let contentFontSize = WordLayout.Text.displayFontSize textStyle
+                        let contentTextStyle = textStyle
+                        let lineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
+                        let lineScale = lineHeight / contentFontSize
+                        let textHeight = contentFontSize * lineScale
+                        Some (spacingBefore + borderBefore + max lineHeight textHeight + borderAfter + spacingAfter)
+            | _ -> None
 
 let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     let mutable counters = numberedCounters
@@ -1390,61 +2389,62 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let isHangingList = prefix <> "" && firstLineIndent < 0.0
     let markerReserve = if isHangingList then 0.0 else prefixWidth
     let availableWidth = maxWidth - indent - rightIndent - markerReserve - max 0.0 firstLineIndent - borderRight
-    let contentFontSize =
-        buffer.Runs
-        |> List.choose (function
-            | Text run -> Some (WordLayout.Text.displayFontSize run.Style)
-            | Image _ -> None)
-        |> function
-            | [] -> metadata.ParagraphMarkFontSize |> Option.defaultValue paragraphStyle.Text.FontSize
-            | sizes -> List.max sizes
-    let contentTextStyle =
-        buffer.Runs
-        |> List.choose (function
-            | Text run -> Some run.Style
-            | Image _ -> None)
-        |> List.sortByDescending WordLayout.Text.displayFontSize
-        |> List.tryHead
-        |> Option.defaultValue paragraphStyle.Text
+    let contentFontSize, contentTextStyle = paragraphContentMetrics paragraphStyle metadata buffer
     let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox }
-    let lines, updatedObstacles, updatedPlacedBoxes = layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.TabStops initialObstacles initialPlacedBoxes
+    let lines, updatedObstacles, updatedPlacedBoxes =
+        if prefix = "" && not metadata.Rtl then
+            match trySingleLineStyledNoObstacles lineSettings measureRange buffer availableWidth metadata.TabStops initialObstacles initialPlacedBoxes with
+            | Some lines -> lines, initialObstacles, initialPlacedBoxes
+            | None -> layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.TabStops initialObstacles initialPlacedBoxes
+        else
+            layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.TabStops initialObstacles initialPlacedBoxes
 
+    let mutable isFirstLine = true
+    let mutable hasRenderedPageBreak = false
+    let markerLineBoxFactor = prefixStyle |> Option.bind WordLayout.Numbering.markerLineBoxFactor
     let adjustedLines =
-        lines |> List.map (fun line ->
-            let startsAfterWrapObstacle =
-                line.Segments
-                |> List.choose (function
-                    | TextSegment (_, _, x, _, _)
-                    | ImageSegment (_, x, _, _, _, _, _, _, _, _, _, _, _)
-                    | MathSegment (_, _, x, _, _, _, _, _) -> Some x)
-                |> function
-                    | [] -> false
-                    | xs -> (List.min xs) > 0.01
+        let adjusted = ResizeArray<MeasuredLine>()
+        for line in lines do
+            let startsAfterWrapObstacle = lineStartsAfterWrapObstacle line
+            let isFirst = isFirstLine
+            isFirstLine <- false
             let lineFirstIndent =
-                if line = (lines |> List.head) then
+                if isFirst then
                     if isHangingList || startsAfterWrapObstacle then 0.0 else firstLineIndent
                 else 0.0
+            let dx = xOffset + indent + markerReserve + lineFirstIndent
             let adjustedSegments =
-                line.Segments |> List.map (function
-                    | TextSegment (text, style, x, width, startOffset) ->
-                        TextSegment (text, style, x + xOffset + indent + markerReserve + lineFirstIndent, width, startOffset)
-                    | ImageSegment (src, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom) ->
-                        ImageSegment (src, x + xOffset + indent + markerReserve + lineFirstIndent, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom)
-                    | MathSegment (prims, style, x, width, ascent, descent, startOffset, length) ->
-                        MathSegment (prims, style, x + xOffset + indent + markerReserve + lineFirstIndent, width, ascent, descent, startOffset, length))
-            { line with
-                Y = contentY + (line.Y - settings.PaddingTop)
-                Segments = adjustedSegments })
-
-    let lineHeightWithMarker line =
-        match prefixStyle |> Option.bind WordLayout.Numbering.markerLineBoxFactor with
-        | Some markerFactor when line.StartOffset = 0 ->
-            max line.Height (contentFontSize * lineSpacing * markerFactor)
-        | _ -> line.Height
-
-    let adjustedLines =
-        adjustedLines
-        |> List.map (fun line -> { line with Height = lineHeightWithMarker line })
+                if abs dx < 0.001 then
+                    for segment in line.Segments do
+                        match segment with
+                        | TextSegment (_, style, _, _, _) when style.RenderedPageBreakBefore ->
+                            hasRenderedPageBreak <- true
+                        | _ -> ()
+                    line.Segments
+                else
+                    let adjustedSegments = ResizeArray<Segment>()
+                    for segment in line.Segments do
+                        match segment with
+                        | TextSegment (text, style, x, width, startOffset) ->
+                            if style.RenderedPageBreakBefore then
+                                hasRenderedPageBreak <- true
+                            adjustedSegments.Add(TextSegment (text, style, x + dx, width, startOffset))
+                        | ImageSegment (src, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom) ->
+                            adjustedSegments.Add(ImageSegment (src, x + dx, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom))
+                        | MathSegment (prims, style, x, width, ascent, descent, startOffset, length) ->
+                            adjustedSegments.Add(MathSegment (prims, style, x + dx, width, ascent, descent, startOffset, length))
+                    resizeArrayToList adjustedSegments
+            let lineHeight =
+                match markerLineBoxFactor with
+                | Some markerFactor when line.StartOffset = 0 ->
+                    max line.Height (contentFontSize * lineSpacing * markerFactor)
+                | _ -> line.Height
+            adjusted.Add
+                { line with
+                    Y = contentY + (line.Y - settings.PaddingTop)
+                    Segments = adjustedSegments
+                    Height = lineHeight }
+        resizeArrayToList adjusted
 
     // Justified text: stretch inter-word space on every line except the
     // paragraph's last. Skip entirely when floats are involved (updatedObstacles
@@ -1456,27 +2456,31 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         if metadata.Alignment <> Justify || not (List.isEmpty updatedObstacles) then adjustedLines
         else
             let rightContentEdge = xOffset + indent + markerReserve + availableWidth + max 0.0 firstLineIndent
-            let lineCount = List.length adjustedLines
-            adjustedLines
-            |> List.mapi (fun i line ->
-                if i = lineCount - 1 then line
-                else justifyLineToEdge rightContentEdge line)
+            let rec justifyNonLast acc = function
+                | [] -> List.rev acc
+                | [last] -> List.rev (last :: acc)
+                | line :: rest -> justifyNonLast (justifyLineToEdge rightContentEdge line :: acc) rest
+            justifyNonLast [] adjustedLines
 
     // RTL paragraphs: reposition each line's tokens right-to-left (guarded by
     // the w:bidi flag, so LTR layout is untouched).
     let adjustedLines =
-        if metadata.Rtl then adjustedLines |> List.map repositionRtl
+        if metadata.Rtl then
+            let repositioned = ResizeArray<MeasuredLine>()
+            for line in adjustedLines do
+                repositioned.Add(repositionRtl line)
+            resizeArrayToList repositioned
         else adjustedLines
 
-    let hasRenderedPageBreak = adjustedLines |> List.exists lineHasRenderedPageBreakBefore
     let pagedLines =
         paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) adjustedLines
 
     let blockHeight =
         if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
         else
-            let lastLine = List.last pagedLines
-            (lastLine.Y - contentY) + lastLine.Height
+            match tryLastLine pagedLines with
+            | Some lastLine -> (lastLine.Y - contentY) + lastLine.Height
+            | None -> lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
 
     ({
         BlockId = para.Id
@@ -1514,17 +2518,24 @@ let private defaultParagraphFirstLineOffsetInDocument doc =
     let paragraphStyle = forBlockInDocument doc (Paragraph para)
     paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
 
+let private defaultParagraphFirstLineOffsetInContext context =
+    let para = { Id = ""; Buffer = TextBuffer.empty; Metadata = defaultMetadata }
+    let paragraphStyle = forBlockInContext context (Paragraph para)
+    paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
+
 let private tableLeftOffsetForDocument doc (_tableBlock: TableBlock) =
     defaultParagraphFirstLineOffsetInDocument doc
 
+let private tableLeftOffsetForContext context (_tableBlock: TableBlock) =
+    defaultParagraphFirstLineOffsetInContext context
+
 let private tableAlignmentOffset (alignment: string option) availableWidth tableWidth =
-    match alignment |> Option.map (fun value -> value.ToLowerInvariant()) with
-    | Some "center" -> max 0.0 ((availableWidth - tableWidth) / 2.0)
-    | Some "right" -> max 0.0 (availableWidth - tableWidth)
-    | _ -> 0.0
+    if optionEqualsIgnoreCase "center" alignment then max 0.0 ((availableWidth - tableWidth) / 2.0)
+    elif optionEqualsIgnoreCase "right" alignment then max 0.0 (availableWidth - tableWidth)
+    else 0.0
 
 let private paragraphIsVisuallyEmpty (para: ParagraphBlock) =
-    System.String.IsNullOrWhiteSpace(TextBuffer.toString para.Buffer)
+    TextBuffer.isWhiteSpace para.Buffer
 
 /// A cell's content laid out in document order: paragraphs interleaved with
 /// nested tables at the positions recorded by NestedTableAnchors.
@@ -1532,20 +2543,21 @@ type private CellContentItem =
     | CellParagraph of ParagraphBlock
     | CellNestedTable of TableBlock
 
+let private maxNestedTableLayoutDepth = 512
+
 let private orderedCellContent (cell: TableCell) : CellContentItem list =
     if cell.NestedTables.IsEmpty then
         cell.Content |> List.map CellParagraph
     else
         let content = cell.Content |> List.toArray
+        let anchors = cell.NestedTableAnchors |> List.toArray
         // Pair each nested table with its anchor (paragraphs preceding it);
         // anchors beyond the available paragraph count fall at the end.
         let anchored =
             cell.NestedTables
             |> List.mapi (fun i table ->
                 let anchor =
-                    cell.NestedTableAnchors
-                    |> List.tryItem i
-                    |> Option.defaultValue content.Length
+                    if i < anchors.Length then anchors.[i] else content.Length
                     |> max 0
                     |> min content.Length
                 table, anchor)
@@ -1563,24 +2575,25 @@ let private orderedCellContent (cell: TableCell) : CellContentItem list =
                 items.Add(CellParagraph content.[paraIndex])
         // Word requires a paragraph after a nested table; drop trailing empty
         // paragraph marks so a cell that ends with a table is not over-tall.
-        let trimmed =
-            items
-            |> List.ofSeq
-            |> List.rev
-            |> List.skipWhile (function
-                | CellParagraph para -> paragraphIsVisuallyEmpty para
-                | CellNestedTable _ -> false)
-            |> List.rev
-        trimmed
+        let mutable last = items.Count - 1
+        let mutable trimming = true
+        while trimming && last >= 0 do
+            match items.[last] with
+            | CellParagraph para when paragraphIsVisuallyEmpty para -> last <- last - 1
+            | _ -> trimming <- false
+        let mutable result = []
+        for i = last downto 0 do
+            result <- items.[i] :: result
+        result
 
-let rec measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (tableMaxWidth: float) (columnWidths: float list) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
+let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
     let cellSettings = {
         settings with
             InTableCell = true
             MarginBottom = if row.CanSplit = Some false then -1000000.0 else settings.MarginBottom
             TableContinuationHeaderHeight = tableContinuationHeaderHeight
     }
-    let numColumns = WordLayout.Table.columnCount tableBlock
+    let numColumns = columnMetrics.Count
     let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
     let rowSpacingAdvance = WordLayout.Table.rowSpacingAdvance cellSpacing
     let outerStartInset = outerLeft + cellSpacing
@@ -1588,13 +2601,16 @@ let rec measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMe
     let mutable cellGroups = []
     let mutable traces = []
 
-    for positioned in WordLayout.Table.positionedCells row do
-        let cell = positioned.Cell
+    let columnWidthPrefix = columnMetrics.Prefix
+    let fallbackWidth = columnMetrics.FallbackWidth
+    let mutable currentColumn = max 0 row.GridBefore
+    for cell in row.Cells do
+        let startColumn = currentColumn
+        let span = WordLayout.Table.cellSpan cell
         let usesInheritedCellAfterSpacing =
             cell.Content
             |> List.exists (fun para -> para.Metadata.SpacingAfter.IsNone)
-        let fallbackWidth = tableMaxWidth / float numColumns
-        let colWidth = WordLayout.Table.positionedSpacedCellWidth columnWidths cellSpacing fallbackWidth positioned
+        let colWidth = spacedSpannedWidthFromPrefix columnWidthPrefix cellSpacing startColumn span fallbackWidth
         let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row cell
         let textPadding =
             if cellSpacing > 0.0 then
@@ -1612,92 +2628,191 @@ let rec measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMe
             else
                 0.0
         let verticalBorderExtent = max (WordLayout.Table.cellVerticalBorderExtent cell) collapsedBorderExtent
-        let cellX = tableLeftOffset + WordLayout.Table.positionedSpacedCellX columnWidths cellSpacing positioned + textPadding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing positioned.StartColumn
+        let cellX = tableLeftOffset + spacedStartOffsetFromPrefix columnWidthPrefix cellSpacing startColumn + textPadding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing startColumn
         let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth textPadding
         let cellY = rowY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
         let contentStartY = WordLayout.Table.cellContentStartY cellY textPadding
         let mutable paraY = contentStartY
-        let mutable cellLayouts = []
+        let cellLayouts = ResizeArray<BlockLayout>()
 
         let layoutNestedTable (nestedTable: TableBlock) nestedTableY =
-            let nestedColumnCount = WordLayout.Table.columnCount nestedTable
-            if nestedColumnCount = 0 then
+            if nestedTableLayoutDepth >= maxNestedTableLayoutDepth then
                 [], WordLayout.Table.emptyTableAdvance cellSettings.LineHeight
             else
                 let nestedOuterLeft, nestedOuterRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale nestedTable
                 let nestedTableMaxWidth = cellMaxWidth + nestedOuterLeft + nestedOuterRight
                 let nestedColumnWidths = tableColumnWidths nestedTableMaxWidth nestedTable
-                let nestedTableWidth = WordLayout.Table.tableWidthWithSpacing nestedColumnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale nestedTable)
-                let nestedHorizontalOffset = cellX + tableAlignmentOffset nestedTable.Alignment cellMaxWidth nestedTableWidth
-                let mutable nestedY = nestedTableY
-                let mutable nestedLayouts = []
+                if List.isEmpty nestedColumnWidths then
+                    [], WordLayout.Table.emptyTableAdvance cellSettings.LineHeight
+                else
+                    let nestedColumnMetrics = tableColumnMetrics nestedTableMaxWidth nestedColumnWidths
+                    let nestedTableWidth = WordLayout.Table.tableWidthWithSpacing nestedColumnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale nestedTable)
+                    let nestedHorizontalOffset = cellX + tableAlignmentOffset nestedTable.Alignment cellMaxWidth nestedTableWidth
+                    let mutable nestedY = nestedTableY
+                    let nestedLayouts = ResizeArray<BlockLayout>()
 
-                for nestedRow in nestedTable.Rows do
-                    let measurement =
-                        measureTableRowWithStyle cellSettings measureText measureRange nestedTable nestedTableMaxWidth nestedColumnWidths nestedOuterLeft nestedHorizontalOffset nestedRow nestedY 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
-                    for group in measurement.CellGroups do
-                        let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment measurement.Height group.PaddingTop group.PaddingBottom group.ContentHeight
-                        let adjustedLayouts =
-                            group.Layouts
-                            |> List.map (fun layout ->
-                                { layout with
-                                    Y = layout.Y + offset
-                                    VAlignOffset = layout.VAlignOffset + offset
-                                    Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + offset }) })
-                        nestedLayouts <- nestedLayouts @ adjustedLayouts
-                    nestedY <- nestedY + measurement.Height
+                    for nestedRow in nestedTable.Rows do
+                        let measurement =
+                            measureTableRowWithStyleAtDepth (nestedTableLayoutDepth + 1) cellSettings measureText measureRange nestedTable nestedColumnMetrics nestedOuterLeft nestedHorizontalOffset nestedRow nestedY 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
+                        for group in measurement.CellGroups do
+                            let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment measurement.Height group.PaddingTop group.PaddingBottom group.ContentHeight
+                            let adjustedLayouts =
+                                group.Layouts
+                                |> List.map (fun layout ->
+                                    { layout with
+                                        Y = layout.Y + offset
+                                        VAlignOffset = layout.VAlignOffset + offset
+                                        Lines = shiftLinesY offset layout.Lines })
+                            nestedLayouts.AddRange adjustedLayouts
+                        nestedY <- nestedY + measurement.Height
 
-                nestedLayouts, (nestedY - nestedTableY) + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale nestedTable
+                    resizeArrayToList nestedLayouts, (nestedY - nestedTableY) + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale nestedTable
 
         let mutable pendingEmptyHeight = 0.0
-        for item in orderedCellContent cell do
-            match item with
-            | CellNestedTable nestedTable ->
-                let nestedLayouts, nestedHeight = layoutNestedTable nestedTable paraY
-                cellLayouts <- cellLayouts @ nestedLayouts
-                paraY <- paraY + nestedHeight
-                pendingEmptyHeight <- 0.0
-            | CellParagraph rawPara ->
-                let para = tableCellParagraphForLayout rawPara
-                let paragraphStyle = paragraphStyleForParagraph para
-                let layout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange cellSettings measureText measureRange cellMaxWidth paraY cellX paragraphStyle effectiveBufferForParagraph para Map.empty [] []
-                let layout = if layout.Lines.IsEmpty then moveLayoutToY paraY layout else layout
-                let layout =
-                    match layout.Lines with
-                    | firstLine :: _ when pendingEmptyHeight > 0.0 && pageNumberForY cellSettings layout.Y <> pageNumberForY cellSettings firstLine.Y ->
-                        { layout with
-                            Height = layout.Height + pendingEmptyHeight
-                            Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + pendingEmptyHeight }) }
-                    | _ -> layout
-                cellLayouts <- cellLayouts @ [layout]
-                pendingEmptyHeight <- if layout.Lines.IsEmpty then pendingEmptyHeight + layout.Height else 0.0
-                paraY <- paraY + layout.Height
+        let layoutCellParagraph rawPara =
+            let para = tableCellParagraphForLayout rawPara
+            let paragraphStyle = paragraphStyleForParagraph para
+            let layout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange cellSettings measureText measureRange cellMaxWidth paraY cellX paragraphStyle effectiveBufferForParagraph para Map.empty [] []
+            let layout = if layout.Lines.IsEmpty then moveLayoutToY paraY layout else layout
+            let layout =
+                match layout.Lines with
+                | firstLine :: _ when pendingEmptyHeight > 0.0 && pageNumberForY cellSettings layout.Y <> pageNumberForY cellSettings firstLine.Y ->
+                    { layout with
+                        Height = layout.Height + pendingEmptyHeight
+                        Lines = shiftLinesY pendingEmptyHeight layout.Lines }
+                | _ -> layout
+            cellLayouts.Add layout
+            pendingEmptyHeight <- if layout.Lines.IsEmpty then pendingEmptyHeight + layout.Height else 0.0
+            paraY <- paraY + layout.Height
+
+        if cell.NestedTables.IsEmpty then
+            for rawPara in cell.Content do
+                layoutCellParagraph rawPara
+        else
+            for item in orderedCellContent cell do
+                match item with
+                | CellNestedTable nestedTable ->
+                    let nestedLayouts, nestedHeight = layoutNestedTable nestedTable paraY
+                    cellLayouts.AddRange nestedLayouts
+                    paraY <- paraY + nestedHeight
+                    pendingEmptyHeight <- 0.0
+                | CellParagraph rawPara ->
+                    layoutCellParagraph rawPara
 
         let contentHeight = max 0.0 (paraY - contentStartY)
         rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + verticalBorderExtent + rowSpacingAdvance)
-        cellGroups <- cellGroups @ [{ VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top; PaddingBottom = textPadding.Bottom; ContentHeight = contentHeight; Layouts = cellLayouts }]
-        let totalLines = cellLayouts |> List.sumBy (fun layout -> layout.Lines.Length)
-        let cellSnippet =
-            cell.Content
-            |> List.map (fun para -> TextBuffer.toString para.Buffer)
-            |> List.tryFind (fun text -> text.Trim() <> "")
-            |> Option.map snippet
-            |> Option.defaultValue ""
-        traces <- traces @ [sprintf "c%d/%d w=%.2f cw=%.2f h=%.2f lines=%d text=%s" positioned.StartColumn positioned.Span colWidth cellMaxWidth contentHeight totalLines cellSnippet]
+        let cellLayoutsList = resizeArrayToList cellLayouts
+        cellGroups <- { VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top; PaddingBottom = textPadding.Bottom; ContentHeight = contentHeight; Layouts = cellLayoutsList } :: cellGroups
+        let mutable totalLines = 0
+        for layout in cellLayoutsList do
+            totalLines <- totalLines + layout.Lines.Length
+        if traceTimingEnabled then
+            let cellSnippet =
+                cell.Content
+                |> List.map (fun para -> TextBuffer.toString para.Buffer)
+                |> List.tryFind hasNonWhitespace
+                |> Option.map snippet
+                |> Option.defaultValue ""
+            traces <- sprintf "c%d/%d w=%.2f cw=%.2f h=%.2f lines=%d text=%s" startColumn span colWidth cellMaxWidth contentHeight totalLines cellSnippet :: traces
+        currentColumn <- currentColumn + span
 
-    { Height = rowHeight; CellGroups = cellGroups; Traces = traces }
+    { Height = rowHeight; CellGroups = List.rev cellGroups; Traces = List.rev traces }
+
+let internal measureTableRowWithStyleUsingMetrics (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
+    measureTableRowWithStyleAtDepth 0 settings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset row rowY tableContinuationHeaderHeight paragraphStyleForParagraph effectiveBufferForParagraph
+
+let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (tableMaxWidth: float) (columnWidths: float list) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
+    let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
+    measureTableRowWithStyleUsingMetrics settings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset row rowY tableContinuationHeaderHeight paragraphStyleForParagraph effectiveBufferForParagraph
+
+let internal tryMeasureTableRowHeightWithMetrics (settings: LayoutSettings) (measureText: TextMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (row: TableRow) (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveTextStyleForParagraph: ParagraphStyle -> TextBuffer.TextStyle -> TextBuffer.TextStyle) =
+    let cellSettings = {
+        settings with
+            InTableCell = true
+            MarginBottom = if row.CanSplit = Some false then -1000000.0 else settings.MarginBottom
+            TableContinuationHeaderHeight = 0.0
+    }
+    let numColumns = columnMetrics.Count
+    if numColumns = 0 then
+        None
+    else
+        let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
+        let rowSpacingAdvance = WordLayout.Table.rowSpacingAdvance cellSpacing
+        let mutable rowHeight = WordLayout.Table.rowMinHeight WordLayout.canvasScale settings.LineHeight row
+        let mutable failed = false
+        let columnWidthPrefix = columnMetrics.Prefix
+        let fallbackWidth = columnMetrics.FallbackWidth
+        let mutable currentColumn = max 0 row.GridBefore
+        for cell in row.Cells do
+            if not failed then
+                let span = WordLayout.Table.cellSpan cell
+                if not cell.NestedTables.IsEmpty then
+                    failed <- true
+                else
+                    let usesInheritedCellAfterSpacing =
+                        cell.Content
+                        |> List.exists (fun para -> para.Metadata.SpacingAfter.IsNone)
+                    let colWidth = spacedSpannedWidthFromPrefix columnWidthPrefix cellSpacing currentColumn span fallbackWidth
+                    let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row cell
+                    let textPadding =
+                        if cellSpacing > 0.0 then
+                            let rowPadding = WordLayout.Table.rowCellPaddingDefaults WordLayout.canvasScale tableBlock row
+                            { cellPadding with Top = rowPadding.Top; Bottom = rowPadding.Bottom }
+                        else
+                            cellPadding
+                    let verticalMarginExcess =
+                        if cellSpacing > 0.0 then WordLayout.Table.spacedVerticalMarginExcess textPadding cellPadding else 0.0
+                    let collapsedBorderExtent =
+                        if row.Height.IsNone && usesInheritedCellAfterSpacing then
+                            WordLayout.Table.collapsedHorizontalBorderExtent tableBlock row
+                        else
+                            0.0
+                    let verticalBorderExtent = max (WordLayout.Table.cellVerticalBorderExtent cell) collapsedBorderExtent
+                    let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth textPadding
+                    let mutable contentHeight = 0.0
+                    for rawPara in cell.Content do
+                        if not failed then
+                            let para = tableCellParagraphForLayout rawPara
+                            let paragraphStyle = paragraphStyleForParagraph para
+                            match trySingleLineParagraphHeightNoObstacles cellSettings measureText cellMaxWidth paragraphStyle effectiveTextStyleForParagraph para with
+                            | Some height -> contentHeight <- contentHeight + height
+                            | None -> failed <- true
+                    if not failed then
+                        rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + verticalBorderExtent + rowSpacingAdvance)
+                currentColumn <- currentColumn + span
+        if failed then None else Some rowHeight
+
+let tryMeasureTableRowHeightWithStyle (settings: LayoutSettings) (measureText: TextMeasurer) (tableBlock: TableBlock) (tableMaxWidth: float) (columnWidths: float list) (row: TableRow) (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveTextStyleForParagraph: ParagraphStyle -> TextBuffer.TextStyle -> TextBuffer.TextStyle) =
+    let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
+    tryMeasureTableRowHeightWithMetrics settings measureText tableBlock columnMetrics row paragraphStyleForParagraph effectiveTextStyleForParagraph
+
+let internal measureTableRowForContextWithColumnMetrics settings measureText measureRange context tableBlock columnMetrics outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight =
+    measureTableRowWithStyleUsingMetrics settings measureText measureRange tableBlock columnMetrics outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight (forTableCellParagraphInContext context) (effectiveBufferInContext context)
+
+let measureTableRowForContext settings measureText measureRange context tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight =
+    let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
+    measureTableRowForContextWithColumnMetrics settings measureText measureRange context tableBlock columnMetrics outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
 
 let measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight =
-    measureTableRowWithStyle settings measureText measureRange tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight (forTableCellParagraphInDocument doc) (effectiveBufferInDocument doc)
+    let context = WordStyles.styleContext doc
+    measureTableRowForContext settings measureText measureRange context tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
 
-let measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row =
+let internal measureTableRowForContextRowLocalWithColumnMetrics settings measureText measureRange context tableBlock columnMetrics outerLeft tableHorizontalOffset row =
     let rowLocalSettings = {
         settings with
             PageHeight = 1000000.0
             MarginBottom = 0.0
             TableContinuationHeaderHeight = 0.0
     }
-    measureTableRowForDocument rowLocalSettings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row 0.0 0.0
+    measureTableRowForContextWithColumnMetrics rowLocalSettings measureText measureRange context tableBlock columnMetrics outerLeft tableHorizontalOffset row 0.0 0.0
+
+let measureTableRowForContextRowLocal settings measureText measureRange context tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row =
+    let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
+    measureTableRowForContextRowLocalWithColumnMetrics settings measureText measureRange context tableBlock columnMetrics outerLeft tableHorizontalOffset row
+
+let measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row =
+    let context = WordStyles.styleContext doc
+    measureTableRowForContextRowLocal settings measureText measureRange context tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row
 
 let moveTableRowMeasurementToY rowY (measurement: TableRowMeasurement) =
     { measurement with
@@ -1710,27 +2825,26 @@ let moveTableRowMeasurementToY rowY (measurement: TableRowMeasurement) =
 let tableRowFragmentLayoutsWithHeight rowHeight (fragment: TableRowFragmentPlan) (measurement: TableRowMeasurement) =
     let fragmentBottom = fragment.Y + fragment.Height
     let contentOriginDelta = fragment.RowContentY - fragment.RowPlanY
-    measurement.CellGroups
-    |> List.collect (fun group ->
+    let fragmentBlockIds = System.Collections.Generic.HashSet<BlockId>(fragment.BlockIds)
+    let result = ResizeArray<BlockLayout>()
+    for group in measurement.CellGroups do
         let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment rowHeight group.PaddingTop group.PaddingBottom group.ContentHeight
-        group.Layouts
-        |> List.choose (fun layout ->
-            if fragment.BlockIds |> List.contains layout.BlockId then
-                let shiftedLayout =
-                    { layout with
-                        Y = layout.Y + offset + contentOriginDelta
-                        Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + offset + contentOriginDelta }) }
-                let visibleLines =
-                    shiftedLayout.Lines
-                    |> List.filter (fun line -> line.Y >= fragment.Y && line.Y + line.Height <= fragmentBottom)
-                match visibleLines with
-                | [] -> None
-                | lines ->
-                    let y = lines |> List.map _.Y |> List.min
-                    let bottom = lines |> List.map (fun line -> line.Y + line.Height) |> List.max
-                    Some { shiftedLayout with Lines = lines; Y = y; Height = bottom - y }
-            else
-                None))
+        let lineOffset = offset + contentOriginDelta
+        for layout in group.Layouts do
+            if fragmentBlockIds.Contains layout.BlockId then
+                let visibleLines = ResizeArray<MeasuredLine>()
+                let mutable y = System.Double.PositiveInfinity
+                let mutable bottom = System.Double.NegativeInfinity
+                for line in layout.Lines do
+                    let shiftedY = line.Y + lineOffset
+                    if shiftedY >= fragment.Y && shiftedY + line.Height <= fragmentBottom then
+                        visibleLines.Add { line with Y = shiftedY }
+                        if shiftedY < y then y <- shiftedY
+                        let lineBottom = shiftedY + line.Height
+                        if lineBottom > bottom then bottom <- lineBottom
+                if visibleLines.Count > 0 then
+                    result.Add { layout with Lines = resizeArrayToList visibleLines; Y = y; Height = bottom - y }
+    resizeArrayToList result
 
 let tableRowFragmentLayouts (fragment: TableRowFragmentPlan) (measurement: TableRowMeasurement) =
     tableRowFragmentLayoutsWithHeight measurement.Height fragment measurement
@@ -1738,13 +2852,13 @@ let tableRowFragmentLayouts (fragment: TableRowFragmentPlan) (measurement: Table
 let tableCellFragmentPlans (plan: TableLayoutPlan) =
     let tableBlock = plan.Table
     let numColumns = WordLayout.Table.columnCount tableBlock
-    let resolvedRows =
-        WordLayout.Table.resolveTable WordLayout.canvasScale (Some plan.TableMaxWidth) tableBlock
-        |> fun resolved -> resolved.BodyRows |> List.toArray
-    let rowHeights = plan.Rows |> List.map _.Height |> List.toArray
-    plan.Rows
-    |> List.collect (fun planRow ->
-        let row = tableBlock.Rows.[planRow.RowIndex]
+    let resolvedRows = plan.ResolvedRows.Value
+    let rowHeights = tablePlanRowHeights plan
+    let rowHeightPrefix = rowHeightPrefix rowHeights
+    let rowSpanLookup = resolvedCellRowSpanLookup resolvedRows
+    let result = ResizeArray<TableCellFragmentPlan>()
+    for planRow in plan.Rows do
+        let row = planRow.Row
         let positionedCells = WordLayout.Table.positionedCells row |> List.toArray
         let cellGroups = planRow.Measurement.CellGroups |> List.toArray
         let resolvedCells =
@@ -1753,13 +2867,11 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
             |> Option.map (fun row -> row.Cells |> List.toArray)
             |> Option.defaultValue [||]
         let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
-        planRow.Fragments
-        |> List.collect (fun fragment ->
+        for fragment in planRow.Fragments do
             let fragmentEnd = fragment.Y + fragment.Height
             let contentOriginDelta = fragment.RowContentY - fragment.RowPlanY
-            resolvedCells
-            |> Array.toList
-            |> List.choose (fun resolvedCell ->
+            let fragmentBlockIds = System.Collections.Generic.HashSet<BlockId>(fragment.BlockIds)
+            for resolvedCell in resolvedCells do
                 match positionedCells |> Array.tryItem resolvedCell.SourceCellIndex, cellGroups |> Array.tryItem resolvedCell.SourceCellIndex with
                 | Some positioned, Some group ->
                     let fallbackWidth = plan.TableMaxWidth / float numColumns
@@ -1779,27 +2891,31 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
                         else
                             cellPadding
                     let paintTopAdjustment = WordLayout.Table.spacedCellPaintTopAdjustment cellSpacing textPadding cellPadding
-                    let cellFragmentHeight = tableCellVerticalAlignmentHeight resolvedRows rowHeights planRow.RowIndex resolvedCell.SourceCellIndex fragment.Height
+                    let cellFragmentHeight = tableCellVerticalAlignmentHeightFromLookup rowSpanLookup rowHeightPrefix planRow.RowIndex resolvedCell.SourceCellIndex fragment.Height
                     let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment cellFragmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
-                    let visibleLines =
-                        group.Layouts
-                        |> List.filter (fun layout -> fragment.BlockIds |> List.contains layout.BlockId)
-                        |> List.collect (fun layout ->
-                            layout.Lines
-                            |> List.map (fun line -> { line with Y = line.Y + offset + contentOriginDelta }))
-                        |> List.filter (fun line -> line.Y >= fragment.Y && line.Y + line.Height <= fragmentEnd)
-                    let visibleY = visibleLines |> List.map _.Y |> function | [] -> None | values -> Some (List.min values)
-                    let visibleEnd = visibleLines |> List.map (fun line -> line.Y + line.Height) |> function | [] -> None | values -> Some (List.max values)
+                    let visibleLines = ResizeArray<MeasuredLine>()
+                    let blockIds = ResizeArray<BlockId>()
+                    let seenBlockIds = System.Collections.Generic.HashSet<BlockId>()
+                    let mutable visibleYValue = System.Double.PositiveInfinity
+                    let mutable visibleEndValue = System.Double.NegativeInfinity
+                    for layout in group.Layouts do
+                        if fragmentBlockIds.Contains layout.BlockId then
+                            if seenBlockIds.Add layout.BlockId then
+                                blockIds.Add layout.BlockId
+                            for line in layout.Lines do
+                                let line = { line with Y = line.Y + offset + contentOriginDelta }
+                                if line.Y >= fragment.Y && line.Y + line.Height <= fragmentEnd then
+                                    visibleLines.Add line
+                                    if line.Y < visibleYValue then visibleYValue <- line.Y
+                                    let lineEnd = line.Y + line.Height
+                                    if lineEnd > visibleEndValue then visibleEndValue <- lineEnd
+                    let visibleY = if visibleLines.Count = 0 then None else Some visibleYValue
+                    let visibleEnd = if visibleLines.Count = 0 then None else Some visibleEndValue
                     let visibleHeight =
                         match visibleY, visibleEnd with
                         | Some startY, Some endY -> Some (endY - startY)
                         | _ -> None
-                    let blockIds =
-                        group.Layouts
-                        |> List.filter (fun layout -> fragment.BlockIds |> List.contains layout.BlockId)
-                        |> List.map _.BlockId
-                        |> List.distinct
-                    Some {
+                    result.Add({
                         RowIndex = planRow.RowIndex
                         CellIndex = resolvedCell.SourceCellIndex
                         StartColumn = resolvedCell.StartColumn
@@ -1819,16 +2935,95 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
                         CellY = fragment.Y + WordLayout.Table.spacedCellPaintTopOffset cellSpacing - paintTopAdjustment
                         CellHeight = WordLayout.Table.spacedCellPaintHeight cellFragmentHeight cellSpacing + paintTopAdjustment
                         CellSpacing = cellSpacing
+                        CellBackgroundColor = positioned.Cell.BackgroundColor
+                        CellShading = positioned.Cell.Shading
                         PaddingTop = group.PaddingTop
                         PaddingBottom = group.PaddingBottom
                         ContentY = fragment.RowContentY + cellSpacing + group.PaddingTop + offset
                         ContentHeight = group.ContentHeight
                         VisibleY = visibleY
                         VisibleHeight = visibleHeight
-                        VisibleLineCount = visibleLines.Length
-                        BlockIds = blockIds
-                    }
-                | _ -> None)))
+                        VisibleLineCount = visibleLines.Count
+                        BlockIds = resizeArrayToList blockIds
+                    })
+                | _ -> ()
+    resizeArrayToList result
+
+let tableCellPaintFragmentPlans (plan: TableLayoutPlan) =
+    let tableBlock = plan.Table
+    let numColumns = WordLayout.Table.columnCount tableBlock
+    let resolvedRows = plan.ResolvedRows.Value
+    let rowHeights = tablePlanRowHeights plan
+    let rowHeightPrefix = rowHeightPrefix rowHeights
+    let rowSpanLookup = resolvedCellRowSpanLookup resolvedRows
+    let result = ResizeArray<TableCellFragmentPlan>()
+    let columnWidthPrefix = columnWidthPrefix plan.ColumnWidths
+    let fallbackWidth = if numColumns = 0 then plan.TableMaxWidth else plan.TableMaxWidth / float numColumns
+    for planRow in plan.Rows do
+        let row = planRow.Row
+        let sourceCells = row.Cells |> List.toArray
+        let cellGroups = planRow.Measurement.CellGroups |> List.toArray
+        let resolvedCells =
+            resolvedRows
+            |> Array.tryItem planRow.RowIndex
+            |> Option.map (fun row -> row.Cells |> List.toArray)
+            |> Option.defaultValue [||]
+        let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
+        for fragment in planRow.Fragments do
+            for resolvedCell in resolvedCells do
+                match sourceCells |> Array.tryItem resolvedCell.SourceCellIndex, cellGroups |> Array.tryItem resolvedCell.SourceCellIndex with
+                | Some cell, Some group ->
+                    let cellX =
+                        plan.TableX
+                        + spacedStartOffsetFromPrefix columnWidthPrefix cellSpacing resolvedCell.StartColumn
+                        - WordLayout.Table.spacedCellPaintXOffset cellSpacing resolvedCell.StartColumn
+                    let cellWidth =
+                        spacedSpannedWidthFromPrefix columnWidthPrefix cellSpacing resolvedCell.StartColumn resolvedCell.ColSpan fallbackWidth
+                        - WordLayout.Table.spacedCellPaintWidthAdjustment cellSpacing numColumns resolvedCell.StartColumn resolvedCell.ColSpan
+                        |> max 0.0
+                    let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row cell
+                    let textPadding =
+                        if cellSpacing > 0.0 then
+                            let rowPadding = WordLayout.Table.rowCellPaddingDefaults WordLayout.canvasScale tableBlock row
+                            { cellPadding with Top = rowPadding.Top; Bottom = rowPadding.Bottom }
+                        else
+                            cellPadding
+                    let paintTopAdjustment = WordLayout.Table.spacedCellPaintTopAdjustment cellSpacing textPadding cellPadding
+                    let cellFragmentHeight = tableCellVerticalAlignmentHeightFromLookup rowSpanLookup rowHeightPrefix planRow.RowIndex resolvedCell.SourceCellIndex fragment.Height
+                    let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment cellFragmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
+                    result.Add({
+                        RowIndex = planRow.RowIndex
+                        CellIndex = resolvedCell.SourceCellIndex
+                        StartColumn = resolvedCell.StartColumn
+                        ColumnSpan = resolvedCell.ColSpan
+                        RowSpan = resolvedCell.RowSpan
+                        BorderTop = resolvedCell.Borders.Top
+                        BorderRight = resolvedCell.Borders.Right
+                        BorderBottom = resolvedCell.Borders.Bottom
+                        BorderLeft = resolvedCell.Borders.Left
+                        Page = fragment.Page
+                        RowY = planRow.Y
+                        RowHeight = planRow.Height
+                        FragmentY = fragment.Y
+                        FragmentHeight = fragment.Height
+                        CellX = cellX
+                        CellWidth = cellWidth
+                        CellY = fragment.Y + WordLayout.Table.spacedCellPaintTopOffset cellSpacing - paintTopAdjustment
+                        CellHeight = WordLayout.Table.spacedCellPaintHeight cellFragmentHeight cellSpacing + paintTopAdjustment
+                        CellSpacing = cellSpacing
+                        CellBackgroundColor = cell.BackgroundColor
+                        CellShading = cell.Shading
+                        PaddingTop = group.PaddingTop
+                        PaddingBottom = group.PaddingBottom
+                        ContentY = fragment.RowContentY + cellSpacing + group.PaddingTop + offset
+                        ContentHeight = group.ContentHeight
+                        VisibleY = None
+                        VisibleHeight = None
+                        VisibleLineCount = 0
+                        BlockIds = []
+                    })
+                | _ -> ()
+    resizeArrayToList result
 
 let private borderGridStroke priority (stroke: WordLayout.Table.PrintStroke option) =
     stroke
@@ -1840,66 +3035,95 @@ let private borderGridStroke priority (stroke: WordLayout.Table.PrintStroke opti
     }: RedBat.BorderGrid.Stroke))
 
 let tableCellFragmentBorderCells (cellFragments: TableCellFragmentPlan list) =
-    cellFragments
-    |> List.map (fun fragment -> ({
-        Row = fragment.RowIndex
-        Column = fragment.StartColumn
-        RowSpan = fragment.RowSpan
-        ColumnSpan = fragment.ColumnSpan
-        X = fragment.CellX
-        Y = fragment.CellY
-        Width = fragment.CellWidth
-        Height = fragment.CellHeight
-        Edges = {
-            Top = borderGridStroke 1 fragment.BorderTop
-            Right = borderGridStroke 1 fragment.BorderRight
-            Bottom = borderGridStroke 1 fragment.BorderBottom
-            Left = borderGridStroke 1 fragment.BorderLeft
-        }
-    }: RedBat.BorderGrid.Cell))
+    let result = ResizeArray<RedBat.BorderGrid.Cell>(cellFragments.Length)
+    for fragment in cellFragments do
+        result.Add({
+            Row = fragment.RowIndex
+            Column = fragment.StartColumn
+            RowSpan = fragment.RowSpan
+            ColumnSpan = fragment.ColumnSpan
+            X = fragment.CellX
+            Y = fragment.CellY
+            Width = fragment.CellWidth
+            Height = fragment.CellHeight
+            Edges = {
+                Top = borderGridStroke 1 fragment.BorderTop
+                Right = borderGridStroke 1 fragment.BorderRight
+                Bottom = borderGridStroke 1 fragment.BorderBottom
+                Left = borderGridStroke 1 fragment.BorderLeft
+            }
+        }: RedBat.BorderGrid.Cell)
+    resizeArrayToList result
 
 let planTableRowFragments (settings: LayoutSettings) firstTablePage repeatedHeaderHeight rowY rowHeight (measurement: TableRowMeasurement) =
     let rowBottom = rowY + rowHeight
-    let lines =
-        measurement.CellGroups
-        |> List.collect (fun group -> group.Layouts)
-        |> List.collect (fun layout -> layout.Lines |> List.map (fun line -> layout.BlockId, line))
-        |> List.sortBy (fun (_, line) -> line.Y, line.StartOffset, line.EndOffset)
-    let mutable fragments = []
-    let mutable consumedLineStart = 0
     let mutable pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
-    while pageTop < rowBottom do
-        let fragmentTop = max rowY (WordLayout.Page.contentTop settings.PaddingTop pageTop)
-        let fragmentBottom = min rowBottom (WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop)
-        if fragmentBottom > fragmentTop then
-            let fragmentLines =
-                lines
-                |> List.filter (fun (_, line) -> line.Y < fragmentBottom && line.Y + line.Height > fragmentTop)
-            let consumedLineEnd = consumedLineStart + fragmentLines.Length
-            let contentTop = fragmentLines |> List.map (fun (_, line) -> line.Y) |> function | [] -> None | values -> Some (List.min values)
-            let contentBottom = fragmentLines |> List.map (fun (_, line) -> line.Y + line.Height) |> function | [] -> None | values -> Some (List.max values)
-            let blockIds = fragmentLines |> List.map fst |> List.distinct
-            let page = pageNumberForY settings fragmentTop
-            let repeatedHeaderHeight = if page > firstTablePage then repeatedHeaderHeight else 0.0
-            fragments <- fragments @ [{
-                Page = page
-                RowPlanY = rowY
-                RowContentY = rowY
-                Y = fragmentTop
-                Height = fragmentBottom - fragmentTop
-                AvailableHeight = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop - fragmentTop
-                RepeatedHeaderHeight = repeatedHeaderHeight
-                ContentTop = contentTop
-                ContentBottom = contentBottom
-                LineCount = fragmentLines.Length
-                ConsumedLineStart = consumedLineStart
-                ConsumedLineEnd = consumedLineEnd
-                BlockIds = blockIds
-                BreakReason = "row-span"
-            }]
-            consumedLineStart <- consumedLineEnd
-        pageTop <- pageTop + pageHeight settings + pageGap
-    fragments
+    let pageContentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
+    let pageContentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+    if rowY >= pageContentTop && rowBottom <= pageContentBottom then
+        let lineCount, contentTop, contentBottom, blockIds = tableRowMeasurementLineSummary measurement
+        let page = pageNumberForY settings rowY
+        [{
+            Page = page
+            RowPlanY = rowY
+            RowContentY = rowY
+            Y = rowY
+            Height = rowHeight
+            AvailableHeight = pageContentBottom - rowY
+            RepeatedHeaderHeight = if page > firstTablePage then repeatedHeaderHeight else 0.0
+            ContentTop = contentTop
+            ContentBottom = contentBottom
+            LineCount = lineCount
+            ConsumedLineStart = 0
+            ConsumedLineEnd = lineCount
+            BlockIds = blockIds
+            BreakReason = "row-span"
+        }]
+    else
+        let lines = sortedTableRowBlockLines measurement
+        let fragments = ResizeArray<TableRowFragmentPlan>()
+        let mutable consumedLineStart = 0
+        while pageTop < rowBottom do
+            let fragmentTop = max rowY (WordLayout.Page.contentTop settings.PaddingTop pageTop)
+            let fragmentBottom = min rowBottom (WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop)
+            if fragmentBottom > fragmentTop then
+                let blockIds = ResizeArray<BlockId>()
+                let seenBlockIds = System.Collections.Generic.HashSet<BlockId>()
+                let mutable lineCount = 0
+                let mutable contentTopValue = System.Double.PositiveInfinity
+                let mutable contentBottomValue = System.Double.NegativeInfinity
+                for blockId, line in lines do
+                    if line.Y < fragmentBottom && line.Y + line.Height > fragmentTop then
+                        lineCount <- lineCount + 1
+                        if line.Y < contentTopValue then contentTopValue <- line.Y
+                        let lineBottom = line.Y + line.Height
+                        if lineBottom > contentBottomValue then contentBottomValue <- lineBottom
+                        if seenBlockIds.Add blockId then
+                            blockIds.Add blockId
+                let consumedLineEnd = consumedLineStart + lineCount
+                let contentTop = if lineCount = 0 then None else Some contentTopValue
+                let contentBottom = if lineCount = 0 then None else Some contentBottomValue
+                let page = pageNumberForY settings fragmentTop
+                let repeatedHeaderHeight = if page > firstTablePage then repeatedHeaderHeight else 0.0
+                fragments.Add {
+                    Page = page
+                    RowPlanY = rowY
+                    RowContentY = rowY
+                    Y = fragmentTop
+                    Height = fragmentBottom - fragmentTop
+                    AvailableHeight = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop - fragmentTop
+                    RepeatedHeaderHeight = repeatedHeaderHeight
+                    ContentTop = contentTop
+                    ContentBottom = contentBottom
+                    LineCount = lineCount
+                    ConsumedLineStart = consumedLineStart
+                    ConsumedLineEnd = consumedLineEnd
+                    BlockIds = resizeArrayToList blockIds
+                    BreakReason = "row-span"
+                }
+                consumedLineStart <- consumedLineEnd
+            pageTop <- pageTop + pageHeight settings + pageGap
+        resizeArrayToList fragments
 
 let private contentBottomForY settings y =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
@@ -1910,13 +3134,8 @@ let private nextPageContentY settings y repeatedHeaderHeight =
     WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + repeatedHeaderHeight
 
 let private fragmentPlanForRowTransaction settings firstTablePage headerHeight rowY rowHeight (row: TableRow) (rowLocalMeasurement: TableRowMeasurement) =
-    let rowLines =
-        rowLocalMeasurement.CellGroups
-        |> List.collect (fun group -> group.Layouts)
-        |> List.collect (fun layout -> layout.Lines |> List.map (fun line -> layout.BlockId, line))
-        |> List.sortBy (fun (_, line) -> line.Y, line.StartOffset, line.EndOffset)
-        |> List.toArray
-    let mutable fragments = []
+    let rowLines = sortedTableRowBlockLines rowLocalMeasurement
+    let fragments = ResizeArray<TableRowFragmentPlan>()
     let mutable currentY = rowY
     let mutable consumedLineStart = 0
 
@@ -1929,11 +3148,23 @@ let private fragmentPlanForRowTransaction settings firstTablePage headerHeight r
         while consumedLineEnd < rowLines.Length && currentY + (snd rowLines.[consumedLineEnd]).Y >= fragmentY && currentY + (snd rowLines.[consumedLineEnd]).Y + (snd rowLines.[consumedLineEnd]).Height <= fragmentBottom do
             consumedLineEnd <- consumedLineEnd + 1
         let visibleLineCount = consumedLineEnd - consumedLineStart
-        let fragmentLines = rowLines.[consumedLineStart .. consumedLineEnd - 1] |> Array.toList
-        let contentTop = fragmentLines |> List.map (fun (_, line) -> currentY + line.Y) |> function | [] -> None | values -> Some (List.min values)
-        let contentBottom = fragmentLines |> List.map (fun (_, line) -> currentY + line.Y + line.Height) |> function | [] -> None | values -> Some (List.max values)
-        let blockIds = fragmentLines |> List.map fst |> List.distinct
-        fragments <- fragments @ [{
+        let blockIds = ResizeArray<BlockId>()
+        let seenBlockIds = System.Collections.Generic.HashSet<BlockId>()
+        let mutable contentTopValue = System.Double.PositiveInfinity
+        let mutable contentBottomValue = System.Double.NegativeInfinity
+        let mutable lineIndex = consumedLineStart
+        while lineIndex < consumedLineEnd do
+            let blockId, line = rowLines.[lineIndex]
+            let lineTop = currentY + line.Y
+            let lineBottom = lineTop + line.Height
+            if lineTop < contentTopValue then contentTopValue <- lineTop
+            if lineBottom > contentBottomValue then contentBottomValue <- lineBottom
+            if seenBlockIds.Add blockId then
+                blockIds.Add blockId
+            lineIndex <- lineIndex + 1
+        let contentTop = if visibleLineCount = 0 then None else Some contentTopValue
+        let contentBottom = if visibleLineCount = 0 then None else Some contentBottomValue
+        fragments.Add {
             Page = pageNumberForY settings fragmentY
             RowPlanY = rowY
             RowContentY = currentY
@@ -1946,9 +3177,9 @@ let private fragmentPlanForRowTransaction settings firstTablePage headerHeight r
             LineCount = visibleLineCount
             ConsumedLineStart = consumedLineStart
             ConsumedLineEnd = consumedLineEnd
-            BlockIds = blockIds
+            BlockIds = resizeArrayToList blockIds
             BreakReason = breakReason
-        }]
+        }
         consumedLineStart <- consumedLineEnd
         visibleLineCount
 
@@ -1965,30 +3196,39 @@ let private fragmentPlanForRowTransaction settings firstTablePage headerHeight r
     let repeatedHeaderHeight = repeatedHeaderHeightAt currentY
     let reason = if consumedLineStart > 0 then "fits-after-advance" else if rowLines.Length = 0 then "empty-fragment" else "fits"
     addFragment currentY rowHeight repeatedHeaderHeight reason |> ignore
-    currentY, fragments
+    currentY, resizeArrayToList fragments
 
 let buildTableLayoutPlanForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY =
+    let styleContext = WordStyles.styleContext doc
+    let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
     let outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock |> snd
     let tableX = settings.PaddingLeft + tableHorizontalOffset - outerLeft
     let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
+    let resolvedRows =
+        lazy (
+            WordLayout.Table.resolveTable WordLayout.canvasScale (Some tableMaxWidth) tableBlock
+            |> fun resolved -> resolved.BodyRows |> List.toArray)
     let headerRows = WordLayout.Table.headerRows tableBlock
-    let headerRowCount = headerRows |> List.length
     let measureRow row rowY tableContinuationHeaderHeight =
-        measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
+        measureTableRowForContextWithColumnMetrics settings measureText measureRange styleContext tableBlock columnMetrics outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
     let measureRowLocal row =
-        measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row
-    let headerHeightAt rowY =
-        headerRows
-        |> List.fold (fun (currentY, totalHeight) headerRow ->
-            let header = measureRow headerRow currentY 0.0
-            currentY + header.Height, totalHeight + header.Height) (rowY, 0.0)
-        |> snd
+        measureTableRowForContextRowLocalWithColumnMetrics settings measureText measureRange styleContext tableBlock columnMetrics outerLeft tableHorizontalOffset row
+    let headerMeasurementsBuffer = ResizeArray()
+    for row in headerRows do
+        headerMeasurementsBuffer.Add(measureRowLocal row)
+    let headerMeasurementsLocal = headerMeasurementsBuffer.ToArray()
+    let headerRowCount = headerMeasurementsLocal.Length
+    let headerHeight =
+        let mutable totalHeight = 0.0
+        for header in headerMeasurementsLocal do
+            totalHeight <- totalHeight + header.Height
+        totalHeight
     let mutable rowY = tableY
     let firstTablePage = pageNumberForY settings tableY
-    let mutable rows = []
-    for rowIndex in 0 .. tableBlock.Rows.Length - 1 do
-        let row = tableBlock.Rows.[rowIndex]
-        let continuationHeaderHeight = if row.IsHeader then 0.0 else headerHeightAt rowY
+    let rows = ResizeArray<TableLayoutPlanRow>()
+    let mutable rowIndex = 0
+    for row in tableBlock.Rows do
+        let continuationHeaderHeight = if row.IsHeader then 0.0 else headerHeight
         let rowLocalMeasurement = measureRowLocal row
         let mutable plannedMeasurement = moveTableRowMeasurementToY rowY rowLocalMeasurement
         let mutable plannedY = rowY
@@ -2005,7 +3245,7 @@ let buildTableLayoutPlanForDocument settings measureText measureRange doc tableB
                 pagedRowY
         let rowContentY =
             if pagedRowY <> rowY && not row.IsHeader && not headerRows.IsEmpty then
-                pagedRowY + headerHeightAt pagedRowY
+                pagedRowY + headerHeight
             else
                 pagedRowY
         let rowFitsAtCurrentY = rowContentY = rowY && rowY + rowHeight <= contentBottom
@@ -2016,18 +3256,20 @@ let buildTableLayoutPlanForDocument settings measureText measureRange doc tableB
         else
             plannedMeasurement <- measureRow row rowY continuationHeaderHeight
             rowHeight <- plannedMeasurement.Height
-        let repeatedHeaderHeight = if row.IsHeader then 0.0 else headerHeightAt rowY
+        let repeatedHeaderHeight = if row.IsHeader then 0.0 else headerHeight
         let fragments = planTableRowFragments settings (pageNumberForY settings plannedY) repeatedHeaderHeight plannedY rowHeight plannedMeasurement
-        rows <- rows @ [{
+        rows.Add {
             RowIndex = rowIndex
+            Row = row
             IsHeader = row.IsHeader
             CanSplit = row.CanSplit |> Option.defaultValue true
             Y = plannedY
             Height = rowHeight
             Measurement = plannedMeasurement
             Fragments = fragments
-        }]
+        }
         rowY <- plannedY + rowHeight
+        rowIndex <- rowIndex + 1
     {
         Table = tableBlock
         TableX = tableX
@@ -2036,8 +3278,9 @@ let buildTableLayoutPlanForDocument settings measureText measureRange doc tableB
         OuterLeft = outerLeft
         OuterRight = outerRight
         ColumnWidths = columnWidths
+        ResolvedRows = resolvedRows
         HeaderRowCount = headerRowCount
-        Rows = rows
+        Rows = resizeArrayToList rows
         NextY = rowY + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock
     }
 
@@ -2061,16 +3304,23 @@ let private layoutDocumentWithRangeAndInitial
         (initialPlacedBoxes: PlacedFloatingBox list) =
     // Multi-column sections are flowed by columnFlowLayout, which drives this
     // function per column at the column width; here we always use the full width.
+    let styleContext = WordStyles.styleContext doc
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
     let mutable y = settings.PaddingTop
-    let mutable layouts = []
+    let layouts = ResizeArray<BlockLayout>()
     let mutable numberedCounters = Map.empty<string * int, int>
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
     let mutable floatingObstacles: FloatingObstacle list = initialObstacles
     let mutable placedFloatingBoxes: PlacedFloatingBox list = initialPlacedBoxes
     let mutable previousParagraphContext: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
     let mutable previousParagraphLayout: BlockLayout option = None
+    let mutable hasEndnoteRefs = false
     let blocks = doc.Blocks |> List.toArray
+
+    let addBodyLayout layout =
+        layouts.Add layout
+        if not hasEndnoteRefs && layoutHasNoteType "endnote" layout then
+            hasEndnoteRefs <- true
 
     let nextParagraphBlock index =
         if index + 1 >= blocks.Length then None
@@ -2089,22 +3339,24 @@ let private layoutDocumentWithRangeAndInitial
             | _ -> None
 
     let paragraphTextIsEmpty (para: ParagraphBlock) =
-        TextBuffer.toString para.Buffer |> fun text -> text.Trim() = ""
+        TextBuffer.isWhiteSpace para.Buffer
 
     let paragraphTextIsNonbreakingBlank (para: ParagraphBlock) =
-        let text = TextBuffer.toString para.Buffer
-        text <> "" && text |> Seq.forall (fun ch -> System.Char.IsWhiteSpace ch || ch = '\u00A0')
+        TextBuffer.isNonbreakingBlank para.Buffer
 
     let previousBlockIsTextTable index =
         index > 0
         && match blocks.[index - 1] with
            | Table table ->
-               table.Rows
-               |> List.exists (fun row ->
-                   row.Cells
-                   |> List.exists (fun cell ->
-                       cell.Content
-                           |> List.exists (fun para -> not (paragraphTextIsEmpty para))))
+               let mutable hasText = false
+               for row in table.Rows do
+                   if not hasText then
+                       for cell in row.Cells do
+                           if not hasText then
+                               for para in cell.Content do
+                                   if not hasText && not (paragraphTextIsEmpty para) then
+                                       hasText <- true
+               hasText
            | _ -> false
 
     let previousBlockIsTable index =
@@ -2170,10 +3422,11 @@ let private layoutDocumentWithRangeAndInitial
     let tableFollowDefaultLineHeightAdjustment () =
         match previousParagraphContext, previousParagraphLayout with
         | Some (_, paragraphStyle, metadata, _), Some layout when not (hasExplicitLineSpacing paragraphStyle metadata) && not (usesDefaultParagraphSpacing metadata) ->
-            layout.Lines
-            |> List.sumBy (fun line ->
+            let mutable adjustment = 0.0
+            for line in layout.Lines do
                 let fontSize = lineMaxTextFontSize paragraphStyle.Text.FontSize line
-                max 0.0 (fontSize * (wordTableFollowSingleLineBoxFactor - wordSingleLineBoxFactor)))
+                adjustment <- adjustment + max 0.0 (fontSize * (wordTableFollowSingleLineBoxFactor - wordSingleLineBoxFactor))
+            adjustment
         | _ -> 0.0
 
     let addTextBoxObstacle (textBox: TextBoxBlock) =
@@ -2193,11 +3446,17 @@ let private layoutDocumentWithRangeAndInitial
                 let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
                 let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
                 let columnWidths = tableColumnWidths tableMaxWidth tableBlock
+                let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
                 let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
                 let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
                 let mutable rowY = tableY
                 let headerRows = WordLayout.Table.headerRows tableBlock
-                let traceRows = traceTimingEnabled && tableBlock.Rows.Length >= 10
+                let tableRowCountForTrace =
+                    if traceTimingEnabled then Some (List.length tableBlock.Rows) else None
+                let traceRows =
+                    match tableRowCountForTrace with
+                    | Some count -> count >= 10
+                    | None -> false
                 let tablePlan = lazy (buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY)
                 let tracePlanRows =
                     if traceRows then
@@ -2206,13 +3465,15 @@ let private layoutDocumentWithRangeAndInitial
                         None
 
                 let hasRowSpanningVerticalAlignment =
-                    tableBlock.Rows
-                    |> List.exists (fun row ->
-                        row.Cells
-                        |> List.exists (fun cell ->
-                            match cell.VerticalMerge, cell.VerticalAlignment with
-                            | Some RestartMerge, Some alignment when alignment = "center" || alignment = "bottom" -> true
-                            | _ -> false))
+                    let mutable found = false
+                    for row in tableBlock.Rows do
+                        if not found then
+                            for cell in row.Cells do
+                                if not found then
+                                    match cell.VerticalMerge, cell.VerticalAlignment with
+                                    | Some RestartMerge, Some alignment when alignment = "center" || alignment = "bottom" -> found <- true
+                                    | _ -> ()
+                    found
                 let verticalAlignmentHeightResolver = lazy (tableCellVerticalAlignmentHeightResolverForPlan tablePlan.Value)
 
                 let verticalAlignmentHeightForCell rowIndex sourceCellIndex rowHeight =
@@ -2222,44 +3483,54 @@ let private layoutDocumentWithRangeAndInitial
                         rowHeight
 
                 if traceRows then
-                    traceTableLayout (sprintf "start rows=%d y=%.2f page=%d widths=%s" tableBlock.Rows.Length tableY (pageNumberForY settings tableY) (columnWidths |> List.map (sprintf "%.2f") |> String.concat ","))
+                    let rowCount = tableRowCountForTrace |> Option.defaultValue 0
+                    traceTableLayout (sprintf "start rows=%d y=%.2f page=%d widths=%s" rowCount tableY (pageNumberForY settings tableY) (columnWidths |> List.map (sprintf "%.2f") |> String.concat ","))
 
                 let measureRow (row: TableRow) rowY tableContinuationHeaderHeight =
-                    measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
+                    measureTableRowForContextWithColumnMetrics settings measureText measureRange styleContext tableBlock columnMetrics outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
 
                 let measureRowLocal (row: TableRow) =
-                    measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row
+                    measureTableRowForContextRowLocalWithColumnMetrics settings measureText measureRange styleContext tableBlock columnMetrics outerLeft tableHorizontalOffset row
 
-                let headerHeightAt rowY =
-                    headerRows
-                    |> List.fold (fun (currentY, totalHeight) headerRow ->
-                        let header = measureRow headerRow currentY 0.0
-                        currentY + header.Height, totalHeight + header.Height) (rowY, 0.0)
-                    |> snd
+                let headerMeasurementsBuffer = ResizeArray()
+                for row in headerRows do
+                    headerMeasurementsBuffer.Add(measureRowLocal row)
+                let headerMeasurementsLocal = headerMeasurementsBuffer.ToArray()
+                let headerHeight =
+                    let mutable totalHeight = 0.0
+                    for header in headerMeasurementsLocal do
+                        totalHeight <- totalHeight + header.Height
+                    totalHeight
+
+                let addAdjustedLayouts offset queryVAlignOffset (groupLayouts: BlockLayout list) =
+                    for layout in groupLayouts do
+                        if not layout.Lines.IsEmpty then
+                            let adjustedLayout =
+                                { layout with
+                                    Y = layout.Y + offset
+                                    VAlignOffset = layout.VAlignOffset + queryVAlignOffset
+                                    Lines = shiftLinesY offset layout.Lines }
+                            addBodyLayout adjustedLayout
+                            footnotesByPage <- addLayoutFootnotes settings footnotesByPage adjustedLayout
 
                 let addHeaderLayoutsAt headerY =
                     let mutable headerRowY = headerY
-                    for headerRowIndex, headerRow in headerRows |> List.indexed do
+                    let mutable headerRowIndex = 0
+                    for headerRow in headerRows do
                         let headerMeasurement = measureRow headerRow headerRowY 0.0
-                        for groupIndex, group in headerMeasurement.CellGroups |> List.indexed do
+                        let mutable groupIndex = 0
+                        for group in headerMeasurement.CellGroups do
                             let alignmentHeight = verticalAlignmentHeightForCell headerRowIndex groupIndex headerMeasurement.Height
                             let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment alignmentHeight group.PaddingTop group.PaddingBottom group.ContentHeight
                             let queryVAlignOffset = if alignmentHeight > headerMeasurement.Height + 0.5 then 0.0 else offset
-                            let adjustedLayouts =
-                                group.Layouts
-                                |> List.filter (fun layout -> not layout.Lines.IsEmpty)
-                                |> List.map (fun layout ->
-                                    { layout with
-                                        Y = layout.Y + offset
-                                        VAlignOffset = layout.VAlignOffset + queryVAlignOffset
-                                        Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + offset }) })
-                            layouts <- layouts @ adjustedLayouts
-                            footnotesByPage <- adjustedLayouts |> List.fold (addLayoutFootnotes settings) footnotesByPage
+                            addAdjustedLayouts offset queryVAlignOffset group.Layouts
+                            groupIndex <- groupIndex + 1
                         headerRowY <- headerRowY + headerMeasurement.Height
+                        headerRowIndex <- headerRowIndex + 1
 
-                for rowIndex in 0 .. tableBlock.Rows.Length - 1 do
-                    let row = tableBlock.Rows.[rowIndex]
-                    let continuationHeaderHeight = if row.IsHeader then 0.0 else headerHeightAt rowY
+                let mutable rowIndex = 0
+                for row in tableBlock.Rows do
+                    let continuationHeaderHeight = if row.IsHeader then 0.0 else headerHeight
                     let rowLocalMeasurement = measureRowLocal row
                     let mutable measuredRow = rowLocalMeasurement
                     let mutable rowHeight = measuredRow.Height
@@ -2278,7 +3549,7 @@ let private layoutDocumentWithRangeAndInitial
                             pagedRowY
                     let rowContentY =
                         if pagedRowY <> rowY && not row.IsHeader && not headerRows.IsEmpty then
-                            pagedRowY + headerHeightAt pagedRowY
+                            pagedRowY + headerHeight
                         else
                             pagedRowY
                     let rowFitsAtCurrentY = rowContentY = rowY && rowY + rowHeight <= contentBottom
@@ -2305,7 +3576,7 @@ let private layoutDocumentWithRangeAndInitial
                             row.Cells
                             |> List.collect (fun cell -> cell.Content)
                             |> List.map (fun para -> TextBuffer.toString para.Buffer)
-                            |> List.tryFind (fun text -> text.Trim() <> "")
+                            |> List.tryFind hasNonWhitespace
                             |> Option.map snippet
                             |> Option.defaultValue ""
                         traceTableLayout (sprintf "row=%d y=%.2f page=%d h=%.2f bottom=%.2f contentBottom=%.2f split=%b header=%b text=%s cells=[%s]" rowIndex rowY (pageNumberForY settings rowY) rowHeight (rowY + rowHeight) contentBottom (row.CanSplit |> Option.defaultValue true) row.IsHeader rowSnippet (String.concat " | " measuredRow.Traces))
@@ -2324,22 +3595,15 @@ let private layoutDocumentWithRangeAndInitial
                         // unaligned origin) but reflects vMerge row-span centering, so only the
                         // single-row offset is subtracted back out in layout queries.
                         let queryVAlignOffset = if alignmentHeight > rowHeight + 0.5 then 0.0 else offset
-                        let adjustedLayouts =
-                            group.Layouts
-                            |> List.filter (fun layout -> not layout.Lines.IsEmpty)
-                            |> List.map (fun layout ->
-                                { layout with
-                                    Y = layout.Y + offset
-                                    VAlignOffset = layout.VAlignOffset + queryVAlignOffset
-                                    Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + offset }) })
-                        layouts <- layouts @ adjustedLayouts
-                        footnotesByPage <- adjustedLayouts |> List.fold (addLayoutFootnotes settings) footnotesByPage
+                        addAdjustedLayouts offset queryVAlignOffset group.Layouts
                     rowY <- rowY + rowHeight
+                    rowIndex <- rowIndex + 1
 
                 rowY + WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock, tableWidth
             else
                 tableY + WordLayout.Table.emptyTableAdvance settings.LineHeight, 0.0
-        traceSlow (sprintf "table rows=%d" tableBlock.Rows.Length) tableStart
+        if traceTimingEnabled then
+            traceSlow (sprintf "table rows=%d" (List.length tableBlock.Rows)) tableStart
         result
 
     for index in 0 .. blocks.Length - 1 do
@@ -2354,7 +3618,7 @@ let private layoutDocumentWithRangeAndInitial
             let blockStart = timingStart ()
             let nextY, tableWidth = layoutTableAt tableBlock tableY
             if tableBlock.Floating then
-                let tableLeftOffset = tableLeftOffsetForDocument doc tableBlock
+                let tableLeftOffset = tableLeftOffsetForContext styleContext tableBlock
                 let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
                 let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
                 let tableHeight = max 0.0 (nextY - tableY - WordLayout.Table.afterSpacing)
@@ -2373,16 +3637,17 @@ let private layoutDocumentWithRangeAndInitial
                 } :: placedFloatingBoxes
             else
                 y <- nextY
-            traceSlow (sprintf "block[%d]:table rows=%d" index tableBlock.Rows.Length) blockStart
+            if traceTimingEnabled then
+                traceSlow (sprintf "block[%d]:table rows=%d" index (List.length tableBlock.Rows)) blockStart
 
         | _ ->
             let blockStart = timingStart ()
             let para = getParagraph block
-            let paragraphStyle = forBlockInDocument doc block
+            let paragraphStyle = forBlockInContext styleContext block
             let beforeRenderedHintY = y
             y <- applyRenderedPageBreakHint settings y para
             if y <> beforeRenderedHintY then resetPreviousParagraph ()
-            if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && not layouts.IsEmpty then
+            if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && layouts.Count > 0 then
                 y <- advanceToNextPage settings y
                 resetPreviousParagraph ()
             let effectiveMetadata = WordStyles.effectiveMetadata paragraphStyle para.Metadata
@@ -2404,7 +3669,7 @@ let private layoutDocumentWithRangeAndInitial
                         y <- y - previousBorderAfter - currentBorderBefore
                 | None -> ()
             let initialStart = timingStart ()
-            let initialLayout, initialCounters, initialObstacles, initialPlacedBoxes = layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth y 0.0 paragraphStyle (effectiveBufferInDocument doc) para numberedCounters floatingObstacles placedFloatingBoxes
+            let initialLayout, initialCounters, initialObstacles, initialPlacedBoxes = layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth y 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters floatingObstacles placedFloatingBoxes
             traceSlow (sprintf "block[%d]:initial lines=%d" index initialLayout.Lines.Length) initialStart
             let keepWithNextY =
                 if paragraphStyle.KeepNext = Some true then
@@ -2419,12 +3684,12 @@ let private layoutDocumentWithRangeAndInitial
                     while shouldContinue do
                         match paragraphBlockAt probeIndex with
                         | Some (nextBlock, nextPara) ->
-                            let nextStyle = forBlockInDocument doc nextBlock
+                            let nextStyle = forBlockInContext styleContext nextBlock
                             if nextPara.Metadata.PageBreakBefore || nextStyle.PageBreakBefore = Some true then
                                 groupIsMoveable <- false
                                 shouldContinue <- false
                             else
-                                let nextLayout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth probeY 0.0 nextStyle (effectiveBufferInDocument doc) nextPara numberedCounters initialObstacles initialPlacedBoxes
+                                let nextLayout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth probeY 0.0 nextStyle (effectiveBufferInContext styleContext) nextPara numberedCounters initialObstacles initialPlacedBoxes
                                 let nextKeepsFurther = nextStyle.KeepNext = Some true
                                 let nextContribution =
                                     if nextKeepsFurther then
@@ -2468,8 +3733,8 @@ let private layoutDocumentWithRangeAndInitial
                     match nextParagraphBlock index with
                     | Some (nextBlock, nextPara) ->
                         let nearFooterStart = timingStart ()
-                        let nextStyle = forBlockInDocument doc nextBlock
-                        let nextLayout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth (pagedY + initialLayout.Height) 0.0 nextStyle (effectiveBufferInDocument doc) nextPara numberedCounters initialObstacles initialPlacedBoxes
+                        let nextStyle = forBlockInContext styleContext nextBlock
+                        let nextLayout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth (pagedY + initialLayout.Height) 0.0 nextStyle (effectiveBufferInContext styleContext) nextPara numberedCounters initialObstacles initialPlacedBoxes
                         traceSlow (sprintf "block[%d]:nearFooterProbe lines=%d" index nextLayout.Lines.Length) nearFooterStart
                         Some nextLayout.Lines.Length
                     | None -> None
@@ -2488,7 +3753,7 @@ let private layoutDocumentWithRangeAndInitial
                 else
                     let relayoutStart = timingStart ()
                     let result =
-                        layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth pagedY 0.0 paragraphStyle (effectiveBufferInDocument doc) para numberedCounters floatingObstacles placedFloatingBoxes
+                        layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth pagedY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters floatingObstacles placedFloatingBoxes
                     traceSlow (sprintf "block[%d]:relayout" index) relayoutStart
                     result
             let layout =
@@ -2517,7 +3782,7 @@ let private layoutDocumentWithRangeAndInitial
             numberedCounters <- counters
             floatingObstacles <- obstacles
             placedFloatingBoxes <- placedBoxes
-            layouts <- layouts @ [layout]
+            addBodyLayout layout
             footnotesByPage <- addLayoutFootnotes settings footnotesByPage layout
             y <- layout.Y + layout.Height
             previousParagraphContext <- Some (para, paragraphStyle, layout.Metadata, WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata)
@@ -2554,25 +3819,30 @@ let private layoutDocumentWithRangeAndInitial
                     layout)
             let blockTop = pageContentBottom - footnoteBottomPad - tempY
             for layout in laidOut do
-                layouts <- layouts @ [moveLayoutToY (blockTop + layout.Y) layout]
+                layouts.Add(moveLayoutToY (blockTop + layout.Y) layout)
 
     // Endnotes: collect every endnote in document order and lay them out after
     // the body content (Word stacks endnotes at the end of the document), with a
     // separator drawn above the first by Paint.
-    let bodyLayouts = layouts |> List.filter (fun layout -> not (layout.BlockId.StartsWith footnoteBlockIdPrefix))
-    let endnotes =
-        bodyLayouts
-        |> List.sortBy (fun layout -> layout.Y)
-        |> List.collect (fun layout -> layout.Lines |> List.collect endnotesInLine)
-        |> List.distinctBy fst
-    if not endnotes.IsEmpty then
-        let bodyBottom =
-            bodyLayouts
-            |> List.map (fun layout -> layout.Y + layout.Height)
-            |> List.fold max settings.PaddingTop
+    if hasEndnoteRefs then
+        let bodyLayouts = ResizeArray<BlockLayout>()
+        let mutable bodyBottom = settings.PaddingTop
+        for layout in layouts do
+            if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) then
+                bodyLayouts.Add layout
+                bodyBottom <- max bodyBottom (layout.Y + layout.Height)
+        bodyLayouts.Sort(System.Comparison<BlockLayout>(fun left right -> compare left.Y right.Y))
+        let endnotes = ResizeArray<string * string>()
+        let seenEndnotes = System.Collections.Generic.HashSet<string>()
+        for layout in bodyLayouts do
+            for line in layout.Lines do
+                for id, text in endnotesInLine line do
+                    if seenEndnotes.Add id then
+                        endnotes.Add(id, text)
         let stride = pageHeight settings + pageGap
         let mutable noteY = bodyBottom + endnoteTopGap
-        endnotes |> List.iteri (fun noteIndex (id, text) ->
+        for noteIndex = 0 to endnotes.Count - 1 do
+            let id, text = endnotes.[noteIndex]
             let mark = endnoteMark id
             let noteString = sprintf "%s %s" mark (text.Trim())
             let buffer =
@@ -2595,10 +3865,10 @@ let private layoutDocumentWithRangeAndInitial
                 if noteY > contentTop && noteY + height > contentBottom
                 then WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride)
                 else noteY
-            layouts <- layouts @ [moveLayoutToY startY probe]
-            noteY <- startY + height)
+            layouts.Add(moveLayoutToY startY probe)
+            noteY <- startY + height
 
-    layouts, placedFloatingBoxes
+    resizeArrayToList layouts, placedFloatingBoxes
 
 // Walk a first-pass layout result and shift each placed float's obstacle top
 // up to the top of whichever line first sits "inside" the float's effective
@@ -2677,15 +3947,45 @@ let private shiftSegmentX dx segment =
         ImageSegment (src, x + dx, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb)
     | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + dx, w, asc, desc, off, len)
 
+let private shiftSegmentsX dx segments =
+    let shifted = ResizeArray<Segment>()
+    for segment in segments do
+        shifted.Add(shiftSegmentX dx segment)
+    resizeArrayToList shifted
+
+let private shiftLinesX dx lines =
+    let shifted = ResizeArray<MeasuredLine>()
+    for line in lines do
+        shifted.Add { line with Segments = shiftSegmentsX dx line.Segments }
+    resizeArrayToList shifted
+
 let private shiftBlockX dx (layout: BlockLayout) =
-    { layout with
-        Indent = layout.Indent + dx
-        Lines = layout.Lines |> List.map (fun line -> { line with Segments = line.Segments |> List.map (shiftSegmentX dx) }) }
+    if dx = 0.0 then layout
+    else
+        { layout with
+            Indent = layout.Indent + dx
+            Lines = shiftLinesX dx layout.Lines }
 
 let private shiftBlockY dy (layout: BlockLayout) =
-    { layout with
-        Y = layout.Y + dy
-        Lines = layout.Lines |> List.map (fun line -> { line with Y = line.Y + dy }) }
+    if dy = 0.0 then layout
+    else
+        { layout with
+            Y = layout.Y + dy
+            Lines = shiftLinesY dy layout.Lines }
+
+let private takeLines count (lines: MeasuredLine list) =
+    let taken = ResizeArray<MeasuredLine>()
+    let mutable remainingCount = count
+    let mutable remainingLines: MeasuredLine list = lines
+    let mutable taking = remainingCount > 0
+    while taking do
+        match remainingLines with
+        | line :: rest when remainingCount > 0 ->
+            taken.Add line
+            remainingCount <- remainingCount - 1
+            remainingLines <- rest
+        | _ -> taking <- false
+    resizeArrayToList taken
 
 /// Lay the document body out column by column. Each paragraph is laid out at the
 /// current column's width and, if it overflows, split at the column boundary —
@@ -2699,6 +3999,7 @@ let private shiftBlockY dy (layout: BlockLayout) =
 /// column fills to the page bottom and the flow wraps to the next page after
 /// `count` columns. Returns the placed layouts.
 let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) =
+    let styleContext = WordStyles.styleContext doc
     let n = max 1 columns.Count
     let full = settings.Width - settings.PaddingLeft - settings.MarginRight
     let widthsArr =
@@ -2727,7 +4028,7 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
         if balanced then
             let w = columnWidth 0
             let sub, _ = layoutDocumentWithRangeAndInitial { settings with Width = settings.PaddingLeft + w + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange doc [] []
-            let bottom = sub |> List.collect (fun l -> l.Lines) |> List.map (fun l -> l.Y + l.Height) |> (function [] -> settings.PaddingTop | ys -> List.max ys)
+            let bottom = maxLineBottom settings.PaddingTop sub
             Some ((bottom - settings.PaddingTop) / float n + 2.0)
         else None
 
@@ -2761,14 +4062,19 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
         | Some para0 ->
             if (para0.Metadata.PageBreakBefore || para0.Metadata.RenderedPageBreakBefore.IsSome) && not (atColumnTop ()) then
                 advanceColumn ()
-            let style = forBlockInDocument doc block
+            let style = forBlockInContext styleContext block
             let mutable remaining = para0
             let mutable placed = false
             while not placed do
                 let colBottom = columnBottom ()
                 let layout, newCounters, _, _ =
-                    layoutParagraphAtWithStyleAndObstaclesWithRange flowSettings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInDocument doc) remaining counters [] []
-                let fitCount = layout.Lines |> List.filter (fun line -> line.Y + line.Height <= colBottom + 0.5) |> List.length
+                    layoutParagraphAtWithStyleAndObstaclesWithRange flowSettings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInContext styleContext) remaining counters [] []
+                let mutable fitCount = 0
+                let mutable lastFit = None
+                for line in layout.Lines do
+                    if line.Y + line.Height <= colBottom + 0.5 then
+                        fitCount <- fitCount + 1
+                        lastFit <- Some line
                 if fitCount = layout.Lines.Length then
                     results.Add(shiftBlockX (columnDx col) layout)
                     counters <- newCounters
@@ -2782,11 +4088,14 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
                         placed <- true
                     else advanceColumn ()
                 else
-                    let fitLines = layout.Lines |> List.truncate fitCount
-                    let lastFit = List.last fitLines
-                    results.Add(shiftBlockX (columnDx col) { layout with Lines = fitLines; Height = lastFit.Y + lastFit.Height - layout.Y })
-                    remaining <- { remaining with Buffer = TextBuffer.delete 0 lastFit.EndOffset remaining.Buffer }
-                    advanceColumn ()
+                    let fitLines = takeLines fitCount layout.Lines
+                    match lastFit with
+                    | Some lastFit ->
+                        results.Add(shiftBlockX (columnDx col) { layout with Lines = fitLines; Height = lastFit.Y + lastFit.Height - layout.Y })
+                        remaining <- { remaining with Buffer = TextBuffer.delete 0 lastFit.EndOffset remaining.Buffer }
+                        advanceColumn ()
+                    | None ->
+                        advanceColumn ()
             if para0.Metadata.PageBreakAfter && not (atColumnTop ()) then advanceColumn ()
         | None ->
             let sub = { doc with Blocks = [block] }
@@ -2795,15 +4104,19 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
             match subLayouts with
             | [] -> ()
             | _ ->
-                let subTop = subLayouts |> List.map (fun l -> l.Y) |> List.min
-                let subBottom = subLayouts |> List.map (fun l -> l.Y + l.Height) |> List.max
+                let mutable subTop = System.Double.PositiveInfinity
+                let mutable subBottom = System.Double.NegativeInfinity
+                for layout in subLayouts do
+                    if layout.Y < subTop then subTop <- layout.Y
+                    let layoutBottom = layout.Y + layout.Height
+                    if layoutBottom > subBottom then subBottom <- layoutBottom
                 let height = subBottom - subTop
                 if not (atColumnTop ()) && y + height > columnBottom () + 0.5 then advanceColumn ()
                 let dy = y - subTop
                 for sl in subLayouts do
                     results.Add(sl |> shiftBlockY dy |> shiftBlockX (columnDx col))
                 y <- y + height
-    List.ofSeq results, page, y
+    resizeArrayToList results, page, y
 
 /// Absolute geometry of one rendered page. For single-section documents every
 /// page is identical (uniform), matching the legacy stride-based model; with
@@ -2828,12 +4141,12 @@ let private splitIntoSections (doc: Document) =
         current.Add block
         match tryGetParagraph block with
         | Some para when para.Metadata.SectionBreak.IsSome ->
-            result.Add(List.ofSeq current, para.Metadata.SectionColumns, para.Metadata.SectionPageSetup, para.Metadata.SectionBreak, false)
+            result.Add(resizeArrayToList current, para.Metadata.SectionColumns, para.Metadata.SectionPageSetup, para.Metadata.SectionBreak, false)
             current <- ResizeArray<Block>()
         | _ -> ()
     // The final section's start type comes from the body sectPr.
-    result.Add(List.ofSeq current, doc.PageSetup.Columns, None, doc.PageSetup.SectionStart, true)
-    List.ofSeq result
+    result.Add(resizeArrayToList current, doc.PageSetup.Columns, None, doc.PageSetup.SectionStart, true)
+    resizeArrayToList result
 
 let private columnsOrSingle (columns: SectionColumns option) =
     match columns with
@@ -2849,11 +4162,14 @@ let private pageInfoOf (s: LayoutSettings) top =
     { Top = top; Width = s.Width; Height = pageHeight s; MarginTop = s.PaddingTop; MarginBottom = s.MarginBottom; MarginLeft = s.PaddingLeft; MarginRight = s.MarginRight }
 
 /// The uniform page list for a single-section document (legacy stride model).
-let uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
+let uniformPageInfosWithLayoutCount (settings: LayoutSettings) (layouts: BlockLayout list) =
     let stride = pageHeight settings + pageGap
-    let bottom = layouts |> List.collect (fun l -> l.Lines) |> List.map (fun l -> l.Y + l.Height) |> (function [] -> 0.0 | ys -> List.max ys)
+    let bottom, layoutCount = maxLineBottomAndLayoutCount 0.0 layouts
     let pageCount = max 1 (int (floor (max 0.0 bottom / stride)) + 1)
-    [ for p in 0 .. pageCount - 1 -> pageInfoOf settings (float p * stride) ]
+    [ for p in 0 .. pageCount - 1 -> pageInfoOf settings (float p * stride) ], layoutCount
+
+let uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
+    uniformPageInfosWithLayoutCount settings layouts |> fst
 
 /// Lay out a multi-section document section by section. A continuous break
 /// continues on the same page below the previous section; otherwise the next
@@ -2908,7 +4224,7 @@ let private layoutSections (settings: LayoutSettings) (measureText: TextMeasurer
         currentY <- endY)
     let maxPage = pageTops.Count - 1
     let pages = [ for p in 0 .. maxPage -> pageInfoOf pageSettings.[p] pageTops.[p] ]
-    List.ofSeq results, pages
+    resizeArrayToList results, pages
 
 /// Lay out a document, returning the layouts and the per-page geometry.
 let layoutDocumentPages (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) : BlockLayout list * PageInfo list =

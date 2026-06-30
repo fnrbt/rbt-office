@@ -1,5 +1,19 @@
 module RedBat.Word.Input
 
+let private sameListOrEqual left right =
+    obj.ReferenceEquals(left, right) || left = right
+
+let private documentsEqualForChange (left: RedBat.Word.Document.Document) (right: RedBat.Word.Document.Document) =
+    obj.ReferenceEquals(left, right)
+    || (left.Selection = right.Selection
+        && left.PageSetup = right.PageSetup
+        && sameListOrEqual left.Blocks right.Blocks
+        && sameListOrEqual left.Styles right.Styles
+        && sameListOrEqual left.Headers right.Headers
+        && sameListOrEqual left.Footers right.Footers
+        && sameListOrEqual left.HeaderParts right.HeaderParts
+        && sameListOrEqual left.FooterParts right.FooterParts)
+
 #if FABLE_COMPILER
 open Fable.Core
 open Fable.Core.JsInterop
@@ -13,20 +27,15 @@ module Doc = RedBat.Word.Document
 module Cmd = RedBat.Word.Commands
 module Clipboard = RedBat.Word.Clipboard
 
-[<Emit("console.log($0, $1, $2, $3, $4, $5)")>]
-let consoleLog6 (a: obj) (b: obj) (c: obj) (d: obj) (e: obj) (f: obj) : unit = jsNative
-
-[<Emit("console.log($0, $1, $2, $3, $4)")>]
-let consoleLog5 (a: obj) (b: obj) (c: obj) (d: obj) (e: obj) : unit = jsNative
-
-[<Emit("console.log($0, $1)")>]
-let consoleLog2 (a: obj) (b: obj) : unit = jsNative
-
-[<Emit("console.log($0)")>]
-let consoleLog1 (a: obj) : unit = jsNative
-
 [<Emit("$0.style.cursor = $1")>]
 let setCursor (elem: HTMLCanvasElement) (cursor: string) : unit = jsNative
+
+let private keyEquals (expected: char) (key: string) =
+    if key.Length <> 1 then
+        false
+    else
+        let actual = key.[0]
+        actual = expected || System.Char.ToUpperInvariant actual = System.Char.ToUpperInvariant expected
 
 /// Resize state for images
 type ResizeState = {
@@ -101,111 +110,110 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let nearBottom = abs (y - (imageY + height)) <= handle
         (nearLeft || nearRight) && (nearTop || nearBottom)
 
+    let applyPointerDocumentChange newDoc =
+        if not (documentsEqualForChange newDoc handler.Document) then
+            handler.Document <- newDoc
+            renderWithHover handler.RenderContext newDoc handler.HoveredImage
+            handler.OnChange newDoc
+
     // Make canvas focusable
     canvas.tabIndex <- 0
 
     // Handle keyboard input
     canvas.addEventListener("keydown", fun (e: Event) ->
         let ke = e :?> KeyboardEvent
-        consoleLog6 "Key pressed:" (box ke.key) "ctrl:" (box ke.ctrlKey) "shift:" (box ke.shiftKey)
         let mutable newDoc = handler.Document
         let mutable newHistory = handler.History
         let mutable useCommand = false
 
+        let commandKey = ke.ctrlKey || ke.metaKey
+
         match ke.key with
-        | "z" when ke.ctrlKey || ke.metaKey ->
+        | key when commandKey && keyEquals 'z' key ->
             // Undo/Redo
             if ke.shiftKey then
                 // Redo (Ctrl+Shift+Z)
-                consoleLog1 "=== REDO TRIGGERED ==="
                 let (doc', hist') = Cmd.redo handler.Document handler.History
                 newDoc <- doc'
                 newHistory <- hist'
                 useCommand <- true
             else
                 // Undo (Ctrl+Z)
-                consoleLog1 "=== UNDO TRIGGERED ==="
-                consoleLog2 "History size:" (box handler.History.Undos.Length)
-                consoleLog2 "Current doc before undo:" (box (Doc.getText handler.Document))
                 let (doc', hist') = Cmd.undo handler.Document handler.History
-                consoleLog2 "Doc after undo:" (box (Doc.getText doc'))
-                consoleLog2 "New history size:" (box hist'.Undos.Length)
                 newDoc <- doc'
                 newHistory <- hist'
                 useCommand <- true
             e.preventDefault()
-        | key when (ke.ctrlKey || ke.metaKey) && key.ToLowerInvariant() = "a" ->
+        | key when commandKey && keyEquals 'a' key ->
             newDoc <- Doc.selectAll handler.Document
             e.preventDefault()
-        | key when (ke.ctrlKey || ke.metaKey) && key.ToLowerInvariant() = "b" ->
+        | key when commandKey && keyEquals 'b' key ->
             let beforeDoc = handler.Document
             let afterDoc = Doc.toggleBold handler.Document
-            if afterDoc <> beforeDoc then
+            if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "bold") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
                 newDoc <- doc'
                 newHistory <- hist'
                 useCommand <- true
             e.preventDefault()
-        | key when (ke.ctrlKey || ke.metaKey) && key.ToLowerInvariant() = "i" ->
+        | key when commandKey && keyEquals 'i' key ->
             let beforeDoc = handler.Document
             let afterDoc = Doc.toggleItalic handler.Document
-            if afterDoc <> beforeDoc then
+            if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "italic") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
                 newDoc <- doc'
                 newHistory <- hist'
                 useCommand <- true
             e.preventDefault()
-        | key when (ke.ctrlKey || ke.metaKey) && key.ToLowerInvariant() = "u" ->
+        | key when commandKey && keyEquals 'u' key ->
             let beforeDoc = handler.Document
             let afterDoc = Doc.toggleUnderline handler.Document
-            if afterDoc <> beforeDoc then
+            if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "underline") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
                 newDoc <- doc'
                 newHistory <- hist'
                 useCommand <- true
             e.preventDefault()
-        | "1" when ke.ctrlKey || ke.metaKey ->
+        | "1" when commandKey ->
             newDoc <- Doc.setHeadingLevel 1 handler.Document
             e.preventDefault()
-        | "2" when ke.ctrlKey || ke.metaKey ->
+        | "2" when commandKey ->
             newDoc <- Doc.setHeadingLevel 2 handler.Document
             e.preventDefault()
-        | "3" when ke.ctrlKey || ke.metaKey ->
+        | "3" when commandKey ->
             newDoc <- Doc.setHeadingLevel 3 handler.Document
             e.preventDefault()
-        | "c" when ke.ctrlKey || ke.metaKey ->
+        | key when commandKey && keyEquals 'c' key ->
             // Copy (Ctrl+C)
             let text = Doc.getSelectionText handler.Document
             if text <> "" then
                 Clipboard.copyText text |> ignore
-                consoleLog2 "Copied to clipboard:" (box text)
             e.preventDefault()
-        | "x" when ke.ctrlKey || ke.metaKey ->
+        | key when commandKey && keyEquals 'x' key ->
             // Cut (Ctrl+X)
             let text = Doc.getSelectionText handler.Document
             if text <> "" then
                 Clipboard.copyText text |> ignore
-                consoleLog2 "Cut to clipboard:" (box text)
                 // Delete selection
                 let beforeDoc = handler.Document
                 let afterDoc = deleteSelectionForMode handler.Document
-                if afterDoc <> beforeDoc then
+                if not (documentsEqualForChange afterDoc beforeDoc) then
                     let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Cut") :> ICommand
                     let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
                     newDoc <- doc'
                     newHistory <- hist'
                     useCommand <- true
             e.preventDefault()
-        | "v" when ke.ctrlKey || ke.metaKey ->
+        | key when commandKey && keyEquals 'v' key ->
             // Paste (Ctrl+V)
             e.preventDefault()
             Clipboard.pasteText().``then``(fun text ->
                 if text <> "" then
-                    consoleLog2 "Pasting from clipboard:" (box text)
-                    let mutable doc' = handler.Document
+                    let beforeDoc = handler.Document
+                    let mutable doc' = beforeDoc
 
                     // Delete selection first if any
                     let hasSelection =
@@ -216,27 +224,40 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                     if hasSelection then
                         doc' <- deleteSelectionForMode doc'
 
-                    // If text contains newlines, split into blocks
-                    if text.Contains("\n") then
-                        let lines = text.Split([|'\n'|], System.StringSplitOptions.None)
-                        for i = 0 to lines.Length - 1 do
-                            let line = lines.[i]
-                            doc' <- insertTextForMode line doc'
-                            // Split block after each line except the last
-                            if i < lines.Length - 1 then
-                                doc' <- Doc.splitBlock doc'
+                    let mutable segmentStart = 0
+                    let mutable index = 0
+                    let mutable sawLineBreak = false
+                    let insertSegment segmentEnd =
+                        doc' <- insertTextForMode (text.Substring(segmentStart, segmentEnd - segmentStart)) doc'
+
+                    while index < text.Length do
+                        let ch = text.[index]
+                        if ch = '\r' || ch = '\n' then
+                            sawLineBreak <- true
+                            insertSegment index
+                            doc' <- Doc.splitBlock doc'
+                            if ch = '\r' && index + 1 < text.Length && text.[index + 1] = '\n' then
+                                index <- index + 1
+                            segmentStart <- index + 1
+                        index <- index + 1
+
+                    if sawLineBreak then
+                        insertSegment text.Length
                     else
                         doc' <- insertTextForMode text doc'
 
-                    // Update document through handler
-                    handler.Document <- doc'
-                    renderWithHover handler.RenderContext doc' handler.HoveredImage
-                    handler.OnChange doc'
+                    if not (documentsEqualForChange doc' beforeDoc) then
+                        let cmd = DeleteTextCommand(beforeDoc, doc', "Paste") :> ICommand
+                        let doc'', hist' = Cmd.execute cmd beforeDoc handler.History
+                        handler.Document <- doc''
+                        handler.History <- hist'
+                        renderWithHover handler.RenderContext doc'' handler.HoveredImage
+                        handler.OnChange doc''
             ) |> ignore
         | "Backspace" ->
             let beforeDoc = handler.Document
             let afterDoc = deleteBackwardForMode handler.Document
-            if afterDoc <> beforeDoc then
+            if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete backward") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
                 newDoc <- doc'
@@ -246,7 +267,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         | "Delete" ->
             let beforeDoc = handler.Document
             let afterDoc = deleteForwardForMode handler.Document
-            if afterDoc <> beforeDoc then
+            if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Delete forward") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
                 newDoc <- doc'
@@ -303,7 +324,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                         // Normal split
                         let beforeDoc = handler.Document
                         let afterDoc = Doc.splitBlock handler.Document
-                        if afterDoc <> beforeDoc then
+                        if not (documentsEqualForChange afterDoc beforeDoc) then
                             let cmd = SplitBlockCommand(beforeDoc, afterDoc) :> ICommand
                             let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
                             newDoc <- doc'
@@ -318,27 +339,21 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             // Regular character - use command
             let beforeDoc = handler.Document
             let afterDoc = insertTextForMode key handler.Document
-            if afterDoc <> beforeDoc then
-                consoleLog2 "Inserting character:" (box key)
+            if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = DeleteTextCommand(beforeDoc, afterDoc, sprintf "Insert '%s'" key) :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                consoleLog2 "Command executed, history size:" (box hist'.Undos.Length)
                 newDoc <- doc'
                 newHistory <- hist'
                 useCommand <- true
             e.preventDefault()
         | _ -> ()
 
-        if newDoc <> handler.Document then
-            consoleLog1 "Document changed, updating..."
+        if not (documentsEqualForChange newDoc handler.Document) then
             handler.Document <- newDoc
             if useCommand || newHistory <> handler.History then
-                consoleLog1 "History changed, updating..."
                 handler.History <- newHistory
             renderWithHover handler.RenderContext newDoc handler.HoveredImage
             handler.OnChange newDoc
-        else
-            consoleLog1 "Document unchanged, skipping update"
     )
 
     // Handle mouse down - start selection or image resize
@@ -372,9 +387,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 handler.IsMouseDown <- true
                 handler.SelectionAnchor <- Some { BlockId = blockId; Offset = offset }
                 let newDoc = Doc.setCursor blockId offset handler.Document
-                handler.Document <- newDoc
-                renderWithHover handler.RenderContext newDoc handler.HoveredImage
-                handler.OnChange newDoc
+                applyPointerDocumentChange newDoc
                 canvas.focus()
     )
 
@@ -398,9 +411,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 let newHeight = max 20.0 (resizeState.InitialHeight + delta)
 
                 let newDoc = Doc.resizeImage resizeState.BlockId resizeState.Offset newWidth newHeight handler.Document
-                handler.Document <- newDoc
-                renderWithHover handler.RenderContext newDoc handler.HoveredImage
-                handler.OnChange newDoc
+                applyPointerDocumentChange newDoc
             | None ->
                 match handler.DraggingImage with
                 | Some _ -> setCursor canvas "move"
@@ -409,9 +420,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                     match hitTest handler.RenderContext handler.Document x y, handler.SelectionAnchor with
                     | Some (blockId, offset), Some anchor ->
                         let newDoc = Doc.setSelection anchor { BlockId = blockId; Offset = offset } handler.Document
-                        handler.Document <- newDoc
-                        renderWithHover handler.RenderContext newDoc handler.HoveredImage
-                        handler.OnChange newDoc
+                        applyPointerDocumentChange newDoc
                     | _ -> ()
         else
             // Update hover state and cursor
@@ -452,9 +461,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 | Some para when targetBlockId = dragState.BlockId && targetOffset = dragState.Offset -> TextBuffer.length para.Buffer
                 | _ -> targetOffset
             let newDoc = Doc.moveImage dragState.BlockId dragState.Offset targetBlockId effectiveOffset handler.Document
-            handler.Document <- newDoc
-            renderWithHover handler.RenderContext newDoc handler.HoveredImage
-            handler.OnChange newDoc
+            applyPointerDocumentChange newDoc
         | _ -> ()
 
         handler.IsMouseDown <- false

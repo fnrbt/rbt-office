@@ -90,6 +90,9 @@ let private isNullOrUndefined (value: obj): bool = jsNative
 [<Emit("$0 == null ? null : $0[$1]")>]
 let private getProp (value: obj) (name: string): obj = jsNative
 
+let private getIndex (value: obj) (index: int): obj =
+    getProp value (string index)
+
 let private optStringProp source name =
     let value = getProp source name
     if isNullOrUndefined value then None else Some (string value)
@@ -101,6 +104,10 @@ let private optBoolProp source name =
 let private optFloatProp source name =
     let value = getProp source name
     if isNullOrUndefined value then None else Some (unbox<float> value)
+
+let private optIntProp source name =
+    let value = getProp source name
+    if isNullOrUndefined value then None else Some (unbox<int> value)
 
 let private hexColor (value: string) =
     let trimmed = value.TrimStart('#')
@@ -173,11 +180,31 @@ let private convertCellFormat (excelCell: ExcelCell): CellFormat =
             IconSet = None
         }
 
+let private equalsIgnoreCase (left: string) (right: string) =
+        if left.Length <> right.Length then
+            false
+        else
+            let mutable index = 0
+            let mutable equal = true
+            while equal && index < left.Length do
+                let l = left.[index]
+                let r = right.[index]
+                if l <> r && System.Char.ToUpperInvariant l <> System.Char.ToUpperInvariant r then
+                    equal <- false
+                index <- index + 1
+            equal
+
+let private resizeArrayToList (items: ResizeArray<'T>) =
+        let mutable result = []
+        for i = items.Count - 1 downto 0 do
+            result <- items.[i] :: result
+        result
+
 let private convertRichRun (runObj: obj): string * RunOverride =
         let vertAlign =
-            match optStringProp runObj "vertAlign" |> Option.map (fun s -> s.ToLowerInvariant()) with
-            | Some "superscript" -> Some VertAlignSuperscript
-            | Some "subscript" -> Some VertAlignSubscript
+            match optStringProp runObj "vertAlign" with
+            | Some value when equalsIgnoreCase value "superscript" -> Some VertAlignSuperscript
+            | Some value when equalsIgnoreCase value "subscript" -> Some VertAlignSubscript
             | _ -> None
         let text = optStringProp runObj "text" |> Option.defaultValue ""
         text, {
@@ -197,9 +224,59 @@ let private convertRichRun (runObj: obj): string * RunOverride =
     /// </summary>
 let private columnLetterToIndex (letter: string): int =
         let mutable result = 0
-        for c in letter.ToUpper() do
+        for c in letter do
+            let c = System.Char.ToUpperInvariant c
             result <- result * 26 + (int c - int 'A' + 1)
         result - 1
+
+let private parseCellRefSpan (text: string) startIndex endExclusive =
+        let mutable index = startIndex
+        let mutable col = 0
+        let mutable row = 0
+        let mutable hasCol = false
+        let mutable hasRow = false
+        let mutable inRow = false
+        let mutable valid = startIndex < endExclusive
+        while valid && index < endExclusive do
+            let c = text.[index]
+            if System.Char.IsDigit c then
+                inRow <- true
+                hasRow <- true
+                let digit = int c - int '0'
+                if row > (System.Int32.MaxValue - digit) / 10 then
+                    valid <- false
+                else
+                    row <- row * 10 + digit
+            elif System.Char.IsLetter c && not inRow then
+                hasCol <- true
+                let upper = System.Char.ToUpperInvariant c
+                let digit = int upper - int 'A' + 1
+                if col > (System.Int32.MaxValue - digit) / 26 then
+                    valid <- false
+                else
+                    col <- col * 26 + digit
+            else
+                valid <- false
+            index <- index + 1
+        if valid && hasCol && hasRow && row > 0 && col > 0 then
+            Some (row - 1, col - 1)
+        else
+            None
+
+let private parseMergedCellRange (refRange: string) =
+        let colon = refRange.IndexOf(':')
+        if colon >= 0 && colon = refRange.LastIndexOf(':') then
+            match parseCellRefSpan refRange 0 colon, parseCellRefSpan refRange (colon + 1) refRange.Length with
+            | Some (startRow, startCol), Some (endRow, endCol) ->
+                Some {
+                    StartRow = startRow
+                    StartCol = startCol
+                    EndRow = endRow
+                    EndCol = endCol
+                }
+            | _ -> None
+        else
+            None
 
     /// <summary>
     /// Import a sheet from office-format workbook into SpreadsheetModel.
@@ -227,66 +304,86 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
 
             let sheet = excel?sheet(actualSheetName, workbook)
 
-            // Get basic data array to determine dimensions
-            let dataArray: obj[][] = excel?toArray(workbook, sheet)
-            let rowCount = dataArray.Length
-            let colCount =
-                if rowCount > 0 then
-                    dataArray |> Array.map (fun row -> row.Length) |> Array.max
-                else
-                    0
+            let mutable rowCount = 0
+            let mutable colCount = 0
+            let setDimensionsFromSheet () =
+                if isFunction excel?dimensions then
+                    let dims = excel?dimensions(sheet)
+                    rowCount <- optIntProp dims "rowCount" |> Option.defaultValue 0
+                    colCount <- optIntProp dims "colCount" |> Option.defaultValue 0
 
             // Build cell map with styles
             let mutable cellMap = Map.empty<CellAddress, CellData>
             let mutable richRunsMap = Map.empty<CellAddress, (string * RunOverride) list>
             let mutable columnWidths = Map.empty<int, float>
             let mutable rowHeights = Map.empty<int, float>
+            let mutable formulaCount = 0
 
-            let importCell row col excelRef rawValue cellObj directRichRuns =
+            let noteImportedValue value =
+                match value with
+                | CellValue.Formula _ -> formulaCount <- formulaCount + 1
+                | _ -> ()
+
+            let extractBorder (borderObj: obj) =
+                if isNullOrUndefined borderObj then None
+                else
+                    Some {
+                        style = optStringProp borderObj "style"
+                        color = optStringProp borderObj "color"
+                    }
+
+            let excelCellFromObj rawValue cellObj formulaOverride hasCommentOverride hasListDropdownOverride =
+                {
+                    value = if isNullOrUndefined rawValue || string rawValue = "" then None else Some rawValue
+                    formula =
+                        match formulaOverride with
+                        | Some value -> Some value
+                        | None -> optStringProp cellObj "formula"
+                    bold = optBoolProp cellObj "bold"
+                    italic = optBoolProp cellObj "italic"
+                    underline = optBoolProp cellObj "underline"
+                    underlineDouble = optBoolProp cellObj "underlineDouble"
+                    strikethrough = optBoolProp cellObj "strikethrough"
+                    fontName = optStringProp cellObj "fontName"
+                    fontColor = optStringProp cellObj "fontColor"
+                    fillColor = optStringProp cellObj "fillColor"
+                    fontSize = optFloatProp cellObj "fontSize"
+                    numberFormat = optStringProp cellObj "numberFormat"
+                    horizontalAlign = optStringProp cellObj "horizontalAlign"
+                    verticalAlign = optStringProp cellObj "verticalAlign"
+                    wrapText = optBoolProp cellObj "wrapText"
+                    borderTop = extractBorder (getProp cellObj "borderTop")
+                    borderBottom = extractBorder (getProp cellObj "borderBottom")
+                    borderLeft = extractBorder (getProp cellObj "borderLeft")
+                    borderRight = extractBorder (getProp cellObj "borderRight")
+                    borderDiagonal = extractBorder (getProp cellObj "borderDiagonal")
+                    diagonalUp = optBoolProp cellObj "diagonalUp"
+                    diagonalDown = optBoolProp cellObj "diagonalDown"
+                    hasComment =
+                        match hasCommentOverride with
+                        | Some value -> Some value
+                        | None -> optBoolProp cellObj "hasComment"
+                    hasListDropdown =
+                        match hasListDropdownOverride with
+                        | Some value -> Some value
+                        | None -> optBoolProp cellObj "hasListDropdown"
+                }
+
+            let importCell row col excelRef rawValue cellObj directRichRuns knownHasComment =
                 if not (isNullOrUndefined cellObj) || not (isNullOrUndefined rawValue) then
-                    let extractBorder (borderObj: obj) =
-                        if isNullOrUndefined borderObj then None
-                        else
-                            Some {
-                                style = optStringProp borderObj "style"
-                                color = optStringProp borderObj "color"
-                            }
-
                     let excelCell: ExcelCell =
-                        {
-                            value = if isNullOrUndefined rawValue || string rawValue = "" then None else Some rawValue
-                            formula = optStringProp cellObj "formula"
-                            bold = optBoolProp cellObj "bold"
-                            italic = optBoolProp cellObj "italic"
-                            underline = optBoolProp cellObj "underline"
-                            underlineDouble = optBoolProp cellObj "underlineDouble"
-                            strikethrough = optBoolProp cellObj "strikethrough"
-                            fontName = optStringProp cellObj "fontName"
-                            fontColor = optStringProp cellObj "fontColor"
-                            fillColor = optStringProp cellObj "fillColor"
-                            fontSize = optFloatProp cellObj "fontSize"
-                            numberFormat = optStringProp cellObj "numberFormat"
-                            horizontalAlign = optStringProp cellObj "horizontalAlign"
-                            verticalAlign = optStringProp cellObj "verticalAlign"
-                            wrapText = optBoolProp cellObj "wrapText"
-                            borderTop = extractBorder (getProp cellObj "borderTop")
-                            borderBottom = extractBorder (getProp cellObj "borderBottom")
-                            borderLeft = extractBorder (getProp cellObj "borderLeft")
-                            borderRight = extractBorder (getProp cellObj "borderRight")
-                            borderDiagonal = extractBorder (getProp cellObj "borderDiagonal")
-                            diagonalUp = optBoolProp cellObj "diagonalUp"
-                            diagonalDown = optBoolProp cellObj "diagonalDown"
-                            hasComment = optBoolProp cellObj "hasComment"
-                            hasListDropdown = optBoolProp cellObj "hasListDropdown"
-                        }
+                        excelCellFromObj rawValue cellObj None None None
 
                     let cellValue = convertCellValue excelCell
                     let cellFormat = convertCellFormat excelCell
 
                     // Read comment if present. Older office-format builds expose comments as a collection only.
                     let commentObj =
-                        if isFunction excel?commentAt then excel?commentAt(excelRef, sheet)
-                        else null
+                        match knownHasComment with
+                        | Some false -> null
+                        | _ ->
+                            if isFunction excel?commentAt then excel?commentAt(excelRef, sheet)
+                            else null
                     let comment =
                         if isNullOrUndefined commentObj then None
                         else
@@ -303,36 +400,145 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                     // comment markers, and validation dropdowns even when
                     // the cell has no value.
                     if cellValue <> CellValue.Empty || cellFormat <> defaultFormat || comment.IsSome then
+                        noteImportedValue cellValue
                         let addr = { Row = row; Col = col }
                         cellMap <- Map.add addr { Value = cellValue; Format = cellFormat; Comment = comment } cellMap
 
                         let richRunObjs =
                             match directRichRuns with
-                            | Some runs when not (isNullOrUndefined runs) -> runs
-                            | _ ->
+                            | Some runs -> runs
+                            | None ->
                                 if isFunction excel?richRunsAt then excel?richRunsAt(excelRef, workbook, sheet)
                                 else null
                         if not (isNullOrUndefined richRunObjs) then
-                            let runs =
-                                richRunObjs
-                                |> arrayFrom
-                                |> Array.map convertRichRun
-                                |> Array.toList
-                            if not (List.isEmpty runs) then
+                            let richRunArray = arrayFrom richRunObjs
+                            let runs = ResizeArray<string * RunOverride>(richRunArray.Length)
+                            for runObj in richRunArray do
+                                runs.Add(convertRichRun runObj)
+                            if runs.Count > 0 then
+                                let runs = resizeArrayToList runs
                                 richRunsMap <- Map.add addr runs richRunsMap
 
             // Import actual cells with styles in one pass when the
             // office-format API supports it. The coordinate fallback is
             // kept for older browser bundles.
-            if isFunction excel?cellsWithStyle then
+            let styleCache = System.Collections.Generic.Dictionary<int, CellFormat>()
+            let styleFormat styleIndex =
+                if styleIndex < 0 then
+                    defaultFormat
+                else
+                    match styleCache.TryGetValue styleIndex with
+                    | true, cached -> cached
+                    | false, _ ->
+                        let styleObj = excel?styleAt(styleIndex, workbook)
+                        let excelCell = excelCellFromObj null styleObj None None None
+                        let format = convertCellFormat excelCell
+                        styleCache.[styleIndex] <- format
+                        format
+
+            let importCompactCell row col rawValue formulaObj styleIndex hasComment hasListDropdown richRunObjs =
+                if row >= 0 && col >= 0 then
+                    if row + 1 > rowCount then rowCount <- row + 1
+                    if col + 1 > colCount then colCount <- col + 1
+                    let formula =
+                        if isNullOrUndefined formulaObj then None else Some (string formulaObj)
+                    let valueCell = excelCellFromObj rawValue null formula None None
+                    let cellValue = convertCellValue valueCell
+                    let baseFormat = styleFormat styleIndex
+                    let cellFormat =
+                        { baseFormat with
+                            HasComment = baseFormat.HasComment || hasComment
+                            HasListDropdown = baseFormat.HasListDropdown || hasListDropdown }
+                    let comment =
+                        if hasComment && isFunction excel?commentAt then
+                            let excelRef = sprintf "%s%d" (columnToLetter col) (row + 1)
+                            let commentObj = excel?commentAt(excelRef, sheet)
+                            if isNullOrUndefined commentObj then None
+                            else
+                                let text = optStringProp commentObj "text" |> Option.defaultValue ""
+                                let author = optStringProp commentObj "author"
+                                if System.String.IsNullOrWhiteSpace(text) then None
+                                else Some { Text = text; Author = author }
+                        else
+                            None
+                    let cellFormat =
+                        if comment.IsSome then { cellFormat with HasComment = true }
+                        else cellFormat
+                    if cellValue <> CellValue.Empty || cellFormat <> defaultFormat || comment.IsSome then
+                        noteImportedValue cellValue
+                        let addr = { Row = row; Col = col }
+                        cellMap <- Map.add addr { Value = cellValue; Format = cellFormat; Comment = comment } cellMap
+
+                        if not (isNullOrUndefined richRunObjs) then
+                            let richRunArray = arrayFrom richRunObjs
+                            let runs = ResizeArray<string * RunOverride>(richRunArray.Length)
+                            for runObj in richRunArray do
+                                runs.Add(convertRichRun runObj)
+                            if runs.Count > 0 then
+                                richRunsMap <- Map.add addr (resizeArrayToList runs) richRunsMap
+
+            if isFunction excel?cellsColumnar && isFunction excel?styleAt then
+                setDimensionsFromSheet ()
+                let columnarCells = excel?cellsColumnar(workbook, sheet)
+                let rows: int[] = unbox (getProp columnarCells "rows")
+                let cols: int[] = unbox (getProp columnarCells "cols")
+                let values: obj[] = unbox (getProp columnarCells "values")
+                let formulas: obj[] = unbox (getProp columnarCells "formulas")
+                let styleIndexes: int[] = unbox (getProp columnarCells "styleIndexes")
+                let hasComments: bool[] = unbox (getProp columnarCells "hasComments")
+                let hasListDropdowns: bool[] = unbox (getProp columnarCells "hasListDropdowns")
+                let richRuns: obj[] = unbox (getProp columnarCells "richRuns")
+                let count =
+                    [| rows.Length; cols.Length; values.Length; formulas.Length; styleIndexes.Length
+                       hasComments.Length; hasListDropdowns.Length; richRuns.Length |]
+                    |> Array.min
+                for index in 0 .. count - 1 do
+                    importCompactCell
+                        rows.[index]
+                        cols.[index]
+                        values.[index]
+                        formulas.[index]
+                        styleIndexes.[index]
+                        hasComments.[index]
+                        hasListDropdowns.[index]
+                        richRuns.[index]
+            elif isFunction excel?cellsCompact && isFunction excel?styleAt then
+                setDimensionsFromSheet ()
+                let compactCells = excel?cellsCompact(workbook, sheet) |> arrayFrom
+                for compactCell in compactCells do
+                    let row = getIndex compactCell 0 |> unbox<int>
+                    let col = getIndex compactCell 1 |> unbox<int>
+                    importCompactCell
+                        row
+                        col
+                        (getIndex compactCell 2)
+                        (getIndex compactCell 3)
+                        (getIndex compactCell 4 |> unbox<int>)
+                        (getIndex compactCell 5 |> unbox<bool>)
+                        (getIndex compactCell 6 |> unbox<bool>)
+                        (getIndex compactCell 7)
+            elif isFunction excel?cellsWithStyle then
+                setDimensionsFromSheet ()
                 let cellObjs = excel?cellsWithStyle(workbook, sheet) |> arrayFrom
                 for cellObj in cellObjs do
                     let excelRef = optStringProp cellObj "ref" |> Option.defaultValue ""
                     match parseCellRef excelRef with
                     | Some (row, col) ->
-                        importCell row col excelRef (getProp cellObj "value") cellObj (Some (getProp cellObj "richRuns"))
+                        if row + 1 > rowCount then rowCount <- row + 1
+                        if col + 1 > colCount then colCount <- col + 1
+                        let hasComment = optBoolProp cellObj "hasComment" |> Option.defaultValue false
+                        importCell row col excelRef (getProp cellObj "value") cellObj (Some (getProp cellObj "richRuns")) (Some hasComment)
                     | None -> ()
             else
+                // Older office-format bundles do not expose cellsWithStyle;
+                // keep the coordinate scan but pay for toArray only here.
+                let dataArray: obj[][] = excel?toArray(workbook, sheet)
+                rowCount <- dataArray.Length
+                colCount <-
+                    if rowCount > 0 then
+                        dataArray |> Array.map (fun row -> row.Length) |> Array.max
+                    else
+                        0
                 for row in 0 .. rowCount - 1 do
                     for col in 0 .. colCount - 1 do
                         let colLetter = columnToLetter col
@@ -341,53 +547,61 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                             if row < dataArray.Length && col < dataArray.[row].Length then dataArray.[row].[col]
                             else null
                         let cellObj = excel?cellWithStyleAt(excelRef, sheet)
-                        importCell row col excelRef rawValue cellObj None
+                        importCell row col excelRef rawValue cellObj None None
 
-            // Import column widths (office-format provides in Excel units)
-            for col in 0 .. colCount - 1 do
-                let width: float =
-                    if isFunction excel?columnWidth then excel?columnWidth(col, sheet)
-                    else 0.0
+            let addColumnWidth col width =
                 if width > 0.0 then
                     // Convert Excel width units to pixels (approximate: 1 Excel unit ≈ 7 pixels)
                     let pixelWidth = width * 7.0
                     columnWidths <- Map.add col pixelWidth columnWidths
 
-            // Import row heights (office-format provides in points)
-            for row in 0 .. rowCount - 1 do
-                let height: float =
-                    if isFunction excel?rowHeight then excel?rowHeight(row, sheet)
-                    else 0.0
+            let addRowHeight row height =
                 if height > 0.0 then
                     // Convert points to pixels (1 point = 1.333 pixels at 96 DPI)
                     let pixelHeight = height * 1.333
                     rowHeights <- Map.add row pixelHeight rowHeights
+
+            // Import column widths (office-format provides in Excel units)
+            if isFunction excel?columnWidths then
+                let widths = excel?columnWidths(colCount, sheet) |> arrayFrom
+                let last = min colCount widths.Length
+                if last > 0 then
+                    for col in 0 .. last - 1 do
+                        addColumnWidth col (unbox<float> widths.[col])
+            else
+                for col in 0 .. colCount - 1 do
+                    let width: float =
+                        if isFunction excel?columnWidth then excel?columnWidth(col, sheet)
+                        else 0.0
+                    addColumnWidth col width
+
+            // Import row heights (office-format provides in points)
+            if isFunction excel?rowHeights then
+                let heights = excel?rowHeights(rowCount, sheet) |> arrayFrom
+                let last = min rowCount heights.Length
+                if last > 0 then
+                    for row in 0 .. last - 1 do
+                        addRowHeight row (unbox<float> heights.[row])
+            else
+                for row in 0 .. rowCount - 1 do
+                    let height: float =
+                        if isFunction excel?rowHeight then excel?rowHeight(row, sheet)
+                        else 0.0
+                    addRowHeight row height
 
             // Import merged cells (office-format provides as array of ref strings like "A1:B2")
             let mergedCells: string[] = excel?mergedCells(sheet)
             let mergedCellList =
                 if isNull mergedCells then []
                 else
-                    mergedCells
-                    |> Array.choose (fun refRange ->
+                    let ranges = ResizeArray<MergedCell>()
+                    for refRange in mergedCells do
                         try
-                            // Parse range like "A1:B2"
-                            let parts = refRange.Split(':')
-                            if parts.Length = 2 then
-                                match Model.parseCellRef parts.[0], Model.parseCellRef parts.[1] with
-                                | Some (startRow, startCol), Some (endRow, endCol) ->
-                                    Some {
-                                        StartRow = startRow
-                                        StartCol = startCol
-                                        EndRow = endRow
-                                        EndCol = endCol
-                                    }
-                                | _ -> None
-                            else
-                                None
-                        with _ -> None
-                    )
-                    |> Array.toList
+                            match parseMergedCellRange refRange with
+                            | Some range -> ranges.Add range
+                            | None -> ()
+                        with _ -> ()
+                    resizeArrayToList ranges
 
             // Create model with imported data
             let importedModel = {
@@ -401,10 +615,12 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 History = { Past = []; Future = []; MaxSize = 50 }
                 SortState = None
                 Filters = Map.empty
+                FilterHiddenRows = [||]
                 RowHeights = rowHeights
                 ColumnWidths = columnWidths
                 SearchQuery = None
-                SearchResults = []
+                SearchCaseSensitive = None
+                SearchResults = [||]
                 SearchIndex = 0
                 ConditionalFormats = Map.empty
                 RichRuns = richRunsMap
@@ -419,7 +635,10 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 Validations = Map.empty
                 Macros = ""
             }
-            recalculateAllFormulas None None importedModel
+            if formulaCount = 0 then
+                importedModel
+            else
+                recalculateAllFormulas None None importedModel
 
         with ex ->
             printfn "Error importing XLSX: %s" ex.Message
@@ -435,10 +654,12 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 History = { Past = []; Future = []; MaxSize = 50 }
                 SortState = None
                 Filters = Map.empty
+                FilterHiddenRows = [||]
                 RowHeights = Map.empty
                 ColumnWidths = Map.empty
                 SearchQuery = None
-                SearchResults = []
+                SearchCaseSensitive = None
+                SearchResults = [||]
                 SearchIndex = 0
                 ConditionalFormats = Map.empty
                 RichRuns = Map.empty
@@ -485,10 +706,12 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
                     History = { Past = []; Future = []; MaxSize = 50 }
                     SortState = None
                     Filters = Map.empty
+                    FilterHiddenRows = [||]
                     RowHeights = Map.empty
                     ColumnWidths = Map.empty
                     SearchQuery = None
-                    SearchResults = []
+                    SearchCaseSensitive = None
+                    SearchResults = [||]
                     SearchIndex = 0
                     ConditionalFormats = Map.empty
                     RichRuns = Map.empty

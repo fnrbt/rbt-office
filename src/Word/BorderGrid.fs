@@ -1,6 +1,8 @@
 namespace RedBat
 
 module BorderGrid =
+    open System.Collections.Generic
+
     type Stroke = {
         Color: string
         Width: float
@@ -47,15 +49,63 @@ module BorderGrid =
         Stroke: Stroke
     }
 
+    let private resizeArrayToList (items: ResizeArray<'T>) =
+        let mutable result = []
+        for i = items.Count - 1 downto 0 do
+            result <- items.[i] :: result
+        result
+
     let normalizeStyle (style: string option) =
         match style |> Option.map (fun value -> value.Trim()) with
         | Some value when value <> "" -> Some value
         | _ -> Some "single"
 
+    let private equalsIgnoreCase (left: string) (right: string) =
+        if left.Length <> right.Length then
+            false
+        else
+            let mutable index = 0
+            let mutable equal = true
+            while equal && index < left.Length do
+                let l = left.[index]
+                let r = right.[index]
+                if l <> r && System.Char.ToUpperInvariant l <> System.Char.ToUpperInvariant r then
+                    equal <- false
+                index <- index + 1
+            equal
+
     let styleKey (style: string option) =
-        normalizeStyle style
-        |> Option.map (fun value -> value.ToLowerInvariant())
-        |> Option.defaultValue "single"
+        let value = normalizeStyle style |> Option.defaultValue "single"
+        if equalsIgnoreCase value "double" then "double"
+        elif equalsIgnoreCase value "triple" then "triple"
+        elif equalsIgnoreCase value "thinthicksmallgap" then "thinthicksmallgap"
+        elif equalsIgnoreCase value "thickthinsmallgap" then "thickthinsmallgap"
+        elif equalsIgnoreCase value "thinthickthinsmallgap" then "thinthickthinsmallgap"
+        elif equalsIgnoreCase value "thinthickmediumgap" then "thinthickmediumgap"
+        elif equalsIgnoreCase value "thickthinmediumgap" then "thickthinmediumgap"
+        elif equalsIgnoreCase value "thinthickthinmediumgap" then "thinthickthinmediumgap"
+        elif equalsIgnoreCase value "thinthicklargegap" then "thinthicklargegap"
+        elif equalsIgnoreCase value "thickthinlargegap" then "thickthinlargegap"
+        elif equalsIgnoreCase value "thinthickthinlargegap" then "thinthickthinlargegap"
+        elif equalsIgnoreCase value "hidden" then "hidden"
+        elif equalsIgnoreCase value "thick" then "thick"
+        elif equalsIgnoreCase value "single" then "single"
+        elif equalsIgnoreCase value "solid" then "solid"
+        elif equalsIgnoreCase value "doublewave" then "doublewave"
+        elif equalsIgnoreCase value "wave" then "wave"
+        elif equalsIgnoreCase value "dashed" then "dashed"
+        elif equalsIgnoreCase value "dashsmallgap" then "dashsmallgap"
+        elif equalsIgnoreCase value "dotdash" then "dotdash"
+        elif equalsIgnoreCase value "dashdotstroked" then "dashdotstroked"
+        elif equalsIgnoreCase value "dotted" then "dotted"
+        elif equalsIgnoreCase value "dotdotdash" then "dotdotdash"
+        elif equalsIgnoreCase value "threedemboss" then "threedemboss"
+        elif equalsIgnoreCase value "threedengrave" then "threedengrave"
+        elif equalsIgnoreCase value "inset" then "inset"
+        elif equalsIgnoreCase value "outset" then "outset"
+        elif equalsIgnoreCase value "none" then "none"
+        elif equalsIgnoreCase value "nil" then "nil"
+        else value
 
     let strokePattern style =
         match styleKey style with
@@ -125,50 +175,97 @@ module BorderGrid =
         let b = max start finish
         if a = b then None else Some { Fixed = fixedCoord; Start = a; Finish = b; Horizontal = horizontal; Stroke = stroke }
 
+    let private addCandidate (result: ResizeArray<Candidate>) horizontal fixedCoord start finish stroke =
+        match stroke |> Option.bind (toCandidate horizontal fixedCoord start finish) with
+        | Some candidate -> result.Add candidate
+        | None -> ()
+
     let private candidates cells =
-        cells
-        |> List.collect (fun cell ->
-            [ cell.Edges.Top |> Option.bind (toCandidate true cell.Y cell.X (cell.X + cell.Width))
-              cell.Edges.Right |> Option.bind (toCandidate false (cell.X + cell.Width) cell.Y (cell.Y + cell.Height))
-              cell.Edges.Bottom |> Option.bind (toCandidate true (cell.Y + cell.Height) cell.X (cell.X + cell.Width))
-              cell.Edges.Left |> Option.bind (toCandidate false cell.X cell.Y (cell.Y + cell.Height)) ])
-        |> List.choose id
+        let result = ResizeArray<Candidate>()
+        for cell in cells do
+            addCandidate result true cell.Y cell.X (cell.X + cell.Width) cell.Edges.Top
+            addCandidate result false (cell.X + cell.Width) cell.Y (cell.Y + cell.Height) cell.Edges.Right
+            addCandidate result true (cell.Y + cell.Height) cell.X (cell.X + cell.Width) cell.Edges.Bottom
+            addCandidate result false cell.X cell.Y (cell.Y + cell.Height) cell.Edges.Left
+        result
 
-    let private resolveAxis horizontal candidates =
-        candidates
-        |> List.filter (fun candidate -> candidate.Horizontal = horizontal)
-        |> List.groupBy _.Fixed
-        |> List.collect (fun (fixedCoord, axisCandidates) ->
-            let points =
-                axisCandidates
-                |> List.collect (fun candidate -> [candidate.Start; candidate.Finish])
-                |> List.distinct
-                |> List.sort
+    let private resolveAxis horizontal (candidates: ResizeArray<Candidate>) =
+        let groups = Dictionary<float, ResizeArray<Candidate>>()
+        let groupOrder = ResizeArray<float>()
+        for candidate in candidates do
+            if candidate.Horizontal = horizontal then
+                match groups.TryGetValue candidate.Fixed with
+                | true, group -> group.Add candidate
+                | false, _ ->
+                    let group = ResizeArray<Candidate>()
+                    group.Add candidate
+                    groups.[candidate.Fixed] <- group
+                    groupOrder.Add candidate.Fixed
 
-            points
-            |> List.pairwise
-            |> List.choose (fun (startCoord, finishCoord) ->
-                let covering =
-                    axisCandidates
-                    |> List.filter (fun candidate -> candidate.Start <= startCoord && candidate.Finish >= finishCoord)
-                match covering with
-                | [] -> None
-                | first :: rest ->
-                    let winner = rest |> List.fold stronger first
-                    if not (isVisible winner.Stroke) then None
-                    elif horizontal then Some { X1 = startCoord; Y1 = fixedCoord; X2 = finishCoord; Y2 = fixedCoord; Stroke = winner.Stroke }
-                    else Some { X1 = fixedCoord; Y1 = startCoord; X2 = fixedCoord; Y2 = finishCoord; Stroke = winner.Stroke }))
+        let segments = ResizeArray<Segment>()
+        for fixedCoord in groupOrder do
+            let axisCandidates = groups.[fixedCoord]
+            let points = ResizeArray<float>(axisCandidates.Count * 2)
+            let seenPoints = HashSet<float>()
+            for candidate in axisCandidates do
+                if seenPoints.Add candidate.Start then points.Add candidate.Start
+                if seenPoints.Add candidate.Finish then points.Add candidate.Finish
+            let sortedPoints = points.ToArray()
+            Array.sortInPlace sortedPoints
 
-    let resolveWith collapse (cells: Cell list) =
-        let candidates = candidates cells
+            let intervalCount = max 0 (sortedPoints.Length - 1)
+            let winners = Array.zeroCreate<Candidate option> intervalCount
+            let pointIndex = Dictionary<float, int>(sortedPoints.Length)
+            for i = 0 to sortedPoints.Length - 1 do
+                pointIndex.[sortedPoints.[i]] <- i
+
+            for candidate in axisCandidates do
+                let mutable startIndex = 0
+                let mutable finishIndex = 0
+                if pointIndex.TryGetValue(candidate.Start, &startIndex)
+                   && pointIndex.TryGetValue(candidate.Finish, &finishIndex)
+                   && finishIndex > startIndex then
+                    for i = startIndex to finishIndex - 1 do
+                        winners.[i] <-
+                            match winners.[i] with
+                            | None -> Some candidate
+                            | Some current -> Some (stronger current candidate)
+
+            for i = 0 to intervalCount - 1 do
+                match winners.[i] with
+                | Some candidate when isVisible candidate.Stroke ->
+                    let startCoord = sortedPoints.[i]
+                    let finishCoord = sortedPoints.[i + 1]
+                    if horizontal then
+                        segments.Add { X1 = startCoord; Y1 = fixedCoord; X2 = finishCoord; Y2 = fixedCoord; Stroke = candidate.Stroke }
+                    else
+                        segments.Add { X1 = fixedCoord; Y1 = startCoord; X2 = fixedCoord; Y2 = finishCoord; Stroke = candidate.Stroke }
+                | _ -> ()
+        segments
+
+    let private resolveCandidates collapse candidates =
         match collapse with
         | Separate ->
-            candidates
-            |> List.choose (fun candidate ->
-                if not (isVisible candidate.Stroke) then None
-                elif candidate.Horizontal then Some { X1 = candidate.Start; Y1 = candidate.Fixed; X2 = candidate.Finish; Y2 = candidate.Fixed; Stroke = candidate.Stroke }
-                else Some { X1 = candidate.Fixed; Y1 = candidate.Start; X2 = candidate.Fixed; Y2 = candidate.Finish; Stroke = candidate.Stroke })
+            let segments = ResizeArray<Segment>()
+            for candidate in candidates do
+                if isVisible candidate.Stroke then
+                    if candidate.Horizontal then
+                        segments.Add { X1 = candidate.Start; Y1 = candidate.Fixed; X2 = candidate.Finish; Y2 = candidate.Fixed; Stroke = candidate.Stroke }
+                    else
+                        segments.Add { X1 = candidate.Fixed; Y1 = candidate.Start; X2 = candidate.Fixed; Y2 = candidate.Finish; Stroke = candidate.Stroke }
+            resizeArrayToList segments
         | Collapse ->
-            (resolveAxis true candidates) @ (resolveAxis false candidates)
+            let segments = ResizeArray<Segment>()
+            segments.AddRange(resolveAxis true candidates)
+            segments.AddRange(resolveAxis false candidates)
+            resizeArrayToList segments
+
+    let resolveWith collapse (cells: Cell list) =
+        candidates cells |> resolveCandidates collapse
+
+    let resolveResizeArrayWith collapse (cells: ResizeArray<Cell>) =
+        candidates cells |> resolveCandidates collapse
 
     let resolve cells = resolveWith Collapse cells
+
+    let resolveResizeArray cells = resolveResizeArrayWith Collapse cells
