@@ -4552,6 +4552,9 @@ type private ExportCsvCache = {
 }
 
 let mutable private exportCsvCache: ExportCsvCache list = []
+let private exportCsvCacheBySource =
+    System.Collections.Generic.Dictionary<CellMergedReferenceKey, ExportCsvCache>(cellMergedReferenceComparer)
+let private exportCsvFastSlots = Array.zeroCreate<ExportCsvCache> 256
 let private exportCsvCacheMaxSources = 64
 let private exportCsvCacheMaxTotalChars = 5000000
 let private exportCsvCacheMaxTotalCells = 500000
@@ -4561,6 +4564,33 @@ let private exportCsvCacheMaxTotalSourceTextChars = 5000000
 let private exportCsvCacheMatches cells mergedCells (cached: ExportCsvCache) =
     obj.ReferenceEquals(cached.Cells, cells)
     && obj.ReferenceEquals(cached.MergedCells, mergedCells)
+
+let private setExportCsvCache entries =
+    exportCsvCache <- entries
+    exportCsvCacheBySource.Clear()
+    clearArray exportCsvFastSlots
+    for entry in entries do
+        let key = cellMergedReferenceKey entry.Cells entry.MergedCells
+        let mutable existing = Unchecked.defaultof<ExportCsvCache>
+        if not (exportCsvCacheBySource.TryGetValue(key, &existing)) then
+            exportCsvCacheBySource.[key] <- entry
+            let slot = cellMergedReferenceHash entry.Cells entry.MergedCells &&& (exportCsvFastSlots.Length - 1)
+            exportCsvFastSlots.[slot] <- entry
+
+let private tryGetExportCsvCache cells mergedCells =
+    let slot = cellMergedReferenceHash cells mergedCells &&& (exportCsvFastSlots.Length - 1)
+    let fast = exportCsvFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && exportCsvCacheMatches cells mergedCells fast then
+        ValueSome fast
+    else
+        let key = cellMergedReferenceKey cells mergedCells
+        let mutable cached = Unchecked.defaultof<ExportCsvCache>
+        if exportCsvCacheBySource.TryGetValue(key, &cached) then
+            exportCsvFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private exportCsvCacheRetainable (cached: ExportCsvCache) =
     cached.TextLength <= exportCsvCacheMaxTotalChars
@@ -4581,9 +4611,9 @@ let private exportCsvSourceTextCharCountFor textLength cellCount mergedCellCount
 
 let private rememberExportCsv cached =
     if not (exportCsvCacheRetainable cached) then
-        exportCsvCache <-
-            exportCsvCache
-            |> List.filter (exportCsvCacheMatches cached.Cells cached.MergedCells >> not)
+        exportCsvCache
+        |> List.filter (exportCsvCacheMatches cached.Cells cached.MergedCells >> not)
+        |> setExportCsvCache
     else
         let trim entries =
             let rec loop keptCount keptChars keptCells keptMergedCells keptSourceTextChars acc remaining =
@@ -4611,11 +4641,11 @@ let private rememberExportCsv cached =
                     else
                         loop keptCount keptChars keptCells keptMergedCells keptSourceTextChars acc tail
             loop 0 0 0 0 0 [] entries
-        exportCsvCache <-
-            (cached
-             :: (exportCsvCache
-                 |> List.filter (exportCsvCacheMatches cached.Cells cached.MergedCells >> not)))
-            |> trim
+        (cached
+         :: (exportCsvCache
+             |> List.filter (exportCsvCacheMatches cached.Cells cached.MergedCells >> not)))
+        |> trim
+        |> setExportCsvCache
 
 let usedBounds (model: SpreadsheetModel) : (int * int) option =
     match tryGetUsedBoundsCache model.Cells model.MergedCells with
@@ -6969,13 +6999,13 @@ let importCSVWithChanges (csvText: string) (startRow: int) (startCol: int) (mode
 
 /// Export spreadsheet to CSV string
 let exportCSV (model: SpreadsheetModel): string =
-    match exportCsvCache |> List.tryFind (exportCsvCacheMatches model.Cells model.MergedCells) with
-    | Some cached when exportCsvCacheRetainable cached ->
+    match tryGetExportCsvCache model.Cells model.MergedCells with
+    | ValueSome cached when exportCsvCacheRetainable cached ->
         cached.Text
-    | Some cached ->
+    | ValueSome cached ->
         rememberExportCsv cached
         cached.Text
-    | None ->
+    | ValueNone ->
         let text =
             match usedBounds model with
             | None ->

@@ -466,6 +466,23 @@ check "native sort identity cache reuses"
     (obj.ReferenceEquals(sortIdentitySorted, sortIdentitySortedAgain))
     true
 
+let exportCsvCells =
+    [ { Row = 0; Col = 0 }, cell (CellValue.String "Name")
+      { Row = 0; Col = 1 }, cell (CellValue.String "Note")
+      { Row = 1; Col = 0 }, cell (CellValue.String "Ada")
+      { Row = 1; Col = 1 }, cell (CellValue.String "comma,quote\"") ]
+    |> Map.ofList
+
+let exportCsvModel = { createEmpty 2 2 with Cells = exportCsvCells }
+let exportCsvText = exportCSV exportCsvModel
+let exportCsvTextAgain = exportCSV exportCsvModel
+check "native export csv cache value"
+    exportCsvText
+    "Name,Note\nAda,\"comma,quote\"\"\""
+check "native export csv cache reuses"
+    (obj.ReferenceEquals(exportCsvText, exportCsvTextAgain))
+    true
+
 if isNull setFocus || isNull extendFocus || isNull startEditing || isNull commitEdit then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor helpers" "native editor reflection"
