@@ -918,7 +918,23 @@ and private MarkupMarkerCommandsCacheEntry =
       CommandCount: int
       Commands: PaintCommand list }
 
+type private MarkupMarkerCommandsCacheKey = {
+    PaddingLeft: float
+    Layouts: BlockLayout list
+}
+
 let mutable private markupMarkerCommandsCache: MarkupMarkerCommandsCache = { Entries = [] }
+let private markupMarkerCommandsCacheKeyComparer =
+    { new IEqualityComparer<MarkupMarkerCommandsCacheKey> with
+        member _.Equals(left, right) =
+            left.PaddingLeft = right.PaddingLeft
+            && obj.ReferenceEquals(left.Layouts, right.Layouts)
+        member _.GetHashCode(value) =
+            (hash value.PaddingLeft * 397)
+            ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value.Layouts) }
+let private markupMarkerCommandsCacheByKey =
+    Dictionary<MarkupMarkerCommandsCacheKey, MarkupMarkerCommandsCacheEntry>(markupMarkerCommandsCacheKeyComparer)
+let private markupMarkerCommandsFastSlots = Array.zeroCreate<MarkupMarkerCommandsCacheEntry> 256
 let private markupMarkerCommandsCacheMaxEntries = 64
 let private markupMarkerCommandsCacheMaxCommands = 200000
 let private markupMarkerCommandsCacheMaxLayouts = 200000
@@ -935,6 +951,41 @@ let private markupMarkerCommandsCacheEntryRetainable (entry: MarkupMarkerCommand
     entry.CommandCount <= markupMarkerCommandsCacheMaxCommands
     && entry.LayoutCount <= markupMarkerCommandsCacheMaxLayouts
     && entry.LayoutTextCharCount <= markupMarkerCommandsCacheMaxLayoutTextChars
+
+let private markupMarkerCommandsCacheKey paddingLeft layouts = {
+    PaddingLeft = paddingLeft
+    Layouts = layouts
+}
+
+let private markupMarkerCommandsCacheSlot paddingLeft layouts =
+    ((hash paddingLeft * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(layouts))
+    &&& (markupMarkerCommandsFastSlots.Length - 1)
+
+let private setMarkupMarkerCommandsCache entries =
+    markupMarkerCommandsCache <- { Entries = entries }
+    markupMarkerCommandsCacheByKey.Clear()
+    clearArray markupMarkerCommandsFastSlots
+    for entry in entries do
+        let key = markupMarkerCommandsCacheKey entry.PaddingLeft entry.Layouts
+        markupMarkerCommandsCacheByKey.[key] <- entry
+        let slot = markupMarkerCommandsCacheSlot entry.PaddingLeft entry.Layouts
+        markupMarkerCommandsFastSlots.[slot] <- entry
+
+let private tryGetMarkupMarkerCommands paddingLeft layouts =
+    let slot = markupMarkerCommandsCacheSlot paddingLeft layouts
+    let fast = markupMarkerCommandsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && markupMarkerCacheEntryMatches paddingLeft layouts fast then
+        ValueSome fast.Commands
+    else
+        let key = markupMarkerCommandsCacheKey paddingLeft layouts
+        let mutable cached = Unchecked.defaultof<MarkupMarkerCommandsCacheEntry>
+        if markupMarkerCommandsCacheByKey.TryGetValue(key, &cached)
+           && markupMarkerCacheEntryMatches paddingLeft layouts cached then
+            markupMarkerCommandsFastSlots.[slot] <- cached
+            ValueSome cached.Commands
+        else
+            ValueNone
 
 let private markerOptionStringCharCount (value: string option) =
     match value with
@@ -1092,8 +1143,8 @@ let private rememberMarkupMarkerCommands paddingLeft layouts commandCount comman
         | candidate :: tail ->
             removeMatching (candidate :: acc) tail
     if not (markupMarkerCommandsCacheEntryRetainable entry) then
-        markupMarkerCommandsCache <-
-            { Entries = removeMatching [] markupMarkerCommandsCache.Entries }
+        removeMatching [] markupMarkerCommandsCache.Entries
+        |> setMarkupMarkerCommandsCache
     else
         let trim entries =
             let rec loop keptCount keptCommands keptLayouts keptLayoutTextChars acc remaining =
@@ -1118,15 +1169,14 @@ let private rememberMarkupMarkerCommands paddingLeft layouts commandCount comman
                     else
                         loop keptCount keptCommands keptLayouts keptLayoutTextChars acc tail
             loop 0 0 0 0 [] entries
-        markupMarkerCommandsCache <-
-            { Entries =
-                (entry :: removeMatching [] markupMarkerCommandsCache.Entries)
-                |> trim }
+        (entry :: removeMatching [] markupMarkerCommandsCache.Entries)
+        |> trim
+        |> setMarkupMarkerCommandsCache
 
 let markupMarkerCommands (settings: LayoutSettings) (layouts: BlockLayout list) =
-    match markupMarkerCommandsCache.Entries |> List.tryFind (markupMarkerCacheEntryMatches settings.PaddingLeft layouts) with
-    | Some cached -> cached.Commands
-    | _ ->
+    match tryGetMarkupMarkerCommands settings.PaddingLeft layouts with
+    | ValueSome commands -> commands
+    | ValueNone ->
         let commands = ResizeArray<PaintCommand>()
         for layout in layouts do
             match layout.Metadata.ContentControlId with
@@ -3202,6 +3252,13 @@ type private LayoutLookupCacheEntry = {
 }
 
 let mutable private layoutLookupCache: LayoutLookupCacheEntry list = []
+let private layoutLookupCacheLayoutsComparer =
+    { new IEqualityComparer<BlockLayout list> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+let private layoutLookupCacheByLayouts =
+    Dictionary<BlockLayout list, LayoutLookupCacheEntry>(layoutLookupCacheLayoutsComparer)
+let private layoutLookupFastSlots = Array.zeroCreate<LayoutLookupCacheEntry> 256
 let private layoutLookupCacheMaxEntries = 64
 let private layoutLookupCacheMaxTotalEntries = 200000
 let private layoutLookupCacheMaxTotalTextChars = 5000000
@@ -3222,6 +3279,33 @@ let private layoutLookupCacheEntryRetainable (entry: LayoutLookupCacheEntry) =
     entry.EntrySize <= layoutLookupCacheMaxTotalEntries
     && entry.EntryTextCharCount <= layoutLookupCacheMaxTotalTextChars
 
+let private layoutLookupCacheSlot layouts =
+    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(layouts)
+    &&& (layoutLookupFastSlots.Length - 1)
+
+let private setLayoutLookupCache entries =
+    layoutLookupCache <- entries
+    layoutLookupCacheByLayouts.Clear()
+    clearArray layoutLookupFastSlots
+    for entry in entries do
+        layoutLookupCacheByLayouts.[entry.Layouts] <- entry
+        layoutLookupFastSlots.[layoutLookupCacheSlot entry.Layouts] <- entry
+
+let private tryGetLayoutLookupCache layouts =
+    let slot = layoutLookupCacheSlot layouts
+    let fast = layoutLookupFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && layoutLookupCacheEntryMatches layouts fast then
+        ValueSome fast.ById
+    else
+        let mutable cached = Unchecked.defaultof<LayoutLookupCacheEntry>
+        if layoutLookupCacheByLayouts.TryGetValue(layouts, &cached)
+           && layoutLookupCacheEntryMatches layouts cached then
+            layoutLookupFastSlots.[slot] <- cached
+            ValueSome cached.ById
+        else
+            ValueNone
+
 let private rememberLayoutLookupCacheEntry entry =
     let rec removeMatching acc remaining =
         match remaining with
@@ -3231,7 +3315,8 @@ let private rememberLayoutLookupCacheEntry entry =
         | candidate :: tail ->
             removeMatching (candidate :: acc) tail
     if not (layoutLookupCacheEntryRetainable entry) then
-        layoutLookupCache <- removeMatching [] layoutLookupCache
+        removeMatching [] layoutLookupCache
+        |> setLayoutLookupCache
     else
         let trim entries =
             let rec loop keptCount keptTotal keptTextChars acc remaining =
@@ -3253,9 +3338,9 @@ let private rememberLayoutLookupCacheEntry entry =
                     else
                         loop keptCount keptTotal keptTextChars acc tail
             loop 0 0 0 [] entries
-        layoutLookupCache <-
-            (entry :: removeMatching [] layoutLookupCache)
-            |> trim
+        (entry :: removeMatching [] layoutLookupCache)
+        |> trim
+        |> setLayoutLookupCache
 
 let private rememberLayoutLookupCache (layouts: BlockLayout list) byId =
     let entrySize, entryTextCharCount = markerLayoutsRetainedMetrics layouts
@@ -3268,9 +3353,9 @@ let private rememberLayoutLookupCache (layouts: BlockLayout list) byId =
 
 let private cachedLayoutLookupForLayouts (layouts: BlockLayout list) =
     let byId =
-        match layoutLookupCache |> List.tryFind (layoutLookupCacheEntryMatches layouts) with
-        | Some cached -> cached.ById
-        | None ->
+        match tryGetLayoutLookupCache layouts with
+        | ValueSome byId -> byId
+        | ValueNone ->
             let byId = Dictionary<BlockId, BlockLayout>()
             for layout in layouts do
                 if not (byId.ContainsKey layout.BlockId) then
