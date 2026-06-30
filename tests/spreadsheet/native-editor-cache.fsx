@@ -450,6 +450,22 @@ check "native table unique values reuses"
     (obj.ReferenceEquals(tableUniqueValues, tableUniqueValuesAgain))
     true
 
+let sortIdentityCells =
+    [ { Row = 0; Col = 0 }, cell (CellValue.Number 1.0)
+      { Row = 1; Col = 0 }, cell (CellValue.Number 2.0)
+      { Row = 2; Col = 0 }, cell (CellValue.Number 3.0) ]
+    |> Map.ofList
+
+let sortIdentityModel = { createEmpty 3 1 with Cells = sortIdentityCells }
+let sortIdentitySorted = sortByColumn 0 true sortIdentityModel
+let sortIdentitySortedAgain = sortByColumn 0 true sortIdentitySorted
+check "native sort identity cache value"
+    sortIdentitySorted.SortState
+    (Some { Column = 0; Ascending = true })
+check "native sort identity cache reuses"
+    (obj.ReferenceEquals(sortIdentitySorted, sortIdentitySortedAgain))
+    true
+
 if isNull setFocus || isNull extendFocus || isNull startEditing || isNull commitEdit then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor helpers" "native editor reflection"

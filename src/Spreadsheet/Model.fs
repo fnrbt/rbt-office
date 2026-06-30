@@ -2191,6 +2191,9 @@ type private SortIdentityCache = {
 }
 
 let mutable private sortIdentityCache: SortIdentityCache list = []
+let private sortIdentityCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, SortIdentityCache>(cellMapReferenceComparer)
+let private sortIdentityFastSlots = Array.zeroCreate<SortIdentityCache> 256
 let private sortIdentityCacheMaxEntries = 64
 let private sortIdentityCacheMaxSources = 64
 let private sortIdentityCacheMaxTotalCells = 500000
@@ -2198,6 +2201,31 @@ let private sortIdentityCacheMaxTotalSourceTextChars = 5000000
 
 let private sortIdentityCacheMatches cells (cached: SortIdentityCache) =
     obj.ReferenceEquals(cached.Cells, cells)
+
+let private setSortIdentityCache entries =
+    sortIdentityCache <- entries
+    sortIdentityCacheByCells.Clear()
+    clearArray sortIdentityFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<SortIdentityCache>
+        if not (sortIdentityCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            sortIdentityCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells sortIdentityFastSlots.Length
+            sortIdentityFastSlots.[slot] <- entry
+
+let private tryGetSortIdentityCache cells =
+    let slot = referenceSlot cells sortIdentityFastSlots.Length
+    let fast = sortIdentityFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && sortIdentityCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<SortIdentityCache>
+        if sortIdentityCacheByCells.TryGetValue(cells, &cached) then
+            sortIdentityFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private sortIdentityCacheRetainable (cached: SortIdentityCache) =
     cached.CellCount <= sortIdentityCacheMaxTotalCells
@@ -2211,7 +2239,9 @@ let private sortIdentitySourceTextCharCount cells =
 
 let private rememberSortIdentityCache cached =
     if not (sortIdentityCacheRetainable cached) then
-        sortIdentityCache <- sortIdentityCache |> List.filter (sortIdentityCacheMatches cached.Cells >> not)
+        sortIdentityCache
+        |> List.filter (sortIdentityCacheMatches cached.Cells >> not)
+        |> setSortIdentityCache
     else
         let trim (entries: SortIdentityCache list) =
             let rec loop keptCount keptCells keptSourceTextChars acc remaining =
@@ -2233,11 +2263,11 @@ let private rememberSortIdentityCache cached =
                     else
                         loop keptCount keptCells keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        sortIdentityCache <-
-            (cached
-             :: (sortIdentityCache
-                 |> List.filter (sortIdentityCacheMatches cached.Cells >> not)))
-            |> trim
+        (cached
+         :: (sortIdentityCache
+             |> List.filter (sortIdentityCacheMatches cached.Cells >> not)))
+        |> trim
+        |> setSortIdentityCache
 
 let private addSortIdentityCacheEntry key (entries: System.Collections.Generic.Dictionary<struct (int * bool), unit>) (order: System.Collections.Generic.Queue<struct (int * bool)>) =
     if not (entries.ContainsKey key) then
@@ -2256,9 +2286,9 @@ let private addSortIdentityCacheEntry key (entries: System.Collections.Generic.D
 let private rememberSortIdentityWithSourceTextCharCount sourceTextCharCount cells col ascending =
     let key = struct (col, ascending)
     let cache =
-        match sortIdentityCache |> List.tryFind (sortIdentityCacheMatches cells) with
-        | Some cached -> cached
-        | None ->
+        match tryGetSortIdentityCache cells with
+        | ValueSome cached -> cached
+        | ValueNone ->
             {
                 Cells = cells
                 CellCount = max 1 cells.Count
@@ -2274,10 +2304,10 @@ let private rememberSortIdentity cells col ascending =
 
 let private hasSortIdentity cells col ascending =
     let key = struct (col, ascending)
-    match sortIdentityCache |> List.tryFind (sortIdentityCacheMatches cells) with
-    | Some cached ->
+    match tryGetSortIdentityCache cells with
+    | ValueSome cached ->
         cached.Entries.ContainsKey key
-    | None -> false
+    | ValueNone -> false
 
 let private sortStateMatches col ascending (sortState: SortState option) =
     match sortState with
