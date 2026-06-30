@@ -1198,6 +1198,12 @@ type private LineArrayCacheEntry = {
 
 let mutable private lineArrayCache: LineArrayCacheEntry list = []
 let mutable private lastLineArrayCacheEntry: LineArrayCacheEntry option = None
+let private lineArrayCacheLinesComparer =
+    { new System.Collections.Generic.IEqualityComparer<MeasuredLine list> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+let private lineArrayCacheByLines =
+    System.Collections.Generic.Dictionary<MeasuredLine list, LineArrayCacheEntry>(lineArrayCacheLinesComparer)
 let private lineArrayCacheThreshold = 32
 let private lineArrayCacheMaxEntries = 64
 let private lineArrayCacheMaxTotalLines = 200000
@@ -1214,24 +1220,29 @@ let private lineListExceeds threshold lines =
 let private lineArrayCacheEntryMatches lines (entry: LineArrayCacheEntry) =
     obj.ReferenceEquals(entry.Lines, lines)
 
-let private clearLastLineArrayCacheEntry lines =
+let private setLineArrayCache entries =
+    lineArrayCache <- entries
+    lineArrayCacheByLines.Clear()
+    for entry in entries do
+        lineArrayCacheByLines.[entry.Lines] <- entry
     match lastLineArrayCacheEntry with
-    | Some entry when lineArrayCacheEntryMatches lines entry -> lastLineArrayCacheEntry <- None
-    | _ -> ()
+    | Some last ->
+        let mutable cached = Unchecked.defaultof<LineArrayCacheEntry>
+        if not (lineArrayCacheByLines.TryGetValue(last.Lines, &cached) && obj.ReferenceEquals(cached, last)) then
+            lastLineArrayCacheEntry <- None
+    | None -> ()
 
 let private tryFindLineArrayCacheEntry lines =
     match lastLineArrayCacheEntry with
     | Some entry when lineArrayCacheEntryMatches lines entry -> Some entry
     | _ ->
-        let mutable remaining = lineArrayCache
-        let mutable found = None
-        while found.IsNone && not remaining.IsEmpty do
-            let entry = remaining.Head
-            if lineArrayCacheEntryMatches lines entry then
-                lastLineArrayCacheEntry <- Some entry
-                found <- Some entry
-            remaining <- remaining.Tail
-        found
+        let mutable cached = Unchecked.defaultof<LineArrayCacheEntry>
+        if lineArrayCacheByLines.TryGetValue(lines, &cached)
+           && lineArrayCacheEntryMatches lines cached then
+            lastLineArrayCacheEntry <- Some cached
+            Some cached
+        else
+            None
 
 let private lineArrayCacheOptionTextCharCount (value: string option) =
     match value with
@@ -1341,18 +1352,27 @@ let private lineArrayCacheTextCharCount (lines: MeasuredLine list) =
         remainingLines <- remainingLines.Tail
     min total limit
 
+let private lineArrayCacheWithoutLines lines =
+    let mutable cached = Unchecked.defaultof<LineArrayCacheEntry>
+    if lineArrayCacheByLines.TryGetValue(lines, &cached)
+       && lineArrayCacheEntryMatches lines cached then
+        lineArrayCache
+        |> List.filter (lineArrayCacheEntryMatches lines >> not)
+    else
+        lineArrayCache
+
 let private rememberLineArrayCacheEntry entry =
     if entry.LineArray.Length > lineArrayCacheMaxTotalLines
        || entry.TextCharCount > lineArrayCacheMaxTotalTextChars then
-        lineArrayCache <- lineArrayCache |> List.filter (lineArrayCacheEntryMatches entry.Lines >> not)
-        clearLastLineArrayCacheEntry entry.Lines
+        let entries = lineArrayCacheWithoutLines entry.Lines
+        if not (obj.ReferenceEquals(entries, lineArrayCache)) then
+            setLineArrayCache entries
     else
         let mutable keptCount = 1
         let mutable keptLines = entry.LineArray.Length
         let mutable keptTextChars = max 1 entry.TextCharCount
         let retained =
-            lineArrayCache
-            |> List.filter (lineArrayCacheEntryMatches entry.Lines >> not)
+            lineArrayCacheWithoutLines entry.Lines
             |> List.choose (fun candidate ->
                 let candidateLines = candidate.LineArray.Length
                 let candidateTextChars = max 1 candidate.TextCharCount
@@ -1365,7 +1385,7 @@ let private rememberLineArrayCacheEntry entry =
                     Some candidate
                 else
                         None)
-        lineArrayCache <- entry :: retained
+        setLineArrayCache (entry :: retained)
         lastLineArrayCacheEntry <- Some entry
 
 let private cachedLineArrayEntry lines =
