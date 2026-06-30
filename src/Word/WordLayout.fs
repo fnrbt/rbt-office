@@ -2,6 +2,7 @@ module RedBat.Word.WordLayout
 
 open System
 open System.Collections.Generic
+open System.Runtime.CompilerServices
 open RedBat.Word.Document
 open RedBat.Word.TextBuffer
 
@@ -144,6 +145,12 @@ module Page =
     }
 
     let mutable private headerFooterPartLookupCache: HeaderFooterPartLookup list = []
+    let private headerFooterPartLookupCacheByParts =
+        Dictionary<HeaderFooterPart list, HeaderFooterPartLookup>(
+            { new IEqualityComparer<HeaderFooterPart list> with
+                member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+                member _.GetHashCode(value) = RuntimeHelpers.GetHashCode(value) })
+    let private headerFooterPartLookupFastSlots = Array.zeroCreate<HeaderFooterPartLookup> 256
     let private headerFooterPartLookupCacheMaxEntries = 64
     let private headerFooterPartLookupCacheMaxTotalParts = 200000
     let private headerFooterPartLookupCacheMaxTotalPartParagraphs = 100000
@@ -315,6 +322,32 @@ module Page =
     let private headerFooterPartLookupCacheMatches parts (cached: HeaderFooterPartLookup) =
         obj.ReferenceEquals(cached.Parts, parts)
 
+    let private headerFooterPartLookupSlot parts slotCount =
+        RuntimeHelpers.GetHashCode(parts) &&& (slotCount - 1)
+
+    let private setHeaderFooterPartLookupCache entries =
+        headerFooterPartLookupCache <- entries
+        headerFooterPartLookupCacheByParts.Clear()
+        for i = 0 to headerFooterPartLookupFastSlots.Length - 1 do
+            headerFooterPartLookupFastSlots.[i] <- Unchecked.defaultof<HeaderFooterPartLookup>
+        for entry in entries do
+            headerFooterPartLookupCacheByParts.[entry.Parts] <- entry
+            headerFooterPartLookupFastSlots.[headerFooterPartLookupSlot entry.Parts headerFooterPartLookupFastSlots.Length] <- entry
+
+    let private tryGetHeaderFooterPartLookupCache parts =
+        let slot = headerFooterPartLookupSlot parts headerFooterPartLookupFastSlots.Length
+        let fast = headerFooterPartLookupFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && headerFooterPartLookupCacheMatches parts fast then
+            ValueSome fast
+        else
+            let mutable cached = Unchecked.defaultof<HeaderFooterPartLookup>
+            if headerFooterPartLookupCacheByParts.TryGetValue(parts, &cached) then
+                headerFooterPartLookupFastSlots.[slot] <- cached
+                ValueSome cached
+            else
+                ValueNone
+
     let private headerFooterPartLookupRetainable entry =
         entry.PartCount <= headerFooterPartLookupCacheMaxTotalParts
         && entry.PartParagraphCount <= headerFooterPartLookupCacheMaxTotalPartParagraphs
@@ -349,14 +382,14 @@ module Page =
 
     let private rememberHeaderFooterPartLookup cached =
         if not (headerFooterPartLookupRetainable cached) then
-            headerFooterPartLookupCache <-
-                headerFooterPartLookupCache
-                |> List.filter (headerFooterPartLookupCacheMatches cached.Parts >> not)
+            headerFooterPartLookupCache
+            |> List.filter (headerFooterPartLookupCacheMatches cached.Parts >> not)
+            |> setHeaderFooterPartLookupCache
         else
-            headerFooterPartLookupCache <-
-                cached
-                :: (headerFooterPartLookupCache |> List.filter (headerFooterPartLookupCacheMatches cached.Parts >> not))
-                |> trimHeaderFooterPartLookupCache
+            cached
+            :: (headerFooterPartLookupCache |> List.filter (headerFooterPartLookupCacheMatches cached.Parts >> not))
+            |> trimHeaderFooterPartLookupCache
+            |> setHeaderFooterPartLookupCache
 
     let private countHeaderFooterPartsCapped (parts: HeaderFooterPart list) =
         let mutable count = 0
@@ -367,9 +400,9 @@ module Page =
         count
 
     let private cachedPartLookup (parts: HeaderFooterPart list) =
-        match headerFooterPartLookupCache |> List.tryFind (headerFooterPartLookupCacheMatches parts) with
-        | Some cached -> Some cached
-        | None ->
+        match tryGetHeaderFooterPartLookupCache parts with
+        | ValueSome cached -> Some cached
+        | ValueNone ->
             let partCount = countHeaderFooterPartsCapped parts
             let partMetadataTextCharCount = countHeaderFooterPartMetadataTextCharsFor partCount parts
             if partCount > headerFooterPartLookupCacheMaxTotalParts
