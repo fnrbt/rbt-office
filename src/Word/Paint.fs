@@ -987,13 +987,19 @@ let private tryGetMarkupMarkerCommands paddingLeft layouts =
         else
             ValueNone
 
-let private removeMarkupMarkerCommandsCacheEntry paddingLeft layouts =
+let private markupMarkerCommandsCacheWithout paddingLeft layouts =
     let key = markupMarkerCommandsCacheKey paddingLeft layouts
     let mutable cached = Unchecked.defaultof<MarkupMarkerCommandsCacheEntry>
     if markupMarkerCommandsCacheByKey.TryGetValue(key, &cached) then
         markupMarkerCommandsCache.Entries
         |> List.filter (markupMarkerCacheEntryMatches paddingLeft layouts >> not)
-        |> setMarkupMarkerCommandsCache
+    else
+        markupMarkerCommandsCache.Entries
+
+let private removeMarkupMarkerCommandsCacheEntry paddingLeft layouts =
+    let entries = markupMarkerCommandsCacheWithout paddingLeft layouts
+    if not (obj.ReferenceEquals(entries, markupMarkerCommandsCache.Entries)) then
+        setMarkupMarkerCommandsCache entries
 
 let private markerOptionStringCharCount (value: string option) =
     match value with
@@ -1143,13 +1149,6 @@ let private rememberMarkupMarkerCommands paddingLeft layouts commandCount comman
         CommandCount = max 1 commandCount
         Commands = commands
     }
-    let rec removeMatching acc remaining =
-        match remaining with
-        | [] -> List.rev acc
-        | candidate :: tail when markupMarkerCacheEntryMatches paddingLeft layouts candidate ->
-            List.rev acc @ tail
-        | candidate :: tail ->
-            removeMatching (candidate :: acc) tail
     if not (markupMarkerCommandsCacheEntryRetainable entry) then
         removeMarkupMarkerCommandsCacheEntry paddingLeft layouts
     else
@@ -1176,7 +1175,7 @@ let private rememberMarkupMarkerCommands paddingLeft layouts commandCount comman
                     else
                         loop keptCount keptCommands keptLayouts keptLayoutTextChars acc tail
             loop 0 0 0 0 [] entries
-        (entry :: removeMatching [] markupMarkerCommandsCache.Entries)
+        (entry :: markupMarkerCommandsCacheWithout paddingLeft layouts)
         |> trim
         |> setMarkupMarkerCommandsCache
 
