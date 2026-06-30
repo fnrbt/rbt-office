@@ -390,6 +390,23 @@ check "native visible rows cache reuses"
     (obj.ReferenceEquals(filterCacheVisibleRows, filterCacheVisibleRowsAgain))
     true
 
+let searchCacheCells =
+    [ { Row = 0; Col = 0 }, cell (CellValue.String "header")
+      { Row = 1; Col = 0 }, cell (CellValue.String "needle")
+      { Row = 2; Col = 0 }, cell (CellValue.String "other")
+      { Row = 3; Col = 1 }, cell (CellValue.String "Needle case") ]
+    |> Map.ofList
+
+let searchCacheModel = { createEmpty 4 2 with Cells = searchCacheCells }
+let searchCacheResults = searchCells "needle" false searchCacheModel
+let searchCacheResultsAgain = searchCells "needle" false searchCacheModel
+check "native search cache value"
+    (searchCacheResults |> Array.toList)
+    [ { Row = 1; Col = 0 }; { Row = 3; Col = 1 } ]
+check "native search cache reuses"
+    (obj.ReferenceEquals(searchCacheResults, searchCacheResultsAgain))
+    true
+
 if isNull setFocus || isNull extendFocus || isNull startEditing || isNull commitEdit then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor helpers" "native editor reflection"

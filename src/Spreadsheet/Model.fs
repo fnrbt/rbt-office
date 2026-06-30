@@ -4951,6 +4951,12 @@ type private ReplaceAllChanges = {
 
 let mutable private searchCellsCache: SearchCellsCache list = []
 let mutable private replaceIdentityCache: ReplaceIdentityCache list = []
+let private searchCellsCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, SearchCellsCache>(cellMapReferenceComparer)
+let private replaceIdentityCacheByCells =
+    System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, ReplaceIdentityCache>(cellMapReferenceComparer)
+let private searchCellsFastSlots = Array.zeroCreate<SearchCellsCache> 256
+let private replaceIdentityFastSlots = Array.zeroCreate<ReplaceIdentityCache> 256
 let private emptySearchResults: CellAddress array = [||]
 let private searchCellsCacheMaxEntries = 64
 let private searchCellsCacheMaxSources = 64
@@ -4976,6 +4982,56 @@ let private searchCellsCacheMatches cells (cached: SearchCellsCache) =
 
 let private replaceIdentityCacheMatches cells (cached: ReplaceIdentityCache) =
     obj.ReferenceEquals(cached.Cells, cells)
+
+let private setSearchCellsCache entries =
+    searchCellsCache <- entries
+    searchCellsCacheByCells.Clear()
+    clearArray searchCellsFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<SearchCellsCache>
+        if not (searchCellsCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            searchCellsCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells searchCellsFastSlots.Length
+            searchCellsFastSlots.[slot] <- entry
+
+let private tryGetSearchCellsCache cells =
+    let slot = referenceSlot cells searchCellsFastSlots.Length
+    let fast = searchCellsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && searchCellsCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<SearchCellsCache>
+        if searchCellsCacheByCells.TryGetValue(cells, &cached) then
+            searchCellsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private setReplaceIdentityCache entries =
+    replaceIdentityCache <- entries
+    replaceIdentityCacheByCells.Clear()
+    clearArray replaceIdentityFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<ReplaceIdentityCache>
+        if not (replaceIdentityCacheByCells.TryGetValue(entry.Cells, &existing)) then
+            replaceIdentityCacheByCells.[entry.Cells] <- entry
+            let slot = referenceSlot entry.Cells replaceIdentityFastSlots.Length
+            replaceIdentityFastSlots.[slot] <- entry
+
+let private tryGetReplaceIdentityCache cells =
+    let slot = referenceSlot cells replaceIdentityFastSlots.Length
+    let fast = replaceIdentityFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && replaceIdentityCacheMatches cells fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<ReplaceIdentityCache>
+        if replaceIdentityCacheByCells.TryGetValue(cells, &cached) then
+            replaceIdentityFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private searchCellsCacheRetainable (cached: SearchCellsCache) =
     cached.Entries.Count > 0
@@ -5012,7 +5068,9 @@ let private replaceIdentityCacheSourceTextCharCountFor keyCharCount cells =
 
 let private rememberSearchCellsCache cached =
     if not (searchCellsCacheRetainable cached) then
-        searchCellsCache <- searchCellsCache |> List.filter (searchCellsCacheMatches cached.Cells >> not)
+        searchCellsCache
+        |> List.filter (searchCellsCacheMatches cached.Cells >> not)
+        |> setSearchCellsCache
     else
         let mutable keptCount = 1
         let mutable keptResults = cached.TotalResultCount
@@ -5041,11 +5099,14 @@ let private rememberSearchCellsCache cached =
                     Some candidate
                 else
                     None)
-        searchCellsCache <- cached :: retained
+        cached :: retained
+        |> setSearchCellsCache
 
 let private rememberReplaceIdentityCache cached =
     if not (replaceIdentityCacheRetainable cached) then
-        replaceIdentityCache <- replaceIdentityCache |> List.filter (replaceIdentityCacheMatches cached.Cells >> not)
+        replaceIdentityCache
+        |> List.filter (replaceIdentityCacheMatches cached.Cells >> not)
+        |> setReplaceIdentityCache
     else
         let mutable keptCount = 1
         let mutable keptKeyChars = cached.TotalKeyCharCount
@@ -5070,28 +5131,29 @@ let private rememberReplaceIdentityCache cached =
                     Some candidate
                 else
                     None)
-        replaceIdentityCache <- cached :: retained
+        cached :: retained
+        |> setReplaceIdentityCache
 
 let private cachedSearchCells query caseSensitive (model: SpreadsheetModel) =
     let key = struct (query, caseSensitive)
-    match searchCellsCache |> List.tryFind (searchCellsCacheMatches model.Cells) with
-    | Some cached when searchCellsCacheRetainable cached ->
+    match tryGetSearchCellsCache model.Cells with
+    | ValueSome cached when searchCellsCacheRetainable cached ->
         let mutable entry = Unchecked.defaultof<SearchCellsCacheEntry>
         if cached.Entries.TryGetValue(key, &entry) then Some entry.Results else None
-    | Some cached ->
+    | ValueSome cached ->
         rememberSearchCellsCache cached
         None
-    | None -> None
+    | ValueNone -> None
 
 let private cachedReplaceIdentity findText replaceText caseSensitive (model: SpreadsheetModel) =
     let key = struct (findText, replaceText, caseSensitive)
-    match replaceIdentityCache |> List.tryFind (replaceIdentityCacheMatches model.Cells) with
-    | Some cached when replaceIdentityCacheRetainable cached ->
+    match tryGetReplaceIdentityCache model.Cells with
+    | ValueSome cached when replaceIdentityCacheRetainable cached ->
         cached.Entries.ContainsKey key
-    | Some cached ->
+    | ValueSome cached ->
         rememberReplaceIdentityCache cached
         false
-    | None -> false
+    | ValueNone -> false
 
 let private removeSearchCellsCacheEntry key (cache: SearchCellsCache) =
     let mutable existing = Unchecked.defaultof<SearchCellsCacheEntry>
@@ -5163,11 +5225,11 @@ let private addReplaceIdentityCacheEntry key (cache: ReplaceIdentityCache) =
 let private rememberSearchCellsWithSourceTextCharCount query caseSensitive (model: SpreadsheetModel) results sourceTextCharCountOpt =
     let key = struct (query, caseSensitive)
     let keyCharCount = searchCellsCacheKeyCharCount key
-    match searchCellsCache |> List.tryFind (searchCellsCacheMatches model.Cells) with
-    | Some cached ->
+    match tryGetSearchCellsCache model.Cells with
+    | ValueSome cached ->
         addSearchCellsCacheEntry key results cached
         rememberSearchCellsCache cached
-    | None ->
+    | ValueNone ->
         let entries = System.Collections.Generic.Dictionary<struct (string * bool), SearchCellsCacheEntry>()
         let order = System.Collections.Generic.Queue<struct (string * bool)>()
         let sourceTextCharCount =
@@ -5201,10 +5263,10 @@ let private rememberReplaceIdentity findText replaceText caseSensitive (model: S
         let sourceTextCharCount = replaceIdentityCacheSourceTextCharCountFor keyCharCount model.Cells
         if sourceTextCharCount <= replaceIdentityCacheMaxTotalSourceTextChars then
             let cache =
-                match replaceIdentityCache |> List.tryFind (replaceIdentityCacheMatches model.Cells) with
-                | Some cached ->
+                match tryGetReplaceIdentityCache model.Cells with
+                | ValueSome cached ->
                     cached
-                | None ->
+                | ValueNone ->
                     {
                         Cells = model.Cells
                         CellCount = max 1 model.Cells.Count
