@@ -452,6 +452,8 @@ let sparsePaintPartsA =
     RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel paintCacheViewport
 let sparsePaintPartsB =
     RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel paintCacheViewport
+let sparsePaintPartsItemCount (parts: RedBat.Spreadsheet.Paint.SparseDefaultPaintParts) =
+    parts.GridItems.Length + parts.TextItems.Length
 let sparsePaintPartsReuse =
     match sparsePaintPartsA, sparsePaintPartsB with
     | Some partsA, Some partsB ->
@@ -472,10 +474,7 @@ let mutable sparsePaintPartsTotal = 0
 for _ in 1 .. 100000 do
     match RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel paintCacheViewport with
     | Some parts ->
-        sparsePaintPartsTotal <-
-            sparsePaintPartsTotal
-            + parts.GridItems.Length
-            + parts.TextItems.Length
+        sparsePaintPartsTotal <- sparsePaintPartsTotal + sparsePaintPartsItemCount parts
     | None -> ()
 sparsePaintPartsSw.Stop()
 let sparsePaintPartsAllocated =
@@ -484,6 +483,40 @@ check "native sparse default paint parts hot hits"
     (sparsePaintPartsSw.Elapsed.TotalMilliseconds < 80.0
      && sparsePaintPartsAllocated < 8L * 1024L * 1024L
      && sparsePaintPartsTotal > 0)
+    true
+
+let sparsePaintPartsAltViewport = { paintCacheViewport with ScrollY = 420.0 }
+let sparsePaintPartsAltA =
+    RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel paintCacheViewport
+let sparsePaintPartsAltB =
+    RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel sparsePaintPartsAltViewport
+let sparsePaintPartsAltExpected =
+    match sparsePaintPartsAltA, sparsePaintPartsAltB with
+    | Some partsA, Some partsB -> Some (sparsePaintPartsItemCount partsA + sparsePaintPartsItemCount partsB)
+    | _ -> None
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let sparsePaintPartsAltAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let sparsePaintPartsAltSw = Stopwatch.StartNew()
+let mutable sparsePaintPartsAltTotal = 0
+for index in 1 .. 200000 do
+    let viewport = if index % 2 = 0 then paintCacheViewport else sparsePaintPartsAltViewport
+    match RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel viewport with
+    | Some parts ->
+        sparsePaintPartsAltTotal <- sparsePaintPartsAltTotal + sparsePaintPartsItemCount parts
+    | None -> ()
+sparsePaintPartsAltSw.Stop()
+let sparsePaintPartsAltAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - sparsePaintPartsAltAllocatedBefore
+check "native sparse default paint parts alternates"
+    (sparsePaintPartsAltSw.Elapsed.TotalMilliseconds < 120.0
+     && sparsePaintPartsAltAllocated < 16L * 1024L * 1024L
+     && (match sparsePaintPartsAltExpected with
+         | Some expected -> sparsePaintPartsAltTotal = expected * 100000
+         | None -> false))
     true
 
 if isNull usedBoundsCached then

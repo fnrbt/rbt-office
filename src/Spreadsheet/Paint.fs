@@ -715,6 +715,8 @@ let private sparseDefaultPaintCacheByKey =
 let private sparseDefaultPaintFastSlots = Array.zeroCreate<SparseDefaultPaintCacheEntry> 256
 let mutable private sparseDefaultPaintPartsLastSet = false
 let mutable private sparseDefaultPaintPartsLast = Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
+let mutable private sparseDefaultPaintPartsPreviousSet = false
+let mutable private sparseDefaultPaintPartsPrevious = Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
 let private sparseDefaultPaintCacheMaxEntries = 16
 let private sparseDefaultPaintCacheMaxTotalItems = 200000
 let private sparseDefaultPaintCacheMaxTotalTextChars = 5000000
@@ -728,6 +730,8 @@ let private sparseDefaultPaintCacheEntryRetainable (entry: SparseDefaultPaintCac
 let private clearSparseDefaultPaintPartsLast () =
     sparseDefaultPaintPartsLastSet <- false
     sparseDefaultPaintPartsLast <- Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
+    sparseDefaultPaintPartsPreviousSet <- false
+    sparseDefaultPaintPartsPrevious <- Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
 
 let private sparseDefaultPaintPartsLastMatches (model: SpreadsheetModel) (viewport: Viewport) (cached: SparseDefaultPaintPartsLastEntry) =
     obj.ReferenceEquals(cached.Cells, model.Cells)
@@ -759,12 +763,18 @@ let private tryGetSparseDefaultPaintPartsLast model viewport =
     if sparseDefaultPaintPartsLastSet
        && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsLast then
         ValueSome sparseDefaultPaintPartsLast.Result
+    elif sparseDefaultPaintPartsPreviousSet
+         && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsPrevious then
+        ValueSome sparseDefaultPaintPartsPrevious.Result
     else
         ValueNone
 
 let private rememberSparseDefaultPaintPartsLast (model: SpreadsheetModel) (viewport: Viewport) result =
     match result with
     | Some _ ->
+        if sparseDefaultPaintPartsLastSet then
+            sparseDefaultPaintPartsPreviousSet <- true
+            sparseDefaultPaintPartsPrevious <- sparseDefaultPaintPartsLast
         sparseDefaultPaintPartsLastSet <- true
         sparseDefaultPaintPartsLast <-
             { Cells = model.Cells
