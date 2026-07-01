@@ -5554,11 +5554,11 @@ let private cachedSearchCells query caseSensitive (model: SpreadsheetModel) =
     match tryGetSearchCellsCache model.Cells with
     | ValueSome cached when searchCellsCacheRetainable cached ->
         let mutable entry = Unchecked.defaultof<SearchCellsCacheEntry>
-        if cached.Entries.TryGetValue(key, &entry) then Some entry.Results else None
+        if cached.Entries.TryGetValue(key, &entry) then ValueSome entry.Results else ValueNone
     | ValueSome cached ->
         rememberSearchCellsCache cached
-        None
-    | ValueNone -> None
+        ValueNone
+    | ValueNone -> ValueNone
 
 let private cachedReplaceIdentity findText replaceText caseSensitive (model: SpreadsheetModel) =
     let key = struct (findText, replaceText, caseSensitive)
@@ -5695,8 +5695,8 @@ let private rememberReplaceIdentity findText replaceText caseSensitive (model: S
 
 let private cachedEmptySearchResults query caseSensitive (model: SpreadsheetModel) =
     match cachedSearchCells query caseSensitive model with
-    | Some results -> results.Length = 0
-    | None -> false
+    | ValueSome results -> results.Length = 0
+    | ValueNone -> false
 
 let private rememberEmptySearchResults query caseSensitive (model: SpreadsheetModel) =
     rememberSearchCells query caseSensitive model emptySearchResults
@@ -5706,9 +5706,9 @@ let searchCells (query: string) (caseSensitive: bool) (model: SpreadsheetModel):
         emptySearchResults
     else
         match cachedSearchCells query caseSensitive model with
-        | Some results ->
+        | ValueSome results ->
             results
-        | _ ->
+        | ValueNone ->
             let numberQueryPossible = numberDisplayMayContainSearchText query
             let booleanQueryPossible = booleanDisplayMayContainSearchText query
             let errorMatchesSearchText = errorSearchTextMatcher query caseSensitive

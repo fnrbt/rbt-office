@@ -811,6 +811,26 @@ check "search cells number text impossible" (searchCells "missing" false replace
 let cachedSearchFirst = searchCells "TARGET" false replaceModel
 let cachedSearchSecond = searchCells "TARGET" false replaceModel
 check "search cells cache identity" (obj.ReferenceEquals(cachedSearchFirst, cachedSearchSecond)) true
+let searchCellsHotHitRun count =
+    let mutable total = 0
+    for _ in 1 .. count do
+        total <- total + (searchCells "TARGET" false replaceModel).Length
+    total
+searchCellsHotHitRun 1000 |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let searchCellsHotHitAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let searchCellsHotHitSw = Stopwatch.StartNew()
+let searchCellsHotHitTotal = searchCellsHotHitRun 200000
+searchCellsHotHitSw.Stop()
+let searchCellsHotHitAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - searchCellsHotHitAllocatedBefore
+check "search cells cache hot hit allocation"
+    (searchCellsHotHitTotal = 200000
+     && searchCellsHotHitSw.Elapsed.TotalMilliseconds < 100.0
+     && searchCellsHotHitAllocated < 1024L * 1024L)
+    true
 let cachedSearchCaseFirst = searchCells "target" true replaceModel
 let cachedSearchOtherQuery = searchCells "42" true replaceModel
 let cachedSearchCaseSecond = searchCells "target" true replaceModel
