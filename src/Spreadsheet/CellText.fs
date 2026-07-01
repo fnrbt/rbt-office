@@ -594,11 +594,164 @@ let private numberFormatSectionColor (section: string) : string option =
             i <- i + 1
     result
 
+type private NumberFormatColorSectionInfo = {
+    Condition: (string * float) option
+    Color: string option
+}
+
+type private NumberFormatColorInfo = {
+    HasSectionSeparator: bool
+    HasCondition: bool
+    Sections: NumberFormatColorSectionInfo array
+    RetainedCharCount: int
+    RetainedSectionCount: int
+}
+
+let private numberFormatColorInfoCache = Dictionary<string, NumberFormatColorInfo>()
+let private numberFormatColorInfoCacheOrder = Queue<string>()
+let private numberFormatColorInfoCacheMaxEntries = 4096
+let private numberFormatColorInfoCacheMaxTotalChars = 5000000
+let private numberFormatColorInfoCacheMaxTotalSections = 200000
+let mutable private numberFormatColorInfoCacheTotalChars = 0
+let mutable private numberFormatColorInfoCacheTotalSections = 0
+let private numberFormatColorInfoFastSlots = Array.zeroCreate<StringFastCacheEntry<NumberFormatColorInfo>> 256
+
+let private numberFormatColorInfoCanCache info =
+    info.RetainedCharCount <= numberFormatColorInfoCacheMaxTotalChars
+    && info.RetainedSectionCount <= numberFormatColorInfoCacheMaxTotalSections
+
+let private removeNumberFormatColorInfoCacheEntry code =
+    let mutable previous = Unchecked.defaultof<NumberFormatColorInfo>
+    if numberFormatColorInfoCache.TryGetValue(code, &previous) then
+        clearStringFastSlots numberFormatColorInfoFastSlots
+        numberFormatColorInfoCache.Remove code |> ignore
+        numberFormatColorInfoCacheTotalChars <-
+            max 0 (numberFormatColorInfoCacheTotalChars - previous.RetainedCharCount)
+        numberFormatColorInfoCacheTotalSections <-
+            max 0 (numberFormatColorInfoCacheTotalSections - previous.RetainedSectionCount)
+
+let private addNumberFormatColorInfoCacheEntry code info =
+    if not (numberFormatColorInfoCanCache info) then
+        removeNumberFormatColorInfoCacheEntry code
+        info
+    else
+        let mutable previous = Unchecked.defaultof<NumberFormatColorInfo>
+        if numberFormatColorInfoCache.TryGetValue(code, &previous) then
+            numberFormatColorInfoCacheTotalChars <-
+                max 0 (numberFormatColorInfoCacheTotalChars - previous.RetainedCharCount)
+            numberFormatColorInfoCacheTotalSections <-
+                max 0 (numberFormatColorInfoCacheTotalSections - previous.RetainedSectionCount)
+        else
+            numberFormatColorInfoCacheOrder.Enqueue code
+        numberFormatColorInfoCache.[code] <- info
+        numberFormatColorInfoCacheTotalChars <- numberFormatColorInfoCacheTotalChars + info.RetainedCharCount
+        numberFormatColorInfoCacheTotalSections <- numberFormatColorInfoCacheTotalSections + info.RetainedSectionCount
+        while (numberFormatColorInfoCache.Count > numberFormatColorInfoCacheMaxEntries
+               || numberFormatColorInfoCacheTotalChars > numberFormatColorInfoCacheMaxTotalChars
+               || numberFormatColorInfoCacheTotalSections > numberFormatColorInfoCacheMaxTotalSections)
+              && numberFormatColorInfoCacheOrder.Count > 0 do
+            let oldest = numberFormatColorInfoCacheOrder.Dequeue()
+            if oldest <> code then
+                removeNumberFormatColorInfoCacheEntry oldest
+        if numberFormatColorInfoCache.Count > numberFormatColorInfoCacheMaxEntries
+           || numberFormatColorInfoCacheTotalChars > numberFormatColorInfoCacheMaxTotalChars
+           || numberFormatColorInfoCacheTotalSections > numberFormatColorInfoCacheMaxTotalSections then
+            let current = numberFormatColorInfoCache.[code]
+            numberFormatColorInfoCache.Clear()
+            numberFormatColorInfoCacheOrder.Clear()
+            numberFormatColorInfoCacheOrder.Enqueue code
+            numberFormatColorInfoCache.[code] <- current
+            numberFormatColorInfoCacheTotalChars <- current.RetainedCharCount
+            numberFormatColorInfoCacheTotalSections <- current.RetainedSectionCount
+            clearStringFastSlots numberFormatColorInfoFastSlots
+        info
+
+let private buildNumberFormatColorInfo (code: string) =
+    let hasSectionSeparator = code.IndexOf(';') >= 0
+    let sections =
+        if hasSectionSeparator then splitSectionsCached code
+        else [ code ]
+    let struct (retainedChars, retainedSections) = splitSectionsEntryMetrics code sections
+    let sectionInfos = List<NumberFormatColorSectionInfo>()
+    let mutable hasCondition = false
+    let mutable remaining = sections
+    while not remaining.IsEmpty do
+        let section = remaining.Head
+        let condition = sectionConditionCached section
+        if condition.IsSome then
+            hasCondition <- true
+        sectionInfos.Add {
+            Condition = condition
+            Color = numberFormatSectionColor section
+        }
+        remaining <- remaining.Tail
+    {
+        HasSectionSeparator = hasSectionSeparator
+        HasCondition = hasCondition
+        Sections = sectionInfos.ToArray()
+        RetainedCharCount = retainedChars
+        RetainedSectionCount = retainedSections
+    }
+
+let private numberFormatColorInfo code =
+    match tryGetStringFastSlot numberFormatColorInfoFastSlots code with
+    | ValueSome info -> info
+    | ValueNone ->
+        let mutable info = Unchecked.defaultof<NumberFormatColorInfo>
+        if numberFormatColorInfoCache.TryGetValue(code, &info) then
+            setStringFastSlot numberFormatColorInfoFastSlots code info
+            info
+        else
+            let info = buildNumberFormatColorInfo code
+            clearStringFastSlots numberFormatColorInfoFastSlots
+            let result = addNumberFormatColorInfoCacheEntry code info
+            if numberFormatColorInfoCache.ContainsKey code then
+                setStringFastSlot numberFormatColorInfoFastSlots code result
+            result
+
+let private colorBySign (sections: NumberFormatColorSectionInfo array) n =
+    if sections.Length = 0 then
+        None
+    elif n > 0.0 then
+        sections.[0].Color
+    elif n < 0.0 then
+        if sections.Length >= 2 then sections.[1].Color else sections.[0].Color
+    else
+        if sections.Length >= 3 then sections.[2].Color else sections.[0].Color
+
+let private colorByCondition (sections: NumberFormatColorSectionInfo array) n =
+    let mutable matched = ValueNone
+    let mutable lastUnconditioned = ValueNone
+    let mutable lastColor = if sections.Length = 0 then None else sections.[0].Color
+    let mutable index = 0
+    while index < sections.Length do
+        let section = sections.[index]
+        lastColor <- section.Color
+        match section.Condition with
+        | Some (op, th) ->
+            if matched.IsNone && conditionMatches op th n then
+                matched <- ValueSome section.Color
+        | None ->
+            lastUnconditioned <- ValueSome section.Color
+        index <- index + 1
+    match matched, lastUnconditioned with
+    | ValueSome color, _ -> color
+    | ValueNone, ValueSome color -> color
+    | ValueNone, ValueNone -> lastColor
+
+let private numberFormatColorInfoForValue info n =
+    if not info.HasSectionSeparator then
+        if info.Sections.Length = 0 then None else info.Sections.[0].Color
+    elif info.HasCondition then
+        colorByCondition info.Sections n
+    else
+        colorBySign info.Sections n
+
 /// Pick the colour tag for the section of `code` that applies to value `n`.
 /// Default (no tag) → None.
 let numberFormatColorForValue (code: string) (n: float) : string option =
     if code.IndexOf('[') < 0 then None
-    else numberFormatSectionColor (selectedSectionForValue code n)
+    else numberFormatColorInfoForValue (numberFormatColorInfo code) n
 
 let private appendLower (sb: System.Text.StringBuilder) (ch: char) =
     sb.Append(System.Char.ToLowerInvariant ch) |> ignore

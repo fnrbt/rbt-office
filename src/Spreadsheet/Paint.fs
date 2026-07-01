@@ -2039,12 +2039,18 @@ type private StaticPaintItemsCacheEntry = {
     ItemTextCharCount: int
 }
 
+type private StaticPaintGeometryFastEntry = {
+    Key: StaticPaintGeometryKey
+    Entry: StaticPaintItemsCacheEntry
+}
+
 type private StaticPaintItemsCache = {
     Model: SpreadsheetModel
     SourceItemCount: int
     SourceTextCharCount: int
     Entries: Dictionary<StaticPaintGeometryKey, StaticPaintItemsCacheEntry>
     Order: Queue<StaticPaintGeometryKey>
+    EntryFastSlots: StaticPaintGeometryFastEntry array
     mutable TotalItemCount: int
     mutable TotalItemTextCharCount: int
 }
@@ -2544,6 +2550,12 @@ let tryBuildSparseDefaultPaintParts (model: SpreadsheetModel) (viewport: Viewpor
     tryGetSparseDefaultPaintCacheEntry model viewport
     |> Option.map (fun entry -> sparseDefaultPartsFromEntry entry.PrefixItems [] model entry)
 
+let private sameMeasurer (left: TextMeasurer option) (right: TextMeasurer option) =
+    match left, right with
+    | None, None -> true
+    | Some a, Some b -> obj.ReferenceEquals(a, b)
+    | _ -> false
+
 let private staticPaintGeometryKey (viewport: Viewport) = {
     ScrollX = viewport.ScrollX
     ScrollY = viewport.ScrollY
@@ -2553,15 +2565,67 @@ let private staticPaintGeometryKey (viewport: Viewport) = {
     RowHeaderWidth = viewport.RowHeaderWidth
 }
 
-let private sameMeasurer (left: TextMeasurer option) (right: TextMeasurer option) =
-    match left, right with
-    | None, None -> true
-    | Some a, Some b -> obj.ReferenceEquals(a, b)
-    | _ -> false
+let private staticPaintGeometrySlot
+    (slotCount: int)
+    scrollX
+    scrollY
+    width
+    height
+    headerHeight
+    rowHeaderWidth =
+    let mutable hashCode = scrollX.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ scrollY.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ width.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ height.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ headerHeight.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ rowHeaderWidth.GetHashCode()
+    hashCode &&& (slotCount - 1)
+
+let private staticPaintGeometryKeyMatchesViewport key (viewport: Viewport) =
+    key.ScrollX = viewport.ScrollX
+    && key.ScrollY = viewport.ScrollY
+    && key.Width = viewport.Width
+    && key.Height = viewport.Height
+    && key.HeaderHeight = viewport.HeaderHeight
+    && key.RowHeaderWidth = viewport.RowHeaderWidth
+
+let private tryGetStaticPaintGeometryFastSlot (cache: StaticPaintItemsCache) (viewport: Viewport) =
+    let slot =
+        staticPaintGeometrySlot
+            cache.EntryFastSlots.Length
+            viewport.ScrollX
+            viewport.ScrollY
+            viewport.Width
+            viewport.Height
+            viewport.HeaderHeight
+            viewport.RowHeaderWidth
+    let fast = cache.EntryFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && staticPaintGeometryKeyMatchesViewport fast.Key viewport
+       && sameMeasurer fast.Entry.Measurer viewport.Measurer then
+        ValueSome fast.Entry
+    else
+        ValueNone
+
+let private setStaticPaintGeometryFastSlot cache key entry =
+    let slot =
+        staticPaintGeometrySlot
+            cache.EntryFastSlots.Length
+            key.ScrollX
+            key.ScrollY
+            key.Width
+            key.Height
+            key.HeaderHeight
+            key.RowHeaderWidth
+    cache.EntryFastSlots.[slot] <- {
+        Key = key
+        Entry = entry
+    }
 
 let private removeStaticPaintItemsCacheEntry key (cache: StaticPaintItemsCache) =
     let mutable existing = Unchecked.defaultof<StaticPaintItemsCacheEntry>
     if cache.Entries.TryGetValue(key, &existing) then
+        clearArray cache.EntryFastSlots
         cache.TotalItemCount <- max 0 (cache.TotalItemCount - existing.ItemCount)
         cache.TotalItemTextCharCount <- max 0 (cache.TotalItemTextCharCount - existing.ItemTextCharCount)
         cache.Entries.Remove key |> ignore
@@ -2580,12 +2644,15 @@ let private addStaticPaintItemsCacheEntry key entry (cache: StaticPaintItemsCach
         cache.Entries.[key] <- entry
         cache.TotalItemCount <- cache.TotalItemCount + entry.ItemCount
         cache.TotalItemTextCharCount <- cache.TotalItemTextCharCount + entry.ItemTextCharCount
+        setStaticPaintGeometryFastSlot cache key entry
+        let mutable removedEntry = false
         while (cache.Entries.Count > staticPaintItemsCacheMaxEntries
                || cache.TotalItemCount > staticPaintItemsCacheMaxTotalItems
                || cache.TotalItemTextCharCount > staticPaintItemsCacheMaxTotalItemTextChars)
               && cache.Order.Count > 0 do
             let oldest = cache.Order.Dequeue()
             if oldest <> key then
+                removedEntry <- true
                 removeStaticPaintItemsCacheEntry oldest cache
         if cache.Entries.Count > staticPaintItemsCacheMaxEntries
            || cache.TotalItemCount > staticPaintItemsCacheMaxTotalItems
@@ -2597,6 +2664,13 @@ let private addStaticPaintItemsCacheEntry key entry (cache: StaticPaintItemsCach
             cache.Entries.[key] <- current
             cache.TotalItemCount <- current.ItemCount
             cache.TotalItemTextCharCount <- current.ItemTextCharCount
+            clearArray cache.EntryFastSlots
+            setStaticPaintGeometryFastSlot cache key current
+        elif removedEntry then
+            clearArray cache.EntryFastSlots
+            let mutable current = Unchecked.defaultof<StaticPaintItemsCacheEntry>
+            if cache.Entries.TryGetValue(key, &current) then
+                setStaticPaintGeometryFastSlot cache key current
 
 let private staticPaintItemsCacheRetainable (cache: StaticPaintItemsCache) =
     cache.Entries.Count > 0
@@ -2690,28 +2764,32 @@ let iterPaintItems (model: SpreadsheetModel) (viewport: Viewport) (emit: PaintIt
 
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
     let model = model |> withFilterRowHeights
-    let key = staticPaintGeometryKey viewport
     match tryGetStaticPaintItemsCache model with
     | ValueSome cached when staticPaintItemsCacheRetainable cached ->
-        let mutable entry = Unchecked.defaultof<StaticPaintItemsCacheEntry>
-        if cached.Entries.TryGetValue(key, &entry) && sameMeasurer entry.Measurer viewport.Measurer then
-            entry.Items
-        else
-            let values = ResizeArray<PaintItem>(estimatedPaintItemCount model viewport)
-            iterPaintItemsPrepared model viewport values.Add
-            let itemCount = values.Count
-            let items = resizeArrayToList values
-            if itemCount <= staticPaintItemsCacheMaxTotalItems then
-                addStaticPaintItemsCacheEntry key {
-                    Measurer = viewport.Measurer
-                    Items = items
-                    ItemCount = itemCount
-                    ItemTextCharCount = paintItemsTextCharCount staticPaintItemsCacheMaxTotalItemTextChars 0 items
-                } cached
+        match tryGetStaticPaintGeometryFastSlot cached viewport with
+        | ValueSome entry -> entry.Items
+        | ValueNone ->
+            let key = staticPaintGeometryKey viewport
+            let mutable entry = Unchecked.defaultof<StaticPaintItemsCacheEntry>
+            if cached.Entries.TryGetValue(key, &entry) && sameMeasurer entry.Measurer viewport.Measurer then
+                setStaticPaintGeometryFastSlot cached key entry
+                entry.Items
             else
-                removeStaticPaintItemsCacheEntry key cached
-            rememberStaticPaintItemsCache cached
-            items
+                let values = ResizeArray<PaintItem>(estimatedPaintItemCount model viewport)
+                iterPaintItemsPrepared model viewport values.Add
+                let itemCount = values.Count
+                let items = resizeArrayToList values
+                if itemCount <= staticPaintItemsCacheMaxTotalItems then
+                    addStaticPaintItemsCacheEntry key {
+                        Measurer = viewport.Measurer
+                        Items = items
+                        ItemCount = itemCount
+                        ItemTextCharCount = paintItemsTextCharCount staticPaintItemsCacheMaxTotalItemTextChars 0 items
+                    } cached
+                else
+                    removeStaticPaintItemsCacheEntry key cached
+                rememberStaticPaintItemsCache cached
+                items
     | ValueSome cached ->
         rememberStaticPaintItemsCache cached
         let values = ResizeArray<PaintItem>(estimatedPaintItemCount model viewport)
@@ -2723,6 +2801,7 @@ let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem li
         let itemCount = values.Count
         let items = resizeArrayToList values
         if itemCount <= staticPaintItemsCacheMaxTotalItems then
+            let key = staticPaintGeometryKey viewport
             let entries = Dictionary<StaticPaintGeometryKey, StaticPaintItemsCacheEntry>()
             let order = Queue<StaticPaintGeometryKey>()
             let sourceItemCount, sourceTextCharCount = staticPaintSourceMetrics model
@@ -2732,6 +2811,7 @@ let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem li
                 SourceTextCharCount = sourceTextCharCount
                 Entries = entries
                 Order = order
+                EntryFastSlots = Array.zeroCreate<StaticPaintGeometryFastEntry> 128
                 TotalItemCount = 0
                 TotalItemTextCharCount = 0
             }
@@ -2881,12 +2961,18 @@ type private ViewportPaintItemsCacheEntry = {
     ItemTextCharCount: int
 }
 
+type private ViewportPaintGeometryFastEntry = {
+    Key: ViewportPaintGeometryKey
+    Entry: ViewportPaintItemsCacheEntry
+}
+
 type private ViewportPaintItemsCache = {
     Model: SpreadsheetModel
     SourceItemCount: int
     SourceTextCharCount: int
     Entries: Dictionary<ViewportPaintGeometryKey, ViewportPaintItemsCacheEntry>
     Order: Queue<ViewportPaintGeometryKey>
+    EntryFastSlots: ViewportPaintGeometryFastEntry array
     mutable TotalItemCount: int
     mutable TotalItemTextCharCount: int
 }
@@ -2911,6 +2997,63 @@ let private viewportPaintGeometryKey (viewport: Viewport) = {
     RowHeaderWidth = viewport.RowHeaderWidth
 }
 
+let private viewportPaintGeometrySlot
+    (slotCount: int)
+    scrollX
+    scrollY
+    width
+    height
+    headerHeight
+    rowHeaderWidth =
+    let mutable hashCode = scrollX.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ scrollY.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ width.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ height.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ headerHeight.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ rowHeaderWidth.GetHashCode()
+    hashCode &&& (slotCount - 1)
+
+let private viewportPaintGeometryKeyMatchesViewport key (viewport: Viewport) =
+    key.ScrollX = viewport.ScrollX
+    && key.ScrollY = viewport.ScrollY
+    && key.Width = viewport.Width
+    && key.Height = viewport.Height
+    && key.HeaderHeight = viewport.HeaderHeight
+    && key.RowHeaderWidth = viewport.RowHeaderWidth
+
+let private tryGetViewportPaintGeometryFastSlot (cache: ViewportPaintItemsCache) (viewport: Viewport) =
+    let slot =
+        viewportPaintGeometrySlot
+            cache.EntryFastSlots.Length
+            viewport.ScrollX
+            viewport.ScrollY
+            viewport.Width
+            viewport.Height
+            viewport.HeaderHeight
+            viewport.RowHeaderWidth
+    let fast = cache.EntryFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && viewportPaintGeometryKeyMatchesViewport fast.Key viewport
+       && sameMeasurer fast.Entry.Measurer viewport.Measurer then
+        ValueSome fast.Entry
+    else
+        ValueNone
+
+let private setViewportPaintGeometryFastSlot cache key entry =
+    let slot =
+        viewportPaintGeometrySlot
+            cache.EntryFastSlots.Length
+            key.ScrollX
+            key.ScrollY
+            key.Width
+            key.Height
+            key.HeaderHeight
+            key.RowHeaderWidth
+    cache.EntryFastSlots.[slot] <- {
+        Key = key
+        Entry = entry
+    }
+
 let private viewportPaintItemsRetainedItemCount limit (items: ViewportPaintItem list) =
     let mutable total = 0
     let mutable remaining = items
@@ -2930,6 +3073,7 @@ let private viewportPaintItemsTextCharCount limit (items: ViewportPaintItem list
 let private removeViewportPaintItemsCacheEntry key (cache: ViewportPaintItemsCache) =
     let mutable existing = Unchecked.defaultof<ViewportPaintItemsCacheEntry>
     if cache.Entries.TryGetValue(key, &existing) then
+        clearArray cache.EntryFastSlots
         cache.TotalItemCount <- max 0 (cache.TotalItemCount - existing.ItemCount)
         cache.TotalItemTextCharCount <- max 0 (cache.TotalItemTextCharCount - existing.ItemTextCharCount)
         cache.Entries.Remove key |> ignore
@@ -2948,12 +3092,15 @@ let private addViewportPaintItemsCacheEntry key entry (cache: ViewportPaintItems
         cache.Entries.[key] <- entry
         cache.TotalItemCount <- cache.TotalItemCount + entry.ItemCount
         cache.TotalItemTextCharCount <- cache.TotalItemTextCharCount + entry.ItemTextCharCount
+        setViewportPaintGeometryFastSlot cache key entry
+        let mutable removedEntry = false
         while (cache.Entries.Count > viewportPaintItemsCacheMaxEntries
                || cache.TotalItemCount > viewportPaintItemsCacheMaxTotalItems
                || cache.TotalItemTextCharCount > viewportPaintItemsCacheMaxTotalItemTextChars)
               && cache.Order.Count > 0 do
             let oldest = cache.Order.Dequeue()
             if oldest <> key then
+                removedEntry <- true
                 removeViewportPaintItemsCacheEntry oldest cache
         if cache.Entries.Count > viewportPaintItemsCacheMaxEntries
            || cache.TotalItemCount > viewportPaintItemsCacheMaxTotalItems
@@ -2965,6 +3112,13 @@ let private addViewportPaintItemsCacheEntry key entry (cache: ViewportPaintItems
             cache.Entries.[key] <- current
             cache.TotalItemCount <- current.ItemCount
             cache.TotalItemTextCharCount <- current.ItemTextCharCount
+            clearArray cache.EntryFastSlots
+            setViewportPaintGeometryFastSlot cache key current
+        elif removedEntry then
+            clearArray cache.EntryFastSlots
+            let mutable current = Unchecked.defaultof<ViewportPaintItemsCacheEntry>
+            if cache.Entries.TryGetValue(key, &current) then
+                setViewportPaintGeometryFastSlot cache key current
 
 let private viewportPaintItemsCacheRetainable (cache: ViewportPaintItemsCache) =
     cache.Entries.Count > 0
@@ -3041,28 +3195,32 @@ let private rememberViewportPaintItemsCache (cache: ViewportPaintItemsCache) =
         setViewportPaintItemsCache (cache :: retained)
 
 let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): ViewportPaintItem list =
-    let key = viewportPaintGeometryKey viewport
     match tryGetViewportPaintItemsCache model with
     | ValueSome cached when viewportPaintItemsCacheRetainable cached ->
-        let mutable entry = Unchecked.defaultof<ViewportPaintItemsCacheEntry>
-        if cached.Entries.TryGetValue(key, &entry) && sameMeasurer entry.Measurer viewport.Measurer then
-            entry.Items
-        else
-            let items = ResizeArray<ViewportPaintItem>(estimatedPaintItemCount model viewport)
-            iterViewportPaintItemsUncached model viewport (fun zone item -> items.Add { Zone = zone; Item = item })
-            let itemCount = items.Count
-            let items = resizeArrayToList items
-            if itemCount <= viewportPaintItemsCacheMaxTotalItems then
-                addViewportPaintItemsCacheEntry key {
-                    Measurer = viewport.Measurer
-                    Items = items
-                    ItemCount = itemCount
-                    ItemTextCharCount = viewportPaintItemsTextCharCount viewportPaintItemsCacheMaxTotalItemTextChars items
-                } cached
+        match tryGetViewportPaintGeometryFastSlot cached viewport with
+        | ValueSome entry -> entry.Items
+        | ValueNone ->
+            let key = viewportPaintGeometryKey viewport
+            let mutable entry = Unchecked.defaultof<ViewportPaintItemsCacheEntry>
+            if cached.Entries.TryGetValue(key, &entry) && sameMeasurer entry.Measurer viewport.Measurer then
+                setViewportPaintGeometryFastSlot cached key entry
+                entry.Items
             else
-                removeViewportPaintItemsCacheEntry key cached
-            rememberViewportPaintItemsCache cached
-            items
+                let items = ResizeArray<ViewportPaintItem>(estimatedPaintItemCount model viewport)
+                iterViewportPaintItemsUncached model viewport (fun zone item -> items.Add { Zone = zone; Item = item })
+                let itemCount = items.Count
+                let items = resizeArrayToList items
+                if itemCount <= viewportPaintItemsCacheMaxTotalItems then
+                    addViewportPaintItemsCacheEntry key {
+                        Measurer = viewport.Measurer
+                        Items = items
+                        ItemCount = itemCount
+                        ItemTextCharCount = viewportPaintItemsTextCharCount viewportPaintItemsCacheMaxTotalItemTextChars items
+                    } cached
+                else
+                    removeViewportPaintItemsCacheEntry key cached
+                rememberViewportPaintItemsCache cached
+                items
     | ValueSome cached ->
         rememberViewportPaintItemsCache cached
         let items = ResizeArray<ViewportPaintItem>(estimatedPaintItemCount model viewport)
@@ -3074,6 +3232,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
         let itemCount = items.Count
         let items = resizeArrayToList items
         if itemCount <= viewportPaintItemsCacheMaxTotalItems then
+            let key = viewportPaintGeometryKey viewport
             let entries = Dictionary<ViewportPaintGeometryKey, ViewportPaintItemsCacheEntry>()
             let order = Queue<ViewportPaintGeometryKey>()
             let sourceItemCount, sourceTextCharCount = staticPaintSourceMetrics model
@@ -3083,6 +3242,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                 SourceTextCharCount = sourceTextCharCount
                 Entries = entries
                 Order = order
+                EntryFastSlots = Array.zeroCreate<ViewportPaintGeometryFastEntry> 128
                 TotalItemCount = 0
                 TotalItemTextCharCount = 0
             }

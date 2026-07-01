@@ -306,6 +306,14 @@ let secondPaintItems = RedBat.Spreadsheet.Paint.buildViewportPaintItems paintCac
 check "native paint viewport cache reuses"
     (obj.ReferenceEquals(firstPaintItems, secondPaintItems))
     true
+let firstVisibleCells = RedBat.Spreadsheet.Layout.visibleCells paintCacheModel paintCacheViewport
+let secondVisibleCells = RedBat.Spreadsheet.Layout.visibleCells paintCacheModel paintCacheViewport
+let firstHeaders = RedBat.Spreadsheet.Layout.headers paintCacheModel paintCacheViewport
+let secondHeaders = RedBat.Spreadsheet.Layout.headers paintCacheModel paintCacheViewport
+check "native viewport geometry cache reuses"
+    (obj.ReferenceEquals(firstVisibleCells, secondVisibleCells)
+     && obj.ReferenceEquals(firstHeaders, secondHeaders))
+    true
 
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
@@ -322,6 +330,43 @@ check "native paint viewport cache perf"
     (paintCacheSw.Elapsed.TotalMilliseconds < 20.0
      && paintCacheAllocated < 1024L * 1024L
      && paintCacheTotal = firstPaintItems.Length * 40)
+    true
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let geometryHotHitAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let geometryHotHitSw = Stopwatch.StartNew()
+let mutable geometryHotHitTotal = 0
+for _ in 1 .. 50000 do
+    geometryHotHitTotal <-
+        geometryHotHitTotal
+        + (RedBat.Spreadsheet.Layout.visibleCells paintCacheModel paintCacheViewport).Length
+        + (RedBat.Spreadsheet.Layout.headers paintCacheModel paintCacheViewport).Length
+geometryHotHitSw.Stop()
+let geometryHotHitAllocated = System.GC.GetAllocatedBytesForCurrentThread() - geometryHotHitAllocatedBefore
+check "native viewport geometry cache hot hits"
+    (geometryHotHitSw.Elapsed.TotalMilliseconds < 140.0
+     && geometryHotHitAllocated < 512L * 1024L
+     && geometryHotHitTotal = (firstVisibleCells.Length + firstHeaders.Length) * 50000)
+    true
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let paintHotHitAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let paintHotHitSw = Stopwatch.StartNew()
+let mutable paintHotHitTotal = 0
+for _ in 1 .. 50000 do
+    paintHotHitTotal <- paintHotHitTotal + (RedBat.Spreadsheet.Paint.buildViewportPaintItems paintCacheModel paintCacheViewport).Length
+paintHotHitSw.Stop()
+let paintHotHitAllocated = System.GC.GetAllocatedBytesForCurrentThread() - paintHotHitAllocatedBefore
+check "native paint viewport cache hot hits"
+    (paintHotHitSw.Elapsed.TotalMilliseconds < 160.0
+     && paintHotHitAllocated < 3L * 1024L * 1024L
+     && paintHotHitTotal = firstPaintItems.Length * 50000)
     true
 
 if isNull usedBoundsCached then
