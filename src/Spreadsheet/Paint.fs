@@ -3152,7 +3152,7 @@ let mutable private viewportPaintItemsCache: ViewportPaintItemsCache list = []
 let private viewportPaintItemsCacheByModel =
     Dictionary<SpreadsheetModel, ViewportPaintItemsCache>(spreadsheetModelReferenceComparer)
 let private viewportPaintItemsFastSlots = Array.zeroCreate<ViewportPaintItemsCache> 256
-let private viewportPaintItemsCacheMaxEntries = 64
+let private viewportPaintItemsCacheMaxEntries = 256
 let private viewportPaintItemsCacheMaxModels = 256
 let private viewportPaintItemsCacheMaxTotalItems = 200000
 let private viewportPaintItemsCacheMaxTotalItemTextChars = 5000000
