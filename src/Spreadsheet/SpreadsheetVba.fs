@@ -974,6 +974,32 @@ let private bytecodeCache = System.Collections.Generic.Dictionary<string, Byteco
 let private bytecodeCacheOrder = System.Collections.Generic.Queue<string>()
 let private bytecodeCacheRetainedUnits = System.Collections.Generic.Dictionary<string, int>()
 let mutable private bytecodeCacheTotalRetainedUnits = 0
+type private BytecodeFastCacheEntry = {
+    Source: string
+    Bytecode: Bytecode.BytecodeProgram
+}
+let private bytecodeFastSlots = Array.zeroCreate<BytecodeFastCacheEntry> 256
+
+let private clearBytecodeFastSlots () =
+    for index = 0 to bytecodeFastSlots.Length - 1 do
+        bytecodeFastSlots.[index] <- Unchecked.defaultof<BytecodeFastCacheEntry>
+
+let private bytecodeFastSlot (source: string) =
+    let hashCode =
+        if isNull source then 0
+        else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(source)
+    hashCode &&& (bytecodeFastSlots.Length - 1)
+
+let private setBytecodeFastSlot source bytecode =
+    bytecodeFastSlots.[bytecodeFastSlot source] <- { Source = source; Bytecode = bytecode }
+
+let private tryGetBytecodeFastSlot source =
+    let fast = bytecodeFastSlots.[bytecodeFastSlot source]
+    if not (obj.ReferenceEquals(fast, null))
+       && obj.ReferenceEquals(fast.Source, source) then
+        ValueSome fast.Bytecode
+    else
+        ValueNone
 
 let private addRetainedUnits left right =
     if left > bytecodeCacheMaxTotalRetainedUnits then
@@ -1091,7 +1117,8 @@ let private removeBytecodeCacheEntry source =
         bytecodeCacheTotalRetainedUnits <- max 0 (bytecodeCacheTotalRetainedUnits - units)
         bytecodeCacheRetainedUnits.Remove source |> ignore
     | _ -> ()
-    bytecodeCache.Remove source |> ignore
+    if bytecodeCache.Remove source then
+        clearBytecodeFastSlots ()
 
 let private addBytecodeCache (source: string) bytecode =
     let retainedUnits = bytecodeProgramRetainedUnits source.Length bytecode
@@ -1115,21 +1142,30 @@ let private addBytecodeCache (source: string) bytecode =
             bytecodeCache.Clear()
             bytecodeCacheOrder.Clear()
             bytecodeCacheRetainedUnits.Clear()
+            clearBytecodeFastSlots ()
             bytecodeCacheOrder.Enqueue source
             bytecodeCache.[source] <- current
             bytecodeCacheRetainedUnits.[source] <- retainedUnits
             bytecodeCacheTotalRetainedUnits <- retainedUnits
+        if bytecodeCache.ContainsKey source then
+            setBytecodeFastSlot source bytecode
 
 /// Compile a macro module to bytecode, caching the result by source text.
 let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
-    match bytecodeCache.TryGetValue source with
-    | true, bc -> Result.Ok bc
-    | _ ->
-        match FsVb.compileSource vbaParseOpts source with
-        | Result.Ok (_, bc) ->
-            addBytecodeCache source bc
+    match tryGetBytecodeFastSlot source with
+    | ValueSome bc ->
+        Result.Ok bc
+    | ValueNone ->
+        match bytecodeCache.TryGetValue source with
+        | true, bc ->
+            setBytecodeFastSlot source bc
             Result.Ok bc
-        | Result.Error e -> Result.Error (sprintf "%A" e)
+        | _ ->
+            match FsVb.compileSource vbaParseOpts source with
+            | Result.Ok (_, bc) ->
+                addBytecodeCache source bc
+                Result.Ok bc
+            | Result.Error e -> Result.Error (sprintf "%A" e)
 
 /// Execute an already-compiled program against a model with read+write host
 /// objects, fold the writes back in (a `=…` value becomes a formula), and

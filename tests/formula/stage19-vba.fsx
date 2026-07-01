@@ -154,6 +154,25 @@ else
         (retainedUnits > 1000000 && sw.Elapsed.TotalMilliseconds < 10.0)
         true
 
+let largeCompileHitSources =
+    [| for index in 0 .. 15 ->
+        "Range(\"A1\").Value = 1\n"
+        + sprintf "' large repeated source %02d " index
+        + System.String('x', 20000) |]
+for source in largeCompileHitSources do
+    V.compileCached source |> ignore
+let largeCompileHitSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable largeCompileHitCount = 0
+for _pass in 1 .. 2000 do
+    for source in largeCompileHitSources do
+        match V.compileCached source with
+        | Result.Ok _ -> largeCompileHitCount <- largeCompileHitCount + 1
+        | Result.Error _ -> ()
+largeCompileHitSw.Stop()
+check "compile cache large source hits"
+    (largeCompileHitCount = 32000 && largeCompileHitSw.Elapsed.TotalMilliseconds < 40.0)
+    true
+
 let largeLexerSource =
     System.String.Join("\n", [| for _ in 1 .. 6000 -> "Range(\"A1\").Value = 1" |])
 let largeLexerSw = System.Diagnostics.Stopwatch.StartNew()
