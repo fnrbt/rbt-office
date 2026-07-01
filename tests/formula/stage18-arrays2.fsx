@@ -132,6 +132,26 @@ let spillLocalCacheChurnValue =
     | value -> value
 check "spill local cache churn" spillLocalCacheChurnValue (N (float spillLocalCacheChurnCount))
 
+let spillRepeatedLargeFormula = "=" + String.replicate 5200 " " + "SEQUENCE(1)"
+let spillRepeatedLargeModel =
+    { createEmpty 20000 1 with
+        Cells =
+            [ for row in 0 .. 19999 ->
+                { Row = row; Col = 0 }, cell (CellValue.Formula (spillRepeatedLargeFormula, CellValue.Empty)) ]
+            |> Map.ofList }
+F.spillArrays None None spillRepeatedLargeModel |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let spillRepeatedLargeTimer = System.Diagnostics.Stopwatch.StartNew()
+let mutable spillRepeatedLargeCells = 0
+for _pass in 1 .. 10 do
+    let result = F.spillArrays None None spillRepeatedLargeModel
+    spillRepeatedLargeCells <- spillRepeatedLargeCells + result.Cells.Count
+spillRepeatedLargeTimer.Stop()
+check "spill repeated large formula cells" spillRepeatedLargeCells 200000
+check "spill repeated large formula perf" (spillRepeatedLargeTimer.Elapsed.TotalMilliseconds < 700.0) true
+
 printfn ""
 printfn "Stage 18 array2 tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

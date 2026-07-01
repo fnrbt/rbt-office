@@ -10872,6 +10872,35 @@ let private rememberRecalcArrayFormulaCacheEntry
                     cache.Remove oldest |> ignore
                     totalChars <- max 0 (totalChars - recalcArrayFormulaCacheEntryChars oldest oldestExpr)
 
+type private RecalcArrayFormulaFastCacheEntry = {
+    Formula: string
+    Expr: Expr option
+}
+
+let private clearRecalcArrayFormulaFastSlots (slots: RecalcArrayFormulaFastCacheEntry array) =
+    for index = 0 to slots.Length - 1 do
+        slots.[index] <- Unchecked.defaultof<RecalcArrayFormulaFastCacheEntry>
+
+let private recalcArrayFormulaFastSlot (slots: RecalcArrayFormulaFastCacheEntry array) (formula: string) =
+    let hashCode =
+        if isNull formula then 0
+        else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(formula)
+    hashCode &&& (slots.Length - 1)
+
+let private setRecalcArrayFormulaFastSlot (slots: RecalcArrayFormulaFastCacheEntry array) formula expr =
+    slots.[recalcArrayFormulaFastSlot slots formula] <- {
+        Formula = formula
+        Expr = expr
+    }
+
+let private tryGetRecalcArrayFormulaFastSlot (slots: RecalcArrayFormulaFastCacheEntry array) formula =
+    let fast = slots.[recalcArrayFormulaFastSlot slots formula]
+    if not (obj.ReferenceEquals(fast, null))
+       && obj.ReferenceEquals(fast.Formula, formula) then
+        ValueSome fast.Expr
+    else
+        ValueNone
+
 let private collectFormulaCells (model: SpreadsheetModel) =
     let formulaCells = ResizeArray<FormulaCell>()
     let parseCache = Dictionary<string, Result<Expr, string>>()
@@ -11152,23 +11181,31 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
     let anchors = ResizeArray<CellAddress * CellData * string * Expr>()
     let arrayFormulaCache = Dictionary<string, Expr option>()
     let arrayFormulaCacheOrder = Queue<string>()
+    let arrayFormulaFastSlots = Array.zeroCreate<RecalcArrayFormulaFastCacheEntry> 256
     let mutable arrayFormulaCacheTotalChars = 0
     let arrayFormulaExpr formula =
-        let mutable cached = Unchecked.defaultof<Expr option>
-        if arrayFormulaCache.TryGetValue(formula, &cached) then
-            cached
-        else
-            cached <-
-                match parseFormulaShared formula with
-                | Ok expr when containsArrayFunction expr -> Some expr
-                | _ -> None
-            rememberRecalcArrayFormulaCacheEntry
-                arrayFormulaCache
-                arrayFormulaCacheOrder
-                &arrayFormulaCacheTotalChars
-                formula
+        match tryGetRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula with
+        | ValueSome cached -> cached
+        | ValueNone ->
+            let mutable cached = Unchecked.defaultof<Expr option>
+            if arrayFormulaCache.TryGetValue(formula, &cached) then
+                setRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula cached
                 cached
-            cached
+            else
+                cached <-
+                    match parseFormulaShared formula with
+                    | Ok expr when containsArrayFunction expr -> Some expr
+                    | _ -> None
+                rememberRecalcArrayFormulaCacheEntry
+                    arrayFormulaCache
+                    arrayFormulaCacheOrder
+                    &arrayFormulaCacheTotalChars
+                    formula
+                    cached
+                clearRecalcArrayFormulaFastSlots arrayFormulaFastSlots
+                if arrayFormulaCache.ContainsKey formula then
+                    setRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula cached
+                cached
     model.Cells
     |> Map.iter (fun addr cell ->
         match cell.Value with
