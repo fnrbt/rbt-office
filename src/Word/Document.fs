@@ -4335,13 +4335,17 @@ let private tryFindTableCellByParagraph doc paragraphId =
 type private CurrentTableCellCache = {
     SourceBlocks: Block list
     Entries: Dictionary<BlockId, CurrentTableCellCacheEntry>
+    EntryFastSlots: CurrentTableCellCacheEntry array
     SourceTableParagraphCount: int
     SourceParagraphCount: int
     SourceTextCharCount: int
 }
 
 and private CurrentTableCellCacheEntry = {
+    ParagraphId: BlockId
     Result: struct (int * int * int)
+    mutable RecentLookupIdSet: bool
+    mutable RecentLookupId: BlockId
 }
 
 let mutable private currentTableCellCache: CurrentTableCellCache list = []
@@ -4352,6 +4356,23 @@ let private currentTableCellCacheMaxTotalTableParagraphs = 200000
 let private currentTableCellCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private currentTableCellCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 let private currentTableCellCacheBuildEntryLimit = 32768
+
+let private currentTableCellEntryFastSlot (slots: CurrentTableCellCacheEntry array) (paragraphId: BlockId) =
+    blockIdKeyHash paragraphId &&& (slots.Length - 1)
+
+let private setCurrentTableCellEntryFastSlot (slots: CurrentTableCellCacheEntry array) (entry: CurrentTableCellCacheEntry) =
+    slots.[currentTableCellEntryFastSlot slots entry.ParagraphId] <- entry
+
+let private currentTableCellEntryMatches (entry: CurrentTableCellCacheEntry) paragraphId =
+    if obj.ReferenceEquals(entry.ParagraphId, paragraphId)
+       || (entry.RecentLookupIdSet && obj.ReferenceEquals(entry.RecentLookupId, paragraphId)) then
+        true
+    elif blockIdKeyEquals entry.ParagraphId paragraphId then
+        entry.RecentLookupIdSet <- true
+        entry.RecentLookupId <- paragraphId
+        true
+    else
+        false
 
 let private currentTableCellCacheMatches blocks (cached: CurrentTableCellCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
@@ -4456,10 +4477,15 @@ let private currentTableCellSourceTextCharCountFor sourceTableParagraphCount sou
 let private addCurrentTableCellEntry (entries: Dictionary<BlockId, CurrentTableCellCacheEntry>) tableIndex rowIndex colIndex cell =
     for paragraph in cell.Content do
         if not (entries.ContainsKey paragraph.Id) then
-            entries.[paragraph.Id] <- { Result = struct (tableIndex, rowIndex, colIndex) }
+            entries.[paragraph.Id] <- {
+                ParagraphId = paragraph.Id
+                Result = struct (tableIndex, rowIndex, colIndex)
+                RecentLookupIdSet = false
+                RecentLookupId = ""
+            }
 
 let private buildCurrentTableCellCache (doc: Document) =
-    let entries = Dictionary<BlockId, CurrentTableCellCacheEntry>()
+    let entries = Dictionary<BlockId, CurrentTableCellCacheEntry>(blockIdLookupComparer)
     let mutable countedTableParagraphs = 0
     let mutable countedTableParagraphsExact = true
     let sourceTableParagraphLimit = sourceParagraphCountCacheLimit
@@ -4499,9 +4525,13 @@ let private buildCurrentTableCellCache (doc: Document) =
         else
             currentTableCellSourceTableParagraphCountFor entries.Count doc.Blocks
     let sourceParagraphCount = currentTableCellSourceParagraphCountFor sourceTableParagraphCount doc.Blocks
+    let entryFastSlots = Array.zeroCreate<CurrentTableCellCacheEntry> (lookupEntryFastSlotSize entries.Count)
+    for entry in entries.Values do
+        setCurrentTableCellEntryFastSlot entryFastSlots entry
     {
         SourceBlocks = doc.Blocks
         Entries = entries
+        EntryFastSlots = entryFastSlots
         SourceTableParagraphCount = sourceTableParagraphCount
         SourceParagraphCount = sourceParagraphCount
         SourceTextCharCount = currentTableCellSourceTextCharCountFor sourceTableParagraphCount sourceParagraphCount doc.Blocks
@@ -4516,11 +4546,24 @@ let private currentTableCellLookup (doc: Document) =
         rememberCurrentTableCellCache cached
         cached
 
+let private tryFindCurrentTableCellEntry (cached: CurrentTableCellCache) blockId =
+    let fast = cached.EntryFastSlots.[currentTableCellEntryFastSlot cached.EntryFastSlots blockId]
+    if not (obj.ReferenceEquals(fast, null))
+       && currentTableCellEntryMatches fast blockId then
+        ValueSome fast.Result
+    else
+        let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
+        if cached.Entries.TryGetValue(blockId, &entry) then
+            entry.RecentLookupIdSet <- true
+            entry.RecentLookupId <- blockId
+            setCurrentTableCellEntryFastSlot cached.EntryFastSlots entry
+            ValueSome entry.Result
+        else
+            ValueNone
+
 let private tryFindCachedCurrentTableCell blocks blockId =
     match tryGetCurrentTableCellCache blocks with
-    | ValueSome cached ->
-        let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
-        if cached.Entries.TryGetValue(blockId, &entry) then ValueSome entry.Result else ValueNone
+    | ValueSome cached -> tryFindCurrentTableCellEntry cached blockId
     | ValueNone -> ValueNone
 
 let private countCurrentTableCellEntriesWithLimit limit (table: TableBlock) =
@@ -4672,11 +4715,7 @@ let private currentTableCell doc =
                 | _ -> shouldBuildCurrentTableCellCacheForBlocks doc.Blocks
             if shouldBuild then
                 let cached = currentTableCellLookup doc
-                let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
-                if cached.Entries.TryGetValue(sel.Focus.BlockId, &entry) then
-                    ValueSome entry.Result
-                else
-                    ValueNone
+                tryFindCurrentTableCellEntry cached sel.Focus.BlockId
             else
                 tryFindCurrentTableCellUntil doc sel.Focus.BlockId
     | None -> ValueNone
@@ -7506,11 +7545,11 @@ let setCurrentTableCellMargins paddingTop paddingRight paddingBottom paddingLeft
         let mutable resultDoc = doc
         match tryGetCurrentTableCellCache doc.Blocks with
         | ValueSome cached ->
-            let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
-            if cached.Entries.TryGetValue(sel.Focus.BlockId, &entry) then
-                let struct (tableIndex, _, _) = entry.Result
+            match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
+            | ValueSome (struct (tableIndex, _, _)) ->
                 resultDoc <- setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
                 handled <- true
+            | ValueNone -> ()
         | ValueNone -> ()
         if handled then
             resultDoc
@@ -7560,11 +7599,11 @@ let setCurrentTableCellMarginsAndSpacing paddingTop paddingRight paddingBottom p
         let mutable resultDoc = doc
         match tryGetCurrentTableCellCache doc.Blocks with
         | ValueSome cached ->
-            let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
-            if cached.Entries.TryGetValue(sel.Focus.BlockId, &entry) then
-                let struct (tableIndex, _, _) = entry.Result
+            match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
+            | ValueSome (struct (tableIndex, _, _)) ->
                 resultDoc <- setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
                 handled <- true
+            | ValueNone -> ()
         | ValueNone -> ()
         if handled then
             resultDoc

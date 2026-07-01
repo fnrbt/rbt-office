@@ -1361,6 +1361,61 @@ check "native table margin noop cache hot hit"
      && tableCellMarginSame = 200000)
     true
 
+let clonedTableCellMarginIdPrefix = System.String('c', 5000)
+let clonedTableCellMarginIds =
+    [| for index in 0 .. 511 -> clonedTableCellMarginIdPrefix + sprintf "%04d" index |]
+let clonedTableCellMarginTable =
+    { tableCellMarginTable with
+        Id = "native-table-margin-cloned"
+        Rows =
+            [ for paragraphId in clonedTableCellMarginIds ->
+                { tableCellMarginRow with
+                    Cells =
+                        [ { tableCellMarginCell with
+                                Content = [ para paragraphId "x" ] } ] } ] }
+let clonedTableCellMarginBlocks = [ Doc.Table clonedTableCellMarginTable ]
+let clonedTableCellMarginDocs =
+    [| for paragraphId in clonedTableCellMarginIds ->
+        { Doc.empty with
+            Blocks = clonedTableCellMarginBlocks
+            Selection =
+                Some {
+                    Anchor = pos (cloneString paragraphId) 0
+                    Focus = pos (cloneString paragraphId) 0
+                } } |]
+Doc.setCurrentTableCellMargins
+    None
+    None
+    None
+    None
+    { clonedTableCellMarginDocs.[0] with
+        Selection =
+            Some {
+                Anchor = pos clonedTableCellMarginIds.[0] 0
+                Focus = pos clonedTableCellMarginIds.[0] 0
+            } }
+|> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let clonedTableCellMarginAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let clonedTableCellMarginSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable clonedTableCellMarginSame = 0
+for _pass in 1 .. 500 do
+    for doc in clonedTableCellMarginDocs do
+        if obj.ReferenceEquals(Doc.setCurrentTableCellMargins None None None None doc, doc) then
+            clonedTableCellMarginSame <- clonedTableCellMarginSame + 1
+clonedTableCellMarginSw.Stop()
+let clonedTableCellMarginAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - clonedTableCellMarginAllocatedBefore
+check "native table margin cloned id cache"
+    (clonedTableCellMarginSw.Elapsed.TotalMilliseconds < 220.0
+     && clonedTableCellMarginAllocated < 512L * 1024L
+     && clonedTableCellMarginSame = 256000)
+    true
+
 let paragraphLookupIdPrefix = System.String('p', 5000)
 let paragraphLookupIds =
     [| for index in 0 .. 511 -> paragraphLookupIdPrefix + sprintf "%04d" index |]
