@@ -898,6 +898,34 @@ check "native normalized range long id perf"
      && normalizedRangeLookupTotal = 2560000)
     true
 
+let normalizedRangeCapacityIds =
+    [| for index in 0 .. 511 -> normalizedRangeLookupIdPrefix + "capacity" + sprintf "%04d" index |]
+let normalizedRangeCapacityDoc =
+    { Doc.empty with
+        Blocks =
+            [ for blockId in normalizedRangeCapacityIds ->
+                Doc.Paragraph (para blockId "lookup text") ] }
+let normalizedRangeCapacitySelections : Doc.Selection array =
+    [| for index in 0 .. 511 ->
+        { Anchor = pos normalizedRangeCapacityIds.[index] 0
+          Focus = pos normalizedRangeCapacityIds.[index] 3 } |]
+for selection in normalizedRangeCapacitySelections do
+    Doc.getNormalizedRange selection normalizedRangeCapacityDoc |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let normalizedRangeCapacitySw = System.Diagnostics.Stopwatch.StartNew()
+let mutable normalizedRangeCapacityTotal = 0
+for _pass in 1 .. 1000 do
+    for selection in normalizedRangeCapacitySelections do
+        let startPos, endPos, blockIds = Doc.getNormalizedRange selection normalizedRangeCapacityDoc
+        normalizedRangeCapacityTotal <- normalizedRangeCapacityTotal + startPos.Offset + endPos.Offset + blockIds.Length
+normalizedRangeCapacitySw.Stop()
+check "native normalized range capacity perf"
+    (normalizedRangeCapacitySw.Elapsed.TotalMilliseconds < 7500.0
+     && normalizedRangeCapacityTotal = 2048000)
+    true
+
 if isNull documentCaptionIdMetrics || isNull documentBookmarkIdMetrics || isNull documentRevisionIdMetrics then
     fail <- fail + 1
     printfn "FAIL %-34s expected private document id metrics helpers" "native id metrics reflection"
