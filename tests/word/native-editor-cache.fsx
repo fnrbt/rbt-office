@@ -1996,6 +1996,46 @@ check "native normalized range capacity perf"
      && normalizedRangeCapacityTotal = 2048000)
     true
 
+let normalizedRangeSourceCycleCount = 80
+let normalizedRangeSourceCycleParagraphCount = 1000
+let normalizedRangeSourceCycleDocs =
+    [| for sourceIndex in 0 .. normalizedRangeSourceCycleCount - 1 ->
+        let firstId = sprintf "native-range-source-%02d-%05d" sourceIndex 0
+        let lastId = sprintf "native-range-source-%02d-%05d" sourceIndex (normalizedRangeSourceCycleParagraphCount - 1)
+        let doc =
+            { Doc.empty with
+                Blocks =
+                    [ for index in 0 .. normalizedRangeSourceCycleParagraphCount - 1 ->
+                        Doc.Paragraph (para (sprintf "native-range-source-%02d-%05d" sourceIndex index) "range text") ] }
+        let selection : Doc.Selection =
+            { Anchor = pos firstId 0
+              Focus = pos lastId 5 }
+        doc, selection |]
+
+for doc, selection in normalizedRangeSourceCycleDocs do
+    Doc.getNormalizedRange selection doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let normalizedRangeSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let normalizedRangeSourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable normalizedRangeSourceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for doc, selection in normalizedRangeSourceCycleDocs do
+        let startPos, endPos, blockIds = Doc.getNormalizedRange selection doc
+        normalizedRangeSourceCycleTotal <-
+            normalizedRangeSourceCycleTotal + startPos.Offset + endPos.Offset + blockIds.Length
+normalizedRangeSourceCycleSw.Stop()
+let normalizedRangeSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - normalizedRangeSourceCycleAllocatedBefore
+check "native normalized range source cycle"
+    (normalizedRangeSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && normalizedRangeSourceCycleAllocated < 512L * 1024L
+     && normalizedRangeSourceCycleTotal = 1608000)
+    true
+
 if isNull documentCaptionIdMetrics || isNull documentBookmarkIdMetrics || isNull documentRevisionIdMetrics then
     fail <- fail + 1
     printfn "FAIL %-34s expected private document id metrics helpers" "native id metrics reflection"
