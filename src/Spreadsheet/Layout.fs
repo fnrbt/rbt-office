@@ -656,7 +656,7 @@ let private headersCacheByModel =
     System.Collections.Generic.Dictionary<SpreadsheetModel, HeadersCache>(spreadsheetModelReferenceComparer)
 let private visibleCellsFastSlots = Array.zeroCreate<VisibleCellsCache> 256
 let private headersFastSlots = Array.zeroCreate<HeadersCache> 256
-let private viewportGeometryCacheMaxEntries = 64
+let private viewportGeometryCacheMaxEntries = 256
 let private viewportGeometryCacheMaxModels = 256
 let private viewportGeometryCacheMaxTotalItems = 200000
 let private viewportGeometryCacheMaxTotalSourceItems = 200000

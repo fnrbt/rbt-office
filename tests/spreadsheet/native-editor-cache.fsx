@@ -390,6 +390,37 @@ check "native viewport geometry source cycle"
      && geometrySourceCycleTotal = 400000)
     true
 
+let geometryEntryCycleViewports: RedBat.Spreadsheet.Layout.Viewport array =
+    [| for index in 0 .. 79 ->
+        { paintCacheViewport with
+            ScrollX = float (index % 5) * 48.0
+            ScrollY = float index * 420.0 } |]
+for viewport in geometryEntryCycleViewports do
+    RedBat.Spreadsheet.Layout.visibleCells paintCacheModel viewport |> ignore
+    RedBat.Spreadsheet.Layout.headers paintCacheModel viewport |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let geometryEntryCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let geometryEntryCycleSw = Stopwatch.StartNew()
+let mutable geometryEntryCycleTotal = 0
+for _pass in 1 .. 20 do
+    for viewport in geometryEntryCycleViewports do
+        geometryEntryCycleTotal <-
+            geometryEntryCycleTotal
+            + (RedBat.Spreadsheet.Layout.visibleCells paintCacheModel viewport).Length
+            + (RedBat.Spreadsheet.Layout.headers paintCacheModel viewport).Length
+geometryEntryCycleSw.Stop()
+let geometryEntryCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - geometryEntryCycleAllocatedBefore
+check "native viewport geometry entry cycle"
+    (geometryEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && geometryEntryCycleAllocated < 512L * 1024L
+     && geometryEntryCycleTotal = 445560)
+    true
+
 let prefixCoordinateRows = 10000
 let prefixCoordinateModel =
     { createEmpty 120000 120000 with
