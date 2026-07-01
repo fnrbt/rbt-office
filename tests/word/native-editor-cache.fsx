@@ -234,6 +234,38 @@ else
         (glyphSw.Elapsed.TotalMilliseconds < 50.0 && glyphProbeCount = 20000)
         true
 
+let documentTextCycleDocs =
+    [| for docIndex in 0 .. 64 ->
+        { Doc.empty with
+            Blocks =
+                [ for index in 0 .. 499 ->
+                    Doc.Paragraph (
+                        para
+                            (sprintf "native-document-text-source-cycle-%02d-%04d" docIndex index)
+                            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda") ] } |]
+
+for doc in documentTextCycleDocs do
+    Doc.getText doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let documentTextCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let documentTextCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable documentTextCycleTotal = 0L
+for _pass in 1 .. 100 do
+    for doc in documentTextCycleDocs do
+        documentTextCycleTotal <- documentTextCycleTotal + int64 (Doc.getText doc).Length
+documentTextCycleSw.Stop()
+let documentTextCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - documentTextCycleAllocatedBefore
+check "native document text source cycle"
+    (documentTextCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && documentTextCycleAllocated < 512L * 1024L
+     && documentTextCycleTotal > 0L)
+    true
+
 let styleContextCycleDocCount = 80
 let styleContextCycleStyleCount = 160
 let styleContextCycleDocs =
