@@ -368,6 +368,51 @@ check "native effective buffer source cycle"
      && effectiveBufferSourceCycleTotal = 1600000)
     true
 
+let runArraySourceCycleCount = 80
+let runArraySourceCycleRunCount = 1000
+let makeRunArrayCycleSource sourceIndex =
+    let text = System.String('x', runArraySourceCycleRunCount)
+    let runs =
+        [ for index in 0 .. runArraySourceCycleRunCount - 1 ->
+            TB.Text
+                { Start = index
+                  Length = 1
+                  Style =
+                    { TB.defaultStyle with
+                        Bold = (index + sourceIndex) % 2 = 0
+                        FontSize = 10.0 + float ((index + sourceIndex) % 7) } } ]
+    { Rope = RedBat.Word.Rope.ofString text; Runs = runs } : TB.TextBuffer
+
+let runArraySourceCycleSources =
+    [| for sourceIndex in 0 .. runArraySourceCycleCount - 1 ->
+        makeRunArrayCycleSource sourceIndex |]
+
+for source in runArraySourceCycleSources do
+    TB.getStyleAt (runArraySourceCycleRunCount / 2) source |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let runArraySourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let runArraySourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable runArraySourceCycleTotal = 0.0
+for _pass in 1 .. 20 do
+    for source in runArraySourceCycleSources do
+        let style = TB.getStyleAt (runArraySourceCycleRunCount / 2) source
+        runArraySourceCycleTotal <-
+            runArraySourceCycleTotal
+            + style.FontSize
+            + (if style.Bold then 1.0 else 0.0)
+runArraySourceCycleSw.Stop()
+let runArraySourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - runArraySourceCycleAllocatedBefore
+check "native text buffer run array source cycle"
+    (runArraySourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && runArraySourceCycleAllocated < 512L * 1024L
+     && abs (runArraySourceCycleTotal - 21660.0) < 0.01)
+    true
+
 let rendererCommandParagraphCount = 5000
 let rendererCommandDoc =
     { Doc.empty with
