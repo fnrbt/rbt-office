@@ -1198,6 +1198,12 @@ type private LineArrayCacheEntry = {
     mutable PreviousLineSet: bool
     mutable PreviousOffset: int
     mutable PreviousLine: MeasuredLine
+    mutable Older1LineSet: bool
+    mutable Older1Offset: int
+    mutable Older1Line: MeasuredLine
+    mutable Older2LineSet: bool
+    mutable Older2Offset: int
+    mutable Older2Line: MeasuredLine
 }
 
 let mutable private lineArrayCache: LineArrayCacheEntry list = []
@@ -1444,6 +1450,12 @@ let private cachedLineArrayEntry lines =
             PreviousLineSet = false
             PreviousOffset = 0
             PreviousLine = Unchecked.defaultof<MeasuredLine>
+            Older1LineSet = false
+            Older1Offset = 0
+            Older1Line = Unchecked.defaultof<MeasuredLine>
+            Older2LineSet = false
+            Older2Offset = 0
+            Older2Line = Unchecked.defaultof<MeasuredLine>
         }
         rememberLineArrayCacheEntry entry
         entry
@@ -1477,8 +1489,20 @@ let private lineForOffsetCacheEntry layout entry offset =
         entry.LastLine
     elif entry.PreviousLineSet && entry.PreviousOffset = offset then
         entry.PreviousLine
+    elif entry.Older1LineSet && entry.Older1Offset = offset then
+        entry.Older1Line
+    elif entry.Older2LineSet && entry.Older2Offset = offset then
+        entry.Older2Line
     else
         let line = lineForOffsetArray layout entry.LineArray offset
+        if entry.Older1LineSet then
+            entry.Older2LineSet <- true
+            entry.Older2Offset <- entry.Older1Offset
+            entry.Older2Line <- entry.Older1Line
+        if entry.PreviousLineSet then
+            entry.Older1LineSet <- true
+            entry.Older1Offset <- entry.PreviousOffset
+            entry.Older1Line <- entry.PreviousLine
         if entry.LastLineSet then
             entry.PreviousLineSet <- true
             entry.PreviousOffset <- entry.LastOffset

@@ -316,6 +316,28 @@ check "native alternating line lookup cache"
     (alternatingLineLookupSw.Elapsed.TotalMilliseconds < 30.0
      && alternatingLineLookupChecksum = 2505000000L)
     true
+let lineLookupCycleOffsets = [| 9999; 10; 5010 |]
+for offset in lineLookupCycleOffsets do
+    Layout.lineForOffset alternatingLineLookupLayout offset |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let lineLookupCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let lineLookupCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable lineLookupCycleChecksum = 0L
+for index in 1 .. 500000 do
+    lineLookupCycleChecksum <-
+        lineLookupCycleChecksum
+        + int64 (Layout.lineForOffset alternatingLineLookupLayout lineLookupCycleOffsets.[index % lineLookupCycleOffsets.Length]).EndOffset
+lineLookupCycleSw.Stop()
+let lineLookupCycleAllocated = System.GC.GetAllocatedBytesForCurrentThread() - lineLookupCycleAllocatedBefore
+check "native line lookup cache three-position cycle"
+    (lineLookupCycleSw.Elapsed.TotalMilliseconds < 30.0
+     && lineLookupCycleAllocated < 512L * 1024L
+     && lineLookupCycleChecksum = 2506661680L)
+    true
 let hitTestMeasureRange (_text: string) (_style: TB.TextStyle) (_start: int) (length: int) =
     float length
 let hitTestLongLineCount = 5000
