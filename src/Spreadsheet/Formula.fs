@@ -747,6 +747,35 @@ let private parsedFormulaCacheMaxTotalChars = 5000000
 let private parsedFormulaCache = Dictionary<string, Result<Expr, string>>()
 let private parsedFormulaCacheOrder = Queue<string>()
 let mutable private parsedFormulaCacheTotalChars = 0
+type private ParsedFormulaFastCacheEntry = {
+    Formula: string
+    Parsed: Result<Expr, string>
+}
+let private parsedFormulaFastSlots = Array.zeroCreate<ParsedFormulaFastCacheEntry> 256
+
+let private clearParsedFormulaFastSlots () =
+    for index = 0 to parsedFormulaFastSlots.Length - 1 do
+        parsedFormulaFastSlots.[index] <- Unchecked.defaultof<ParsedFormulaFastCacheEntry>
+
+let private parsedFormulaFastSlot (input: string) =
+    let hashCode =
+        if isNull input then 0
+        else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(input)
+    hashCode &&& (parsedFormulaFastSlots.Length - 1)
+
+let private setParsedFormulaFastSlot input parsed =
+    parsedFormulaFastSlots.[parsedFormulaFastSlot input] <- {
+        Formula = input
+        Parsed = parsed
+    }
+
+let private tryGetParsedFormulaFastSlot input =
+    let fast = parsedFormulaFastSlots.[parsedFormulaFastSlot input]
+    if not (obj.ReferenceEquals(fast, null))
+       && obj.ReferenceEquals(fast.Formula, input) then
+        ValueSome fast.Parsed
+    else
+        ValueNone
 
 let private parsedFormulaAddCapped (amount: int) (total: int) =
     if amount <= 0 then total
@@ -760,18 +789,23 @@ let private parsedFormulaCacheEntryChars (input: string) (parsed: Result<Expr, s
     |> parsedFormulaAddCapped input.Length
     |> parsedFormulaAddCapped (parsedFormulaResultRetainedTextCharCount parsedFormulaCacheMaxTotalChars parsed)
 
+let private removeParsedFormulaCacheEntry input =
+    let mutable previous = Unchecked.defaultof<Result<Expr, string>>
+    if parsedFormulaCache.TryGetValue(input, &previous) then
+        parsedFormulaCache.Remove input |> ignore
+        parsedFormulaCacheTotalChars <- max 0 (parsedFormulaCacheTotalChars - parsedFormulaCacheEntryChars input previous)
+        clearParsedFormulaFastSlots ()
+
 let private addParsedFormulaCacheEntry (input: string) (parsed: Result<Expr, string>) =
     let entryChars = parsedFormulaCacheEntryChars input parsed
     if entryChars > parsedFormulaCacheMaxTotalChars then
-        let mutable previous = Unchecked.defaultof<Result<Expr, string>>
-        if parsedFormulaCache.TryGetValue(input, &previous) then
-            parsedFormulaCache.Remove input |> ignore
-            parsedFormulaCacheTotalChars <- max 0 (parsedFormulaCacheTotalChars - parsedFormulaCacheEntryChars input previous)
+        removeParsedFormulaCacheEntry input
         parsed
     else
         let mutable previous = Unchecked.defaultof<Result<Expr, string>>
         if parsedFormulaCache.TryGetValue(input, &previous) then
             parsedFormulaCacheTotalChars <- max 0 (parsedFormulaCacheTotalChars - parsedFormulaCacheEntryChars input previous)
+            clearParsedFormulaFastSlots ()
         else
             parsedFormulaCacheOrder.Enqueue input
         parsedFormulaCache.[input] <- parsed
@@ -780,26 +814,30 @@ let private addParsedFormulaCacheEntry (input: string) (parsed: Result<Expr, str
               && parsedFormulaCacheOrder.Count > 0 do
             let oldest = parsedFormulaCacheOrder.Dequeue()
             if oldest <> input then
-                let mutable oldestParsed = Unchecked.defaultof<Result<Expr, string>>
-                if parsedFormulaCache.TryGetValue(oldest, &oldestParsed) then
-                    parsedFormulaCache.Remove oldest |> ignore
-                    parsedFormulaCacheTotalChars <- max 0 (parsedFormulaCacheTotalChars - parsedFormulaCacheEntryChars oldest oldestParsed)
+                removeParsedFormulaCacheEntry oldest
         if parsedFormulaCache.Count > parsedFormulaCacheMaxEntries || parsedFormulaCacheTotalChars > parsedFormulaCacheMaxTotalChars then
             let current = parsedFormulaCache.[input]
             parsedFormulaCache.Clear()
             parsedFormulaCacheOrder.Clear()
+            clearParsedFormulaFastSlots ()
             parsedFormulaCacheOrder.Enqueue input
             parsedFormulaCache.[input] <- current
             parsedFormulaCacheTotalChars <- entryChars
+        if parsedFormulaCache.ContainsKey input then
+            setParsedFormulaFastSlot input parsed
         parsed
 
 let private parseFormulaShared (input: string) : Result<Expr, string> =
-    let mutable cached = Unchecked.defaultof<Result<Expr, string>>
-    if parsedFormulaCache.TryGetValue(input, &cached) then
-        cached
-    else
-        cached <- parseFormula input
-        addParsedFormulaCacheEntry input cached
+    match tryGetParsedFormulaFastSlot input with
+    | ValueSome cached -> cached
+    | ValueNone ->
+        let mutable cached = Unchecked.defaultof<Result<Expr, string>>
+        if parsedFormulaCache.TryGetValue(input, &cached) then
+            setParsedFormulaFastSlot input cached
+            cached
+        else
+            cached <- parseFormula input
+            addParsedFormulaCacheEntry input cached
 
 /// Resolve a defined name to its final parsed expression, scoped to the
 /// current sheet (a sheet-local name shadows a workbook-global one). A

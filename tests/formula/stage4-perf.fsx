@@ -2561,6 +2561,32 @@ let largeFormulaRetainedBytes =
 ok "formula-parse-cache-bounded-source-memory"
    (largeFormulaRetainedBytes < 40000000L)
    (sprintf "large formula parse cache retained %.1f MB" (float largeFormulaRetainedBytes / 1024.0 / 1024.0))
+let parseFormulaSharedMethod =
+    formulaModuleType.GetMethod("parseFormulaShared", BindingFlags.NonPublic ||| BindingFlags.Static)
+let largeFormulaCacheHitSource index =
+    let terms = [| for i in 1 .. 1800 -> string ((i + index) % 97 + 1) |]
+    "=" + System.String.Join("+", terms)
+if isNull parseFormulaSharedMethod then
+    ok "large-formula-parse-cache-hit-perf"
+       false
+       "expected private parseFormulaShared method"
+else
+    let cacheHitFormulas = [| for index in 0 .. 63 -> largeFormulaCacheHitSource index |]
+    for formula in cacheHitFormulas do
+        parseFormulaSharedMethod.Invoke(null, [| box formula |]) |> ignore
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+    let cacheHitSw = Stopwatch.StartNew()
+    let mutable cacheHitCount = 0
+    for _pass in 1 .. 3000 do
+        for formula in cacheHitFormulas do
+            if not (isNull (parseFormulaSharedMethod.Invoke(null, [| box formula |]))) then
+                cacheHitCount <- cacheHitCount + 1
+    cacheHitSw.Stop()
+    ok "large-formula-parse-cache-hit-perf"
+       (cacheHitSw.Elapsed.TotalMilliseconds < 140.0 && cacheHitCount = 192000)
+       (sprintf "large formula parse cache hits took %.1f ms" cacheHitSw.Elapsed.TotalMilliseconds)
 
 // --- Perf 3: re-evaluating a single formula many times ------------------
 // Tight loop over evaluateFormula — catches per-eval allocation regressions.
