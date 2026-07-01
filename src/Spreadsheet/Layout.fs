@@ -244,7 +244,7 @@ let private hiddenPrefixSizeCache = {
     LastEntrySet = false
     LastEntry = Unchecked.defaultof<HiddenPrefixSizeCacheEntry>
 }
-let private hiddenPrefixSizeCacheMaxSources = 64
+let private hiddenPrefixSizeCacheMaxSources = 256
 let private hiddenPrefixSizeCacheMaxTotalKeys = 1000000
 
 let private prefixSizeCacheEntryMatches source (entry: PrefixSizeCacheEntry) =

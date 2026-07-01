@@ -430,6 +430,43 @@ check "native prefix coordinate source cycle"
      && abs (prefixCoordinateCycleTotal - 919999820.0) < 0.001)
     true
 
+let hiddenPrefixCoordinateCycleModels =
+    [| for modelIndex in 0 .. prefixCoordinateCycleModelCount - 1 ->
+        { createEmpty 8000 8000 with
+            RowHeights =
+                [ for row in 0 .. prefixCoordinateCycleOverrideCount - 1 ->
+                    row, 20.0 + float ((row + modelIndex) % 5) ]
+                |> Map.ofList
+            Filters =
+                Map.ofList [
+                    0, { Column = 0; VisibleValues = Set.singleton "keep" }
+                ]
+            FilterHiddenRows =
+                [| for row in 1 .. 2 .. prefixCoordinateCycleOverrideCount - 1 -> row |] } |]
+for model in hiddenPrefixCoordinateCycleModels do
+    RedBat.Spreadsheet.Layout.rowTop model prefixCoordinateCycleOverrideCount |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let hiddenPrefixCoordinateCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let hiddenPrefixCoordinateCycleSw = Stopwatch.StartNew()
+let mutable hiddenPrefixCoordinateCycleTotal = 0.0
+for _pass in 1 .. prefixCoordinateCyclePasses do
+    for model in hiddenPrefixCoordinateCycleModels do
+        hiddenPrefixCoordinateCycleTotal <-
+            hiddenPrefixCoordinateCycleTotal
+            + RedBat.Spreadsheet.Layout.rowTop model prefixCoordinateCycleOverrideCount
+hiddenPrefixCoordinateCycleSw.Stop()
+let hiddenPrefixCoordinateCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - hiddenPrefixCoordinateCycleAllocatedBefore
+check "native hidden prefix coordinate source cycle"
+    (hiddenPrefixCoordinateCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && hiddenPrefixCoordinateCycleAllocated < 512L * 1024L
+     && abs (hiddenPrefixCoordinateCycleTotal - 88000000.0) < 0.001)
+    true
+
 let shallowPrefixCoordinateModel =
     { createEmpty 120000 120000 with
         RowHeights =
