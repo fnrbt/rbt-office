@@ -11096,6 +11096,9 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
             let updated = { model with Cells = updatedCells }
             let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some criteriaCache; CurrentCell = Some addr }
             eval fc.Expr ctx
+        let evaluateIndependentFormulaCell addr (fc: FormulaCell) =
+            let ctx = { Model = model; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some criteriaCache; CurrentCell = Some addr }
+            eval fc.Expr ctx
 
         if hasDependencies then
             let visited = HashSet<CellAddress>()
@@ -11152,7 +11155,7 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
                 | Some parseError ->
                     applyFormulaResult fc.Address fc (CellValue.Error parseError)
                 | None ->
-                    applyFormulaResult fc.Address fc (evaluateFormulaCell fc.Address fc)
+                    applyFormulaResult fc.Address fc (evaluateIndependentFormulaCell fc.Address fc)
         rememberCellsFormulaCount updatedCells formulaCells.Count
         if changed then { model with Cells = updatedCells } else model
 

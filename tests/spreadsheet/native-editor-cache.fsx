@@ -2057,6 +2057,45 @@ check "native independent formula recalc fast path"
      && recalcIndependentTotal = recalcIndependentModel.Cells.Count * 20)
     true
 
+let recalcCriteriaFormulaCount = 6000
+let recalcCriteriaSourceRows = 8
+let recalcCriteriaCells =
+    [ for row in 0 .. recalcCriteriaSourceRows - 1 do
+        yield { Row = row; Col = 0 }, cell (CellValue.Number (float row))
+      for row in 0 .. recalcCriteriaFormulaCount - 1 do
+        yield
+            { Row = row; Col = 1 },
+            cell (CellValue.Formula ("=COUNTIF($A$1:$A$8,\">=4\")", CellValue.Empty)) ]
+    |> Map.ofList
+let recalcCriteriaModel =
+    { createEmpty (recalcCriteriaFormulaCount + recalcCriteriaSourceRows + 4) 4 with
+        Cells = recalcCriteriaCells }
+RedBat.Spreadsheet.Formula.recalculateAllFormulas None None recalcCriteriaModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let recalcCriteriaAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let recalcCriteriaSw = Stopwatch.StartNew()
+let mutable recalcCriteriaTotal = 0.0
+for _pass in 1 .. 30 do
+    let recalculated =
+        RedBat.Spreadsheet.Formula.recalculateAllFormulas None None recalcCriteriaModel
+    match Map.tryFind { Row = 0; Col = 1 } recalculated.Cells with
+    | Some { Value = CellValue.Formula (_, CellValue.Number value) } ->
+        recalcCriteriaTotal <- recalcCriteriaTotal + value
+    | _ ->
+        recalcCriteriaTotal <- recalcCriteriaTotal - 1000000.0
+recalcCriteriaSw.Stop()
+let recalcCriteriaAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - recalcCriteriaAllocatedBefore
+check "native independent criteria recalc stable model"
+    (recalcCriteriaSw.Elapsed.TotalMilliseconds < 1800.0
+     && recalcCriteriaAllocated < 585L * 1024L * 1024L
+     && recalcCriteriaTotal = 120.0)
+    true
+
 let conditionalFormatRows = 20000
 let conditionalFormatCells =
     [ for row in 0 .. conditionalFormatRows - 1 ->
