@@ -834,6 +834,62 @@ else
          && tableStyleSourceCycleHits = 1600)
         true
 
+let tableStyleCellsEntryCycleRowCount = 100
+let tableStyleCellsEntryCycleColCount = 10
+let tableStyleCellsEntryCycleModelCount = 80
+let tableStyleCellsEntryCycleStyle =
+    Some {
+        Name = "TableStyleMedium2"
+        ShowFirstColumn = false
+        ShowLastColumn = false
+        ShowRowStripes = true
+        ShowColumnStripes = false
+        HeaderFill = Some "#4472C4"
+        StripeFill = Some "#D9E1F2"
+    }
+let tableStyleCellsEntryCycleTable modelIndex : Table =
+    { Name = sprintf "NativeEntryStyle%02d" modelIndex
+      StartRow = 1
+      StartCol = 1
+      EndRow = tableStyleCellsEntryCycleRowCount
+      EndCol = tableStyleCellsEntryCycleColCount
+      HeaderRowCount = 1
+      Style = tableStyleCellsEntryCycleStyle
+      AutoFilter = Some (1, tableStyleCellsEntryCycleColCount)
+      HasTotals = false }
+let tableStyleCellsEntryCycleStyledModels =
+    [| for modelIndex in 0 .. tableStyleCellsEntryCycleModelCount - 1 ->
+        { createEmpty tableStyleCellsEntryCycleRowCount tableStyleCellsEntryCycleColCount with
+            Tables = [ tableStyleCellsEntryCycleTable modelIndex ] }
+        |> applyTableStyles |]
+
+for model in tableStyleCellsEntryCycleStyledModels do
+    applyTableStyles model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let tableStyleCellsEntryCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let tableStyleCellsEntryCycleSw = Stopwatch.StartNew()
+let mutable tableStyleCellsEntryCycleSame = 0
+let mutable tableStyleCellsEntryCycleTotal = 0
+for _pass in 1 .. 20 do
+    for model in tableStyleCellsEntryCycleStyledModels do
+        let styled = applyTableStyles model
+        if obj.ReferenceEquals(styled.Cells, model.Cells) then
+            tableStyleCellsEntryCycleSame <- tableStyleCellsEntryCycleSame + 1
+        tableStyleCellsEntryCycleTotal <- tableStyleCellsEntryCycleTotal + styled.Cells.Count
+tableStyleCellsEntryCycleSw.Stop()
+let tableStyleCellsEntryCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - tableStyleCellsEntryCycleAllocatedBefore
+check "native table style cells entry cycle"
+    (tableStyleCellsEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && tableStyleCellsEntryCycleAllocated < 512L * 1024L
+     && tableStyleCellsEntryCycleSame = tableStyleCellsEntryCycleModelCount * 20
+     && tableStyleCellsEntryCycleTotal = 816000)
+    true
+
 let sparsePaintCells =
     [ for row in 0 .. 1999 ->
         { Row = row; Col = 0 }, cell (CellValue.String (sprintf "R%d" row)) ]

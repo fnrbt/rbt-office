@@ -4017,7 +4017,7 @@ type private TableStyleCellsReferenceKey = {
 }
 
 let mutable private tableStyleCellsCache: TableStyleCellsCacheEntry list = []
-let private tableStyleCellsCacheMaxEntries = 64
+let private tableStyleCellsCacheMaxEntries = 256
 let private tableStyleCellsCacheMaxTotalCells = 200000
 let private tableStyleCellsCacheMaxTotalTables = 100000
 let private tableStyleCellsCacheMaxTotalSourceTextChars = 5000000
