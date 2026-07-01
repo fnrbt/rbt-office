@@ -7214,7 +7214,7 @@ type private FieldPresenceScan = {
 let mutable private fieldPresenceCache: FieldPresenceCache list = []
 let private fieldPresenceCacheByBlocks = Dictionary<Block list, FieldPresenceCache>(documentInfoBlocksComparer)
 let private fieldPresenceFastSlots = Array.zeroCreate<FieldPresenceCache> 256
-let private fieldPresenceCacheMaxEntries = 64
+let private fieldPresenceCacheMaxEntries = 256
 let private fieldPresenceCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private fieldPresenceCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 

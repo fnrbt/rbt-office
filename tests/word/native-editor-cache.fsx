@@ -2665,6 +2665,39 @@ check "native date field no page map alloc"
      && dateFieldAllocated < 6L * 1024L * 1024L)
     true
 
+let fieldPresenceCycleDocs =
+    [| for docIndex in 0 .. 64 ->
+        { Doc.empty with
+            Blocks =
+                [ for index in 0 .. 499 ->
+                    Doc.Paragraph (
+                        para
+                            (sprintf "native-field-presence-source-cycle-%02d-%04d" docIndex index)
+                            "plain text without fields") ] } |]
+
+for doc in fieldPresenceCycleDocs do
+    Doc.refreshFields doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let fieldPresenceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let fieldPresenceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable fieldPresenceCycleIdentityHits = 0
+for _pass in 1 .. 100 do
+    for doc in fieldPresenceCycleDocs do
+        if obj.ReferenceEquals(Doc.refreshFields doc, doc) then
+            fieldPresenceCycleIdentityHits <- fieldPresenceCycleIdentityHits + 1
+fieldPresenceCycleSw.Stop()
+let fieldPresenceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - fieldPresenceCycleAllocatedBefore
+check "native field presence source cycle"
+    (fieldPresenceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && fieldPresenceCycleAllocated < 512L * 1024L
+     && fieldPresenceCycleIdentityHits = fieldPresenceCycleDocs.Length * 100)
+    true
+
 if isNull vbaDocumentText then
     fail <- fail + 1
     printfn "FAIL %-34s expected private documentText method" "native vba text cache reflection"
