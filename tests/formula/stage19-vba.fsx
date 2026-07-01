@@ -173,6 +173,42 @@ check "compile cache large source hits"
     (largeCompileHitCount = 32000 && largeCompileHitSw.Elapsed.TotalMilliseconds < 40.0)
     true
 
+let compileCycleSources =
+    [| for sourceIndex in 0 .. 79 ->
+        System.String.Join(
+            "\n",
+            [|
+                yield "Dim x"
+                yield sprintf "' compile source cycle %02d" sourceIndex
+                for line in 1 .. 20 do
+                    yield sprintf "x = %d" (sourceIndex + line)
+            |]) |]
+for source in compileCycleSources do
+    compileCacheSource "compile cache source cycle warm" source |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let compileCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let compileCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable compileCycleHits = 0
+for _pass in 1 .. 20 do
+    for source in compileCycleSources do
+        match V.compileCached source with
+        | Result.Ok _ -> compileCycleHits <- compileCycleHits + 1
+        | Result.Error e ->
+            fail <- fail + 1
+            printfn "FAIL compile cache source cycle errored: %s" e
+compileCycleSw.Stop()
+let compileCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - compileCycleAllocatedBefore
+check "compile cache source cycle"
+    (compileCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && compileCycleAllocated < 8L * 1024L * 1024L
+     && compileCycleHits = 1600)
+    true
+
 let largeLexerSource =
     System.String.Join("\n", [| for _ in 1 .. 6000 -> "Range(\"A1\").Value = 1" |])
 let largeLexerSw = System.Diagnostics.Stopwatch.StartNew()

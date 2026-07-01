@@ -968,7 +968,7 @@ let private hostGlobalsRW cells sheetName =
 // performance cache, so events firing on every edit don't re-lex/parse/compile.
 let private vbaHostNames = [ "Application"; "ActiveWorkbook"; "ActiveSheet"; "Range"; "Cells" ]
 let private vbaParseOpts = FsVb.ParseOptions.withHostGlobals vbaHostNames FsVb.ParseOptions.vba
-let private bytecodeCacheMaxEntries = 64
+let private bytecodeCacheMaxEntries = 256
 let private bytecodeCacheMaxTotalRetainedUnits = 1000000
 let private bytecodeCache = System.Collections.Generic.Dictionary<string, Bytecode.BytecodeProgram>()
 let private bytecodeCacheOrder = System.Collections.Generic.Queue<string>()
