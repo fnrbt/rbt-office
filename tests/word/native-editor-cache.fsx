@@ -1318,6 +1318,36 @@ check "native find text cache hot hit"
      && findTextHotReused)
     true
 
+let findTextCycleSourceCount = 80
+let findTextCycleParagraphCount = 1000
+let findTextCycleQuery = "missing-needle"
+let findTextCycleDocs =
+    [| for sourceIndex in 0 .. findTextCycleSourceCount - 1 ->
+        { Doc.empty with
+            Blocks =
+                [ for index in 0 .. findTextCycleParagraphCount - 1 ->
+                    Doc.Paragraph (para (sprintf "native-find-cycle-%02d-%05d" sourceIndex index) "alpha omega text") ] } |]
+for doc in findTextCycleDocs do
+    Doc.findTextArray findTextCycleQuery false doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let findTextCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let findTextCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable findTextCycleTotal = 0
+for _pass in 1 .. 20 do
+    for doc in findTextCycleDocs do
+        findTextCycleTotal <- findTextCycleTotal + (Doc.findTextArray findTextCycleQuery false doc).Length
+findTextCycleSw.Stop()
+let findTextCycleAllocated = System.GC.GetAllocatedBytesForCurrentThread() - findTextCycleAllocatedBefore
+check "native find text source cycle"
+    (findTextCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && findTextCycleAllocated < 512L * 1024L
+     && findTextCycleTotal = 0)
+    true
+
 let bookmarkParagraphCount = 50000
 let bookmarkInterval = 20
 let bookmarkId = "native-bookmark-perf"
