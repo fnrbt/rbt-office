@@ -473,14 +473,14 @@ let private adjustedFormulaPresenceSourceTextCharCountAfterRemove cachedSourceTe
 let private cachedCellsHaveFormulaCells cells =
     match tryGetFormulaPresenceCache cells with
     | ValueSome cached ->
-        Some cached.HasFormulas
+        ValueSome cached.HasFormulas
     | ValueNone ->
-        None
+        ValueNone
 
 let private cachedFormulaPresence cells =
     match tryGetFormulaPresenceCache cells with
-    | ValueSome cached -> Some cached
-    | ValueNone -> None
+    | ValueSome cached -> ValueSome cached
+    | ValueNone -> ValueNone
 
 let rememberCellsHaveFormulaCells cells hasFormulas =
     let count = if hasFormulas then None else Some 0
@@ -491,16 +491,16 @@ let rememberCellsFormulaCount cells formulaCount =
 
 let cellsFormulaCountIfKnown cells =
     match cachedFormulaPresence cells with
-    | Some cached -> cached.FormulaCount
-    | None -> None
+    | ValueSome cached -> cached.FormulaCount
+    | ValueNone -> None
 
 let private scanCellsHaveFormulaCells (cells: Map<CellAddress, CellData>) =
     cells |> Map.exists (fun _ cell -> cellDataIsFormula cell)
 
 let cellsHaveFormulaCells cells =
     match cachedCellsHaveFormulaCells cells with
-    | Some hasFormulas -> hasFormulas
-    | None ->
+    | ValueSome hasFormulas -> hasFormulas
+    | ValueNone ->
         let hasFormulas = scanCellsHaveFormulaCells cells
         rememberCellsHaveFormulaCells cells hasFormulas
         hasFormulas
@@ -1025,8 +1025,8 @@ let commandRetainedCellMapTextCharCount (cells: Map<CellAddress, CellData>) =
         historyMaxTotalRetainedTextChars + 1
     else
         match cachedFormulaPresence cells with
-        | Some cached -> min (historyMaxTotalRetainedTextChars + 1) cached.SourceTextCharCount
-        | None ->
+        | ValueSome cached -> min (historyMaxTotalRetainedTextChars + 1) cached.SourceTextCharCount
+        | ValueNone ->
             let sourceTextCharCount, formulaCount, hasFormulas =
                 cellMapSourceTextAndFormulaMetrics historyMaxTotalRetainedTextChars cells
             rememberCellsFormulaPresenceWithSourceTextCharCount cells formulaCount hasFormulas sourceTextCharCount
@@ -1506,7 +1506,7 @@ let setCell (addr: CellAddress) (data: CellData) (model: SpreadsheetModel): Spre
             if hasOldCell then cellDataIsFormula oldCell
             else false
         match cachedFormulaPresence model.Cells with
-        | Some cached ->
+        | ValueSome cached ->
             let sourceTextCharCount = adjustedFormulaPresenceSourceTextCharCount cached.SourceTextCharCount oldCellOption data
             match cached.FormulaCount with
             | Some count ->
@@ -1525,9 +1525,9 @@ let setCell (addr: CellAddress) (data: CellData) (model: SpreadsheetModel): Spre
                     rememberCellsFormulaPresenceWithSourceTextCharCount cells (if hasFormulas then None else Some 0) hasFormulas sourceTextCharCount
                 else
                     rememberCellsFormulaPresenceWithSourceTextCharCount cells None hasFormulas sourceTextCharCount
-        | None when dataIsFormula ->
+        | ValueNone when dataIsFormula ->
             rememberCellsHaveFormulaCells cells true
-        | None ->
+        | ValueNone ->
             ()
         { model with Cells = cells }
 
@@ -1649,7 +1649,7 @@ let clearCell (addr: CellAddress) (model: SpreadsheetModel): SpreadsheetModel =
         let cells = Map.remove addr model.Cells
         let oldIsFormula = cellDataIsFormula oldCell
         match cachedFormulaPresence model.Cells with
-        | Some cached ->
+        | ValueSome cached ->
             let sourceTextCharCount =
                 adjustedFormulaPresenceSourceTextCharCountAfterRemove
                     cached.SourceTextCharCount
@@ -1667,13 +1667,13 @@ let clearCell (addr: CellAddress) (model: SpreadsheetModel): SpreadsheetModel =
                     else
                         true
                 rememberCellsFormulaPresenceWithSourceTextCharCount cells (if hasFormulas then None else Some 0) hasFormulas sourceTextCharCount
-        | None ->
+        | ValueNone ->
             ()
         { model with Cells = cells }
 
 let private rememberClearedCellsFormulaPresence oldCells newCells removedFormulaCount removedSourceTextCharCount =
     match cachedFormulaPresence oldCells with
-    | Some cached ->
+    | ValueSome cached ->
         let sourceTextCharCount =
             adjustedFormulaPresenceSourceTextCharCountAfterRemove cached.SourceTextCharCount removedSourceTextCharCount
         match cached.FormulaCount with
@@ -1689,7 +1689,7 @@ let private rememberClearedCellsFormulaPresence oldCells newCells removedFormula
                 else
                     true
             rememberCellsFormulaPresenceWithSourceTextCharCount newCells (if hasFormulas then None else Some 0) hasFormulas sourceTextCharCount
-    | None ->
+    | ValueNone ->
         ()
 
 /// Clear all cells in a selection, preserving identity when nothing changes.
@@ -1710,11 +1710,14 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
             let mutable removedSourceTextCharCount = 0
             let mutable clearedAllCells = false
             let formulaPresence = cachedFormulaPresence model.Cells
-            let trackRemovedFormulaPresence = formulaPresence.IsSome
+            let trackRemovedFormulaPresence =
+                match formulaPresence with
+                | ValueSome _ -> true
+                | ValueNone -> false
             let cachedNoFormulas =
                 match formulaPresence with
-                | Some cached -> not cached.HasFormulas
-                | None -> false
+                | ValueSome cached -> not cached.HasFormulas
+                | ValueNone -> false
             let mutable keepNoFormulaPresence = false
             let inRange addr =
                 addr.Row >= startRow && addr.Row <= endRow && addr.Col >= startCol && addr.Col <= endCol

@@ -621,6 +621,29 @@ check "native formula presence cache count"
     (cellsFormulaCountIfKnown formulaPresenceCells)
     (Some 0)
 
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let formulaPresenceProbeCount = 200000
+let formulaPresenceAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let formulaPresenceSw = Stopwatch.StartNew()
+let mutable formulaPresenceTotal = 0
+for _ in 1 .. formulaPresenceProbeCount do
+    if cellsHaveFormulaCells formulaPresenceCells then
+        formulaPresenceTotal <- formulaPresenceTotal + 1
+    match cellsFormulaCountIfKnown formulaPresenceCells with
+    | Some count -> formulaPresenceTotal <- formulaPresenceTotal + count
+    | None -> formulaPresenceTotal <- formulaPresenceTotal - 1
+formulaPresenceSw.Stop()
+let formulaPresenceAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - formulaPresenceAllocatedBefore
+check "native formula presence cache hot hits"
+    (formulaPresenceSw.Elapsed.TotalMilliseconds < 80.0
+     && formulaPresenceAllocated < 1024L * 1024L
+     && formulaPresenceTotal = 0)
+    true
+
 let conditionalFormatRows = 20000
 let conditionalFormatCells =
     [ for row in 0 .. conditionalFormatRows - 1 ->
