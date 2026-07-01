@@ -558,6 +558,30 @@ check "native paint viewport cache hot hits"
      && paintHotHitTotal = firstPaintItems.Length * 50000)
     true
 
+for model in geometrySourceCycleModels do
+    RedBat.Spreadsheet.Paint.buildViewportPaintItems model paintCacheViewport |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let paintSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let paintSourceCycleSw = Stopwatch.StartNew()
+let mutable paintSourceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for model in geometrySourceCycleModels do
+        paintSourceCycleTotal <-
+            paintSourceCycleTotal
+            + (RedBat.Spreadsheet.Paint.buildViewportPaintItems model paintCacheViewport).Length
+paintSourceCycleSw.Stop()
+let paintSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - paintSourceCycleAllocatedBefore
+check "native paint viewport source cycle"
+    (paintSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && paintSourceCycleAllocated < 512L * 1024L
+     && paintSourceCycleTotal = 568000)
+    true
+
 let sparsePaintCells =
     [ for row in 0 .. 1999 ->
         { Row = row; Col = 0 }, cell (CellValue.String (sprintf "R%d" row)) ]
