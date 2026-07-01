@@ -1215,7 +1215,7 @@ let private lineArrayCacheLinesComparer =
 let private lineArrayCacheByLines =
     System.Collections.Generic.Dictionary<MeasuredLine list, LineArrayCacheEntry>(lineArrayCacheLinesComparer)
 let private lineArrayCacheThreshold = 32
-let private lineArrayCacheMaxEntries = 64
+let private lineArrayCacheMaxEntries = 256
 let private lineArrayCacheMaxTotalLines = 200000
 let private lineArrayCacheMaxTotalTextChars = 5000000
 

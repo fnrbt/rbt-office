@@ -527,6 +527,45 @@ check "native line lookup cache three-position cycle"
      && lineLookupCycleAllocated < 512L * 1024L
      && lineLookupCycleChecksum = 2506661680L)
     true
+
+let lineArraySourceCycleCount = 80
+let lineArraySourceCycleLineCount = 1000
+let makeLineArraySourceCycleLayout layoutIndex =
+    let lines =
+        [ for lineIndex in 0 .. lineArraySourceCycleLineCount - 1 ->
+            { documentPaintLine with
+                Y = float lineIndex * 24.0
+                StartOffset = lineIndex * 10
+                EndOffset = (lineIndex + 1) * 10 } ]
+    { alternatingLineLookupLayout with
+        BlockId = sprintf "native-line-array-source-cycle-%02d" layoutIndex
+        Lines = lines
+        Height = float lineArraySourceCycleLineCount * 24.0 }
+let lineArraySourceCycleLayouts =
+    [| for layoutIndex in 0 .. lineArraySourceCycleCount - 1 ->
+        makeLineArraySourceCycleLayout layoutIndex |]
+for layout in lineArraySourceCycleLayouts do
+    Layout.lineForOffset layout 9999 |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let lineArraySourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let lineArraySourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable lineArraySourceCycleChecksum = 0L
+for _pass in 1 .. 20 do
+    for layout in lineArraySourceCycleLayouts do
+        lineArraySourceCycleChecksum <-
+            lineArraySourceCycleChecksum + int64 (Layout.lineForOffset layout 9999).EndOffset
+lineArraySourceCycleSw.Stop()
+let lineArraySourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - lineArraySourceCycleAllocatedBefore
+check "native line array cache source cycle"
+    (lineArraySourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && lineArraySourceCycleAllocated < 512L * 1024L
+     && lineArraySourceCycleChecksum = 16000000L)
+    true
 let hitTestMeasureRange (_text: string) (_style: TB.TextStyle) (_start: int) (length: int) =
     float length
 let hitTestLongLineCount = 5000
