@@ -2563,6 +2563,8 @@ ok "formula-parse-cache-bounded-source-memory"
    (sprintf "large formula parse cache retained %.1f MB" (float largeFormulaRetainedBytes / 1024.0 / 1024.0))
 let parseFormulaSharedMethod =
     formulaModuleType.GetMethod("parseFormulaShared", BindingFlags.NonPublic ||| BindingFlags.Static)
+let collectFormulaCellsMethod =
+    formulaModuleType.GetMethod("collectFormulaCells", BindingFlags.NonPublic ||| BindingFlags.Static)
 let largeFormulaCacheHitSource index =
     let terms = [| for i in 1 .. 1800 -> string ((i + index) % 97 + 1) |]
     "=" + System.String.Join("+", terms)
@@ -2587,6 +2589,32 @@ else
     ok "large-formula-parse-cache-hit-perf"
        (cacheHitSw.Elapsed.TotalMilliseconds < 140.0 && cacheHitCount = 192000)
        (sprintf "large formula parse cache hits took %.1f ms" cacheHitSw.Elapsed.TotalMilliseconds)
+if isNull collectFormulaCellsMethod then
+    ok "recalc-local-parse-cache-hit-perf"
+       false
+       "expected private collectFormulaCells method"
+else
+    let repeatedFormula = largeFormulaCacheHitSource 0
+    let repeatedFormulaCells =
+        [ for row in 0 .. 15999 ->
+            { Row = row; Col = 0 }, cell (CellValue.Formula (repeatedFormula, CellValue.Empty)) ]
+        |> Map.ofList
+    let repeatedFormulaModel = { createEmpty 16000 1 with Cells = repeatedFormulaCells }
+    collectFormulaCellsMethod.Invoke(null, [| box repeatedFormulaModel |]) |> ignore
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+    let recalcParseSw = Stopwatch.StartNew()
+    let mutable recalcParseHits = 0
+    for _pass in 1 .. 12 do
+        let result = collectFormulaCellsMethod.Invoke(null, [| box repeatedFormulaModel |])
+        recalcParseHits <-
+            recalcParseHits
+            + (result.GetType().GetProperty("Count").GetValue(result) :?> int)
+    recalcParseSw.Stop()
+    ok "recalc-local-parse-cache-hit-perf"
+       (recalcParseSw.Elapsed.TotalMilliseconds < 120.0 && recalcParseHits = 192000)
+       (sprintf "recalc local parse cache hits took %.1f ms" recalcParseSw.Elapsed.TotalMilliseconds)
 
 // --- Perf 3: re-evaluating a single formula many times ------------------
 // Tight loop over evaluateFormula — catches per-eval allocation regressions.

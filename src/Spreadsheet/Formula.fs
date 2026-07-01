@@ -753,29 +753,38 @@ type private ParsedFormulaFastCacheEntry = {
 }
 let private parsedFormulaFastSlots = Array.zeroCreate<ParsedFormulaFastCacheEntry> 256
 
-let private clearParsedFormulaFastSlots () =
-    for index = 0 to parsedFormulaFastSlots.Length - 1 do
-        parsedFormulaFastSlots.[index] <- Unchecked.defaultof<ParsedFormulaFastCacheEntry>
+let private clearParsedFormulaFastSlotsIn (slots: ParsedFormulaFastCacheEntry array) =
+    for index = 0 to slots.Length - 1 do
+        slots.[index] <- Unchecked.defaultof<ParsedFormulaFastCacheEntry>
 
-let private parsedFormulaFastSlot (input: string) =
+let private clearParsedFormulaFastSlots () =
+    clearParsedFormulaFastSlotsIn parsedFormulaFastSlots
+
+let private parsedFormulaFastSlotIn (slots: ParsedFormulaFastCacheEntry array) (input: string) =
     let hashCode =
         if isNull input then 0
         else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(input)
-    hashCode &&& (parsedFormulaFastSlots.Length - 1)
+    hashCode &&& (slots.Length - 1)
 
-let private setParsedFormulaFastSlot input parsed =
-    parsedFormulaFastSlots.[parsedFormulaFastSlot input] <- {
+let private setParsedFormulaFastSlotIn (slots: ParsedFormulaFastCacheEntry array) input parsed =
+    slots.[parsedFormulaFastSlotIn slots input] <- {
         Formula = input
         Parsed = parsed
     }
 
-let private tryGetParsedFormulaFastSlot input =
-    let fast = parsedFormulaFastSlots.[parsedFormulaFastSlot input]
+let private setParsedFormulaFastSlot input parsed =
+    setParsedFormulaFastSlotIn parsedFormulaFastSlots input parsed
+
+let private tryGetParsedFormulaFastSlotIn (slots: ParsedFormulaFastCacheEntry array) input =
+    let fast = slots.[parsedFormulaFastSlotIn slots input]
     if not (obj.ReferenceEquals(fast, null))
        && obj.ReferenceEquals(fast.Formula, input) then
         ValueSome fast.Parsed
     else
         ValueNone
+
+let private tryGetParsedFormulaFastSlot input =
+    tryGetParsedFormulaFastSlotIn parsedFormulaFastSlots input
 
 let private parsedFormulaAddCapped (amount: int) (total: int) =
     if amount <= 0 then total
@@ -10838,15 +10847,23 @@ let private collectFormulaCells (model: SpreadsheetModel) =
     let formulaCells = ResizeArray<FormulaCell>()
     let parseCache = Dictionary<string, Result<Expr, string>>()
     let parseCacheOrder = Queue<string>()
+    let parseCacheFastSlots = Array.zeroCreate<ParsedFormulaFastCacheEntry> 256
     let mutable parseCacheTotalChars = 0
     let parseFormulaCached formula =
-        let mutable parsed = Unchecked.defaultof<Result<Expr, string>>
-        if parseCache.TryGetValue(formula, &parsed) then
-            parsed
-        else
-            parsed <- parseFormulaShared formula
-            rememberRecalcLocalParseCacheEntry parseCache parseCacheOrder &parseCacheTotalChars formula parsed
-            parsed
+        match tryGetParsedFormulaFastSlotIn parseCacheFastSlots formula with
+        | ValueSome parsed -> parsed
+        | ValueNone ->
+            let mutable parsed = Unchecked.defaultof<Result<Expr, string>>
+            if parseCache.TryGetValue(formula, &parsed) then
+                setParsedFormulaFastSlotIn parseCacheFastSlots formula parsed
+                parsed
+            else
+                parsed <- parseFormulaShared formula
+                rememberRecalcLocalParseCacheEntry parseCache parseCacheOrder &parseCacheTotalChars formula parsed
+                clearParsedFormulaFastSlotsIn parseCacheFastSlots
+                if parseCache.ContainsKey formula then
+                    setParsedFormulaFastSlotIn parseCacheFastSlots formula parsed
+                parsed
     model.Cells
     |> Map.iter (fun addr cell ->
         match cell.Value with
