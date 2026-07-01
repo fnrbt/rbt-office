@@ -1178,8 +1178,8 @@ selectionLayoutLookupCycleSw.Stop()
 let selectionLayoutLookupCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - selectionLayoutLookupCycleAllocatedBefore
 check "native selection layout lookup source cycle"
-    (selectionLayoutLookupCycleSw.Elapsed.TotalMilliseconds < 500.0
-     && selectionLayoutLookupCycleAllocated < 96L * 1024L * 1024L
+    (selectionLayoutLookupCycleSw.Elapsed.TotalMilliseconds < 180.0
+     && selectionLayoutLookupCycleAllocated < 512L * 1024L
      && selectionLayoutLookupCycleTotal = selectionLayoutLookupCycleSources.Length * 1000)
     true
 

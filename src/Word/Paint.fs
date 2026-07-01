@@ -3447,6 +3447,126 @@ let private layoutListLookup (layouts: BlockLayout list) =
     else
         tryFindList
 
+type private CollapsedSelectionCommandsCacheEntry = {
+    Layouts: BlockLayout list
+    Settings: LayoutSettings
+    MeasureRange: TextRangeMeasurer
+    Selection: Selection
+    Result: PaintCommand list
+    CommandCount: int
+    LayoutCount: int
+    LayoutTextCharCount: int
+}
+
+let mutable private collapsedSelectionCommandsCache: CollapsedSelectionCommandsCacheEntry list = []
+let private collapsedSelectionCommandsFastSlots = Array.zeroCreate<CollapsedSelectionCommandsCacheEntry> 256
+let private collapsedSelectionCommandsCacheMaxEntries = 256
+let private collapsedSelectionCommandsCacheMaxTotalLayouts = 200000
+let private collapsedSelectionCommandsCacheMaxTotalCommands = 10000
+let private collapsedSelectionCommandsCacheMaxTotalLayoutTextChars = 5000000
+
+let private collapsedSelectionHash (sel: Selection) =
+    let mutable hashCode = sel.Anchor.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ sel.Focus.GetHashCode()
+    hashCode
+
+let private collapsedSelectionCommandsSlot settings measureRange layouts selection =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(layouts)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(settings)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(measureRange)
+    hashCode <- (hashCode * 397) ^^^ collapsedSelectionHash selection
+    hashCode &&& (collapsedSelectionCommandsFastSlots.Length - 1)
+
+let private collapsedSelectionCommandsEntryMatches settings measureRange layouts selection entry =
+    obj.ReferenceEquals(entry.Layouts, layouts)
+    && documentPaintSettingsMatch entry.Settings settings
+    && obj.ReferenceEquals(entry.MeasureRange, measureRange)
+    && entry.Selection = selection
+
+let private clearCollapsedSelectionCommandsFastSlots () =
+    clearArray collapsedSelectionCommandsFastSlots
+
+let private setCollapsedSelectionCommandsCache entries =
+    collapsedSelectionCommandsCache <- entries
+    clearCollapsedSelectionCommandsFastSlots ()
+    for entry in entries do
+        let slot =
+            collapsedSelectionCommandsSlot
+                entry.Settings
+                entry.MeasureRange
+                entry.Layouts
+                entry.Selection
+        collapsedSelectionCommandsFastSlots.[slot] <- entry
+
+let private tryGetCollapsedSelectionCommands settings measureRange layouts selection =
+    let slot = collapsedSelectionCommandsSlot settings measureRange layouts selection
+    let fast = collapsedSelectionCommandsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && collapsedSelectionCommandsEntryMatches settings measureRange layouts selection fast then
+        ValueSome fast.Result
+    else
+        let mutable found = Unchecked.defaultof<CollapsedSelectionCommandsCacheEntry>
+        let mutable hasFound = false
+        let mutable remaining = collapsedSelectionCommandsCache
+        while not hasFound && not remaining.IsEmpty do
+            let candidate = remaining.Head
+            if collapsedSelectionCommandsEntryMatches settings measureRange layouts selection candidate then
+                found <- candidate
+                hasFound <- true
+            remaining <- remaining.Tail
+        if hasFound then
+            collapsedSelectionCommandsFastSlots.[slot] <- found
+            ValueSome found.Result
+        else
+            ValueNone
+
+let private collapsedSelectionCommandsCacheWithout settings measureRange layouts selection =
+    collapsedSelectionCommandsCache
+    |> List.filter (collapsedSelectionCommandsEntryMatches settings measureRange layouts selection >> not)
+
+let private collapsedSelectionCommandsEntryRetainable entry =
+    entry.LayoutCount <= collapsedSelectionCommandsCacheMaxTotalLayouts
+    && entry.CommandCount <= collapsedSelectionCommandsCacheMaxTotalCommands
+    && entry.LayoutTextCharCount <= collapsedSelectionCommandsCacheMaxTotalLayoutTextChars
+
+let private rememberCollapsedSelectionCommands settings measureRange layouts selection commands =
+    let layoutCount, layoutTextCharCount = markerLayoutsRetainedMetrics layouts
+    let entry = {
+        Layouts = layouts
+        Settings = settings
+        MeasureRange = measureRange
+        Selection = selection
+        Result = commands
+        CommandCount = max 1 commands.Length
+        LayoutCount = max 1 layoutCount
+        LayoutTextCharCount = layoutTextCharCount
+    }
+    if collapsedSelectionCommandsEntryRetainable entry then
+        let mutable keptCount = 1
+        let mutable keptLayouts = entry.LayoutCount
+        let mutable keptCommands = entry.CommandCount
+        let mutable keptLayoutTextChars = max 1 entry.LayoutTextCharCount
+        let retained =
+            collapsedSelectionCommandsCacheWithout settings measureRange layouts selection
+            |> List.choose (fun candidate ->
+                let candidateLayouts = max 1 candidate.LayoutCount
+                let candidateCommands = max 1 candidate.CommandCount
+                let candidateLayoutTextChars = max 1 candidate.LayoutTextCharCount
+                if collapsedSelectionCommandsEntryRetainable candidate
+                   && keptCount < collapsedSelectionCommandsCacheMaxEntries
+                   && keptLayouts + candidateLayouts <= collapsedSelectionCommandsCacheMaxTotalLayouts
+                   && keptCommands + candidateCommands <= collapsedSelectionCommandsCacheMaxTotalCommands
+                   && keptLayoutTextChars + candidateLayoutTextChars <= collapsedSelectionCommandsCacheMaxTotalLayoutTextChars then
+                    keptCount <- keptCount + 1
+                    keptLayouts <- keptLayouts + candidateLayouts
+                    keptCommands <- keptCommands + candidateCommands
+                    keptLayoutTextChars <- keptLayoutTextChars + candidateLayoutTextChars
+                    Some candidate
+                else
+                    None)
+        entry :: retained
+        |> setCollapsedSelectionCommandsCache
+
 let private selectionCommandsForNormalizedRange
     (settings: LayoutSettings)
     (measureRange: TextRangeMeasurer)
@@ -3539,13 +3659,20 @@ let selectionCommandsWithRangeLookup (settings: LayoutSettings) (measureRange: T
         selectionCommandsForNormalizedRange settings measureRange sel startPos endPos blockIds tryFindLayout
 
 let selectionCommandsWithRange (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (doc: Document) (layouts: BlockLayout list) =
-    let tryFindList = layoutListLookup layouts
     match doc.Selection with
-    | Some sel when not sel.IsCollapsed ->
+    | None -> []
+    | Some sel when sel.IsCollapsed ->
+        match tryGetCollapsedSelectionCommands settings measureRange layouts sel with
+        | ValueSome commands -> commands
+        | ValueNone ->
+            let tryFindList = layoutListLookup layouts
+            let commands = selectionCommandsWithRangeLookup settings measureRange doc tryFindList
+            rememberCollapsedSelectionCommands settings measureRange layouts sel commands
+            commands
+    | Some sel ->
+        let tryFindList = layoutListLookup layouts
         let startPos, endPos, blockIds = getNormalizedRange sel doc
         selectionCommandsForNormalizedRange settings measureRange sel startPos endPos blockIds tryFindList
-    | _ ->
-        selectionCommandsWithRangeLookup settings measureRange doc tryFindList
 
 let selectionCommands (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) (layouts: BlockLayout list) =
     selectionCommandsWithRange settings (rangeMeasurerFromTextMeasurer measureText) doc layouts
