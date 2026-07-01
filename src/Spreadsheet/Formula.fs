@@ -11255,9 +11255,10 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
         if Map.containsKey addr updatedCells then
             updatedCells <- Map.remove addr updatedCells
             changed <- true
+    let criteriaCache = CriteriaPredicateCache()
     for (addr, cell, formula, expr) in anchors do
         let updated = { model with Cells = updatedCells; Spill = spillMap }
-        let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some (CriteriaPredicateCache()); CurrentCell = Some addr }
+        let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some criteriaCache; CurrentCell = Some addr }
         let nr = arr.Length
         let nc = if nr > 0 then arr.[0].Length else 0
         if nr * nc <= 1 then

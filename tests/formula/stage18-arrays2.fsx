@@ -143,14 +143,18 @@ F.spillArrays None None spillRepeatedLargeModel |> ignore
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()
+let spillRepeatedLargeAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
 let spillRepeatedLargeTimer = System.Diagnostics.Stopwatch.StartNew()
 let mutable spillRepeatedLargeCells = 0
 for _pass in 1 .. 10 do
     let result = F.spillArrays None None spillRepeatedLargeModel
     spillRepeatedLargeCells <- spillRepeatedLargeCells + result.Cells.Count
 spillRepeatedLargeTimer.Stop()
+let spillRepeatedLargeAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - spillRepeatedLargeAllocatedBefore
 check "spill repeated large formula cells" spillRepeatedLargeCells 200000
 check "spill repeated large formula perf" (spillRepeatedLargeTimer.Elapsed.TotalMilliseconds < 700.0) true
+check "spill repeated large formula allocation" (spillRepeatedLargeAllocated < 325L * 1024L * 1024L) true
 
 printfn ""
 printfn "Stage 18 array2 tests: %d passed, %d failed" pass fail
