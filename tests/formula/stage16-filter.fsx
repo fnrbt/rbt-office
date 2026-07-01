@@ -1320,6 +1320,20 @@ if pasteIdentityCacheSw.Elapsed.TotalMilliseconds < 75.0 then
 else
     fail <- fail + 1
     printfn "FAIL %-26s expected under %.1f ms got %.1f ms" "paste cache many targets perf" 75.0 pasteIdentityCacheSw.Elapsed.TotalMilliseconds
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let pasteIdentityHotHitAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let pasteIdentityHotHitSw = Stopwatch.StartNew()
+let pasteIdentityHotHitHits = pasteIdentityCacheRun 5000
+pasteIdentityHotHitSw.Stop()
+let pasteIdentityHotHitAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - pasteIdentityHotHitAllocatedBefore
+check "paste values cache hot hit allocation"
+    (pasteIdentityHotHitHits = pasteIdentityCacheTargets.Length * 5000
+     && pasteIdentityHotHitSw.Elapsed.TotalMilliseconds < 100.0
+     && pasteIdentityHotHitAllocated < 2L * 1024L * 1024L)
+    true
 let pasteIdentityManyModelCount = 24
 let pasteIdentityManyModels =
     [| for modelIndex in 0 .. pasteIdentityManyModelCount - 1 ->

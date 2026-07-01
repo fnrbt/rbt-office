@@ -1161,6 +1161,14 @@ let createEmpty rowCount colCount =
     rememberCellsHaveFormulaCells model.Cells false
     model
 
+[<Struct>]
+type private PasteIdentityCacheKey = {
+    Target: CellAddress
+    Clipboard: ClipboardData
+    ClipboardCellCount: int
+    ClipboardTextCharCount: int
+}
+
 type private PasteIdentityCache = {
     Cells: Map<CellAddress, CellData>
     CellCount: int
@@ -1171,13 +1179,6 @@ type private PasteIdentityCache = {
     Order: System.Collections.Generic.Queue<PasteIdentityCacheKey>
     mutable TotalClipboardCellCount: int
     mutable TotalClipboardTextCharCount: int
-}
-
-and private PasteIdentityCacheKey = {
-    Target: CellAddress
-    Clipboard: ClipboardData
-    ClipboardCellCount: int
-    ClipboardTextCharCount: int
 }
 
 let mutable private pasteIdentityCache: PasteIdentityCache list = []
@@ -1358,11 +1359,11 @@ let private tryPasteIdentityCache targetAddr clipboardData (model: SpreadsheetMo
     match tryGetPasteIdentityCache model.Cells model.RowCount model.ColCount with
     | ValueSome cached when pasteIdentityCacheRetainable cached ->
         let key = pasteIdentityLookupKey targetAddr clipboardData
-        if cached.Entries.ContainsKey key then Some model else None
+        if cached.Entries.ContainsKey key then ValueSome model else ValueNone
     | ValueSome cached ->
         rememberPasteIdentityCache cached
-        None
-    | ValueNone -> None
+        ValueNone
+    | ValueNone -> ValueNone
 
 let private rememberPasteIdentityWithSourceTextCharCount
     sourceTextCharCount
@@ -1973,8 +1974,8 @@ let serializeSelection (selection: Selection) (model: SpreadsheetModel) (isCut: 
 /// Paste clipboard data at target address
 let pasteClipboard (targetAddr: CellAddress) (clipboardData: ClipboardData) (model: SpreadsheetModel): SpreadsheetModel =
     match tryPasteIdentityCache targetAddr clipboardData model with
-    | Some cached -> cached
-    | None ->
+    | ValueSome cached -> cached
+    | ValueNone ->
         let deltaRow = targetAddr.Row - clipboardData.SourceStartRow
         let deltaCol = targetAddr.Col - clipboardData.SourceStartCol
 
