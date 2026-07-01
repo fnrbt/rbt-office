@@ -12,6 +12,7 @@ module Doc = RedBat.Word.Document
 module Layout = RedBat.Word.Layout
 module WordLayout = RedBat.Word.WordLayout
 module Paint = RedBat.Word.Paint
+module Shapes = RedBat.Word.Shapes
 module Styles = RedBat.Word.WordStyles
 module TB = RedBat.Word.TextBuffer
 
@@ -977,6 +978,36 @@ System.GC.Collect()
 check "native x offset cache skips oversized style"
     xOffsetOversizedStyleWeak.IsAlive
     false
+
+let shapePresetPathCycleSizes =
+    [| for index in 0 .. 128 ->
+        100.0 + float index, 80.0 + float (index % 17) |]
+
+for w, h in shapePresetPathCycleSizes do
+    Shapes.presetPath "star32" w h |> ignore
+
+let shapePresetPathCycleExpectedLength =
+    (Shapes.presetPath "star32" 100.0 80.0).Length
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let shapePresetPathCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let shapePresetPathCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable shapePresetPathCycleTotal = 0
+for _pass in 1 .. 1000 do
+    for w, h in shapePresetPathCycleSizes do
+        shapePresetPathCycleTotal <- shapePresetPathCycleTotal + (Shapes.presetPath "star32" w h).Length
+shapePresetPathCycleSw.Stop()
+let shapePresetPathCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - shapePresetPathCycleAllocatedBefore
+check "native shape preset path source cycle"
+    (shapePresetPathCycleSw.Elapsed.TotalMilliseconds < 250.0
+     && shapePresetPathCycleAllocated < 32L * 1024L * 1024L
+     && shapePresetPathCycleTotal = shapePresetPathCycleSizes.Length * 1000 * shapePresetPathCycleExpectedLength)
+    true
+
 let documentPaintLayout : Layout.BlockLayout =
     { BlockId = "native-document-paint-cache"
       Lines = [ documentPaintLine ]

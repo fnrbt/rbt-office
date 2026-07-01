@@ -164,7 +164,7 @@ type private PresetPathCacheKey = {
 let mutable private presetPathCache: PresetPathCacheEntry list = []
 let private presetPathCacheByKey = Dictionary<PresetPathCacheKey, PresetPathCacheEntry>()
 let private presetPathFastSlots = Array.zeroCreate<PresetPathCacheEntry> 256
-let private presetPathCacheMaxEntries = 128
+let private presetPathCacheMaxEntries = 256
 let private presetPathCacheMaxTotalPresetChars = 1000000
 
 let private presetPathCacheMatches preset w h (cached: PresetPathCacheEntry) =
