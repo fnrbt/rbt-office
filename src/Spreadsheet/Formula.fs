@@ -10770,6 +10770,239 @@ let private recalcCacheAddCapped (maxTotal: int) (amount: int) (total: int) =
     elif total > maxTotal || amount > maxTotal - total then maxTotal + 1
     else total + amount
 
+type private RecalcResultCacheKey = {
+    SourceCells: Map<CellAddress, CellData>
+    SourceSpill: Map<CellAddress, CellAddress>
+    Workbook: RedBat.Spreadsheet.Workbook.Workbook option
+    CurrentSheet: RedBat.Spreadsheet.Workbook.SheetId option
+}
+
+type private RecalcResultCacheEntry = {
+    SourceCells: Map<CellAddress, CellData>
+    SourceSpill: Map<CellAddress, CellAddress>
+    Workbook: RedBat.Spreadsheet.Workbook.Workbook option
+    CurrentSheet: RedBat.Spreadsheet.Workbook.SheetId option
+    ResultCells: Map<CellAddress, CellData>
+    FormulaCount: int
+    SourceCellCount: int
+    SourceSpillCount: int
+    ResultCellCount: int
+    SourceTextCharCount: int
+    ResultTextCharCount: int
+}
+
+let mutable private recalcResultCache: RecalcResultCacheEntry list = []
+let private recalcResultFastSlots = Array.zeroCreate<RecalcResultCacheEntry> 256
+let private recalcResultCacheMaxEntries = 128
+let private recalcResultCacheMaxTotalCells = 500000
+let private recalcResultCacheMaxTotalTextChars = 5000000
+
+let private recalcReferenceHash (value: obj) =
+    if isNull value then 0
+    else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value)
+
+let private recalcWorkbookHash = function
+    | Some workbook -> recalcReferenceHash workbook
+    | None -> 0
+
+let private recalcSheetHash = function
+    | Some sheet -> sheet.GetHashCode()
+    | None -> 0
+
+let private recalcWorkbookMatches left right =
+    match left, right with
+    | None, None -> true
+    | Some left, Some right -> obj.ReferenceEquals(left, right)
+    | _ -> false
+
+let private recalcSheetMatches left right =
+    match left, right with
+    | None, None -> true
+    | Some left, Some right -> String.Equals(left, right, StringComparison.Ordinal)
+    | _ -> false
+
+let private recalcResultCacheHash sourceCells sourceSpill workbook currentSheet =
+    let mutable hashCode = recalcReferenceHash sourceCells
+    hashCode <- (hashCode * 397) ^^^ recalcReferenceHash sourceSpill
+    hashCode <- (hashCode * 397) ^^^ recalcWorkbookHash workbook
+    hashCode <- (hashCode * 397) ^^^ recalcSheetHash currentSheet
+    hashCode
+
+let private recalcResultCacheSlot sourceCells sourceSpill workbook currentSheet slotCount =
+    recalcResultCacheHash sourceCells sourceSpill workbook currentSheet &&& (slotCount - 1)
+
+let private recalcResultCacheEntryMatches sourceCells sourceSpill workbook currentSheet (entry: RecalcResultCacheEntry) =
+    obj.ReferenceEquals(entry.SourceCells, sourceCells)
+    && obj.ReferenceEquals(entry.SourceSpill, sourceSpill)
+    && recalcWorkbookMatches entry.Workbook workbook
+    && recalcSheetMatches entry.CurrentSheet currentSheet
+
+let private recalcResultCacheKeyMatchesEntry (key: RecalcResultCacheKey) (entry: RecalcResultCacheEntry) =
+    recalcResultCacheEntryMatches key.SourceCells key.SourceSpill key.Workbook key.CurrentSheet entry
+
+let private recalcResultCacheKeyComparer =
+    { new IEqualityComparer<RecalcResultCacheKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.SourceCells, right.SourceCells)
+            && obj.ReferenceEquals(left.SourceSpill, right.SourceSpill)
+            && recalcWorkbookMatches left.Workbook right.Workbook
+            && recalcSheetMatches left.CurrentSheet right.CurrentSheet
+
+        member _.GetHashCode(key) =
+            recalcResultCacheHash key.SourceCells key.SourceSpill key.Workbook key.CurrentSheet }
+
+let private recalcResultCacheByKey =
+    Dictionary<RecalcResultCacheKey, RecalcResultCacheEntry>(recalcResultCacheKeyComparer)
+
+let private clearRecalcResultFastSlots () =
+    for index = 0 to recalcResultFastSlots.Length - 1 do
+        recalcResultFastSlots.[index] <- Unchecked.defaultof<RecalcResultCacheEntry>
+
+let private setRecalcResultCache entries =
+    recalcResultCache <- entries
+    recalcResultCacheByKey.Clear()
+    clearRecalcResultFastSlots ()
+    for entry in entries do
+        let key = {
+            SourceCells = entry.SourceCells
+            SourceSpill = entry.SourceSpill
+            Workbook = entry.Workbook
+            CurrentSheet = entry.CurrentSheet
+        }
+        let mutable existing = Unchecked.defaultof<RecalcResultCacheEntry>
+        if not (recalcResultCacheByKey.TryGetValue(key, &existing)) then
+            recalcResultCacheByKey.[key] <- entry
+            let slot =
+                recalcResultCacheSlot
+                    entry.SourceCells
+                    entry.SourceSpill
+                    entry.Workbook
+                    entry.CurrentSheet
+                    recalcResultFastSlots.Length
+            recalcResultFastSlots.[slot] <- entry
+
+let private tryGetRecalcResultCache workbook currentSheet (model: SpreadsheetModel) =
+    let slot =
+        recalcResultCacheSlot
+            model.Cells
+            model.Spill
+            workbook
+            currentSheet
+            recalcResultFastSlots.Length
+    let fast = recalcResultFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && recalcResultCacheEntryMatches model.Cells model.Spill workbook currentSheet fast then
+        ValueSome fast
+    else
+        let key = {
+            SourceCells = model.Cells
+            SourceSpill = model.Spill
+            Workbook = workbook
+            CurrentSheet = currentSheet
+        }
+        let mutable cached = Unchecked.defaultof<RecalcResultCacheEntry>
+        if recalcResultCacheByKey.TryGetValue(key, &cached) then
+            recalcResultFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private recalcResultCacheWithoutEntry entry =
+    let mutable cached = Unchecked.defaultof<RecalcResultCacheEntry>
+    let key = {
+        SourceCells = entry.SourceCells
+        SourceSpill = entry.SourceSpill
+        Workbook = entry.Workbook
+        CurrentSheet = entry.CurrentSheet
+    }
+    if recalcResultCacheByKey.TryGetValue(key, &cached)
+       && recalcResultCacheKeyMatchesEntry key cached then
+        recalcResultCache
+        |> List.filter (recalcResultCacheKeyMatchesEntry key >> not)
+    else
+        recalcResultCache
+
+let private recalcResultCellsTextCharCount cells =
+    if Map.count cells > recalcResultCacheMaxTotalCells then
+        recalcResultCacheMaxTotalTextChars + 1
+    else
+        let mutable total = 0
+        cells
+        |> Map.exists (fun _ cell ->
+            total <-
+                recalcCacheAddCapped
+                    recalcResultCacheMaxTotalTextChars
+                    (cellDataTextCharCountFor recalcResultCacheMaxTotalTextChars cell)
+                    total
+            total > recalcResultCacheMaxTotalTextChars)
+        |> ignore
+        min total (recalcResultCacheMaxTotalTextChars + 1)
+
+let private recalcResultRetainedCellCount entry =
+    let resultCellCount =
+        if obj.ReferenceEquals(entry.SourceCells, entry.ResultCells) then 0
+        else entry.ResultCellCount
+    max 1 (entry.SourceCellCount + entry.SourceSpillCount + resultCellCount)
+
+let private recalcResultRetainedTextCharCount entry =
+    let resultTextCharCount =
+        if obj.ReferenceEquals(entry.SourceCells, entry.ResultCells) then 0
+        else entry.ResultTextCharCount
+    max 1 (entry.SourceTextCharCount + resultTextCharCount)
+
+let private recalcResultCacheEntryRetainable entry =
+    recalcResultRetainedCellCount entry <= recalcResultCacheMaxTotalCells
+    && recalcResultRetainedTextCharCount entry <= recalcResultCacheMaxTotalTextChars
+
+let private rememberRecalcResultCache workbook currentSheet sourceCells sourceSpill resultCells formulaCount =
+    let entry = {
+        SourceCells = sourceCells
+        SourceSpill = sourceSpill
+        Workbook = workbook
+        CurrentSheet = currentSheet
+        ResultCells = resultCells
+        FormulaCount = formulaCount
+        SourceCellCount = max 1 (Map.count sourceCells)
+        SourceSpillCount = Map.count sourceSpill
+        ResultCellCount = max 1 (Map.count resultCells)
+        SourceTextCharCount = recalcResultCellsTextCharCount sourceCells
+        ResultTextCharCount =
+            if obj.ReferenceEquals(sourceCells, resultCells) then 0
+            else recalcResultCellsTextCharCount resultCells
+    }
+    if not (recalcResultCacheEntryRetainable entry) then
+        let entries = recalcResultCacheWithoutEntry entry
+        if not (obj.ReferenceEquals(entries, recalcResultCache)) then
+            setRecalcResultCache entries
+    else
+        let mutable keptCount = 1
+        let mutable keptCells = recalcResultRetainedCellCount entry
+        let mutable keptTextChars = recalcResultRetainedTextCharCount entry
+        let retained =
+            recalcResultCacheWithoutEntry entry
+            |> List.choose (fun candidate ->
+                let candidateCells = recalcResultRetainedCellCount candidate
+                let candidateTextChars = recalcResultRetainedTextCharCount candidate
+                if recalcResultCacheEntryRetainable candidate
+                   && keptCount < recalcResultCacheMaxEntries
+                   && keptCells + candidateCells <= recalcResultCacheMaxTotalCells
+                   && keptTextChars + candidateTextChars <= recalcResultCacheMaxTotalTextChars then
+                    keptCount <- keptCount + 1
+                    keptCells <- keptCells + candidateCells
+                    keptTextChars <- keptTextChars + candidateTextChars
+                    Some candidate
+                else
+                    None)
+        entry :: retained
+        |> setRecalcResultCache
+
+let private modelWithCachedRecalcCells (model: SpreadsheetModel) (cached: RecalcResultCacheEntry) =
+    rememberCellsFormulaCount cached.ResultCells cached.FormulaCount
+    if obj.ReferenceEquals(cached.ResultCells, model.Cells) then
+        model
+    else
+        { model with Cells = cached.ResultCells }
+
 let private recalcLocalParseCacheEntryChars (formula: string) (parsed: Result<Expr, string>) =
     0
     |> recalcCacheAddCapped recalcLocalParseCacheMaxTotalChars formula.Length
@@ -10939,6 +11172,7 @@ let private collectFormulaCells (model: SpreadsheetModel) =
     let parseCacheFastSlots = Array.zeroCreate<ParsedFormulaFastCacheEntry> 256
     let mutable parseCacheTotalChars = 0
     let mutable repeatedFormulas: HashSet<string> = null
+    let mutable canCacheResult = true
     let parseFormulaCached formula =
         match tryGetParsedFormulaFastSlotIn parseCacheFastSlots formula with
         | ValueSome parsed ->
@@ -10967,6 +11201,8 @@ let private collectFormulaCells (model: SpreadsheetModel) =
         | CellValue.Formula (formula, _) ->
             match parseFormulaCached formula with
             | Ok expr ->
+                if containsVolatile expr || exprUsesSubtotal expr then
+                    canCacheResult <- false
                 formulaCells.Add {
                     Address = addr
                     Cell = cell
@@ -10983,18 +11219,18 @@ let private collectFormulaCells (model: SpreadsheetModel) =
                     ParseError = Some error
                 }
         | _ -> ())
-    formulaCells, repeatedFormulas
+    formulaCells, repeatedFormulas, canCacheResult
 
 /// Recalculate every formula cell in a model, in dependency order.
 /// `currentSheet` scopes defined-name resolution to the sheet being
 /// recalculated (the caller knows which sheet `model` belongs to).
-let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                           (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
-                           (model: SpreadsheetModel) : SpreadsheetModel =
+let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                                          (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                                          (model: SpreadsheetModel) : SpreadsheetModel =
     match cellsFormulaCountIfKnown model.Cells with
     | Some 0 -> model
     | _ ->
-        let formulaCells, repeatedFormulas = collectFormulaCells model
+        let formulaCells, repeatedFormulas, canCacheResult = collectFormulaCells model
         rememberCellsFormulaCount model.Cells formulaCells.Count
         if formulaCells.Count = 0 then model else
         let criteriaCache = CriteriaPredicateCache()
@@ -11217,7 +11453,19 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
                     | None ->
                         applyFormulaResult fc.Address fc (evaluateCachedIndependentFormulaCell independentResultCache fc.Address fc)
         rememberCellsFormulaCount updatedCells formulaCells.Count
+        if canCacheResult then
+            rememberRecalcResultCache workbook currentSheet model.Cells model.Spill updatedCells formulaCells.Count
         if changed then { model with Cells = updatedCells } else model
+
+let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                           (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                           (model: SpreadsheetModel) : SpreadsheetModel =
+    match cellsFormulaCountIfKnown model.Cells with
+    | Some 0 -> model
+    | _ ->
+        match tryGetRecalcResultCache workbook currentSheet model with
+        | ValueSome cached -> modelWithCachedRecalcCells model cached
+        | ValueNone -> recalculateAllFormulasUncached workbook currentSheet model
 
 /// True if the expression tree uses a dynamic-array (spilling) function.
 let containsArrayFunction (e: Expr) : bool =

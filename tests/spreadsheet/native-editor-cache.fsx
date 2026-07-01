@@ -2052,8 +2052,8 @@ recalcIndependentSw.Stop()
 let recalcIndependentAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - recalcIndependentAllocatedBefore
 check "native independent formula recalc fast path"
-    (recalcIndependentSw.Elapsed.TotalMilliseconds < 600.0
-     && recalcIndependentAllocated < 130L * 1024L * 1024L
+    (recalcIndependentSw.Elapsed.TotalMilliseconds < 180.0
+     && recalcIndependentAllocated < 1024L * 1024L
      && recalcIndependentTotal = recalcIndependentModel.Cells.Count * 20)
     true
 
@@ -2091,8 +2091,8 @@ recalcCriteriaSw.Stop()
 let recalcCriteriaAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - recalcCriteriaAllocatedBefore
 check "native independent criteria recalc stable model"
-    (recalcCriteriaSw.Elapsed.TotalMilliseconds < 900.0
-     && recalcCriteriaAllocated < 260L * 1024L * 1024L
+    (recalcCriteriaSw.Elapsed.TotalMilliseconds < 220.0
+     && recalcCriteriaAllocated < 1024L * 1024L
      && recalcCriteriaTotal = 120.0)
     true
 
