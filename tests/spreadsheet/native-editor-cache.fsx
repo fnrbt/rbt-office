@@ -661,6 +661,30 @@ check "native static paint source cycle"
      && staticPaintSourceCycleTotal = 568000)
     true
 
+for viewport in geometryEntryCycleViewports do
+    RedBat.Spreadsheet.Paint.buildPaintItems paintCacheModel viewport |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let staticPaintEntryCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let staticPaintEntryCycleSw = Stopwatch.StartNew()
+let mutable staticPaintEntryCycleTotal = 0
+for _pass in 1 .. 20 do
+    for viewport in geometryEntryCycleViewports do
+        staticPaintEntryCycleTotal <-
+            staticPaintEntryCycleTotal
+            + (RedBat.Spreadsheet.Paint.buildPaintItems paintCacheModel viewport).Length
+staticPaintEntryCycleSw.Stop()
+let staticPaintEntryCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - staticPaintEntryCycleAllocatedBefore
+check "native static paint entry cycle"
+    (staticPaintEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && staticPaintEntryCycleAllocated < 512L * 1024L
+     && staticPaintEntryCycleTotal = 618020)
+    true
+
 let sparsePaintCells =
     [ for row in 0 .. 1999 ->
         { Row = row; Col = 0 }, cell (CellValue.String (sprintf "R%d" row)) ]
