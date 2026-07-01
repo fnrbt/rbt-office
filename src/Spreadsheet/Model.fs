@@ -4766,7 +4766,7 @@ let mutable private usedBoundsCache: UsedBoundsCache list = []
 let private usedBoundsCacheBySource =
     System.Collections.Generic.Dictionary<CellMergedReferenceKey, UsedBoundsCache>(cellMergedReferenceComparer)
 let private usedBoundsFastSlots = Array.zeroCreate<UsedBoundsCache> 256
-let private usedBoundsCacheMaxSources = 64
+let private usedBoundsCacheMaxSources = 256
 let private usedBoundsCacheMaxTotalCells = structuralCellSourceTextCacheMaxTotalCells
 let private usedBoundsCacheMaxTotalMergedCells = 100000
 let private usedBoundsCacheMaxTotalSourceTextChars = structuralCellSourceTextCacheMaxTotalSourceTextChars

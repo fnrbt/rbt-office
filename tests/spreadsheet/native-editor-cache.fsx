@@ -593,6 +593,41 @@ else
          && usedBoundsTotal = (usedBoundsRows - 1 + 11) * 20)
         true
 
+let usedBoundsCycleSourceCount = 80
+let usedBoundsCycleCellCount = 5000
+let usedBoundsCycleModels =
+    [| for sourceIndex in 0 .. usedBoundsCycleSourceCount - 1 ->
+        let cells =
+            [ for row in 0 .. usedBoundsCycleCellCount - 1 ->
+                let col = if row = usedBoundsCycleCellCount - 1 then 40 + sourceIndex % 7 else sourceIndex % 5
+                { Row = row; Col = col }, cell (CellValue.Number (float (row + sourceIndex))) ]
+            |> Map.ofList
+        { createEmpty usedBoundsCycleCellCount 64 with Cells = cells } |]
+
+for model in usedBoundsCycleModels do
+    usedBounds model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let usedBoundsCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let usedBoundsCycleSw = Stopwatch.StartNew()
+let mutable usedBoundsCycleTotal = 0
+for _pass in 1 .. 20 do
+    for model in usedBoundsCycleModels do
+        match usedBounds model with
+        | Some (row, col) -> usedBoundsCycleTotal <- usedBoundsCycleTotal + row + col
+        | None -> usedBoundsCycleTotal <- usedBoundsCycleTotal - 1
+usedBoundsCycleSw.Stop()
+let usedBoundsCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - usedBoundsCycleAllocatedBefore
+check "native used bounds source cycle"
+    (usedBoundsCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && usedBoundsCycleAllocated < 512L * 1024L
+     && usedBoundsCycleTotal = 8067080)
+    true
+
 let lastUsedColumnRows = 100000
 let lastUsedColumnCells =
     [ for row in 0 .. lastUsedColumnRows - 1 ->
