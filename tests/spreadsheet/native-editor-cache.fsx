@@ -670,6 +670,36 @@ check "native search cache reuses"
     (obj.ReferenceEquals(searchCacheResults, searchCacheResultsAgain))
     true
 
+let searchEmptyCycleRows = 10000
+let searchEmptyCycleCells =
+    [ for row in 0 .. searchEmptyCycleRows - 1 ->
+        { Row = row; Col = 0 }, cell (CellValue.String (sprintf "value-%05d" row)) ]
+    |> Map.ofList
+let searchEmptyCycleModel = { createEmpty searchEmptyCycleRows 4 with Cells = searchEmptyCycleCells }
+let searchEmptyCycleQueries = [| for index in 0 .. 199 -> sprintf "missing-%03d" index |]
+for query in searchEmptyCycleQueries do
+    searchCells query false searchEmptyCycleModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let searchEmptyCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let searchEmptyCycleSw = Stopwatch.StartNew()
+let mutable searchEmptyCycleTotal = 0
+for index in 1 .. 1000 do
+    searchEmptyCycleTotal <-
+        searchEmptyCycleTotal
+        + (searchCells searchEmptyCycleQueries.[index % searchEmptyCycleQueries.Length] false searchEmptyCycleModel).Length
+searchEmptyCycleSw.Stop()
+let searchEmptyCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - searchEmptyCycleAllocatedBefore
+check "native search empty query cycle cache"
+    (searchEmptyCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && searchEmptyCycleAllocated < 512L * 1024L
+     && searchEmptyCycleTotal = 0)
+    true
+
 let uniqueValuesCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "red")
       { Row = 1; Col = 0 }, cell (CellValue.String "blue")
