@@ -935,7 +935,7 @@ let private markupMarkerCommandsCacheKeyComparer =
 let private markupMarkerCommandsCacheByKey =
     Dictionary<MarkupMarkerCommandsCacheKey, MarkupMarkerCommandsCacheEntry>(markupMarkerCommandsCacheKeyComparer)
 let private markupMarkerCommandsFastSlots = Array.zeroCreate<MarkupMarkerCommandsCacheEntry> 256
-let private markupMarkerCommandsCacheMaxEntries = 64
+let private markupMarkerCommandsCacheMaxEntries = 256
 let private markupMarkerCommandsCacheMaxCommands = 200000
 let private markupMarkerCommandsCacheMaxLayouts = 200000
 let private markupMarkerCommandsCacheMaxLayoutTextChars = 5000000

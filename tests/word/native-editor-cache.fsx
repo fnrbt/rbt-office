@@ -800,6 +800,50 @@ check "native document paint cache document cycle"
      && documentPaintCycleTotal = 40000)
     true
 
+let markupMarkerCycleSources: Layout.BlockLayout list array =
+    [| for index in 0 .. 79 ->
+        [ for blockIndex in 0 .. 9 ->
+            let line =
+                { documentPaintLine with
+                    Y = float blockIndex * 24.0 }
+            { BlockId = sprintf "native-marker-cycle-%02d-%02d" index blockIndex
+              Lines = [ line ]
+              Y = float blockIndex * 24.0
+              Height = line.Height
+              AvailableWidth = 120.0
+              Metadata =
+                { Doc.defaultMetadata with
+                    ContentControlId = Some (sprintf "cc-%02d-%02d" index blockIndex) }
+              Prefix = ""
+              PrefixStyle = None
+              PrefixWidth = 0.0
+              Indent = 0.0
+              VAlignOffset = 0.0 } ] |]
+
+for layouts in markupMarkerCycleSources do
+    Paint.markupMarkerCommands documentPaintSettings layouts |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let markupMarkerCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let markupMarkerCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable markupMarkerCycleTotal = 0
+for _pass in 1 .. 500 do
+    for layouts in markupMarkerCycleSources do
+        markupMarkerCycleTotal <-
+            markupMarkerCycleTotal
+            + (Paint.markupMarkerCommands documentPaintSettings layouts).Length
+markupMarkerCycleSw.Stop()
+let markupMarkerCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - markupMarkerCycleAllocatedBefore
+check "native markup marker cache entry cycle"
+    (markupMarkerCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && markupMarkerCycleAllocated < 1024L * 1024L
+     && markupMarkerCycleTotal = 800000)
+    true
+
 if isNull commandsInViewport then
     fail <- fail + 1
     printfn "FAIL %-34s expected private commandsInViewport method" "native viewport commands reflection"
