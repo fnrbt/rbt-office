@@ -300,7 +300,7 @@ let private styleContextCacheByStyles =
 let private styleContextFastSlots = Array.zeroCreate<StyleContextCacheEntry> 256
 let mutable private styleContextLastSet = false
 let mutable private styleContextLast = Unchecked.defaultof<StyleContextCacheEntry>
-let private styleContextCacheMaxEntries = 64
+let private styleContextCacheMaxEntries = 256
 let private styleContextCacheMaxTotalStyles = 200000
 let private styleContextCacheMaxTotalStyleChars = 5000000
 

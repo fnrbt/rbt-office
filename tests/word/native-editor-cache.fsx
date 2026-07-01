@@ -26,6 +26,41 @@ let check label got expected =
 
 let pos blockId offset : Doc.Position = { BlockId = blockId; Offset = offset }
 let para id text : Doc.ParagraphBlock = { Id = id; Buffer = TB.ofString text; Metadata = Doc.defaultMetadata }
+let namedStyle id basedOn textStyle : Doc.NamedStyle =
+    { Id = id
+      Name = Some id
+      StyleType = "character"
+      IsDefault = false
+      BasedOn = basedOn
+      Next = None
+      Linked = None
+      IsQuickStyle = false
+      Aliases = None
+      UiPriority = None
+      SemiHidden = false
+      UnhideWhenUsed = false
+      Text = textStyle
+      TextBold = None
+      TextItalic = None
+      TextUnderline = None
+      TextAllCaps = None
+      TextSmallCaps = None
+      TextStrike = None
+      SpacingBefore = None
+      SpacingAfter = None
+      ContextualSpacing = None
+      LineSpacing = None
+      LineSpacingRule = None
+      Alignment = None
+      IndentLeft = None
+      IndentRight = None
+      FirstLineIndent = None
+      BackgroundColor = None
+      OutlineLevel = None
+      KeepNext = None
+      KeepLines = None
+      PageBreakBefore = None
+      WidowControl = None }
 let cloneString (text: string) = System.String(text.ToCharArray())
 
 let paragraphCount = 10000
@@ -195,6 +230,42 @@ else
     check "native glyph layout cache perf"
         (glyphSw.Elapsed.TotalMilliseconds < 50.0 && glyphProbeCount = 20000)
         true
+
+let styleContextCycleDocCount = 80
+let styleContextCycleStyleCount = 160
+let styleContextCycleDocs =
+    [| for docIndex in 0 .. styleContextCycleDocCount - 1 ->
+        { Doc.empty with
+            Styles =
+                [ for styleIndex in 0 .. styleContextCycleStyleCount - 1 ->
+                    namedStyle
+                        (sprintf "native-cycle-style-%02d-%03d" docIndex styleIndex)
+                        None
+                        (Some { TB.defaultStyle with FontSize = 10.0 + float (styleIndex % 9); Bold = styleIndex % 3 = 0 }) ] } |]
+for doc in styleContextCycleDocs do
+    Styles.styleContext doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let styleContextCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let styleContextCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable styleContextCycleTotal = 0
+for index in 1 .. 800 do
+    let context = Styles.styleContext styleContextCycleDocs.[index % styleContextCycleDocs.Length]
+    styleContextCycleTotal <-
+        styleContextCycleTotal
+        + context.Styles.Count
+        + context.ResolvedCharacterStyles.Count
+styleContextCycleSw.Stop()
+let styleContextCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - styleContextCycleAllocatedBefore
+check "native style context cache document cycle"
+    (styleContextCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && styleContextCycleAllocated < 512L * 1024L
+     && styleContextCycleTotal = 256000)
+    true
 
 let effectiveBufferContext = Styles.styleContext Doc.empty
 let effectiveBufferStyle = Styles.normal
