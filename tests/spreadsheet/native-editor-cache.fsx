@@ -1282,6 +1282,43 @@ check "native filter row source cycle"
      && filterRowCycleTotal = 7998400)
     true
 
+let filterEntryCycleFilterCount = 80
+let filterEntryCycleCells =
+    [ for row in 0 .. filterRowCycleRowCount - 1 ->
+        { Row = row; Col = 0 },
+        cell (CellValue.String (sprintf "bucket-%02d" (row % filterEntryCycleFilterCount))) ]
+    |> Map.ofList
+let filterEntryCycleSourceModel =
+    { createEmpty filterRowCycleRowCount 1 with Cells = filterEntryCycleCells }
+let filterEntryCycleModels =
+    [| for index in 0 .. filterEntryCycleFilterCount - 1 ->
+        filterEntryCycleSourceModel
+        |> applyFilter 0 (Set.singleton (sprintf "bucket-%02d" index)) |]
+
+for model in filterEntryCycleModels do
+    applyFilterRowHeights model |> ignore
+    getVisibleRows model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let filterEntryCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let filterEntryCycleSw = Stopwatch.StartNew()
+let mutable filterEntryCycleTotal = 0
+for _pass in 1 .. 20 do
+    for model in filterEntryCycleModels do
+        filterEntryCycleTotal <- filterEntryCycleTotal + (applyFilterRowHeights model).FilterHiddenRows.Length
+        filterEntryCycleTotal <- filterEntryCycleTotal + (getVisibleRows model).Count
+filterEntryCycleSw.Stop()
+let filterEntryCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - filterEntryCycleAllocatedBefore
+check "native filter row entry cycle"
+    (filterEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && filterEntryCycleAllocated < 4L * 1024L * 1024L
+     && filterEntryCycleTotal = 7998420)
+    true
+
 let searchCacheCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "header")
       { Row = 1; Col = 0 }, cell (CellValue.String "needle")
