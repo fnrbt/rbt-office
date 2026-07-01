@@ -1051,6 +1051,39 @@ check "native replace all alloc"
      && replaceAllAllocated < 4L * 1024L * 1024L)
     true
 
+let findTextHotParagraphCount = 1000
+let findTextHotDoc =
+    { Doc.empty with
+        Blocks =
+            [ for index in 0 .. findTextHotParagraphCount - 1 ->
+                let text = if index % 100 = 0 then "alpha target omega" else "alpha omega"
+                Doc.Paragraph (para (sprintf "native-find-text-hot-%05d" index) text) ] }
+let findTextHotFirst = Doc.findTextArray "target" false findTextHotDoc
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let findTextHotProbeCount = 200000
+let findTextHotAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let findTextHotSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable findTextHotTotal = 0
+let mutable findTextHotReused = true
+for _ in 1 .. findTextHotProbeCount do
+    let matches = Doc.findTextArray "target" false findTextHotDoc
+    findTextHotTotal <- findTextHotTotal + matches.Length
+    if not (obj.ReferenceEquals(matches, findTextHotFirst)) then
+        findTextHotReused <- false
+findTextHotSw.Stop()
+let findTextHotAllocated = System.GC.GetAllocatedBytesForCurrentThread() - findTextHotAllocatedBefore
+check "native find text cache hot hit"
+    (findTextHotSw.Elapsed.TotalMilliseconds < 120.0
+     && findTextHotAllocated < 1024L * 1024L
+     && findTextHotFirst.Length = findTextHotParagraphCount / 100
+     && findTextHotTotal = findTextHotFirst.Length * findTextHotProbeCount
+     && findTextHotReused)
+    true
+
 let bookmarkParagraphCount = 50000
 let bookmarkInterval = 20
 let bookmarkId = "native-bookmark-perf"

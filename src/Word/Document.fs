@@ -7818,11 +7818,11 @@ let private cachedFindTextMatches query matchCase doc =
     match tryGetFindTextCache doc.Blocks with
     | ValueSome cached when findTextCacheRetainable cached ->
         let mutable entry = Unchecked.defaultof<FindTextCacheEntry>
-        if cached.Entries.TryGetValue(key, &entry) then Some entry else None
+        if cached.Entries.TryGetValue(key, &entry) then ValueSome entry else ValueNone
     | ValueSome cached ->
         rememberFindTextCache cached
-        None
-    | ValueNone -> None
+        ValueNone
+    | ValueNone -> ValueNone
 
 let private removeFindTextCacheEntry key (cache: FindTextCache) =
     let mutable existing = Unchecked.defaultof<FindTextCacheEntry>
@@ -7939,7 +7939,7 @@ let private findTextMatchesArray query matchCase doc =
         [||]
     else
         match cachedFindTextMatches query matchCase doc with
-        | Some cached ->
+        | ValueSome cached ->
             cached.Matches
         | _ ->
             let matches = ResizeArray<FindMatch>()
@@ -7966,12 +7966,12 @@ let findText query matchCase doc =
         []
     else
         match cachedFindTextMatches query matchCase doc with
-        | Some cached ->
+        | ValueSome cached ->
             findTextCacheEntryList cached
         | _ ->
             let matches = findTextMatchesArray query matchCase doc
             match cachedFindTextMatches query matchCase doc with
-            | Some cached ->
+            | ValueSome cached ->
                 findTextCacheEntryList cached
             | _ -> arrayToList matches
 
@@ -7998,8 +7998,8 @@ let replaceAllText query replacement matchCase doc =
         (doc, 0)
     elif
         match cachedFindTextMatches query matchCase doc with
-        | Some cached -> cached.Matches.Length = 0
-        | None -> false
+        | ValueSome cached -> cached.Matches.Length = 0
+        | ValueNone -> false
     then
         (doc, 0)
     else
