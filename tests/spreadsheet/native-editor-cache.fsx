@@ -593,6 +593,36 @@ else
          && usedBoundsTotal = (usedBoundsRows - 1 + 11) * 20)
         true
 
+let lastUsedColumnRows = 100000
+let lastUsedColumnCells =
+    [ for row in 0 .. lastUsedColumnRows - 1 ->
+        { Row = row; Col = row % 50 }, cell (CellValue.Number (float row)) ]
+    |> Map.ofList
+let lastUsedColumnModel = { createEmpty lastUsedColumnRows 60 with Cells = lastUsedColumnCells }
+let lastUsedColumnQueryRows = [| for row in 1000 .. 1199 -> row |]
+for row in lastUsedColumnQueryRows do
+    lastUsedColumnInRow row lastUsedColumnModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let lastUsedColumnAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let lastUsedColumnSw = Stopwatch.StartNew()
+let mutable lastUsedColumnTotal = 0
+for index in 1 .. 500000 do
+    match lastUsedColumnInRow lastUsedColumnQueryRows.[index % lastUsedColumnQueryRows.Length] lastUsedColumnModel with
+    | Some col -> lastUsedColumnTotal <- lastUsedColumnTotal + col
+    | None -> lastUsedColumnTotal <- lastUsedColumnTotal - 1
+lastUsedColumnSw.Stop()
+let lastUsedColumnAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - lastUsedColumnAllocatedBefore
+check "native last used column row cycle cache"
+    (lastUsedColumnSw.Elapsed.TotalMilliseconds < 80.0
+     && lastUsedColumnAllocated < 512L * 1024L
+     && lastUsedColumnTotal = 12250000)
+    true
+
 let filterCacheCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "header")
       { Row = 1; Col = 0 }, cell (CellValue.String "keep")

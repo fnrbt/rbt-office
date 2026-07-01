@@ -5021,6 +5021,13 @@ let usedBounds (model: SpreadsheetModel) : (int * int) option =
 /// Last populated column in a row. Used by End-key navigation; keeps that
 /// row-specific scan in one place and accounts for merged cells crossing
 /// the row.
+[<Struct>]
+type private LastUsedColumnInRowFastEntry = {
+    Set: bool
+    Row: int
+    Result: int option
+}
+
 type private LastUsedColumnInRowCache = {
     Cells: Map<CellAddress, CellData>
     CellCount: int
@@ -5031,6 +5038,7 @@ type private LastUsedColumnInRowCache = {
     MergeRowLastColumns: System.Collections.Generic.Dictionary<int, int> option
     Entries: System.Collections.Generic.Dictionary<int, int option>
     Order: System.Collections.Generic.Queue<int>
+    EntryFastSlots: LastUsedColumnInRowFastEntry array
 }
 
 let mutable private lastUsedColumnInRowCache: LastUsedColumnInRowCache list = []
@@ -5092,6 +5100,17 @@ let private lastUsedColumnInRowCacheRetainable (cached: LastUsedColumnInRowCache
     cached.CellCount <= lastUsedColumnInRowCacheMaxTotalCells
     && cached.MergedCellCount <= lastUsedColumnInRowCacheMaxTotalMergedCells
     && cached.SourceTextCharCount <= lastUsedColumnInRowCacheMaxTotalSourceTextChars
+
+let private lastUsedColumnInRowEntryFastSlot (slots: LastUsedColumnInRowFastEntry array) row =
+    row &&& (slots.Length - 1)
+
+let private tryGetLastUsedColumnInRowEntryFastSlot (cached: LastUsedColumnInRowCache) row =
+    let fast = cached.EntryFastSlots.[lastUsedColumnInRowEntryFastSlot cached.EntryFastSlots row]
+    if fast.Set && fast.Row = row then ValueSome fast.Result else ValueNone
+
+let private setLastUsedColumnInRowEntryFastSlot (cached: LastUsedColumnInRowCache) row result =
+    cached.EntryFastSlots.[lastUsedColumnInRowEntryFastSlot cached.EntryFastSlots row] <-
+        { Set = true; Row = row; Result = result }
 
 let private buildLastUsedColumnRowIndex (cells: Map<CellAddress, CellData>) =
     let rows = System.Collections.Generic.Dictionary<int, int>()
@@ -5226,12 +5245,17 @@ let lastUsedColumnInRow (row: int) (model: SpreadsheetModel) : int option =
     match tryGetLastUsedColumnInRowCache model.Cells model.MergedCells with
     | ValueSome cached when lastUsedColumnInRowCacheRetainable cached ->
         let mutable lastColumn = Unchecked.defaultof<int option>
-        if cached.Entries.TryGetValue(row, &lastColumn) then
-            lastColumn
-        else
-            let computed = lastUsedColumnInRowFromIndex row cached.CellRowLastColumns cached.MergeRowLastColumns cached.MergedCells
-            addLastUsedColumnInRowCacheEntry row computed cached.Entries cached.Order
-            computed
+        match tryGetLastUsedColumnInRowEntryFastSlot cached row with
+        | ValueSome cachedResult -> cachedResult
+        | ValueNone ->
+            if cached.Entries.TryGetValue(row, &lastColumn) then
+                setLastUsedColumnInRowEntryFastSlot cached row lastColumn
+                lastColumn
+            else
+                let computed = lastUsedColumnInRowFromIndex row cached.CellRowLastColumns cached.MergeRowLastColumns cached.MergedCells
+                addLastUsedColumnInRowCacheEntry row computed cached.Entries cached.Order
+                setLastUsedColumnInRowEntryFastSlot cached row computed
+                computed
     | ValueSome cached ->
         rememberLastUsedColumnInRowCache cached
         let mutable lastColumn = Unchecked.defaultof<int option>
@@ -5262,6 +5286,7 @@ let lastUsedColumnInRow (row: int) (model: SpreadsheetModel) : int option =
                     MergeRowLastColumns = mergeRowLastColumns
                     Entries = entries
                     Order = order
+                    EntryFastSlots = Array.zeroCreate<LastUsedColumnInRowFastEntry> 256
                 }
             result
 
