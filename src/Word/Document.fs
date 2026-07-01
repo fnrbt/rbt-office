@@ -5923,6 +5923,23 @@ type private CaptionIdMetricsCache = {
 }
 
 let mutable private captionIdMetricsCache: CaptionIdMetricsCache list = []
+[<Struct>]
+type private CaptionIdMetricsCacheKey = {
+    KeyBlocks: Block list
+    KeyLabel: string
+}
+
+let private captionIdMetricsCacheKeyComparer =
+    { new IEqualityComparer<CaptionIdMetricsCacheKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.KeyBlocks, right.KeyBlocks)
+            && left.KeyLabel = right.KeyLabel
+        member _.GetHashCode(value) =
+            (System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value.KeyBlocks) * 397)
+            ^^^ hash value.KeyLabel }
+let private captionIdMetricsCacheByKey =
+    Dictionary<CaptionIdMetricsCacheKey, CaptionIdMetricsCache>(captionIdMetricsCacheKeyComparer)
+let private captionIdMetricsFastSlots = Array.zeroCreate<CaptionIdMetricsCache> 256
 let private captionIdMetricsCacheMaxEntries = 16
 let private captionIdMetricsCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit + 20000
 let private captionIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
@@ -5930,6 +5947,46 @@ let private captionIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCac
 let private captionIdMetricsCacheMatches blocks label cached =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
     && cached.SourceLabel = label
+
+let private captionIdMetricsCacheKey blocks label = {
+    KeyBlocks = blocks
+    KeyLabel = label
+}
+
+let private captionIdMetricsCacheKeyMatches key cached =
+    obj.ReferenceEquals(cached.SourceBlocks, key.KeyBlocks)
+    && cached.SourceLabel = key.KeyLabel
+
+let private captionIdMetricsCacheSlot key slotCount =
+    ((System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.KeyBlocks) * 397)
+     ^^^ hash key.KeyLabel)
+    &&& (slotCount - 1)
+
+let private setCaptionIdMetricsCache entries =
+    captionIdMetricsCache <- entries
+    captionIdMetricsCacheByKey.Clear()
+    clearArray captionIdMetricsFastSlots
+    for entry in entries do
+        let key = captionIdMetricsCacheKey entry.SourceBlocks entry.SourceLabel
+        let mutable existing = Unchecked.defaultof<CaptionIdMetricsCache>
+        if not (captionIdMetricsCacheByKey.TryGetValue(key, &existing)) then
+            captionIdMetricsCacheByKey.[key] <- entry
+            captionIdMetricsFastSlots.[captionIdMetricsCacheSlot key captionIdMetricsFastSlots.Length] <- entry
+
+let private tryGetCaptionIdMetricsCache blocks label =
+    let key = captionIdMetricsCacheKey blocks label
+    let slot = captionIdMetricsCacheSlot key captionIdMetricsFastSlots.Length
+    let fast = captionIdMetricsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && captionIdMetricsCacheKeyMatches key fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<CaptionIdMetricsCache>
+        if captionIdMetricsCacheByKey.TryGetValue(key, &cached) then
+            captionIdMetricsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private captionIdMetricsCacheRetainable cached =
     cached.SourceParagraphCount <= captionIdMetricsCacheMaxTotalSourceParagraphs
@@ -5957,31 +6014,25 @@ let private trimCaptionIdMetricsCache entries =
     loop 0 0 0 [] entries
 
 let private captionIdMetricsCacheWithoutMatching blocks label =
-    let rec rebuild keptRev remaining =
-        match remaining with
-        | [] -> List.rev keptRev
-        | entry :: tail when captionIdMetricsCacheMatches blocks label entry ->
-            rebuild keptRev tail
-        | entry :: tail ->
-            rebuild (entry :: keptRev) tail
-    let rec seek keptRev remaining =
-        match remaining with
-        | [] -> captionIdMetricsCache
-        | entry :: tail when captionIdMetricsCacheMatches blocks label entry ->
-            rebuild keptRev tail
-        | entry :: tail ->
-            seek (entry :: keptRev) tail
-    seek [] captionIdMetricsCache
+    let key = captionIdMetricsCacheKey blocks label
+    let mutable cached = Unchecked.defaultof<CaptionIdMetricsCache>
+    if captionIdMetricsCacheByKey.TryGetValue(key, &cached)
+       && captionIdMetricsCacheKeyMatches key cached then
+        captionIdMetricsCache
+        |> List.filter (captionIdMetricsCacheMatches blocks label >> not)
+    else
+        captionIdMetricsCache
 
 let private rememberCaptionIdMetrics cached =
     let withoutMatching =
         captionIdMetricsCacheWithoutMatching cached.SourceBlocks cached.SourceLabel
     if not (captionIdMetricsCacheRetainable cached) then
-        captionIdMetricsCache <- withoutMatching
+        if not (obj.ReferenceEquals(withoutMatching, captionIdMetricsCache)) then
+            setCaptionIdMetricsCache withoutMatching
     else
-        captionIdMetricsCache <-
-            (cached :: withoutMatching)
-            |> trimCaptionIdMetricsCache
+        (cached :: withoutMatching)
+        |> trimCaptionIdMetricsCache
+        |> setCaptionIdMetricsCache
 
 let private captionIdMetricsSourceTextCharCountFor sourceParagraphCount blocks =
     documentBlocksSourceTextCharCountFor
@@ -5990,9 +6041,9 @@ let private captionIdMetricsSourceTextCharCountFor sourceParagraphCount blocks =
         blocks
 
 let private captionIdMetrics label doc =
-    match captionIdMetricsCache |> List.tryFind (captionIdMetricsCacheMatches doc.Blocks label) with
-    | Some cached -> cached
-    | None ->
+    match tryGetCaptionIdMetricsCache doc.Blocks label with
+    | ValueSome cached -> cached
+    | ValueNone ->
         let prefix = sprintf " SEQ %s " label
         let mutable maxSequenceResult = 0
         let mutable maxBookmarkId = 0
@@ -6046,12 +6097,39 @@ type private BookmarkIdMetricsCache = {
 }
 
 let mutable private bookmarkIdMetricsCache: BookmarkIdMetricsCache list = []
+let private bookmarkIdMetricsCacheByBlocks =
+    Dictionary<Block list, BookmarkIdMetricsCache>(documentInfoBlocksComparer)
+let private bookmarkIdMetricsFastSlots = Array.zeroCreate<BookmarkIdMetricsCache> 256
 let private bookmarkIdMetricsCacheMaxEntries = 64
 let private bookmarkIdMetricsCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private bookmarkIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
 let private bookmarkIdMetricsCacheMatches blocks cached =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private setBookmarkIdMetricsCache entries =
+    bookmarkIdMetricsCache <- entries
+    bookmarkIdMetricsCacheByBlocks.Clear()
+    clearArray bookmarkIdMetricsFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<BookmarkIdMetricsCache>
+        if not (bookmarkIdMetricsCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            bookmarkIdMetricsCacheByBlocks.[entry.SourceBlocks] <- entry
+            bookmarkIdMetricsFastSlots.[documentInfoSlot entry.SourceBlocks bookmarkIdMetricsFastSlots.Length] <- entry
+
+let private tryGetBookmarkIdMetricsCache blocks =
+    let slot = documentInfoSlot blocks bookmarkIdMetricsFastSlots.Length
+    let fast = bookmarkIdMetricsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && bookmarkIdMetricsCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<BookmarkIdMetricsCache>
+        if bookmarkIdMetricsCacheByBlocks.TryGetValue(blocks, &cached) then
+            bookmarkIdMetricsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private bookmarkIdMetricsCacheRetainable cached =
     cached.SourceParagraphCount <= bookmarkIdMetricsCacheMaxTotalSourceParagraphs
@@ -6072,25 +6150,19 @@ let private tryParseBookmarkId value =
     | None -> ValueNone
 
 let private bookmarkIdMetricsCacheWithoutMatching blocks =
-    let rec rebuild keptRev remaining =
-        match remaining with
-        | [] -> List.rev keptRev
-        | entry :: tail when bookmarkIdMetricsCacheMatches blocks entry ->
-            rebuild keptRev tail
-        | entry :: tail ->
-            rebuild (entry :: keptRev) tail
-    let rec seek keptRev remaining =
-        match remaining with
-        | [] -> bookmarkIdMetricsCache
-        | entry :: tail when bookmarkIdMetricsCacheMatches blocks entry ->
-            rebuild keptRev tail
-        | entry :: tail ->
-            seek (entry :: keptRev) tail
-    seek [] bookmarkIdMetricsCache
+    let mutable cached = Unchecked.defaultof<BookmarkIdMetricsCache>
+    if bookmarkIdMetricsCacheByBlocks.TryGetValue(blocks, &cached)
+       && bookmarkIdMetricsCacheMatches blocks cached then
+        bookmarkIdMetricsCache
+        |> List.filter (bookmarkIdMetricsCacheMatches blocks >> not)
+    else
+        bookmarkIdMetricsCache
 
 let private rememberBookmarkIdMetrics cached =
     if not (bookmarkIdMetricsCacheRetainable cached) then
-        bookmarkIdMetricsCache <- bookmarkIdMetricsCacheWithoutMatching cached.SourceBlocks
+        let entries = bookmarkIdMetricsCacheWithoutMatching cached.SourceBlocks
+        if not (obj.ReferenceEquals(entries, bookmarkIdMetricsCache)) then
+            setBookmarkIdMetricsCache entries
     else
         let trim entries =
             let rec loop keptCount keptBlocks keptSourceTextChars acc remaining =
@@ -6112,14 +6184,14 @@ let private rememberBookmarkIdMetrics cached =
                     else
                         loop keptCount keptBlocks keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        bookmarkIdMetricsCache <-
-            (cached :: bookmarkIdMetricsCacheWithoutMatching cached.SourceBlocks)
-            |> trim
+        (cached :: bookmarkIdMetricsCacheWithoutMatching cached.SourceBlocks)
+        |> trim
+        |> setBookmarkIdMetricsCache
 
 let private bookmarkIdMetrics doc =
-    match bookmarkIdMetricsCache |> List.tryFind (bookmarkIdMetricsCacheMatches doc.Blocks) with
-    | Some cached -> cached
-    | None ->
+    match tryGetBookmarkIdMetricsCache doc.Blocks with
+    | ValueSome cached -> cached
+    | ValueNone ->
         let mutable maxExisting = 0
         for block in doc.Blocks do
             iterTextRunsInBlock block (fun run ->
@@ -6173,12 +6245,39 @@ type private RevisionIdMetricsCache = {
 }
 
 let mutable private revisionIdMetricsCache: RevisionIdMetricsCache list = []
+let private revisionIdMetricsCacheByBlocks =
+    Dictionary<Block list, RevisionIdMetricsCache>(documentInfoBlocksComparer)
+let private revisionIdMetricsFastSlots = Array.zeroCreate<RevisionIdMetricsCache> 256
 let private revisionIdMetricsCacheMaxEntries = 64
 let private revisionIdMetricsCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private revisionIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
 let private revisionIdMetricsCacheMatches blocks cached =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
+
+let private setRevisionIdMetricsCache entries =
+    revisionIdMetricsCache <- entries
+    revisionIdMetricsCacheByBlocks.Clear()
+    clearArray revisionIdMetricsFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<RevisionIdMetricsCache>
+        if not (revisionIdMetricsCacheByBlocks.TryGetValue(entry.SourceBlocks, &existing)) then
+            revisionIdMetricsCacheByBlocks.[entry.SourceBlocks] <- entry
+            revisionIdMetricsFastSlots.[documentInfoSlot entry.SourceBlocks revisionIdMetricsFastSlots.Length] <- entry
+
+let private tryGetRevisionIdMetricsCache blocks =
+    let slot = documentInfoSlot blocks revisionIdMetricsFastSlots.Length
+    let fast = revisionIdMetricsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && revisionIdMetricsCacheMatches blocks fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<RevisionIdMetricsCache>
+        if revisionIdMetricsCacheByBlocks.TryGetValue(blocks, &cached) then
+            revisionIdMetricsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
 
 let private revisionIdMetricsCacheRetainable cached =
     cached.SourceParagraphCount <= revisionIdMetricsCacheMaxTotalSourceParagraphs
@@ -6199,25 +6298,19 @@ let private tryParseRevisionId value =
     | None -> ValueNone
 
 let private revisionIdMetricsCacheWithoutMatching blocks =
-    let rec rebuild keptRev remaining =
-        match remaining with
-        | [] -> List.rev keptRev
-        | entry :: tail when revisionIdMetricsCacheMatches blocks entry ->
-            rebuild keptRev tail
-        | entry :: tail ->
-            rebuild (entry :: keptRev) tail
-    let rec seek keptRev remaining =
-        match remaining with
-        | [] -> revisionIdMetricsCache
-        | entry :: tail when revisionIdMetricsCacheMatches blocks entry ->
-            rebuild keptRev tail
-        | entry :: tail ->
-            seek (entry :: keptRev) tail
-    seek [] revisionIdMetricsCache
+    let mutable cached = Unchecked.defaultof<RevisionIdMetricsCache>
+    if revisionIdMetricsCacheByBlocks.TryGetValue(blocks, &cached)
+       && revisionIdMetricsCacheMatches blocks cached then
+        revisionIdMetricsCache
+        |> List.filter (revisionIdMetricsCacheMatches blocks >> not)
+    else
+        revisionIdMetricsCache
 
 let private rememberRevisionIdMetrics cached =
     if not (revisionIdMetricsCacheRetainable cached) then
-        revisionIdMetricsCache <- revisionIdMetricsCacheWithoutMatching cached.SourceBlocks
+        let entries = revisionIdMetricsCacheWithoutMatching cached.SourceBlocks
+        if not (obj.ReferenceEquals(entries, revisionIdMetricsCache)) then
+            setRevisionIdMetricsCache entries
     else
         let trim entries =
             let rec loop keptCount keptBlocks keptSourceTextChars acc remaining =
@@ -6239,14 +6332,14 @@ let private rememberRevisionIdMetrics cached =
                     else
                         loop keptCount keptBlocks keptSourceTextChars acc tail
             loop 0 0 0 [] entries
-        revisionIdMetricsCache <-
-            (cached :: revisionIdMetricsCacheWithoutMatching cached.SourceBlocks)
-            |> trim
+        (cached :: revisionIdMetricsCacheWithoutMatching cached.SourceBlocks)
+        |> trim
+        |> setRevisionIdMetricsCache
 
 let private revisionIdMetrics doc =
-    match revisionIdMetricsCache |> List.tryFind (revisionIdMetricsCacheMatches doc.Blocks) with
-    | Some cached -> cached
-    | None ->
+    match tryGetRevisionIdMetricsCache doc.Blocks with
+    | ValueSome cached -> cached
+    | ValueNone ->
         let mutable maxExisting = 0
         for block in doc.Blocks do
             iterTextRunsInBlock block (fun run ->

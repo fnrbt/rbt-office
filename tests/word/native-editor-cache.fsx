@@ -40,6 +40,7 @@ let initialDoc = docWithSelection 0
 let state = Composit.Ui.WordEditor.createState initialDoc
 let wordEditorType = typeof<Composit.Ui.WordEditor.WordEditorState>.Assembly.GetType("Composit.Ui.WordEditor")
 let staticBindingFlags = BindingFlags.NonPublic ||| BindingFlags.Public ||| BindingFlags.Static
+let documentModuleType = typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Document")
 let cachedLayouts =
     wordEditorType.GetMethod("cachedLayouts", BindingFlags.NonPublic ||| BindingFlags.Static)
 let documentHeightCached =
@@ -62,6 +63,12 @@ let tryLoadWordFont =
     wordEditorType.GetMethod("tryLoadWordFont", staticBindingFlags)
 let wordFontCacheProperty =
     wordEditorType.GetProperty("wordFontCache", staticBindingFlags)
+let documentCaptionIdMetrics =
+    documentModuleType.GetMethod("captionIdMetrics", BindingFlags.NonPublic ||| BindingFlags.Static)
+let documentBookmarkIdMetrics =
+    documentModuleType.GetMethod("bookmarkIdMetrics", BindingFlags.NonPublic ||| BindingFlags.Static)
+let documentRevisionIdMetrics =
+    documentModuleType.GetMethod("revisionIdMetrics", BindingFlags.NonPublic ||| BindingFlags.Static)
 let vbaDocumentText =
     typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("documentText", BindingFlags.NonPublic ||| BindingFlags.Static)
 let vbaLayoutCacheFor =
@@ -811,6 +818,49 @@ check "native remove bookmark alloc"
     (bookmarkSw.Elapsed.TotalMilliseconds < 40.0
      && bookmarkAllocated < 20L * 1024L * 1024L)
     true
+
+if isNull documentCaptionIdMetrics || isNull documentBookmarkIdMetrics || isNull documentRevisionIdMetrics then
+    fail <- fail + 1
+    printfn "FAIL %-34s expected private document id metrics helpers" "native id metrics reflection"
+else
+    let idMetricDoc docIndex =
+        { Doc.empty with
+            Blocks =
+                [ for index in 0 .. 24 ->
+                    Doc.Paragraph (para (sprintf "native-id-metric-%03d-%03d" docIndex index) "plain text") ] }
+    let idMetricDocs =
+        [| for index in 0 .. 63 -> idMetricDoc index |]
+    let captionMetricDocs =
+        [| for index in 0 .. 15 -> idMetricDoc (100 + index) |]
+
+    for doc in idMetricDocs do
+        documentBookmarkIdMetrics.Invoke(null, [| box doc |]) |> ignore
+        documentRevisionIdMetrics.Invoke(null, [| box doc |]) |> ignore
+    for doc in captionMetricDocs do
+        documentCaptionIdMetrics.Invoke(null, [| box "Figure"; box doc |]) |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let idMetricSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable idMetricHits = 0
+    for _pass in 1 .. 2000 do
+        for doc in idMetricDocs do
+            if not (isNull (documentBookmarkIdMetrics.Invoke(null, [| box doc |]))) then
+                idMetricHits <- idMetricHits + 1
+            if not (isNull (documentRevisionIdMetrics.Invoke(null, [| box doc |]))) then
+                idMetricHits <- idMetricHits + 1
+    for _pass in 1 .. 1000 do
+        for doc in captionMetricDocs do
+            if not (isNull (documentCaptionIdMetrics.Invoke(null, [| box "Figure"; box doc |]))) then
+                idMetricHits <- idMetricHits + 1
+    idMetricSw.Stop()
+
+    check "native id metrics cache many docs"
+        (idMetricSw.Elapsed.TotalMilliseconds < 120.0
+         && idMetricHits = 272000)
+        true
 
 let dateFieldParagraphCount = 50000
 let dateFieldBuffer =
