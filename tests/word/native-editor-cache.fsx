@@ -1421,6 +1421,36 @@ check "native find text cache hot hit"
      && findTextHotReused)
     true
 
+let findTextEntryCycleQueryCount = 80
+let findTextEntryCycleQueries =
+    [| for index in 0 .. findTextEntryCycleQueryCount - 1 ->
+        sprintf "missing-entry-%02d" index |]
+let findTextEntryCycleDoc =
+    { Doc.empty with
+        Blocks =
+            [ for index in 0 .. findTextHotParagraphCount - 1 ->
+                Doc.Paragraph (para (sprintf "native-find-entry-%05d" index) "alpha omega text") ] }
+for query in findTextEntryCycleQueries do
+    Doc.findTextArray query false findTextEntryCycleDoc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let findTextEntryCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let findTextEntryCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable findTextEntryCycleTotal = 0
+for _pass in 1 .. 20 do
+    for query in findTextEntryCycleQueries do
+        findTextEntryCycleTotal <- findTextEntryCycleTotal + (Doc.findTextArray query false findTextEntryCycleDoc).Length
+findTextEntryCycleSw.Stop()
+let findTextEntryCycleAllocated = System.GC.GetAllocatedBytesForCurrentThread() - findTextEntryCycleAllocatedBefore
+check "native find text entry cycle"
+    (findTextEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && findTextEntryCycleAllocated < 512L * 1024L
+     && findTextEntryCycleTotal = 0)
+    true
+
 let findTextCycleSourceCount = 80
 let findTextCycleParagraphCount = 1000
 let findTextCycleQuery = "missing-needle"
