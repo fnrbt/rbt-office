@@ -161,8 +161,25 @@ type private PresetPathCacheKey = {
     Height: float
 }
 
+let private presetPathCacheKeyHash (key: PresetPathCacheKey) =
+    let mutable hashCode =
+        if isNull key.Preset then 0 else key.Preset.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ key.Width.GetHashCode()
+    (hashCode * 397) ^^^ key.Height.GetHashCode()
+
+let private presetPathCacheKeyEquals (left: PresetPathCacheKey) (right: PresetPathCacheKey) =
+    left.Preset = right.Preset
+    && left.Width = right.Width
+    && left.Height = right.Height
+
+let private presetPathCacheKeyComparer =
+    { new IEqualityComparer<PresetPathCacheKey> with
+        member _.Equals(left, right) = presetPathCacheKeyEquals left right
+        member _.GetHashCode(value) = presetPathCacheKeyHash value }
+
 let mutable private presetPathCache: PresetPathCacheEntry list = []
-let private presetPathCacheByKey = Dictionary<PresetPathCacheKey, PresetPathCacheEntry>()
+let private presetPathCacheByKey =
+    Dictionary<PresetPathCacheKey, PresetPathCacheEntry>(presetPathCacheKeyComparer)
 let private presetPathFastSlots = Array.zeroCreate<PresetPathCacheEntry> 256
 let private presetPathCacheMaxEntries = 256
 let private presetPathCacheMaxTotalPresetChars = 1000000
@@ -180,7 +197,7 @@ let private presetPathCacheKeyMatches (key: PresetPathCacheKey) (cached: PresetP
     cached.Preset = key.Preset && cached.Width = key.Width && cached.Height = key.Height
 
 let private presetPathCacheSlot (key: PresetPathCacheKey) slotCount =
-    hash key &&& (slotCount - 1)
+    presetPathCacheKeyHash key &&& (slotCount - 1)
 
 let private setPresetPathCache (entries: PresetPathCacheEntry list) =
     presetPathCache <- entries

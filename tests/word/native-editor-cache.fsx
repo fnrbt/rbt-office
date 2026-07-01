@@ -1003,8 +1003,8 @@ shapePresetPathCycleSw.Stop()
 let shapePresetPathCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - shapePresetPathCycleAllocatedBefore
 check "native shape preset path source cycle"
-    (shapePresetPathCycleSw.Elapsed.TotalMilliseconds < 250.0
-     && shapePresetPathCycleAllocated < 32L * 1024L * 1024L
+    (shapePresetPathCycleSw.Elapsed.TotalMilliseconds < 100.0
+     && shapePresetPathCycleAllocated < 512L * 1024L
      && shapePresetPathCycleTotal = shapePresetPathCycleSizes.Length * 1000 * shapePresetPathCycleExpectedLength)
     true
 
