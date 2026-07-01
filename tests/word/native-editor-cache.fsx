@@ -2091,7 +2091,7 @@ headingNoopSw.Stop()
 let headingNoopAllocated = System.GC.GetAllocatedBytesForCurrentThread() - headingNoopAllocatedBefore
 check "native heading noop cache hot hit"
     (headingNoopSw.Elapsed.TotalMilliseconds < 250.0
-     && headingNoopAllocated < 10L * 1024L * 1024L
+     && headingNoopAllocated < 128L * 1024L
      && headingNoopSame = 200000)
     true
 let tableCellMarginCell : Doc.TableCell =

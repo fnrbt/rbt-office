@@ -7877,10 +7877,17 @@ let private headingFontSize level =
 let private hasHeadingStyle level buffer =
     let bold = level >= 1 && level <= 3
     let fontSize = headingFontSize level
-    buffer.Runs
-    |> List.forall (function
-        | Text tr -> tr.Style.Bold = bold && tr.Style.FontSize = fontSize
-        | Image _ -> true)
+    let mutable matches = true
+    let mutable runs = buffer.Runs
+    while matches && not runs.IsEmpty do
+        match runs with
+        | Text tr :: tail ->
+            matches <- tr.Style.Bold = bold && tr.Style.FontSize = fontSize
+            runs <- tail
+        | Image _ :: tail ->
+            runs <- tail
+        | [] -> ()
+    matches
 
 let private styleHeadingBuffer level buffer =
     let len = TextBuffer.length buffer
