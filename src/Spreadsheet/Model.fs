@@ -2175,7 +2175,7 @@ let mutable private columnUniqueValuesCache: ColumnUniqueValuesCache list = []
 let private columnUniqueValuesCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, ColumnUniqueValuesCache>(cellMapReferenceComparer)
 let private columnUniqueValuesFastSlots = Array.zeroCreate<ColumnUniqueValuesCache> 256
-let private columnUniqueValuesCacheMaxEntries = 64
+let private columnUniqueValuesCacheMaxEntries = 256
 let private columnUniqueValuesCacheMaxSources = 64
 let private columnUniqueValuesCacheMaxTotalValues = 200000
 let private columnUniqueValuesCacheMaxTotalValueTextChars = 5000000

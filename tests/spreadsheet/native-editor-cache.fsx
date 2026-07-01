@@ -734,6 +734,35 @@ check "native column unique values hot hit"
      && uniqueValuesTotal = 1000000)
     true
 
+let uniqueValuesCycleRows = 250
+let uniqueValuesCycleCols = 80
+let uniqueValuesCycleCells =
+    [ for row in 0 .. uniqueValuesCycleRows - 1 do
+        for col in 0 .. uniqueValuesCycleCols - 1 ->
+            { Row = row; Col = col }, cell (CellValue.String (sprintf "C%02d-V%02d" col (row % 20))) ]
+    |> Map.ofList
+let uniqueValuesCycleModel = { createEmpty uniqueValuesCycleRows uniqueValuesCycleCols with Cells = uniqueValuesCycleCells }
+for col in 0 .. uniqueValuesCycleCols - 1 do
+    columnUniqueValues col uniqueValuesCycleModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let uniqueValuesCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let uniqueValuesCycleSw = Stopwatch.StartNew()
+let mutable uniqueValuesCycleTotal = 0
+for index in 1 .. 800 do
+    uniqueValuesCycleTotal <- uniqueValuesCycleTotal + (columnUniqueValues (index % uniqueValuesCycleCols) uniqueValuesCycleModel).Length
+uniqueValuesCycleSw.Stop()
+let uniqueValuesCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - uniqueValuesCycleAllocatedBefore
+check "native column unique values column cycle"
+    (uniqueValuesCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && uniqueValuesCycleAllocated < 512L * 1024L
+     && uniqueValuesCycleTotal = 16000)
+    true
+
 let tableUniqueValuesCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "Color")
       { Row = 1; Col = 0 }, cell (CellValue.String "red")
