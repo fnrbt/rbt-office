@@ -537,7 +537,7 @@ type private RendererPaintItemsCacheEntry = {
 }
 
 let mutable private cellRendererCommandsCache: RendererPaintItemsCacheEntry list = []
-let private cellRendererCommandsCacheMaxEntries = 16
+let private cellRendererCommandsCacheMaxEntries = 256
 let private cellRendererCommandsCacheMaxCommands = 200000
 let private cellRendererCommandsCacheMaxTextChars = 5000000
 

@@ -302,6 +302,51 @@ else
          && sparseFrameTotal = 265540)
         true
 
+    let denseRendererRows = 2000
+    let denseRendererCols = 80
+    let denseRendererCells =
+        [ for row in 0 .. denseRendererRows - 1 do
+            for col in 0 .. denseRendererCols - 1 do
+                { Row = row; Col = col }, cell (CellValue.Number (float (row + col))) ]
+        |> Map.ofList
+    let denseRendererModel =
+        { createEmpty denseRendererRows denseRendererCols with
+            Cells = denseRendererCells
+            RichRuns =
+                Map.ofList [
+                    { Row = 0; Col = 0 },
+                    [ "1", { emptyRunOverride with Bold = Some true } ]
+                ] }
+    let denseRendererViewports =
+        [| for index in 0 .. 79 ->
+            0.0, float index * 120.0, 900.0, 600.0 |]
+    let invokeDenseRendererViewport (scrollX, scrollY, viewportWidth, viewportHeight) =
+        cellCommandsInViewport.Invoke(
+            null,
+            [| box denseRendererModel; box scrollX; box scrollY; box viewportWidth; box viewportHeight |])
+        :?> Renderer.Cmd list
+
+    for viewport in denseRendererViewports do
+        invokeDenseRendererViewport viewport |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let denseRendererAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let denseRendererSw = Stopwatch.StartNew()
+    let mutable denseRendererTotal = 0
+    for _pass in 1 .. 20 do
+        for viewport in denseRendererViewports do
+            denseRendererTotal <- denseRendererTotal + (invokeDenseRendererViewport viewport).Length
+    denseRendererSw.Stop()
+    let denseRendererAllocated = System.GC.GetAllocatedBytesForCurrentThread() - denseRendererAllocatedBefore
+    check "native grid renderer command entry cycle"
+        (denseRendererSw.Elapsed.TotalMilliseconds < 100.0
+         && denseRendererAllocated < 8L * 1024L * 1024L
+         && denseRendererTotal = 582820)
+        true
+
 if isNull measureText then
     fail <- fail + 1
     printfn "FAIL %-38s expected grid measureText helper" "native text measure reflection"
