@@ -278,6 +278,43 @@ let documentPaintLine : Layout.MeasuredLine =
       Height = 24.0
       StartOffset = 0
       EndOffset = 6 }
+let alternatingLineLookupLines =
+    [ for index in 0 .. 999 ->
+        { documentPaintLine with
+            Y = float index * 24.0
+            StartOffset = index * 10
+            EndOffset = (index + 1) * 10 } ]
+let alternatingLineLookupLayout : Layout.BlockLayout =
+    { BlockId = "native-line-lookup-cache"
+      Lines = alternatingLineLookupLines
+      Y = 0.0
+      Height = 24000.0
+      AvailableWidth = 120.0
+      Metadata = Doc.defaultMetadata
+      Prefix = ""
+      PrefixStyle = None
+      PrefixWidth = 0.0
+      Indent = 0.0
+      VAlignOffset = 0.0 }
+Layout.lineForOffset alternatingLineLookupLayout 9999 |> ignore
+Layout.lineForOffset alternatingLineLookupLayout 10 |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let alternatingLineLookupSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable alternatingLineLookupChecksum = 0L
+for index in 1 .. 500000 do
+    let offset = if index % 2 = 0 then 9999 else 10
+    alternatingLineLookupChecksum <-
+        alternatingLineLookupChecksum
+        + int64 (Layout.lineForOffset alternatingLineLookupLayout offset).EndOffset
+alternatingLineLookupSw.Stop()
+check "native alternating line lookup cache"
+    (alternatingLineLookupSw.Elapsed.TotalMilliseconds < 30.0
+     && alternatingLineLookupChecksum = 2505000000L)
+    true
 let documentPaintLayout : Layout.BlockLayout =
     { BlockId = "native-document-paint-cache"
       Lines = [ documentPaintLine ]
