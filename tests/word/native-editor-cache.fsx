@@ -1244,6 +1244,34 @@ check "native selection text long id perf"
      && selectionTextLookupTotal = 1920000)
     true
 
+let sameBlockSelectionTextParagraphCount = 50000
+let sameBlockSelectionTextDoc =
+    { Doc.empty with
+        Blocks =
+            [ for index in 0 .. sameBlockSelectionTextParagraphCount - 1 ->
+                Doc.Paragraph (para (sprintf "native-selection-text-same-%05d" index) "abcd") ]
+        Selection =
+            Some {
+                Anchor = pos "native-selection-text-same-00000" 1
+                Focus = pos "native-selection-text-same-00000" 3
+            } }
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let sameBlockSelectionTextAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let sameBlockSelectionTextSw = System.Diagnostics.Stopwatch.StartNew()
+let sameBlockSelectionText = Doc.getSelectionText sameBlockSelectionTextDoc
+sameBlockSelectionTextSw.Stop()
+let sameBlockSelectionTextAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - sameBlockSelectionTextAllocatedBefore
+check "native selection text same-block cold"
+    (sameBlockSelectionText = "bc"
+     && sameBlockSelectionTextSw.Elapsed.TotalMilliseconds < 30.0
+     && sameBlockSelectionTextAllocated < 200000L)
+    true
+
 let normalizedRangeCapacityIds =
     [| for index in 0 .. 511 -> normalizedRangeLookupIdPrefix + "capacity" + sprintf "%04d" index |]
 let normalizedRangeCapacityDoc =

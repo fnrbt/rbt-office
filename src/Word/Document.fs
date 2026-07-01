@@ -1608,17 +1608,35 @@ let private selectionTextCacheMaxTotalChars = 5000000
 let private selectionTextCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private selectionTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
+let private selectionTextKeyHash anchorBlockId anchorOffset focusBlockId focusOffset =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(anchorBlockId)
+    hashCode <- (hashCode * 397) ^^^ anchorOffset
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(focusBlockId)
+    hashCode <- (hashCode * 397) ^^^ focusOffset
+    hashCode
+
+let private selectionTextCacheKeyComparer =
+    { new IEqualityComparer<SelectionTextCacheKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.AnchorBlockId, right.AnchorBlockId)
+            && left.AnchorOffset = right.AnchorOffset
+            && obj.ReferenceEquals(left.FocusBlockId, right.FocusBlockId)
+            && left.FocusOffset = right.FocusOffset
+
+        member _.GetHashCode(key) =
+            selectionTextKeyHash
+                key.AnchorBlockId
+                key.AnchorOffset
+                key.FocusBlockId
+                key.FocusOffset }
+
 let private selectionTextEntryFastSlot
     (slots: SelectionTextFastEntry array)
     anchorBlockId
     anchorOffset
     focusBlockId
     focusOffset =
-    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(anchorBlockId)
-    hashCode <- (hashCode * 397) ^^^ anchorOffset
-    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(focusBlockId)
-    hashCode <- (hashCode * 397) ^^^ focusOffset
-    hashCode &&& (slots.Length - 1)
+    selectionTextKeyHash anchorBlockId anchorOffset focusBlockId focusOffset &&& (slots.Length - 1)
 
 let private clearSelectionTextEntryFastSlots (slots: SelectionTextFastEntry array) =
     for index = 0 to slots.Length - 1 do
@@ -1840,7 +1858,7 @@ let private rememberSelectionText (doc: Document) (text: string) =
             addSelectionTextCacheEntry key text cached
             rememberSelectionTextCache cached
         | ValueNone ->
-            let entries = Dictionary<SelectionTextCacheKey, SelectionTextCacheEntry>()
+            let entries = Dictionary<SelectionTextCacheKey, SelectionTextCacheEntry>(selectionTextCacheKeyComparer)
             let order = Queue<SelectionTextCacheKey>()
             let sourceParagraphCount = selectionTextSourceParagraphCountFor text.Length doc.Blocks
             let cache = {
@@ -5636,8 +5654,18 @@ let private findCursorParagraph doc blockId =
     let tryCachedParagraphLookup () =
         match tryGetParagraphLookup doc.Blocks with
         | ValueSome cached ->
-            let mutable paragraph = Unchecked.defaultof<ParagraphBlock>
-            if cached.Paragraphs.TryGetValue(blockId, &paragraph) then Some paragraph else None
+            let fast = cached.ParagraphFastSlots.[paragraphLookupEntryFastSlot cached.ParagraphFastSlots blockId]
+            if not (obj.ReferenceEquals(fast, null))
+               && obj.ReferenceEquals(fast.Id, blockId) then
+                Some fast
+            else
+                let mutable paragraph = Unchecked.defaultof<ParagraphBlock>
+                if cached.Paragraphs.TryGetValue(blockId, &paragraph) then
+                    if obj.ReferenceEquals(paragraph.Id, blockId) then
+                        setParagraphLookupEntryFastSlot cached.ParagraphFastSlots paragraph
+                    Some paragraph
+                else
+                    None
         | ValueNone -> None
     match tryCachedBlockLookup () with
     | Some para -> Some para
@@ -9598,7 +9626,7 @@ let getSelectionText doc =
                 if sliceLen <= 0 then
                     ""
                 else
-                    match findParagraph doc sel.Anchor.BlockId with
+                    match findCursorParagraph doc sel.Anchor.BlockId with
                     | None -> ""
                     | Some para -> TextBuffer.slice sliceStart sliceLen para.Buffer
             | Some sel ->
@@ -9640,8 +9668,6 @@ let getSelectionText doc =
 
                 if foundBoth then selectedText.ToString() else ""
         if text.Length > 0
-           && (doc.Selection
-               |> Option.exists (fun sel -> not (sameBlockId sel.Anchor.BlockId sel.Focus.BlockId)))
            && selectionTextSourceSmallEnoughForColdCache doc then
             rememberSelectionText doc text
         text
