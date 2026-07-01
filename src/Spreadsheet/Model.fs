@@ -7992,7 +7992,7 @@ let private mergeRangeQueryCacheBySource =
     System.Collections.Generic.Dictionary<MergedCell list, MergeRangeQueryCache>(mergedCellListReferenceComparer)
 let private mergeRangeQueryFastSlots = Array.zeroCreate<MergeRangeQueryCache> 256
 let private mergeLookupRowEntryLimit = 100000
-let private mergeIndexCacheMaxSources = 64
+let private mergeIndexCacheMaxSources = 256
 let private mergeIndexCacheMaxTotalSourceMerges = 100000
 let private mergeRangeQueryCacheMaxEntries = 256
 let private mergeRangeQueryCacheMaxTotalResults = 200000

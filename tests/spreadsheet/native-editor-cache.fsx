@@ -826,6 +826,50 @@ check "native merge range query cycle cache"
      && mergeRangeCycleTotal = 24000)
     true
 
+let mergeSourceCycleCount = 80
+let mergeSourceCycleMergeCount = 1000
+let mergeSourceCycleModels =
+    [| for modelIndex in 0 .. mergeSourceCycleCount - 1 ->
+        let startCol = modelIndex % 5
+        let merges =
+            [ for index in mergeSourceCycleMergeCount - 1 .. -1 .. 0 ->
+                let row = index * 2
+                { StartRow = row
+                  StartCol = startCol
+                  EndRow = row
+                  EndCol = startCol + 2 } ]
+        { createEmpty (mergeSourceCycleMergeCount * 2 + 5) 16 with
+            MergedCells = merges },
+        { Row = mergeSourceCycleMergeCount; Col = startCol + 1 } |]
+for model, lookupAddress in mergeSourceCycleModels do
+    mergedCellsIntersectingRange 0 (mergeSourceCycleMergeCount * 2) 0 16 model |> ignore
+    findMergedCell lookupAddress model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let mergeSourceCyclePasses = 20
+let mergeSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let mergeSourceCycleSw = Stopwatch.StartNew()
+let mutable mergeSourceCycleTotal = 0
+for _pass in 1 .. mergeSourceCyclePasses do
+    for model, lookupAddress in mergeSourceCycleModels do
+        mergeSourceCycleTotal <-
+            mergeSourceCycleTotal
+            + (mergedCellsIntersectingRange 0 (mergeSourceCycleMergeCount * 2) 0 16 model).Length
+        match findMergedCell lookupAddress model with
+        | Some _ -> mergeSourceCycleTotal <- mergeSourceCycleTotal + 1
+        | None -> ()
+mergeSourceCycleSw.Stop()
+let mergeSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - mergeSourceCycleAllocatedBefore
+check "native merge source cycle cache"
+    (mergeSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && mergeSourceCycleAllocated < 512L * 1024L
+     && mergeSourceCycleTotal = 1601600)
+    true
+
 let filterCacheCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "header")
       { Row = 1; Col = 0 }, cell (CellValue.String "keep")
