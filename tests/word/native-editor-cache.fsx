@@ -1679,6 +1679,51 @@ check "native table margin cloned id cache"
      && clonedTableCellMarginSame = 256000)
     true
 
+let tableCellMarginSourceCycleCount = 80
+let tableCellMarginSourceCycleRows = 1000
+let tableCellMarginSourceCycleDocs =
+    [| for sourceIndex in 0 .. tableCellMarginSourceCycleCount - 1 ->
+        let selectedId = sprintf "native-table-margin-source-%02d-%05d" sourceIndex (tableCellMarginSourceCycleRows - 1)
+        let table =
+            { tableCellMarginTable with
+                Id = sprintf "native-table-margin-source-%02d" sourceIndex
+                Rows =
+                    [ for rowIndex in 0 .. tableCellMarginSourceCycleRows - 1 ->
+                        { tableCellMarginRow with
+                            Cells =
+                                [ { tableCellMarginCell with
+                                        Content = [ para (sprintf "native-table-margin-source-%02d-%05d" sourceIndex rowIndex) "x" ] } ] } ] }
+        { Doc.empty with
+            Blocks = [ Doc.Table table ]
+            Selection =
+                Some {
+                    Anchor = pos selectedId 0
+                    Focus = pos selectedId 0
+                } } |]
+
+for doc in tableCellMarginSourceCycleDocs do
+    Doc.setCurrentTableCellMargins None None None None doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let tableCellMarginSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let tableCellMarginSourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable tableCellMarginSourceCycleSame = 0
+for _pass in 1 .. 20 do
+    for doc in tableCellMarginSourceCycleDocs do
+        if obj.ReferenceEquals(Doc.setCurrentTableCellMargins None None None None doc, doc) then
+            tableCellMarginSourceCycleSame <- tableCellMarginSourceCycleSame + 1
+tableCellMarginSourceCycleSw.Stop()
+let tableCellMarginSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - tableCellMarginSourceCycleAllocatedBefore
+check "native table margin source cycle"
+    (tableCellMarginSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && tableCellMarginSourceCycleAllocated < 512L * 1024L
+     && tableCellMarginSourceCycleSame = 1600)
+    true
+
 let paragraphLookupIdPrefix = System.String('p', 5000)
 let paragraphLookupIds =
     [| for index in 0 .. 511 -> paragraphLookupIdPrefix + sprintf "%04d" index |]
