@@ -656,6 +656,31 @@ check "native max used column source cycle"
      && maxUsedColumnCycleSameCells = 1600)
     true
 
+let lastUsedColumnSourceCycleQueryRow = usedBoundsCycleCellCount - 1
+for model in usedBoundsCycleModels do
+    lastUsedColumnInRow lastUsedColumnSourceCycleQueryRow model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let lastUsedColumnSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let lastUsedColumnSourceCycleSw = Stopwatch.StartNew()
+let mutable lastUsedColumnSourceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for model in usedBoundsCycleModels do
+        match lastUsedColumnInRow lastUsedColumnSourceCycleQueryRow model with
+        | Some col -> lastUsedColumnSourceCycleTotal <- lastUsedColumnSourceCycleTotal + col
+        | None -> lastUsedColumnSourceCycleTotal <- lastUsedColumnSourceCycleTotal - 1
+lastUsedColumnSourceCycleSw.Stop()
+let lastUsedColumnSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - lastUsedColumnSourceCycleAllocatedBefore
+check "native last used column source cycle"
+    (lastUsedColumnSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && lastUsedColumnSourceCycleAllocated < 512L * 1024L
+     && lastUsedColumnSourceCycleTotal = 68680)
+    true
+
 let lastUsedColumnRows = 100000
 let lastUsedColumnCells =
     [ for row in 0 .. lastUsedColumnRows - 1 ->

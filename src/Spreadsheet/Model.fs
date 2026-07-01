@@ -5046,7 +5046,7 @@ let private lastUsedColumnInRowCacheBySource =
     System.Collections.Generic.Dictionary<CellMergedReferenceKey, LastUsedColumnInRowCache>(cellMergedReferenceComparer)
 let private lastUsedColumnInRowFastSlots = Array.zeroCreate<LastUsedColumnInRowCache> 256
 let private lastUsedColumnInRowCacheMaxEntries = 64
-let private lastUsedColumnInRowCacheMaxSources = 64
+let private lastUsedColumnInRowCacheMaxSources = 256
 let private lastUsedColumnInRowCacheMaxTotalCells = structuralCellSourceTextCacheMaxTotalCells
 let private lastUsedColumnInRowCacheMaxTotalMergedCells = 100000
 let private lastUsedColumnInRowCacheMaxTotalSourceTextChars = structuralCellSourceTextCacheMaxTotalSourceTextChars
