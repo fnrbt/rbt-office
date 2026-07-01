@@ -1755,6 +1755,42 @@ check "native sort identity source cycle"
      && sortIdentityCycleSame = sortIdentityCycleModelCount * 20)
     true
 
+let sortIdentityEntryCycleRowCount = 1000
+let sortIdentityEntryCycleColumnCount = 80
+let sortIdentityEntryCycleCells =
+    [ for row in 0 .. sortIdentityEntryCycleRowCount - 1 do
+        for col in 0 .. sortIdentityEntryCycleColumnCount - 1 do
+            yield { Row = row; Col = col }, cell (CellValue.Number (float row)) ]
+    |> Map.ofList
+let sortIdentityEntryCycleModels =
+    [| for col in 0 .. sortIdentityEntryCycleColumnCount - 1 ->
+        { createEmpty sortIdentityEntryCycleRowCount sortIdentityEntryCycleColumnCount with
+            Cells = sortIdentityEntryCycleCells
+            SortState = Some { Column = col; Ascending = true } } |]
+
+for col in 0 .. sortIdentityEntryCycleColumnCount - 1 do
+    sortByColumn col true sortIdentityEntryCycleModels.[col] |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let sortIdentityEntryCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let sortIdentityEntryCycleSw = Stopwatch.StartNew()
+let mutable sortIdentityEntryCycleSame = 0
+for _pass in 1 .. 20 do
+    for col in 0 .. sortIdentityEntryCycleColumnCount - 1 do
+        if obj.ReferenceEquals(sortByColumn col true sortIdentityEntryCycleModels.[col], sortIdentityEntryCycleModels.[col]) then
+            sortIdentityEntryCycleSame <- sortIdentityEntryCycleSame + 1
+sortIdentityEntryCycleSw.Stop()
+let sortIdentityEntryCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - sortIdentityEntryCycleAllocatedBefore
+check "native sort identity entry cycle"
+    (sortIdentityEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && sortIdentityEntryCycleAllocated < 512L * 1024L
+     && sortIdentityEntryCycleSame = sortIdentityEntryCycleColumnCount * 20)
+    true
+
 let exportCsvCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "Name")
       { Row = 0; Col = 1 }, cell (CellValue.String "Note")
