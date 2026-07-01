@@ -325,6 +325,49 @@ check "native effective buffer cache three-position cycle"
      && effectiveBufferCycleTotal = 1800000)
     true
 
+let effectiveBufferSourceCycleCount = 80
+let effectiveBufferSourceCycleRunCount = 1000
+let makeEffectiveBufferCycleSource sourceIndex =
+    let text = System.String('x', effectiveBufferSourceCycleRunCount)
+    let runs =
+        [ for index in 0 .. effectiveBufferSourceCycleRunCount - 1 ->
+            TB.Text
+                { Start = index
+                  Length = 1
+                  Style =
+                    { TB.defaultStyle with
+                        Bold = (index + sourceIndex) % 2 = 0
+                        FontSize = 10.0 + float ((index + sourceIndex) % 7) } } ]
+    { Rope = RedBat.Word.Rope.ofString text; Runs = runs } : TB.TextBuffer
+
+let effectiveBufferSourceCycleSources =
+    [| for sourceIndex in 0 .. effectiveBufferSourceCycleCount - 1 ->
+        makeEffectiveBufferCycleSource sourceIndex |]
+
+for source in effectiveBufferSourceCycleSources do
+    Styles.effectiveBufferInContext effectiveBufferContext effectiveBufferStyle source |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let effectiveBufferSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let effectiveBufferSourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable effectiveBufferSourceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for source in effectiveBufferSourceCycleSources do
+        effectiveBufferSourceCycleTotal <-
+            effectiveBufferSourceCycleTotal
+            + TB.length (Styles.effectiveBufferInContext effectiveBufferContext effectiveBufferStyle source)
+effectiveBufferSourceCycleSw.Stop()
+let effectiveBufferSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - effectiveBufferSourceCycleAllocatedBefore
+check "native effective buffer source cycle"
+    (effectiveBufferSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && effectiveBufferSourceCycleAllocated < 512L * 1024L
+     && effectiveBufferSourceCycleTotal = 1600000)
+    true
+
 let rendererCommandParagraphCount = 5000
 let rendererCommandDoc =
     { Doc.empty with

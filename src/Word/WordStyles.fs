@@ -640,7 +640,7 @@ type private EffectiveBufferCacheEntry = {
 }
 
 let mutable private effectiveBufferCache: EffectiveBufferCacheEntry list = []
-let private effectiveBufferCacheMaxEntries = 64
+let private effectiveBufferCacheMaxEntries = 256
 let private effectiveBufferCacheMaxRetainedRuns = 200000
 let private effectiveBufferCacheMaxRetainedChars = 5000000
 
