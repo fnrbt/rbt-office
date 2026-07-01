@@ -4572,24 +4572,23 @@ let private updateTableCell rowIndex colIndex updateCell (table: TableBlock) =
 let private currentTableCell doc =
     match doc.Selection with
     | Some sel ->
-        let cachedOrBuild shouldBuild =
-            match tryFindCachedCurrentTableCell doc.Blocks sel.Focus.BlockId with
-            | Some result -> Some result
-            | None ->
-                if shouldBuild () then
-                    let cached = currentTableCellLookup doc
-                    let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
-                    if cached.Entries.TryGetValue(sel.Focus.BlockId, &entry) then
-                        entry.Result
-                    else
-                        None
+        let cachedResult = tryFindCachedCurrentTableCell doc.Blocks sel.Focus.BlockId
+        match cachedResult with
+        | Some _ -> cachedResult
+        | None ->
+            let shouldBuild =
+                match doc.Blocks with
+                | [ Table table ] -> shouldBuildCurrentTableCellCacheForSingleTable table
+                | _ -> shouldBuildCurrentTableCellCacheForBlocks doc.Blocks
+            if shouldBuild then
+                let cached = currentTableCellLookup doc
+                let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
+                if cached.Entries.TryGetValue(sel.Focus.BlockId, &entry) then
+                    entry.Result
                 else
-                    tryFindCurrentTableCellUntil doc sel.Focus.BlockId
-        match doc.Blocks with
-        | [ Table table ] ->
-            cachedOrBuild (fun () -> shouldBuildCurrentTableCellCacheForSingleTable table)
-        | _ ->
-            cachedOrBuild (fun () -> shouldBuildCurrentTableCellCacheForBlocks doc.Blocks)
+                    None
+            else
+                tryFindCurrentTableCellUntil doc sel.Focus.BlockId
     | None -> None
 
 let private tryGetTableCellParagraphInRow colIndex (row: TableRow) =

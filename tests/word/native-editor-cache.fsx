@@ -1258,6 +1258,82 @@ check "native heading noop cache hot hit"
      && headingNoopAllocated < 10L * 1024L * 1024L
      && headingNoopSame = 200000)
     true
+let tableCellMarginCell : Doc.TableCell =
+    { Content = [ para "native-table-margin-cell" "x" ]
+      NestedTables = []
+      NestedTableAnchors = []
+      ColSpan = 1
+      BackgroundColor = None
+      Shading = None
+      Width = None
+      PreferredWidth = None
+      BorderColor = None
+      BorderWidth = None
+      Borders = None
+      VerticalAlignment = None
+      VerticalMerge = None
+      PaddingTop = None
+      PaddingRight = None
+      PaddingBottom = None
+      PaddingLeft = None }
+let tableCellMarginRow : Doc.TableRow =
+    { Cells = [ tableCellMarginCell ]
+      IsHeader = false
+      Height = None
+      HeightRule = None
+      CanSplit = None
+      CellSpacing = None
+      PaddingTop = None
+      PaddingRight = None
+      PaddingBottom = None
+      PaddingLeft = None
+      GridBefore = 0
+      GridAfter = 0
+      WidthBefore = None
+      WidthAfter = None
+      BordersOverride = None }
+let tableCellMarginTable : Doc.TableBlock =
+    { Id = "native-table-margin"
+      Rows = [ tableCellMarginRow ]
+      PreferredWidth = None
+      Alignment = None
+      LayoutMode = None
+      GridColumns = []
+      Borders = None
+      BackgroundColor = None
+      Shading = None
+      CellSpacing = None
+      PaddingTop = None
+      PaddingRight = None
+      PaddingBottom = None
+      PaddingLeft = None
+      Floating = false }
+let tableCellMarginDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Table tableCellMarginTable ]
+        Selection =
+            Some {
+                Anchor = pos "native-table-margin-cell" 0
+                Focus = pos "native-table-margin-cell" 0
+            } }
+Doc.setCurrentTableCellMargins None None None None tableCellMarginDoc |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let tableCellMarginAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let tableCellMarginSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable tableCellMarginSame = 0
+for _pass in 1 .. 200000 do
+    if obj.ReferenceEquals(Doc.setCurrentTableCellMargins None None None None tableCellMarginDoc, tableCellMarginDoc) then
+        tableCellMarginSame <- tableCellMarginSame + 1
+tableCellMarginSw.Stop()
+let tableCellMarginAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - tableCellMarginAllocatedBefore
+check "native table margin noop cache hot hit"
+    (tableCellMarginSw.Elapsed.TotalMilliseconds < 250.0
+     && tableCellMarginAllocated < 18L * 1024L * 1024L
+     && tableCellMarginSame = 200000)
+    true
 
 let paragraphLookupIdPrefix = System.String('p', 5000)
 let paragraphLookupIds =
