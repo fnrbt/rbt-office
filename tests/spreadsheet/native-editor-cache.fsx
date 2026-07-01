@@ -629,6 +629,23 @@ check "native table unique values reuses"
     (obj.ReferenceEquals(tableUniqueValues, tableUniqueValuesAgain))
     true
 
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let tableUniqueValuesAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let tableUniqueValuesSw = Stopwatch.StartNew()
+let mutable tableUniqueValuesTotal = 0
+for _pass in 1 .. 200000 do
+    tableUniqueValuesTotal <- tableUniqueValuesTotal + (tableColumnUniqueValues tableUniqueValuesTable 0 tableUniqueValuesModel).Length
+tableUniqueValuesSw.Stop()
+let tableUniqueValuesAllocated = System.GC.GetAllocatedBytesForCurrentThread() - tableUniqueValuesAllocatedBefore
+check "native table unique values hot hit"
+    (tableUniqueValuesSw.Elapsed.TotalMilliseconds < 80.0
+     && tableUniqueValuesAllocated < 512L * 1024L
+     && tableUniqueValuesTotal = tableUniqueValues.Length * 200000)
+    true
+
 let sortIdentityCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.Number 1.0)
       { Row = 1; Col = 0 }, cell (CellValue.Number 2.0)

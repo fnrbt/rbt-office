@@ -3655,12 +3655,49 @@ let tableAt (row: int) (col: int) (model: SpreadsheetModel): Table option =
 
 /// Distinct, sorted display values in one column of a table — data rows only
 /// (header and totals excluded). The checklist for a table's filter button.
+[<Struct>]
+type private TableColumnUniqueValuesKey = {
+    StartRow: int
+    EndRow: int
+    HeaderRowCount: int
+    HasTotals: bool
+    Column: int
+}
+
+let private tableColumnUniqueValuesKeyHash (key: TableColumnUniqueValuesKey) =
+    let mutable hashCode = key.StartRow
+    hashCode <- (hashCode * 397) ^^^ key.EndRow
+    hashCode <- (hashCode * 397) ^^^ key.HeaderRowCount
+    hashCode <- (hashCode * 397) ^^^ (if key.HasTotals then 1 else 0)
+    hashCode <- (hashCode * 397) ^^^ key.Column
+    hashCode
+
+let private tableColumnUniqueValuesKeyComparer =
+    { new System.Collections.Generic.IEqualityComparer<TableColumnUniqueValuesKey> with
+        member _.Equals(left, right) =
+            left.StartRow = right.StartRow
+            && left.EndRow = right.EndRow
+            && left.HeaderRowCount = right.HeaderRowCount
+            && left.HasTotals = right.HasTotals
+            && left.Column = right.Column
+
+        member _.GetHashCode(key) =
+            tableColumnUniqueValuesKeyHash key }
+
+let private tableColumnUniqueValuesKeyMatches left right =
+    left.StartRow = right.StartRow
+    && left.EndRow = right.EndRow
+    && left.HeaderRowCount = right.HeaderRowCount
+    && left.HasTotals = right.HasTotals
+    && left.Column = right.Column
+
 type private TableColumnUniqueValuesCache = {
     Cells: Map<CellAddress, CellData>
     CellCount: int
     SourceTextCharCount: int
     Entries: System.Collections.Generic.Dictionary<TableColumnUniqueValuesKey, TableColumnUniqueValuesCacheEntry>
     Order: System.Collections.Generic.Queue<TableColumnUniqueValuesKey>
+    EntryFastSlots: TableColumnUniqueValuesFastEntry array
     mutable TotalValueCount: int
     mutable TotalValueTextCharCount: int
 }
@@ -3671,12 +3708,9 @@ and private TableColumnUniqueValuesCacheEntry = {
     ValueTextCharCount: int
 }
 
-and private TableColumnUniqueValuesKey = {
-    StartRow: int
-    EndRow: int
-    HeaderRowCount: int
-    HasTotals: bool
-    Column: int
+and private TableColumnUniqueValuesFastEntry = {
+    Key: TableColumnUniqueValuesKey
+    Entry: TableColumnUniqueValuesCacheEntry
 }
 
 let mutable private tableColumnUniqueValuesCache: TableColumnUniqueValuesCache list = []
@@ -3738,6 +3772,28 @@ let private tableColumnUniqueValuesCacheRetainable (cached: TableColumnUniqueVal
     && cached.CellCount <= tableColumnUniqueValuesCacheMaxTotalCells
     && cached.SourceTextCharCount <= tableColumnUniqueValuesCacheMaxTotalSourceTextChars
 
+let private tableColumnUniqueValuesEntryFastSlot (slots: TableColumnUniqueValuesFastEntry array) key =
+    tableColumnUniqueValuesKeyHash key &&& (slots.Length - 1)
+
+let private setTableColumnUniqueValuesEntryFastSlot (slots: TableColumnUniqueValuesFastEntry array) key entry =
+    slots.[tableColumnUniqueValuesEntryFastSlot slots key] <- {
+        Key = key
+        Entry = entry
+    }
+
+let private tryGetTableColumnUniqueValuesEntry key (cache: TableColumnUniqueValuesCache) =
+    let fast = cache.EntryFastSlots.[tableColumnUniqueValuesEntryFastSlot cache.EntryFastSlots key]
+    if not (obj.ReferenceEquals(fast, null))
+       && tableColumnUniqueValuesKeyMatches fast.Key key then
+        ValueSome fast.Entry
+    else
+        let mutable entry = Unchecked.defaultof<TableColumnUniqueValuesCacheEntry>
+        if cache.Entries.TryGetValue(key, &entry) then
+            setTableColumnUniqueValuesEntryFastSlot cache.EntryFastSlots key entry
+            ValueSome entry
+        else
+            ValueNone
+
 let private tableColumnUniqueValuesSourceTextCharCountFor valueCount valueTextCharCount cells =
     if valueCount > tableColumnUniqueValuesCacheMaxTotalValues
        || valueTextCharCount > tableColumnUniqueValuesCacheMaxTotalValueTextChars then
@@ -3784,6 +3840,7 @@ let private rememberTableColumnUniqueValuesCache cached =
 let private removeTableColumnUniqueValuesCacheEntry key (cache: TableColumnUniqueValuesCache) =
     let mutable existing = Unchecked.defaultof<TableColumnUniqueValuesCacheEntry>
     if cache.Entries.TryGetValue(key, &existing) then
+        clearArray cache.EntryFastSlots
         cache.TotalValueCount <- max 0 (cache.TotalValueCount - existing.ValueCount)
         cache.TotalValueTextCharCount <- max 0 (cache.TotalValueTextCharCount - existing.ValueTextCharCount)
         cache.Entries.Remove key |> ignore
@@ -3800,6 +3857,7 @@ let private addTableColumnUniqueValuesCacheEntry key entry (cache: TableColumnUn
         else
             cache.Order.Enqueue key
         cache.Entries.[key] <- entry
+        setTableColumnUniqueValuesEntryFastSlot cache.EntryFastSlots key entry
         cache.TotalValueCount <- cache.TotalValueCount + entry.ValueCount
         cache.TotalValueTextCharCount <- cache.TotalValueTextCharCount + entry.ValueTextCharCount
         while (cache.Entries.Count > tableColumnUniqueValuesCacheMaxEntries
@@ -3815,8 +3873,10 @@ let private addTableColumnUniqueValuesCacheEntry key entry (cache: TableColumnUn
             let current = cache.Entries.[key]
             cache.Entries.Clear()
             cache.Order.Clear()
+            clearArray cache.EntryFastSlots
             cache.Order.Enqueue key
             cache.Entries.[key] <- current
+            setTableColumnUniqueValuesEntryFastSlot cache.EntryFastSlots key current
             cache.TotalValueCount <- current.ValueCount
             cache.TotalValueTextCharCount <- current.ValueTextCharCount
 
@@ -3830,10 +3890,10 @@ let tableColumnUniqueValues (table: Table) (col: int) (model: SpreadsheetModel):
     }
     match tryGetTableColumnUniqueValuesCache model.Cells with
     | ValueSome cached ->
-        let mutable entry = Unchecked.defaultof<TableColumnUniqueValuesCacheEntry>
-        if cached.Entries.TryGetValue(key, &entry) then
+        match tryGetTableColumnUniqueValuesEntry key cached with
+        | ValueSome entry ->
             entry.Values
-        else
+        | ValueNone ->
             let dataStart = (table.StartRow - 1) + table.HeaderRowCount
             let dataEnd = (table.EndRow - 1) - (if table.HasTotals then 1 else 0)
             let dataRowCount = max 0 (dataEnd - dataStart + 1)
@@ -3906,7 +3966,9 @@ let tableColumnUniqueValues (table: Table) (col: int) (model: SpreadsheetModel):
                 addValue (getCellValue { Row = r; Col = col } model)
         let result, valueCount, valueTextCharCount =
             sortedStringSetValuesWithTextMetrics tableColumnUniqueValuesCacheMaxTotalValueTextChars values
-        let entries = System.Collections.Generic.Dictionary<TableColumnUniqueValuesKey, TableColumnUniqueValuesCacheEntry>()
+        let entries =
+            System.Collections.Generic.Dictionary<TableColumnUniqueValuesKey, TableColumnUniqueValuesCacheEntry>(
+                tableColumnUniqueValuesKeyComparer)
         let order = System.Collections.Generic.Queue<TableColumnUniqueValuesKey>()
         let cache = {
             Cells = model.Cells
@@ -3918,6 +3980,7 @@ let tableColumnUniqueValues (table: Table) (col: int) (model: SpreadsheetModel):
                     model.Cells
             Entries = entries
             Order = order
+            EntryFastSlots = Array.zeroCreate<TableColumnUniqueValuesFastEntry> 128
             TotalValueCount = 0
             TotalValueTextCharCount = 0
         }
