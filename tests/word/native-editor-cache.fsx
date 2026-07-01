@@ -2634,7 +2634,7 @@ let clonedCursorFormatAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - clonedCursorFormatAllocatedBefore
 check "native cursor paragraph cloned id cache"
     (clonedCursorFormatSw.Elapsed.TotalMilliseconds < 450.0
-     && clonedCursorFormatAllocated < 16L * 1024L * 1024L
+     && clonedCursorFormatAllocated < 128L * 1024L
      && clonedCursorFormatSame = 128000)
     true
 

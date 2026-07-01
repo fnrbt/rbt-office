@@ -6182,35 +6182,33 @@ let moveCursorToLineStart doc =
         setSelectionIfChanged newSel doc
 
 let private findCursorParagraph doc blockId =
-    let tryCachedBlockLookup () =
+    let cachedBlock =
         match tryGetBlockLookup doc.Blocks with
         | ValueSome cached ->
             match tryFindBlockLookupEntry cached blockId with
             | ValueSome entry -> entry.TopParagraphResult
             | ValueNone -> None
         | ValueNone -> None
-    let tryCachedParagraphLookup () =
-        match tryGetParagraphLookup doc.Blocks with
-        | ValueSome cached ->
-            let fast = cached.ParagraphFastSlots.[paragraphLookupEntryFastSlot cached.ParagraphFastSlots blockId]
-            if not (obj.ReferenceEquals(fast, null))
-               && paragraphLookupEntryMatches fast blockId then
-                fast.Result
-            else
-                let mutable entry = Unchecked.defaultof<ParagraphLookupEntry>
-                if cached.Paragraphs.TryGetValue(blockId, &entry) then
-                    entry.RecentLookupIdSet <- true
-                    entry.RecentLookupId <- blockId
-                    setParagraphLookupEntryFastSlot cached.ParagraphFastSlots entry
-                    entry.Result
-                else
-                    None
-        | ValueNone -> None
-    let cachedBlock = tryCachedBlockLookup ()
     match cachedBlock with
     | Some _ -> cachedBlock
     | None ->
-        let cachedParagraph = tryCachedParagraphLookup ()
+        let cachedParagraph =
+            match tryGetParagraphLookup doc.Blocks with
+            | ValueSome cached ->
+                let fast = cached.ParagraphFastSlots.[paragraphLookupEntryFastSlot cached.ParagraphFastSlots blockId]
+                if not (obj.ReferenceEquals(fast, null))
+                   && paragraphLookupEntryMatches fast blockId then
+                    fast.Result
+                else
+                    let mutable entry = Unchecked.defaultof<ParagraphLookupEntry>
+                    if cached.Paragraphs.TryGetValue(blockId, &entry) then
+                        entry.RecentLookupIdSet <- true
+                        entry.RecentLookupId <- blockId
+                        setParagraphLookupEntryFastSlot cached.ParagraphFastSlots entry
+                        entry.Result
+                    else
+                        None
+            | ValueNone -> None
         match cachedParagraph with
         | Some _ -> cachedParagraph
         | None ->

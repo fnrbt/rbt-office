@@ -1239,6 +1239,148 @@ let private textRunsInRangeSatisfy start len predicate buffer =
             | [] -> ()
         allMatch
 
+let private textRunsInRangeHaveVertAlign start len align buffer =
+    if len <= 0 then
+        true
+    else
+        let rangeEnd = start + len
+        let mutable allMatch = true
+        let mutable remaining = buffer.Runs
+        while allMatch && not remaining.IsEmpty do
+            match remaining with
+            | Text tr :: tail ->
+                let runStart = tr.Start
+                let runEnd = tr.Start + tr.Length
+                if runEnd > start && runStart < rangeEnd then
+                    allMatch <- tr.Style.VertAlign = align
+                remaining <- tail
+            | _ :: tail ->
+                remaining <- tail
+            | [] -> ()
+        allMatch
+
+let private textRunsInRangeHaveColor start len color buffer =
+    if len <= 0 then
+        true
+    else
+        let rangeEnd = start + len
+        let mutable allMatch = true
+        let mutable remaining = buffer.Runs
+        while allMatch && not remaining.IsEmpty do
+            match remaining with
+            | Text tr :: tail ->
+                let runStart = tr.Start
+                let runEnd = tr.Start + tr.Length
+                if runEnd > start && runStart < rangeEnd then
+                    allMatch <- tr.Style.Color = color
+                remaining <- tail
+            | _ :: tail ->
+                remaining <- tail
+            | [] -> ()
+        allMatch
+
+let private textRunsInRangeHaveHighlight start len color buffer =
+    if len <= 0 then
+        true
+    else
+        let rangeEnd = start + len
+        let mutable allMatch = true
+        let mutable remaining = buffer.Runs
+        while allMatch && not remaining.IsEmpty do
+            match remaining with
+            | Text tr :: tail ->
+                let runStart = tr.Start
+                let runEnd = tr.Start + tr.Length
+                if runEnd > start && runStart < rangeEnd then
+                    allMatch <- tr.Style.Highlight = color
+                remaining <- tail
+            | _ :: tail ->
+                remaining <- tail
+            | [] -> ()
+        allMatch
+
+let private textRunsInRangeHaveHyperlink start len target buffer =
+    if len <= 0 then
+        true
+    else
+        let rangeEnd = start + len
+        let mutable allMatch = true
+        let mutable remaining = buffer.Runs
+        while allMatch && not remaining.IsEmpty do
+            match remaining with
+            | Text tr :: tail ->
+                let runStart = tr.Start
+                let runEnd = tr.Start + tr.Length
+                if runEnd > start && runStart < rangeEnd then
+                    allMatch <- tr.Style.Hyperlink = target
+                remaining <- tail
+            | _ :: tail ->
+                remaining <- tail
+            | [] -> ()
+        allMatch
+
+let private textRunsInRangeHaveCharacterStyle start len styleId buffer =
+    if len <= 0 then
+        true
+    else
+        let rangeEnd = start + len
+        let mutable allMatch = true
+        let mutable remaining = buffer.Runs
+        while allMatch && not remaining.IsEmpty do
+            match remaining with
+            | Text tr :: tail ->
+                let runStart = tr.Start
+                let runEnd = tr.Start + tr.Length
+                if runEnd > start && runStart < rangeEnd then
+                    allMatch <- tr.Style.Style = styleId
+                remaining <- tail
+            | _ :: tail ->
+                remaining <- tail
+            | [] -> ()
+        allMatch
+
+let private textRunsInRangeHaveFontSize start len size buffer =
+    if len <= 0 then
+        true
+    else
+        let rangeEnd = start + len
+        let mutable allMatch = true
+        let mutable remaining = buffer.Runs
+        while allMatch && not remaining.IsEmpty do
+            match remaining with
+            | Text tr :: tail ->
+                let runStart = tr.Start
+                let runEnd = tr.Start + tr.Length
+                if runEnd > start && runStart < rangeEnd then
+                    allMatch <- tr.Style.FontSize = size
+                remaining <- tail
+            | _ :: tail ->
+                remaining <- tail
+            | [] -> ()
+        allMatch
+
+let private textRunsInRangeHaveFontFamily start len family buffer =
+    if len <= 0 then
+        true
+    else
+        let rangeEnd = start + len
+        let mutable allMatch = true
+        let mutable remaining = buffer.Runs
+        while allMatch && not remaining.IsEmpty do
+            match remaining with
+            | Text tr :: tail ->
+                let runStart = tr.Start
+                let runEnd = tr.Start + tr.Length
+                if runEnd > start && runStart < rangeEnd then
+                    match tr.Style.FontFamily with
+                    | Some existingFamily -> allMatch <- existingFamily = family
+                    | None -> allMatch <- false
+                remaining <- tail
+            | _ :: tail ->
+                remaining <- tail
+            | [] -> ()
+        allMatch
+
 /// Toggle bold for range
 let toggleBold start len buffer =
     applyStyle start len (fun style -> { style with Bold = not style.Bold }) buffer
@@ -1265,28 +1407,28 @@ let toggleStrike start len buffer =
 
 /// Set vertical alignment for range
 let setVertAlign start len align buffer =
-    if textRunsInRangeSatisfy start len (fun style -> style.VertAlign = align) buffer then
+    if textRunsInRangeHaveVertAlign start len align buffer then
         buffer
     else
         applyStyle start len (fun style -> { style with VertAlign = align }) buffer
 
 /// Set text color for range
 let setColor start len color buffer =
-    if textRunsInRangeSatisfy start len (fun style -> style.Color = color) buffer then
+    if textRunsInRangeHaveColor start len color buffer then
         buffer
     else
         applyStyle start len (fun style -> { style with Color = color }) buffer
 
 /// Set highlight color for range
 let setHighlight start len color buffer =
-    if textRunsInRangeSatisfy start len (fun style -> style.Highlight = color) buffer then
+    if textRunsInRangeHaveHighlight start len color buffer then
         buffer
     else
         applyStyle start len (fun style -> { style with Highlight = color }) buffer
 
 /// Set hyperlink target for range
 let setHyperlink start len target buffer =
-    if textRunsInRangeSatisfy start len (fun style -> style.Hyperlink = target) buffer then
+    if textRunsInRangeHaveHyperlink start len target buffer then
         buffer
     else
         applyStyle start len (fun style -> { style with Hyperlink = target }) buffer
@@ -1318,7 +1460,7 @@ let setBookmark start len bookmarkId bookmarkName buffer =
 
 /// Set named character style for range
 let setCharacterStyle start len styleId buffer =
-    if textRunsInRangeSatisfy start len (fun style -> style.Style = styleId) buffer then
+    if textRunsInRangeHaveCharacterStyle start len styleId buffer then
         buffer
     else
         applyStyle start len (fun style -> { style with Style = styleId }) buffer
@@ -1515,17 +1657,14 @@ let resolveRevisionsInRange accept selStart selEnd isCollapsed buffer =
 
 /// Set font size for range
 let setFontSize start len size buffer =
-    if textRunsInRangeSatisfy start len (fun style -> style.FontSize = size) buffer then
+    if textRunsInRangeHaveFontSize start len size buffer then
         buffer
     else
         applyStyle start len (fun style -> { style with FontSize = size }) buffer
 
 /// Set font family for range
 let setFontFamily start len family buffer =
-    if textRunsInRangeSatisfy start len (fun style ->
-        match style.FontFamily with
-        | Some existingFamily -> existingFamily = family
-        | None -> false) buffer then
+    if textRunsInRangeHaveFontFamily start len family buffer then
         buffer
     else
         applyStyle start len (fun style -> { style with FontFamily = Some family }) buffer
