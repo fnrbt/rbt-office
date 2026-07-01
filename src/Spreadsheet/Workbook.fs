@@ -102,8 +102,8 @@ type private SheetNamesReferenceKey = {
 
 let mutable private sheetNamesCache: SheetNamesCacheEntry list = []
 let mutable private tableNamesCache: TableNamesCacheEntry list = []
-let private sheetNamesCacheMaxEntries = 64
-let private tableNamesCacheMaxEntries = 64
+let private sheetNamesCacheMaxEntries = 256
+let private tableNamesCacheMaxEntries = 256
 let private sheetNamesCacheMaxTotalNames = 200000
 let private tableNamesCacheMaxTotalNames = 200000
 let private sheetNamesCacheMaxTotalNameChars = 5000000

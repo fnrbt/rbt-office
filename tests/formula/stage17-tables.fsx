@@ -161,6 +161,56 @@ workbookNameCacheSw.Stop()
 check "workbook names cache many workbooks"
     (workbookNameCacheSw.Elapsed.TotalMilliseconds < 80.0 && workbookNameCacheTotal > 0)
     true
+
+let workbookNameSourceCycleWorkbookCount = 80
+let workbookNameSourceCycleNameCount = 200
+let workbookNameSourceCycleWorkbooks =
+    [| for workbookIndex in 0 .. workbookNameSourceCycleWorkbookCount - 1 ->
+        let sheetIds =
+            [ for index in 0 .. workbookNameSourceCycleNameCount - 1 ->
+                sprintf "source-sheet-%02d-%04d" workbookIndex index ]
+        let sheets =
+            sheetIds
+            |> List.map (fun id ->
+                id,
+                ({ Id = id
+                   Name = id
+                   Model = largeSheetModel
+                   Visible = true }: WB.Sheet))
+            |> Map.ofList
+        let tables =
+            [ for index in 0 .. workbookNameSourceCycleNameCount - 1 ->
+                let name = sprintf "SourceTable_%02d_%04d" workbookIndex index
+                name, ({ table with Name = name; SheetId = sheetIds.[index % sheetIds.Length] }: WB.Table) ]
+            |> Map.ofList
+        ({ Sheets = sheets
+           SheetOrder = sheetIds
+           ActiveSheet = sheetIds.[0]
+           Tables = tables
+           Names = Map.empty }: WB.Workbook) |]
+for workbook in workbookNameSourceCycleWorkbooks do
+    WB.getSheetNames workbook |> ignore
+    WB.getTableNames workbook |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let workbookNameSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let workbookNameSourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable workbookNameSourceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for workbook in workbookNameSourceCycleWorkbooks do
+        workbookNameSourceCycleTotal <- workbookNameSourceCycleTotal + (WB.getSheetNames workbook).Length
+        workbookNameSourceCycleTotal <- workbookNameSourceCycleTotal + (WB.getTableNames workbook).Length
+workbookNameSourceCycleSw.Stop()
+let workbookNameSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - workbookNameSourceCycleAllocatedBefore
+check "workbook names cache source cycle"
+    (workbookNameSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && workbookNameSourceCycleAllocated < 512L * 1024L
+     && workbookNameSourceCycleTotal = 640000)
+    true
 let workbookNameRetainedWorkbookCount = 80
 let workbookNameRetainedNameCount = 500
 let workbookNameRetainedLongName prefix workbookIndex nameIndex =
