@@ -4279,7 +4279,7 @@ type private CurrentTableCellCache = {
 }
 
 and private CurrentTableCellCacheEntry = {
-    Result: (BlockId * int * int) option
+    Result: struct (int * int * int)
 }
 
 let mutable private currentTableCellCache: CurrentTableCellCache list = []
@@ -4391,10 +4391,10 @@ let private currentTableCellSourceTextCharCountFor sourceTableParagraphCount sou
             sourceParagraphCount
             blocks
 
-let private addCurrentTableCellEntry (entries: Dictionary<BlockId, CurrentTableCellCacheEntry>) tableId rowIndex colIndex cell =
+let private addCurrentTableCellEntry (entries: Dictionary<BlockId, CurrentTableCellCacheEntry>) tableIndex rowIndex colIndex cell =
     for paragraph in cell.Content do
         if not (entries.ContainsKey paragraph.Id) then
-            entries.[paragraph.Id] <- { Result = Some (tableId, rowIndex, colIndex) }
+            entries.[paragraph.Id] <- { Result = struct (tableIndex, rowIndex, colIndex) }
 
 let private buildCurrentTableCellCache (doc: Document) =
     let entries = Dictionary<BlockId, CurrentTableCellCacheEntry>()
@@ -4402,6 +4402,7 @@ let private buildCurrentTableCellCache (doc: Document) =
     let mutable countedTableParagraphsExact = true
     let sourceTableParagraphLimit = sourceParagraphCountCacheLimit
     let sourceTableVisitedItemLimit = sourceStructureVisitedItemLimit sourceTableParagraphLimit
+    let mutable tableIndex = 0
     for block in doc.Blocks do
         match block with
         | Table table ->
@@ -4416,7 +4417,7 @@ let private buildCurrentTableCellCache (doc: Document) =
                     if not cell.NestedTables.IsEmpty then
                         countedTableParagraphsExact <- false
                     tableParagraphCount <- tableParagraphCount + cell.Content.Length
-                    addCurrentTableCellEntry entries table.Id rowIndex colIndex cell
+                    addCurrentTableCellEntry entries tableIndex rowIndex colIndex cell
                     colIndex <- colIndex + 1
                 rowIndex <- rowIndex + 1
             let tableCount =
@@ -4427,6 +4428,7 @@ let private buildCurrentTableCellCache (doc: Document) =
                     min tableParagraphCount (sourceTableParagraphLimit + 1)
             countedTableParagraphs <- countedTableParagraphs + tableCount
         | _ -> ()
+        tableIndex <- tableIndex + 1
     let sourceTableParagraphCount =
         if entries.Count > currentTableCellCacheMaxTotalTableParagraphs then
             currentTableCellCacheMaxTotalTableParagraphs + 1
@@ -4456,8 +4458,8 @@ let private tryFindCachedCurrentTableCell blocks blockId =
     match tryGetCurrentTableCellCache blocks with
     | ValueSome cached ->
         let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
-        if cached.Entries.TryGetValue(blockId, &entry) then entry.Result else None
-    | ValueNone -> None
+        if cached.Entries.TryGetValue(blockId, &entry) then ValueSome entry.Result else ValueNone
+    | ValueNone -> ValueNone
 
 let private countCurrentTableCellEntriesWithLimit limit (table: TableBlock) =
     let mutable count = 0
@@ -4493,11 +4495,12 @@ let private shouldBuildCurrentTableCellCacheForBlocks blocks =
     <= currentTableCellCacheBuildEntryLimit
 
 let private tryFindCurrentTableCellUntil doc blockId =
-    let tryCached () =
-        tryFindCachedCurrentTableCell doc.Blocks blockId
-    let scan () =
-        let mutable result = None
+    match tryFindCachedCurrentTableCell doc.Blocks blockId with
+    | ValueSome _ as cached -> cached
+    | ValueNone ->
+        let mutable result = ValueNone
         let mutable blocks = doc.Blocks
+        let mutable tableIndex = 0
         while result.IsNone && not blocks.IsEmpty do
             match blocks with
             | Table table :: tail ->
@@ -4512,7 +4515,7 @@ let private tryFindCurrentTableCellUntil doc blockId =
                             match cells with
                             | cell :: cellTail ->
                                 if cell.Content |> List.exists (fun para -> para.Id = blockId) then
-                                    result <- Some (table.Id, rowIndex, colIndex)
+                                    result <- ValueSome (struct (tableIndex, rowIndex, colIndex))
                                 colIndex <- colIndex + 1
                                 cells <- cellTail
                             | [] -> ()
@@ -4520,13 +4523,27 @@ let private tryFindCurrentTableCellUntil doc blockId =
                         rows <- rowTail
                     | [] -> ()
                 blocks <- tail
+                tableIndex <- tableIndex + 1
             | _ :: tail ->
                 blocks <- tail
+                tableIndex <- tableIndex + 1
             | [] -> ()
         result
-    match tryCached () with
-    | Some result -> Some result
-    | None -> scan ()
+
+let private tryFindTableAtTopLevelIndex tableIndex (blocks: Block list) =
+    let mutable result = ValueNone
+    if tableIndex >= 0 then
+        let mutable index = 0
+        let mutable remaining = blocks
+        while result.IsNone && index <= tableIndex && not remaining.IsEmpty do
+            match remaining with
+            | Table table :: _ when index = tableIndex ->
+                result <- ValueSome table
+            | _ :: tail ->
+                index <- index + 1
+                remaining <- tail
+            | [] -> ()
+    result
 
 let private updateTable (doc: Document) tableId update =
     match tryFindTopBlockWithIndexUntil doc tableId with
@@ -4537,6 +4554,17 @@ let private updateTable (doc: Document) tableId update =
         else
             { doc with Blocks = replaceTopLevelBlockAtIndex tableIndex (Table nextTable) doc.Blocks }
     | _ ->
+        doc
+
+let private updateTableAtIndex tableIndex update (doc: Document) =
+    match tryFindTableAtTopLevelIndex tableIndex doc.Blocks with
+    | ValueSome table ->
+        let nextTable = update table
+        if obj.ReferenceEquals(nextTable, table) || nextTable = table then
+            doc
+        else
+            { doc with Blocks = replaceTopLevelBlockAtIndex tableIndex (Table nextTable) doc.Blocks }
+    | ValueNone ->
         doc
 
 let private updateTableCell rowIndex colIndex updateCell (table: TableBlock) =
@@ -4574,8 +4602,8 @@ let private currentTableCell doc =
     | Some sel ->
         let cachedResult = tryFindCachedCurrentTableCell doc.Blocks sel.Focus.BlockId
         match cachedResult with
-        | Some _ -> cachedResult
-        | None ->
+        | ValueSome _ -> cachedResult
+        | ValueNone ->
             let shouldBuild =
                 match doc.Blocks with
                 | [ Table table ] -> shouldBuildCurrentTableCellCacheForSingleTable table
@@ -4584,12 +4612,12 @@ let private currentTableCell doc =
                 let cached = currentTableCellLookup doc
                 let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
                 if cached.Entries.TryGetValue(sel.Focus.BlockId, &entry) then
-                    entry.Result
+                    ValueSome entry.Result
                 else
-                    None
+                    ValueNone
             else
                 tryFindCurrentTableCellUntil doc sel.Focus.BlockId
-    | None -> None
+    | None -> ValueNone
 
 let private tryGetTableCellParagraphInRow colIndex (row: TableRow) =
     row.Cells
@@ -5969,9 +5997,9 @@ let setCursor blockId offset doc =
 
 let insertTableRowAfterSelection doc =
     match currentTableCell doc with
-    | None -> doc
-    | Some (tableId, rowIndex, _) ->
-        updateTable doc tableId (fun table ->
+    | ValueNone -> doc
+    | ValueSome (struct (tableIndex, rowIndex, _)) ->
+        updateTableAtIndex tableIndex (fun table ->
             let newRow columnCount = { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None }
             let prefix = ResizeArray<TableRow>(max 0 rowIndex)
             let rec insertAfter rowPosition rows =
@@ -5983,28 +6011,28 @@ let insertTableRowAfterSelection doc =
                 | row :: tail ->
                     prefix.Add row
                     insertAfter (rowPosition + 1) tail
-            { table with Rows = insertAfter 0 table.Rows })
+            { table with Rows = insertAfter 0 table.Rows }) doc
 
 let insertTableColumnAfterSelection doc =
     match currentTableCell doc with
-    | None -> doc
-    | Some (tableId, _, colIndex) ->
-        updateTable doc tableId (fun table ->
+    | ValueNone -> doc
+    | ValueSome (struct (tableIndex, _, colIndex)) ->
+        updateTableAtIndex tableIndex (fun table ->
             { table with
                 Rows =
                     table.Rows
                     |> List.map (fun row ->
                         match tryInsertListItemAfterAtV colIndex emptyTableCell row.Cells with
                         | ValueSome cells -> { row with Cells = cells }
-                        | ValueNone -> row) })
+                        | ValueNone -> row) }) doc
 
 let deleteSelectedTableRow doc =
     match currentTableCell doc with
-    | None -> doc
-    | Some (tableId, rowIndex, colIndex) ->
+    | ValueNone -> doc
+    | ValueSome (struct (tableIndex, rowIndex, colIndex)) ->
         let mutable deletedRow = false
         let mutable targetPara = None
-        let updatedDoc = updateTable doc tableId (fun table ->
+        let updatedDoc = updateTableAtIndex tableIndex (fun table ->
             match table.Rows with
             | [] | [_] -> table
             | rows ->
@@ -6027,7 +6055,7 @@ let deleteSelectedTableRow doc =
                     | row :: tail ->
                         prefix.Add row
                         deleteAt (rowPosition + 1) tail
-                deleteAt 0 rows)
+                deleteAt 0 rows) doc
 
         if deletedRow then
             match targetPara with
@@ -6038,11 +6066,11 @@ let deleteSelectedTableRow doc =
 
 let deleteSelectedTableColumn doc =
     match currentTableCell doc with
-    | None -> doc
-    | Some (tableId, rowIndex, colIndex) ->
+    | ValueNone -> doc
+    | ValueSome (struct (tableIndex, rowIndex, colIndex)) ->
         let mutable deletedColumn = false
         let mutable targetPara = None
-        let updatedDoc = updateTable doc tableId (fun table ->
+        let updatedDoc = updateTableAtIndex tableIndex (fun table ->
             let mutable hasMultipleColumns = false
             let mutable rows = table.Rows
             while not hasMultipleColumns && not rows.IsEmpty do
@@ -6068,7 +6096,7 @@ let deleteSelectedTableColumn doc =
                                     targetPara <- tryGetTableCellParagraphInRow targetCol nextRow
                                 rowPosition <- rowPosition + 1
                                 nextRow) }
-                nextTable)
+                nextTable) doc
 
         if deletedColumn then
             match targetPara with
@@ -7360,9 +7388,9 @@ let setCurrentTextBoxStyle x y width height fillColor borderColor borderWidth do
 
 let setSelectedTableCellStyleWithShading backgroundColor shading width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
     match currentTableCell doc with
-    | None -> doc
-    | Some (tableId, rowIndex, colIndex) ->
-        updateTable doc tableId (fun table ->
+    | ValueNone -> doc
+    | ValueSome (struct (tableIndex, rowIndex, colIndex)) ->
+        updateTableAtIndex tableIndex (fun table ->
             updateTableCell rowIndex colIndex (fun cell ->
                 { cell with
                     BackgroundColor = backgroundColor
@@ -7374,61 +7402,116 @@ let setSelectedTableCellStyleWithShading backgroundColor shading width borderCol
                     PaddingTop = paddingTop
                     PaddingRight = paddingRight
                     PaddingBottom = paddingBottom
-                    PaddingLeft = paddingLeft }) table)
+                    PaddingLeft = paddingLeft }) table) doc
 
 let setSelectedTableCellStyle backgroundColor width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
     setSelectedTableCellStyleWithShading backgroundColor None width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc
 
-let private setTableMarginsById paddingTop paddingRight paddingBottom paddingLeft doc tableId =
-    match tryFindTopBlockWithIndexUntil doc tableId with
-    | ValueSome (struct (Table table, tableIndex)) ->
-        if table.PaddingTop = paddingTop
-           && table.PaddingRight = paddingRight
-           && table.PaddingBottom = paddingBottom
-           && table.PaddingLeft = paddingLeft then
-            doc
-        else
-            let nextTable = {
-                table with
-                    PaddingTop = paddingTop
-                    PaddingRight = paddingRight
-                    PaddingBottom = paddingBottom
-                    PaddingLeft = paddingLeft
-            }
-            { doc with Blocks = replaceTopLevelBlockAtIndex tableIndex (Table nextTable) doc.Blocks }
-    | _ -> doc
+let private setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex =
+    let mutable resultDoc = doc
+    if tableIndex >= 0 then
+        let mutable doneScanning = false
+        let mutable index = 0
+        let mutable remaining = doc.Blocks
+        while not doneScanning && index <= tableIndex && not remaining.IsEmpty do
+            match remaining with
+            | Table table :: _ when index = tableIndex ->
+                if table.PaddingTop = paddingTop
+                   && table.PaddingRight = paddingRight
+                   && table.PaddingBottom = paddingBottom
+                   && table.PaddingLeft = paddingLeft then
+                    doneScanning <- true
+                else
+                    let nextTable: TableBlock = {
+                        table with
+                            PaddingTop = paddingTop
+                            PaddingRight = paddingRight
+                            PaddingBottom = paddingBottom
+                            PaddingLeft = paddingLeft
+                    }
+                    resultDoc <- { doc with Blocks = replaceTopLevelBlockAtIndex tableIndex (Table nextTable) doc.Blocks }
+                    doneScanning <- true
+            | _ :: tail ->
+                index <- index + 1
+                remaining <- tail
+            | [] -> ()
+    resultDoc
 
 let setCurrentTableCellMargins paddingTop paddingRight paddingBottom paddingLeft doc =
-    match currentTableCell doc with
-    | None -> doc
-    | Some (tableId, _, _) -> setTableMarginsById paddingTop paddingRight paddingBottom paddingLeft doc tableId
-
-let private setTableMarginsAndSpacingById paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableId =
-    match tryFindTopBlockWithIndexUntil doc tableId with
-    | ValueSome (struct (Table table, tableIndex)) ->
-        if table.PaddingTop = paddingTop
-           && table.PaddingRight = paddingRight
-           && table.PaddingBottom = paddingBottom
-           && table.PaddingLeft = paddingLeft
-           && table.CellSpacing = cellSpacing then
-            doc
+    match doc.Selection with
+    | Some sel ->
+        let mutable handled = false
+        let mutable resultDoc = doc
+        match tryGetCurrentTableCellCache doc.Blocks with
+        | ValueSome cached ->
+            let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
+            if cached.Entries.TryGetValue(sel.Focus.BlockId, &entry) then
+                let struct (tableIndex, _, _) = entry.Result
+                resultDoc <- setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
+                handled <- true
+        | ValueNone -> ()
+        if handled then
+            resultDoc
         else
-            let nextTable = {
-                table with
-                    PaddingTop = paddingTop
-                    PaddingRight = paddingRight
-                    PaddingBottom = paddingBottom
-                    PaddingLeft = paddingLeft
-                    CellSpacing = cellSpacing
-            }
-            { doc with Blocks = replaceTopLevelBlockAtIndex tableIndex (Table nextTable) doc.Blocks }
-    | _ -> doc
+            match currentTableCell doc with
+            | ValueNone -> doc
+            | ValueSome (struct (tableIndex, _, _)) ->
+                setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
+    | None -> doc
+
+let private setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex =
+    let mutable resultDoc = doc
+    if tableIndex >= 0 then
+        let mutable doneScanning = false
+        let mutable index = 0
+        let mutable remaining = doc.Blocks
+        while not doneScanning && index <= tableIndex && not remaining.IsEmpty do
+            match remaining with
+            | Table table :: _ when index = tableIndex ->
+                if table.PaddingTop = paddingTop
+                   && table.PaddingRight = paddingRight
+                   && table.PaddingBottom = paddingBottom
+                   && table.PaddingLeft = paddingLeft
+                   && table.CellSpacing = cellSpacing then
+                    doneScanning <- true
+                else
+                    let nextTable: TableBlock = {
+                        table with
+                            PaddingTop = paddingTop
+                            PaddingRight = paddingRight
+                            PaddingBottom = paddingBottom
+                            PaddingLeft = paddingLeft
+                            CellSpacing = cellSpacing
+                    }
+                    resultDoc <- { doc with Blocks = replaceTopLevelBlockAtIndex tableIndex (Table nextTable) doc.Blocks }
+                    doneScanning <- true
+            | _ :: tail ->
+                index <- index + 1
+                remaining <- tail
+            | [] -> ()
+    resultDoc
 
 let setCurrentTableCellMarginsAndSpacing paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc =
-    match currentTableCell doc with
+    match doc.Selection with
+    | Some sel ->
+        let mutable handled = false
+        let mutable resultDoc = doc
+        match tryGetCurrentTableCellCache doc.Blocks with
+        | ValueSome cached ->
+            let mutable entry = Unchecked.defaultof<CurrentTableCellCacheEntry>
+            if cached.Entries.TryGetValue(sel.Focus.BlockId, &entry) then
+                let struct (tableIndex, _, _) = entry.Result
+                resultDoc <- setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
+                handled <- true
+        | ValueNone -> ()
+        if handled then
+            resultDoc
+        else
+            match currentTableCell doc with
+            | ValueNone -> doc
+            | ValueSome (struct (tableIndex, _, _)) ->
+                setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
     | None -> doc
-    | Some (tableId, _, _) ->
-        setTableMarginsAndSpacingById paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableId
 
 let private headingFontSize level =
     match level with
