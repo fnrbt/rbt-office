@@ -10,6 +10,7 @@ open Renderer
 
 module Doc = RedBat.Word.Document
 module Layout = RedBat.Word.Layout
+module WordLayout = RedBat.Word.WordLayout
 module Paint = RedBat.Word.Paint
 module Styles = RedBat.Word.WordStyles
 module TB = RedBat.Word.TextBuffer
@@ -2116,6 +2117,43 @@ check "native normalized range source cycle"
     (normalizedRangeSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
      && normalizedRangeSourceCycleAllocated < 512L * 1024L
      && normalizedRangeSourceCycleTotal = 1608000)
+    true
+
+let headerFooterPartSourceCycleCount = 80
+let headerFooterPartSourceCyclePartCount = 1000
+let headerFooterPartSourceCycleDocs =
+    [| for docIndex in 0 .. headerFooterPartSourceCycleCount - 1 ->
+        let parts: Doc.HeaderFooterPart list =
+            [ for partIndex in 0 .. headerFooterPartSourceCyclePartCount - 1 ->
+                { Kind = if partIndex = 0 then "default" else sprintf "kind-%04d" partIndex
+                  RelationshipId = Some (sprintf "r-%02d-%04d" docIndex partIndex)
+                  Blocks =
+                    [ Doc.Paragraph (
+                        para
+                            (sprintf "native-header-footer-part-%02d-%04d" docIndex partIndex)
+                            "header") ] } ]
+        { Doc.empty with HeaderParts = parts } |]
+for doc in headerFooterPartSourceCycleDocs do
+    WordLayout.Page.defaultHeaderParagraphs doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let headerFooterPartSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let headerFooterPartSourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable headerFooterPartSourceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for doc in headerFooterPartSourceCycleDocs do
+        headerFooterPartSourceCycleTotal <-
+            headerFooterPartSourceCycleTotal + (WordLayout.Page.defaultHeaderParagraphs doc).Length
+headerFooterPartSourceCycleSw.Stop()
+let headerFooterPartSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - headerFooterPartSourceCycleAllocatedBefore
+check "native header/footer part source cycle"
+    (headerFooterPartSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && headerFooterPartSourceCycleAllocated < 512L * 1024L
+     && headerFooterPartSourceCycleTotal = 1600)
     true
 
 if isNull documentCaptionIdMetrics || isNull documentBookmarkIdMetrics || isNull documentRevisionIdMetrics then
