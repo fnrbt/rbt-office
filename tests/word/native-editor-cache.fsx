@@ -1621,6 +1621,59 @@ check "native selection text same-block cold"
      && sameBlockSelectionTextAllocated < 200000L)
     true
 
+let clonedCursorFormatIdPrefix = System.String('f', 5000)
+let clonedCursorFormatIds =
+    [| for index in 0 .. 511 -> clonedCursorFormatIdPrefix + sprintf "%04d" index |]
+let clonedCursorFormatTable =
+    { tableCellMarginTable with
+        Id = "native-cursor-format-cloned"
+        Rows =
+            [ for paragraphId in clonedCursorFormatIds ->
+                { tableCellMarginRow with
+                    Cells =
+                        [ { tableCellMarginCell with
+                                Content = [ para paragraphId "abcdef" ] } ] } ] }
+let clonedCursorFormatBlocks = [ Doc.Table clonedCursorFormatTable ]
+let clonedCursorFormatDocs =
+    [| for paragraphId in clonedCursorFormatIds ->
+        let blockId = cloneString paragraphId
+        { Doc.empty with
+            Blocks = clonedCursorFormatBlocks
+            Selection =
+                Some {
+                    Anchor = pos blockId 1
+                    Focus = pos blockId 4
+                } } |]
+Doc.setColor
+    None
+    { clonedCursorFormatDocs.[0] with
+        Selection =
+            Some {
+                Anchor = pos clonedCursorFormatIds.[0] 1
+                Focus = pos clonedCursorFormatIds.[0] 4
+            } }
+|> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let clonedCursorFormatAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let clonedCursorFormatSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable clonedCursorFormatSame = 0
+for _pass in 1 .. 250 do
+    for doc in clonedCursorFormatDocs do
+        if obj.ReferenceEquals(Doc.setColor None doc, doc) then
+            clonedCursorFormatSame <- clonedCursorFormatSame + 1
+clonedCursorFormatSw.Stop()
+let clonedCursorFormatAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - clonedCursorFormatAllocatedBefore
+check "native cursor paragraph cloned id cache"
+    (clonedCursorFormatSw.Elapsed.TotalMilliseconds < 450.0
+     && clonedCursorFormatAllocated < 16L * 1024L * 1024L
+     && clonedCursorFormatSame = 128000)
+    true
+
 let normalizedRangeClonedId = "native-normalized-range-cloned"
 let normalizedRangeClonedDoc =
     { Doc.empty with

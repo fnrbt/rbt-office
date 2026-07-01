@@ -3534,6 +3534,23 @@ let private tryFindEditableParagraphUntil doc paragraphId =
     | ValueSome para -> Some para
     | ValueNone -> None
 
+let private tryFindTopLevelParagraphUntil doc paragraphId =
+    let mutable found: ParagraphBlock voption = ValueNone
+    let mutable remaining = doc.Blocks
+    while found.IsNone && not remaining.IsEmpty do
+        match remaining with
+        | Paragraph para :: tail
+        | Heading (_, para) :: tail ->
+            if blockIdKeyEquals para.Id paragraphId then
+                found <- ValueSome para
+            remaining <- tail
+        | _ :: tail ->
+            remaining <- tail
+        | [] -> ()
+    match found with
+    | ValueSome para -> Some para
+    | ValueNone -> None
+
 type private OrderedEditableParagraphsCache = {
     OrderedSourceBlocks: Block list
     EntryCount: int
@@ -4581,8 +4598,8 @@ let private countCurrentTableCellEntriesWithLimit limit (table: TableBlock) =
     count
 
 let private shouldBuildCurrentTableCellCacheForSingleTable table =
-    countCurrentTableCellEntriesWithLimit (currentTableCellCacheBuildEntryLimit + 1) table
-    <= currentTableCellCacheBuildEntryLimit
+    let count = countCurrentTableCellEntriesWithLimit (currentTableCellCacheBuildEntryLimit + 1) table
+    count > 0 && count <= currentTableCellCacheBuildEntryLimit
 
 let private countCurrentTableCellEntriesInBlocksWithLimit limit (blocks: Block list) =
     let mutable count = 0
@@ -4596,8 +4613,8 @@ let private countCurrentTableCellEntriesInBlocksWithLimit limit (blocks: Block l
     count
 
 let private shouldBuildCurrentTableCellCacheForBlocks blocks =
-    countCurrentTableCellEntriesInBlocksWithLimit (currentTableCellCacheBuildEntryLimit + 1) blocks
-    <= currentTableCellCacheBuildEntryLimit
+    let count = countCurrentTableCellEntriesInBlocksWithLimit (currentTableCellCacheBuildEntryLimit + 1) blocks
+    count > 0 && count <= currentTableCellCacheBuildEntryLimit
 
 let private tryFindCurrentTableCellUntil doc blockId =
     match tryFindCachedCurrentTableCell doc.Blocks blockId with
@@ -5803,13 +5820,14 @@ let private findCursorParagraph doc blockId =
         | ValueSome cached ->
             let fast = cached.ParagraphFastSlots.[paragraphLookupEntryFastSlot cached.ParagraphFastSlots blockId]
             if not (obj.ReferenceEquals(fast, null))
-               && obj.ReferenceEquals(fast.Paragraph.Id, blockId) then
+               && paragraphLookupEntryMatches fast blockId then
                 fast.Result
             else
                 let mutable entry = Unchecked.defaultof<ParagraphLookupEntry>
                 if cached.Paragraphs.TryGetValue(blockId, &entry) then
-                    if obj.ReferenceEquals(entry.Paragraph.Id, blockId) then
-                        setParagraphLookupEntryFastSlot cached.ParagraphFastSlots entry
+                    entry.RecentLookupIdSet <- true
+                    entry.RecentLookupId <- blockId
+                    setParagraphLookupEntryFastSlot cached.ParagraphFastSlots entry
                     entry.Result
                 else
                     None
@@ -5821,7 +5839,18 @@ let private findCursorParagraph doc blockId =
         let cachedParagraph = tryCachedParagraphLookup ()
         match cachedParagraph with
         | Some _ -> cachedParagraph
-        | None -> tryFindEditableParagraphUntil doc blockId
+        | None ->
+            match tryFindTopLevelParagraphUntil doc blockId with
+            | Some _ as topLevel -> topLevel
+            | None ->
+                let shouldBuild =
+                    match doc.Blocks with
+                    | [ Table table ] -> shouldBuildCurrentTableCellCacheForSingleTable table
+                    | _ -> shouldBuildCurrentTableCellCacheForBlocks doc.Blocks
+                if shouldBuild then
+                    findParagraphFromParagraphLookup doc blockId
+                else
+                    tryFindEditableParagraphUntil doc blockId
 
 let private tryFindCursorParagraphLength doc blockId =
     match findCursorParagraph doc blockId with
