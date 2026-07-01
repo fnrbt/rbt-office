@@ -3718,7 +3718,7 @@ let private tableColumnUniqueValuesCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, TableColumnUniqueValuesCache>(cellMapReferenceComparer)
 let private tableColumnUniqueValuesFastSlots = Array.zeroCreate<TableColumnUniqueValuesCache> 256
 let private tableColumnUniqueValuesCacheMaxEntries = 256
-let private tableColumnUniqueValuesCacheMaxSources = 64
+let private tableColumnUniqueValuesCacheMaxSources = 256
 let private tableColumnUniqueValuesCacheMaxTotalValues = 200000
 let private tableColumnUniqueValuesCacheMaxTotalValueTextChars = 5000000
 let private tableColumnUniqueValuesCacheMaxTotalCells = 500000
