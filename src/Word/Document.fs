@@ -3868,7 +3868,146 @@ let private pageBreakBeforeLookup (doc: Document) =
             cache.DefaultBreak
     paragraphPageBreakBefore
 
-let buildPageMap (doc: Document) =
+[<Struct>]
+type private PageMapCacheKey = {
+    SourceBlocks: Block list
+    SourceStyles: NamedStyle list
+}
+
+type private PageMapCacheEntry = {
+    Key: PageMapCacheKey
+    PageMap: PageMap
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    StyleCount: int
+    StyleTextCharCount: int
+    AnchorCount: int
+}
+
+let private pageMapCacheKeyHash key =
+    let blockHash = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.SourceBlocks)
+    let styleHash = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.SourceStyles)
+    blockHash ^^^ (styleHash <<< 1)
+
+let private pageMapCacheKeyMatches left right =
+    obj.ReferenceEquals(left.SourceBlocks, right.SourceBlocks)
+    && obj.ReferenceEquals(left.SourceStyles, right.SourceStyles)
+
+let private pageMapCacheKeyComparer =
+    { new IEqualityComparer<PageMapCacheKey> with
+        member _.Equals(left, right) = pageMapCacheKeyMatches left right
+        member _.GetHashCode(key) = pageMapCacheKeyHash key }
+
+let mutable private pageMapCache: PageMapCacheEntry list = []
+let private pageMapCacheByKey = Dictionary<PageMapCacheKey, PageMapCacheEntry>(pageMapCacheKeyComparer)
+let private pageMapFastSlots = Array.zeroCreate<PageMapCacheEntry> 256
+let private pageMapCacheMaxEntries = 256
+let private pageMapCacheMaxTotalAnchors = 200000
+let private pageMapCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
+let private pageMapCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+let private pageMapCacheMaxTotalStyles = pageBreakBeforeLookupCacheMaxTotalStyles
+let private pageMapCacheMaxTotalStyleTextChars = pageBreakBeforeLookupCacheMaxTotalStyleTextChars
+
+let private pageMapCacheKey blocks styles = {
+    SourceBlocks = blocks
+    SourceStyles = styles
+}
+
+let private pageMapCacheRetainable cached =
+    cached.AnchorCount <= pageMapCacheMaxTotalAnchors
+    && cached.SourceParagraphCount <= pageMapCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= pageMapCacheMaxTotalSourceTextChars
+    && cached.StyleCount <= pageMapCacheMaxTotalStyles
+    && cached.StyleTextCharCount <= pageMapCacheMaxTotalStyleTextChars
+
+let private pageMapCacheEntryMatches key cached =
+    pageMapCacheKeyMatches key cached.Key
+
+let private setPageMapCache entries =
+    pageMapCache <- entries
+    pageMapCacheByKey.Clear()
+    clearArray pageMapFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<PageMapCacheEntry>
+        if not (pageMapCacheByKey.TryGetValue(entry.Key, &existing)) then
+            pageMapCacheByKey.[entry.Key] <- entry
+            pageMapFastSlots.[pageMapCacheKeyHash entry.Key &&& (pageMapFastSlots.Length - 1)] <- entry
+
+let private tryGetPageMapCache key =
+    let slot = pageMapCacheKeyHash key &&& (pageMapFastSlots.Length - 1)
+    let fast = pageMapFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && pageMapCacheEntryMatches key fast
+       && pageMapCacheRetainable fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<PageMapCacheEntry>
+        if pageMapCacheByKey.TryGetValue(key, &cached)
+           && pageMapCacheRetainable cached then
+            pageMapFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
+let private pageMapCacheWithoutKey key =
+    let mutable cached = Unchecked.defaultof<PageMapCacheEntry>
+    if pageMapCacheByKey.TryGetValue(key, &cached)
+       && pageMapCacheEntryMatches key cached then
+        pageMapCache
+        |> List.filter (pageMapCacheEntryMatches key >> not)
+    else
+        pageMapCache
+
+let private trimPageMapCache caches =
+    let rec loop remaining kept count totalAnchors totalSourceParagraphs totalSourceTextChars totalStyles totalStyleTextChars =
+        match remaining with
+        | [] -> List.rev kept
+        | cached :: rest ->
+            let anchors = max 1 cached.AnchorCount
+            let sourceParagraphs = max 1 cached.SourceParagraphCount
+            let sourceTextChars = max 1 cached.SourceTextCharCount
+            let styles = max 1 cached.StyleCount
+            let styleTextChars = max 1 cached.StyleTextCharCount
+            let nextAnchors = totalAnchors + anchors
+            let nextSourceParagraphs = totalSourceParagraphs + sourceParagraphs
+            let nextSourceTextChars = totalSourceTextChars + sourceTextChars
+            let nextStyles = totalStyles + styles
+            let nextStyleTextChars = totalStyleTextChars + styleTextChars
+            if pageMapCacheRetainable cached
+               && count < pageMapCacheMaxEntries
+               && nextAnchors <= pageMapCacheMaxTotalAnchors
+               && nextSourceParagraphs <= pageMapCacheMaxTotalSourceParagraphs
+               && nextSourceTextChars <= pageMapCacheMaxTotalSourceTextChars
+               && nextStyles <= pageMapCacheMaxTotalStyles
+               && nextStyleTextChars <= pageMapCacheMaxTotalStyleTextChars then
+                loop
+                    rest
+                    (cached :: kept)
+                    (count + 1)
+                    nextAnchors
+                    nextSourceParagraphs
+                    nextSourceTextChars
+                    nextStyles
+                    nextStyleTextChars
+            else
+                loop rest kept count totalAnchors totalSourceParagraphs totalSourceTextChars totalStyles totalStyleTextChars
+    loop caches [] 0 0 0 0 0 0
+
+let private rememberPageMap cached =
+    if not (pageMapCacheRetainable cached) then
+        let entries = pageMapCacheWithoutKey cached.Key
+        if not (obj.ReferenceEquals(entries, pageMapCache)) then
+            setPageMapCache entries
+    else
+        cached
+        :: pageMapCacheWithoutKey cached.Key
+        |> trimPageMapCache
+        |> setPageMapCache
+
+let private pageMapAnchorCount pageMap =
+    pageMap.BlockAnchors.Length + pageMap.Fields.Length + pageMap.Bookmarks.Length
+
+let private buildPageMapUncached (doc: Document) =
     let mutable physicalPageNumber = 1
     let mutable displayPageStart = 1
     let mutable displayPageStartPhysical = 1
@@ -3924,6 +4063,29 @@ let buildPageMap (doc: Document) =
         Fields = resizeArrayToList fieldAnchors
         Bookmarks = resizeArrayToList bookmarkAnchors
     }
+
+let buildPageMap (doc: Document) =
+    let key = pageMapCacheKey doc.Blocks doc.Styles
+    match tryGetPageMapCache key with
+    | ValueSome cached -> cached.PageMap
+    | ValueNone ->
+        let pageMap = buildPageMapUncached doc
+        let sourceParagraphCount = countSourceParagraphs doc.Blocks
+        let cached = {
+            Key = key
+            PageMap = pageMap
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount =
+                documentBlocksSourceTextCharCountFor
+                    pageMapCacheMaxTotalSourceParagraphs
+                    sourceParagraphCount
+                    doc.Blocks
+            StyleCount = doc.Styles.Length
+            StyleTextCharCount = pageBreakBeforeStylesTextCharCount doc.Styles
+            AnchorCount = pageMapAnchorCount pageMap
+        }
+        rememberPageMap cached
+        pageMap
 
 let bookmarkInfos (doc: Document) =
     match tryGetBookmarkInfoCache doc.Blocks with

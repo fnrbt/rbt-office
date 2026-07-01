@@ -492,8 +492,8 @@ pageBreakLookupCycleSw.Stop()
 let pageBreakLookupCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - pageBreakLookupCycleAllocatedBefore
 check "native page break lookup source cycle"
-    (pageBreakLookupCycleSw.Elapsed.TotalMilliseconds < 800.0
-     && pageBreakLookupCycleAllocated < 250L * 1024L * 1024L
+    (pageBreakLookupCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && pageBreakLookupCycleAllocated < 1024L * 1024L
      && pageBreakLookupCycleTotal = pageBreakLookupCycleDocs.Length * 20 * pageBreakLookupCycleExpectedPerDoc)
     true
 
