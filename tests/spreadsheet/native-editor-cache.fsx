@@ -691,6 +691,40 @@ check "native visible rows cache reuses"
     (obj.ReferenceEquals(filterCacheVisibleRows, filterCacheVisibleRowsAgain))
     true
 
+let filterRowCycleModelCount = 80
+let filterRowCycleRowCount = 5000
+let filterRowCycleModels =
+    [| for modelIndex in 0 .. filterRowCycleModelCount - 1 ->
+        { createEmpty filterRowCycleRowCount 1 with
+            Cells =
+                [ for row in 0 .. filterRowCycleRowCount - 1 ->
+                    { Row = row; Col = 0 }, cell (CellValue.String (sprintf "drop-%02d-%04d" modelIndex row)) ]
+                |> Map.ofList }
+        |> applyFilter 0 (Set.singleton "keep") |]
+for model in filterRowCycleModels do
+    applyFilterRowHeights model |> ignore
+    getVisibleRows model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let filterRowCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let filterRowCycleSw = Stopwatch.StartNew()
+let mutable filterRowCycleTotal = 0
+for _pass in 1 .. 20 do
+    for model in filterRowCycleModels do
+        filterRowCycleTotal <- filterRowCycleTotal + (applyFilterRowHeights model).FilterHiddenRows.Length
+        filterRowCycleTotal <- filterRowCycleTotal + (getVisibleRows model).Count
+filterRowCycleSw.Stop()
+let filterRowCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - filterRowCycleAllocatedBefore
+check "native filter row source cycle"
+    (filterRowCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && filterRowCycleAllocated < 4L * 1024L * 1024L
+     && filterRowCycleTotal = 7998400)
+    true
+
 let searchCacheCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "header")
       { Row = 1; Col = 0 }, cell (CellValue.String "needle")

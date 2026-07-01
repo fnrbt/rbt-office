@@ -2882,7 +2882,7 @@ let private filterHiddenRowsCacheBySource =
     System.Collections.Generic.Dictionary<CellRowCountReferenceKey, FilterHiddenRowsCache>(cellRowCountReferenceComparer)
 let private filterHiddenRowsFastSlots = Array.zeroCreate<FilterHiddenRowsCache> 256
 let private filterHiddenRowsCacheMaxEntries = 64
-let private filterHiddenRowsCacheMaxSources = 64
+let private filterHiddenRowsCacheMaxSources = 256
 let private filterHiddenRowsCacheMaxRowCount = 2000000
 let private filterHiddenRowsCacheMaxTotalRowCount = 2000000
 let private filterHiddenRowsCacheMaxTotalCells = 500000
@@ -3254,7 +3254,7 @@ let private visibleRowsCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, VisibleRowsCache>(cellMapReferenceComparer)
 let private visibleRowsFastSlots = Array.zeroCreate<VisibleRowsCache> 256
 let private visibleRowsCacheMaxEntries = 64
-let private visibleRowsCacheMaxSources = 64
+let private visibleRowsCacheMaxSources = 256
 let private visibleRowsCacheMaxRowCount = 200000
 let private visibleRowsCacheMaxTotalRowCount = 200000
 let private visibleRowsCacheMaxTotalCells = 500000
