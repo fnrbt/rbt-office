@@ -7994,7 +7994,7 @@ let private mergeRangeQueryFastSlots = Array.zeroCreate<MergeRangeQueryCache> 25
 let private mergeLookupRowEntryLimit = 100000
 let private mergeIndexCacheMaxSources = 64
 let private mergeIndexCacheMaxTotalSourceMerges = 100000
-let private mergeRangeQueryCacheMaxEntries = 64
+let private mergeRangeQueryCacheMaxEntries = 256
 let private mergeRangeQueryCacheMaxTotalResults = 200000
 let private mergeRangeQueryCacheMaxTotalSourceMerges = 100000
 

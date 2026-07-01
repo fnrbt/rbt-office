@@ -623,6 +623,44 @@ check "native last used column row cycle cache"
      && lastUsedColumnTotal = 12250000)
     true
 
+let mergeRangeCycleMergeCount = 40000
+let mergeRangeCycleQueryCount = 80
+let mergeRangeCycleMerges =
+    [ for index in mergeRangeCycleMergeCount - 1 .. -1 .. 0 ->
+        { StartRow = index * 2
+          StartCol = index % 12
+          EndRow = index * 2
+          EndCol = (index % 12) + 1 } ]
+let mergeRangeCycleModel =
+    { createEmpty (mergeRangeCycleMergeCount * 2 + 10) 20 with MergedCells = mergeRangeCycleMerges }
+let mergeRangeCycleQueries =
+    [| for index in 0 .. mergeRangeCycleQueryCount - 1 ->
+        let startRow = mergeRangeCycleMergeCount + index * 7
+        struct (startRow, startRow + 30, 0, 20) |]
+for struct (startRow, endRow, startCol, endCol) in mergeRangeCycleQueries do
+    mergedCellsIntersectingRange startRow endRow startCol endCol mergeRangeCycleModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let mergeRangeCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let mergeRangeCycleSw = Stopwatch.StartNew()
+let mutable mergeRangeCycleTotal = 0
+for _pass in 1 .. 20 do
+    for struct (startRow, endRow, startCol, endCol) in mergeRangeCycleQueries do
+        mergeRangeCycleTotal <-
+            mergeRangeCycleTotal
+            + (mergedCellsIntersectingRange startRow endRow startCol endCol mergeRangeCycleModel).Length
+mergeRangeCycleSw.Stop()
+let mergeRangeCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - mergeRangeCycleAllocatedBefore
+check "native merge range query cycle cache"
+    (mergeRangeCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && mergeRangeCycleAllocated < 512L * 1024L
+     && mergeRangeCycleTotal = 24000)
+    true
+
 let filterCacheCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "header")
       { Row = 1; Col = 0 }, cell (CellValue.String "keep")
