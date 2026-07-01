@@ -63,6 +63,8 @@ let wordFontCacheProperty =
     wordEditorType.GetProperty("wordFontCache", staticBindingFlags)
 let vbaDocumentText =
     typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("documentText", BindingFlags.NonPublic ||| BindingFlags.Static)
+let vbaLayoutCacheFor =
+    typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("layoutCacheFor", BindingFlags.NonPublic ||| BindingFlags.Static)
 
 if isNull cachedLayouts then
     fail <- fail + 1
@@ -865,6 +867,33 @@ else
     check "native vba text cache many docs"
         (vbaTextCacheSw.Elapsed.TotalMilliseconds < 80.0
          && vbaTextCacheTotal > 0L)
+        true
+
+if isNull vbaLayoutCacheFor then
+    fail <- fail + 1
+    printfn "FAIL %-34s expected private layoutCacheFor method" "native vba layout cache reflection"
+else
+    let vbaLayoutCacheDocs =
+        [| for docIndex in 0 .. 23 ->
+            { Doc.empty with
+                Blocks =
+                    [ for index in 0 .. 199 ->
+                        Doc.Paragraph (para (sprintf "native-vba-layout-%02d-%04d" docIndex index) "alpha beta gamma delta epsilon zeta eta theta") ] } |]
+
+    for doc in vbaLayoutCacheDocs do
+        vbaLayoutCacheFor.Invoke(null, [| box doc |]) |> ignore
+
+    let vbaLayoutCacheSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable vbaLayoutCacheHits = 0
+    for _pass in 1 .. 5000 do
+        for doc in vbaLayoutCacheDocs do
+            if not (isNull (vbaLayoutCacheFor.Invoke(null, [| box doc |]))) then
+                vbaLayoutCacheHits <- vbaLayoutCacheHits + 1
+    vbaLayoutCacheSw.Stop()
+
+    check "native vba layout cache many docs"
+        (vbaLayoutCacheSw.Elapsed.TotalMilliseconds < 40.0
+         && vbaLayoutCacheHits = 120000)
         true
 
 if isNull tryLoadWordFont || isNull wordFontCacheProperty then

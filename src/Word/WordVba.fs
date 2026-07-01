@@ -880,6 +880,15 @@ module Vba =
         for i = 0 to items.Length - 1 do
             items.[i] <- Unchecked.defaultof<'T>
 
+    let private documentBlocksReferenceComparer =
+        { new IEqualityComparer<Doc.Block list> with
+            member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+            member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+
+    let private documentBlocksSlot blocks slotCount =
+        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks)
+        &&& (slotCount - 1)
+
     let private eq (left: string) (right: string) =
         if left.Length <> right.Length then
             false
@@ -1037,6 +1046,9 @@ module Vba =
     }
 
     let mutable private layoutCache: LayoutCache list = []
+    let private layoutCacheByBlocks =
+        Dictionary<Doc.Block list, ResizeArray<LayoutCache>>(documentBlocksReferenceComparer)
+    let private layoutFastSlots = Array.zeroCreate<LayoutCache> 256
     let private layoutCacheMaxEntries = 64
     let private layoutCacheMaxTotalLayouts = 200000
     let private vbaSourceTextCacheMaxTotalChars = 5000000
@@ -1474,6 +1486,59 @@ module Vba =
         && obj.ReferenceEquals(cached.HeaderParts, doc.HeaderParts)
         && obj.ReferenceEquals(cached.FooterParts, doc.FooterParts)
 
+    let private setLayoutCache entries =
+        layoutCache <- entries
+        layoutCacheByBlocks.Clear()
+        clearArray layoutFastSlots
+        for entry in entries do
+            let blocks = entry.CachedDoc.Blocks
+            let mutable candidates = Unchecked.defaultof<ResizeArray<LayoutCache>>
+            if not (layoutCacheByBlocks.TryGetValue(blocks, &candidates)) then
+                candidates <- ResizeArray<LayoutCache>()
+                layoutCacheByBlocks.[blocks] <- candidates
+            candidates.Add entry
+            let slot = documentBlocksSlot blocks layoutFastSlots.Length
+            if obj.ReferenceEquals(layoutFastSlots.[slot], null) then
+                layoutFastSlots.[slot] <- entry
+
+    let private tryFindLayoutCacheCandidate (doc: Doc.Document) (candidates: ResizeArray<LayoutCache>) =
+        let mutable index = 0
+        let mutable found = false
+        let mutable result = Unchecked.defaultof<LayoutCache>
+        while not found && index < candidates.Count do
+            let candidate = candidates.[index]
+            if layoutInputsEqual candidate.CachedDoc doc then
+                found <- true
+                result <- candidate
+            index <- index + 1
+        if found then ValueSome result else ValueNone
+
+    let private tryGetLayoutCache (doc: Doc.Document) =
+        let slot = documentBlocksSlot doc.Blocks layoutFastSlots.Length
+        let fast = layoutFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && layoutInputsEqual fast.CachedDoc doc then
+            ValueSome fast
+        else
+            let mutable candidates = Unchecked.defaultof<ResizeArray<LayoutCache>>
+            if layoutCacheByBlocks.TryGetValue(doc.Blocks, &candidates) then
+                match tryFindLayoutCacheCandidate doc candidates with
+                | ValueSome cached ->
+                    layoutFastSlots.[slot] <- cached
+                    ValueSome cached
+                | ValueNone ->
+                    ValueNone
+            else
+                ValueNone
+
+    let private layoutCacheWithoutDoc (doc: Doc.Document) =
+        match tryGetLayoutCache doc with
+        | ValueSome _ ->
+            layoutCache
+            |> List.filter (fun existing -> not (layoutInputsEqual existing.CachedDoc doc))
+        | ValueNone ->
+            layoutCache
+
     let private rememberLayoutCache cached =
         let trim entries =
             let rec loop remaining kept count totalLayouts totalSourceTextChars =
@@ -1491,10 +1556,10 @@ module Vba =
                     else
                         loop rest kept count totalLayouts totalSourceTextChars
             loop entries [] 0 0 0
-        layoutCache <-
-            cached
-            :: (layoutCache |> List.filter (fun existing -> not (layoutInputsEqual existing.CachedDoc cached.CachedDoc)))
-            |> trim
+        cached
+        :: layoutCacheWithoutDoc cached.CachedDoc
+        |> trim
+        |> setLayoutCache
 
     let private layoutSegmentRetainedTextCharCount segment =
         match segment with
@@ -1569,10 +1634,10 @@ module Vba =
           PageCount = pageCount }
 
     let private layoutCacheFor doc =
-        match layoutCache |> List.tryFind (fun cached -> layoutInputsEqual cached.CachedDoc doc) with
-        | Some cached ->
+        match tryGetLayoutCache doc with
+        | ValueSome cached ->
             cached.Value
-        | None ->
+        | ValueNone ->
             let value = buildLayoutCacheValue doc
             if value.LayoutCount <= layoutCacheMaxTotalLayouts
                && value.SourceTextCharCount <= vbaSourceTextCacheMaxTotalChars then
@@ -1670,10 +1735,6 @@ module Vba =
     }
 
     let mutable private documentTextCache: DocumentTextCache list = []
-    let private documentBlocksReferenceComparer =
-        { new IEqualityComparer<Doc.Block list> with
-            member _.Equals(left, right) = obj.ReferenceEquals(left, right)
-            member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
     let private documentTextCacheByBlocks =
         Dictionary<Doc.Block list, DocumentTextCache>(documentBlocksReferenceComparer)
     let private documentTextFastSlots = Array.zeroCreate<DocumentTextCache> 256
@@ -1684,10 +1745,6 @@ module Vba =
 
     let private documentTextCacheMatches blocks (cached: DocumentTextCache) =
         obj.ReferenceEquals(cached.SourceBlocks, blocks)
-
-    let private documentBlocksSlot blocks slotCount =
-        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blocks)
-        &&& (slotCount - 1)
 
     let private documentTextCacheWithoutBlocks blocks =
         let mutable cached = Unchecked.defaultof<DocumentTextCache>
