@@ -1578,6 +1578,7 @@ type private SelectionTextCache = {
     SourceTextCharCount: int
     Entries: Dictionary<SelectionTextCacheKey, SelectionTextCacheEntry>
     Order: Queue<SelectionTextCacheKey>
+    EntryFastSlots: SelectionTextFastEntry array
     mutable TotalChars: int
 }
 
@@ -1593,6 +1594,11 @@ and private SelectionTextCacheEntry = {
     TextLength: int
 }
 
+and private SelectionTextFastEntry = {
+    Key: SelectionTextCacheKey
+    Entry: SelectionTextCacheEntry
+}
+
 let mutable private selectionTextCache: SelectionTextCache list = []
 let private selectionTextCacheByBlocks = Dictionary<Block list, SelectionTextCache>(documentInfoBlocksComparer)
 let private selectionTextFastSlots = Array.zeroCreate<SelectionTextCache> 256
@@ -1601,6 +1607,56 @@ let private selectionTextCacheMaxSources = 64
 let private selectionTextCacheMaxTotalChars = 5000000
 let private selectionTextCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private selectionTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private selectionTextEntryFastSlot
+    (slots: SelectionTextFastEntry array)
+    anchorBlockId
+    anchorOffset
+    focusBlockId
+    focusOffset =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(anchorBlockId)
+    hashCode <- (hashCode * 397) ^^^ anchorOffset
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(focusBlockId)
+    hashCode <- (hashCode * 397) ^^^ focusOffset
+    hashCode &&& (slots.Length - 1)
+
+let private clearSelectionTextEntryFastSlots (slots: SelectionTextFastEntry array) =
+    for index = 0 to slots.Length - 1 do
+        slots.[index] <- Unchecked.defaultof<SelectionTextFastEntry>
+
+let private selectionTextKeyMatchesSelection (selection: Selection) (key: SelectionTextCacheKey) =
+    obj.ReferenceEquals(key.AnchorBlockId, selection.Anchor.BlockId)
+    && key.AnchorOffset = selection.Anchor.Offset
+    && obj.ReferenceEquals(key.FocusBlockId, selection.Focus.BlockId)
+    && key.FocusOffset = selection.Focus.Offset
+
+let private tryGetSelectionTextEntryFastSlot (cache: SelectionTextCache) (selection: Selection) =
+    let slot =
+        selectionTextEntryFastSlot
+            cache.EntryFastSlots
+            selection.Anchor.BlockId
+            selection.Anchor.Offset
+            selection.Focus.BlockId
+            selection.Focus.Offset
+    let fast = cache.EntryFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && selectionTextKeyMatchesSelection selection fast.Key then
+        ValueSome fast.Entry
+    else
+        ValueNone
+
+let private setSelectionTextEntryFastSlot (cache: SelectionTextCache) key entry =
+    let slot =
+        selectionTextEntryFastSlot
+            cache.EntryFastSlots
+            key.AnchorBlockId
+            key.AnchorOffset
+            key.FocusBlockId
+            key.FocusOffset
+    cache.EntryFastSlots.[slot] <- {
+        Key = key
+        Entry = entry
+    }
 
 let private selectionTextCacheMatches blocks (cached: SelectionTextCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
@@ -1706,6 +1762,7 @@ let private selectionTextKey (selection: Selection) = {
 let private removeSelectionTextCacheEntry key (cache: SelectionTextCache) =
     let mutable existing = Unchecked.defaultof<SelectionTextCacheEntry>
     if cache.Entries.TryGetValue(key, &existing) then
+        clearSelectionTextEntryFastSlots cache.EntryFastSlots
         cache.TotalChars <- max 0 (cache.TotalChars - existing.TextLength)
         cache.Entries.Remove key |> ignore
 
@@ -1713,23 +1770,27 @@ let private addSelectionTextCacheEntry key (text: string) (cache: SelectionTextC
     let textLength = max 1 text.Length
     let mutable existing = Unchecked.defaultof<SelectionTextCacheEntry>
     if textLength > selectionTextCacheMaxTotalChars then
-        if cache.Entries.TryGetValue(key, &existing) then
-            cache.TotalChars <- max 0 (cache.TotalChars - existing.TextLength)
-            cache.Entries.Remove key |> ignore
+        removeSelectionTextCacheEntry key cache
     elif cache.Entries.TryGetValue(key, &existing) then
         cache.TotalChars <- max 0 (cache.TotalChars - existing.TextLength)
-        cache.Entries.[key] <- { Text = text; TextLength = textLength }
+        let entry = { Text = text; TextLength = textLength }
+        cache.Entries.[key] <- entry
         cache.TotalChars <- cache.TotalChars + textLength
+        setSelectionTextEntryFastSlot cache key entry
     else
         cache.Order.Enqueue key
-        cache.Entries.[key] <- { Text = text; TextLength = textLength }
+        let entry = { Text = text; TextLength = textLength }
+        cache.Entries.[key] <- entry
         cache.TotalChars <- cache.TotalChars + textLength
+        setSelectionTextEntryFastSlot cache key entry
     if textLength <= selectionTextCacheMaxTotalChars then
+        let mutable removedEntry = false
         while (cache.Entries.Count > selectionTextCacheMaxEntries
                || cache.TotalChars > selectionTextCacheMaxTotalChars)
               && cache.Order.Count > 0 do
             let oldest = cache.Order.Dequeue()
             if oldest <> key then
+                removedEntry <- true
                 removeSelectionTextCacheEntry oldest cache
         if cache.Entries.Count > selectionTextCacheMaxEntries
            || cache.TotalChars > selectionTextCacheMaxTotalChars then
@@ -1739,6 +1800,13 @@ let private addSelectionTextCacheEntry key (text: string) (cache: SelectionTextC
             cache.Order.Enqueue key
             cache.Entries.[key] <- current
             cache.TotalChars <- current.TextLength
+            clearSelectionTextEntryFastSlots cache.EntryFastSlots
+            setSelectionTextEntryFastSlot cache key current
+        elif removedEntry then
+            clearSelectionTextEntryFastSlots cache.EntryFastSlots
+            let mutable current = Unchecked.defaultof<SelectionTextCacheEntry>
+            if cache.Entries.TryGetValue(key, &current) then
+                setSelectionTextEntryFastSlot cache key current
 
 let private cachedSelectionText (doc: Document) =
     match doc.Selection with
@@ -1746,9 +1814,17 @@ let private cachedSelectionText (doc: Document) =
     | Some selection ->
         match tryGetSelectionTextCache doc.Blocks with
         | ValueSome cached when selectionTextCacheWithinBudget cached ->
-            let key = selectionTextKey selection
-            let mutable entry = Unchecked.defaultof<SelectionTextCacheEntry>
-            if cached.Entries.TryGetValue(key, &entry) then Some entry.Text else None
+            match tryGetSelectionTextEntryFastSlot cached selection with
+            | ValueSome entry -> Some entry.Text
+            | ValueNone ->
+                let key = selectionTextKey selection
+                let mutable entry = Unchecked.defaultof<SelectionTextCacheEntry>
+                if cached.Entries.TryGetValue(key, &entry) then
+                    if selectionTextKeyMatchesSelection selection key then
+                        setSelectionTextEntryFastSlot cached key entry
+                    Some entry.Text
+                else
+                    None
         | ValueSome cached ->
             rememberSelectionTextCache cached
             None
@@ -1777,6 +1853,7 @@ let private rememberSelectionText (doc: Document) (text: string) =
                         doc.Blocks
                 Entries = entries
                 Order = order
+                EntryFastSlots = Array.zeroCreate<SelectionTextFastEntry> 2048
                 TotalChars = 0
             }
             addSelectionTextCacheEntry key text cache
@@ -9488,6 +9565,14 @@ let private selectionTextSourceSmallEnoughForColdCache doc =
             true)
     smallEnough
 
+let private sameBlockId (left: BlockId) (right: BlockId) =
+    obj.ReferenceEquals(left, right)
+    || System.String.Equals(left, right, System.StringComparison.Ordinal)
+
+let private samePosition (left: Position) (right: Position) =
+    left.Offset = right.Offset
+    && sameBlockId left.BlockId right.BlockId
+
 /// Get selected text as plain text
 let getSelectionText doc =
     match cachedSelectionText doc with
@@ -9496,15 +9581,15 @@ let getSelectionText doc =
         let text =
             match doc.Selection with
             | None -> ""
-            | Some sel when sel.Anchor = sel.Focus -> ""  // No selection
-            | Some sel when sel.Anchor.BlockId = sel.Focus.BlockId ->
+            | Some sel when samePosition sel.Anchor sel.Focus -> ""  // No selection
+            | Some sel when sameBlockId sel.Anchor.BlockId sel.Focus.BlockId ->
                 let sliceStart = min sel.Anchor.Offset sel.Focus.Offset
                 let sliceEnd = max sel.Anchor.Offset sel.Focus.Offset
                 let sliceLen = sliceEnd - sliceStart
                 if sliceLen <= 0 then
                     ""
                 else
-                    match tryFindEditableParagraphUntil doc sel.Anchor.BlockId with
+                    match findParagraph doc sel.Anchor.BlockId with
                     | None -> ""
                     | Some para -> TextBuffer.slice sliceStart sliceLen para.Buffer
             | Some sel ->
@@ -9547,7 +9632,7 @@ let getSelectionText doc =
                 if foundBoth then selectedText.ToString() else ""
         if text.Length > 0
            && (doc.Selection
-               |> Option.exists (fun sel -> sel.Anchor.BlockId <> sel.Focus.BlockId))
+               |> Option.exists (fun sel -> not (sameBlockId sel.Anchor.BlockId sel.Focus.BlockId)))
            && selectionTextSourceSmallEnoughForColdCache doc then
             rememberSelectionText doc text
         text

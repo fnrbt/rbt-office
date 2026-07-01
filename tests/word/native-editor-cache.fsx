@@ -898,6 +898,38 @@ check "native normalized range long id perf"
      && normalizedRangeLookupTotal = 2560000)
     true
 
+let selectionTextLookupIdPrefix = System.String('u', 5000)
+let selectionTextLookupIds =
+    [| for index in 0 .. 63 -> selectionTextLookupIdPrefix + sprintf "%04d" index |]
+let selectionTextLookupBaseDoc =
+    { Doc.empty with
+        Blocks =
+            [ for blockId in selectionTextLookupIds ->
+                Doc.Paragraph (para blockId "abcdef") ] }
+let selectionTextLookupDocs : Doc.Document array =
+    [| for index in 0 .. 63 ->
+        { selectionTextLookupBaseDoc with
+            Selection =
+                Some {
+                    Anchor = pos selectionTextLookupIds.[index] 1
+                    Focus = pos selectionTextLookupIds.[index] 4
+                } } |]
+for doc in selectionTextLookupDocs do
+    Doc.getSelectionText doc |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let selectionTextLookupSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable selectionTextLookupTotal = 0
+for _pass in 1 .. 10000 do
+    for doc in selectionTextLookupDocs do
+        selectionTextLookupTotal <- selectionTextLookupTotal + (Doc.getSelectionText doc).Length
+selectionTextLookupSw.Stop()
+check "native selection text long id perf"
+    (selectionTextLookupSw.Elapsed.TotalMilliseconds < 1000.0
+     && selectionTextLookupTotal = 1920000)
+    true
+
 let normalizedRangeCapacityIds =
     [| for index in 0 .. 511 -> normalizedRangeLookupIdPrefix + "capacity" + sprintf "%04d" index |]
 let normalizedRangeCapacityDoc =
