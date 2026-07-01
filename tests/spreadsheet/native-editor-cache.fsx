@@ -1224,6 +1224,71 @@ check "native conditional format no-number three-position cycle"
      && conditionalNoNumberCycleHits = 300000)
     true
 
+let conditionalFormatCycleSourceCount = 80
+let conditionalFormatCycleRows = 2000
+let conditionalFormatCycleModels =
+    [| for sourceIndex in 0 .. conditionalFormatCycleSourceCount - 1 ->
+        let cells =
+            [ for row in 0 .. conditionalFormatCycleRows - 1 ->
+                { Row = row; Col = 0 }, cell (CellValue.String (sprintf "source-%d-row-%d" sourceIndex row)) ]
+            |> Map.ofList
+        { createEmpty conditionalFormatCycleRows 1 with Cells = cells } |]
+
+for model in conditionalFormatCycleModels do
+    applyDataBars 0 0 (conditionalFormatCycleRows - 1) 0 "#63C384" model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let conditionalFormatSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let conditionalFormatSourceCycleSw = Stopwatch.StartNew()
+let mutable conditionalFormatSourceCycleHits = 0
+for _pass in 1 .. 20 do
+    for model in conditionalFormatCycleModels do
+        if obj.ReferenceEquals(
+            applyDataBars 0 0 (conditionalFormatCycleRows - 1) 0 "#63C384" model,
+            model) then
+            conditionalFormatSourceCycleHits <- conditionalFormatSourceCycleHits + 1
+conditionalFormatSourceCycleSw.Stop()
+let conditionalFormatSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - conditionalFormatSourceCycleAllocatedBefore
+check "native conditional format source cycle"
+    (conditionalFormatSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && conditionalFormatSourceCycleAllocated < 512L * 1024L
+     && conditionalFormatSourceCycleHits = 1600)
+    true
+
+let conditionalFormatCycleKeyColors =
+    [| for index in 0 .. 79 ->
+        sprintf "#%06X" ((index * 7919) &&& 0xFFFFFF) |]
+let conditionalFormatCycleKeyModel = conditionalFormatCycleModels.[0]
+
+for color in conditionalFormatCycleKeyColors do
+    applyDataBars 0 0 (conditionalFormatCycleRows - 1) 0 color conditionalFormatCycleKeyModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let conditionalFormatEntryCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let conditionalFormatEntryCycleSw = Stopwatch.StartNew()
+let mutable conditionalFormatEntryCycleHits = 0
+for _pass in 1 .. 20 do
+    for color in conditionalFormatCycleKeyColors do
+        if obj.ReferenceEquals(
+            applyDataBars 0 0 (conditionalFormatCycleRows - 1) 0 color conditionalFormatCycleKeyModel,
+            conditionalFormatCycleKeyModel) then
+            conditionalFormatEntryCycleHits <- conditionalFormatEntryCycleHits + 1
+conditionalFormatEntryCycleSw.Stop()
+let conditionalFormatEntryCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - conditionalFormatEntryCycleAllocatedBefore
+check "native conditional format entry cycle"
+    (conditionalFormatEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && conditionalFormatEntryCycleAllocated < 512L * 1024L
+     && conditionalFormatEntryCycleHits = 1600)
+    true
+
 let pasteIdentityCells =
     [ { Row = 1; Col = 1 }, cell (CellValue.String "same") ]
     |> Map.ofList

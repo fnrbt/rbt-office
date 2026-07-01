@@ -6583,8 +6583,8 @@ let private iconSetApplyFastSlots = Array.zeroCreate<IconSetApplyCache> 256
 let private colorScaleApplyCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, ColorScaleApplyCache>(cellMapReferenceComparer)
 let private colorScaleApplyFastSlots = Array.zeroCreate<ColorScaleApplyCache> 256
-let private conditionalFormatApplyCacheMaxEntries = 64
-let private conditionalFormatApplyCacheMaxSources = 64
+let private conditionalFormatApplyCacheMaxEntries = 256
+let private conditionalFormatApplyCacheMaxSources = 256
 let private conditionalFormatApplyCacheMaxTotalCells = 200000
 let private conditionalFormatApplyCacheMaxTotalSourceTextChars = 5000000
 let private conditionalFormatApplyCacheMaxTotalKeyChars = 5000000
