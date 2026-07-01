@@ -1331,7 +1331,7 @@ let tableCellMarginAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - tableCellMarginAllocatedBefore
 check "native table margin noop cache hot hit"
     (tableCellMarginSw.Elapsed.TotalMilliseconds < 250.0
-     && tableCellMarginAllocated < 18L * 1024L * 1024L
+     && tableCellMarginAllocated < 6L * 1024L * 1024L
      && tableCellMarginSame = 200000)
     true
 

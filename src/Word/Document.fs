@@ -7379,41 +7379,56 @@ let setSelectedTableCellStyleWithShading backgroundColor shading width borderCol
 let setSelectedTableCellStyle backgroundColor width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
     setSelectedTableCellStyleWithShading backgroundColor None width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc
 
-let setCurrentTableCellMargins paddingTop paddingRight paddingBottom paddingLeft doc =
-    match currentTableCell doc with
-    | None -> doc
-    | Some (tableId, _, _) ->
-        updateTable doc tableId (fun table ->
-            if table.PaddingTop = paddingTop
-               && table.PaddingRight = paddingRight
-               && table.PaddingBottom = paddingBottom
-               && table.PaddingLeft = paddingLeft then
-                table
-            else
-                { table with
+let private setTableMarginsById paddingTop paddingRight paddingBottom paddingLeft doc tableId =
+    match tryFindTopBlockWithIndexUntil doc tableId with
+    | ValueSome (struct (Table table, tableIndex)) ->
+        if table.PaddingTop = paddingTop
+           && table.PaddingRight = paddingRight
+           && table.PaddingBottom = paddingBottom
+           && table.PaddingLeft = paddingLeft then
+            doc
+        else
+            let nextTable = {
+                table with
                     PaddingTop = paddingTop
                     PaddingRight = paddingRight
                     PaddingBottom = paddingBottom
-                    PaddingLeft = paddingLeft })
+                    PaddingLeft = paddingLeft
+            }
+            { doc with Blocks = replaceTopLevelBlockAtIndex tableIndex (Table nextTable) doc.Blocks }
+    | _ -> doc
+
+let setCurrentTableCellMargins paddingTop paddingRight paddingBottom paddingLeft doc =
+    match currentTableCell doc with
+    | None -> doc
+    | Some (tableId, _, _) -> setTableMarginsById paddingTop paddingRight paddingBottom paddingLeft doc tableId
+
+let private setTableMarginsAndSpacingById paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableId =
+    match tryFindTopBlockWithIndexUntil doc tableId with
+    | ValueSome (struct (Table table, tableIndex)) ->
+        if table.PaddingTop = paddingTop
+           && table.PaddingRight = paddingRight
+           && table.PaddingBottom = paddingBottom
+           && table.PaddingLeft = paddingLeft
+           && table.CellSpacing = cellSpacing then
+            doc
+        else
+            let nextTable = {
+                table with
+                    PaddingTop = paddingTop
+                    PaddingRight = paddingRight
+                    PaddingBottom = paddingBottom
+                    PaddingLeft = paddingLeft
+                    CellSpacing = cellSpacing
+            }
+            { doc with Blocks = replaceTopLevelBlockAtIndex tableIndex (Table nextTable) doc.Blocks }
+    | _ -> doc
 
 let setCurrentTableCellMarginsAndSpacing paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc =
     match currentTableCell doc with
     | None -> doc
     | Some (tableId, _, _) ->
-        updateTable doc tableId (fun table ->
-            if table.PaddingTop = paddingTop
-               && table.PaddingRight = paddingRight
-               && table.PaddingBottom = paddingBottom
-               && table.PaddingLeft = paddingLeft
-               && table.CellSpacing = cellSpacing then
-                table
-            else
-                { table with
-                    PaddingTop = paddingTop
-                    PaddingRight = paddingRight
-                    PaddingBottom = paddingBottom
-                    PaddingLeft = paddingLeft
-                    CellSpacing = cellSpacing })
+        setTableMarginsAndSpacingById paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableId
 
 let private headingFontSize level =
     match level with
