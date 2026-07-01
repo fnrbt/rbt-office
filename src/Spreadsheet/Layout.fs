@@ -194,6 +194,7 @@ let private containsSorted (values: int array) target =
 type private PrefixSizeCache = {
     Keys: int array
     PrefixDeltas: float array
+    LimitExclusive: int
 }
 
 type private PrefixSizeCacheEntry = {
@@ -220,12 +221,15 @@ let private columnPrefixSizeCache = {
 let private prefixSizeCacheMaxSources = 64
 let private prefixSizeCacheMaxTotalKeys = 1000000
 let private prefixSizeDirectIndexThreshold = 4096
+let private prefixSizeShallowCacheLimit = prefixSizeDirectIndexThreshold + 1
+let private prefixSizeFullCacheLimit = System.Int32.MaxValue
 
 type private HiddenPrefixSizeCacheEntry = {
     Source: Map<int, float>
     HiddenRows: int array
     CustomRows: int array
     PrefixDeltas: float array
+    LimitExclusive: int
 }
 
 type private HiddenPrefixSizeCacheSlot = {
@@ -370,19 +374,28 @@ let private rememberHiddenPrefixSizeCacheEntry (entry: HiddenPrefixSizeCacheEntr
         entry :: retained
         |> setHiddenPrefixSizeCacheEntries
 
-let private buildPrefixSizeCache defaultSize (overrides: Map<int, float>) =
-    let keys = System.Collections.Generic.List<int>(overrides.Count)
-    let prefixDeltas = System.Collections.Generic.List<float>(overrides.Count + 1)
+let private buildPrefixSizeCache defaultSize limitExclusive (overrides: Map<int, float>) =
+    let capacity =
+        if limitExclusive = prefixSizeFullCacheLimit then overrides.Count
+        else min overrides.Count (max 0 limitExclusive)
+    let keys = System.Collections.Generic.List<int>(capacity)
+    let prefixDeltas = System.Collections.Generic.List<float>(capacity + 1)
     let mutable total = 0.0
     prefixDeltas.Add total
-    for KeyValue(i, size) in overrides do
-        if i >= 0 then
+    use entries = (overrides :> seq<_>).GetEnumerator()
+    let mutable keepGoing = true
+    while keepGoing && entries.MoveNext() do
+        let (KeyValue(i, size)) = entries.Current
+        if i >= limitExclusive then
+            keepGoing <- false
+        elif i >= 0 then
             keys.Add i
             total <- total + (size - defaultSize)
             prefixDeltas.Add total
     {
         Keys = keys.ToArray()
         PrefixDeltas = prefixDeltas.ToArray()
+        LimitExclusive = limitExclusive
     }
 
 let private prefixSizeUncached defaultSize (overrides: Map<int, float>) index =
@@ -399,27 +412,36 @@ let private prefixSizeUncached defaultSize (overrides: Map<int, float>) index =
     defaultSize * float clipped + total
 
 let private prefixSize defaultSize (overrides: Map<int, float>) (slot: PrefixSizeCacheSlot) (index: int) =
-    match tryGetPrefixSizeCacheEntry slot overrides with
-    | ValueSome entry ->
-        let clipped = max 0 index
-        defaultSize * float clipped + entry.Cache.PrefixDeltas.[lowerBound entry.Cache.Keys clipped]
-    | ValueNone ->
-        if index <= prefixSizeDirectIndexThreshold
-           || Map.count overrides > prefixSizeCacheMaxTotalKeys then
-            prefixSizeUncached defaultSize overrides index
-        else
-            let cache = buildPrefixSizeCache defaultSize overrides
-            rememberPrefixSizeCacheEntry slot { Source = overrides; Cache = cache }
-            let clipped = max 0 index
-            defaultSize * float clipped + cache.PrefixDeltas.[lowerBound cache.Keys clipped]
+    let clipped = max 0 index
+    if Map.isEmpty overrides then
+        defaultSize * float clipped
+    else
+        match tryGetPrefixSizeCacheEntry slot overrides with
+        | ValueSome entry when clipped < entry.Cache.LimitExclusive ->
+            defaultSize * float clipped + entry.Cache.PrefixDeltas.[lowerBound entry.Cache.Keys clipped]
+        | _ ->
+            if Map.count overrides > prefixSizeCacheMaxTotalKeys then
+                prefixSizeUncached defaultSize overrides index
+            else
+                let limitExclusive =
+                    if clipped <= prefixSizeDirectIndexThreshold then prefixSizeShallowCacheLimit
+                    else prefixSizeFullCacheLimit
+                let cache = buildPrefixSizeCache defaultSize limitExclusive overrides
+                rememberPrefixSizeCacheEntry slot { Source = overrides; Cache = cache }
+                defaultSize * float clipped + cache.PrefixDeltas.[lowerBound cache.Keys clipped]
 
-let private buildHiddenPrefixSizeCache defaultSize (overrides: Map<int, float>) (hiddenRows: int array) =
+let private buildHiddenPrefixSizeCache defaultSize (overrides: Map<int, float>) (hiddenRows: int array) limitExclusive =
     let customRows = System.Collections.Generic.List<int>()
     let prefixDeltas = System.Collections.Generic.List<float>()
     let mutable total = 0.0
     prefixDeltas.Add total
-    for KeyValue(row, height) in overrides do
-        if row >= 0 && containsSorted hiddenRows row then
+    use entries = (overrides :> seq<_>).GetEnumerator()
+    let mutable keepGoing = true
+    while keepGoing && entries.MoveNext() do
+        let (KeyValue(row, height)) = entries.Current
+        if row >= limitExclusive then
+            keepGoing <- false
+        elif row >= 0 && containsSorted hiddenRows row then
             customRows.Add row
             total <- total + (height - defaultSize)
             prefixDeltas.Add total
@@ -428,6 +450,7 @@ let private buildHiddenPrefixSizeCache defaultSize (overrides: Map<int, float>) 
         HiddenRows = hiddenRows
         CustomRows = customRows.ToArray()
         PrefixDeltas = prefixDeltas.ToArray()
+        LimitExclusive = limitExclusive
     }
 
 let private hiddenPrefixSizeUncached defaultSize (overrides: Map<int, float>) (hiddenRows: int array) clipped hiddenCount =
@@ -452,15 +475,17 @@ let private hiddenPrefixSize defaultSize (overrides: Map<int, float>) (hiddenRow
             defaultSize * float hiddenCount
         else
             match tryGetHiddenPrefixSizeCacheEntry overrides hiddenRows with
-            | ValueSome cache ->
+            | ValueSome cache when clipped < cache.LimitExclusive ->
                 defaultSize * float hiddenCount
                 + cache.PrefixDeltas.[lowerBound cache.CustomRows clipped]
-            | ValueNone ->
-                if clipped <= prefixSizeDirectIndexThreshold
-                   || Map.count overrides + hiddenRows.Length > hiddenPrefixSizeCacheMaxTotalKeys then
+            | _ ->
+                if Map.count overrides + hiddenRows.Length > hiddenPrefixSizeCacheMaxTotalKeys then
                     hiddenPrefixSizeUncached defaultSize overrides hiddenRows clipped hiddenCount
                 else
-                    let cache = buildHiddenPrefixSizeCache defaultSize overrides hiddenRows
+                    let limitExclusive =
+                        if clipped <= prefixSizeDirectIndexThreshold then prefixSizeShallowCacheLimit
+                        else prefixSizeFullCacheLimit
+                    let cache = buildHiddenPrefixSizeCache defaultSize overrides hiddenRows limitExclusive
                     rememberHiddenPrefixSizeCacheEntry cache
                     defaultSize * float hiddenCount
                     + cache.PrefixDeltas.[lowerBound cache.CustomRows clipped]

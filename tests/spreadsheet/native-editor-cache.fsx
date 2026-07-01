@@ -390,6 +390,42 @@ check "native prefix coordinate cache hot hits"
      && prefixCoordinateTotal > 0.0)
     true
 
+let shallowPrefixCoordinateModel =
+    { createEmpty 120000 120000 with
+        RowHeights =
+            [ for row in 0 .. 9999 -> row, 18.0 + float (row % 11) ]
+            |> Map.ofList
+        ColumnWidths =
+            [ for col in 0 .. 9999 -> col, 76.0 + float (col % 13) ]
+            |> Map.ofList }
+let shallowPrefixCoordinateRun count =
+    let mutable total = 0.0
+    for index in 1 .. count do
+        let offset = index % 250
+        let coord = 3000 + offset
+        total <-
+            total
+            + RedBat.Spreadsheet.Layout.rowTop shallowPrefixCoordinateModel coord
+            + RedBat.Spreadsheet.Layout.columnLeft shallowPrefixCoordinateModel coord
+    total
+shallowPrefixCoordinateRun 1000 |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let shallowPrefixCoordinateAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let shallowPrefixCoordinateSw = Stopwatch.StartNew()
+let shallowPrefixCoordinateTotal = shallowPrefixCoordinateRun 10000
+shallowPrefixCoordinateSw.Stop()
+let shallowPrefixCoordinateAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - shallowPrefixCoordinateAllocatedBefore
+check "native prefix coordinate shallow cache"
+    (shallowPrefixCoordinateSw.Elapsed.TotalMilliseconds < 40.0
+     && shallowPrefixCoordinateAllocated < 128L * 1024L
+     && shallowPrefixCoordinateTotal > 0.0)
+    true
+
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()
