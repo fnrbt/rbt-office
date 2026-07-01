@@ -3327,7 +3327,7 @@ let private layoutLookupCacheLayoutsComparer =
 let private layoutLookupCacheByLayouts =
     Dictionary<BlockLayout list, LayoutLookupCacheEntry>(layoutLookupCacheLayoutsComparer)
 let private layoutLookupFastSlots = Array.zeroCreate<LayoutLookupCacheEntry> 256
-let private layoutLookupCacheMaxEntries = 64
+let private layoutLookupCacheMaxEntries = 256
 let private layoutLookupCacheMaxTotalEntries = 200000
 let private layoutLookupCacheMaxTotalTextChars = 5000000
 let private layoutLookupCacheThreshold = 32

@@ -1101,6 +1101,57 @@ check "native document paint cache document cycle"
      && documentPaintCycleTotal = 40000)
     true
 
+let selectionLayoutLookupCycleSources =
+    [| for sourceIndex in 0 .. 64 ->
+        let blocks, layouts =
+            [ for layoutIndex in 0 .. 499 ->
+                let blockId = sprintf "native-layout-lookup-cycle-%02d-%04d" sourceIndex layoutIndex
+                let line =
+                    { documentPaintLine with
+                        Y = float layoutIndex * documentPaintLine.Height }
+                Doc.Paragraph (para blockId "abcdef"),
+                ({ BlockId = blockId
+                   Lines = [ line ]
+                   Y = line.Y
+                   Height = line.Height
+                   AvailableWidth = 120.0
+                   Metadata = Doc.defaultMetadata
+                   Prefix = ""
+                   PrefixStyle = None
+                   PrefixWidth = 0.0
+                   Indent = 0.0
+                   VAlignOffset = 0.0 } : Layout.BlockLayout) ]
+            |> List.unzip
+        let targetBlockId = sprintf "native-layout-lookup-cycle-%02d-%04d" sourceIndex 499
+        { Doc.empty with
+            Blocks = blocks
+            Selection = Some { Anchor = pos targetBlockId 3; Focus = pos targetBlockId 3 } },
+        layouts |]
+
+for doc, layouts in selectionLayoutLookupCycleSources do
+    Paint.selectionCommandsWithRange documentPaintSettings documentPaintRangeMeasure doc layouts |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let selectionLayoutLookupCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let selectionLayoutLookupCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable selectionLayoutLookupCycleTotal = 0
+for _pass in 1 .. 1000 do
+    for doc, layouts in selectionLayoutLookupCycleSources do
+        selectionLayoutLookupCycleTotal <-
+            selectionLayoutLookupCycleTotal
+            + (Paint.selectionCommandsWithRange documentPaintSettings documentPaintRangeMeasure doc layouts).Length
+selectionLayoutLookupCycleSw.Stop()
+let selectionLayoutLookupCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - selectionLayoutLookupCycleAllocatedBefore
+check "native selection layout lookup source cycle"
+    (selectionLayoutLookupCycleSw.Elapsed.TotalMilliseconds < 500.0
+     && selectionLayoutLookupCycleAllocated < 96L * 1024L * 1024L
+     && selectionLayoutLookupCycleTotal = selectionLayoutLookupCycleSources.Length * 1000)
+    true
+
 let markupMarkerCycleSources: Layout.BlockLayout list array =
     [| for index in 0 .. 79 ->
         [ for blockIndex in 0 .. 9 ->
