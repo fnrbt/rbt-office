@@ -266,6 +266,79 @@ check "native document text source cycle"
      && documentTextCycleTotal > 0L)
     true
 
+let editableEndpointCycleDocs =
+    [| for docIndex in 0 .. 64 ->
+        { Doc.empty with
+            Blocks =
+                [ for index in 0 .. 499 ->
+                    Doc.Paragraph (
+                        para
+                            (sprintf "native-select-all-source-cycle-%02d-%04d" docIndex index)
+                            "abcdefghijklmnopqrstuvwxyz") ] } |]
+
+for doc in editableEndpointCycleDocs do
+    Doc.selectAll doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let editableEndpointCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let editableEndpointCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable editableEndpointCycleTotal = 0
+for _pass in 1 .. 100 do
+    for doc in editableEndpointCycleDocs do
+        match Doc.selectAll doc with
+        | { Selection = Some selection } -> editableEndpointCycleTotal <- editableEndpointCycleTotal + selection.Focus.Offset
+        | _ -> ()
+editableEndpointCycleSw.Stop()
+let editableEndpointCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - editableEndpointCycleAllocatedBefore
+check "native select all endpoint source cycle"
+    (editableEndpointCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && editableEndpointCycleAllocated < 8L * 1024L * 1024L
+     && editableEndpointCycleTotal > 0)
+    true
+
+let orderedParagraphCycleDocs =
+    [| for docIndex in 0 .. 64 ->
+        let ids =
+            [| for index in 0 .. 499 ->
+                sprintf "native-ordered-source-cycle-%02d-%04d" docIndex index |]
+        { Doc.empty with
+            Blocks =
+                [ for paragraphId in ids ->
+                    Doc.Paragraph (para paragraphId "abcdefghijklmnopqrstuvwxyz") ] },
+        ids.[0] |]
+
+for doc, blockId in orderedParagraphCycleDocs do
+    let selection: Doc.Selection = { Anchor = pos blockId 0; Focus = pos blockId 1 }
+    Doc.getNormalizedRange selection doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let orderedParagraphCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let orderedParagraphCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable orderedParagraphCycleTotal = 0
+for pass in 1 .. 100 do
+    let offset = pass % 20
+    for doc, blockId in orderedParagraphCycleDocs do
+        let selection: Doc.Selection =
+            { Anchor = pos blockId offset
+              Focus = pos blockId (offset + 1) }
+        let startPos, endPos, blockIds = Doc.getNormalizedRange selection doc
+        orderedParagraphCycleTotal <- orderedParagraphCycleTotal + startPos.Offset + endPos.Offset + blockIds.Length
+orderedParagraphCycleSw.Stop()
+let orderedParagraphCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - orderedParagraphCycleAllocatedBefore
+check "native ordered paragraph source cycle"
+    (orderedParagraphCycleSw.Elapsed.TotalMilliseconds < 180.0
+     && orderedParagraphCycleAllocated < 16L * 1024L * 1024L
+     && orderedParagraphCycleTotal > 0)
+    true
+
 let styleContextCycleDocCount = 80
 let styleContextCycleStyleCount = 160
 let styleContextCycleDocs =

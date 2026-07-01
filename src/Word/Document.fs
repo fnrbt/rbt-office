@@ -3421,7 +3421,7 @@ type private EditableParagraphEndpointsCache = {
 let mutable private editableParagraphEndpointsCache: EditableParagraphEndpointsCache list = []
 let private editableParagraphEndpointsCacheByBlocks = Dictionary<Block list, EditableParagraphEndpointsCache>(documentInfoBlocksComparer)
 let private editableParagraphEndpointsFastSlots = Array.zeroCreate<EditableParagraphEndpointsCache> 256
-let private editableParagraphEndpointsCacheMaxEntries = 64
+let private editableParagraphEndpointsCacheMaxEntries = 256
 let private editableParagraphEndpointsCacheMaxTotalParagraphs = 200000
 let private editableParagraphEndpointsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
@@ -3562,7 +3562,7 @@ type private OrderedEditableParagraphsCache = {
 let mutable private orderedEditableParagraphsCache: OrderedEditableParagraphsCache list = []
 let private orderedEditableParagraphsCacheByBlocks = Dictionary<Block list, OrderedEditableParagraphsCache>(documentInfoBlocksComparer)
 let private orderedEditableParagraphsFastSlots = Array.zeroCreate<OrderedEditableParagraphsCache> 256
-let private orderedEditableParagraphsCacheMaxEntries = 64
+let private orderedEditableParagraphsCacheMaxEntries = 256
 let private orderedEditableParagraphsCacheMaxTotalEntries = 200000
 let private orderedEditableParagraphsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
