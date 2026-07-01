@@ -958,7 +958,7 @@ for _pass in 1 .. 2000 do
         | None -> ()
 blockLookupSw.Stop()
 check "native block lookup long id perf"
-    (blockLookupSw.Elapsed.TotalMilliseconds < 950.0
+    (blockLookupSw.Elapsed.TotalMilliseconds < 400.0
      && blockLookupHits = 1024000)
     true
 
@@ -983,7 +983,7 @@ for _pass in 1 .. 2000 do
         | None -> ()
 paragraphLookupSw.Stop()
 check "native paragraph lookup long id perf"
-    (paragraphLookupSw.Elapsed.TotalMilliseconds < 750.0
+    (paragraphLookupSw.Elapsed.TotalMilliseconds < 500.0
      && paragraphLookupHits = 1024000)
     true
 
