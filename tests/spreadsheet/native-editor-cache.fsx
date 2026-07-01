@@ -626,6 +626,31 @@ check "native export csv cache reuses"
     (obj.ReferenceEquals(exportCsvText, exportCsvTextAgain))
     true
 
+let importCsvText = "Name,Score\nAda,42\nBob,17"
+let importCsvImported = importCSV importCsvText 0 0 (createEmpty 3 2)
+let importCsvImportedAgain = importCSV importCsvText 0 0 importCsvImported
+check "native import csv cache reuses"
+    (obj.ReferenceEquals(importCsvImported, importCsvImportedAgain))
+    true
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let importCsvAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let importCsvSw = Stopwatch.StartNew()
+let mutable importCsvSame = 0
+for _pass in 1 .. 200000 do
+    if obj.ReferenceEquals(importCSV importCsvText 0 0 importCsvImported, importCsvImported) then
+        importCsvSame <- importCsvSame + 1
+importCsvSw.Stop()
+let importCsvAllocated = System.GC.GetAllocatedBytesForCurrentThread() - importCsvAllocatedBefore
+check "native import csv hot hit"
+    (importCsvSw.Elapsed.TotalMilliseconds < 150.0
+     && importCsvAllocated < 512L * 1024L
+     && importCsvSame = 200000)
+    true
+
 let formulaPresenceCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.Number 1.0)
       { Row = 1; Col = 0 }, cell (CellValue.String "plain") ]

@@ -7419,26 +7419,24 @@ let private rememberImportCsv cached =
         |> trim
         |> setImportCsvCache
 
-let private importCSVWithOptionalChanges (captureChanges: bool) (useCache: bool) (csvText: string) (startRow: int) (startCol: int) (model: SpreadsheetModel): SpreadsheetModel * ImportCsvChanges option =
+let private importCSVWithOptionalChanges (captureChanges: bool) (useCache: bool) (csvText: string) (startRow: int) (startCol: int) (model: SpreadsheetModel): struct (SpreadsheetModel * ImportCsvChanges option) =
     let cached =
         if useCache then
-            match tryGetImportCsvCache csvText startRow startCol model.Cells with
-            | ValueSome cached -> Some cached
-            | ValueNone -> None
+            tryGetImportCsvCache csvText startRow startCol model.Cells
         else
-            None
+            ValueNone
 
     match cached with
-    | Some cached when importCsvCacheRetainable cached && obj.ReferenceEquals(cached.ResultCells, model.Cells) ->
-        model, None
-    | Some cached when importCsvCacheRetainable cached ->
-        if obj.ReferenceEquals(cached.ResultCells, model.Cells) then model, None
-        else { model with Cells = cached.ResultCells }, None
-    | Some cached ->
+    | ValueSome cached when importCsvCacheRetainable cached && obj.ReferenceEquals(cached.ResultCells, model.Cells) ->
+        struct (model, None)
+    | ValueSome cached when importCsvCacheRetainable cached ->
+        if obj.ReferenceEquals(cached.ResultCells, model.Cells) then struct (model, None)
+        else struct ({ model with Cells = cached.ResultCells }, None)
+    | ValueSome cached ->
         rememberImportCsv cached
-        if obj.ReferenceEquals(cached.ResultCells, model.Cells) then model, None
-        else { model with Cells = cached.ResultCells }, None
-    | None ->
+        if obj.ReferenceEquals(cached.ResultCells, model.Cells) then struct (model, None)
+        else struct ({ model with Cells = cached.ResultCells }, None)
+    | ValueNone ->
         let sourceCells = model.Cells
         let sourceCellsEmpty = Map.isEmpty sourceCells
         let mutable cells = model.Cells
@@ -7597,16 +7595,16 @@ let private importCSVWithOptionalChanges (captureChanges: bool) (useCache: bool)
                         sourceCells
             }
         let result = if changed then { model with Cells = cells } else model
-        result, changes
+        struct (result, changes)
 
 /// Import CSV data into spreadsheet
 let importCSV (csvText: string) (startRow: int) (startCol: int) (model: SpreadsheetModel): SpreadsheetModel =
-    let imported, _ = importCSVWithOptionalChanges false true csvText startRow startCol model
+    let struct (imported, _) = importCSVWithOptionalChanges false true csvText startRow startCol model
     imported
 
 /// Import CSV data and return changed old/new cells for sparse undo.
 let importCSVWithChanges (csvText: string) (startRow: int) (startCol: int) (model: SpreadsheetModel): SpreadsheetModel * ResizeArray<CellAddress * CellData option> * ResizeArray<CellAddress * CellData option> =
-    let imported, changes = importCSVWithOptionalChanges true false csvText startRow startCol model
+    let struct (imported, changes) = importCSVWithOptionalChanges true false csvText startRow startCol model
     match changes with
     | Some changes ->
         imported, changes.OldCells, changes.NewCells
