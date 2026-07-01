@@ -2067,6 +2067,37 @@ else
          && vbaLayoutCacheHits = 120000)
         true
 
+    let vbaLayoutCycleDocs =
+        [| for docIndex in 0 .. 79 ->
+            { Doc.empty with
+                Blocks =
+                    [ for index in 0 .. 199 ->
+                        Doc.Paragraph (para (sprintf "native-vba-layout-cycle-%02d-%04d" docIndex index) "alpha beta gamma delta epsilon zeta eta theta") ] } |]
+
+    for doc in vbaLayoutCycleDocs do
+        vbaLayoutCacheFor.Invoke(null, [| box doc |]) |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let vbaLayoutCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let vbaLayoutCycleSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable vbaLayoutCycleHits = 0
+    for _pass in 1 .. 100 do
+        for doc in vbaLayoutCycleDocs do
+            if not (isNull (vbaLayoutCacheFor.Invoke(null, [| box doc |]))) then
+                vbaLayoutCycleHits <- vbaLayoutCycleHits + 1
+    vbaLayoutCycleSw.Stop()
+    let vbaLayoutCycleAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - vbaLayoutCycleAllocatedBefore
+
+    check "native vba layout cache document cycle"
+        (vbaLayoutCycleSw.Elapsed.TotalMilliseconds < 120.0
+         && vbaLayoutCycleAllocated < 8L * 1024L * 1024L
+         && vbaLayoutCycleHits = 8000)
+        true
+
 if isNull vbaCompileSourceCached then
     fail <- fail + 1
     printfn "FAIL %-34s expected private compileSourceCached method" "native vba compile cache reflection"

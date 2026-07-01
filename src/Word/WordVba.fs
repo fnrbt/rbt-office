@@ -1091,7 +1091,7 @@ module Vba =
     let private layoutCacheByBlocks =
         Dictionary<Doc.Block list, ResizeArray<LayoutCache>>(documentBlocksReferenceComparer)
     let private layoutFastSlots = Array.zeroCreate<LayoutCache> 256
-    let private layoutCacheMaxEntries = 64
+    let private layoutCacheMaxEntries = 256
     let private layoutCacheMaxTotalLayouts = 200000
     let private vbaSourceTextCacheMaxTotalChars = 5000000
     let private vbaSourceParagraphCountLimit = 100000
