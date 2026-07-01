@@ -992,6 +992,40 @@ check "native column unique values column cycle"
      && uniqueValuesCycleTotal = 16000)
     true
 
+let uniqueValuesSourceCycleCount = 80
+let uniqueValuesSourceCycleRows = 1000
+let uniqueValuesSourceCycleModels =
+    [| for sourceIndex in 0 .. uniqueValuesSourceCycleCount - 1 ->
+        let targetCol = sourceIndex % 4
+        let cells =
+            [ for row in 0 .. uniqueValuesSourceCycleRows - 1 ->
+                { Row = row; Col = targetCol },
+                cell (CellValue.String (sprintf "u%04d" row)) ]
+            |> Map.ofList
+        { createEmpty uniqueValuesSourceCycleRows 4 with Cells = cells }, targetCol |]
+
+for model, col in uniqueValuesSourceCycleModels do
+    columnUniqueValues col model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let uniqueValuesSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let uniqueValuesSourceCycleSw = Stopwatch.StartNew()
+let mutable uniqueValuesSourceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for model, col in uniqueValuesSourceCycleModels do
+        uniqueValuesSourceCycleTotal <- uniqueValuesSourceCycleTotal + (columnUniqueValues col model).Length
+uniqueValuesSourceCycleSw.Stop()
+let uniqueValuesSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - uniqueValuesSourceCycleAllocatedBefore
+check "native column unique values source cycle"
+    (uniqueValuesSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && uniqueValuesSourceCycleAllocated < 512L * 1024L
+     && uniqueValuesSourceCycleTotal = 1600000)
+    true
+
 let tableUniqueValuesCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "Color")
       { Row = 1; Col = 0 }, cell (CellValue.String "red")
