@@ -315,6 +315,66 @@ check "native alternating line lookup cache"
     (alternatingLineLookupSw.Elapsed.TotalMilliseconds < 30.0
      && alternatingLineLookupChecksum = 2505000000L)
     true
+let xOffsetSegmentCount = 256
+let xOffsetSegmentText = "abcde"
+let xOffsetLine : Layout.MeasuredLine =
+    { Segments =
+        [ for index in 0 .. xOffsetSegmentCount - 1 ->
+            Layout.TextSegment (
+                xOffsetSegmentText,
+                TB.defaultStyle,
+                float (index * xOffsetSegmentText.Length),
+                float xOffsetSegmentText.Length,
+                index * xOffsetSegmentText.Length) ]
+      Y = 0.0
+      Width = float (xOffsetSegmentCount * xOffsetSegmentText.Length)
+      Height = 24.0
+      StartOffset = 0
+      EndOffset = xOffsetSegmentCount * xOffsetSegmentText.Length }
+let xOffsetMeasureRange (_text: string) (_style: TB.TextStyle) (_start: int) (length: int) =
+    float length
+let xOffsetHotOffset = xOffsetLine.EndOffset - 1
+let xOffsetHotX = Layout.xForOffsetWithRange xOffsetMeasureRange xOffsetLine xOffsetHotOffset
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let xOffsetAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let xOffsetSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable xOffsetTotal = 0.0
+for _ in 1 .. 200000 do
+    xOffsetTotal <- xOffsetTotal + Layout.xForOffsetWithRange xOffsetMeasureRange xOffsetLine xOffsetHotOffset
+xOffsetSw.Stop()
+let xOffsetAllocated = System.GC.GetAllocatedBytesForCurrentThread() - xOffsetAllocatedBefore
+check "native x offset cache hot hit"
+    (xOffsetSw.Elapsed.TotalMilliseconds < 80.0
+     && xOffsetAllocated < 1024L * 1024L
+     && xOffsetHotX = 1279.0
+     && xOffsetTotal = xOffsetHotX * 200000.0)
+    true
+let xOffsetOversizedStyleWeakReference () =
+    let payload = System.String('X', 6 * 1024 * 1024)
+    let line : Layout.MeasuredLine =
+        { xOffsetLine with
+            Segments =
+                [ Layout.TextSegment (
+                    "x",
+                    { TB.defaultStyle with CommentText = Some payload },
+                    0.0,
+                    1.0,
+                    0) ]
+            Width = 1.0
+            EndOffset = 1 }
+    Layout.xForOffsetWithRange xOffsetMeasureRange line 1 |> ignore
+    System.WeakReference(payload)
+let xOffsetOversizedStyleWeak = xOffsetOversizedStyleWeakReference ()
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+check "native x offset cache skips oversized style"
+    xOffsetOversizedStyleWeak.IsAlive
+    false
 let documentPaintLayout : Layout.BlockLayout =
     { BlockId = "native-document-paint-cache"
       Lines = [ documentPaintLine ]

@@ -1355,6 +1355,32 @@ let private lineArrayCacheTextCharCount (lines: MeasuredLine list) =
         remainingLines <- remainingLines.Tail
     min total limit
 
+let private xForOffsetCacheMaxTextChars = lineArrayCacheMaxTotalTextChars
+let mutable private xForOffsetLineMetricSet = false
+let mutable private xForOffsetLineMetricLine = Unchecked.defaultof<MeasuredLine>
+let mutable private xForOffsetLineMetricTextCharCount = 0
+
+let private xForOffsetLineTextCharCount (line: MeasuredLine) =
+    if xForOffsetLineMetricSet && obj.ReferenceEquals(xForOffsetLineMetricLine, line) then
+        xForOffsetLineMetricTextCharCount
+    else
+        let limit = xForOffsetCacheMaxTextChars + 1
+        let mutable total = 0
+        let mutable remainingSegments = line.Segments
+        while total <= xForOffsetCacheMaxTextChars
+              && not remainingSegments.IsEmpty do
+            total <- lineArrayCacheAddCapped (lineArrayCacheSegmentTextCharCount remainingSegments.Head) total
+            remainingSegments <- remainingSegments.Tail
+        let total = min total limit
+        if total <= xForOffsetCacheMaxTextChars then
+            xForOffsetLineMetricSet <- true
+            xForOffsetLineMetricLine <- line
+            xForOffsetLineMetricTextCharCount <- total
+        total
+
+let private xForOffsetLineCacheable line =
+    xForOffsetLineTextCharCount line <= xForOffsetCacheMaxTextChars
+
 let private lineArrayCacheWithoutLines lines =
     let mutable cached = Unchecked.defaultof<LineArrayCacheEntry>
     if lineArrayCacheByLines.TryGetValue(lines, &cached)
@@ -1502,7 +1528,37 @@ let maxOffsetInLayout (layout: BlockLayout) =
                 maxOffset <- line.EndOffset
         maxOffset
 
-let xForOffsetWithRange (measureRange: TextRangeMeasurer) (line: MeasuredLine) (offset: int) =
+let mutable private xForOffsetLastSet = false
+let mutable private xForOffsetLastLine = Unchecked.defaultof<MeasuredLine>
+let mutable private xForOffsetLastMeasureRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private xForOffsetLastOffset = 0
+let mutable private xForOffsetLastX = 0.0
+let mutable private xForOffsetPreviousSet = false
+let mutable private xForOffsetPreviousLine = Unchecked.defaultof<MeasuredLine>
+let mutable private xForOffsetPreviousMeasureRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private xForOffsetPreviousOffset = 0
+let mutable private xForOffsetPreviousX = 0.0
+
+let private xForOffsetCacheEntryMatches measureRange line offset cachedMeasureRange cachedLine cachedOffset =
+    offset = cachedOffset
+    && obj.ReferenceEquals(cachedLine, line)
+    && obj.ReferenceEquals(cachedMeasureRange, measureRange)
+
+let private rememberXForOffset measureRange line offset x =
+    if xForOffsetLineCacheable line then
+        if xForOffsetLastSet then
+            xForOffsetPreviousSet <- true
+            xForOffsetPreviousLine <- xForOffsetLastLine
+            xForOffsetPreviousMeasureRange <- xForOffsetLastMeasureRange
+            xForOffsetPreviousOffset <- xForOffsetLastOffset
+            xForOffsetPreviousX <- xForOffsetLastX
+        xForOffsetLastSet <- true
+        xForOffsetLastLine <- line
+        xForOffsetLastMeasureRange <- measureRange
+        xForOffsetLastOffset <- offset
+        xForOffsetLastX <- x
+
+let private xForOffsetWithRangeUncached (measureRange: TextRangeMeasurer) (line: MeasuredLine) (offset: int) =
     let mutable x = 0.0
     let mutable found = false
 
@@ -1528,6 +1584,18 @@ let xForOffsetWithRange (measureRange: TextRangeMeasurer) (line: MeasuredLine) (
                 x <- segmentX segment + segmentWidth segment
 
     x
+
+let xForOffsetWithRange (measureRange: TextRangeMeasurer) (line: MeasuredLine) (offset: int) =
+    if xForOffsetLastSet
+       && xForOffsetCacheEntryMatches measureRange line offset xForOffsetLastMeasureRange xForOffsetLastLine xForOffsetLastOffset then
+        xForOffsetLastX
+    elif xForOffsetPreviousSet
+         && xForOffsetCacheEntryMatches measureRange line offset xForOffsetPreviousMeasureRange xForOffsetPreviousLine xForOffsetPreviousOffset then
+        xForOffsetPreviousX
+    else
+        let x = xForOffsetWithRangeUncached measureRange line offset
+        rememberXForOffset measureRange line offset x
+        x
 
 let xForOffset (measureText: TextMeasurer) (line: MeasuredLine) (offset: int) =
     xForOffsetWithRange (rangeMeasurerFromTextMeasurer measureText) line offset
