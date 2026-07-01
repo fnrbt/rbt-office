@@ -335,8 +335,8 @@ orderedParagraphCycleSw.Stop()
 let orderedParagraphCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - orderedParagraphCycleAllocatedBefore
 check "native ordered paragraph source cycle"
-    (orderedParagraphCycleSw.Elapsed.TotalMilliseconds < 180.0
-     && orderedParagraphCycleAllocated < 16L * 1024L * 1024L
+    (orderedParagraphCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && orderedParagraphCycleAllocated < 2L * 1024L * 1024L
      && orderedParagraphCycleTotal > 0)
     true
 

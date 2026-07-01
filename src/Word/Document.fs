@@ -5123,6 +5123,7 @@ let findBlockIndex doc blockId =
     | ValueSome entry -> entry.TopIndexResult
     | ValueNone -> None
 
+[<Struct>]
 type private NormalizedRangeCacheKey = {
     AnchorBlockId: BlockId
     AnchorOffset: int
@@ -5130,6 +5131,7 @@ type private NormalizedRangeCacheKey = {
     FocusOffset: int
 }
 
+[<Struct>]
 type private NormalizedRangeCacheEntry = {
     BlockIdCount: int
     Result: Position * Position * BlockId list
@@ -5401,22 +5403,26 @@ let private rememberNormalizedRange
         BlockIdCount = blockIds.Length
         Result = result
     }
-    let cache =
-        match tryGetNormalizedRangeCache doc.Blocks with
-        | ValueSome cached -> cached
-        | ValueNone ->
-            let sourceParagraphCount = normalizedRangeSourceParagraphCountFor entry.BlockIdCount doc.Blocks
-            {
-                SourceBlocks = doc.Blocks
-                SourceParagraphCount = sourceParagraphCount
-                SourceTextCharCount = normalizedRangeSourceTextCharCountFor entry.BlockIdCount sourceParagraphCount doc.Blocks
-                Entries = Dictionary<NormalizedRangeCacheKey, NormalizedRangeCacheEntry>(normalizedRangeCacheKeyComparer)
-                Order = Queue<NormalizedRangeCacheKey>()
-                EntryFastSlots = Array.zeroCreate<NormalizedRangeFastEntry> 2048
-                TotalBlockIds = 0
-            }
-    addNormalizedRangeEntry key entry cache
-    rememberNormalizedRangeCache cache
+    match tryGetNormalizedRangeCache doc.Blocks with
+    | ValueSome cached when normalizedRangeCacheRetainable cached ->
+        addNormalizedRangeEntry key entry cached
+        if not (normalizedRangeCacheRetainable cached) then
+            removeNormalizedRangeCacheForBlocks cached.SourceBlocks
+    | ValueSome cached ->
+        removeNormalizedRangeCacheForBlocks cached.SourceBlocks
+    | ValueNone ->
+        let sourceParagraphCount = normalizedRangeSourceParagraphCountFor entry.BlockIdCount doc.Blocks
+        let cache = {
+            SourceBlocks = doc.Blocks
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = normalizedRangeSourceTextCharCountFor entry.BlockIdCount sourceParagraphCount doc.Blocks
+            Entries = Dictionary<NormalizedRangeCacheKey, NormalizedRangeCacheEntry>(normalizedRangeCacheKeyComparer)
+            Order = Queue<NormalizedRangeCacheKey>()
+            EntryFastSlots = Array.zeroCreate<NormalizedRangeFastEntry> 2048
+            TotalBlockIds = 0
+        }
+        addNormalizedRangeEntry key entry cache
+        rememberNormalizedRangeCache cache
 
 /// Get normalized range with block IDs for multi-block selection
 let getNormalizedRange (sel: Selection) (doc: Document) =
@@ -5429,21 +5435,22 @@ let getNormalizedRange (sel: Selection) (doc: Document) =
             let mutable focusIndex = 0
             if ordered.OrderedIndexById.TryGetValue(sel.Anchor.BlockId, &anchorIndex)
                && ordered.OrderedIndexById.TryGetValue(sel.Focus.BlockId, &focusIndex) then
-                let anchorFirst = anchorIndex <= focusIndex
-                let startPos, endPos, startIndex, endIndex =
-                    if sel.Anchor.BlockId = sel.Focus.BlockId then
-                        if sel.Anchor.Offset <= sel.Focus.Offset then
+                if sel.Anchor.BlockId = sel.Focus.BlockId then
+                    if sel.Anchor.Offset <= sel.Focus.Offset then
+                        sel.Anchor, sel.Focus, [ sel.Anchor.BlockId ]
+                    else
+                        sel.Focus, sel.Anchor, [ sel.Anchor.BlockId ]
+                else
+                    let anchorFirst = anchorIndex <= focusIndex
+                    let startPos, endPos, startIndex, endIndex =
+                        if anchorFirst then
                             sel.Anchor, sel.Focus, anchorIndex, focusIndex
                         else
                             sel.Focus, sel.Anchor, focusIndex, anchorIndex
-                    elif anchorFirst then
-                        sel.Anchor, sel.Focus, anchorIndex, focusIndex
-                    else
-                        sel.Focus, sel.Anchor, focusIndex, anchorIndex
-                let blockIds = ResizeArray<BlockId>(endIndex - startIndex + 1)
-                for i = startIndex to endIndex do
-                    blockIds.Add ordered.OrderedParagraphs.[i].Id
-                startPos, endPos, resizeArrayToList blockIds
+                    let blockIds = ResizeArray<BlockId>(endIndex - startIndex + 1)
+                    for i = startIndex to endIndex do
+                        blockIds.Add ordered.OrderedParagraphs.[i].Id
+                    startPos, endPos, resizeArrayToList blockIds
             else
                 let blockIds = ResizeArray<BlockId>()
                 let mutable collecting = false
