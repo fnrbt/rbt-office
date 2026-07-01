@@ -315,6 +315,72 @@ check "native alternating line lookup cache"
     (alternatingLineLookupSw.Elapsed.TotalMilliseconds < 30.0
      && alternatingLineLookupChecksum = 2505000000L)
     true
+let hitTestMeasureRange (_text: string) (_style: TB.TextStyle) (_start: int) (length: int) =
+    float length
+let hitTestLongLineCount = 5000
+let hitTestLongLines =
+    [ for index in 0 .. hitTestLongLineCount - 1 ->
+        let startOffset = index * 10
+        { documentPaintLine with
+            Segments = [ Layout.TextSegment ("abcdef", TB.defaultStyle, 0.0, 6.0, startOffset) ]
+            Y = float index * 24.0
+            Width = 6.0
+            StartOffset = startOffset
+            EndOffset = startOffset + 6 } ]
+let hitTestLongLayout : Layout.BlockLayout =
+    { alternatingLineLookupLayout with
+        BlockId = "native-hit-test-long-lines"
+        Lines = hitTestLongLines
+        Height = float hitTestLongLineCount * 24.0 }
+let hitTestLongLayouts = [ hitTestLongLayout ]
+let hitTestLongY = float (hitTestLongLineCount - 1) * 24.0 + 2.0
+Layout.hitTestLayoutsWithRange hitTestMeasureRange 0.0 hitTestLongLayouts 3.0 hitTestLongY |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let hitTestLongSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable hitTestLongTotal = 0
+for _ in 1 .. 20000 do
+    match Layout.hitTestLayoutsWithRange hitTestMeasureRange 0.0 hitTestLongLayouts 3.0 hitTestLongY with
+    | Some (_, offset) -> hitTestLongTotal <- hitTestLongTotal + offset
+    | None -> ()
+hitTestLongSw.Stop()
+check "native long line hit-test cache"
+    (hitTestLongSw.Elapsed.TotalMilliseconds < 80.0
+     && hitTestLongTotal = 999860000)
+    true
+let hitTestNonMonotonicLines =
+    let high =
+        { documentPaintLine with
+            Segments = [ Layout.TextSegment ("high", TB.defaultStyle, 0.0, 4.0, 10) ]
+            Y = 1000.0
+            Width = 4.0
+            StartOffset = 10
+            EndOffset = 14 }
+    let low =
+        { documentPaintLine with
+            Segments = [ Layout.TextSegment ("low", TB.defaultStyle, 0.0, 3.0, 20) ]
+            Y = 0.0
+            Width = 3.0
+            StartOffset = 20
+            EndOffset = 23 }
+    let rest =
+        [ for index in 2 .. 40 ->
+            { documentPaintLine with
+                Y = 1000.0 + float index * 24.0
+                StartOffset = index * 10
+                EndOffset = index * 10 + 6 } ]
+    high :: low :: rest
+let hitTestNonMonotonicLayout : Layout.BlockLayout =
+    { alternatingLineLookupLayout with
+        BlockId = "native-hit-test-nonmonotonic"
+        Lines = hitTestNonMonotonicLines
+        Height = 2400.0 }
+check "native hit-test nonmonotonic fallback"
+    (Layout.hitTestLayoutsWithRange hitTestMeasureRange 0.0 [hitTestNonMonotonicLayout] 3.0 2.0)
+    (Some ("native-hit-test-nonmonotonic", 23))
 let xOffsetSegmentCount = 256
 let xOffsetSegmentText = "abcde"
 let xOffsetLine : Layout.MeasuredLine =

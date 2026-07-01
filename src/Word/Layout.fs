@@ -1190,6 +1190,7 @@ let private maxLineBottomAndLayoutCount defaultValue (layouts: BlockLayout list)
 type private LineArrayCacheEntry = {
     Lines: MeasuredLine list
     LineArray: MeasuredLine array
+    MonotonicY: bool
     TextCharCount: int
     mutable LastLineSet: bool
     mutable LastOffset: int
@@ -1355,6 +1356,15 @@ let private lineArrayCacheTextCharCount (lines: MeasuredLine list) =
         remainingLines <- remainingLines.Tail
     min total limit
 
+let private lineArrayMonotonicY (lineArray: MeasuredLine array) =
+    let mutable monotonic = true
+    let mutable index = 1
+    while monotonic && index < lineArray.Length do
+        if lineArray.[index].Y < lineArray.[index - 1].Y then
+            monotonic <- false
+        index <- index + 1
+    monotonic
+
 let private xForOffsetCacheMaxTextChars = lineArrayCacheMaxTotalTextChars
 let mutable private xForOffsetLineMetricSet = false
 let mutable private xForOffsetLineMetricLine = Unchecked.defaultof<MeasuredLine>
@@ -1426,6 +1436,7 @@ let private cachedLineArrayEntry lines =
         let entry = {
             Lines = lines
             LineArray = lineArray
+            MonotonicY = lineArrayMonotonicY lineArray
             TextCharCount = lineArrayCacheTextCharCount lines
             LastLineSet = false
             LastOffset = 0
@@ -1603,20 +1614,63 @@ let xForOffset (measureText: TextMeasurer) (line: MeasuredLine) (offset: int) =
 let private layoutContainsY mouseY (layout: BlockLayout) =
     mouseY >= layout.Y && mouseY < layout.Y + layout.Height
 
-let private hitTestLayoutWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layout: BlockLayout) (mouseX: float) (mouseY: float) =
-    let mutable lineOpt = None
-    let mutable remaining = layout.Lines
-    while lineOpt.IsNone && not remaining.IsEmpty do
+let private lineContainsY (mouseY: float) (line: MeasuredLine) =
+    mouseY >= line.Y && mouseY < line.Y + line.Height
+
+let private tryFindLineForYList (lines: MeasuredLine list) (mouseY: float) =
+    let mutable found = false
+    let mutable result = Unchecked.defaultof<MeasuredLine>
+    let mutable remaining = lines
+    while not found && not remaining.IsEmpty do
         match remaining with
         | line :: tail ->
-            if mouseY >= line.Y && mouseY < line.Y + line.Height then
-                lineOpt <- Some line
+            if lineContainsY mouseY line then
+                found <- true
+                result <- line
             remaining <- tail
         | [] -> ()
+    if found then ValueSome result else ValueNone
 
+let private tryFindLineForYArray (lines: MeasuredLine array) (mouseY: float) =
+    let mutable low = 0
+    let mutable high = lines.Length
+    while low < high do
+        let mid = low + (high - low) / 2
+        let line = lines.[mid]
+        if line.Y + line.Height <= mouseY then
+            low <- mid + 1
+        else
+            high <- mid
+
+    let mutable index = low
+    while index > 0 && lines.[index - 1].Y + lines.[index - 1].Height > mouseY do
+        index <- index - 1
+
+    let mutable found = false
+    let mutable result = Unchecked.defaultof<MeasuredLine>
+    while not found && index < lines.Length && lines.[index].Y <= mouseY do
+        let line = lines.[index]
+        if lineContainsY mouseY line then
+            found <- true
+            result <- line
+        index <- index + 1
+    if found then ValueSome result else ValueNone
+
+let private tryFindLineForY (layout: BlockLayout) (mouseY: float) =
+    if lineListExceeds lineArrayCacheThreshold layout.Lines then
+        let entry = cachedLineArrayEntry layout.Lines
+        if entry.MonotonicY then
+            tryFindLineForYArray entry.LineArray mouseY
+        else
+            tryFindLineForYList layout.Lines mouseY
+    else
+        tryFindLineForYList layout.Lines mouseY
+
+let private hitTestLayoutWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layout: BlockLayout) (mouseX: float) (mouseY: float) =
+    let lineOpt = tryFindLineForY layout mouseY
     match lineOpt with
-    | None -> Some (layout.BlockId, 0)
-    | Some line ->
+    | ValueNone -> Some (layout.BlockId, 0)
+    | ValueSome line ->
         let relativeX = mouseX - paddingLeft - alignmentOffset layout line
         let mutable offset = line.EndOffset
         let mutable found = false
