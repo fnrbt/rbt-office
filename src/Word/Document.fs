@@ -4322,45 +4322,107 @@ let selectContentControl controlId doc =
             | _ ->
                 { doc with Selection = Some { Anchor = anchor; Focus = focus } }
 
-let removeBookmark bookmarkId doc =
-    let mutable replacements: Dictionary<BlockId, ParagraphBlock> = null
-    iterEditableParagraphs doc (fun para ->
-        let mutable runs: ResizeArray<Run> = null
-        let mutable prefixCount = 0
-        let mutable changed = false
-        let ensureChanged () =
-            if not changed then
-                changed <- true
-                runs <- ResizeArray<Run>()
-                let mutable copied = 0
-                let mutable prefix = para.Buffer.Runs
-                while copied < prefixCount do
-                    match prefix with
-                    | prefixRun :: tail ->
-                        runs.Add prefixRun
-                        prefix <- tail
-                        copied <- copied + 1
-                    | [] -> copied <- prefixCount
-        for runValue in para.Buffer.Runs do
-            match runValue with
-            | Text run ->
-                if run.Style.BookmarkStartId = Some bookmarkId || run.Style.BookmarkName = Some bookmarkId then
-                    ensureChanged ()
-                    runs.Add(Text { run with Style = { run.Style with BookmarkStartId = None; BookmarkName = None; BookmarkEndId = None } })
-                elif changed then
-                    runs.Add runValue
-                else
-                    prefixCount <- prefixCount + 1
-            | Image _ ->
-                if changed then
-                    runs.Add runValue
-                else
-                    prefixCount <- prefixCount + 1
+let private tryRemoveBookmarkFromParagraph bookmarkId para =
+    let mutable result = ValueNone
+    let mutable runs: ResizeArray<Run> = null
+    let mutable prefixCount = 0
+    let mutable changed = false
+    let ensureChanged () =
+        if not changed then
+            changed <- true
+            runs <- ResizeArray<Run>()
+            let mutable copied = 0
+            let mutable prefix = para.Buffer.Runs
+            while copied < prefixCount do
+                match prefix with
+                | prefixRun :: tail ->
+                    runs.Add prefixRun
+                    prefix <- tail
+                    copied <- copied + 1
+                | [] -> copied <- prefixCount
+    for runValue in para.Buffer.Runs do
+        match runValue with
+        | Text run ->
+            if run.Style.BookmarkStartId = Some bookmarkId || run.Style.BookmarkName = Some bookmarkId then
+                ensureChanged ()
+                runs.Add(Text { run with Style = { run.Style with BookmarkStartId = None; BookmarkName = None; BookmarkEndId = None } })
+            elif changed then
+                runs.Add runValue
+            else
+                prefixCount <- prefixCount + 1
+        | Image _ ->
+            if changed then
+                runs.Add runValue
+            else
+                prefixCount <- prefixCount + 1
+    if changed then
+        result <- ValueSome { para with Buffer = { para.Buffer with Runs = resizeArrayToList runs } }
+    result
+
+let private tryRemoveBookmarkFromTopLevelParagraphs bookmarkId doc =
+    let blocks = ResizeArray<Block>(doc.Blocks.Length)
+    let mutable pendingUnchangedBlocks = Unchecked.defaultof<ResizeArray<Block>>
+    let mutable changed = false
+    let mutable blockedByNestedContent = false
+    let mutable tailAfterLastChange: Block list = []
+
+    let flushPendingUnchangedBlocks () =
+        if not (obj.ReferenceEquals(pendingUnchangedBlocks, null)) && pendingUnchangedBlocks.Count > 0 then
+            blocks.AddRange pendingUnchangedBlocks
+            pendingUnchangedBlocks.Clear()
+
+    let addChangedBlock block tail =
         if changed then
-            if isNull replacements then
-                replacements <- Dictionary<BlockId, ParagraphBlock>()
-            replacements.[para.Id] <- { para with Buffer = { para.Buffer with Runs = resizeArrayToList runs } })
-    if isNull replacements then doc else replaceParagraphs doc replacements
+            flushPendingUnchangedBlocks ()
+        changed <- true
+        blocks.Add block
+        tailAfterLastChange <- tail
+
+    let addUnchangedBlock block =
+        if changed then
+            if obj.ReferenceEquals(pendingUnchangedBlocks, null) then
+                pendingUnchangedBlocks <- ResizeArray<Block>()
+            pendingUnchangedBlocks.Add block
+        else
+            blocks.Add block
+
+    let mutable remaining = doc.Blocks
+    while not blockedByNestedContent && not remaining.IsEmpty do
+        match remaining with
+        | Paragraph para :: tail ->
+            match tryRemoveBookmarkFromParagraph bookmarkId para with
+            | ValueSome para -> addChangedBlock (Paragraph para) tail
+            | ValueNone -> addUnchangedBlock remaining.Head
+            remaining <- tail
+        | Heading (level, para) :: tail ->
+            match tryRemoveBookmarkFromParagraph bookmarkId para with
+            | ValueSome para -> addChangedBlock (Heading (level, para)) tail
+            | ValueNone -> addUnchangedBlock remaining.Head
+            remaining <- tail
+        | (Table _ | TextBox _) :: _ ->
+            blockedByNestedContent <- true
+        | [] -> ()
+
+    if blockedByNestedContent then
+        ValueNone
+    elif changed then
+        ValueSome { doc with Blocks = prependResizeArray blocks tailAfterLastChange }
+    else
+        ValueSome doc
+
+let removeBookmark bookmarkId doc =
+    match tryRemoveBookmarkFromTopLevelParagraphs bookmarkId doc with
+    | ValueSome doc -> doc
+    | ValueNone ->
+        let mutable replacements: Dictionary<BlockId, ParagraphBlock> = null
+        iterEditableParagraphs doc (fun para ->
+            match tryRemoveBookmarkFromParagraph bookmarkId para with
+            | ValueSome para ->
+                if isNull replacements then
+                    replacements <- Dictionary<BlockId, ParagraphBlock>()
+                replacements.[para.Id] <- para
+            | ValueNone -> ())
+        if isNull replacements then doc else replaceParagraphs doc replacements
 
 let renameBookmark bookmarkId bookmarkName doc =
     let normalizedName =

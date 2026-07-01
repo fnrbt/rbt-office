@@ -1910,7 +1910,7 @@ check "native remove bookmark tail shares"
     true
 check "native remove bookmark alloc"
     (bookmarkSw.Elapsed.TotalMilliseconds < 40.0
-     && bookmarkAllocated < 20L * 1024L * 1024L)
+     && bookmarkAllocated < 13L * 1024L * 1024L)
     true
 
 let blockLookupIdPrefix = System.String('b', 5000)
