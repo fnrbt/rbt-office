@@ -519,6 +519,44 @@ check "native sparse default paint parts alternates"
          | None -> false))
     true
 
+let sparsePaintPartsCycleViewports =
+    [| paintCacheViewport
+       sparsePaintPartsAltViewport
+       { paintCacheViewport with ScrollY = 840.0 } |]
+let sparsePaintPartsCycleCounts =
+    sparsePaintPartsCycleViewports
+    |> Array.map (fun viewport ->
+        RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel viewport
+        |> Option.map sparsePaintPartsItemCount)
+let mutable sparsePaintPartsCycleExpectedTotal = 0
+for index in 1 .. 200000 do
+    match sparsePaintPartsCycleCounts.[index % sparsePaintPartsCycleCounts.Length] with
+    | Some count -> sparsePaintPartsCycleExpectedTotal <- sparsePaintPartsCycleExpectedTotal + count
+    | None -> ()
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let sparsePaintPartsCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let sparsePaintPartsCycleSw = Stopwatch.StartNew()
+let mutable sparsePaintPartsCycleTotal = 0
+for index in 1 .. 200000 do
+    match RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel sparsePaintPartsCycleViewports.[index % sparsePaintPartsCycleViewports.Length] with
+    | Some parts ->
+        sparsePaintPartsCycleTotal <- sparsePaintPartsCycleTotal + sparsePaintPartsItemCount parts
+    | None -> ()
+sparsePaintPartsCycleSw.Stop()
+let sparsePaintPartsCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - sparsePaintPartsCycleAllocatedBefore
+check "native sparse default paint parts three-position cycle"
+    (sparsePaintPartsCycleSw.Elapsed.TotalMilliseconds < 140.0
+     && sparsePaintPartsCycleAllocated < 16L * 1024L * 1024L
+     && (sparsePaintPartsCycleCounts |> Array.forall Option.isSome)
+     && sparsePaintPartsCycleTotal = sparsePaintPartsCycleExpectedTotal
+     && sparsePaintPartsCycleTotal > 0)
+    true
+
 if isNull usedBoundsCached then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor usedBoundsCached helper" "native used bounds reflection"

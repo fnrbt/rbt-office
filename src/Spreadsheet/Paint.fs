@@ -717,6 +717,10 @@ let mutable private sparseDefaultPaintPartsLastSet = false
 let mutable private sparseDefaultPaintPartsLast = Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
 let mutable private sparseDefaultPaintPartsPreviousSet = false
 let mutable private sparseDefaultPaintPartsPrevious = Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
+let mutable private sparseDefaultPaintPartsOlder1Set = false
+let mutable private sparseDefaultPaintPartsOlder1 = Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
+let mutable private sparseDefaultPaintPartsOlder2Set = false
+let mutable private sparseDefaultPaintPartsOlder2 = Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
 let private sparseDefaultPaintCacheMaxEntries = 16
 let private sparseDefaultPaintCacheMaxTotalItems = 200000
 let private sparseDefaultPaintCacheMaxTotalTextChars = 5000000
@@ -732,6 +736,10 @@ let private clearSparseDefaultPaintPartsLast () =
     sparseDefaultPaintPartsLast <- Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
     sparseDefaultPaintPartsPreviousSet <- false
     sparseDefaultPaintPartsPrevious <- Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
+    sparseDefaultPaintPartsOlder1Set <- false
+    sparseDefaultPaintPartsOlder1 <- Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
+    sparseDefaultPaintPartsOlder2Set <- false
+    sparseDefaultPaintPartsOlder2 <- Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
 
 let private sparseDefaultPaintPartsLastMatches (model: SpreadsheetModel) (viewport: Viewport) (cached: SparseDefaultPaintPartsLastEntry) =
     obj.ReferenceEquals(cached.Cells, model.Cells)
@@ -766,12 +774,24 @@ let private tryGetSparseDefaultPaintPartsLast model viewport =
     elif sparseDefaultPaintPartsPreviousSet
          && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsPrevious then
         ValueSome sparseDefaultPaintPartsPrevious.Result
+    elif sparseDefaultPaintPartsOlder1Set
+         && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsOlder1 then
+        ValueSome sparseDefaultPaintPartsOlder1.Result
+    elif sparseDefaultPaintPartsOlder2Set
+         && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsOlder2 then
+        ValueSome sparseDefaultPaintPartsOlder2.Result
     else
         ValueNone
 
 let private rememberSparseDefaultPaintPartsLast (model: SpreadsheetModel) (viewport: Viewport) result =
     match result with
     | Some _ ->
+        if sparseDefaultPaintPartsOlder1Set then
+            sparseDefaultPaintPartsOlder2Set <- true
+            sparseDefaultPaintPartsOlder2 <- sparseDefaultPaintPartsOlder1
+        if sparseDefaultPaintPartsPreviousSet then
+            sparseDefaultPaintPartsOlder1Set <- true
+            sparseDefaultPaintPartsOlder1 <- sparseDefaultPaintPartsPrevious
         if sparseDefaultPaintPartsLastSet then
             sparseDefaultPaintPartsPreviousSet <- true
             sparseDefaultPaintPartsPrevious <- sparseDefaultPaintPartsLast
