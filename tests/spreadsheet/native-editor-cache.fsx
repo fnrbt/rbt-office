@@ -905,6 +905,40 @@ check "native sort identity cache reuses"
     (obj.ReferenceEquals(sortIdentitySorted, sortIdentitySortedAgain))
     true
 
+let sortIdentityCycleModelCount = 80
+let sortIdentityCycleRowCount = 3000
+let sortIdentityCycleModels =
+    [| for modelIndex in 0 .. sortIdentityCycleModelCount - 1 ->
+        { createEmpty sortIdentityCycleRowCount 2 with
+            Cells =
+                [ for row in 0 .. sortIdentityCycleRowCount - 1 do
+                    yield { Row = row; Col = 0 }, cell (CellValue.Number (float row))
+                    yield { Row = row; Col = 1 }, cell (CellValue.String (sprintf "M%02d-R%04d" modelIndex row)) ]
+                |> Map.ofList
+            SortState = Some { Column = 0; Ascending = true } } |]
+for model in sortIdentityCycleModels do
+    sortByColumn 0 true model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let sortIdentityCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let sortIdentityCycleSw = Stopwatch.StartNew()
+let mutable sortIdentityCycleSame = 0
+for _pass in 1 .. 20 do
+    for model in sortIdentityCycleModels do
+        if obj.ReferenceEquals(sortByColumn 0 true model, model) then
+            sortIdentityCycleSame <- sortIdentityCycleSame + 1
+sortIdentityCycleSw.Stop()
+let sortIdentityCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - sortIdentityCycleAllocatedBefore
+check "native sort identity source cycle"
+    (sortIdentityCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && sortIdentityCycleAllocated < 512L * 1024L
+     && sortIdentityCycleSame = sortIdentityCycleModelCount * 20)
+    true
+
 let exportCsvCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "Name")
       { Row = 0; Col = 1 }, cell (CellValue.String "Note")

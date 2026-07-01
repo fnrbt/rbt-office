@@ -2325,7 +2325,7 @@ let private sortIdentityCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, SortIdentityCache>(cellMapReferenceComparer)
 let private sortIdentityFastSlots = Array.zeroCreate<SortIdentityCache> 256
 let private sortIdentityCacheMaxEntries = 64
-let private sortIdentityCacheMaxSources = 64
+let private sortIdentityCacheMaxSources = 256
 let private sortIdentityCacheMaxTotalCells = 500000
 let private sortIdentityCacheMaxTotalSourceTextChars = 5000000
 
