@@ -352,6 +352,44 @@ check "native viewport geometry cache hot hits"
      && geometryHotHitTotal = (firstVisibleCells.Length + firstHeaders.Length) * 50000)
     true
 
+let prefixCoordinateRows = 10000
+let prefixCoordinateModel =
+    { createEmpty 120000 120000 with
+        RowHeights =
+            [ for row in 0 .. prefixCoordinateRows - 1 -> row, 20.0 + float (row % 7) ]
+            |> Map.ofList
+        ColumnWidths =
+            [ for col in 0 .. prefixCoordinateRows - 1 -> col, 80.0 + float (col % 5) ]
+            |> Map.ofList }
+RedBat.Spreadsheet.Layout.rowTop prefixCoordinateModel 80000 |> ignore
+RedBat.Spreadsheet.Layout.columnLeft prefixCoordinateModel 80000 |> ignore
+let prefixCoordinateHotHitRun count =
+    let mutable total = 0.0
+    for index in 1 .. count do
+        let offset = index % 1000
+        total <-
+            total
+            + RedBat.Spreadsheet.Layout.rowTop prefixCoordinateModel (70000 + offset)
+            + RedBat.Spreadsheet.Layout.columnLeft prefixCoordinateModel (70000 + offset)
+    total
+prefixCoordinateHotHitRun 1000 |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let prefixCoordinateAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let prefixCoordinateSw = Stopwatch.StartNew()
+let prefixCoordinateTotal = prefixCoordinateHotHitRun 200000
+prefixCoordinateSw.Stop()
+let prefixCoordinateAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - prefixCoordinateAllocatedBefore
+check "native prefix coordinate cache hot hits"
+    (prefixCoordinateSw.Elapsed.TotalMilliseconds < 140.0
+     && prefixCoordinateAllocated < 1024L * 1024L
+     && prefixCoordinateTotal > 0.0)
+    true
+
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()

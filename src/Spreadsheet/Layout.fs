@@ -263,14 +263,14 @@ let private setPrefixSizeCacheEntries (slot: PrefixSizeCacheSlot) (entries: Pref
 
 let private tryGetPrefixSizeCacheEntry (slot: PrefixSizeCacheSlot) overrides =
     if slot.LastEntrySet && prefixSizeCacheEntryMatches overrides slot.LastEntry then
-        Some slot.LastEntry
+        ValueSome slot.LastEntry
     else
         match slot.Entries |> List.tryFind (prefixSizeCacheEntryMatches overrides) with
         | Some entry ->
             slot.LastEntrySet <- true
             slot.LastEntry <- entry
-            Some entry
-        | None -> None
+            ValueSome entry
+        | None -> ValueNone
 
 let private prefixSizeCacheEntriesWithoutSource (slot: PrefixSizeCacheSlot) source =
     let rec loop acc remaining =
@@ -328,14 +328,14 @@ let private setHiddenPrefixSizeCacheEntries (entries: HiddenPrefixSizeCacheEntry
 let private tryGetHiddenPrefixSizeCacheEntry overrides hiddenRows =
     if hiddenPrefixSizeCache.LastEntrySet
        && hiddenPrefixSizeCacheEntryMatches overrides hiddenRows hiddenPrefixSizeCache.LastEntry then
-        Some hiddenPrefixSizeCache.LastEntry
+        ValueSome hiddenPrefixSizeCache.LastEntry
     else
         match hiddenPrefixSizeCache.Entries |> List.tryFind (hiddenPrefixSizeCacheEntryMatches overrides hiddenRows) with
         | Some entry ->
             hiddenPrefixSizeCache.LastEntrySet <- true
             hiddenPrefixSizeCache.LastEntry <- entry
-            Some entry
-        | None -> None
+            ValueSome entry
+        | None -> ValueNone
 
 let private hiddenPrefixSizeCacheEntriesWithoutSource source hiddenRows =
     let rec loop acc remaining =
@@ -400,10 +400,10 @@ let private prefixSizeUncached defaultSize (overrides: Map<int, float>) index =
 
 let private prefixSize defaultSize (overrides: Map<int, float>) (slot: PrefixSizeCacheSlot) (index: int) =
     match tryGetPrefixSizeCacheEntry slot overrides with
-    | Some entry ->
+    | ValueSome entry ->
         let clipped = max 0 index
         defaultSize * float clipped + entry.Cache.PrefixDeltas.[lowerBound entry.Cache.Keys clipped]
-    | None ->
+    | ValueNone ->
         if index <= prefixSizeDirectIndexThreshold
            || Map.count overrides > prefixSizeCacheMaxTotalKeys then
             prefixSizeUncached defaultSize overrides index
@@ -452,10 +452,10 @@ let private hiddenPrefixSize defaultSize (overrides: Map<int, float>) (hiddenRow
             defaultSize * float hiddenCount
         else
             match tryGetHiddenPrefixSizeCacheEntry overrides hiddenRows with
-            | Some cache ->
+            | ValueSome cache ->
                 defaultSize * float hiddenCount
                 + cache.PrefixDeltas.[lowerBound cache.CustomRows clipped]
-            | None ->
+            | ValueNone ->
                 if clipped <= prefixSizeDirectIndexThreshold
                    || Map.count overrides + hiddenRows.Length > hiddenPrefixSizeCacheMaxTotalKeys then
                     hiddenPrefixSizeUncached defaultSize overrides hiddenRows clipped hiddenCount
