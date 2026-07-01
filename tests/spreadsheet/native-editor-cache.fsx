@@ -583,6 +583,63 @@ check "native formula presence cache count"
     (cellsFormulaCountIfKnown formulaPresenceCells)
     (Some 0)
 
+let conditionalFormatRows = 20000
+let conditionalFormatCells =
+    [ for row in 0 .. conditionalFormatRows - 1 ->
+        { Row = row; Col = 0 }, cell (CellValue.Number (float row)) ]
+    |> Map.ofList
+let conditionalFormatModel = { createEmpty conditionalFormatRows 4 with Cells = conditionalFormatCells }
+let conditionalDataBarModel =
+    applyDataBars 0 0 (conditionalFormatRows - 1) 0 "#63C384" conditionalFormatModel
+let conditionalColorScaleModel =
+    applyColorScale 0 0 (conditionalFormatRows - 1) 0 "#FF0000" None "#00FF00" conditionalFormatModel
+let conditionalIconSetModel =
+    applyIconSet 0 0 (conditionalFormatRows - 1) 0 3 conditionalFormatModel
+check "native data bar no-op identity"
+    (obj.ReferenceEquals(
+        applyDataBars 0 0 (conditionalFormatRows - 1) 0 "#63C384" conditionalDataBarModel,
+        conditionalDataBarModel))
+    true
+check "native color scale no-op identity"
+    (obj.ReferenceEquals(
+        applyColorScale 0 0 (conditionalFormatRows - 1) 0 "#FF0000" None "#00FF00" conditionalColorScaleModel,
+        conditionalColorScaleModel))
+    true
+check "native icon set no-op identity"
+    (obj.ReferenceEquals(
+        applyIconSet 0 0 (conditionalFormatRows - 1) 0 3 conditionalIconSetModel,
+        conditionalIconSetModel))
+    true
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let conditionalFormatAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let conditionalFormatSw = Stopwatch.StartNew()
+let mutable conditionalFormatHits = 0
+for _ in 1 .. 100000 do
+    if obj.ReferenceEquals(
+        applyDataBars 0 0 (conditionalFormatRows - 1) 0 "#63C384" conditionalDataBarModel,
+        conditionalDataBarModel) then
+        conditionalFormatHits <- conditionalFormatHits + 1
+    if obj.ReferenceEquals(
+        applyColorScale 0 0 (conditionalFormatRows - 1) 0 "#FF0000" None "#00FF00" conditionalColorScaleModel,
+        conditionalColorScaleModel) then
+        conditionalFormatHits <- conditionalFormatHits + 1
+    if obj.ReferenceEquals(
+        applyIconSet 0 0 (conditionalFormatRows - 1) 0 3 conditionalIconSetModel,
+        conditionalIconSetModel) then
+        conditionalFormatHits <- conditionalFormatHits + 1
+conditionalFormatSw.Stop()
+let conditionalFormatAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - conditionalFormatAllocatedBefore
+check "native conditional format no-op hot hits"
+    (conditionalFormatSw.Elapsed.TotalMilliseconds < 80.0
+     && conditionalFormatAllocated < 4L * 1024L * 1024L
+     && conditionalFormatHits = 300000)
+    true
+
 let pasteIdentityCells =
     [ { Row = 1; Col = 1 }, cell (CellValue.String "same") ]
     |> Map.ofList

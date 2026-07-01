@@ -6356,9 +6356,44 @@ and private ColorScaleApplyCacheKey = {
     HiColor: string
 }
 
+type private DataBarApplyLast = {
+    Cells: Map<CellAddress, CellData>
+    StartRow: int
+    StartCol: int
+    EndRow: int
+    EndCol: int
+    Color: string
+}
+
+type private IconSetApplyLast = {
+    Cells: Map<CellAddress, CellData>
+    StartRow: int
+    StartCol: int
+    EndRow: int
+    EndCol: int
+    Count: int
+}
+
+type private ColorScaleApplyLast = {
+    Cells: Map<CellAddress, CellData>
+    StartRow: int
+    StartCol: int
+    EndRow: int
+    EndCol: int
+    LoColor: string
+    MidColor: string option
+    HiColor: string
+}
+
 let mutable private dataBarApplyCache: DataBarApplyCache list = []
 let mutable private iconSetApplyCache: IconSetApplyCache list = []
 let mutable private colorScaleApplyCache: ColorScaleApplyCache list = []
+let mutable private dataBarApplyLastSet = false
+let mutable private dataBarApplyLast = Unchecked.defaultof<DataBarApplyLast>
+let mutable private iconSetApplyLastSet = false
+let mutable private iconSetApplyLast = Unchecked.defaultof<IconSetApplyLast>
+let mutable private colorScaleApplyLastSet = false
+let mutable private colorScaleApplyLast = Unchecked.defaultof<ColorScaleApplyLast>
 let private dataBarApplyCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, DataBarApplyCache>(cellMapReferenceComparer)
 let private dataBarApplyFastSlots = Array.zeroCreate<DataBarApplyCache> 256
@@ -6391,6 +6426,76 @@ let private iconSetApplyCacheMatches cells (cached: IconSetApplyCache) =
 
 let private colorScaleApplyCacheMatches cells (cached: ColorScaleApplyCache) =
     obj.ReferenceEquals(cached.Cells, cells)
+
+let private dataBarApplyLastMatches sr sc er ec color cells (cached: DataBarApplyLast) =
+    obj.ReferenceEquals(cached.Cells, cells)
+    && cached.StartRow = sr
+    && cached.StartCol = sc
+    && cached.EndRow = er
+    && cached.EndCol = ec
+    && cached.Color = color
+
+let private rememberDataBarApplyLast sr sc er ec color cells =
+    dataBarApplyLastSet <- true
+    dataBarApplyLast <-
+        { Cells = cells
+          StartRow = sr
+          StartCol = sc
+          EndRow = er
+          EndCol = ec
+          Color = color }
+
+let private tryGetDataBarApplyLast sr sc er ec color cells =
+    dataBarApplyLastSet
+    && dataBarApplyLastMatches sr sc er ec color cells dataBarApplyLast
+
+let private iconSetApplyLastMatches sr sc er ec count cells (cached: IconSetApplyLast) =
+    obj.ReferenceEquals(cached.Cells, cells)
+    && cached.StartRow = sr
+    && cached.StartCol = sc
+    && cached.EndRow = er
+    && cached.EndCol = ec
+    && cached.Count = count
+
+let private rememberIconSetApplyLast sr sc er ec count cells =
+    iconSetApplyLastSet <- true
+    iconSetApplyLast <-
+        { Cells = cells
+          StartRow = sr
+          StartCol = sc
+          EndRow = er
+          EndCol = ec
+          Count = count }
+
+let private tryGetIconSetApplyLast sr sc er ec count cells =
+    iconSetApplyLastSet
+    && iconSetApplyLastMatches sr sc er ec count cells iconSetApplyLast
+
+let private colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells (cached: ColorScaleApplyLast) =
+    obj.ReferenceEquals(cached.Cells, cells)
+    && cached.StartRow = sr
+    && cached.StartCol = sc
+    && cached.EndRow = er
+    && cached.EndCol = ec
+    && cached.LoColor = loColor
+    && cached.MidColor = mid
+    && cached.HiColor = hiColor
+
+let private rememberColorScaleApplyLast sr sc er ec loColor mid hiColor cells =
+    colorScaleApplyLastSet <- true
+    colorScaleApplyLast <-
+        { Cells = cells
+          StartRow = sr
+          StartCol = sc
+          EndRow = er
+          EndCol = ec
+          LoColor = loColor
+          MidColor = mid
+          HiColor = hiColor }
+
+let private tryGetColorScaleApplyLast sr sc er ec loColor mid hiColor cells =
+    colorScaleApplyLastSet
+    && colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyLast
 
 let private setDataBarApplyCache entries =
     dataBarApplyCache <- entries
@@ -6690,194 +6795,206 @@ let private addColorScaleApplyCacheEntry key (cache: ColorScaleApplyCache) =
 /// Data bars over a range, baselined at 0 when all values are ≥ 0 (Excel's
 /// automatic behaviour), else min→max.
 let applyDataBars (sr: int) (sc: int) (er: int) (ec: int) (color: string) (model: SpreadsheetModel) : SpreadsheetModel =
-    let key = {
-        StartRow = sr
-        StartCol = sc
-        EndRow = er
-        EndCol = ec
-        Color = color
-    }
-    let rememberWithSourceTextCharCount sourceTextCharCount cells =
-        let cache =
-            match tryGetDataBarApplyCache cells with
-            | ValueSome cached -> cached
-            | ValueNone ->
-                {
-                    Cells = cells
-                    CellCount = conditionalFormatApplyCacheCellCount cells
-                    SourceTextCharCount = sourceTextCharCount
-                    Entries = System.Collections.Generic.Dictionary<DataBarApplyCacheKey, unit>()
-                    Order = System.Collections.Generic.Queue<DataBarApplyCacheKey>()
-                    TotalKeyCharCount = 0
-                }
-        addDataBarApplyCacheEntry key cache
-        rememberDataBarApplyCache cache
-    let remember cells =
-        rememberWithSourceTextCharCount (conditionalFormatApplyCacheSourceTextCharCount cells) cells
-    let rememberChangedResult cells =
-        rememberWithSourceTextCharCount (conditionalFormatApplyCacheMaxTotalSourceTextChars + 1) cells
-    let compute () =
-        match rangeNumberStats sr sc er ec model with
-        | None ->
-            remember model.Cells
-            model
-        | Some (numberCount, minValue, maxValue) ->
-            let lo = min 0.0 minValue
-            let hi = max 0.0 maxValue
-            let span = if hi - lo < 1e-12 then 1.0 else hi - lo
-            let dataBarFormat value cell =
-                { cell.Format with DataBar = Some(max 0.0 (min 1.0 ((value - lo) / span)), color) }
-            if int64 numberCount * 2L >= int64 model.Cells.Count then
-                if not (rangeNumbersHaveAnyFormatChange sr sc er ec model dataBarFormat) then
-                    remember model.Cells
-                    model
-                else
-                    let cellMap =
-                        model.Cells
-                        |> Map.map (fun addr cell ->
-                            if addr.Row >= sr && addr.Row <= er && addr.Col >= sc && addr.Col <= ec then
-                                match unwrapVal cell.Value with
-                                | Number n ->
-                                    { cell with Format = dataBarFormat n cell }
-                                | Boolean true ->
-                                    { cell with Format = dataBarFormat 1.0 cell }
-                                | Boolean false ->
-                                    { cell with Format = dataBarFormat 0.0 cell }
-                                | _ -> cell
-                            else
-                                cell)
-                    let updated = { model with Cells = cellMap }
-                    rememberChangedResult updated.Cells
-                    updated
-            else
-                let cells =
-                    match rangeNumbersWithBounds sr sc er ec model with
-                    | Some (cells, _, _) -> cells
-                    | None -> ResizeArray<CellAddress * float * CellData>()
-                if not (hasAnyFormatChange cells dataBarFormat) then
-                    remember model.Cells
-                    model
-                else
-                    let mutable cellMap = model.Cells
-                    let mutable changed = false
-                    for addr, v, cell in cells do
-                        let newFormat = dataBarFormat v cell
-                        if newFormat <> cell.Format then
-                            cellMap <- Map.add addr { cell with Format = newFormat } cellMap
-                            changed <- true
-                    if changed then
+    if tryGetDataBarApplyLast sr sc er ec color model.Cells then
+        model
+    else
+        let key = {
+            StartRow = sr
+            StartCol = sc
+            EndRow = er
+            EndCol = ec
+            Color = color
+        }
+        let rememberWithSourceTextCharCount sourceTextCharCount cells =
+            let cache =
+                match tryGetDataBarApplyCache cells with
+                | ValueSome cached -> cached
+                | ValueNone ->
+                    {
+                        Cells = cells
+                        CellCount = conditionalFormatApplyCacheCellCount cells
+                        SourceTextCharCount = sourceTextCharCount
+                        Entries = System.Collections.Generic.Dictionary<DataBarApplyCacheKey, unit>()
+                        Order = System.Collections.Generic.Queue<DataBarApplyCacheKey>()
+                        TotalKeyCharCount = 0
+                    }
+            addDataBarApplyCacheEntry key cache
+            rememberDataBarApplyCache cache
+        let remember cells =
+            rememberWithSourceTextCharCount (conditionalFormatApplyCacheSourceTextCharCount cells) cells
+        let rememberChangedResult cells =
+            rememberWithSourceTextCharCount (conditionalFormatApplyCacheMaxTotalSourceTextChars + 1) cells
+        let compute () =
+            match rangeNumberStats sr sc er ec model with
+            | None ->
+                remember model.Cells
+                model
+            | Some (numberCount, minValue, maxValue) ->
+                let lo = min 0.0 minValue
+                let hi = max 0.0 maxValue
+                let span = if hi - lo < 1e-12 then 1.0 else hi - lo
+                let dataBarFormat value cell =
+                    { cell.Format with DataBar = Some(max 0.0 (min 1.0 ((value - lo) / span)), color) }
+                if int64 numberCount * 2L >= int64 model.Cells.Count then
+                    if not (rangeNumbersHaveAnyFormatChange sr sc er ec model dataBarFormat) then
+                        remember model.Cells
+                        model
+                    else
+                        let cellMap =
+                            model.Cells
+                            |> Map.map (fun addr cell ->
+                                if addr.Row >= sr && addr.Row <= er && addr.Col >= sc && addr.Col <= ec then
+                                    match unwrapVal cell.Value with
+                                    | Number n ->
+                                        { cell with Format = dataBarFormat n cell }
+                                    | Boolean true ->
+                                        { cell with Format = dataBarFormat 1.0 cell }
+                                    | Boolean false ->
+                                        { cell with Format = dataBarFormat 0.0 cell }
+                                    | _ -> cell
+                                else
+                                    cell)
                         let updated = { model with Cells = cellMap }
                         rememberChangedResult updated.Cells
                         updated
-                    else
+                else
+                    let cells =
+                        match rangeNumbersWithBounds sr sc er ec model with
+                        | Some (cells, _, _) -> cells
+                        | None -> ResizeArray<CellAddress * float * CellData>()
+                    if not (hasAnyFormatChange cells dataBarFormat) then
                         remember model.Cells
                         model
-    match tryGetDataBarApplyCache model.Cells with
-    | ValueSome cached when cached.Entries.ContainsKey key -> model
-    | _ ->
-        compute ()
+                    else
+                        let mutable cellMap = model.Cells
+                        let mutable changed = false
+                        for addr, v, cell in cells do
+                            let newFormat = dataBarFormat v cell
+                            if newFormat <> cell.Format then
+                                cellMap <- Map.add addr { cell with Format = newFormat } cellMap
+                                changed <- true
+                        if changed then
+                            let updated = { model with Cells = cellMap }
+                            rememberChangedResult updated.Cells
+                            updated
+                        else
+                            remember model.Cells
+                            model
+        match tryGetDataBarApplyCache model.Cells with
+        | ValueSome cached when cached.Entries.ContainsKey key ->
+            rememberDataBarApplyLast sr sc er ec color model.Cells
+            model
+        | _ ->
+            compute ()
 
 /// 2- or 3-color scale (pass `mid = None` for 2-color) → per-cell BgColor.
 let applyColorScale (sr: int) (sc: int) (er: int) (ec: int) (loColor: string) (mid: string option) (hiColor: string) (model: SpreadsheetModel) : SpreadsheetModel =
-    let key = {
-        StartRow = sr
-        StartCol = sc
-        EndRow = er
-        EndCol = ec
-        LoColor = loColor
-        MidColor = mid
-        HiColor = hiColor
-    }
-    let rememberWithSourceTextCharCount sourceTextCharCount cells =
-        let cache =
-            match tryGetColorScaleApplyCache cells with
-            | ValueSome cached -> cached
-            | ValueNone ->
-                {
-                    Cells = cells
-                    CellCount = conditionalFormatApplyCacheCellCount cells
-                    SourceTextCharCount = sourceTextCharCount
-                    Entries = System.Collections.Generic.Dictionary<ColorScaleApplyCacheKey, unit>()
-                    Order = System.Collections.Generic.Queue<ColorScaleApplyCacheKey>()
-                    TotalKeyCharCount = 0
-                }
-        addColorScaleApplyCacheEntry key cache
-        rememberColorScaleApplyCache cache
-    let remember cells =
-        rememberWithSourceTextCharCount (conditionalFormatApplyCacheSourceTextCharCount cells) cells
-    let rememberChangedResult cells =
-        rememberWithSourceTextCharCount (conditionalFormatApplyCacheMaxTotalSourceTextChars + 1) cells
-    let compute () =
-        match rangeNumberStats sr sc er ec model with
-        | None ->
-            remember model.Cells
-            model
-        | Some (numberCount, lo, hi) ->
-            let span = if hi - lo < 1e-12 then 1.0 else hi - lo
-            let loRgb = hexToRgb loColor
-            let hiRgb = hexToRgb hiColor
-            let midRgb = mid |> Option.map hexToRgb
-            let scaleColor value =
-                let t = (value - lo) / span
-                match midRgb with
-                | None -> lerpRgb loRgb hiRgb t
-                | Some mc -> if t <= 0.5 then lerpRgb loRgb mc (t * 2.0) else lerpRgb mc hiRgb ((t - 0.5) * 2.0)
-            let colorScaleFormat value cell =
-                { cell.Format with BgColor = Some (scaleColor value) }
-            if int64 numberCount * 2L >= int64 model.Cells.Count then
-                if not (rangeNumbersHaveAnyFormatChange sr sc er ec model colorScaleFormat) then
-                    remember model.Cells
-                    model
-                else
-                    let cellMap =
-                        model.Cells
-                        |> Map.map (fun addr cell ->
-                            if addr.Row >= sr && addr.Row <= er && addr.Col >= sc && addr.Col <= ec then
-                                match unwrapVal cell.Value with
-                                | Number n ->
-                                    { cell with Format = colorScaleFormat n cell }
-                                | Boolean true ->
-                                    { cell with Format = colorScaleFormat 1.0 cell }
-                                | Boolean false ->
-                                    { cell with Format = colorScaleFormat 0.0 cell }
-                                | _ -> cell
-                            else
-                                cell)
-                    let updated = { model with Cells = cellMap }
-                    rememberChangedResult updated.Cells
-                    updated
-            else
-                let cells =
-                    match rangeNumbersWithBounds sr sc er ec model with
-                    | Some (cells, _, _) -> cells
-                    | None -> ResizeArray<CellAddress * float * CellData>()
-                if not (hasAnyFormatChange cells colorScaleFormat) then
-                    remember model.Cells
-                    model
-                else
-                    let mutable cellMap = model.Cells
-                    let mutable changed = false
-                    for addr, v, cell in cells do
-                        let newFormat = colorScaleFormat v cell
-                        if newFormat <> cell.Format then
-                            cellMap <- Map.add addr { cell with Format = newFormat } cellMap
-                            changed <- true
-                    if changed then
+    if tryGetColorScaleApplyLast sr sc er ec loColor mid hiColor model.Cells then
+        model
+    else
+        let key = {
+            StartRow = sr
+            StartCol = sc
+            EndRow = er
+            EndCol = ec
+            LoColor = loColor
+            MidColor = mid
+            HiColor = hiColor
+        }
+        let rememberWithSourceTextCharCount sourceTextCharCount cells =
+            let cache =
+                match tryGetColorScaleApplyCache cells with
+                | ValueSome cached -> cached
+                | ValueNone ->
+                    {
+                        Cells = cells
+                        CellCount = conditionalFormatApplyCacheCellCount cells
+                        SourceTextCharCount = sourceTextCharCount
+                        Entries = System.Collections.Generic.Dictionary<ColorScaleApplyCacheKey, unit>()
+                        Order = System.Collections.Generic.Queue<ColorScaleApplyCacheKey>()
+                        TotalKeyCharCount = 0
+                    }
+            addColorScaleApplyCacheEntry key cache
+            rememberColorScaleApplyCache cache
+        let remember cells =
+            rememberWithSourceTextCharCount (conditionalFormatApplyCacheSourceTextCharCount cells) cells
+        let rememberChangedResult cells =
+            rememberWithSourceTextCharCount (conditionalFormatApplyCacheMaxTotalSourceTextChars + 1) cells
+        let compute () =
+            match rangeNumberStats sr sc er ec model with
+            | None ->
+                remember model.Cells
+                model
+            | Some (numberCount, lo, hi) ->
+                let span = if hi - lo < 1e-12 then 1.0 else hi - lo
+                let loRgb = hexToRgb loColor
+                let hiRgb = hexToRgb hiColor
+                let midRgb = mid |> Option.map hexToRgb
+                let scaleColor value =
+                    let t = (value - lo) / span
+                    match midRgb with
+                    | None -> lerpRgb loRgb hiRgb t
+                    | Some mc -> if t <= 0.5 then lerpRgb loRgb mc (t * 2.0) else lerpRgb mc hiRgb ((t - 0.5) * 2.0)
+                let colorScaleFormat value cell =
+                    { cell.Format with BgColor = Some (scaleColor value) }
+                if int64 numberCount * 2L >= int64 model.Cells.Count then
+                    if not (rangeNumbersHaveAnyFormatChange sr sc er ec model colorScaleFormat) then
+                        remember model.Cells
+                        model
+                    else
+                        let cellMap =
+                            model.Cells
+                            |> Map.map (fun addr cell ->
+                                if addr.Row >= sr && addr.Row <= er && addr.Col >= sc && addr.Col <= ec then
+                                    match unwrapVal cell.Value with
+                                    | Number n ->
+                                        { cell with Format = colorScaleFormat n cell }
+                                    | Boolean true ->
+                                        { cell with Format = colorScaleFormat 1.0 cell }
+                                    | Boolean false ->
+                                        { cell with Format = colorScaleFormat 0.0 cell }
+                                    | _ -> cell
+                                else
+                                    cell)
                         let updated = { model with Cells = cellMap }
                         rememberChangedResult updated.Cells
                         updated
-                    else
+                else
+                    let cells =
+                        match rangeNumbersWithBounds sr sc er ec model with
+                        | Some (cells, _, _) -> cells
+                        | None -> ResizeArray<CellAddress * float * CellData>()
+                    if not (hasAnyFormatChange cells colorScaleFormat) then
                         remember model.Cells
                         model
-    match tryGetColorScaleApplyCache model.Cells with
-    | ValueSome cached when cached.Entries.ContainsKey key -> model
-    | _ ->
-        compute ()
+                    else
+                        let mutable cellMap = model.Cells
+                        let mutable changed = false
+                        for addr, v, cell in cells do
+                            let newFormat = colorScaleFormat v cell
+                            if newFormat <> cell.Format then
+                                cellMap <- Map.add addr { cell with Format = newFormat } cellMap
+                                changed <- true
+                        if changed then
+                            let updated = { model with Cells = cellMap }
+                            rememberChangedResult updated.Cells
+                            updated
+                        else
+                            remember model.Cells
+                            model
+        match tryGetColorScaleApplyCache model.Cells with
+        | ValueSome cached when cached.Entries.ContainsKey key ->
+            rememberColorScaleApplyLast sr sc er ec loColor mid hiColor model.Cells
+            model
+        | _ ->
+            compute ()
 
 /// Icon set over a range: `count` buckets by value (Excel's percent
 /// thresholds), each cell tagged with its bucket index for the renderer.
 let applyIconSet (sr: int) (sc: int) (er: int) (ec: int) (count: int) (model: SpreadsheetModel) : SpreadsheetModel =
     if count <= 1 then model
+    elif tryGetIconSetApplyLast sr sc er ec count model.Cells then
+        model
     else
         let key = {
             StartRow = sr
@@ -6961,7 +7078,9 @@ let applyIconSet (sr: int) (sc: int) (er: int) (ec: int) (count: int) (model: Sp
                             remember model.Cells
                             model
         match tryGetIconSetApplyCache model.Cells with
-        | ValueSome cached when cached.Entries.ContainsKey key -> model
+        | ValueSome cached when cached.Entries.ContainsKey key ->
+            rememberIconSetApplyLast sr sc er ec count model.Cells
+            model
         | _ ->
             compute ()
 
