@@ -1179,6 +1179,85 @@ check "native block index lookup long id perf"
      && blockLookupIndexAllocated < 2L * 1024L * 1024L
      && blockLookupIndexHits = 1024000)
     true
+let cursorBoundaryDownDoc =
+    { blockLookupDoc with
+        Selection =
+            Some {
+                Anchor = pos blockLookupIds.[blockLookupIds.Length - 1] 0
+                Focus = pos blockLookupIds.[blockLookupIds.Length - 1] 0
+            } }
+Doc.findBlock cursorBoundaryDownDoc blockLookupIds.[blockLookupIds.Length - 1] |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let cursorBoundaryDownAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let cursorBoundaryDownSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable cursorBoundaryDownSame = 0
+for _pass in 1 .. 1024000 do
+    if obj.ReferenceEquals(Doc.moveCursorDown cursorBoundaryDownDoc, cursorBoundaryDownDoc) then
+        cursorBoundaryDownSame <- cursorBoundaryDownSame + 1
+cursorBoundaryDownSw.Stop()
+let cursorBoundaryDownAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - cursorBoundaryDownAllocatedBefore
+check "native cursor down boundary cache hot hit"
+    (cursorBoundaryDownSw.Elapsed.TotalMilliseconds < 500.0
+     && cursorBoundaryDownAllocated < 2L * 1024L * 1024L
+     && cursorBoundaryDownSame = 1024000)
+    true
+let cursorBoundaryUpDoc =
+    { blockLookupDoc with
+        Selection =
+            Some {
+                Anchor = pos blockLookupIds.[0] 0
+                Focus = pos blockLookupIds.[0] 0
+            } }
+Doc.findBlock cursorBoundaryUpDoc blockLookupIds.[0] |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let cursorBoundaryUpAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let cursorBoundaryUpSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable cursorBoundaryUpSame = 0
+for _pass in 1 .. 1024000 do
+    if obj.ReferenceEquals(Doc.moveCursorUp cursorBoundaryUpDoc, cursorBoundaryUpDoc) then
+        cursorBoundaryUpSame <- cursorBoundaryUpSame + 1
+cursorBoundaryUpSw.Stop()
+let cursorBoundaryUpAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - cursorBoundaryUpAllocatedBefore
+check "native cursor up boundary cache hot hit"
+    (cursorBoundaryUpSw.Elapsed.TotalMilliseconds < 500.0
+     && cursorBoundaryUpAllocated < 2L * 1024L * 1024L
+     && cursorBoundaryUpSame = 1024000)
+    true
+let headingNoopPara =
+    { para "native-heading-noop" "Title" with
+        Buffer =
+            TB.applyStyle
+                0
+                5
+                (fun style -> { style with Bold = true; FontSize = 24.0 })
+                (TB.ofString "Title") }
+let headingNoopDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Heading (1, headingNoopPara) ]
+        Selection = Some { Anchor = pos "native-heading-noop" 0; Focus = pos "native-heading-noop" 0 } }
+Doc.findBlock headingNoopDoc "native-heading-noop" |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let headingNoopAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let headingNoopSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable headingNoopSame = 0
+for _pass in 1 .. 200000 do
+    if obj.ReferenceEquals(Doc.setHeadingLevel 1 headingNoopDoc, headingNoopDoc) then
+        headingNoopSame <- headingNoopSame + 1
+headingNoopSw.Stop()
+let headingNoopAllocated = System.GC.GetAllocatedBytesForCurrentThread() - headingNoopAllocatedBefore
+check "native heading noop cache hot hit"
+    (headingNoopSw.Elapsed.TotalMilliseconds < 250.0
+     && headingNoopAllocated < 10L * 1024L * 1024L
+     && headingNoopSame = 200000)
+    true
 
 let paragraphLookupIdPrefix = System.String('p', 5000)
 let paragraphLookupIds =

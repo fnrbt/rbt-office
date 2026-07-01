@@ -2246,80 +2246,70 @@ let findBlock doc blockId =
     | ValueSome entry -> entry.TopBlockResult
     | ValueNone -> None
 
-let private tryFindTopBlockUntil doc blockId =
-    let tryCached () =
-        match tryGetBlockLookup doc.Blocks with
-        | ValueSome lookup ->
-            match tryFindBlockLookupEntry lookup blockId with
-            | ValueSome entry -> Some entry.TopBlock
-            | ValueNone -> None
-        | ValueNone -> None
-    let scan () =
-        let rec loop remaining =
-            match remaining with
-            | block :: _ when getBlockId block = blockId -> Some block
-            | _ :: tail -> loop tail
-            | [] -> None
-        loop doc.Blocks
-    match tryCached () with
-    | Some block -> Some block
-    | None -> scan ()
+let private scanTopBlockUntil blocks blockId =
+    let rec loop remaining =
+        match remaining with
+        | block :: _ when getBlockId block = blockId -> Some block
+        | _ :: tail -> loop tail
+        | [] -> None
+    loop blocks
 
-let private tryFindTopBlockWithIndexUntil doc blockId =
-    let tryCached () =
-        match tryGetBlockLookup doc.Blocks with
-        | ValueSome lookup ->
-            match tryFindBlockLookupEntry lookup blockId with
-            | ValueSome entry ->
-                Some (entry.TopBlock, entry.TopIndex)
-            | ValueNone -> None
-        | ValueNone -> None
-    let scan () =
-        let rec loop index remaining =
-            match remaining with
-            | block :: _ when getBlockId block = blockId -> Some (block, index)
-            | _ :: tail -> loop (index + 1) tail
-            | [] -> None
-        loop 0 doc.Blocks
-    match tryCached () with
-    | Some result -> Some result
-    | None -> scan ()
+let private scanTopBlockWithIndexUntil blocks blockId =
+    let rec loop index remaining =
+        match remaining with
+        | block :: _ when getBlockId block = blockId -> ValueSome (struct (block, index))
+        | _ :: tail -> loop (index + 1) tail
+        | [] -> ValueNone
+    loop 0 blocks
 
-let private tryFindAdjacentTopBlock doc blockId offset =
-    let tryCached () =
-        match tryGetBlockLookup doc.Blocks with
-        | ValueSome lookup ->
-            match tryFindBlockLookupEntry lookup blockId with
-            | ValueSome entry ->
-                let index = entry.TopIndex + offset
-                if index >= 0 && index < lookup.TopBlocks.Length then
-                    Some lookup.TopBlocks.[index]
-                else
-                    None
-            | ValueNone -> None
-        | ValueNone -> None
-    let scanNext () =
+let private scanAdjacentTopBlock blocks blockId offset =
+    if offset = 1 then
         let rec loop remaining =
             match remaining with
             | block :: next :: _ when getBlockId block = blockId -> Some next
             | block :: [] when getBlockId block = blockId -> None
             | _ :: tail -> loop tail
             | [] -> None
-        loop doc.Blocks
-    let scanPrevious () =
+        loop blocks
+    elif offset = -1 then
         let rec loop hasPrevious previous remaining =
             match remaining with
             | block :: _ when getBlockId block = blockId ->
                 if hasPrevious then Some previous else None
             | block :: tail -> loop true block tail
             | [] -> None
-        loop false Unchecked.defaultof<Block> doc.Blocks
-    match tryCached () with
-    | Some block -> Some block
-    | None ->
-        if offset = 1 then scanNext ()
-        elif offset = -1 then scanPrevious ()
-        else None
+        loop false Unchecked.defaultof<Block> blocks
+    else
+        None
+
+let private tryFindTopBlockUntil doc blockId =
+    match tryGetBlockLookup doc.Blocks with
+    | ValueSome lookup ->
+        match tryFindBlockLookupEntry lookup blockId with
+        | ValueSome entry -> entry.TopBlockResult
+        | ValueNone -> None
+    | ValueNone -> scanTopBlockUntil doc.Blocks blockId
+
+let private tryFindTopBlockWithIndexUntil doc blockId =
+    match tryGetBlockLookup doc.Blocks with
+    | ValueSome lookup ->
+        match tryFindBlockLookupEntry lookup blockId with
+        | ValueSome entry -> ValueSome (struct (entry.TopBlock, entry.TopIndex))
+        | ValueNone -> ValueNone
+    | ValueNone -> scanTopBlockWithIndexUntil doc.Blocks blockId
+
+let private tryFindAdjacentTopBlock doc blockId offset =
+    match tryGetBlockLookup doc.Blocks with
+    | ValueSome lookup ->
+        match tryFindBlockLookupEntry lookup blockId with
+        | ValueSome entry ->
+            let index = entry.TopIndex + offset
+            if index >= 0 && index < lookup.TopBlocks.Length then
+                Some lookup.TopBlocks.[index]
+            else
+                None
+        | ValueNone -> None
+    | ValueNone -> scanAdjacentTopBlock doc.Blocks blockId offset
 
 /// Try to get the editable paragraph payload from a block.
 let tryGetParagraph = function
@@ -4540,7 +4530,7 @@ let private tryFindCurrentTableCellUntil doc blockId =
 
 let private updateTable (doc: Document) tableId update =
     match tryFindTopBlockWithIndexUntil doc tableId with
-    | Some (Table table, tableIndex) ->
+    | ValueSome (struct (Table table, tableIndex)) ->
         let nextTable = update table
         if obj.ReferenceEquals(nextTable, table) || nextTable = table then
             doc
@@ -5144,8 +5134,8 @@ let splitBlock doc =
     | None -> doc
     | Some sel ->
         match tryFindTopBlockWithIndexUntil doc sel.Focus.BlockId with
-        | None -> doc
-        | Some (block, idx) ->
+        | ValueNone -> doc
+        | ValueSome (struct (block, idx)) ->
             let para = getParagraph block
             let offset = sel.Focus.Offset
 
