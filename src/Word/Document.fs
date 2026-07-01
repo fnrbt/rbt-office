@@ -2025,6 +2025,7 @@ type private BlockLookupEntry = {
     TopBlock: Block
     TopIndex: int
     TopBlockResult: Block option
+    TopIndexResult: int option
     TopParagraphResult: ParagraphBlock option
 }
 
@@ -2044,6 +2045,7 @@ let private blockLookupEntry blockId block index =
       TopBlock = block
       TopIndex = index
       TopBlockResult = Some block
+      TopIndexResult = Some index
       TopParagraphResult = paragraph }
 
 /// Find block by ID
@@ -2203,39 +2205,40 @@ let private rememberBlockLookup cached =
             |> trim
         setBlockLookupCache entries
 
+let private buildBlockLookup blocks =
+    let entriesById = Dictionary<BlockId, BlockLookupEntry>()
+    let topBlocks = ResizeArray<Block>()
+    let mutable index = 0
+    for block in blocks do
+        topBlocks.Add block
+        let blockId = getBlockId block
+        if not (entriesById.ContainsKey blockId) then
+            let entry = blockLookupEntry blockId block index
+            entriesById.[blockId] <- entry
+        index <- index + 1
+    let entryFastSlots = Array.zeroCreate<BlockLookupEntry> (lookupEntryFastSlotSize entriesById.Count)
+    for entry in entriesById.Values do
+        setBlockLookupEntryFastSlot entryFastSlots entry
+    let sourceParagraphCount = blockLookupSourceParagraphCountFor entriesById.Count blocks
+    let cached = {
+        CachedBlocks = blocks
+        EntryCount = entriesById.Count
+        SourceParagraphCount = sourceParagraphCount
+        SourceTextCharCount = blockLookupSourceTextCharCountFor entriesById.Count sourceParagraphCount blocks
+        EntriesById = entriesById
+        EntryFastSlots = entryFastSlots
+        TopBlocks = topBlocks.ToArray()
+        LastEntrySet = false
+        LastEntryId = ""
+        LastEntry = Unchecked.defaultof<BlockLookupEntry>
+    }
+    rememberBlockLookup cached
+    cached
+
 let private blockLookup blocks =
-    let build () =
-        let entriesById = Dictionary<BlockId, BlockLookupEntry>()
-        let topBlocks = ResizeArray<Block>()
-        let mutable index = 0
-        for block in blocks do
-            topBlocks.Add block
-            let blockId = getBlockId block
-            if not (entriesById.ContainsKey blockId) then
-                let entry = blockLookupEntry blockId block index
-                entriesById.[blockId] <- entry
-            index <- index + 1
-        let entryFastSlots = Array.zeroCreate<BlockLookupEntry> (lookupEntryFastSlotSize entriesById.Count)
-        for entry in entriesById.Values do
-            setBlockLookupEntryFastSlot entryFastSlots entry
-        let sourceParagraphCount = blockLookupSourceParagraphCountFor entriesById.Count blocks
-        let cached = {
-            CachedBlocks = blocks
-            EntryCount = entriesById.Count
-            SourceParagraphCount = sourceParagraphCount
-            SourceTextCharCount = blockLookupSourceTextCharCountFor entriesById.Count sourceParagraphCount blocks
-            EntriesById = entriesById
-            EntryFastSlots = entryFastSlots
-            TopBlocks = topBlocks.ToArray()
-            LastEntrySet = false
-            LastEntryId = ""
-            LastEntry = Unchecked.defaultof<BlockLookupEntry>
-        }
-        rememberBlockLookup cached
-        cached
     match tryGetBlockLookup blocks with
     | ValueSome cached -> cached
-    | ValueNone -> build ()
+    | ValueNone -> buildBlockLookup blocks
 
 let findBlock doc blockId =
     let lookup = blockLookup doc.Blocks
@@ -2857,8 +2860,13 @@ type private ParagraphLookupCache = {
     EntryCount: int
     SourceParagraphCount: int
     SourceTextCharCount: int
-    Paragraphs: Dictionary<BlockId, ParagraphBlock>
-    ParagraphFastSlots: ParagraphBlock array
+    Paragraphs: Dictionary<BlockId, ParagraphLookupEntry>
+    ParagraphFastSlots: ParagraphLookupEntry array
+}
+
+and private ParagraphLookupEntry = {
+    Paragraph: ParagraphBlock
+    Result: ParagraphBlock option
 }
 
 let mutable private paragraphLookupCache: ParagraphLookupCache list = []
@@ -2869,11 +2877,11 @@ let private paragraphLookupCacheMaxTotalEntries = 200000
 let private paragraphLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private paragraphLookupCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
-let private paragraphLookupEntryFastSlot (slots: ParagraphBlock array) (paragraphId: BlockId) =
+let private paragraphLookupEntryFastSlot (slots: ParagraphLookupEntry array) (paragraphId: BlockId) =
     System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(paragraphId) &&& (slots.Length - 1)
 
-let private setParagraphLookupEntryFastSlot (slots: ParagraphBlock array) (paragraph: ParagraphBlock) =
-    slots.[paragraphLookupEntryFastSlot slots paragraph.Id] <- paragraph
+let private setParagraphLookupEntryFastSlot (slots: ParagraphLookupEntry array) (entry: ParagraphLookupEntry) =
+    slots.[paragraphLookupEntryFastSlot slots entry.Paragraph.Id] <- entry
 
 let private paragraphLookupCacheMatches blocks (cached: ParagraphLookupCache) =
     obj.ReferenceEquals(cached.CachedBlocks, blocks)
@@ -2967,9 +2975,12 @@ let private rememberParagraphLookup cached =
             |> trim
         setParagraphLookupCache entries
 
-let private addParagraphLookup (paragraphs: Dictionary<BlockId, ParagraphBlock>) (paragraph: ParagraphBlock) =
+let private addParagraphLookup (paragraphs: Dictionary<BlockId, ParagraphLookupEntry>) (paragraph: ParagraphBlock) =
     if not (paragraphs.ContainsKey paragraph.Id) then
-        paragraphs.[paragraph.Id] <- paragraph
+        paragraphs.[paragraph.Id] <- {
+            Paragraph = paragraph
+            Result = Some paragraph
+        }
 
 type private ParagraphLookupFrame =
     | ParagraphLookupTable of TableBlock
@@ -2977,7 +2988,7 @@ type private ParagraphLookupFrame =
     | ParagraphLookupParagraph of ParagraphBlock
 
 let private addTableParagraphLookups
-    (paragraphs: Dictionary<BlockId, ParagraphBlock>)
+    (paragraphs: Dictionary<BlockId, ParagraphLookupEntry>)
     visitSourceItem
     addSourceParagraph
     (table: TableBlock) =
@@ -3037,7 +3048,7 @@ let private addTableParagraphLookups
                 pushCellFrames rowArray.[rowIndex].Cells
 
 let private addBlockParagraphLookups
-    (paragraphs: Dictionary<BlockId, ParagraphBlock>)
+    (paragraphs: Dictionary<BlockId, ParagraphLookupEntry>)
     visitSourceItem
     addSourceParagraph
     block =
@@ -3053,72 +3064,73 @@ let private addBlockParagraphLookups
             addSourceParagraph ()
             addParagraphLookup paragraphs paragraph
 
+let private buildParagraphLookup (doc: Document) =
+    let paragraphs = Dictionary<BlockId, ParagraphLookupEntry>()
+    let mutable sourceParagraphCount = 0
+    let mutable visitedSourceItems = 0
+    let maxVisitedSourceItems = sourceStructureVisitedItemLimit paragraphLookupCacheMaxTotalSourceParagraphs
+    let canCountSource () =
+        sourceParagraphCount <= paragraphLookupCacheMaxTotalSourceParagraphs
+        && visitedSourceItems <= maxVisitedSourceItems
+    let visitSourceItem () =
+        if canCountSource () then
+            visitedSourceItems <- visitedSourceItems + 1
+    let addSourceParagraph () =
+        if canCountSource () then
+            sourceParagraphCount <- sourceParagraphCount + 1
+    let sourceParagraphCountResult () =
+        if visitedSourceItems > maxVisitedSourceItems
+           || sourceStructureOverwhelmsParagraphs paragraphLookupCacheMaxTotalSourceParagraphs sourceParagraphCount visitedSourceItems then
+            paragraphLookupCacheMaxTotalSourceParagraphs + 1
+        else
+            min sourceParagraphCount (paragraphLookupCacheMaxTotalSourceParagraphs + 1)
+    for block in doc.Blocks do
+        visitSourceItem ()
+        addBlockParagraphLookups paragraphs visitSourceItem addSourceParagraph block
+    let struct (sourceParagraphCount, sourceTextCharCount) =
+        match tryParagraphLookupSourceMetricsFromBlockLookup doc.Blocks with
+        | ValueSome metrics -> metrics
+        | ValueNone ->
+            let sourceParagraphCount =
+                if paragraphs.Count > paragraphLookupCacheMaxTotalEntries then
+                    paragraphLookupCacheMaxTotalSourceParagraphs + 1
+                else
+                    sourceParagraphCountResult ()
+            let sourceTextCharCount =
+                paragraphLookupSourceTextCharCountFor paragraphs.Count sourceParagraphCount doc.Blocks
+            struct (sourceParagraphCount, sourceTextCharCount)
+    let paragraphFastSlots = Array.zeroCreate<ParagraphLookupEntry> (lookupEntryFastSlotSize paragraphs.Count)
+    for entry in paragraphs.Values do
+        setParagraphLookupEntryFastSlot paragraphFastSlots entry
+    let cached = {
+        CachedBlocks = doc.Blocks
+        EntryCount = paragraphs.Count
+        SourceParagraphCount = sourceParagraphCount
+        SourceTextCharCount = sourceTextCharCount
+        Paragraphs = paragraphs
+        ParagraphFastSlots = paragraphFastSlots
+    }
+    rememberParagraphLookup cached
+    cached
+
 let private paragraphLookup (doc: Document) =
-    let build () =
-        let paragraphs = Dictionary<BlockId, ParagraphBlock>()
-        let mutable sourceParagraphCount = 0
-        let mutable visitedSourceItems = 0
-        let maxVisitedSourceItems = sourceStructureVisitedItemLimit paragraphLookupCacheMaxTotalSourceParagraphs
-        let canCountSource () =
-            sourceParagraphCount <= paragraphLookupCacheMaxTotalSourceParagraphs
-            && visitedSourceItems <= maxVisitedSourceItems
-        let visitSourceItem () =
-            if canCountSource () then
-                visitedSourceItems <- visitedSourceItems + 1
-        let addSourceParagraph () =
-            if canCountSource () then
-                sourceParagraphCount <- sourceParagraphCount + 1
-        let sourceParagraphCountResult () =
-            if visitedSourceItems > maxVisitedSourceItems
-               || sourceStructureOverwhelmsParagraphs paragraphLookupCacheMaxTotalSourceParagraphs sourceParagraphCount visitedSourceItems then
-                paragraphLookupCacheMaxTotalSourceParagraphs + 1
-            else
-                min sourceParagraphCount (paragraphLookupCacheMaxTotalSourceParagraphs + 1)
-        for block in doc.Blocks do
-            visitSourceItem ()
-            addBlockParagraphLookups paragraphs visitSourceItem addSourceParagraph block
-        let struct (sourceParagraphCount, sourceTextCharCount) =
-            match tryParagraphLookupSourceMetricsFromBlockLookup doc.Blocks with
-            | ValueSome metrics -> metrics
-            | ValueNone ->
-                let sourceParagraphCount =
-                    if paragraphs.Count > paragraphLookupCacheMaxTotalEntries then
-                        paragraphLookupCacheMaxTotalSourceParagraphs + 1
-                    else
-                        sourceParagraphCountResult ()
-                let sourceTextCharCount =
-                    paragraphLookupSourceTextCharCountFor paragraphs.Count sourceParagraphCount doc.Blocks
-                struct (sourceParagraphCount, sourceTextCharCount)
-        let paragraphFastSlots = Array.zeroCreate<ParagraphBlock> (lookupEntryFastSlotSize paragraphs.Count)
-        for paragraph in paragraphs.Values do
-            setParagraphLookupEntryFastSlot paragraphFastSlots paragraph
-        let cached = {
-            CachedBlocks = doc.Blocks
-            EntryCount = paragraphs.Count
-            SourceParagraphCount = sourceParagraphCount
-            SourceTextCharCount = sourceTextCharCount
-            Paragraphs = paragraphs
-            ParagraphFastSlots = paragraphFastSlots
-        }
-        rememberParagraphLookup cached
-        cached
     match tryGetParagraphLookup doc.Blocks with
     | ValueSome cached -> cached
-    | ValueNone -> build ()
+    | ValueNone -> buildParagraphLookup doc
 
 /// Find an editable paragraph anywhere in the document, including table cells.
 let private findParagraphFromParagraphLookup (doc: Document) paragraphId =
     let lookup = paragraphLookup doc
     let fast = lookup.ParagraphFastSlots.[paragraphLookupEntryFastSlot lookup.ParagraphFastSlots paragraphId]
     if not (obj.ReferenceEquals(fast, null))
-       && obj.ReferenceEquals(fast.Id, paragraphId) then
-        Some fast
+       && obj.ReferenceEquals(fast.Paragraph.Id, paragraphId) then
+        fast.Result
     else
-        let mutable paragraph = Unchecked.defaultof<ParagraphBlock>
-        if lookup.Paragraphs.TryGetValue(paragraphId, &paragraph) then
-            if obj.ReferenceEquals(paragraph.Id, paragraphId) then
-                setParagraphLookupEntryFastSlot lookup.ParagraphFastSlots paragraph
-            Some paragraph
+        let mutable entry = Unchecked.defaultof<ParagraphLookupEntry>
+        if lookup.Paragraphs.TryGetValue(paragraphId, &entry) then
+            if obj.ReferenceEquals(entry.Paragraph.Id, paragraphId) then
+                setParagraphLookupEntryFastSlot lookup.ParagraphFastSlots entry
+            entry.Result
         else
             None
 
@@ -4599,7 +4611,7 @@ let private tryGetTableCellParagraphInRow colIndex (row: TableRow) =
 let findBlockIndex doc blockId =
     let lookup = blockLookup doc.Blocks
     match tryFindBlockLookupEntry lookup blockId with
-    | ValueSome entry -> Some entry.TopIndex
+    | ValueSome entry -> entry.TopIndexResult
     | ValueNone -> None
 
 type private NormalizedRangeCacheKey = {
@@ -5665,11 +5677,7 @@ let private findCursorParagraph doc blockId =
         match tryGetBlockLookup doc.Blocks with
         | ValueSome cached ->
             match tryFindBlockLookupEntry cached blockId with
-            | ValueSome entry ->
-                match entry.TopBlock with
-                | Paragraph p when p.Id = blockId -> Some p
-                | Heading (_, p) when p.Id = blockId -> Some p
-                | _ -> None
+            | ValueSome entry -> entry.TopParagraphResult
             | ValueNone -> None
         | ValueNone -> None
     let tryCachedParagraphLookup () =
@@ -5677,22 +5685,24 @@ let private findCursorParagraph doc blockId =
         | ValueSome cached ->
             let fast = cached.ParagraphFastSlots.[paragraphLookupEntryFastSlot cached.ParagraphFastSlots blockId]
             if not (obj.ReferenceEquals(fast, null))
-               && obj.ReferenceEquals(fast.Id, blockId) then
-                Some fast
+               && obj.ReferenceEquals(fast.Paragraph.Id, blockId) then
+                fast.Result
             else
-                let mutable paragraph = Unchecked.defaultof<ParagraphBlock>
-                if cached.Paragraphs.TryGetValue(blockId, &paragraph) then
-                    if obj.ReferenceEquals(paragraph.Id, blockId) then
-                        setParagraphLookupEntryFastSlot cached.ParagraphFastSlots paragraph
-                    Some paragraph
+                let mutable entry = Unchecked.defaultof<ParagraphLookupEntry>
+                if cached.Paragraphs.TryGetValue(blockId, &entry) then
+                    if obj.ReferenceEquals(entry.Paragraph.Id, blockId) then
+                        setParagraphLookupEntryFastSlot cached.ParagraphFastSlots entry
+                    entry.Result
                 else
                     None
         | ValueNone -> None
-    match tryCachedBlockLookup () with
-    | Some para -> Some para
+    let cachedBlock = tryCachedBlockLookup ()
+    match cachedBlock with
+    | Some _ -> cachedBlock
     | None ->
-        match tryCachedParagraphLookup () with
-        | Some para -> Some para
+        let cachedParagraph = tryCachedParagraphLookup ()
+        match cachedParagraph with
+        | Some _ -> cachedParagraph
         | None -> tryFindEditableParagraphUntil doc blockId
 
 let private tryFindCursorParagraphLength doc blockId =

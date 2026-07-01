@@ -1145,6 +1145,7 @@ Doc.findBlock blockLookupDoc blockLookupIds.[0] |> ignore
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()
+let blockLookupAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
 let blockLookupSw = System.Diagnostics.Stopwatch.StartNew()
 let mutable blockLookupHits = 0
 for _pass in 1 .. 2000 do
@@ -1153,9 +1154,30 @@ for _pass in 1 .. 2000 do
         | Some _ -> blockLookupHits <- blockLookupHits + 1
         | None -> ()
 blockLookupSw.Stop()
+let blockLookupAllocated = System.GC.GetAllocatedBytesForCurrentThread() - blockLookupAllocatedBefore
 check "native block lookup long id perf"
     (blockLookupSw.Elapsed.TotalMilliseconds < 400.0
+     && blockLookupAllocated < 2L * 1024L * 1024L
      && blockLookupHits = 1024000)
+    true
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let blockLookupIndexAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let blockLookupIndexSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable blockLookupIndexHits = 0
+for _pass in 1 .. 2000 do
+    for blockId in blockLookupIds do
+        match Doc.findBlockIndex blockLookupDoc blockId with
+        | Some _ -> blockLookupIndexHits <- blockLookupIndexHits + 1
+        | None -> ()
+blockLookupIndexSw.Stop()
+let blockLookupIndexAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - blockLookupIndexAllocatedBefore
+check "native block index lookup long id perf"
+    (blockLookupIndexSw.Elapsed.TotalMilliseconds < 400.0
+     && blockLookupIndexAllocated < 2L * 1024L * 1024L
+     && blockLookupIndexHits = 1024000)
     true
 
 let paragraphLookupIdPrefix = System.String('p', 5000)
@@ -1170,6 +1192,7 @@ Doc.findParagraph paragraphLookupDoc paragraphLookupIds.[0] |> ignore
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()
+let paragraphLookupAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
 let paragraphLookupSw = System.Diagnostics.Stopwatch.StartNew()
 let mutable paragraphLookupHits = 0
 for _pass in 1 .. 2000 do
@@ -1178,8 +1201,11 @@ for _pass in 1 .. 2000 do
         | Some _ -> paragraphLookupHits <- paragraphLookupHits + 1
         | None -> ()
 paragraphLookupSw.Stop()
+let paragraphLookupAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - paragraphLookupAllocatedBefore
 check "native paragraph lookup long id perf"
     (paragraphLookupSw.Elapsed.TotalMilliseconds < 500.0
+     && paragraphLookupAllocated < 2L * 1024L * 1024L
      && paragraphLookupHits = 1024000)
     true
 
