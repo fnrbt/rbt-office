@@ -1672,6 +1672,37 @@ check "native block lookup cloned long id cache"
      && clonedBlockLookupAllocated < 512L * 1024L
      && clonedBlockLookupHits = 768000)
     true
+
+let blockLookupSourceCycleDocs =
+    [| for docIndex in 0 .. 64 ->
+        let ids = [| for index in 0 .. 499 -> sprintf "native-block-source-cycle-%02d-%04d" docIndex index |]
+        { Doc.empty with
+            Blocks = [ for blockId in ids -> Doc.Paragraph (para blockId "alpha beta gamma delta") ] },
+        ids.[ids.Length - 1] |]
+
+for doc, target in blockLookupSourceCycleDocs do
+    Doc.findBlock doc target |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let blockLookupSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let blockLookupSourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable blockLookupSourceCycleHits = 0
+for _pass in 1 .. 100 do
+    for doc, target in blockLookupSourceCycleDocs do
+        match Doc.findBlock doc target with
+        | Some _ -> blockLookupSourceCycleHits <- blockLookupSourceCycleHits + 1
+        | None -> ()
+blockLookupSourceCycleSw.Stop()
+let blockLookupSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - blockLookupSourceCycleAllocatedBefore
+check "native block lookup source cycle"
+    (blockLookupSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && blockLookupSourceCycleAllocated < 512L * 1024L
+     && blockLookupSourceCycleHits = blockLookupSourceCycleDocs.Length * 100)
+    true
 let cursorBoundaryDownDoc =
     { blockLookupDoc with
         Selection =
@@ -1976,6 +2007,37 @@ check "native paragraph lookup cloned long id cache"
     (clonedParagraphLookupSw.Elapsed.TotalMilliseconds < 340.0
      && clonedParagraphLookupAllocated < 512L * 1024L
      && clonedParagraphLookupHits = 384000)
+    true
+
+let paragraphLookupSourceCycleDocs =
+    [| for docIndex in 0 .. 64 ->
+        let ids = [| for index in 0 .. 499 -> sprintf "native-paragraph-source-cycle-%02d-%04d" docIndex index |]
+        { Doc.empty with
+            Blocks = [ for paragraphId in ids -> Doc.Paragraph (para paragraphId "alpha beta gamma delta") ] },
+        ids.[ids.Length - 1] |]
+
+for doc, target in paragraphLookupSourceCycleDocs do
+    Doc.findParagraph doc target |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let paragraphLookupSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let paragraphLookupSourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable paragraphLookupSourceCycleHits = 0
+for _pass in 1 .. 100 do
+    for doc, target in paragraphLookupSourceCycleDocs do
+        match Doc.findParagraph doc target with
+        | Some _ -> paragraphLookupSourceCycleHits <- paragraphLookupSourceCycleHits + 1
+        | None -> ()
+paragraphLookupSourceCycleSw.Stop()
+let paragraphLookupSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - paragraphLookupSourceCycleAllocatedBefore
+check "native paragraph lookup source cycle"
+    (paragraphLookupSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && paragraphLookupSourceCycleAllocated < 512L * 1024L
+     && paragraphLookupSourceCycleHits = paragraphLookupSourceCycleDocs.Length * 100)
     true
 
 let normalizedRangeLookupIdPrefix = System.String('r', 5000)
