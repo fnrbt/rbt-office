@@ -1919,6 +1919,35 @@ else
          && idMetricHits = 272000)
         true
 
+    let idMetricCycleDocs =
+        [| for index in 0 .. 79 -> idMetricDoc (200 + index) |]
+    for doc in idMetricCycleDocs do
+        documentBookmarkIdMetrics.Invoke(null, [| box doc |]) |> ignore
+        documentRevisionIdMetrics.Invoke(null, [| box doc |]) |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let idMetricCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let idMetricCycleSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable idMetricCycleHits = 0
+    for _pass in 1 .. 500 do
+        for doc in idMetricCycleDocs do
+            if not (isNull (documentBookmarkIdMetrics.Invoke(null, [| box doc |]))) then
+                idMetricCycleHits <- idMetricCycleHits + 1
+            if not (isNull (documentRevisionIdMetrics.Invoke(null, [| box doc |]))) then
+                idMetricCycleHits <- idMetricCycleHits + 1
+    idMetricCycleSw.Stop()
+    let idMetricCycleAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - idMetricCycleAllocatedBefore
+
+    check "native id metrics cache document cycle"
+        (idMetricCycleSw.Elapsed.TotalMilliseconds < 120.0
+         && idMetricCycleAllocated < 12L * 1024L * 1024L
+         && idMetricCycleHits = 80000)
+        true
+
 let dateFieldParagraphCount = 50000
 let dateFieldBuffer =
     TB.ofString "old"

@@ -6504,7 +6504,7 @@ let mutable private bookmarkIdMetricsCache: BookmarkIdMetricsCache list = []
 let private bookmarkIdMetricsCacheByBlocks =
     Dictionary<Block list, BookmarkIdMetricsCache>(documentInfoBlocksComparer)
 let private bookmarkIdMetricsFastSlots = Array.zeroCreate<BookmarkIdMetricsCache> 256
-let private bookmarkIdMetricsCacheMaxEntries = 64
+let private bookmarkIdMetricsCacheMaxEntries = 256
 let private bookmarkIdMetricsCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private bookmarkIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
@@ -6652,7 +6652,7 @@ let mutable private revisionIdMetricsCache: RevisionIdMetricsCache list = []
 let private revisionIdMetricsCacheByBlocks =
     Dictionary<Block list, RevisionIdMetricsCache>(documentInfoBlocksComparer)
 let private revisionIdMetricsFastSlots = Array.zeroCreate<RevisionIdMetricsCache> 256
-let private revisionIdMetricsCacheMaxEntries = 64
+let private revisionIdMetricsCacheMaxEntries = 256
 let private revisionIdMetricsCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private revisionIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
