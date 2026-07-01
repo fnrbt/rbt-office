@@ -352,6 +352,44 @@ check "native viewport geometry cache hot hits"
      && geometryHotHitTotal = (firstVisibleCells.Length + firstHeaders.Length) * 50000)
     true
 
+let geometrySourceCycleCount = 80
+let geometrySourceCycleRows = 200
+let geometrySourceCycleCols = 10
+let geometrySourceCycleModels =
+    [| for sourceIndex in 0 .. geometrySourceCycleCount - 1 ->
+        let cells =
+            [ for row in 0 .. geometrySourceCycleRows - 1 do
+                for col in 0 .. geometrySourceCycleCols - 1 do
+                    { Row = row; Col = col },
+                    cell (CellValue.String (sprintf "S%02dR%03dC%02d" sourceIndex row col)) ]
+            |> Map.ofList
+        { createEmpty geometrySourceCycleRows geometrySourceCycleCols with Cells = cells } |]
+for model in geometrySourceCycleModels do
+    RedBat.Spreadsheet.Layout.visibleCells model paintCacheViewport |> ignore
+    RedBat.Spreadsheet.Layout.headers model paintCacheViewport |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let geometrySourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let geometrySourceCycleSw = Stopwatch.StartNew()
+let mutable geometrySourceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for model in geometrySourceCycleModels do
+        geometrySourceCycleTotal <-
+            geometrySourceCycleTotal
+            + (RedBat.Spreadsheet.Layout.visibleCells model paintCacheViewport).Length
+            + (RedBat.Spreadsheet.Layout.headers model paintCacheViewport).Length
+geometrySourceCycleSw.Stop()
+let geometrySourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - geometrySourceCycleAllocatedBefore
+check "native viewport geometry source cycle"
+    (geometrySourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && geometrySourceCycleAllocated < 512L * 1024L
+     && geometrySourceCycleTotal = 400000)
+    true
+
 let prefixCoordinateRows = 10000
 let prefixCoordinateModel =
     { createEmpty 120000 120000 with
