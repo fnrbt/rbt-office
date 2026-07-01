@@ -339,6 +339,43 @@ check "native ordered paragraph source cycle"
      && orderedParagraphCycleTotal > 0)
     true
 
+let contentInfoCycleDocs =
+    [| for docIndex in 0 .. 64 ->
+        { Doc.empty with
+            Blocks =
+                [ for index in 0 .. 499 ->
+                    Doc.Paragraph {
+                        Id = sprintf "native-content-info-source-cycle-%02d-%04d" docIndex index
+                        Buffer = TB.ofString "plain content control text"
+                        Metadata =
+                            { Doc.defaultMetadata with
+                                ContentControlId = Some (sprintf "control-%02d-%04d" docIndex index)
+                                ContentControlTag = Some "tag"
+                                ContentControlAlias = Some "alias" }
+                    } ] } |]
+
+for doc in contentInfoCycleDocs do
+    Doc.contentControlInfos doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let contentInfoCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let contentInfoCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable contentInfoCycleTotal = 0
+for _pass in 1 .. 100 do
+    for doc in contentInfoCycleDocs do
+        contentInfoCycleTotal <- contentInfoCycleTotal + (Doc.contentControlInfos doc).Length
+contentInfoCycleSw.Stop()
+let contentInfoCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - contentInfoCycleAllocatedBefore
+check "native content info source cycle"
+    (contentInfoCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && contentInfoCycleAllocated < 512L * 1024L
+     && contentInfoCycleTotal = contentInfoCycleDocs.Length * 100 * 500)
+    true
+
 let styleContextCycleDocCount = 80
 let styleContextCycleStyleCount = 160
 let styleContextCycleDocs =
