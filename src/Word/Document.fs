@@ -4610,10 +4610,8 @@ type private NormalizedRangeCacheKey = {
 }
 
 type private NormalizedRangeCacheEntry = {
-    StartPos: Position
-    EndPos: Position
-    BlockIds: BlockId list
     BlockIdCount: int
+    Result: Position * Position * BlockId list
 }
 
 type private NormalizedRangeFastEntry = {
@@ -4640,17 +4638,35 @@ let private normalizedRangeCacheMaxTotalBlockIds = 200000
 let private normalizedRangeCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private normalizedRangeCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
+let private normalizedRangeKeyHash anchorBlockId anchorOffset focusBlockId focusOffset =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(anchorBlockId)
+    hashCode <- (hashCode * 397) ^^^ anchorOffset
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(focusBlockId)
+    hashCode <- (hashCode * 397) ^^^ focusOffset
+    hashCode ^^^ (hashCode >>> 16)
+
+let private normalizedRangeCacheKeyComparer =
+    { new IEqualityComparer<NormalizedRangeCacheKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.AnchorBlockId, right.AnchorBlockId)
+            && left.AnchorOffset = right.AnchorOffset
+            && obj.ReferenceEquals(left.FocusBlockId, right.FocusBlockId)
+            && left.FocusOffset = right.FocusOffset
+
+        member _.GetHashCode(key) =
+            normalizedRangeKeyHash
+                key.AnchorBlockId
+                key.AnchorOffset
+                key.FocusBlockId
+                key.FocusOffset }
+
 let private normalizedRangeEntryFastSlot
     (slots: NormalizedRangeFastEntry array)
     anchorBlockId
     anchorOffset
     focusBlockId
     focusOffset =
-    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(anchorBlockId)
-    hashCode <- (hashCode * 397) ^^^ anchorOffset
-    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(focusBlockId)
-    hashCode <- (hashCode * 397) ^^^ focusOffset
-    hashCode &&& (slots.Length - 1)
+    normalizedRangeKeyHash anchorBlockId anchorOffset focusBlockId focusOffset &&& (slots.Length - 1)
 
 let private clearNormalizedRangeEntryFastSlots (slots: NormalizedRangeFastEntry array) =
     for index = 0 to slots.Length - 1 do
@@ -4836,28 +4852,33 @@ let private cachedNormalizedRange doc sel =
     | ValueSome cached when normalizedRangeCacheRetainable cached ->
         match tryGetNormalizedRangeEntryFastSlot cached sel with
         | ValueSome entry ->
-            Some (entry.StartPos, entry.EndPos, entry.BlockIds)
+            ValueSome entry.Result
         | ValueNone ->
             let key = normalizedRangeKey sel
             let mutable entry = Unchecked.defaultof<NormalizedRangeCacheEntry>
             if cached.Entries.TryGetValue(key, &entry) then
                 if normalizedRangeKeyMatchesSelection sel key then
                     setNormalizedRangeEntryFastSlot cached key entry
-                Some (entry.StartPos, entry.EndPos, entry.BlockIds)
+                ValueSome entry.Result
             else
-                None
+                ValueNone
     | ValueSome cached ->
         rememberNormalizedRangeCache cached
-        None
-    | ValueNone -> None
+        ValueNone
+    | ValueNone -> ValueNone
 
-let private rememberNormalizedRange doc sel startPos endPos blockIds =
+let private rememberNormalizedRange
+    (doc: Document)
+    sel
+    (startPos: Position)
+    (endPos: Position)
+    (blockIds: BlockId list)
+    =
     let key = normalizedRangeKey sel
-    let entry = {
-        StartPos = startPos
-        EndPos = endPos
-        BlockIds = blockIds
+    let result: Position * Position * BlockId list = (startPos, endPos, blockIds)
+    let entry: NormalizedRangeCacheEntry = {
         BlockIdCount = blockIds.Length
+        Result = result
     }
     let cache =
         match tryGetNormalizedRangeCache doc.Blocks with
@@ -4868,7 +4889,7 @@ let private rememberNormalizedRange doc sel startPos endPos blockIds =
                 SourceBlocks = doc.Blocks
                 SourceParagraphCount = sourceParagraphCount
                 SourceTextCharCount = normalizedRangeSourceTextCharCountFor entry.BlockIdCount sourceParagraphCount doc.Blocks
-                Entries = Dictionary<NormalizedRangeCacheKey, NormalizedRangeCacheEntry>()
+                Entries = Dictionary<NormalizedRangeCacheKey, NormalizedRangeCacheEntry>(normalizedRangeCacheKeyComparer)
                 Order = Queue<NormalizedRangeCacheKey>()
                 EntryFastSlots = Array.zeroCreate<NormalizedRangeFastEntry> 2048
                 TotalBlockIds = 0
@@ -4879,8 +4900,8 @@ let private rememberNormalizedRange doc sel startPos endPos blockIds =
 /// Get normalized range with block IDs for multi-block selection
 let getNormalizedRange (sel: Selection) (doc: Document) =
     match cachedNormalizedRange doc sel with
-    | Some cached -> cached
-    | None ->
+    | ValueSome cached -> cached
+    | ValueNone ->
         let result =
             let ordered = orderedEditableParagraphs doc
             let mutable anchorIndex = 0

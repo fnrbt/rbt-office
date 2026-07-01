@@ -1200,6 +1200,7 @@ for selection in normalizedRangeLookupSelections do
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()
+let normalizedRangeLookupAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
 let normalizedRangeLookupSw = System.Diagnostics.Stopwatch.StartNew()
 let mutable normalizedRangeLookupTotal = 0
 for _pass in 1 .. 10000 do
@@ -1207,8 +1208,11 @@ for _pass in 1 .. 10000 do
         let startPos, endPos, blockIds = Doc.getNormalizedRange selection normalizedRangeLookupDoc
         normalizedRangeLookupTotal <- normalizedRangeLookupTotal + startPos.Offset + endPos.Offset + blockIds.Length
 normalizedRangeLookupSw.Stop()
+let normalizedRangeLookupAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - normalizedRangeLookupAllocatedBefore
 check "native normalized range long id perf"
     (normalizedRangeLookupSw.Elapsed.TotalMilliseconds < 2600.0
+     && normalizedRangeLookupAllocated < 30L * 1024L * 1024L
      && normalizedRangeLookupTotal = 2560000)
     true
 
