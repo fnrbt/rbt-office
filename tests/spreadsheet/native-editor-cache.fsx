@@ -860,6 +860,41 @@ check "native search empty query cycle cache"
      && searchEmptyCycleTotal = 0)
     true
 
+let searchSourceCycleCount = 80
+let searchSourceCycleRows = 3000
+let searchSourceCycleQuery = "missing-needle"
+let searchSourceCycleModels =
+    [| for sourceIndex in 0 .. searchSourceCycleCount - 1 ->
+        let cells =
+            [ for row in 0 .. searchSourceCycleRows - 1 ->
+                { Row = row; Col = sourceIndex % 4 },
+                cell (CellValue.String (sprintf "value-%04d-%04d" sourceIndex row)) ]
+            |> Map.ofList
+        { createEmpty searchSourceCycleRows 4 with Cells = cells } |]
+
+for model in searchSourceCycleModels do
+    searchCells searchSourceCycleQuery false model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let searchSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let searchSourceCycleSw = Stopwatch.StartNew()
+let mutable searchSourceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for model in searchSourceCycleModels do
+        searchSourceCycleTotal <-
+            searchSourceCycleTotal + (searchCells searchSourceCycleQuery false model).Length
+searchSourceCycleSw.Stop()
+let searchSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - searchSourceCycleAllocatedBefore
+check "native search source cycle cache"
+    (searchSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && searchSourceCycleAllocated < 512L * 1024L
+     && searchSourceCycleTotal = 0)
+    true
+
 let uniqueValuesCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "red")
       { Row = 1; Col = 0 }, cell (CellValue.String "blue")
