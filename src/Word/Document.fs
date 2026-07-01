@@ -1926,6 +1926,7 @@ let setPlainTextContent (text: string) doc =
         plainTextDocument text
 
 type private BlockLookupEntry = {
+    BlockId: BlockId
     TopBlock: Block
     TopIndex: int
     TopBlockResult: Block option
@@ -1938,13 +1939,14 @@ let private getBlockId = function
     | Table t -> t.Id
     | TextBox t -> t.Id
 
-let private blockLookupEntry block index =
+let private blockLookupEntry blockId block index =
     let paragraph =
         match block with
         | Paragraph paragraph
         | Heading (_, paragraph) -> Some paragraph
         | _ -> None
-    { TopBlock = block
+    { BlockId = blockId
+      TopBlock = block
       TopIndex = index
       TopBlockResult = Some block
       TopParagraphResult = paragraph }
@@ -1956,6 +1958,7 @@ type private BlockLookupCache = {
     SourceParagraphCount: int
     SourceTextCharCount: int
     EntriesById: Dictionary<BlockId, BlockLookupEntry>
+    EntryFastSlots: BlockLookupEntry array
     TopBlocks: Block array
     mutable LastEntrySet: bool
     mutable LastEntryId: BlockId
@@ -1973,6 +1976,12 @@ let private blockLookupCacheMaxEntries = 64
 let private blockLookupCacheMaxTotalEntries = 200000
 let private blockLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private blockLookupCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private blockLookupEntryFastSlot (slots: BlockLookupEntry array) (blockId: BlockId) =
+    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blockId) &&& (slots.Length - 1)
+
+let private setBlockLookupEntryFastSlot (slots: BlockLookupEntry array) (entry: BlockLookupEntry) =
+    slots.[blockLookupEntryFastSlot slots entry.BlockId] <- entry
 
 let private blockLookupCacheMatches blocks (cached: BlockLookupCache) =
     obj.ReferenceEquals(cached.CachedBlocks, blocks)
@@ -2020,14 +2029,24 @@ let private tryFindBlockLookupEntry (lookup: BlockLookupCache) blockId =
     if lookup.LastEntrySet && lookup.LastEntryId = blockId then
         ValueSome lookup.LastEntry
     else
-        let mutable entry = Unchecked.defaultof<BlockLookupEntry>
-        if lookup.EntriesById.TryGetValue(blockId, &entry) then
+        let fast = lookup.EntryFastSlots.[blockLookupEntryFastSlot lookup.EntryFastSlots blockId]
+        if not (obj.ReferenceEquals(fast, null))
+           && obj.ReferenceEquals(fast.BlockId, blockId) then
             lookup.LastEntrySet <- true
             lookup.LastEntryId <- blockId
-            lookup.LastEntry <- entry
-            ValueSome entry
+            lookup.LastEntry <- fast
+            ValueSome fast
         else
-            ValueNone
+            let mutable entry = Unchecked.defaultof<BlockLookupEntry>
+            if lookup.EntriesById.TryGetValue(blockId, &entry) then
+                if obj.ReferenceEquals(entry.BlockId, blockId) then
+                    setBlockLookupEntryFastSlot lookup.EntryFastSlots entry
+                lookup.LastEntrySet <- true
+                lookup.LastEntryId <- blockId
+                lookup.LastEntry <- entry
+                ValueSome entry
+            else
+                ValueNone
 
 let private blockLookupSourceParagraphCountFor entryCount blocks =
     if entryCount > blockLookupCacheMaxTotalEntries then
@@ -2083,13 +2102,16 @@ let private rememberBlockLookup cached =
 let private blockLookup blocks =
     let build () =
         let entriesById = Dictionary<BlockId, BlockLookupEntry>()
+        let entryFastSlots = Array.zeroCreate<BlockLookupEntry> 2048
         let topBlocks = ResizeArray<Block>()
         let mutable index = 0
         for block in blocks do
             topBlocks.Add block
             let blockId = getBlockId block
             if not (entriesById.ContainsKey blockId) then
-                entriesById.[blockId] <- blockLookupEntry block index
+                let entry = blockLookupEntry blockId block index
+                entriesById.[blockId] <- entry
+                setBlockLookupEntryFastSlot entryFastSlots entry
             index <- index + 1
         let sourceParagraphCount = blockLookupSourceParagraphCountFor entriesById.Count blocks
         let cached = {
@@ -2098,6 +2120,7 @@ let private blockLookup blocks =
             SourceParagraphCount = sourceParagraphCount
             SourceTextCharCount = blockLookupSourceTextCharCountFor entriesById.Count sourceParagraphCount blocks
             EntriesById = entriesById
+            EntryFastSlots = entryFastSlots
             TopBlocks = topBlocks.ToArray()
             LastEntrySet = false
             LastEntryId = ""

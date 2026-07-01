@@ -819,6 +819,31 @@ check "native remove bookmark alloc"
      && bookmarkAllocated < 20L * 1024L * 1024L)
     true
 
+let blockLookupIdPrefix = System.String('b', 5000)
+let blockLookupIds =
+    [| for index in 0 .. 511 -> blockLookupIdPrefix + sprintf "%04d" index |]
+let blockLookupDoc =
+    { Doc.empty with
+        Blocks =
+            [ for blockId in blockLookupIds ->
+                Doc.Paragraph (para blockId "lookup text") ] }
+Doc.findBlock blockLookupDoc blockLookupIds.[0] |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let blockLookupSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable blockLookupHits = 0
+for _pass in 1 .. 2000 do
+    for blockId in blockLookupIds do
+        match Doc.findBlock blockLookupDoc blockId with
+        | Some _ -> blockLookupHits <- blockLookupHits + 1
+        | None -> ()
+blockLookupSw.Stop()
+check "native block lookup long id perf"
+    (blockLookupSw.Elapsed.TotalMilliseconds < 950.0
+     && blockLookupHits = 1024000)
+    true
+
 if isNull documentCaptionIdMetrics || isNull documentBookmarkIdMetrics || isNull documentRevisionIdMetrics then
     fail <- fail + 1
     printfn "FAIL %-34s expected private document id metrics helpers" "native id metrics reflection"
