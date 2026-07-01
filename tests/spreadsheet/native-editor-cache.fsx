@@ -1529,6 +1529,43 @@ check "native paste identity cache reuses"
     (obj.ReferenceEquals(pasteIdentityFirst, pasteIdentitySecond))
     true
 
+let pasteIdentityCycleCount = 80
+let pasteIdentityCycleRows = 2000
+let pasteIdentityCycleModels =
+    [| for sourceIndex in 0 .. pasteIdentityCycleCount - 1 ->
+        let targetCol = sourceIndex % 4
+        let cells =
+            [ for row in 0 .. pasteIdentityCycleRows - 1 ->
+                { Row = row; Col = targetCol },
+                cell (CellValue.String (sprintf "same-%04d-%04d" sourceIndex row)) ]
+            |> Map.ofList
+        let model = { createEmpty pasteIdentityCycleRows 4 with Cells = cells }
+        let clipboard = serializeSelection (SingleCell (0, targetCol)) model false
+        model, clipboard, targetCol |]
+
+for model, clipboard, targetCol in pasteIdentityCycleModels do
+    pasteClipboard { Row = 0; Col = targetCol } clipboard model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let pasteIdentityCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let pasteIdentityCycleSw = Stopwatch.StartNew()
+let mutable pasteIdentityCycleSame = 0
+for _pass in 1 .. 20 do
+    for model, clipboard, targetCol in pasteIdentityCycleModels do
+        if obj.ReferenceEquals(pasteClipboard { Row = 0; Col = targetCol } clipboard model, model) then
+            pasteIdentityCycleSame <- pasteIdentityCycleSame + 1
+pasteIdentityCycleSw.Stop()
+let pasteIdentityCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - pasteIdentityCycleAllocatedBefore
+check "native paste identity source cycle"
+    (pasteIdentityCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && pasteIdentityCycleAllocated < 512L * 1024L
+     && pasteIdentityCycleSame = 1600)
+    true
+
 if isNull setFocus || isNull extendFocus || isNull startEditing || isNull commitEdit then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor helpers" "native editor reflection"
