@@ -9,6 +9,7 @@ open System.Collections.Generic
 open Renderer
 
 module Doc = RedBat.Word.Document
+module Layout = RedBat.Word.Layout
 module Paint = RedBat.Word.Paint
 module TB = RedBat.Word.TextBuffer
 
@@ -224,6 +225,93 @@ rendererCommandsSw.Stop()
 check "native renderer command cache perf"
     (rendererCommandsSw.Elapsed.TotalMilliseconds < 20.0
      && rendererCommandTotal = rendererCommandsA.Length * 10)
+    true
+
+let documentPaintSettings : Layout.LayoutSettings =
+    { Width = 240.0
+      PageHeight = 1000.0
+      FontSize = 16.0
+      LineHeight = 24.0
+      PaddingLeft = 0.0
+      PaddingTop = 0.0
+      MarginRight = 0.0
+      MarginBottom = 0.0
+      InTableCell = false
+      TableContinuationHeaderHeight = 0.0
+      LongTrailingSpaceFitSafety = 0.25 }
+let documentPaintMeasureText (text: string) _style =
+    float text.Length * 7.0
+let documentPaintLine : Layout.MeasuredLine =
+    { Segments = [ Layout.TextSegment ("abcdef", TB.defaultStyle, 0.0, 42.0, 0) ]
+      Y = 0.0
+      Width = 42.0
+      Height = 24.0
+      StartOffset = 0
+      EndOffset = 6 }
+let documentPaintLayout : Layout.BlockLayout =
+    { BlockId = "native-document-paint-cache"
+      Lines = [ documentPaintLine ]
+      Y = 0.0
+      Height = documentPaintLine.Height
+      AvailableWidth = 120.0
+      Metadata = Doc.defaultMetadata
+      Prefix = ""
+      PrefixStyle = None
+      PrefixWidth = 0.0
+      Indent = 0.0
+      VAlignOffset = 0.0 }
+let documentPaintLayouts = [ documentPaintLayout ]
+let documentPaintCachedLayouts = Some documentPaintLayouts
+let documentPaintDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (para "native-document-paint-cache" "abcdef") ]
+        Selection = None }
+let documentPaintRangeMeasure = Layout.rangeMeasurerFromTextMeasurer documentPaintMeasureText
+let _, documentPaintCommandsA, _ =
+    Paint.collectDocumentCommandsWithLayouts
+        documentPaintSettings
+        "Calibri"
+        documentPaintMeasureText
+        documentPaintRangeMeasure
+        documentPaintDoc
+        documentPaintCachedLayouts
+let _, documentPaintCommandsB, _ =
+    Paint.collectDocumentCommandsWithLayouts
+        documentPaintSettings
+        "Calibri"
+        documentPaintMeasureText
+        documentPaintRangeMeasure
+        documentPaintDoc
+        documentPaintCachedLayouts
+check "native document paint cache reuse"
+    (obj.ReferenceEquals(documentPaintCommandsA, documentPaintCommandsB))
+    true
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let documentPaintProbeCount = 100000
+let documentPaintAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let documentPaintSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable documentPaintTotal = 0
+for _ in 1 .. documentPaintProbeCount do
+    let _, commands, _ =
+        Paint.collectDocumentCommandsWithLayouts
+            documentPaintSettings
+            "Calibri"
+            documentPaintMeasureText
+            documentPaintRangeMeasure
+            documentPaintDoc
+            documentPaintCachedLayouts
+    documentPaintTotal <- documentPaintTotal + commands.Length
+documentPaintSw.Stop()
+let documentPaintAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - documentPaintAllocatedBefore
+check "native document paint cache hot hit"
+    (documentPaintSw.Elapsed.TotalMilliseconds < 40.0
+     && documentPaintAllocated < 4L * 1024L * 1024L
+     && documentPaintTotal = documentPaintCommandsA.Length * documentPaintProbeCount)
     true
 
 if isNull commandsInViewport then

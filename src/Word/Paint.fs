@@ -2117,12 +2117,18 @@ let private cachedLayoutsHash = function
     | Some layouts -> System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(layouts)
     | None -> 0
 
+let private documentPaintSettingsMatch (left: LayoutSettings) (right: LayoutSettings) =
+    obj.ReferenceEquals(left, right) || left = right
+
+let private documentPaintPageSetupMatch (left: PageSetup) (right: PageSetup) =
+    obj.ReferenceEquals(left, right) || left = right
+
 let private documentPaintCacheEntryMatches settings fontFamily (doc: Document) cachedLayouts (cached: DocumentPaintCommandsCacheEntry) =
-    cached.Settings = settings
+    documentPaintSettingsMatch cached.Settings settings
       && cached.FontFamily = fontFamily
       && obj.ReferenceEquals(cached.Blocks, doc.Blocks)
       && obj.ReferenceEquals(cached.Styles, doc.Styles)
-      && cached.PageSetup = doc.PageSetup
+      && documentPaintPageSetupMatch cached.PageSetup doc.PageSetup
       && obj.ReferenceEquals(cached.Headers, doc.Headers)
       && obj.ReferenceEquals(cached.Footers, doc.Footers)
       && obj.ReferenceEquals(cached.HeaderParts, doc.HeaderParts)
@@ -2130,11 +2136,11 @@ let private documentPaintCacheEntryMatches settings fontFamily (doc: Document) c
       && cachedLayoutsMatch cached.CachedLayouts cachedLayouts
 
 let private documentPaintCacheEntryMatchesKey (key: DocumentPaintCommandsCacheKey) (cached: DocumentPaintCommandsCacheEntry) =
-    cached.Settings = key.Settings
+    documentPaintSettingsMatch cached.Settings key.Settings
       && cached.FontFamily = key.FontFamily
       && obj.ReferenceEquals(cached.Blocks, key.Blocks)
       && obj.ReferenceEquals(cached.Styles, key.Styles)
-      && cached.PageSetup = key.PageSetup
+      && documentPaintPageSetupMatch cached.PageSetup key.PageSetup
       && obj.ReferenceEquals(cached.Headers, key.Headers)
       && obj.ReferenceEquals(cached.Footers, key.Footers)
       && obj.ReferenceEquals(cached.HeaderParts, key.HeaderParts)
@@ -2219,11 +2225,11 @@ let private documentPaintCommandsCacheEntryHash (entry: DocumentPaintCommandsCac
 let private documentPaintCommandsCacheKeyComparer =
     { new IEqualityComparer<DocumentPaintCommandsCacheKey> with
         member _.Equals(left, right) =
-            left.Settings = right.Settings
+            documentPaintSettingsMatch left.Settings right.Settings
             && left.FontFamily = right.FontFamily
             && obj.ReferenceEquals(left.Blocks, right.Blocks)
             && obj.ReferenceEquals(left.Styles, right.Styles)
-            && left.PageSetup = right.PageSetup
+            && documentPaintPageSetupMatch left.PageSetup right.PageSetup
             && obj.ReferenceEquals(left.Headers, right.Headers)
             && obj.ReferenceEquals(left.Footers, right.Footers)
             && obj.ReferenceEquals(left.HeaderParts, right.HeaderParts)
@@ -2235,6 +2241,16 @@ let private documentPaintCommandsCacheKeyComparer =
 let private documentPaintCommandsCacheByKey =
     Dictionary<DocumentPaintCommandsCacheKey, DocumentPaintCommandsCacheEntry>(documentPaintCommandsCacheKeyComparer)
 let private documentPaintCommandsFastSlots = Array.zeroCreate<DocumentPaintCommandsCacheEntry> 256
+let mutable private documentPaintCommandsLastSet = false
+let mutable private documentPaintCommandsLast = Unchecked.defaultof<DocumentPaintCommandsCacheEntry>
+
+let private clearDocumentPaintCommandsLast () =
+    documentPaintCommandsLastSet <- false
+    documentPaintCommandsLast <- Unchecked.defaultof<DocumentPaintCommandsCacheEntry>
+
+let private setDocumentPaintCommandsLast entry =
+    documentPaintCommandsLastSet <- true
+    documentPaintCommandsLast <- entry
 
 let private documentPaintCommandsCacheSlot settings fontFamily (doc: Document) cachedLayouts =
     documentPaintCommandsCacheHash
@@ -2254,27 +2270,44 @@ let private setDocumentPaintCommandsCache entries =
     documentPaintCommandsCache <- entries
     documentPaintCommandsCacheByKey.Clear()
     clearArray documentPaintCommandsFastSlots
+    clearDocumentPaintCommandsLast ()
     for entry in entries do
         let key = documentPaintCommandsEntryKey entry
         documentPaintCommandsCacheByKey.[key] <- entry
+        if not documentPaintCommandsLastSet then
+            setDocumentPaintCommandsLast entry
         let slot = documentPaintCommandsCacheEntryHash entry &&& (documentPaintCommandsFastSlots.Length - 1)
         documentPaintCommandsFastSlots.[slot] <- entry
 
-let private tryGetDocumentPaintCommandsCache settings fontFamily (doc: Document) cachedLayouts =
-    let slot = documentPaintCommandsCacheSlot settings fontFamily doc cachedLayouts
-    let fast = documentPaintCommandsFastSlots.[slot]
-    if not (obj.ReferenceEquals(fast, null))
-       && documentPaintCacheEntryMatches settings fontFamily doc cachedLayouts fast then
-        ValueSome fast.Result
+let private tryGetDocumentPaintCommandsCache
+    settings
+    fontFamily
+    (doc: Document)
+    cachedLayouts
+    (result: byref<BlockLayout list * PaintCommand list * PageInfo list>) =
+    if documentPaintCommandsLastSet
+       && documentPaintCacheEntryMatches settings fontFamily doc cachedLayouts documentPaintCommandsLast then
+        result <- documentPaintCommandsLast.Result
+        true
     else
-        let key = documentPaintCommandsCacheKey settings fontFamily doc cachedLayouts
-        let mutable cached = Unchecked.defaultof<DocumentPaintCommandsCacheEntry>
-        if documentPaintCommandsCacheByKey.TryGetValue(key, &cached)
-           && documentPaintCacheEntryMatchesKey key cached then
-            documentPaintCommandsFastSlots.[slot] <- cached
-            ValueSome cached.Result
+        let slot = documentPaintCommandsCacheSlot settings fontFamily doc cachedLayouts
+        let fast = documentPaintCommandsFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && documentPaintCacheEntryMatches settings fontFamily doc cachedLayouts fast then
+            setDocumentPaintCommandsLast fast
+            result <- fast.Result
+            true
         else
-            ValueNone
+            let key = documentPaintCommandsCacheKey settings fontFamily doc cachedLayouts
+            let mutable cached = Unchecked.defaultof<DocumentPaintCommandsCacheEntry>
+            if documentPaintCommandsCacheByKey.TryGetValue(key, &cached)
+               && documentPaintCacheEntryMatchesKey key cached then
+                documentPaintCommandsFastSlots.[slot] <- cached
+                setDocumentPaintCommandsLast cached
+                result <- cached.Result
+                true
+            else
+                false
 
 let private documentPaintCommandsCacheEntryRetainable (entry: DocumentPaintCommandsCacheEntry) =
     entry.RetainedItemCount <= documentPaintCommandsCacheMaxTotalItems
@@ -3252,14 +3285,29 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
     layouts, resizeArrayToList commands, pages, commandCount
 
 let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
-    match tryGetDocumentPaintCommandsCache settings fontFamily doc cachedLayouts with
-    | ValueSome result -> result
-    | ValueNone ->
-        let layouts, commands, pages, commandCount =
-            collectDocumentCommandsWithLayoutsUncached settings fontFamily measureText measureRange doc cachedLayouts
-        let result = layouts, commands, pages
-        rememberDocumentPaintCommands settings fontFamily doc cachedLayouts commandCount result
-        result
+    let last = documentPaintCommandsLast
+    if documentPaintCommandsLastSet
+       && obj.ReferenceEquals(last.Settings, settings)
+       && obj.ReferenceEquals(last.FontFamily, fontFamily)
+       && obj.ReferenceEquals(last.Blocks, doc.Blocks)
+       && obj.ReferenceEquals(last.Styles, doc.Styles)
+       && obj.ReferenceEquals(last.PageSetup, doc.PageSetup)
+       && obj.ReferenceEquals(last.Headers, doc.Headers)
+       && obj.ReferenceEquals(last.Footers, doc.Footers)
+       && obj.ReferenceEquals(last.HeaderParts, doc.HeaderParts)
+       && obj.ReferenceEquals(last.FooterParts, doc.FooterParts)
+       && cachedLayoutsMatch last.CachedLayouts cachedLayouts then
+        last.Result
+    else
+        let mutable cachedResult = Unchecked.defaultof<BlockLayout list * PaintCommand list * PageInfo list>
+        if tryGetDocumentPaintCommandsCache settings fontFamily doc cachedLayouts &cachedResult then
+            cachedResult
+        else
+            let layouts, commands, pages, commandCount =
+                collectDocumentCommandsWithLayoutsUncached settings fontFamily measureText measureRange doc cachedLayouts
+            let result = layouts, commands, pages
+            rememberDocumentPaintCommands settings fontFamily doc cachedLayouts commandCount result
+            result
 
 let collectDocumentCommands settings fontFamily measureText measureRange doc =
     collectDocumentCommandsWithLayouts settings fontFamily measureText measureRange doc None
