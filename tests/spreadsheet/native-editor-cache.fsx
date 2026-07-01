@@ -895,6 +895,40 @@ check "native search source cycle cache"
      && searchSourceCycleTotal = 0)
     true
 
+let replaceIdentityCycleCount = 80
+let replaceIdentityCycleRows = 3000
+let replaceIdentityCycleModels =
+    [| for sourceIndex in 0 .. replaceIdentityCycleCount - 1 ->
+        let cells =
+            [ for row in 0 .. replaceIdentityCycleRows - 1 ->
+                { Row = row; Col = sourceIndex % 4 },
+                cell (CellValue.String "NEEDLE") ]
+            |> Map.ofList
+        { createEmpty replaceIdentityCycleRows 4 with Cells = cells } |]
+
+for model in replaceIdentityCycleModels do
+    replaceAll "needle" "NEEDLE" false model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let replaceIdentityCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let replaceIdentityCycleSw = Stopwatch.StartNew()
+let mutable replaceIdentityCycleSame = 0
+for _pass in 1 .. 20 do
+    for model in replaceIdentityCycleModels do
+        if obj.ReferenceEquals(replaceAll "needle" "NEEDLE" false model, model) then
+            replaceIdentityCycleSame <- replaceIdentityCycleSame + 1
+replaceIdentityCycleSw.Stop()
+let replaceIdentityCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - replaceIdentityCycleAllocatedBefore
+check "native replace identity source cycle"
+    (replaceIdentityCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && replaceIdentityCycleAllocated < 512L * 1024L
+     && replaceIdentityCycleSame = 1600)
+    true
+
 let uniqueValuesCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "red")
       { Row = 1; Col = 0 }, cell (CellValue.String "blue")
