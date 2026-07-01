@@ -1549,6 +1549,16 @@ let mutable private xForOffsetPreviousLine = Unchecked.defaultof<MeasuredLine>
 let mutable private xForOffsetPreviousMeasureRange = Unchecked.defaultof<TextRangeMeasurer>
 let mutable private xForOffsetPreviousOffset = 0
 let mutable private xForOffsetPreviousX = 0.0
+let mutable private xForOffsetOlder1Set = false
+let mutable private xForOffsetOlder1Line = Unchecked.defaultof<MeasuredLine>
+let mutable private xForOffsetOlder1MeasureRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private xForOffsetOlder1Offset = 0
+let mutable private xForOffsetOlder1X = 0.0
+let mutable private xForOffsetOlder2Set = false
+let mutable private xForOffsetOlder2Line = Unchecked.defaultof<MeasuredLine>
+let mutable private xForOffsetOlder2MeasureRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private xForOffsetOlder2Offset = 0
+let mutable private xForOffsetOlder2X = 0.0
 
 let private xForOffsetCacheEntryMatches measureRange line offset cachedMeasureRange cachedLine cachedOffset =
     offset = cachedOffset
@@ -1557,6 +1567,18 @@ let private xForOffsetCacheEntryMatches measureRange line offset cachedMeasureRa
 
 let private rememberXForOffset measureRange line offset x =
     if xForOffsetLineCacheable line then
+        if xForOffsetOlder1Set then
+            xForOffsetOlder2Set <- true
+            xForOffsetOlder2Line <- xForOffsetOlder1Line
+            xForOffsetOlder2MeasureRange <- xForOffsetOlder1MeasureRange
+            xForOffsetOlder2Offset <- xForOffsetOlder1Offset
+            xForOffsetOlder2X <- xForOffsetOlder1X
+        if xForOffsetPreviousSet then
+            xForOffsetOlder1Set <- true
+            xForOffsetOlder1Line <- xForOffsetPreviousLine
+            xForOffsetOlder1MeasureRange <- xForOffsetPreviousMeasureRange
+            xForOffsetOlder1Offset <- xForOffsetPreviousOffset
+            xForOffsetOlder1X <- xForOffsetPreviousX
         if xForOffsetLastSet then
             xForOffsetPreviousSet <- true
             xForOffsetPreviousLine <- xForOffsetLastLine
@@ -1603,6 +1625,12 @@ let xForOffsetWithRange (measureRange: TextRangeMeasurer) (line: MeasuredLine) (
     elif xForOffsetPreviousSet
          && xForOffsetCacheEntryMatches measureRange line offset xForOffsetPreviousMeasureRange xForOffsetPreviousLine xForOffsetPreviousOffset then
         xForOffsetPreviousX
+    elif xForOffsetOlder1Set
+         && xForOffsetCacheEntryMatches measureRange line offset xForOffsetOlder1MeasureRange xForOffsetOlder1Line xForOffsetOlder1Offset then
+        xForOffsetOlder1X
+    elif xForOffsetOlder2Set
+         && xForOffsetCacheEntryMatches measureRange line offset xForOffsetOlder2MeasureRange xForOffsetOlder2Line xForOffsetOlder2Offset then
+        xForOffsetOlder2X
     else
         let x = xForOffsetWithRangeUncached measureRange line offset
         rememberXForOffset measureRange line offset x

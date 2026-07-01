@@ -420,6 +420,29 @@ check "native x offset cache hot hit"
      && xOffsetHotX = 1279.0
      && xOffsetTotal = xOffsetHotX * 200000.0)
     true
+
+let xOffsetCycleOffsets = [| 1279; 640; 7 |]
+for offset in xOffsetCycleOffsets do
+    Layout.xForOffsetWithRange xOffsetMeasureRange xOffsetLine offset |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let xOffsetCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let xOffsetCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable xOffsetCycleTotal = 0.0
+for index in 1 .. 200000 do
+    xOffsetCycleTotal <-
+        xOffsetCycleTotal
+        + Layout.xForOffsetWithRange xOffsetMeasureRange xOffsetLine xOffsetCycleOffsets.[index % xOffsetCycleOffsets.Length]
+xOffsetCycleSw.Stop()
+let xOffsetCycleAllocated = System.GC.GetAllocatedBytesForCurrentThread() - xOffsetCycleAllocatedBefore
+check "native x offset cache three-position cycle"
+    (xOffsetCycleSw.Elapsed.TotalMilliseconds < 40.0
+     && xOffsetCycleAllocated < 512L * 1024L
+     && xOffsetCycleTotal = 128399363.0)
+    true
 let xOffsetOversizedStyleWeakReference () =
     let payload = System.String('X', 6 * 1024 * 1024)
     let line : Layout.MeasuredLine =
