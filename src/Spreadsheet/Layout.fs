@@ -220,6 +220,7 @@ let private columnPrefixSizeCache = {
 }
 let private prefixSizeCacheMaxSources = 64
 let private prefixSizeCacheMaxTotalKeys = 1000000
+let private prefixSizeTinyUncachedThreshold = 32
 let private prefixSizeDirectIndexThreshold = 4096
 let private prefixSizeShallowCacheLimit = prefixSizeDirectIndexThreshold + 1
 let private prefixSizeFullCacheLimit = System.Int32.MaxValue
@@ -420,7 +421,9 @@ let private prefixSize defaultSize (overrides: Map<int, float>) (slot: PrefixSiz
         | ValueSome entry when clipped < entry.Cache.LimitExclusive ->
             defaultSize * float clipped + entry.Cache.PrefixDeltas.[lowerBound entry.Cache.Keys clipped]
         | _ ->
-            if Map.count overrides > prefixSizeCacheMaxTotalKeys then
+            if clipped <= prefixSizeTinyUncachedThreshold then
+                prefixSizeUncached defaultSize overrides index
+            elif Map.count overrides > prefixSizeCacheMaxTotalKeys then
                 prefixSizeUncached defaultSize overrides index
             else
                 let limitExclusive =
@@ -479,7 +482,9 @@ let private hiddenPrefixSize defaultSize (overrides: Map<int, float>) (hiddenRow
                 defaultSize * float hiddenCount
                 + cache.PrefixDeltas.[lowerBound cache.CustomRows clipped]
             | _ ->
-                if Map.count overrides + hiddenRows.Length > hiddenPrefixSizeCacheMaxTotalKeys then
+                if clipped <= prefixSizeTinyUncachedThreshold then
+                    hiddenPrefixSizeUncached defaultSize overrides hiddenRows clipped hiddenCount
+                elif Map.count overrides + hiddenRows.Length > hiddenPrefixSizeCacheMaxTotalKeys then
                     hiddenPrefixSizeUncached defaultSize overrides hiddenRows clipped hiddenCount
                 else
                     let limitExclusive =
