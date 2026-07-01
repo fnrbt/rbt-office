@@ -31,6 +31,12 @@ let cellCommandsInViewport =
     gridType.GetMethod("cellCommandsInViewport", staticBindingFlags)
 let measureText =
     gridType.GetMethod("measureText", staticBindingFlags)
+let measureTextDelegate =
+    if isNull measureText then
+        null
+    else
+        measureText.CreateDelegate(typeof<System.Func<string, float, string option, bool, bool, float>>)
+        :?> System.Func<string, float, string option, bool, bool, float>
 let setFocus =
     editorType.GetMethod("setFocus", staticBindingFlags)
 let extendFocus =
@@ -41,6 +47,9 @@ let commitEdit =
     editorType.GetMethod("commitEdit", staticBindingFlags)
 let usedBoundsCached =
     editorType.GetMethod("usedBoundsCached", staticBindingFlags)
+let paintModuleType = typeof<SpreadsheetModel>.Assembly.GetType("RedBat.Spreadsheet.Paint")
+let hasAnyRenderTimeTableStyle =
+    paintModuleType.GetMethod("hasAnyRenderTimeTableStyle", staticBindingFlags)
 
 let makeLargeCells commandIndex =
     [ for row in 0 .. 119999 ->
@@ -261,8 +270,9 @@ if isNull measureText then
     fail <- fail + 1
     printfn "FAIL %-38s expected grid measureText helper" "native text measure reflection"
 else
+    let measureFontName = Some "Calibri"
     let invokeMeasure text =
-        measureText.Invoke(null, [| box text; box 11.0; box (Some "Calibri"); box false; box false |]) :?> float
+        measureTextDelegate.Invoke(text, 11.0, measureFontName, false, false)
     let firstWidth = invokeMeasure "Repeated spreadsheet text 12345"
 
     System.GC.Collect()
@@ -684,6 +694,58 @@ check "native static paint entry cycle"
      && staticPaintEntryCycleAllocated < 512L * 1024L
      && staticPaintEntryCycleTotal = 618020)
     true
+
+if isNull hasAnyRenderTimeTableStyle then
+    fail <- fail + 1
+    printfn "FAIL %-38s expected private table style cache helper" "native table style cache reflection"
+else
+    let tableStyleSourceCycleStyle =
+        { Name = "TableStyleMedium2"
+          ShowFirstColumn = false
+          ShowLastColumn = false
+          ShowRowStripes = true
+          ShowColumnStripes = false
+          HeaderFill = Some "#4472c4"
+          StripeFill = Some "#d9eaf7" }
+    let tableStyleSourceCycleSources =
+        [| for sourceIndex in 0 .. 79 ->
+            [ for tableIndex in 0 .. 999 ->
+                { Name = sprintf "native-table-style-%02d-%04d" sourceIndex tableIndex
+                  StartRow = tableIndex + 1
+                  StartCol = 1
+                  EndRow = tableIndex + 3
+                  EndCol = 4
+                  HeaderRowCount = 1
+                  Style =
+                    if tableIndex = 999 then
+                        Some tableStyleSourceCycleStyle
+                    else
+                        None
+                  AutoFilter = None
+                  HasTotals = false } ] |]
+
+    for tables in tableStyleSourceCycleSources do
+        hasAnyRenderTimeTableStyle.Invoke(null, [| box tables |]) |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let tableStyleSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let tableStyleSourceCycleSw = Stopwatch.StartNew()
+    let mutable tableStyleSourceCycleHits = 0
+    for _pass in 1 .. 20 do
+        for tables in tableStyleSourceCycleSources do
+            if hasAnyRenderTimeTableStyle.Invoke(null, [| box tables |]) :?> bool then
+                tableStyleSourceCycleHits <- tableStyleSourceCycleHits + 1
+    tableStyleSourceCycleSw.Stop()
+    let tableStyleSourceCycleAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - tableStyleSourceCycleAllocatedBefore
+    check "native table style source cycle"
+        (tableStyleSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+         && tableStyleSourceCycleAllocated < 512L * 1024L
+         && tableStyleSourceCycleHits = 1600)
+        true
 
 let sparsePaintCells =
     [ for row in 0 .. 1999 ->

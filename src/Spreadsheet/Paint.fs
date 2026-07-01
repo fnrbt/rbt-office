@@ -230,7 +230,7 @@ let private renderTimeTableStyleCacheByTables =
             member _.Equals(left, right) = obj.ReferenceEquals(left, right)
             member _.GetHashCode(value) = RuntimeHelpers.GetHashCode(value) })
 let private renderTimeTableStyleFastSlots = Array.zeroCreate<RenderTimeTableStyleCacheEntry> 256
-let private renderTimeTableStyleCacheMaxEntries = 64
+let private renderTimeTableStyleCacheMaxEntries = 256
 let private renderTimeTableStyleCacheMaxTotalTables = 200000
 let private renderTimeTableStyleCacheMaxTotalSourceTextChars = 5000000
 
