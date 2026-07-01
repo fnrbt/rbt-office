@@ -1078,6 +1078,39 @@ check "native export csv cache reuses"
     (obj.ReferenceEquals(exportCsvText, exportCsvTextAgain))
     true
 
+let exportCsvCycleSourceCount = 80
+let exportCsvCycleRowCount = 1000
+let exportCsvCycleModels =
+    [| for sourceIndex in 0 .. exportCsvCycleSourceCount - 1 ->
+        let cells =
+            [ for row in 0 .. exportCsvCycleRowCount - 1 ->
+                let col = if row = exportCsvCycleRowCount - 1 then 10 + sourceIndex % 3 else sourceIndex % 3
+                { Row = row; Col = col }, cell (CellValue.Number (float (row + sourceIndex))) ]
+            |> Map.ofList
+        { createEmpty exportCsvCycleRowCount 16 with Cells = cells } |]
+
+for model in exportCsvCycleModels do
+    exportCSV model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let exportCsvCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let exportCsvCycleSw = Stopwatch.StartNew()
+let mutable exportCsvCycleTotalLength = 0
+for _pass in 1 .. 20 do
+    for model in exportCsvCycleModels do
+        exportCsvCycleTotalLength <- exportCsvCycleTotalLength + (exportCSV model).Length
+exportCsvCycleSw.Stop()
+let exportCsvCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - exportCsvCycleAllocatedBefore
+check "native export csv source cycle"
+    (exportCsvCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && exportCsvCycleAllocated < 512L * 1024L
+     && exportCsvCycleTotalLength = 23943700)
+    true
+
 let importCsvText = "Name,Score\nAda,42\nBob,17"
 let importCsvImported = importCSV importCsvText 0 0 (createEmpty 3 2)
 let importCsvImportedAgain = importCSV importCsvText 0 0 importCsvImported

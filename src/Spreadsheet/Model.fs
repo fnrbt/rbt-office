@@ -4874,7 +4874,7 @@ let mutable private exportCsvCache: ExportCsvCache list = []
 let private exportCsvCacheBySource =
     System.Collections.Generic.Dictionary<CellMergedReferenceKey, ExportCsvCache>(cellMergedReferenceComparer)
 let private exportCsvFastSlots = Array.zeroCreate<ExportCsvCache> 256
-let private exportCsvCacheMaxSources = 64
+let private exportCsvCacheMaxSources = 256
 let private exportCsvCacheMaxTotalChars = 5000000
 let private exportCsvCacheMaxTotalCells = 500000
 let private exportCsvCacheMaxTotalMergedCells = 200000
