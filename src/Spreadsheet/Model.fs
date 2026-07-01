@@ -248,7 +248,7 @@ let private formulaPresenceCellsComparer =
 let private formulaPresenceCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, FormulaPresenceCacheEntry>(formulaPresenceCellsComparer)
 let private formulaPresenceFastSlots = Array.zeroCreate<FormulaPresenceCacheEntry> 256
-let private formulaPresenceCacheMaxEntries = 64
+let private formulaPresenceCacheMaxEntries = 256
 let private formulaPresenceCacheMaxTotalCells = 500000
 let private formulaPresenceCacheMaxTotalSourceTextChars = 5000000
 

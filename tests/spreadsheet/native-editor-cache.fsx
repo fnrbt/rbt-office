@@ -1050,6 +1050,39 @@ check "native formula presence cache hot hits"
      && formulaPresenceTotal = 0)
     true
 
+let formulaPresenceCycleSourceCount = 80
+let formulaPresenceCycleCellCount = 5000
+let formulaPresenceCycleSources =
+    [| for sourceIndex in 0 .. formulaPresenceCycleSourceCount - 1 ->
+        [ for row in 0 .. formulaPresenceCycleCellCount - 1 ->
+            { Row = row; Col = sourceIndex % 4 }, cell (CellValue.Number (float row)) ]
+        |> Map.ofList |]
+for cells in formulaPresenceCycleSources do
+    cellsHaveFormulaCells cells |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let formulaPresenceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let formulaPresenceCycleSw = Stopwatch.StartNew()
+let mutable formulaPresenceCycleTotal = 0
+for _pass in 1 .. 20 do
+    for cells in formulaPresenceCycleSources do
+        if cellsHaveFormulaCells cells then
+            formulaPresenceCycleTotal <- formulaPresenceCycleTotal + 1
+        match cellsFormulaCountIfKnown cells with
+        | Some count -> formulaPresenceCycleTotal <- formulaPresenceCycleTotal + count
+        | None -> formulaPresenceCycleTotal <- formulaPresenceCycleTotal - 1
+formulaPresenceCycleSw.Stop()
+let formulaPresenceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - formulaPresenceCycleAllocatedBefore
+check "native formula presence source cycle"
+    (formulaPresenceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && formulaPresenceCycleAllocated < 512L * 1024L
+     && formulaPresenceCycleTotal = 0)
+    true
+
 let conditionalFormatRows = 20000
 let conditionalFormatCells =
     [ for row in 0 .. conditionalFormatRows - 1 ->
