@@ -2228,6 +2228,32 @@ else
          && idMetricCycleHits = 80000)
         true
 
+    let captionMetricCycleDocs =
+        [| for index in 0 .. 79 -> idMetricDoc (300 + index) |]
+    for doc in captionMetricCycleDocs do
+        documentCaptionIdMetrics.Invoke(null, [| box "Figure"; box doc |]) |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let captionMetricCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let captionMetricCycleSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable captionMetricCycleHits = 0
+    for _pass in 1 .. 500 do
+        for doc in captionMetricCycleDocs do
+            if not (isNull (documentCaptionIdMetrics.Invoke(null, [| box "Figure"; box doc |]))) then
+                captionMetricCycleHits <- captionMetricCycleHits + 1
+    captionMetricCycleSw.Stop()
+    let captionMetricCycleAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - captionMetricCycleAllocatedBefore
+
+    check "native caption metrics cache document cycle"
+        (captionMetricCycleSw.Elapsed.TotalMilliseconds < 80.0
+         && captionMetricCycleAllocated < 4L * 1024L * 1024L
+         && captionMetricCycleHits = 40000)
+        true
+
 let dateFieldParagraphCount = 50000
 let dateFieldBuffer =
     TB.ofString "old"

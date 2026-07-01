@@ -6344,7 +6344,7 @@ let private captionIdMetricsCacheKeyComparer =
 let private captionIdMetricsCacheByKey =
     Dictionary<CaptionIdMetricsCacheKey, CaptionIdMetricsCache>(captionIdMetricsCacheKeyComparer)
 let private captionIdMetricsFastSlots = Array.zeroCreate<CaptionIdMetricsCache> 256
-let private captionIdMetricsCacheMaxEntries = 16
+let private captionIdMetricsCacheMaxEntries = 256
 let private captionIdMetricsCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit + 20000
 let private captionIdMetricsCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
