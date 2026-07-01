@@ -1108,6 +1108,51 @@ else
         "replace identity cache perf"
         25.0
         replaceIdentityCacheSw.Elapsed.TotalMilliseconds
+
+let replaceIdentityCycleRows = 10000
+let replaceIdentityCycleModel =
+    { createEmpty replaceIdentityCycleRows 1 with
+        Cells =
+            [ for row in 0 .. replaceIdentityCycleRows - 1 ->
+                let text =
+                    if row < 200 then sprintf "target-%03d" row
+                    else sprintf "plain-%05d" row
+                { Row = row; Col = 0 }, cell (S text) ]
+            |> Map.ofList }
+let replaceIdentityCycleQueries = [| for index in 0 .. 199 -> sprintf "target-%03d" index |]
+for query in replaceIdentityCycleQueries do
+    replaceAllWithCount query query false replaceIdentityCycleModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let replaceIdentityCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let replaceIdentityCycleSw = Stopwatch.StartNew()
+let mutable replaceIdentityCycleTotal = 0
+let mutable replaceIdentityCycleSame = 0
+for index in 1 .. 1000 do
+    let query = replaceIdentityCycleQueries.[index % replaceIdentityCycleQueries.Length]
+    let replaced, count = replaceAllWithCount query query false replaceIdentityCycleModel
+    replaceIdentityCycleTotal <- replaceIdentityCycleTotal + count
+    if obj.ReferenceEquals(replaced, replaceIdentityCycleModel) then
+        replaceIdentityCycleSame <- replaceIdentityCycleSame + 1
+replaceIdentityCycleSw.Stop()
+let replaceIdentityCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - replaceIdentityCycleAllocatedBefore
+check "replace all identity cycle count" replaceIdentityCycleTotal 0
+check "replace all identity cycle identity" replaceIdentityCycleSame 1000
+check "replace all identity cycle allocation" (replaceIdentityCycleAllocated < 512L * 1024L) true
+if replaceIdentityCycleSw.Elapsed.TotalMilliseconds < 80.0 then
+    pass <- pass + 1
+else
+    fail <- fail + 1
+    printfn
+        "FAIL %-26s expected under %.1f ms got %.1f ms"
+        "replace identity cycle perf"
+        80.0
+        replaceIdentityCycleSw.Elapsed.TotalMilliseconds
+
 let replaceIdentityChangedModel =
     replaceIdentityCacheModel |> setCell { Row = 0; Col = 0 } (cell (S "Target"))
 let replaceIdentityChanged, replaceIdentityChangedCount = replaceAllWithCount "target" "target" false replaceIdentityChangedModel
