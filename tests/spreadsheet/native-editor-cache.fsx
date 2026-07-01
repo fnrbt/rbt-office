@@ -2026,6 +2026,37 @@ check "native formula presence source cycle"
      && formulaPresenceCycleTotal = 0)
     true
 
+let recalcIndependentFormulaCount = 5000
+let recalcIndependentCells =
+    [ for row in 0 .. recalcIndependentFormulaCount - 1 do
+        yield { Row = row; Col = 0 }, cell (CellValue.Number (float row))
+        yield { Row = row; Col = 1 }, cell (CellValue.Formula (sprintf "=1+%d" (row % 20), CellValue.Empty)) ]
+    |> Map.ofList
+let recalcIndependentModel =
+    { createEmpty recalcIndependentFormulaCount 2 with
+        Cells = recalcIndependentCells }
+RedBat.Spreadsheet.Formula.recalculateAllFormulas None None recalcIndependentModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let recalcIndependentAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let recalcIndependentSw = Stopwatch.StartNew()
+let mutable recalcIndependentTotal = 0
+for _pass in 1 .. 20 do
+    let recalculated =
+        RedBat.Spreadsheet.Formula.recalculateAllFormulas None None recalcIndependentModel
+    recalcIndependentTotal <- recalcIndependentTotal + recalculated.Cells.Count
+recalcIndependentSw.Stop()
+let recalcIndependentAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - recalcIndependentAllocatedBefore
+check "native independent formula recalc fast path"
+    (recalcIndependentSw.Elapsed.TotalMilliseconds < 600.0
+     && recalcIndependentAllocated < 180L * 1024L * 1024L
+     && recalcIndependentTotal = recalcIndependentModel.Cells.Count * 20)
+    true
+
 let conditionalFormatRows = 20000
 let conditionalFormatCells =
     [ for row in 0 .. conditionalFormatRows - 1 ->

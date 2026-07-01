@@ -11047,6 +11047,8 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
                         stack.Add(struct (seen, arg))
             refs.ToArray()
 
+        let dependencies = Dictionary<CellAddress, CellAddress array>(formulaCells.Count)
+        let mutable hasDependencies = false
         let referencedFormulaCellsCache = Dictionary<string, CellAddress array>()
         let referencedFormulaCellsCacheOrder = Queue<string>()
         let referencedFormulaCellsFastSlots = Array.zeroCreate<RecalcReferenceFastCacheEntry> 256
@@ -11074,51 +11076,14 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
                         setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
                     refs
 
-        let dependencies = Dictionary<CellAddress, CellAddress array>(formulaCells.Count)
         for fc in formulaCells do
             match fc.ParseError with
             | Some _ -> ()
             | None ->
                 let refs = referencedFormulaCellsFor fc
                 if refs.Length > 0 then
+                    hasDependencies <- true
                     dependencies.[fc.Address] <- refs
-
-        let visited = HashSet<CellAddress>()
-        let activeStack = ResizeArray<CellAddress>()
-        let activeIndex = Dictionary<CellAddress, int>()
-        let order = ResizeArray<CellAddress>(formulaCells.Count)
-        let cyclic = HashSet<CellAddress>()
-
-        let markCycleFrom cycleStart =
-            for i = cycleStart to activeStack.Count - 1 do
-                cyclic.Add activeStack.[i] |> ignore
-
-        let depsFor addr =
-            match dependencies.TryGetValue addr with
-            | true, deps -> deps
-            | false, _ -> Array.empty
-
-        let enter (stack: Stack<struct (CellAddress * CellAddress array * int)>) addr =
-            let mutable cycleStart = 0
-            if activeIndex.TryGetValue(addr, &cycleStart) then
-                markCycleFrom cycleStart
-            elif visited.Add addr then
-                activeIndex.[addr] <- activeStack.Count
-                activeStack.Add addr
-                stack.Push(struct (addr, depsFor addr, 0))
-
-        for fc in formulaCells do
-            let stack = Stack<struct (CellAddress * CellAddress array * int)>()
-            enter stack fc.Address
-            while stack.Count > 0 do
-                let struct (addr, deps, index) = stack.Pop()
-                if index >= deps.Length then
-                    activeIndex.Remove addr |> ignore
-                    activeStack.RemoveAt(activeStack.Count - 1)
-                    order.Add addr
-                else
-                    stack.Push(struct (addr, deps, index + 1))
-                    enter stack deps.[index]
 
         let mutable updatedCells = model.Cells
         let mutable changed = false
@@ -11127,20 +11092,67 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
             if fc.Cell.Value <> nextValue then
                 updatedCells <- Map.add addr { fc.Cell with Value = nextValue } updatedCells
                 changed <- true
-        for addr in order do
-            match formulaByAddress.TryGetValue addr with
-            | true, fc ->
+        let evaluateFormulaCell addr (fc: FormulaCell) =
+            let updated = { model with Cells = updatedCells }
+            let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some criteriaCache; CurrentCell = Some addr }
+            eval fc.Expr ctx
+
+        if hasDependencies then
+            let visited = HashSet<CellAddress>()
+            let activeStack = ResizeArray<CellAddress>()
+            let activeIndex = Dictionary<CellAddress, int>()
+            let order = ResizeArray<CellAddress>(formulaCells.Count)
+            let cyclic = HashSet<CellAddress>()
+
+            let markCycleFrom cycleStart =
+                for i = cycleStart to activeStack.Count - 1 do
+                    cyclic.Add activeStack.[i] |> ignore
+
+            let depsFor addr =
+                match dependencies.TryGetValue addr with
+                | true, deps -> deps
+                | false, _ -> Array.empty
+
+            let enter (stack: Stack<struct (CellAddress * CellAddress array * int)>) addr =
+                let mutable cycleStart = 0
+                if activeIndex.TryGetValue(addr, &cycleStart) then
+                    markCycleFrom cycleStart
+                elif visited.Add addr then
+                    activeIndex.[addr] <- activeStack.Count
+                    activeStack.Add addr
+                    stack.Push(struct (addr, depsFor addr, 0))
+
+            for fc in formulaCells do
+                let stack = Stack<struct (CellAddress * CellAddress array * int)>()
+                enter stack fc.Address
+                while stack.Count > 0 do
+                    let struct (addr, deps, index) = stack.Pop()
+                    if index >= deps.Length then
+                        activeIndex.Remove addr |> ignore
+                        activeStack.RemoveAt(activeStack.Count - 1)
+                        order.Add addr
+                    else
+                        stack.Push(struct (addr, deps, index + 1))
+                        enter stack deps.[index]
+
+            for addr in order do
+                match formulaByAddress.TryGetValue addr with
+                | true, fc ->
+                    match fc.ParseError with
+                    | Some parseError ->
+                        applyFormulaResult addr fc (CellValue.Error parseError)
+                    | None when cyclic.Contains addr ->
+                        applyFormulaResult addr fc (CellValue.Error Err.cycle)
+                    | None ->
+                        applyFormulaResult addr fc (evaluateFormulaCell addr fc)
+                | false, _ -> ()
+        else
+            for fc in formulaCells do
                 match fc.ParseError with
                 | Some parseError ->
-                    applyFormulaResult addr fc (CellValue.Error parseError)
-                | None when cyclic.Contains addr ->
-                    applyFormulaResult addr fc (CellValue.Error Err.cycle)
+                    applyFormulaResult fc.Address fc (CellValue.Error parseError)
                 | None ->
-                    let updated = { model with Cells = updatedCells }
-                    let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some criteriaCache; CurrentCell = Some addr }
-                    let result = eval fc.Expr ctx
-                    applyFormulaResult addr fc result
-            | false, _ -> ()
+                    applyFormulaResult fc.Address fc (evaluateFormulaCell fc.Address fc)
         rememberCellsFormulaCount updatedCells formulaCells.Count
         if changed then { model with Cells = updatedCells } else model
 
