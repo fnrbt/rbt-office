@@ -1828,25 +1828,25 @@ let private addSelectionTextCacheEntry key (text: string) (cache: SelectionTextC
 
 let private cachedSelectionText (doc: Document) =
     match doc.Selection with
-    | None -> None
+    | None -> ValueNone
     | Some selection ->
         match tryGetSelectionTextCache doc.Blocks with
         | ValueSome cached when selectionTextCacheWithinBudget cached ->
             match tryGetSelectionTextEntryFastSlot cached selection with
-            | ValueSome entry -> Some entry.Text
+            | ValueSome entry -> ValueSome entry.Text
             | ValueNone ->
                 let key = selectionTextKey selection
                 let mutable entry = Unchecked.defaultof<SelectionTextCacheEntry>
                 if cached.Entries.TryGetValue(key, &entry) then
                     if selectionTextKeyMatchesSelection selection key then
                         setSelectionTextEntryFastSlot cached key entry
-                    Some entry.Text
+                    ValueSome entry.Text
                 else
-                    None
+                    ValueNone
         | ValueSome cached ->
             rememberSelectionTextCache cached
-            None
-        | ValueNone -> None
+            ValueNone
+        | ValueNone -> ValueNone
 
 let private rememberSelectionText (doc: Document) (text: string) =
     match doc.Selection with
@@ -9613,7 +9613,7 @@ let private samePosition (left: Position) (right: Position) =
 /// Get selected text as plain text
 let getSelectionText doc =
     match cachedSelectionText doc with
-    | Some text -> text
+    | ValueSome text -> text
     | _ ->
         let text =
             match doc.Selection with

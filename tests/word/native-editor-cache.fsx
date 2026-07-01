@@ -1244,6 +1244,35 @@ check "native selection text long id perf"
      && selectionTextLookupTotal = 1920000)
     true
 
+let selectionTextHotDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (para "native-selection-text-hot" "abcdef") ]
+        Selection =
+            Some {
+                Anchor = pos "native-selection-text-hot" 1
+                Focus = pos "native-selection-text-hot" 4
+            } }
+let selectionTextHotFirst = Doc.getSelectionText selectionTextHotDoc
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let selectionTextHotProbeCount = 200000
+let selectionTextHotAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let selectionTextHotSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable selectionTextHotTotal = 0
+for _ in 1 .. selectionTextHotProbeCount do
+    selectionTextHotTotal <- selectionTextHotTotal + (Doc.getSelectionText selectionTextHotDoc).Length
+selectionTextHotSw.Stop()
+let selectionTextHotAllocated = System.GC.GetAllocatedBytesForCurrentThread() - selectionTextHotAllocatedBefore
+check "native selection text cache hot hit"
+    (selectionTextHotSw.Elapsed.TotalMilliseconds < 80.0
+     && selectionTextHotAllocated < 1024L * 1024L
+     && selectionTextHotFirst = "bcd"
+     && selectionTextHotTotal = selectionTextHotFirst.Length * selectionTextHotProbeCount)
+    true
+
 let sameBlockSelectionTextParagraphCount = 50000
 let sameBlockSelectionTextDoc =
     { Doc.empty with
