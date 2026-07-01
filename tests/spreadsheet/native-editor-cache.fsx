@@ -1325,11 +1325,15 @@ let filterCacheModel =
 
 let filterCacheProjected = applyFilterRowHeights filterCacheModel
 let filterCacheProjectedAgain = applyFilterRowHeights filterCacheProjected
+let filterCacheProjectedCached = applyFilterRowHeights filterCacheModel
 check "native filter hidden rows value"
     (filterCacheProjected.FilterHiddenRows |> Array.toList)
     [ 2; 4 ]
 check "native filter hidden rows reuses"
     (obj.ReferenceEquals(filterCacheProjected.FilterHiddenRows, filterCacheProjectedAgain.FilterHiddenRows))
+    true
+check "native filter projection reuses"
+    (obj.ReferenceEquals(filterCacheProjected, filterCacheProjectedCached))
     true
 
 let filterCacheVisibleRows = getVisibleRows filterCacheProjected
@@ -1371,7 +1375,7 @@ let filterRowCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - filterRowCycleAllocatedBefore
 check "native filter row source cycle"
     (filterRowCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && filterRowCycleAllocated < 4L * 1024L * 1024L
+     && filterRowCycleAllocated < 128L * 1024L
      && filterRowCycleTotal = 7998400)
     true
 
@@ -1408,7 +1412,7 @@ let filterEntryCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - filterEntryCycleAllocatedBefore
 check "native filter row entry cycle"
     (filterEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && filterEntryCycleAllocated < 4L * 1024L * 1024L
+     && filterEntryCycleAllocated < 128L * 1024L
      && filterEntryCycleTotal = 7998420)
     true
 

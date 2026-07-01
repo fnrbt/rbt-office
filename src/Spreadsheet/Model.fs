@@ -1,6 +1,7 @@
 module RedBat.Spreadsheet.Model
 
 open System
+open System.Runtime.CompilerServices
 
 let private resizeArrayToList (items: ResizeArray<'T>) =
     let mutable result = []
@@ -529,6 +530,11 @@ type ColumnFilter = {
     Column: int
     VisibleValues: Set<string>  // String representation of values to show
 }
+
+let private filterMapReferenceComparer =
+    { new System.Collections.Generic.IEqualityComparer<Map<int, ColumnFilter>> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = referenceHash value }
 
 /// Conditional formatting rule
 type ConditionalFormatRule =
@@ -3045,7 +3051,7 @@ let private addFilterHiddenRowsCacheEntryWithMetrics filters (rows: int array) f
                || cache.TotalFilterTextCharCount > filterHiddenRowsCacheMaxTotalFilterTextChars)
               && cache.Order.Count > 0 do
             let oldest = cache.Order.Dequeue()
-            if oldest <> filters then
+            if not (obj.ReferenceEquals(oldest, filters)) then
                 removeFilterHiddenRowsCacheEntry oldest cache
         if cache.Entries.Count > filterHiddenRowsCacheMaxEntries
            || cache.TotalRowCount > filterHiddenRowsCacheMaxTotalRowCount
@@ -3090,7 +3096,9 @@ let private filterHiddenRows (model: SpreadsheetModel) =
                 filterHiddenRowsCacheMaxFilterTextChars + 1
             else
                 filterTextCharCount filterHiddenRowsCacheMaxFilterTextChars model.Filters
-        let entries = System.Collections.Generic.Dictionary<Map<int, ColumnFilter>, FilterHiddenRowsCacheEntry>()
+        let entries =
+            System.Collections.Generic.Dictionary<Map<int, ColumnFilter>, FilterHiddenRowsCacheEntry>(
+                filterMapReferenceComparer)
         let order = System.Collections.Generic.Queue<Map<int, ColumnFilter>>()
         let cache = {
             Cells = model.Cells
@@ -3135,6 +3143,14 @@ let private intArraysEqual (left: int array) (right: int array) =
                 equal <- false
             i <- i + 1
         equal
+
+type private FilterProjectionCacheEntry = {
+    Source: SpreadsheetModel
+    Projected: SpreadsheetModel
+}
+
+let private filterProjectionCache = ConditionalWeakTable<SpreadsheetModel, SpreadsheetModel>()
+let private filterProjectionFastSlots = Array.zeroCreate<FilterProjectionCacheEntry> 256
 
 let private filterProjectionMatchesCurrent (model: SpreadsheetModel) =
     match tryGetFilterHiddenRowsCache model.Cells model.RowCount with
@@ -3421,7 +3437,7 @@ let private addVisibleRowsCacheEntryWithMetrics filters (rows: Set<int>) filterV
                || cache.TotalFilterTextCharCount > visibleRowsCacheMaxTotalFilterTextChars)
               && cache.Order.Count > 0 do
             let oldest = cache.Order.Dequeue()
-            if oldest <> filters then
+            if not (obj.ReferenceEquals(oldest, filters)) then
                 removeVisibleRowsCacheEntry oldest cache
         if cache.Entries.Count > visibleRowsCacheMaxEntries
            || cache.TotalRowCount > visibleRowsCacheMaxTotalRowCount
@@ -3465,7 +3481,9 @@ let private rememberVisibleRows (rows: Set<int>) (model: SpreadsheetModel) =
     | ValueNone ->
         let struct (filterValues, filterTextChars, sourceTextCharCount) =
             visibleRowsCacheMetricsFor rows.Count model.Cells model.RowCount model.Filters
-        let entries = System.Collections.Generic.Dictionary<Map<int, ColumnFilter>, VisibleRowsCacheEntry>()
+        let entries =
+            System.Collections.Generic.Dictionary<Map<int, ColumnFilter>, VisibleRowsCacheEntry>(
+                filterMapReferenceComparer)
         let order = System.Collections.Generic.Queue<Map<int, ColumnFilter>>()
         let cache = {
             Cells = model.Cells
@@ -3584,9 +3602,27 @@ let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
     if Map.isEmpty model.Filters then
         if model.FilterHiddenRows.Length = 0 then model else { model with FilterHiddenRows = [||] }
     else
-        let hiddenRows = filterHiddenRows model
-        if obj.ReferenceEquals(model.FilterHiddenRows, hiddenRows) || intArraysEqual model.FilterHiddenRows hiddenRows then model
-        else { model with FilterHiddenRows = hiddenRows }
+        let mutable projected = Unchecked.defaultof<SpreadsheetModel>
+        let slot = referenceSlot model filterProjectionFastSlots.Length
+        let fast = filterProjectionFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && obj.ReferenceEquals(fast.Source, model) then
+            fast.Projected
+        elif filterProjectionCache.TryGetValue(model, &projected) then
+            filterProjectionFastSlots.[slot] <- { Source = model; Projected = projected }
+            projected
+        else
+            let hiddenRows = filterHiddenRows model
+            let projected =
+                if obj.ReferenceEquals(model.FilterHiddenRows, hiddenRows)
+                   || intArraysEqual model.FilterHiddenRows hiddenRows then
+                    model
+                else
+                    { model with FilterHiddenRows = hiddenRows }
+            if not (obj.ReferenceEquals(projected, model)) then
+                filterProjectionFastSlots.[slot] <- { Source = model; Projected = projected }
+                filterProjectionCache.Add(model, projected)
+            projected
 
 /// Distinct, sorted display strings in a column — the AutoFilter checklist's
 /// values. Blanks excluded; uses the same `displayValue` as the filter test.

@@ -2420,18 +2420,142 @@ let private replaceTopLevelBlockAtIndex index replacement blocks =
             loop (currentIndex + 1) tail
     loop 0 blocks
 
+let private paragraphReplacementMatches (current: ParagraphBlock) (replacement: ParagraphBlock) =
+    obj.ReferenceEquals(current, replacement)
+    || (current.Id = replacement.Id
+        && obj.ReferenceEquals(current.Buffer, replacement.Buffer)
+        && current.Metadata = replacement.Metadata)
+
+type private TopLevelParagraphEditCacheEntry = {
+    SourceBlocks: Block list
+    TargetParagraphId: BlockId
+    TargetIndex: int
+    PrefixBlocks: Block array
+    TargetBlock: Block
+    TailAfterTarget: Block list
+}
+
+let mutable private topLevelParagraphEditLastSet = false
+let mutable private topLevelParagraphEditLast = Unchecked.defaultof<TopLevelParagraphEditCacheEntry>
+
+let private prependBlockArray (prefix: Block array) tail =
+    let mutable result = tail
+    for i = prefix.Length - 1 downto 0 do
+        result <- prefix.[i] :: result
+    result
+
+let private tryGetTopLevelParagraphEditEntry blocks paragraphId =
+    if topLevelParagraphEditLastSet
+       && obj.ReferenceEquals(topLevelParagraphEditLast.SourceBlocks, blocks)
+       && blockIdKeyEquals topLevelParagraphEditLast.TargetParagraphId paragraphId then
+        ValueSome topLevelParagraphEditLast
+    else
+        ValueNone
+
+let private rememberTopLevelParagraphEditEntry blocks paragraphId index prefixBlocks targetBlock tailAfterTarget =
+    topLevelParagraphEditLastSet <- true
+    topLevelParagraphEditLast <-
+        { SourceBlocks = blocks
+          TargetParagraphId = paragraphId
+          TargetIndex = index
+          PrefixBlocks = prefixBlocks
+          TargetBlock = targetBlock
+          TailAfterTarget = tailAfterTarget }
+
+let private rememberTopLevelParagraphEditFromReplacement entry nextBlocks replacement =
+    rememberTopLevelParagraphEditEntry
+        nextBlocks
+        entry.TargetParagraphId
+        entry.TargetIndex
+        entry.PrefixBlocks
+        replacement
+        entry.TailAfterTarget
+
+let private replaceTopLevelBlockFromCachedEntry entry replacement =
+    prependBlockArray entry.PrefixBlocks (replacement :: entry.TailAfterTarget)
+
+let private replaceTopLevelBlockAtIndexAndRemember index replacement paragraphId blocks =
+    let prefix = ResizeArray<Block>(max 0 index)
+    let mutable remaining = blocks
+    let mutable currentIndex = 0
+    let mutable result = blocks
+    let mutable scanning = true
+    while scanning do
+        match remaining with
+        | [] ->
+            result <- prependResizeArray prefix []
+            scanning <- false
+        | _ :: tail when currentIndex = index ->
+            let prefixBlocks = prefix.ToArray()
+            result <- prependResizeArray prefix (replacement :: tail)
+            rememberTopLevelParagraphEditEntry result paragraphId index prefixBlocks replacement tail
+            scanning <- false
+        | block :: tail ->
+            prefix.Add block
+            remaining <- tail
+            currentIndex <- currentIndex + 1
+    result
+
+let private tryReplaceTopLevelParagraphFromCachedEntry
+    (doc: Document)
+    paragraphId
+    (entry: TopLevelParagraphEditCacheEntry)
+    newPara
+    : Document voption =
+    match entry.TargetBlock with
+    | Paragraph para when blockIdKeyEquals para.Id paragraphId ->
+        if paragraphReplacementMatches para newPara then
+            ValueSome doc
+        else
+            let replacement = Paragraph newPara
+            let nextBlocks = replaceTopLevelBlockFromCachedEntry entry replacement
+            rememberTopLevelParagraphEditFromReplacement entry nextBlocks replacement
+            ValueSome { doc with Blocks = nextBlocks }
+    | Heading (level, para) when blockIdKeyEquals para.Id paragraphId ->
+        if paragraphReplacementMatches para newPara then
+            ValueSome doc
+        else
+            let replacement = Heading (level, newPara)
+            let nextBlocks = replaceTopLevelBlockFromCachedEntry entry replacement
+            rememberTopLevelParagraphEditFromReplacement entry nextBlocks replacement
+            ValueSome { doc with Blocks = nextBlocks }
+    | _ ->
+        ValueNone
+
+let private tryUpdateTopLevelParagraphFromCachedEntry
+    (doc: Document)
+    paragraphId
+    (entry: TopLevelParagraphEditCacheEntry)
+    updateParagraph
+    : Document voption =
+    match entry.TargetBlock with
+    | Paragraph para when blockIdKeyEquals para.Id paragraphId ->
+        let nextPara = updateParagraph para
+        if paragraphReplacementMatches para nextPara then
+            ValueSome doc
+        else
+            let replacement = Paragraph nextPara
+            let nextBlocks = replaceTopLevelBlockFromCachedEntry entry replacement
+            rememberTopLevelParagraphEditFromReplacement entry nextBlocks replacement
+            ValueSome { doc with Blocks = nextBlocks }
+    | Heading (level, para) when blockIdKeyEquals para.Id paragraphId ->
+        let nextPara = updateParagraph para
+        if paragraphReplacementMatches para nextPara then
+            ValueSome doc
+        else
+            let replacement = Heading (level, nextPara)
+            let nextBlocks = replaceTopLevelBlockFromCachedEntry entry replacement
+            rememberTopLevelParagraphEditFromReplacement entry nextBlocks replacement
+            ValueSome { doc with Blocks = nextBlocks }
+    | _ ->
+        ValueNone
+
 let private withParagraphBuffer block para =
     match block with
     | Paragraph _ -> Some (Paragraph para)
     | Heading (level, _) -> Some (Heading (level, para))
     | Table _
     | TextBox _ -> None
-
-let private paragraphReplacementMatches (current: ParagraphBlock) (replacement: ParagraphBlock) =
-    obj.ReferenceEquals(current, replacement)
-    || (current.Id = replacement.Id
-        && obj.ReferenceEquals(current.Buffer, replacement.Buffer)
-        && current.Metadata = replacement.Metadata)
 
 let private blockReplacementMatches current replacement =
     obj.ReferenceEquals(current, replacement)
@@ -3200,66 +3324,92 @@ let findParagraph (doc: Document) paragraphId =
     | None -> findParagraphFromParagraphLookup doc paragraphId
 
 let private tryReplaceTopLevelParagraphBeforeNestedContent doc paragraphId newPara =
-    let mutable remaining = doc.Blocks
-    let mutable result: Document voption = ValueNone
-    let mutable blockedByNestedContent = false
-    let mutable index = 0
+    let scan () =
+        let mutable remaining = doc.Blocks
+        let mutable result: Document voption = ValueNone
+        let mutable blockedByNestedContent = false
+        let mutable index = 0
 
-    while result.IsNone && not blockedByNestedContent do
-        match remaining with
-        | [] ->
-            result <- ValueSome doc
-        | Paragraph para :: tail when para.Id = paragraphId ->
-            result <-
-                if paragraphReplacementMatches para newPara then
-                    ValueSome doc
-                else
-                    ValueSome { doc with Blocks = replaceTopLevelBlockAtIndex index (Paragraph newPara) doc.Blocks }
-        | Heading (level, para) :: tail when para.Id = paragraphId ->
-            result <-
-                if paragraphReplacementMatches para newPara then
-                    ValueSome doc
-                else
-                    ValueSome { doc with Blocks = replaceTopLevelBlockAtIndex index (Heading (level, newPara)) doc.Blocks }
-        | (Table _ | TextBox _) :: _ ->
-            blockedByNestedContent <- true
-        | block :: tail ->
-            remaining <- tail
-            index <- index + 1
+        while result.IsNone && not blockedByNestedContent do
+            match remaining with
+            | [] ->
+                result <- ValueSome doc
+            | Paragraph para :: tail when para.Id = paragraphId ->
+                result <-
+                    if paragraphReplacementMatches para newPara then
+                        ValueSome doc
+                    else
+                        let nextBlocks =
+                            replaceTopLevelBlockAtIndexAndRemember index (Paragraph newPara) paragraphId doc.Blocks
+                        ValueSome { doc with Blocks = nextBlocks }
+            | Heading (level, para) :: tail when para.Id = paragraphId ->
+                result <-
+                    if paragraphReplacementMatches para newPara then
+                        ValueSome doc
+                    else
+                        let nextBlocks =
+                            replaceTopLevelBlockAtIndexAndRemember index (Heading (level, newPara)) paragraphId doc.Blocks
+                        ValueSome { doc with Blocks = nextBlocks }
+            | (Table _ | TextBox _) :: _ ->
+                blockedByNestedContent <- true
+            | block :: tail ->
+                remaining <- tail
+                index <- index + 1
 
-    if blockedByNestedContent then ValueNone else result
+        if blockedByNestedContent then ValueNone else result
+
+    match tryGetTopLevelParagraphEditEntry doc.Blocks paragraphId with
+    | ValueSome entry ->
+        match tryReplaceTopLevelParagraphFromCachedEntry doc paragraphId entry newPara with
+        | ValueSome updatedDoc -> ValueSome updatedDoc
+        | ValueNone -> scan ()
+    | ValueNone ->
+        scan ()
 
 let private tryUpdateTopLevelParagraphBeforeNestedContent doc paragraphId updateParagraph =
-    let mutable remaining = doc.Blocks
-    let mutable result: Document voption = ValueNone
-    let mutable blockedByNestedContent = false
-    let mutable index = 0
+    let scan () =
+        let mutable remaining = doc.Blocks
+        let mutable result: Document voption = ValueNone
+        let mutable blockedByNestedContent = false
+        let mutable index = 0
 
-    while result.IsNone && not blockedByNestedContent do
-        match remaining with
-        | [] ->
-            result <- ValueSome doc
-        | Paragraph para :: tail when para.Id = paragraphId ->
-            let nextPara = updateParagraph para
-            result <-
-                if paragraphReplacementMatches para nextPara then
-                    ValueSome doc
-                else
-                    ValueSome { doc with Blocks = replaceTopLevelBlockAtIndex index (Paragraph nextPara) doc.Blocks }
-        | Heading (level, para) :: tail when para.Id = paragraphId ->
-            let nextPara = updateParagraph para
-            result <-
-                if paragraphReplacementMatches para nextPara then
-                    ValueSome doc
-                else
-                    ValueSome { doc with Blocks = replaceTopLevelBlockAtIndex index (Heading (level, nextPara)) doc.Blocks }
-        | (Table _ | TextBox _) :: _ ->
-            blockedByNestedContent <- true
-        | block :: tail ->
-            remaining <- tail
-            index <- index + 1
+        while result.IsNone && not blockedByNestedContent do
+            match remaining with
+            | [] ->
+                result <- ValueSome doc
+            | Paragraph para :: tail when para.Id = paragraphId ->
+                let nextPara = updateParagraph para
+                result <-
+                    if paragraphReplacementMatches para nextPara then
+                        ValueSome doc
+                    else
+                        let nextBlocks =
+                            replaceTopLevelBlockAtIndexAndRemember index (Paragraph nextPara) paragraphId doc.Blocks
+                        ValueSome { doc with Blocks = nextBlocks }
+            | Heading (level, para) :: tail when para.Id = paragraphId ->
+                let nextPara = updateParagraph para
+                result <-
+                    if paragraphReplacementMatches para nextPara then
+                        ValueSome doc
+                    else
+                        let nextBlocks =
+                            replaceTopLevelBlockAtIndexAndRemember index (Heading (level, nextPara)) paragraphId doc.Blocks
+                        ValueSome { doc with Blocks = nextBlocks }
+            | (Table _ | TextBox _) :: _ ->
+                blockedByNestedContent <- true
+            | block :: tail ->
+                remaining <- tail
+                index <- index + 1
 
-    if blockedByNestedContent then ValueNone else result
+        if blockedByNestedContent then ValueNone else result
+
+    match tryGetTopLevelParagraphEditEntry doc.Blocks paragraphId with
+    | ValueSome entry ->
+        match tryUpdateTopLevelParagraphFromCachedEntry doc paragraphId entry updateParagraph with
+        | ValueSome updatedDoc -> ValueSome updatedDoc
+        | ValueNone -> scan ()
+    | ValueNone ->
+        scan ()
 
 /// Replace an editable paragraph anywhere in the document, preserving its container.
 let replaceParagraph (doc: Document) paragraphId newPara =

@@ -1707,7 +1707,7 @@ check "native image resize applied"
     (Some 220.0)
 check "native image resize alloc"
     (resizeSw.Elapsed.TotalMilliseconds < 140.0
-     && resizeAllocated < 48L * 1024L * 1024L)
+     && resizeAllocated < 36L * 1024L * 1024L)
     true
 
 let replaceParagraphCount = 50000
@@ -1736,7 +1736,7 @@ check "native replace paragraph value"
     (Some "replace 20")
 check "native replace paragraph alloc"
     (replaceSw.Elapsed.TotalMilliseconds < 170.0
-     && replaceAllocated < 48L * 1024L * 1024L)
+     && replaceAllocated < 36L * 1024L * 1024L)
     true
 
 let replaceAllParagraphCount = 50000
