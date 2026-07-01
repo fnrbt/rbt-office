@@ -799,6 +799,40 @@ check "native sparse default paint parts three-position cycle"
      && sparsePaintPartsCycleTotal > 0)
     true
 
+let sparsePaintPartsEntryCycleViewports: RedBat.Spreadsheet.Layout.Viewport array =
+    [| for index in 0 .. 79 ->
+        { paintCacheViewport with
+            ScrollX = 0.0
+            ScrollY = float index * 420.0 } |]
+let sparsePaintPartsEntryCycleCounts =
+    sparsePaintPartsEntryCycleViewports
+    |> Array.map (fun viewport ->
+        RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel viewport
+        |> Option.map sparsePaintPartsItemCount)
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let sparsePaintPartsEntryCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let sparsePaintPartsEntryCycleSw = Stopwatch.StartNew()
+let mutable sparsePaintPartsEntryCycleTotal = 0
+for _pass in 1 .. 20 do
+    for viewport in sparsePaintPartsEntryCycleViewports do
+        match RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel viewport with
+        | Some parts ->
+            sparsePaintPartsEntryCycleTotal <- sparsePaintPartsEntryCycleTotal + sparsePaintPartsItemCount parts
+        | None -> ()
+sparsePaintPartsEntryCycleSw.Stop()
+let sparsePaintPartsEntryCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - sparsePaintPartsEntryCycleAllocatedBefore
+check "native sparse default paint parts entry cycle"
+    (sparsePaintPartsEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && sparsePaintPartsEntryCycleAllocated < 2L * 1024L * 1024L
+     && (sparsePaintPartsEntryCycleCounts |> Array.forall Option.isSome)
+     && sparsePaintPartsEntryCycleTotal = 96920)
+    true
+
 if isNull usedBoundsCached then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor usedBoundsCached helper" "native used bounds reflection"
