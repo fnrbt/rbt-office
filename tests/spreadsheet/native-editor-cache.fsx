@@ -911,6 +911,46 @@ check "native conditional format alternating no-number cache"
      && conditionalNoNumberHits = 300000)
     true
 
+let conditionalNoNumberDataBarColors = [| "#63C384"; "#FF0000"; "#0000FF" |]
+let conditionalNoNumberScaleLowColors = [| "#FF0000"; "#0000FF"; "#63C384" |]
+let conditionalNoNumberIconCounts = [| 3; 4; 5 |]
+for color in conditionalNoNumberDataBarColors do
+    applyDataBars 0 0 (conditionalFormatRows - 1) 0 color conditionalNoNumberModel |> ignore
+for color in conditionalNoNumberScaleLowColors do
+    applyColorScale 0 0 (conditionalFormatRows - 1) 0 color None "#00FF00" conditionalNoNumberModel |> ignore
+for count in conditionalNoNumberIconCounts do
+    applyIconSet 0 0 (conditionalFormatRows - 1) 0 count conditionalNoNumberModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let conditionalNoNumberCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let conditionalNoNumberCycleSw = Stopwatch.StartNew()
+let mutable conditionalNoNumberCycleHits = 0
+for index in 1 .. 100000 do
+    let variant = index % 3
+    if obj.ReferenceEquals(
+        applyDataBars 0 0 (conditionalFormatRows - 1) 0 conditionalNoNumberDataBarColors.[variant] conditionalNoNumberModel,
+        conditionalNoNumberModel) then
+        conditionalNoNumberCycleHits <- conditionalNoNumberCycleHits + 1
+    if obj.ReferenceEquals(
+        applyColorScale 0 0 (conditionalFormatRows - 1) 0 conditionalNoNumberScaleLowColors.[variant] None "#00FF00" conditionalNoNumberModel,
+        conditionalNoNumberModel) then
+        conditionalNoNumberCycleHits <- conditionalNoNumberCycleHits + 1
+    if obj.ReferenceEquals(
+        applyIconSet 0 0 (conditionalFormatRows - 1) 0 conditionalNoNumberIconCounts.[variant] conditionalNoNumberModel,
+        conditionalNoNumberModel) then
+        conditionalNoNumberCycleHits <- conditionalNoNumberCycleHits + 1
+conditionalNoNumberCycleSw.Stop()
+let conditionalNoNumberCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - conditionalNoNumberCycleAllocatedBefore
+check "native conditional format no-number three-position cycle"
+    (conditionalNoNumberCycleSw.Elapsed.TotalMilliseconds < 60.0
+     && conditionalNoNumberCycleAllocated < 512L * 1024L
+     && conditionalNoNumberCycleHits = 300000)
+    true
+
 let pasteIdentityCells =
     [ { Row = 1; Col = 1 }, cell (CellValue.String "same") ]
     |> Map.ofList

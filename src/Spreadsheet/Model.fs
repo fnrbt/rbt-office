@@ -6529,14 +6529,26 @@ let mutable private dataBarApplyLastSet = false
 let mutable private dataBarApplyLast = Unchecked.defaultof<DataBarApplyLast>
 let mutable private dataBarApplyPreviousLastSet = false
 let mutable private dataBarApplyPreviousLast = Unchecked.defaultof<DataBarApplyLast>
+let mutable private dataBarApplyOlder1LastSet = false
+let mutable private dataBarApplyOlder1Last = Unchecked.defaultof<DataBarApplyLast>
+let mutable private dataBarApplyOlder2LastSet = false
+let mutable private dataBarApplyOlder2Last = Unchecked.defaultof<DataBarApplyLast>
 let mutable private iconSetApplyLastSet = false
 let mutable private iconSetApplyLast = Unchecked.defaultof<IconSetApplyLast>
 let mutable private iconSetApplyPreviousLastSet = false
 let mutable private iconSetApplyPreviousLast = Unchecked.defaultof<IconSetApplyLast>
+let mutable private iconSetApplyOlder1LastSet = false
+let mutable private iconSetApplyOlder1Last = Unchecked.defaultof<IconSetApplyLast>
+let mutable private iconSetApplyOlder2LastSet = false
+let mutable private iconSetApplyOlder2Last = Unchecked.defaultof<IconSetApplyLast>
 let mutable private colorScaleApplyLastSet = false
 let mutable private colorScaleApplyLast = Unchecked.defaultof<ColorScaleApplyLast>
 let mutable private colorScaleApplyPreviousLastSet = false
 let mutable private colorScaleApplyPreviousLast = Unchecked.defaultof<ColorScaleApplyLast>
+let mutable private colorScaleApplyOlder1LastSet = false
+let mutable private colorScaleApplyOlder1Last = Unchecked.defaultof<ColorScaleApplyLast>
+let mutable private colorScaleApplyOlder2LastSet = false
+let mutable private colorScaleApplyOlder2Last = Unchecked.defaultof<ColorScaleApplyLast>
 let private dataBarApplyCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, DataBarApplyCache>(cellMapReferenceComparer)
 let private dataBarApplyFastSlots = Array.zeroCreate<DataBarApplyCache> 256
@@ -6581,6 +6593,12 @@ let private dataBarApplyLastMatches sr sc er ec color cells (cached: DataBarAppl
 let private rememberDataBarApplyLast sr sc er ec color cells =
     if dataBarApplyLastSet
        && not (dataBarApplyLastMatches sr sc er ec color cells dataBarApplyLast) then
+        if dataBarApplyOlder1LastSet then
+            dataBarApplyOlder2LastSet <- true
+            dataBarApplyOlder2Last <- dataBarApplyOlder1Last
+        if dataBarApplyPreviousLastSet then
+            dataBarApplyOlder1LastSet <- true
+            dataBarApplyOlder1Last <- dataBarApplyPreviousLast
         dataBarApplyPreviousLastSet <- true
         dataBarApplyPreviousLast <- dataBarApplyLast
     dataBarApplyLastSet <- true
@@ -6597,6 +6615,10 @@ let private tryGetDataBarApplyLast sr sc er ec color cells =
      && dataBarApplyLastMatches sr sc er ec color cells dataBarApplyLast)
     || (dataBarApplyPreviousLastSet
         && dataBarApplyLastMatches sr sc er ec color cells dataBarApplyPreviousLast)
+    || (dataBarApplyOlder1LastSet
+        && dataBarApplyLastMatches sr sc er ec color cells dataBarApplyOlder1Last)
+    || (dataBarApplyOlder2LastSet
+        && dataBarApplyLastMatches sr sc er ec color cells dataBarApplyOlder2Last)
 
 let private iconSetApplyLastMatches sr sc er ec count cells (cached: IconSetApplyLast) =
     obj.ReferenceEquals(cached.Cells, cells)
@@ -6609,6 +6631,12 @@ let private iconSetApplyLastMatches sr sc er ec count cells (cached: IconSetAppl
 let private rememberIconSetApplyLast sr sc er ec count cells =
     if iconSetApplyLastSet
        && not (iconSetApplyLastMatches sr sc er ec count cells iconSetApplyLast) then
+        if iconSetApplyOlder1LastSet then
+            iconSetApplyOlder2LastSet <- true
+            iconSetApplyOlder2Last <- iconSetApplyOlder1Last
+        if iconSetApplyPreviousLastSet then
+            iconSetApplyOlder1LastSet <- true
+            iconSetApplyOlder1Last <- iconSetApplyPreviousLast
         iconSetApplyPreviousLastSet <- true
         iconSetApplyPreviousLast <- iconSetApplyLast
     iconSetApplyLastSet <- true
@@ -6625,6 +6653,10 @@ let private tryGetIconSetApplyLast sr sc er ec count cells =
      && iconSetApplyLastMatches sr sc er ec count cells iconSetApplyLast)
     || (iconSetApplyPreviousLastSet
         && iconSetApplyLastMatches sr sc er ec count cells iconSetApplyPreviousLast)
+    || (iconSetApplyOlder1LastSet
+        && iconSetApplyLastMatches sr sc er ec count cells iconSetApplyOlder1Last)
+    || (iconSetApplyOlder2LastSet
+        && iconSetApplyLastMatches sr sc er ec count cells iconSetApplyOlder2Last)
 
 let private colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells (cached: ColorScaleApplyLast) =
     obj.ReferenceEquals(cached.Cells, cells)
@@ -6639,6 +6671,12 @@ let private colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells (ca
 let private rememberColorScaleApplyLast sr sc er ec loColor mid hiColor cells =
     if colorScaleApplyLastSet
        && not (colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyLast) then
+        if colorScaleApplyOlder1LastSet then
+            colorScaleApplyOlder2LastSet <- true
+            colorScaleApplyOlder2Last <- colorScaleApplyOlder1Last
+        if colorScaleApplyPreviousLastSet then
+            colorScaleApplyOlder1LastSet <- true
+            colorScaleApplyOlder1Last <- colorScaleApplyPreviousLast
         colorScaleApplyPreviousLastSet <- true
         colorScaleApplyPreviousLast <- colorScaleApplyLast
     colorScaleApplyLastSet <- true
@@ -6657,6 +6695,10 @@ let private tryGetColorScaleApplyLast sr sc er ec loColor mid hiColor cells =
      && colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyLast)
     || (colorScaleApplyPreviousLastSet
         && colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyPreviousLast)
+    || (colorScaleApplyOlder1LastSet
+        && colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyOlder1Last)
+    || (colorScaleApplyOlder2LastSet
+        && colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyOlder2Last)
 
 let private setDataBarApplyCache entries =
     dataBarApplyCache <- entries
