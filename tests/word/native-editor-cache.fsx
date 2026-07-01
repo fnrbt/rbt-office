@@ -844,6 +844,31 @@ check "native block lookup long id perf"
      && blockLookupHits = 1024000)
     true
 
+let paragraphLookupIdPrefix = System.String('p', 5000)
+let paragraphLookupIds =
+    [| for index in 0 .. 511 -> paragraphLookupIdPrefix + sprintf "%04d" index |]
+let paragraphLookupDoc =
+    { Doc.empty with
+        Blocks =
+            [ for paragraphId in paragraphLookupIds ->
+                Doc.Paragraph (para paragraphId "lookup text") ] }
+Doc.findParagraph paragraphLookupDoc paragraphLookupIds.[0] |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let paragraphLookupSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable paragraphLookupHits = 0
+for _pass in 1 .. 2000 do
+    for paragraphId in paragraphLookupIds do
+        match Doc.findParagraph paragraphLookupDoc paragraphId with
+        | Some _ -> paragraphLookupHits <- paragraphLookupHits + 1
+        | None -> ()
+paragraphLookupSw.Stop()
+check "native paragraph lookup long id perf"
+    (paragraphLookupSw.Elapsed.TotalMilliseconds < 750.0
+     && paragraphLookupHits = 1024000)
+    true
+
 if isNull documentCaptionIdMetrics || isNull documentBookmarkIdMetrics || isNull documentRevisionIdMetrics then
     fail <- fail + 1
     printfn "FAIL %-34s expected private document id metrics helpers" "native id metrics reflection"
