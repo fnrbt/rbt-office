@@ -4462,7 +4462,7 @@ let mutable private maxUsedColumnCache: MaxUsedColumnCache list = []
 let private maxUsedColumnCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, MaxUsedColumnCache>(cellMapReferenceComparer)
 let private maxUsedColumnFastSlots = Array.zeroCreate<MaxUsedColumnCache> 256
-let private maxUsedColumnCacheMaxSources = 64
+let private maxUsedColumnCacheMaxSources = 256
 let private maxUsedColumnCacheMaxTotalCells = structuralCellSourceTextCacheMaxTotalCells
 let private maxUsedColumnCacheMaxTotalSourceTextChars = structuralCellSourceTextCacheMaxTotalSourceTextChars
 

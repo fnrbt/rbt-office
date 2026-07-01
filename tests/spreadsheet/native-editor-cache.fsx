@@ -628,6 +628,34 @@ check "native used bounds source cycle"
      && usedBoundsCycleTotal = 8067080)
     true
 
+let maxUsedColumnCycleInsertCol = 60
+for model in usedBoundsCycleModels do
+    insertColumn maxUsedColumnCycleInsertCol model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let maxUsedColumnCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let maxUsedColumnCycleSw = Stopwatch.StartNew()
+let mutable maxUsedColumnCycleTotal = 0
+let mutable maxUsedColumnCycleSameCells = 0
+for _pass in 1 .. 20 do
+    for model in usedBoundsCycleModels do
+        let updated = insertColumn maxUsedColumnCycleInsertCol model
+        maxUsedColumnCycleTotal <- maxUsedColumnCycleTotal + updated.ColCount
+        if obj.ReferenceEquals(updated.Cells, model.Cells) then
+            maxUsedColumnCycleSameCells <- maxUsedColumnCycleSameCells + 1
+maxUsedColumnCycleSw.Stop()
+let maxUsedColumnCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - maxUsedColumnCycleAllocatedBefore
+check "native max used column source cycle"
+    (maxUsedColumnCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && maxUsedColumnCycleAllocated < 512L * 1024L
+     && maxUsedColumnCycleTotal = 104000
+     && maxUsedColumnCycleSameCells = 1600)
+    true
+
 let lastUsedColumnRows = 100000
 let lastUsedColumnCells =
     [ for row in 0 .. lastUsedColumnRows - 1 ->
