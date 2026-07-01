@@ -2226,7 +2226,7 @@ let private staticPaintItemsCacheByModel =
     Dictionary<SpreadsheetModel, StaticPaintItemsCache>(spreadsheetModelReferenceComparer)
 let private staticPaintItemsFastSlots = Array.zeroCreate<StaticPaintItemsCache> 256
 let private staticPaintItemsCacheMaxEntries = 64
-let private staticPaintItemsCacheMaxModels = 64
+let private staticPaintItemsCacheMaxModels = 256
 let private staticPaintItemsCacheMaxTotalItems = 200000
 let private staticPaintItemsCacheMaxTotalItemTextChars = 5000000
 let private staticPaintItemsCacheMaxTotalSourceItems = 200000
