@@ -2515,19 +2515,19 @@ let private sortRowsAreIdentitySorted col ascending (cells: Map<CellAddress, Cel
     haveRows, alreadyIdentitySorted, sourceTextCharCount
 
 let private columnUniqueValuesCached includeBlanks col (model: SpreadsheetModel) =
-    let tryCached () =
+    let cachedResult =
         match tryGetColumnUniqueValuesCache model.Cells with
         | ValueSome cached ->
             let mutable entry = Unchecked.defaultof<ColumnUniqueValuesCacheEntry>
             if cached.Entries.TryGetValue(col, &entry) then
-                Some (if includeBlanks then entry.ValuesWithBlanks else entry.ValuesWithoutBlanks)
+                ValueSome (if includeBlanks then entry.ValuesWithBlanks else entry.ValuesWithoutBlanks)
             else
-                None
-        | ValueNone -> None
+                ValueNone
+        | ValueNone -> ValueNone
 
-    match tryCached () with
-    | Some values -> values
-    | _ ->
+    match cachedResult with
+    | ValueSome values -> values
+    | ValueNone ->
         let valuesWithBlanks = System.Collections.Generic.HashSet<string>()
         let valuesWithoutBlanks = System.Collections.Generic.HashSet<string>()
         let mutable errorDisplayCache = Unchecked.defaultof<System.Collections.Generic.Dictionary<string, string>>

@@ -549,6 +549,23 @@ check "native column unique values cache value"
 check "native column unique values reuses"
     (obj.ReferenceEquals(uniqueValues, uniqueValuesAgain))
     true
+columnUniqueValues 0 uniqueValuesModel |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let uniqueValuesAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let uniqueValuesSw = Stopwatch.StartNew()
+let mutable uniqueValuesTotal = 0
+for _pass in 1 .. 200000 do
+    uniqueValuesTotal <- uniqueValuesTotal + (getColumnUniqueValues 0 uniqueValuesModel).Length
+    uniqueValuesTotal <- uniqueValuesTotal + (columnUniqueValues 0 uniqueValuesModel).Length
+uniqueValuesSw.Stop()
+let uniqueValuesAllocated = System.GC.GetAllocatedBytesForCurrentThread() - uniqueValuesAllocatedBefore
+check "native column unique values hot hit"
+    (uniqueValuesSw.Elapsed.TotalMilliseconds < 250.0
+     && uniqueValuesAllocated < 2L * 1024L * 1024L
+     && uniqueValuesTotal = 1000000)
+    true
 
 let tableUniqueValuesCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.String "Color")
