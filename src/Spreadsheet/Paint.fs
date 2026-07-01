@@ -599,6 +599,10 @@ type private SparseDefaultPaintCacheEntry = {
     ItemCount: int
     TextCharCount: int
     SourceCellCount: int
+    mutable CachedPartsSelection: Selection
+    mutable CachedPartsPrefixItems: PaintItem list
+    mutable CachedPartsSuffixItems: PaintItem list
+    mutable CachedParts: SparseDefaultPaintParts option
 }
 
 type private SparseDefaultPaintCacheKey = {
@@ -622,6 +626,34 @@ type private SparseDefaultPaintCacheKey = {
     Measurer: TextMeasurer option
 }
 
+type private SparseDefaultPaintPartsLastEntry = {
+    Cells: Map<CellAddress, CellData>
+    Tables: Table list
+    ConditionalFormats: Map<CellAddress, ConditionalFormat list>
+    MergedCells: MergedCell list
+    RichRuns: Map<CellAddress, (string * RunOverride) list>
+    RowHeights: Map<int, float>
+    ColumnWidths: Map<int, float>
+    Filters: Map<int, ColumnFilter>
+    FilterHiddenRows: int array
+    Spill: Map<CellAddress, CellAddress>
+    Validations: Map<CellAddress, DataValidation>
+    SearchResults: CellAddress array
+    CfBoldCells: Set<CellAddress>
+    PageSetup: PageSetup
+    RowCount: int
+    ColCount: int
+    Selection: Selection
+    ScrollX: float
+    ScrollY: float
+    Width: float
+    Height: float
+    HeaderHeight: float
+    RowHeaderWidth: float
+    Measurer: TextMeasurer option
+    Result: SparseDefaultPaintParts option
+}
+
 let private sparseSameMeasurer (left: TextMeasurer option) (right: TextMeasurer option) =
     match left, right with
     | None, None -> true
@@ -632,7 +664,7 @@ let private sparseMeasurerHash = function
     | Some measurer -> RuntimeHelpers.GetHashCode(measurer)
     | None -> 0
 
-let private sparseDefaultPaintCacheKeyHash key =
+let private sparseDefaultPaintCacheKeyHash (key: SparseDefaultPaintCacheKey) =
     let mutable hashCode = RuntimeHelpers.GetHashCode(key.Cells)
     hashCode <- (hashCode * 397) ^^^ RuntimeHelpers.GetHashCode(key.Tables)
     hashCode <- (hashCode * 397) ^^^ RuntimeHelpers.GetHashCode(key.ConditionalFormats)
@@ -652,7 +684,7 @@ let private sparseDefaultPaintCacheKeyHash key =
     hashCode <- (hashCode * 397) ^^^ hash key.Geometry
     (hashCode * 397) ^^^ sparseMeasurerHash key.Measurer
 
-let private sparseDefaultPaintCacheKeyMatches left right =
+let private sparseDefaultPaintCacheKeyMatches (left: SparseDefaultPaintCacheKey) (right: SparseDefaultPaintCacheKey) =
     obj.ReferenceEquals(left.Cells, right.Cells)
     && obj.ReferenceEquals(left.Tables, right.Tables)
     && obj.ReferenceEquals(left.ConditionalFormats, right.ConditionalFormats)
@@ -681,12 +713,89 @@ let mutable private sparseDefaultPaintCache: SparseDefaultPaintCacheEntry list =
 let private sparseDefaultPaintCacheByKey =
     Dictionary<SparseDefaultPaintCacheKey, SparseDefaultPaintCacheEntry>(sparseDefaultPaintCacheKeyComparer)
 let private sparseDefaultPaintFastSlots = Array.zeroCreate<SparseDefaultPaintCacheEntry> 256
+let mutable private sparseDefaultPaintPartsLastSet = false
+let mutable private sparseDefaultPaintPartsLast = Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
 let private sparseDefaultPaintCacheMaxEntries = 16
 let private sparseDefaultPaintCacheMaxTotalItems = 200000
 let private sparseDefaultPaintCacheMaxTotalTextChars = 5000000
 let private sparseDefaultPaintCacheMaxTotalSourceCells = 200000
 
-let private sparseDefaultPaintGeometryKey (viewport: Viewport) = {
+let private sparseDefaultPaintCacheEntryRetainable (entry: SparseDefaultPaintCacheEntry) =
+    entry.ItemCount <= sparseDefaultPaintCacheMaxTotalItems
+    && entry.TextCharCount <= sparseDefaultPaintCacheMaxTotalTextChars
+    && entry.SourceCellCount <= sparseDefaultPaintCacheMaxTotalSourceCells
+
+let private clearSparseDefaultPaintPartsLast () =
+    sparseDefaultPaintPartsLastSet <- false
+    sparseDefaultPaintPartsLast <- Unchecked.defaultof<SparseDefaultPaintPartsLastEntry>
+
+let private sparseDefaultPaintPartsLastMatches (model: SpreadsheetModel) (viewport: Viewport) (cached: SparseDefaultPaintPartsLastEntry) =
+    obj.ReferenceEquals(cached.Cells, model.Cells)
+    && obj.ReferenceEquals(cached.Tables, model.Tables)
+    && obj.ReferenceEquals(cached.ConditionalFormats, model.ConditionalFormats)
+    && obj.ReferenceEquals(cached.MergedCells, model.MergedCells)
+    && obj.ReferenceEquals(cached.RichRuns, model.RichRuns)
+    && obj.ReferenceEquals(cached.RowHeights, model.RowHeights)
+    && obj.ReferenceEquals(cached.ColumnWidths, model.ColumnWidths)
+    && obj.ReferenceEquals(cached.Filters, model.Filters)
+    && obj.ReferenceEquals(cached.FilterHiddenRows, model.FilterHiddenRows)
+    && obj.ReferenceEquals(cached.Spill, model.Spill)
+    && obj.ReferenceEquals(cached.Validations, model.Validations)
+    && obj.ReferenceEquals(cached.SearchResults, model.SearchResults)
+    && obj.ReferenceEquals(cached.CfBoldCells, model.CfBoldCells)
+    && obj.ReferenceEquals(cached.PageSetup, model.PageSetup)
+    && cached.RowCount = model.RowCount
+    && cached.ColCount = model.ColCount
+    && cached.Selection = model.Selection
+    && cached.ScrollX = viewport.ScrollX
+    && cached.ScrollY = viewport.ScrollY
+    && cached.Width = viewport.Width
+    && cached.Height = viewport.Height
+    && cached.HeaderHeight = viewport.HeaderHeight
+    && cached.RowHeaderWidth = viewport.RowHeaderWidth
+    && sparseSameMeasurer cached.Measurer viewport.Measurer
+
+let private tryGetSparseDefaultPaintPartsLast model viewport =
+    if sparseDefaultPaintPartsLastSet
+       && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsLast then
+        ValueSome sparseDefaultPaintPartsLast.Result
+    else
+        ValueNone
+
+let private rememberSparseDefaultPaintPartsLast (model: SpreadsheetModel) (viewport: Viewport) result =
+    match result with
+    | Some _ ->
+        sparseDefaultPaintPartsLastSet <- true
+        sparseDefaultPaintPartsLast <-
+            { Cells = model.Cells
+              Tables = model.Tables
+              ConditionalFormats = model.ConditionalFormats
+              MergedCells = model.MergedCells
+              RichRuns = model.RichRuns
+              RowHeights = model.RowHeights
+              ColumnWidths = model.ColumnWidths
+              Filters = model.Filters
+              FilterHiddenRows = model.FilterHiddenRows
+              Spill = model.Spill
+              Validations = model.Validations
+              SearchResults = model.SearchResults
+              CfBoldCells = model.CfBoldCells
+              PageSetup = model.PageSetup
+              RowCount = model.RowCount
+              ColCount = model.ColCount
+              Selection = model.Selection
+              ScrollX = viewport.ScrollX
+              ScrollY = viewport.ScrollY
+              Width = viewport.Width
+              Height = viewport.Height
+              HeaderHeight = viewport.HeaderHeight
+              RowHeaderWidth = viewport.RowHeaderWidth
+              Measurer = viewport.Measurer
+              Result = result }
+    | None -> ()
+    result
+
+let private sparseDefaultPaintGeometryKey (viewport: Viewport) : SparseDefaultPaintGeometryKey = {
     ScrollX = viewport.ScrollX
     ScrollY = viewport.ScrollY
     Width = viewport.Width
@@ -695,7 +804,11 @@ let private sparseDefaultPaintGeometryKey (viewport: Viewport) = {
     RowHeaderWidth = viewport.RowHeaderWidth
 }
 
-let private sparseDefaultPaintCacheKey (model: SpreadsheetModel) geometry measurer = {
+let private sparseDefaultPaintCacheKey
+    (model: SpreadsheetModel)
+    (geometry: SparseDefaultPaintGeometryKey)
+    measurer
+    : SparseDefaultPaintCacheKey = {
     Cells = model.Cells
     Tables = model.Tables
     ConditionalFormats = model.ConditionalFormats
@@ -716,7 +829,7 @@ let private sparseDefaultPaintCacheKey (model: SpreadsheetModel) geometry measur
     Measurer = measurer
 }
 
-let private sparseDefaultPaintCacheKeyFromEntry (entry: SparseDefaultPaintCacheEntry) = {
+let private sparseDefaultPaintCacheKeyFromEntry (entry: SparseDefaultPaintCacheEntry) : SparseDefaultPaintCacheKey = {
     Cells = entry.Cells
     Tables = entry.Tables
     ConditionalFormats = entry.ConditionalFormats
@@ -737,7 +850,7 @@ let private sparseDefaultPaintCacheKeyFromEntry (entry: SparseDefaultPaintCacheE
     Measurer = entry.Measurer
 }
 
-let private sparseDefaultPaintCacheKeyMatchesEntry key (cached: SparseDefaultPaintCacheEntry) =
+let private sparseDefaultPaintCacheKeyMatchesEntry (key: SparseDefaultPaintCacheKey) (cached: SparseDefaultPaintCacheEntry) =
     obj.ReferenceEquals(cached.Cells, key.Cells)
     && obj.ReferenceEquals(cached.Tables, key.Tables)
     && obj.ReferenceEquals(cached.ConditionalFormats, key.ConditionalFormats)
@@ -757,19 +870,20 @@ let private sparseDefaultPaintCacheKeyMatchesEntry key (cached: SparseDefaultPai
     && cached.Geometry = key.Geometry
     && sparseSameMeasurer cached.Measurer key.Measurer
 
-let private sparseDefaultPaintCacheSlot key slotCount =
+let private sparseDefaultPaintCacheSlot (key: SparseDefaultPaintCacheKey) slotCount =
     sparseDefaultPaintCacheKeyHash key &&& (slotCount - 1)
 
 let private setSparseDefaultPaintCache entries =
     sparseDefaultPaintCache <- entries
     sparseDefaultPaintCacheByKey.Clear()
     clearArray sparseDefaultPaintFastSlots
+    clearSparseDefaultPaintPartsLast ()
     for entry in entries do
         let key = sparseDefaultPaintCacheKeyFromEntry entry
         sparseDefaultPaintCacheByKey.[key] <- entry
         sparseDefaultPaintFastSlots.[sparseDefaultPaintCacheSlot key sparseDefaultPaintFastSlots.Length] <- entry
 
-let private tryGetSparseDefaultPaintCachedEntry key =
+let private tryGetSparseDefaultPaintCachedEntry (key: SparseDefaultPaintCacheKey) =
     let slot = sparseDefaultPaintCacheSlot key sparseDefaultPaintFastSlots.Length
     let fast = sparseDefaultPaintFastSlots.[slot]
     if not (obj.ReferenceEquals(fast, null))
@@ -832,9 +946,7 @@ let private sparseDefaultPrefixItems (model: SpreadsheetModel) (viewport: Viewpo
     resizeArrayToList prefix
 
 let private rememberSparseDefaultPaintCacheEntry entry =
-    if entry.ItemCount > sparseDefaultPaintCacheMaxTotalItems
-       || entry.TextCharCount > sparseDefaultPaintCacheMaxTotalTextChars
-       || entry.SourceCellCount > sparseDefaultPaintCacheMaxTotalSourceCells then
+    if not (sparseDefaultPaintCacheEntryRetainable entry) then
         let entries = sparseDefaultPaintCacheWithoutMatching entry
         if not (obj.ReferenceEquals(entries, sparseDefaultPaintCache)) then
             setSparseDefaultPaintCache entries
@@ -939,6 +1051,10 @@ let private buildSparseDefaultPaintCacheEntry
             ItemCount = 0
             TextCharCount = 0
             SourceCellCount = model.Cells.Count
+            CachedPartsSelection = SingleCell (-1, -1)
+            CachedPartsPrefixItems = []
+            CachedPartsSuffixItems = []
+            CachedParts = None
         }
     else
         let textItems = ResizeArray<PaintItem>()
@@ -1045,6 +1161,10 @@ let private buildSparseDefaultPaintCacheEntry
                 ItemCount = prefixItems.Length + gridItems.Length + textItems.Length
                 TextCharCount = textCharCount
                 SourceCellCount = model.Cells.Count
+                CachedPartsSelection = SingleCell (-1, -1)
+                CachedPartsPrefixItems = []
+                CachedPartsSuffixItems = []
+                CachedParts = None
             }
 
 let private tryGetSparseDefaultPaintCacheEntry (model: SpreadsheetModel) (viewport: Viewport) =
@@ -1075,16 +1195,28 @@ let private tryGetSparseDefaultPaintCacheEntry (model: SpreadsheetModel) (viewpo
             entry
 
 let private sparseDefaultPartsFromEntry prefixItems suffixItems (model: SpreadsheetModel) (entry: SparseDefaultPaintCacheEntry) =
-    let selectionFills, selectionStrokes =
-        sparseDefaultSelectionParts entry.VisibleRows entry.VisibleCols model.Selection
-    {
-        PrefixItems = prefixItems
-        SelectionFills = selectionFills
-        GridItems = entry.GridItems
-        SelectionStrokes = selectionStrokes
-        TextItems = entry.TextItems
-        SuffixItems = suffixItems
-    }
+    match entry.CachedParts with
+    | Some parts
+        when entry.CachedPartsSelection = model.Selection
+             && obj.ReferenceEquals(entry.CachedPartsPrefixItems, prefixItems)
+             && obj.ReferenceEquals(entry.CachedPartsSuffixItems, suffixItems) ->
+        parts
+    | _ ->
+        let selectionFills, selectionStrokes =
+            sparseDefaultSelectionParts entry.VisibleRows entry.VisibleCols model.Selection
+        let parts = {
+            PrefixItems = prefixItems
+            SelectionFills = selectionFills
+            GridItems = entry.GridItems
+            SelectionStrokes = selectionStrokes
+            TextItems = entry.TextItems
+            SuffixItems = suffixItems
+        }
+        entry.CachedPartsSelection <- model.Selection
+        entry.CachedPartsPrefixItems <- prefixItems
+        entry.CachedPartsSuffixItems <- suffixItems
+        entry.CachedParts <- Some parts
+        parts
 
 let private tryBuildSparseDefaultCellPaintParts (model: SpreadsheetModel) (viewport: Viewport) =
     tryGetSparseDefaultPaintCacheEntry model viewport
@@ -2547,8 +2679,17 @@ let private withFilterRowHeights (model: SpreadsheetModel) =
 
 let tryBuildSparseDefaultPaintParts (model: SpreadsheetModel) (viewport: Viewport) =
     let model = model |> withFilterRowHeights
-    tryGetSparseDefaultPaintCacheEntry model viewport
-    |> Option.map (fun entry -> sparseDefaultPartsFromEntry entry.PrefixItems [] model entry)
+    match tryGetSparseDefaultPaintPartsLast model viewport with
+    | ValueSome cached -> cached
+    | ValueNone ->
+        match tryGetSparseDefaultPaintCacheEntry model viewport with
+        | Some entry ->
+            let result = Some (sparseDefaultPartsFromEntry entry.PrefixItems [] model entry)
+            if sparseDefaultPaintCacheEntryRetainable entry then
+                rememberSparseDefaultPaintPartsLast model viewport result
+            else
+                result
+        | None -> None
 
 let private sameMeasurer (left: TextMeasurer option) (right: TextMeasurer option) =
     match left, right with

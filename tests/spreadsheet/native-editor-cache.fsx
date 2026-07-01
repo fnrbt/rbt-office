@@ -369,6 +369,49 @@ check "native paint viewport cache hot hits"
      && paintHotHitTotal = firstPaintItems.Length * 50000)
     true
 
+let sparsePaintCells =
+    [ for row in 0 .. 1999 ->
+        { Row = row; Col = 0 }, cell (CellValue.String (sprintf "R%d" row)) ]
+    |> Map.ofList
+let sparsePaintModel = { createEmpty 20000 50 with Cells = sparsePaintCells }
+let sparsePaintPartsA =
+    RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel paintCacheViewport
+let sparsePaintPartsB =
+    RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel paintCacheViewport
+let sparsePaintPartsReuse =
+    match sparsePaintPartsA, sparsePaintPartsB with
+    | Some partsA, Some partsB ->
+        obj.ReferenceEquals(sparsePaintPartsA, sparsePaintPartsB)
+        && obj.ReferenceEquals(partsA, partsB)
+    | _ -> false
+check "native sparse default paint parts reuses"
+    sparsePaintPartsReuse
+    true
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let sparsePaintPartsAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let sparsePaintPartsSw = Stopwatch.StartNew()
+let mutable sparsePaintPartsTotal = 0
+for _ in 1 .. 100000 do
+    match RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparsePaintModel paintCacheViewport with
+    | Some parts ->
+        sparsePaintPartsTotal <-
+            sparsePaintPartsTotal
+            + parts.GridItems.Length
+            + parts.TextItems.Length
+    | None -> ()
+sparsePaintPartsSw.Stop()
+let sparsePaintPartsAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - sparsePaintPartsAllocatedBefore
+check "native sparse default paint parts hot hits"
+    (sparsePaintPartsSw.Elapsed.TotalMilliseconds < 80.0
+     && sparsePaintPartsAllocated < 8L * 1024L * 1024L
+     && sparsePaintPartsTotal > 0)
+    true
+
 if isNull usedBoundsCached then
     fail <- fail + 1
     printfn "FAIL %-38s expected editor usedBoundsCached helper" "native used bounds reflection"
