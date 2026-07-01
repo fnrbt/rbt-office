@@ -376,6 +376,73 @@ check "native content info source cycle"
      && contentInfoCycleTotal = contentInfoCycleDocs.Length * 100 * 500)
     true
 
+let revisionCacheCycleDocs =
+    [| for docIndex in 0 .. 64 ->
+        let firstBlockId = sprintf "native-revision-source-cycle-%02d-0000" docIndex
+        { Doc.empty with
+            Blocks =
+                [ for paragraphIndex in 0 .. 499 ->
+                    let buffer =
+                        TB.ofString "abcdefghijklmnopqrstuvwxyz"
+                        |> TB.applyStyle 3 12 (fun style ->
+                            { style with
+                                RevisionType = Some "insert"
+                                RevisionId = Some (sprintf "rev-%02d-%04d" docIndex paragraphIndex)
+                                RevisionAuthor = Some "author"
+                                RevisionDate = Some "date" })
+                    Doc.Paragraph {
+                        Id = sprintf "native-revision-source-cycle-%02d-%04d" docIndex paragraphIndex
+                        Buffer = buffer
+                        Metadata = Doc.defaultMetadata
+                    } ]
+            Selection = Some { Anchor = pos firstBlockId 0; Focus = pos firstBlockId 0 } } |]
+
+for doc in revisionCacheCycleDocs do
+    Doc.revisionInfos doc |> ignore
+    Doc.selectNextRevision doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let revisionInfoCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let revisionInfoCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable revisionInfoCycleTotal = 0
+for _pass in 1 .. 100 do
+    for doc in revisionCacheCycleDocs do
+        revisionInfoCycleTotal <- revisionInfoCycleTotal + (Doc.revisionInfos doc).Length
+revisionInfoCycleSw.Stop()
+let revisionInfoCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - revisionInfoCycleAllocatedBefore
+check "native revision info source cycle"
+    (revisionInfoCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && revisionInfoCycleAllocated < 512L * 1024L
+     && revisionInfoCycleTotal = revisionCacheCycleDocs.Length * 100 * 500)
+    true
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let revisionNavigationCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let revisionNavigationCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable revisionNavigationCycleTotal = 0
+for _pass in 1 .. 100 do
+    for doc in revisionCacheCycleDocs do
+        match Doc.selectNextRevision doc with
+        | { Selection = Some selection } ->
+            revisionNavigationCycleTotal <-
+                revisionNavigationCycleTotal + selection.Anchor.Offset + selection.Focus.Offset
+        | _ -> ()
+revisionNavigationCycleSw.Stop()
+let revisionNavigationCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - revisionNavigationCycleAllocatedBefore
+check "native revision navigation source cycle"
+    (revisionNavigationCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && revisionNavigationCycleAllocated < 4L * 1024L * 1024L
+     && revisionNavigationCycleTotal = revisionCacheCycleDocs.Length * 100 * (3 + 15))
+    true
+
 let styleContextCycleDocCount = 80
 let styleContextCycleStyleCount = 160
 let styleContextCycleDocs =
