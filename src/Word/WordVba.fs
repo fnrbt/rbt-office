@@ -979,13 +979,17 @@ module Vba =
         | VBoolean b -> if b then "True" else "False"
         | _ -> ""
 
+    let private isWordDelimiter = function
+        | ' ' | '\t' | '\r' | '\n' -> true
+        | _ -> false
+
     let private countWords (text: string) =
         let mutable count = 0
         let mutable inWord = false
         for ch in text do
-            match ch with
-            | ' ' | '\t' | '\r' | '\n' -> inWord <- false
-            | _ ->
+            if isWordDelimiter ch then
+                inWord <- false
+            else
                 if not inWord then
                     count <- count + 1
                     inWord <- true
@@ -1032,6 +1036,54 @@ module Vba =
         let mutable count = 0
         iterParagraphs doc (fun _ -> count <- count + 1)
         count
+
+    let private documentTextLength (doc: Doc.Document) =
+        let mutable totalLength = 0
+        let mutable count = 0
+        iterParagraphs doc (fun para ->
+            totalLength <- totalLength + TextBuf.length para.Buffer
+            count <- count + 1)
+        totalLength + max 0 (count - 1)
+
+    let private countWordsInBuffer (buffer: TextBuf.TextBuffer) =
+        let mutable count = 0
+        let mutable inWord = false
+        let countChar ch =
+            if isWordDelimiter ch then
+                inWord <- false
+            elif not inWord then
+                count <- count + 1
+                inWord <- true
+        let rec loop = function
+            | Rope.Empty -> ()
+            | Rope.Leaf text ->
+                for index = 0 to text.Length - 1 do
+                    countChar text.[index]
+            | Rope.Node (left, right, _) ->
+                loop left
+                loop right
+        loop buffer.Rope
+        count
+
+    let private documentTextWordCount (doc: Doc.Document) =
+        let mutable count = 0
+        iterParagraphs doc (fun para ->
+            count <- count + countWordsInBuffer para.Buffer)
+        count
+
+    let private documentTextLineCount (doc: Doc.Document) =
+        let mutable paragraphCount = 0
+        let mutable newlineCount = 0
+        iterParagraphs doc (fun para ->
+            paragraphCount <- paragraphCount + 1
+            newlineCount <- newlineCount + Rope.lines para.Buffer.Rope)
+        if paragraphCount = 0 then 1 else paragraphCount + newlineCount
+
+    let private tryFullDocumentRangeLength (doc: Doc.Document) startOffset endOffset =
+        let textLength = documentTextLength doc
+        let start = max 0 (min startOffset textLength)
+        let finish = max start (min endOffset textLength)
+        if start = 0 && finish = textLength then ValueSome textLength else ValueNone
 
     let private resolvePosition (doc: Doc.Document) (offset: int) =
         let mutable remaining = max 0 offset
@@ -1093,7 +1145,7 @@ module Vba =
     let private layoutFastSlots = Array.zeroCreate<LayoutCache> 256
     let private layoutCacheMaxEntries = 256
     let private layoutCacheMaxTotalLayouts = 200000
-    let private vbaSourceTextCacheMaxTotalChars = 5000000
+    let private vbaSourceTextCacheMaxTotalChars = 8000000
     let private vbaSourceParagraphCountLimit = 100000
 
     let private vbaAddCapped total value =
@@ -1899,7 +1951,7 @@ module Vba =
 
     let mutable private textStatisticsCache: TextStatisticsCache list = []
     let private textStatisticsCacheMaxEntries = 64
-    let private textStatisticsCacheMaxSources = 64
+    let private textStatisticsCacheMaxSources = 256
     let private textStatisticsCacheMaxTotalSourceParagraphs = vbaSourceParagraphCountLimit
     let private textStatisticsCacheMaxTotalSourceTextChars = vbaSourceTextCacheMaxTotalChars
     let private textStatisticsCacheByBlocks =
@@ -1997,8 +2049,11 @@ module Vba =
             order.Enqueue key
             entries.[key] <- value
 
-    let private textStatisticsRangeTextLength startOffset endOffset =
-        max 0 (endOffset - startOffset)
+    let private textStatisticsRangeTextLength doc startOffset endOffset =
+        let textLength = documentTextLength doc
+        let start = max 0 (min startOffset textLength)
+        let finish = max start (min endOffset textLength)
+        finish - start
 
     let private textStatisticsSourceParagraphCountFor rangeTextLength doc =
         if rangeTextLength > textStatisticsCacheMaxTotalSourceTextChars then
@@ -2034,7 +2089,7 @@ module Vba =
             let entries = Dictionary<TextStatisticsCacheKey, Value>()
             let order = Queue<TextStatisticsCacheKey>()
             addTextStatisticsCacheEntry key value entries order
-            let rangeTextLength = textStatisticsRangeTextLength startOffset endOffset
+            let rangeTextLength = textStatisticsRangeTextLength doc startOffset endOffset
             let sourceParagraphCount = textStatisticsSourceParagraphCountFor rangeTextLength doc
             rememberTextStatisticsCache {
                 SourceBlocks = doc.Blocks
@@ -2045,18 +2100,27 @@ module Vba =
             }
 
     let private computeTextStatisticByConstant (doc: Doc.Document) startOffset endOffset constant =
-        match constant with
-        | 0 -> VInteger (countWords (rangeText doc startOffset endOffset))
-        | 3 ->
-            let text = rangeText doc startOffset endOffset
-            VInteger text.Length
-        | 4 ->
-            let text = rangeText doc startOffset endOffset
-            VInteger (countLines text)
-        | 5 ->
-            let text = rangeText doc startOffset endOffset
-            VInteger text.Length
-        | _ -> VEmpty
+        match tryFullDocumentRangeLength doc startOffset endOffset with
+        | ValueSome textLength ->
+            match constant with
+            | 0 -> VInteger (documentTextWordCount doc)
+            | 3
+            | 5 -> VInteger textLength
+            | 4 -> VInteger (documentTextLineCount doc)
+            | _ -> VEmpty
+        | ValueNone ->
+            match constant with
+            | 0 -> VInteger (countWords (rangeText doc startOffset endOffset))
+            | 3 ->
+                let text = rangeText doc startOffset endOffset
+                VInteger text.Length
+            | 4 ->
+                let text = rangeText doc startOffset endOffset
+                VInteger (countLines text)
+            | 5 ->
+                let text = rangeText doc startOffset endOffset
+                VInteger text.Length
+            | _ -> VEmpty
 
     let private textStatisticByConstant (doc: Doc.Document) startOffset endOffset constant =
         match tryTextStatisticsCache doc startOffset endOffset constant with
@@ -2215,14 +2279,14 @@ module Vba =
         host "Word.Document"
             (fun (name: string) ->
                 if eq name "Application" then None
-                elif eq name "Content" then Some (rangeObject doc 0 (documentText doc).Length)
+                elif eq name "Content" then Some (rangeObject doc 0 (documentTextLength doc))
                 elif eq name "Words" then
                     Some (host "Word.Words"
-                        (fun field -> if eq field "Count" then Some (statisticsByConstant doc 0 (documentText doc).Length 0) else None)
+                        (fun field -> if eq field "Count" then Some (statisticsByConstant doc 0 System.Int32.MaxValue 0) else None)
                         (fun _ _ -> None))
                 elif eq name "Characters" then
                     Some (host "Word.Characters"
-                        (fun field -> if eq field "Count" then Some (statisticsByConstant doc 0 (documentText doc).Length 3) else None)
+                        (fun field -> if eq field "Count" then Some (statisticsByConstant doc 0 System.Int32.MaxValue 3) else None)
                         (fun _ _ -> None))
                 elif eq name "Paragraphs" then
                     Some (host "Word.Paragraphs"
@@ -2235,7 +2299,7 @@ module Vba =
                     let endOffset = if args.Length >= 2 then valueToInt args.[1] else startOffset
                     Some (rangeObject doc startOffset endOffset)
                 elif eq name "ComputeStatistics" && args.Length >= 1 then
-                    Some (statisticsByConstant doc 0 (documentText doc).Length (valueToInt args.[0]))
+                    Some (statisticsByConstant doc 0 System.Int32.MaxValue (valueToInt args.[0]))
                 else None)
 
     let private applicationObject (doc: Doc.Document) =

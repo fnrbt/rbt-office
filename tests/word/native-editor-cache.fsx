@@ -113,6 +113,8 @@ let vbaLayoutCacheFor =
     typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("layoutCacheFor", BindingFlags.NonPublic ||| BindingFlags.Static)
 let vbaCompileSourceCached =
     typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("compileSourceCached", BindingFlags.NonPublic ||| BindingFlags.Static)
+let vbaStatisticsByConstant =
+    typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("statisticsByConstant", BindingFlags.NonPublic ||| BindingFlags.Static)
 
 if isNull cachedLayouts then
     fail <- fail + 1
@@ -2038,6 +2040,51 @@ else
         (vbaTextCycleSw.Elapsed.TotalMilliseconds < 80.0
          && vbaTextCycleAllocated < 8L * 1024L * 1024L
          && vbaTextCycleTotal > 0L)
+        true
+
+if isNull vbaStatisticsByConstant || isNull vbaDocumentText then
+    fail <- fail + 1
+    printfn "FAIL %-34s expected private statistics cache helpers" "native vba statistics cache reflection"
+else
+    let vbaStatisticsCycleDocs =
+        [| for docIndex in 0 .. 79 ->
+            { Doc.empty with
+                Blocks =
+                    [ for index in 0 .. 999 ->
+                        Doc.Paragraph (para (sprintf "native-vba-statistics-cycle-%02d-%04d" docIndex index) "alpha beta gamma delta epsilon zeta eta theta") ] } |]
+    let vbaStatisticsCycleLengths =
+        vbaStatisticsCycleDocs
+        |> Array.map (fun doc -> (vbaDocumentText.Invoke(null, [| box doc |]) :?> string).Length)
+
+    for index in 0 .. vbaStatisticsCycleDocs.Length - 1 do
+        vbaStatisticsByConstant.Invoke(
+            null,
+            [| box vbaStatisticsCycleDocs.[index]; box 0; box vbaStatisticsCycleLengths.[index]; box 0 |])
+        |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let vbaStatisticsCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let vbaStatisticsCycleSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable vbaStatisticsCycleHits = 0
+    for _pass in 1 .. 200 do
+        for index in 0 .. vbaStatisticsCycleDocs.Length - 1 do
+            let result =
+                vbaStatisticsByConstant.Invoke(
+                    null,
+                    [| box vbaStatisticsCycleDocs.[index]; box 0; box vbaStatisticsCycleLengths.[index]; box 0 |])
+            if not (isNull result) then
+                vbaStatisticsCycleHits <- vbaStatisticsCycleHits + 1
+    vbaStatisticsCycleSw.Stop()
+    let vbaStatisticsCycleAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - vbaStatisticsCycleAllocatedBefore
+
+    check "native vba statistics document cycle"
+        (vbaStatisticsCycleSw.Elapsed.TotalMilliseconds < 80.0
+         && vbaStatisticsCycleAllocated < 8L * 1024L * 1024L
+         && vbaStatisticsCycleHits = 16000)
         true
 
 if isNull vbaLayoutCacheFor then
