@@ -2615,6 +2615,25 @@ else
     ok "recalc-local-parse-cache-hit-perf"
        (recalcParseSw.Elapsed.TotalMilliseconds < 120.0 && recalcParseHits = 192000)
        (sprintf "recalc local parse cache hits took %.1f ms" recalcParseSw.Elapsed.TotalMilliseconds)
+let recalcReferenceFormula = "=" + String.replicate 5200 " " + "0"
+let recalcReferenceCells =
+    [ for row in 0 .. 19999 ->
+        { Row = row; Col = 0 }, cell (CellValue.Formula (recalcReferenceFormula, CellValue.Empty)) ]
+    |> Map.ofList
+let recalcReferenceModel = { createEmpty 20000 1 with Cells = recalcReferenceCells }
+recalculateAllFormulas None None recalcReferenceModel |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let recalcReferenceSw = Stopwatch.StartNew()
+let mutable recalcReferenceCellsSeen = 0
+for _pass in 1 .. 10 do
+    let result = recalculateAllFormulas None None recalcReferenceModel
+    recalcReferenceCellsSeen <- recalcReferenceCellsSeen + result.Cells.Count
+recalcReferenceSw.Stop()
+ok "recalc-reference-cache-hit-perf"
+   (recalcReferenceSw.Elapsed.TotalMilliseconds < 520.0 && recalcReferenceCellsSeen = 200000)
+   (sprintf "recalc reference cache hits took %.1f ms" recalcReferenceSw.Elapsed.TotalMilliseconds)
 
 // --- Perf 3: re-evaluating a single formula many times ------------------
 // Tight loop over evaluateFormula — catches per-eval allocation regressions.

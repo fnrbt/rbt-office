@@ -10777,6 +10777,35 @@ let private recalcReferenceCacheFormulaChars (formula: string) =
 let private recalcReferenceCacheRefsCount (refs: CellAddress array) =
     max 1 refs.Length
 
+type private RecalcReferenceFastCacheEntry = {
+    Formula: string
+    Refs: CellAddress array
+}
+
+let private clearRecalcReferenceFastSlots (slots: RecalcReferenceFastCacheEntry array) =
+    for index = 0 to slots.Length - 1 do
+        slots.[index] <- Unchecked.defaultof<RecalcReferenceFastCacheEntry>
+
+let private recalcReferenceFastSlot (slots: RecalcReferenceFastCacheEntry array) (formula: string) =
+    let hashCode =
+        if isNull formula then 0
+        else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(formula)
+    hashCode &&& (slots.Length - 1)
+
+let private setRecalcReferenceFastSlot (slots: RecalcReferenceFastCacheEntry array) formula refs =
+    slots.[recalcReferenceFastSlot slots formula] <- {
+        Formula = formula
+        Refs = refs
+    }
+
+let private tryGetRecalcReferenceFastSlot (slots: RecalcReferenceFastCacheEntry array) formula =
+    let fast = slots.[recalcReferenceFastSlot slots formula]
+    if not (obj.ReferenceEquals(fast, null))
+       && obj.ReferenceEquals(fast.Formula, formula) then
+        ValueSome fast.Refs
+    else
+        ValueNone
+
 let private rememberRecalcReferenceCacheEntry
     (cache: Dictionary<string, CellAddress array>)
     (order: Queue<string>)
@@ -10991,22 +11020,30 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
 
         let referencedFormulaCellsCache = Dictionary<string, CellAddress array>()
         let referencedFormulaCellsCacheOrder = Queue<string>()
+        let referencedFormulaCellsFastSlots = Array.zeroCreate<RecalcReferenceFastCacheEntry> 256
         let mutable referencedFormulaCellsCacheTotalFormulaChars = 0
         let mutable referencedFormulaCellsCacheTotalRefs = 0
         let referencedFormulaCellsFor (fc: FormulaCell) =
-            let mutable refs = Unchecked.defaultof<CellAddress array>
-            if referencedFormulaCellsCache.TryGetValue(fc.Formula, &refs) then
-                refs
-            else
-                refs <- referencedFormulaCells fc.Expr
-                rememberRecalcReferenceCacheEntry
-                    referencedFormulaCellsCache
-                    referencedFormulaCellsCacheOrder
-                    &referencedFormulaCellsCacheTotalFormulaChars
-                    &referencedFormulaCellsCacheTotalRefs
-                    fc.Formula
+            match tryGetRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula with
+            | ValueSome refs -> refs
+            | ValueNone ->
+                let mutable refs = Unchecked.defaultof<CellAddress array>
+                if referencedFormulaCellsCache.TryGetValue(fc.Formula, &refs) then
+                    setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
                     refs
-                refs
+                else
+                    refs <- referencedFormulaCells fc.Expr
+                    rememberRecalcReferenceCacheEntry
+                        referencedFormulaCellsCache
+                        referencedFormulaCellsCacheOrder
+                        &referencedFormulaCellsCacheTotalFormulaChars
+                        &referencedFormulaCellsCacheTotalRefs
+                        fc.Formula
+                        refs
+                    clearRecalcReferenceFastSlots referencedFormulaCellsFastSlots
+                    if referencedFormulaCellsCache.ContainsKey fc.Formula then
+                        setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
+                    refs
 
         let dependencies = Dictionary<CellAddress, CellAddress array>(formulaCells.Count)
         for fc in formulaCells do
