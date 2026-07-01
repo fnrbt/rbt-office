@@ -1950,7 +1950,7 @@ module Vba =
     }
 
     let mutable private textStatisticsCache: TextStatisticsCache list = []
-    let private textStatisticsCacheMaxEntries = 64
+    let private textStatisticsCacheMaxEntries = 256
     let private textStatisticsCacheMaxSources = 256
     let private textStatisticsCacheMaxTotalSourceParagraphs = vbaSourceParagraphCountLimit
     let private textStatisticsCacheMaxTotalSourceTextChars = vbaSourceTextCacheMaxTotalChars

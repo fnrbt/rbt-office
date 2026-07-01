@@ -2603,6 +2603,55 @@ else
          && vbaStatisticsCycleHits = 16000)
         true
 
+    let vbaStatisticsEntryDoc =
+        { Doc.empty with
+            Blocks =
+                [ for index in 0 .. 1499 ->
+                    Doc.Paragraph (
+                        para
+                            (sprintf "native-vba-statistics-entry-%04d" index)
+                            "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau") ] }
+    let vbaStatisticsEntryTextLength = (Doc.getText vbaStatisticsEntryDoc).Length
+    let vbaStatisticsEntryRangeCount = 160
+    let vbaStatisticsEntryRangeLength = 4096
+    let vbaStatisticsEntryMaxStart =
+        max 1 (vbaStatisticsEntryTextLength - vbaStatisticsEntryRangeLength - 1)
+    let vbaStatisticsEntryRanges =
+        [| for index in 0 .. vbaStatisticsEntryRangeCount - 1 ->
+            let startOffset = (index * 997) % vbaStatisticsEntryMaxStart
+            startOffset, startOffset + vbaStatisticsEntryRangeLength |]
+
+    for startOffset, endOffset in vbaStatisticsEntryRanges do
+        vbaStatisticsByConstant.Invoke(
+            null,
+            [| box vbaStatisticsEntryDoc; box startOffset; box endOffset; box 0 |])
+        |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let vbaStatisticsEntryAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let vbaStatisticsEntrySw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable vbaStatisticsEntryHits = 0
+    for _pass in 1 .. 120 do
+        for startOffset, endOffset in vbaStatisticsEntryRanges do
+            let result =
+                vbaStatisticsByConstant.Invoke(
+                    null,
+                    [| box vbaStatisticsEntryDoc; box startOffset; box endOffset; box 0 |])
+            if not (isNull result) then
+                vbaStatisticsEntryHits <- vbaStatisticsEntryHits + 1
+    vbaStatisticsEntrySw.Stop()
+    let vbaStatisticsEntryAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - vbaStatisticsEntryAllocatedBefore
+
+    check "native vba statistics entry cycle"
+        (vbaStatisticsEntrySw.Elapsed.TotalMilliseconds < 80.0
+         && vbaStatisticsEntryAllocated < 8L * 1024L * 1024L
+         && vbaStatisticsEntryHits = vbaStatisticsEntryRanges.Length * 120)
+        true
+
 if isNull vbaLayoutCacheFor then
     fail <- fail + 1
     printfn "FAIL %-34s expected private layoutCacheFor method" "native vba layout cache reflection"
