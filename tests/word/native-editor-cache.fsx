@@ -1180,6 +1180,31 @@ check "native block index lookup long id perf"
      && blockLookupIndexAllocated < 2L * 1024L * 1024L
      && blockLookupIndexHits = 1024000)
     true
+let clonedBlockLookupIds = blockLookupIds |> Array.map cloneString
+Doc.findBlock blockLookupDoc clonedBlockLookupIds.[0] |> ignore
+Doc.findBlockIndex blockLookupDoc clonedBlockLookupIds.[0] |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let clonedBlockLookupAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let clonedBlockLookupSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable clonedBlockLookupHits = 0
+for _pass in 1 .. 750 do
+    for blockId in clonedBlockLookupIds do
+        match Doc.findBlock blockLookupDoc blockId with
+        | Some _ -> clonedBlockLookupHits <- clonedBlockLookupHits + 1
+        | None -> ()
+        match Doc.findBlockIndex blockLookupDoc blockId with
+        | Some _ -> clonedBlockLookupHits <- clonedBlockLookupHits + 1
+        | None -> ()
+clonedBlockLookupSw.Stop()
+let clonedBlockLookupAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - clonedBlockLookupAllocatedBefore
+check "native block lookup cloned long id cache"
+    (clonedBlockLookupSw.Elapsed.TotalMilliseconds < 380.0
+     && clonedBlockLookupAllocated < 512L * 1024L
+     && clonedBlockLookupHits = 768000)
+    true
 let cursorBoundaryDownDoc =
     { blockLookupDoc with
         Selection =
@@ -1363,6 +1388,27 @@ check "native paragraph lookup long id perf"
     (paragraphLookupSw.Elapsed.TotalMilliseconds < 500.0
      && paragraphLookupAllocated < 2L * 1024L * 1024L
      && paragraphLookupHits = 1024000)
+    true
+let clonedParagraphLookupIds = paragraphLookupIds |> Array.map cloneString
+Doc.findParagraph paragraphLookupDoc clonedParagraphLookupIds.[0] |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let clonedParagraphLookupAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let clonedParagraphLookupSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable clonedParagraphLookupHits = 0
+for _pass in 1 .. 750 do
+    for paragraphId in clonedParagraphLookupIds do
+        match Doc.findParagraph paragraphLookupDoc paragraphId with
+        | Some _ -> clonedParagraphLookupHits <- clonedParagraphLookupHits + 1
+        | None -> ()
+clonedParagraphLookupSw.Stop()
+let clonedParagraphLookupAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - clonedParagraphLookupAllocatedBefore
+check "native paragraph lookup cloned long id cache"
+    (clonedParagraphLookupSw.Elapsed.TotalMilliseconds < 340.0
+     && clonedParagraphLookupAllocated < 512L * 1024L
+     && clonedParagraphLookupHits = 384000)
     true
 
 let normalizedRangeLookupIdPrefix = System.String('r', 5000)

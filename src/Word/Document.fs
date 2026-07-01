@@ -1597,6 +1597,11 @@ let private blockIdKeyHash (blockId: BlockId) =
             hashCode <- (hashCode * 397) ^^^ int blockId.[length - 4]
         hashCode ^^^ (hashCode >>> 16)
 
+let private blockIdLookupComparer =
+    { new IEqualityComparer<BlockId> with
+        member _.Equals(left, right) = blockIdKeyEquals left right
+        member _.GetHashCode(value) = blockIdKeyHash value }
+
 type private SelectionTextCache = {
     SourceBlocks: Block list
     SourceParagraphCount: int
@@ -2052,6 +2057,8 @@ type private BlockLookupEntry = {
     TopBlockResult: Block option
     TopIndexResult: int option
     TopParagraphResult: ParagraphBlock option
+    mutable RecentLookupIdSet: bool
+    mutable RecentLookupId: BlockId
 }
 
 let private getBlockId = function
@@ -2071,7 +2078,9 @@ let private blockLookupEntry blockId block index =
       TopIndex = index
       TopBlockResult = Some block
       TopIndexResult = Some index
-      TopParagraphResult = paragraph }
+      TopParagraphResult = paragraph
+      RecentLookupIdSet = false
+      RecentLookupId = "" }
 
 /// Find block by ID
 type private BlockLookupCache = {
@@ -2109,10 +2118,21 @@ let private lookupEntryFastSlotSize entryCount =
     size
 
 let private blockLookupEntryFastSlot (slots: BlockLookupEntry array) (blockId: BlockId) =
-    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(blockId) &&& (slots.Length - 1)
+    blockIdKeyHash blockId &&& (slots.Length - 1)
 
 let private setBlockLookupEntryFastSlot (slots: BlockLookupEntry array) (entry: BlockLookupEntry) =
     slots.[blockLookupEntryFastSlot slots entry.BlockId] <- entry
+
+let private blockLookupEntryMatches (entry: BlockLookupEntry) blockId =
+    if obj.ReferenceEquals(entry.BlockId, blockId)
+       || (entry.RecentLookupIdSet && obj.ReferenceEquals(entry.RecentLookupId, blockId)) then
+        true
+    elif blockIdKeyEquals entry.BlockId blockId then
+        entry.RecentLookupIdSet <- true
+        entry.RecentLookupId <- blockId
+        true
+    else
+        false
 
 let private blockLookupCacheMatches blocks (cached: BlockLookupCache) =
     obj.ReferenceEquals(cached.CachedBlocks, blocks)
@@ -2162,7 +2182,7 @@ let private tryFindBlockLookupEntry (lookup: BlockLookupCache) blockId =
     else
         let fast = lookup.EntryFastSlots.[blockLookupEntryFastSlot lookup.EntryFastSlots blockId]
         if not (obj.ReferenceEquals(fast, null))
-           && obj.ReferenceEquals(fast.BlockId, blockId) then
+           && blockLookupEntryMatches fast blockId then
             lookup.LastEntrySet <- true
             lookup.LastEntryId <- blockId
             lookup.LastEntry <- fast
@@ -2170,8 +2190,9 @@ let private tryFindBlockLookupEntry (lookup: BlockLookupCache) blockId =
         else
             let mutable entry = Unchecked.defaultof<BlockLookupEntry>
             if lookup.EntriesById.TryGetValue(blockId, &entry) then
-                if obj.ReferenceEquals(entry.BlockId, blockId) then
-                    setBlockLookupEntryFastSlot lookup.EntryFastSlots entry
+                entry.RecentLookupIdSet <- true
+                entry.RecentLookupId <- blockId
+                setBlockLookupEntryFastSlot lookup.EntryFastSlots entry
                 lookup.LastEntrySet <- true
                 lookup.LastEntryId <- blockId
                 lookup.LastEntry <- entry
@@ -2231,7 +2252,7 @@ let private rememberBlockLookup cached =
         setBlockLookupCache entries
 
 let private buildBlockLookup blocks =
-    let entriesById = Dictionary<BlockId, BlockLookupEntry>()
+    let entriesById = Dictionary<BlockId, BlockLookupEntry>(blockIdLookupComparer)
     let topBlocks = ResizeArray<Block>()
     let mutable index = 0
     for block in blocks do
@@ -2882,6 +2903,8 @@ type private ParagraphLookupCache = {
 and private ParagraphLookupEntry = {
     Paragraph: ParagraphBlock
     Result: ParagraphBlock option
+    mutable RecentLookupIdSet: bool
+    mutable RecentLookupId: BlockId
 }
 
 let mutable private paragraphLookupCache: ParagraphLookupCache list = []
@@ -2893,10 +2916,21 @@ let private paragraphLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountC
 let private paragraphLookupCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
 let private paragraphLookupEntryFastSlot (slots: ParagraphLookupEntry array) (paragraphId: BlockId) =
-    System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(paragraphId) &&& (slots.Length - 1)
+    blockIdKeyHash paragraphId &&& (slots.Length - 1)
 
 let private setParagraphLookupEntryFastSlot (slots: ParagraphLookupEntry array) (entry: ParagraphLookupEntry) =
     slots.[paragraphLookupEntryFastSlot slots entry.Paragraph.Id] <- entry
+
+let private paragraphLookupEntryMatches (entry: ParagraphLookupEntry) paragraphId =
+    if obj.ReferenceEquals(entry.Paragraph.Id, paragraphId)
+       || (entry.RecentLookupIdSet && obj.ReferenceEquals(entry.RecentLookupId, paragraphId)) then
+        true
+    elif blockIdKeyEquals entry.Paragraph.Id paragraphId then
+        entry.RecentLookupIdSet <- true
+        entry.RecentLookupId <- paragraphId
+        true
+    else
+        false
 
 let private paragraphLookupCacheMatches blocks (cached: ParagraphLookupCache) =
     obj.ReferenceEquals(cached.CachedBlocks, blocks)
@@ -2995,6 +3029,8 @@ let private addParagraphLookup (paragraphs: Dictionary<BlockId, ParagraphLookupE
         paragraphs.[paragraph.Id] <- {
             Paragraph = paragraph
             Result = Some paragraph
+            RecentLookupIdSet = false
+            RecentLookupId = ""
         }
 
 type private ParagraphLookupFrame =
@@ -3080,7 +3116,7 @@ let private addBlockParagraphLookups
             addParagraphLookup paragraphs paragraph
 
 let private buildParagraphLookup (doc: Document) =
-    let paragraphs = Dictionary<BlockId, ParagraphLookupEntry>()
+    let paragraphs = Dictionary<BlockId, ParagraphLookupEntry>(blockIdLookupComparer)
     let mutable sourceParagraphCount = 0
     let mutable visitedSourceItems = 0
     let maxVisitedSourceItems = sourceStructureVisitedItemLimit paragraphLookupCacheMaxTotalSourceParagraphs
@@ -3138,13 +3174,14 @@ let private findParagraphFromParagraphLookup (doc: Document) paragraphId =
     let lookup = paragraphLookup doc
     let fast = lookup.ParagraphFastSlots.[paragraphLookupEntryFastSlot lookup.ParagraphFastSlots paragraphId]
     if not (obj.ReferenceEquals(fast, null))
-       && obj.ReferenceEquals(fast.Paragraph.Id, paragraphId) then
+       && paragraphLookupEntryMatches fast paragraphId then
         fast.Result
     else
         let mutable entry = Unchecked.defaultof<ParagraphLookupEntry>
         if lookup.Paragraphs.TryGetValue(paragraphId, &entry) then
-            if obj.ReferenceEquals(entry.Paragraph.Id, paragraphId) then
-                setParagraphLookupEntryFastSlot lookup.ParagraphFastSlots entry
+            entry.RecentLookupIdSet <- true
+            entry.RecentLookupId <- paragraphId
+            setParagraphLookupEntryFastSlot lookup.ParagraphFastSlots entry
             entry.Result
         else
             None
