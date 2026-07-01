@@ -1285,8 +1285,17 @@ let valueToExpr (v: CellValue) : Expr =
     | CellValue.Empty -> Number 0.0
     | CellValue.Formula _ -> Number 0.0
 
-/// True if the expression contains a volatile function (RAND/RANDBETWEEN/
-/// NOW/TODAY/OFFSET/INDIRECT) anywhere in its tree. Such cells must be
+let private isVolatileFunctionName name =
+    equalsOrdinalIgnoreCase name "RAND"
+    || equalsOrdinalIgnoreCase name "RANDARRAY"
+    || equalsOrdinalIgnoreCase name "RANDBETWEEN"
+    || equalsOrdinalIgnoreCase name "NOW"
+    || equalsOrdinalIgnoreCase name "TODAY"
+    || equalsOrdinalIgnoreCase name "OFFSET"
+    || equalsOrdinalIgnoreCase name "INDIRECT"
+
+/// True if the expression contains a volatile function (RAND/RANDARRAY/
+/// RANDBETWEEN/NOW/TODAY/OFFSET/INDIRECT) anywhere in its tree. Such cells must be
 /// recalculated on every pass regardless of dependency state.
 let containsVolatile (expr: Expr) : bool =
     let stack = ResizeArray<Expr>()
@@ -1298,12 +1307,7 @@ let containsVolatile (expr: Expr) : bool =
         stack.RemoveAt last
         match expr with
         | Function (name, args) ->
-            if equalsOrdinalIgnoreCase name "RAND"
-               || equalsOrdinalIgnoreCase name "RANDBETWEEN"
-               || equalsOrdinalIgnoreCase name "NOW"
-               || equalsOrdinalIgnoreCase name "TODAY"
-               || equalsOrdinalIgnoreCase name "OFFSET"
-               || equalsOrdinalIgnoreCase name "INDIRECT" then
+            if isVolatileFunctionName name then
                 found <- true
             else
                 for arg in args do
@@ -1314,6 +1318,31 @@ let containsVolatile (expr: Expr) : bool =
             stack.Add right
         | _ -> ()
     found
+
+let private canReuseIndependentFormulaResult (expr: Expr) =
+    let stack = ResizeArray<Expr>()
+    stack.Add expr
+    let mutable reusable = true
+    while reusable && stack.Count > 0 do
+        let last = stack.Count - 1
+        let expr = stack.[last]
+        stack.RemoveAt last
+        match expr with
+        | Function (name, args) ->
+            if isVolatileFunctionName name then
+                reusable <- false
+            else
+                for arg in args do
+                    stack.Add arg
+        | TableRef _
+        | NameRef _ ->
+            reusable <- false
+        | UnaryOp (_, inner) -> stack.Add inner
+        | BinOp (left, _, right) ->
+            stack.Add left
+            stack.Add right
+        | _ -> ()
+    reusable
 
 let private containsFunctionNamed (targetName: string) (expr: Expr) =
     let stack = ResizeArray<Expr>()
@@ -10734,6 +10763,8 @@ let private recalcReferenceCacheMaxTotalRefs = 200000
 let private recalcArrayFormulaCacheMaxEntries = 8192
 let private recalcArrayFormulaCacheMaxTotalChars = 5000000
 
+let private recalcIndependentResultCacheMaxEntries = 1024
+
 let private recalcCacheAddCapped (maxTotal: int) (amount: int) (total: int) =
     if amount <= 0 then total
     elif total > maxTotal || amount > maxTotal - total then maxTotal + 1
@@ -10907,12 +10938,20 @@ let private collectFormulaCells (model: SpreadsheetModel) =
     let parseCacheOrder = Queue<string>()
     let parseCacheFastSlots = Array.zeroCreate<ParsedFormulaFastCacheEntry> 256
     let mutable parseCacheTotalChars = 0
+    let mutable repeatedFormulas: HashSet<string> = null
     let parseFormulaCached formula =
         match tryGetParsedFormulaFastSlotIn parseCacheFastSlots formula with
-        | ValueSome parsed -> parsed
+        | ValueSome parsed ->
+            if isNull repeatedFormulas then
+                repeatedFormulas <- HashSet<string>()
+            repeatedFormulas.Add formula |> ignore
+            parsed
         | ValueNone ->
             let mutable parsed = Unchecked.defaultof<Result<Expr, string>>
             if parseCache.TryGetValue(formula, &parsed) then
+                if isNull repeatedFormulas then
+                    repeatedFormulas <- HashSet<string>()
+                repeatedFormulas.Add formula |> ignore
                 setParsedFormulaFastSlotIn parseCacheFastSlots formula parsed
                 parsed
             else
@@ -10944,7 +10983,7 @@ let private collectFormulaCells (model: SpreadsheetModel) =
                     ParseError = Some error
                 }
         | _ -> ())
-    formulaCells
+    formulaCells, repeatedFormulas
 
 /// Recalculate every formula cell in a model, in dependency order.
 /// `currentSheet` scopes defined-name resolution to the sheet being
@@ -10955,7 +10994,7 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
     match cellsFormulaCountIfKnown model.Cells with
     | Some 0 -> model
     | _ ->
-        let formulaCells = collectFormulaCells model
+        let formulaCells, repeatedFormulas = collectFormulaCells model
         rememberCellsFormulaCount model.Cells formulaCells.Count
         if formulaCells.Count = 0 then model else
         let criteriaCache = CriteriaPredicateCache()
@@ -11099,6 +11138,18 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
         let evaluateIndependentFormulaCell addr (fc: FormulaCell) =
             let ctx = { Model = model; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some criteriaCache; CurrentCell = Some addr }
             eval fc.Expr ctx
+        let evaluateCachedIndependentFormulaCell (independentResultCache: Dictionary<string, CellValue>) addr (fc: FormulaCell) =
+            let mutable cached = Unchecked.defaultof<CellValue>
+            if not (repeatedFormulas.Contains fc.Formula) then
+                evaluateIndependentFormulaCell addr fc
+            elif independentResultCache.TryGetValue(fc.Formula, &cached) then
+                cached
+            else
+                let result = evaluateIndependentFormulaCell addr fc
+                if independentResultCache.Count < recalcIndependentResultCacheMaxEntries
+                   && canReuseIndependentFormulaResult fc.Expr then
+                    independentResultCache.[fc.Formula] <- result
+                result
 
         if hasDependencies then
             let visited = HashSet<CellAddress>()
@@ -11150,12 +11201,21 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
                         applyFormulaResult addr fc (evaluateFormulaCell addr fc)
                 | false, _ -> ()
         else
-            for fc in formulaCells do
-                match fc.ParseError with
-                | Some parseError ->
-                    applyFormulaResult fc.Address fc (CellValue.Error parseError)
-                | None ->
-                    applyFormulaResult fc.Address fc (evaluateIndependentFormulaCell fc.Address fc)
+            if isNull repeatedFormulas then
+                for fc in formulaCells do
+                    match fc.ParseError with
+                    | Some parseError ->
+                        applyFormulaResult fc.Address fc (CellValue.Error parseError)
+                    | None ->
+                        applyFormulaResult fc.Address fc (evaluateIndependentFormulaCell fc.Address fc)
+            else
+                let independentResultCache = Dictionary<string, CellValue>()
+                for fc in formulaCells do
+                    match fc.ParseError with
+                    | Some parseError ->
+                        applyFormulaResult fc.Address fc (CellValue.Error parseError)
+                    | None ->
+                        applyFormulaResult fc.Address fc (evaluateCachedIndependentFormulaCell independentResultCache fc.Address fc)
         rememberCellsFormulaCount updatedCells formulaCells.Count
         if changed then { model with Cells = updatedCells } else model
 

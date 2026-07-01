@@ -114,10 +114,14 @@ match eval sharedExpr { Model = model; Workbook = wb; Sheet = Some "sheet2"; Cri
 // containsVolatile detection
 let volatileExpr =
     match parseFormula "=RAND()+1" with Ok x -> x | _ -> Number 0.0
+let volatileArrayExpr =
+    match parseFormula "=SUM(RANDARRAY(2,2))" with Ok x -> x | _ -> Number 0.0
 let plainExpr =
     match parseFormula "=B1+B2" with Ok x -> x | _ -> Number 0.0
 if containsVolatile volatileExpr then pass <- pass + 1
 else (fail <- fail + 1; printfn "FAIL containsVolatile(RAND) should be true")
+if containsVolatile volatileArrayExpr then pass <- pass + 1
+else (fail <- fail + 1; printfn "FAIL containsVolatile(RANDARRAY) should be true")
 if not (containsVolatile plainExpr) then pass <- pass + 1
 else (fail <- fail + 1; printfn "FAIL containsVolatile(B1+B2) should be false")
 
