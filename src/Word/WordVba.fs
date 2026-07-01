@@ -1780,7 +1780,7 @@ module Vba =
     let private documentTextCacheByBlocks =
         Dictionary<Doc.Block list, DocumentTextCache>(documentBlocksReferenceComparer)
     let private documentTextFastSlots = Array.zeroCreate<DocumentTextCache> 256
-    let private documentTextCacheMaxEntries = 64
+    let private documentTextCacheMaxEntries = 256
     let private documentTextCacheMaxTotalChars = 5000000
     let private documentTextCacheMaxTotalSourceParagraphs = vbaSourceParagraphCountLimit
     let private documentTextCacheMaxTotalSourceTextChars = vbaSourceTextCacheMaxTotalChars

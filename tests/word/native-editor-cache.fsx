@@ -2008,6 +2008,38 @@ else
          && vbaTextCacheTotal > 0L)
         true
 
+    let vbaTextCycleDocs =
+        [| for docIndex in 0 .. 79 ->
+            { Doc.empty with
+                Blocks =
+                    [ for index in 0 .. 999 ->
+                        Doc.Paragraph (para (sprintf "native-vba-text-cycle-%02d-%04d" docIndex index) "alpha beta gamma delta") ] } |]
+
+    for doc in vbaTextCycleDocs do
+        vbaDocumentText.Invoke(null, [| box doc |]) |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let vbaTextCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let vbaTextCycleSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable vbaTextCycleTotal = 0L
+    for _pass in 1 .. 200 do
+        for doc in vbaTextCycleDocs do
+            vbaTextCycleTotal <-
+                vbaTextCycleTotal
+                + int64 ((vbaDocumentText.Invoke(null, [| box doc |]) :?> string).Length)
+    vbaTextCycleSw.Stop()
+    let vbaTextCycleAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - vbaTextCycleAllocatedBefore
+
+    check "native vba text cache document cycle"
+        (vbaTextCycleSw.Elapsed.TotalMilliseconds < 80.0
+         && vbaTextCycleAllocated < 8L * 1024L * 1024L
+         && vbaTextCycleTotal > 0L)
+        true
+
 if isNull vbaLayoutCacheFor then
     fail <- fail + 1
     printfn "FAIL %-34s expected private layoutCacheFor method" "native vba layout cache reflection"
