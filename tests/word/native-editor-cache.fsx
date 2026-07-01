@@ -1942,6 +1942,47 @@ check "native selection text long id perf"
      && selectionTextLookupTotal = 1920000)
     true
 
+let selectionTextEntryCycleIdPrefix = System.String('v', 5000)
+let selectionTextEntryCycleCount = 80
+let selectionTextEntryCycleIds =
+    [| for index in 0 .. selectionTextEntryCycleCount - 1 ->
+        selectionTextEntryCycleIdPrefix + sprintf "%04d" index |]
+let selectionTextEntryCycleBaseDoc =
+    { Doc.empty with
+        Blocks =
+            [ for blockId in selectionTextEntryCycleIds ->
+                Doc.Paragraph (para blockId "abcdef") ] }
+let selectionTextEntryCycleDocs =
+    [| for index in 0 .. selectionTextEntryCycleCount - 1 ->
+        { selectionTextEntryCycleBaseDoc with
+            Selection =
+                Some {
+                    Anchor = pos selectionTextEntryCycleIds.[index] 1
+                    Focus = pos selectionTextEntryCycleIds.[index] 4
+                } } |]
+for doc in selectionTextEntryCycleDocs do
+    Doc.getSelectionText doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let selectionTextEntryCyclePasses = 1000
+let selectionTextEntryCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let selectionTextEntryCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable selectionTextEntryCycleTotal = 0
+for _pass in 1 .. selectionTextEntryCyclePasses do
+    for doc in selectionTextEntryCycleDocs do
+        selectionTextEntryCycleTotal <- selectionTextEntryCycleTotal + (Doc.getSelectionText doc).Length
+selectionTextEntryCycleSw.Stop()
+let selectionTextEntryCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - selectionTextEntryCycleAllocatedBefore
+check "native selection text entry cycle"
+    (selectionTextEntryCycleSw.Elapsed.TotalMilliseconds < 120.0
+     && selectionTextEntryCycleAllocated < 4L * 1024L * 1024L
+     && selectionTextEntryCycleTotal = 240000)
+    true
+
 let selectionTextHotDoc =
     { Doc.empty with
         Blocks = [ Doc.Paragraph (para "native-selection-text-hot" "abcdef") ]
