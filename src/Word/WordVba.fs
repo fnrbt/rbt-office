@@ -19,8 +19,28 @@ module Vba =
     }
 
     let mutable private compiledSourceCache: CompiledSourceCacheEntry list = []
+    let private compiledSourceFastSlots = Array.zeroCreate<CompiledSourceCacheEntry> 256
     let private compiledSourceCacheMaxEntries = 64
     let private compiledSourceCacheMaxTotalRetainedUnits = 1000000
+
+    let private clearCompiledSourceFastSlots () =
+        for index = 0 to compiledSourceFastSlots.Length - 1 do
+            compiledSourceFastSlots.[index] <- Unchecked.defaultof<CompiledSourceCacheEntry>
+
+    let private compiledSourceCacheSlot key =
+        let mutable hashCode =
+            if isNull key.Source then 0
+            else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Source)
+        hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.HostGlobalNames)
+        hashCode <- (hashCode * 397) ^^^ hash key.Dialect
+        hashCode <- (hashCode * 397) ^^^ if key.Tolerant then 1 else 0
+        hashCode &&& (compiledSourceFastSlots.Length - 1)
+
+    let private compiledSourceFastCacheMatches key (entry: CompiledSourceCacheEntry) =
+        entry.Key.Dialect = key.Dialect
+        && entry.Key.Tolerant = key.Tolerant
+        && obj.ReferenceEquals(entry.Key.Source, key.Source)
+        && entry.Key.HostGlobalNames = key.HostGlobalNames
 
     let private addRetainedUnits left right =
         if left > compiledSourceCacheMaxTotalRetainedUnits then
@@ -422,6 +442,28 @@ module Vba =
             total <- addRetainedUnits total (bytecodeProgramRetainedUnits bytecode)
         total
 
+    let private setCompiledSourceCache entries =
+        compiledSourceCache <- entries
+        clearCompiledSourceFastSlots ()
+        for entry in entries do
+            let slot = compiledSourceCacheSlot entry.Key
+            if obj.ReferenceEquals(compiledSourceFastSlots.[slot], null) then
+                compiledSourceFastSlots.[slot] <- entry
+
+    let private tryGetCompiledSourceCache key =
+        let slot = compiledSourceCacheSlot key
+        let fast = compiledSourceFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && compiledSourceFastCacheMatches key fast then
+            Some fast
+        else
+            match compiledSourceCache |> List.tryFind (fun entry -> entry.Key = key) with
+            | Some entry ->
+                compiledSourceFastSlots.[slot] <- entry
+                Some entry
+            | None ->
+                None
+
     let private rememberCompiledSource entry =
         let trim entries =
             let rec loop remaining kept count totalRetainedUnits =
@@ -436,10 +478,10 @@ module Vba =
                     else
                         loop rest kept count totalRetainedUnits
             loop entries [] 0 0
-        compiledSourceCache <-
-            entry
-            :: (compiledSourceCache |> List.filter (fun existing -> existing.Key <> entry.Key))
-            |> trim
+        entry
+        :: (compiledSourceCache |> List.filter (fun existing -> existing.Key <> entry.Key))
+        |> trim
+        |> setCompiledSourceCache
 
     let private compileSourceCached (options: FsVb.ParseOptions) source =
         let key = {
@@ -448,7 +490,7 @@ module Vba =
             Source = source
             HostGlobalNames = options.HostGlobalNames
         }
-        match compiledSourceCache |> List.tryFind (fun entry -> entry.Key = key) with
+        match tryGetCompiledSourceCache key with
         | Some entry ->
             Ok (entry.Program, entry.Bytecode)
         | None ->

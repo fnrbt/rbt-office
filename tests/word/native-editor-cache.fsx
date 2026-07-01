@@ -2,6 +2,7 @@
 #r "/home/dave/Dev/browser/widgets/bin/Debug/net10.0/Widgets.dll"
 #r "/home/dave/Dev/browser/office/word-native/bin/Debug/net10.0/WordWidgets.dll"
 #r "/home/dave/Dev/browser/office/src/Word/bin/Debug/netstandard2.0/RedBat.Word.dll"
+#r "/home/dave/Dev/browser/fsvb/bin/Debug/netstandard2.0/VBScriptParser.dll"
 
 open System.Reflection
 open System.Collections.Generic
@@ -65,6 +66,8 @@ let vbaDocumentText =
     typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("documentText", BindingFlags.NonPublic ||| BindingFlags.Static)
 let vbaLayoutCacheFor =
     typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("layoutCacheFor", BindingFlags.NonPublic ||| BindingFlags.Static)
+let vbaCompileSourceCached =
+    typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Vba").GetMethod("compileSourceCached", BindingFlags.NonPublic ||| BindingFlags.Static)
 
 if isNull cachedLayouts then
     fail <- fail + 1
@@ -894,6 +897,39 @@ else
     check "native vba layout cache many docs"
         (vbaLayoutCacheSw.Elapsed.TotalMilliseconds < 40.0
          && vbaLayoutCacheHits = 120000)
+        true
+
+if isNull vbaCompileSourceCached then
+    fail <- fail + 1
+    printfn "FAIL %-34s expected private compileSourceCached method" "native vba compile cache reflection"
+else
+    let vbaCompileOptions = FsVb.ParseOptions.vba
+    let vbaCompileSources =
+        [| for sourceIndex in 0 .. 63 ->
+            System.String.Join(
+                "\n",
+                [|
+                    yield "Dim x"
+                    yield sprintf "' native compile source %02d" sourceIndex
+                    for line in 1 .. 20 do
+                        yield sprintf "x = %d" (sourceIndex + line)
+                |]) |]
+
+    for source in vbaCompileSources do
+        vbaCompileSourceCached.Invoke(null, [| box vbaCompileOptions; box source |]) |> ignore
+
+    let vbaCompileCacheSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable vbaCompileCacheHits = 0
+    for _pass in 1 .. 5000 do
+        for source in vbaCompileSources do
+            let result = vbaCompileSourceCached.Invoke(null, [| box vbaCompileOptions; box source |])
+            if not (isNull result) then
+                vbaCompileCacheHits <- vbaCompileCacheHits + 1
+    vbaCompileCacheSw.Stop()
+
+    check "native vba compile cache many sources"
+        (vbaCompileCacheSw.Elapsed.TotalMilliseconds < 300.0
+         && vbaCompileCacheHits = 320000)
         true
 
 if isNull tryLoadWordFont || isNull wordFontCacheProperty then
