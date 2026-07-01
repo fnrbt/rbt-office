@@ -1901,6 +1901,43 @@ check "native selection text cloned id cache"
      && clonedSelectionTextTotal = 300000)
     true
 
+let selectionTextSourceCycleDocCount = 80
+let selectionTextSourceCycleParagraphCount = 1000
+let selectionTextSourceCycleDocs =
+    [| for docIndex in 0 .. selectionTextSourceCycleDocCount - 1 ->
+        let blockId index = sprintf "native-selection-source-cycle-%02d-%04d" docIndex index
+        { Doc.empty with
+            Blocks =
+                [ for index in 0 .. selectionTextSourceCycleParagraphCount - 1 ->
+                    Doc.Paragraph (para (blockId index) "abcdef") ]
+            Selection =
+                Some {
+                    Anchor = pos (blockId 1) 1
+                    Focus = pos (blockId (selectionTextSourceCycleParagraphCount - 2)) 4
+                } } |]
+for doc in selectionTextSourceCycleDocs do
+    Doc.getSelectionText doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let selectionTextSourceCyclePasses = 20
+let selectionTextSourceCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let selectionTextSourceCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable selectionTextSourceCycleTotal = 0
+for _pass in 1 .. selectionTextSourceCyclePasses do
+    for doc in selectionTextSourceCycleDocs do
+        selectionTextSourceCycleTotal <- selectionTextSourceCycleTotal + (Doc.getSelectionText doc).Length
+selectionTextSourceCycleSw.Stop()
+let selectionTextSourceCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - selectionTextSourceCycleAllocatedBefore
+check "native selection text source cycle"
+    (selectionTextSourceCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && selectionTextSourceCycleAllocated < 512L * 1024L
+     && selectionTextSourceCycleTotal = 11171200)
+    true
+
 let sameBlockSelectionTextParagraphCount = 50000
 let sameBlockSelectionTextDoc =
     { Doc.empty with
