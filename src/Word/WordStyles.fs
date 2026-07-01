@@ -692,6 +692,13 @@ let private effectiveBufferCacheHash rope runs paragraphStyle resolvedStyles =
     hashCode <- (hashCode * 397) ^^^ effectiveBufferResolvedStylesHash resolvedStyles
     hashCode
 
+let private effectiveBufferCacheHashResolved rope runs paragraphStyle resolvedStyles =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(rope)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(runs)
+    hashCode <- (hashCode * 397) ^^^ hash paragraphStyle
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(resolvedStyles)
+    hashCode
+
 let private effectiveBufferCacheKeyComparer =
     { new System.Collections.Generic.IEqualityComparer<EffectiveBufferCacheKey> with
         member _.Equals(left, right) =
@@ -711,12 +718,33 @@ let private effectiveBufferCacheByKey =
 let private effectiveBufferFastSlots = Array.zeroCreate<EffectiveBufferCacheEntry> 256
 let mutable private effectiveBufferLastSet = false
 let mutable private effectiveBufferLast = Unchecked.defaultof<EffectiveBufferCacheEntry>
+let mutable private effectiveBufferPreviousSet = false
+let mutable private effectiveBufferPrevious = Unchecked.defaultof<EffectiveBufferCacheEntry>
+let mutable private effectiveBufferOlder1Set = false
+let mutable private effectiveBufferOlder1 = Unchecked.defaultof<EffectiveBufferCacheEntry>
+let mutable private effectiveBufferOlder2Set = false
+let mutable private effectiveBufferOlder2 = Unchecked.defaultof<EffectiveBufferCacheEntry>
 
 let private clearEffectiveBufferLast () =
     effectiveBufferLastSet <- false
     effectiveBufferLast <- Unchecked.defaultof<EffectiveBufferCacheEntry>
+    effectiveBufferPreviousSet <- false
+    effectiveBufferPrevious <- Unchecked.defaultof<EffectiveBufferCacheEntry>
+    effectiveBufferOlder1Set <- false
+    effectiveBufferOlder1 <- Unchecked.defaultof<EffectiveBufferCacheEntry>
+    effectiveBufferOlder2Set <- false
+    effectiveBufferOlder2 <- Unchecked.defaultof<EffectiveBufferCacheEntry>
 
 let private setEffectiveBufferLast entry =
+    if effectiveBufferOlder1Set then
+        effectiveBufferOlder2Set <- true
+        effectiveBufferOlder2 <- effectiveBufferOlder1
+    if effectiveBufferPreviousSet then
+        effectiveBufferOlder1Set <- true
+        effectiveBufferOlder1 <- effectiveBufferPrevious
+    if effectiveBufferLastSet then
+        effectiveBufferPreviousSet <- true
+        effectiveBufferPrevious <- effectiveBufferLast
     effectiveBufferLastSet <- true
     effectiveBufferLast <- entry
 
@@ -730,8 +758,37 @@ let private effectiveBufferCacheEntryMatchesExact
     && obj.ReferenceEquals(entry.ParagraphStyle, paragraphStyle)
     && resolvedCharacterStylesMatch entry.ResolvedCharacterStyles resolvedStyles
 
+let private resolvedCharacterStylesReferenceMatches resolvedStyles cached =
+    match cached with
+    | Some cachedStyles -> obj.ReferenceEquals(cachedStyles, resolvedStyles)
+    | None -> false
+
+let private effectiveBufferCacheEntryMatchesResolvedExact
+    (resolvedStyles: Map<string, NamedStyle>)
+    (paragraphStyle: ParagraphStyle)
+    (buffer: TextBuffer)
+    (entry: EffectiveBufferCacheEntry) =
+    obj.ReferenceEquals(entry.SourceRope, buffer.Rope)
+    && obj.ReferenceEquals(entry.SourceRuns, buffer.Runs)
+    && obj.ReferenceEquals(entry.ParagraphStyle, paragraphStyle)
+    && resolvedCharacterStylesReferenceMatches resolvedStyles entry.ResolvedCharacterStyles
+
+let private effectiveBufferCacheEntryMatchesResolved
+    (rope: RedBat.Word.Rope.Rope)
+    (runs: Run list)
+    (paragraphStyle: ParagraphStyle)
+    (resolvedStyles: Map<string, NamedStyle>)
+    (entry: EffectiveBufferCacheEntry) =
+    obj.ReferenceEquals(entry.SourceRope, rope)
+    && obj.ReferenceEquals(entry.SourceRuns, runs)
+    && (obj.ReferenceEquals(entry.ParagraphStyle, paragraphStyle) || entry.ParagraphStyle = paragraphStyle)
+    && resolvedCharacterStylesReferenceMatches resolvedStyles entry.ResolvedCharacterStyles
+
 let private effectiveBufferCacheSlot rope runs paragraphStyle resolvedStyles =
     effectiveBufferCacheHash rope runs paragraphStyle resolvedStyles &&& (effectiveBufferFastSlots.Length - 1)
+
+let private effectiveBufferCacheSlotResolved rope runs paragraphStyle resolvedStyles =
+    effectiveBufferCacheHashResolved rope runs paragraphStyle resolvedStyles &&& (effectiveBufferFastSlots.Length - 1)
 
 let private setEffectiveBufferCache entries =
     effectiveBufferCache <- entries
@@ -761,8 +818,17 @@ let private tryGetEffectiveBuffer
     (paragraphStyle: ParagraphStyle)
     (buffer: TextBuffer) =
     if effectiveBufferLastSet
-       && effectiveBufferCacheEntryMatches buffer.Rope buffer.Runs paragraphStyle resolvedStyles effectiveBufferLast then
+       && effectiveBufferCacheEntryMatchesExact resolvedStyles paragraphStyle buffer effectiveBufferLast then
         ValueSome effectiveBufferLast.Result
+    elif effectiveBufferPreviousSet
+         && effectiveBufferCacheEntryMatchesExact resolvedStyles paragraphStyle buffer effectiveBufferPrevious then
+        ValueSome effectiveBufferPrevious.Result
+    elif effectiveBufferOlder1Set
+         && effectiveBufferCacheEntryMatchesExact resolvedStyles paragraphStyle buffer effectiveBufferOlder1 then
+        ValueSome effectiveBufferOlder1.Result
+    elif effectiveBufferOlder2Set
+         && effectiveBufferCacheEntryMatchesExact resolvedStyles paragraphStyle buffer effectiveBufferOlder2 then
+        ValueSome effectiveBufferOlder2.Result
     else
         let slot = effectiveBufferCacheSlot buffer.Rope buffer.Runs paragraphStyle resolvedStyles
         let fast = effectiveBufferFastSlots.[slot]
@@ -775,6 +841,41 @@ let private tryGetEffectiveBuffer
             let mutable cached = Unchecked.defaultof<EffectiveBufferCacheEntry>
             if effectiveBufferCacheByKey.TryGetValue(key, &cached)
                && effectiveBufferCacheEntryMatches buffer.Rope buffer.Runs paragraphStyle resolvedStyles cached then
+                effectiveBufferFastSlots.[slot] <- cached
+                setEffectiveBufferLast cached
+                ValueSome cached.Result
+            else
+                ValueNone
+
+let private tryGetEffectiveBufferResolved
+    (resolvedStyles: Map<string, NamedStyle>)
+    (paragraphStyle: ParagraphStyle)
+    (buffer: TextBuffer) =
+    if effectiveBufferLastSet
+       && effectiveBufferCacheEntryMatchesResolvedExact resolvedStyles paragraphStyle buffer effectiveBufferLast then
+        ValueSome effectiveBufferLast.Result
+    elif effectiveBufferPreviousSet
+         && effectiveBufferCacheEntryMatchesResolvedExact resolvedStyles paragraphStyle buffer effectiveBufferPrevious then
+        ValueSome effectiveBufferPrevious.Result
+    elif effectiveBufferOlder1Set
+         && effectiveBufferCacheEntryMatchesResolvedExact resolvedStyles paragraphStyle buffer effectiveBufferOlder1 then
+        ValueSome effectiveBufferOlder1.Result
+    elif effectiveBufferOlder2Set
+         && effectiveBufferCacheEntryMatchesResolvedExact resolvedStyles paragraphStyle buffer effectiveBufferOlder2 then
+        ValueSome effectiveBufferOlder2.Result
+    else
+        let slot = effectiveBufferCacheSlotResolved buffer.Rope buffer.Runs paragraphStyle resolvedStyles
+        let fast = effectiveBufferFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null))
+           && effectiveBufferCacheEntryMatchesResolved buffer.Rope buffer.Runs paragraphStyle resolvedStyles fast then
+            setEffectiveBufferLast fast
+            ValueSome fast.Result
+        else
+            let resolvedStylesOption = Some resolvedStyles
+            let key = effectiveBufferCacheKey buffer.Rope buffer.Runs paragraphStyle resolvedStylesOption
+            let mutable cached = Unchecked.defaultof<EffectiveBufferCacheEntry>
+            if effectiveBufferCacheByKey.TryGetValue(key, &cached)
+               && effectiveBufferCacheEntryMatches buffer.Rope buffer.Runs paragraphStyle resolvedStylesOption cached then
                 effectiveBufferFastSlots.[slot] <- cached
                 setEffectiveBufferLast cached
                 ValueSome cached.Result
@@ -1090,15 +1191,31 @@ let private effectiveBufferCached
             let result = effectiveBufferWith transformStyle buffer
             rememberEffectiveBuffer buffer.Rope buffer.Runs paragraphStyle resolvedStyles result
 
+let private effectiveBufferCachedResolved
+    (resolvedStyles: Map<string, NamedStyle>)
+    (paragraphStyle: ParagraphStyle)
+    (buffer: TextBuffer) =
+    let last = effectiveBufferLast
+    if effectiveBufferLastSet
+       && effectiveBufferCacheEntryMatchesResolvedExact resolvedStyles paragraphStyle buffer last then
+        last.Result
+    else
+        match tryGetEffectiveBufferResolved resolvedStyles paragraphStyle buffer with
+        | ValueSome result -> result
+        | ValueNone ->
+            let result =
+                effectiveBufferWith (effectiveTextStyleWithResolved resolvedStyles paragraphStyle) buffer
+            rememberEffectiveBuffer buffer.Rope buffer.Runs paragraphStyle (Some resolvedStyles) result
+
 let effectiveBuffer (paragraphStyle: ParagraphStyle) (buffer: TextBuffer) =
     effectiveBufferCached None paragraphStyle buffer
 
 let effectiveBufferInDocument (doc: Document) (paragraphStyle: ParagraphStyle) (buffer: TextBuffer) =
     let context = styleContext doc
-    effectiveBufferCached (Some context.ResolvedCharacterStyles) paragraphStyle buffer
+    effectiveBufferCachedResolved context.ResolvedCharacterStyles paragraphStyle buffer
 
 let effectiveBufferInContext (context: DocumentStyleContext) (paragraphStyle: ParagraphStyle) (buffer: TextBuffer) =
-    effectiveBufferCached (Some context.ResolvedCharacterStyles) paragraphStyle buffer
+    effectiveBufferCachedResolved context.ResolvedCharacterStyles paragraphStyle buffer
 
 // DocumentProcessors.twipsToPoints stores SpacingBefore/SpacingAfter as
 // points (twips / 20). Layout runs in CSS-pixels at 96 DPI (margins came

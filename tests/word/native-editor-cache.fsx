@@ -225,6 +225,33 @@ check "native effective buffer cache hot hit"
      && effectiveBufferTotal = TB.length effectiveBufferA * 100000)
     true
 
+let effectiveBufferCycleSources =
+    [| TB.ofString "abcdef"
+       TB.ofString "ghijkl"
+       TB.ofString "mnopqr" |]
+for source in effectiveBufferCycleSources do
+    Styles.effectiveBufferInContext effectiveBufferContext effectiveBufferStyle source |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let effectiveBufferCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let effectiveBufferCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable effectiveBufferCycleTotal = 0
+for index in 1 .. 300000 do
+    effectiveBufferCycleTotal <-
+        effectiveBufferCycleTotal
+        + TB.length (Styles.effectiveBufferInContext effectiveBufferContext effectiveBufferStyle effectiveBufferCycleSources.[index % effectiveBufferCycleSources.Length])
+effectiveBufferCycleSw.Stop()
+let effectiveBufferCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - effectiveBufferCycleAllocatedBefore
+check "native effective buffer cache three-position cycle"
+    (effectiveBufferCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && effectiveBufferCycleAllocated < 512L * 1024L
+     && effectiveBufferCycleTotal = 1800000)
+    true
+
 let rendererCommandParagraphCount = 5000
 let rendererCommandDoc =
     { Doc.empty with
