@@ -1185,7 +1185,7 @@ let mutable private pasteIdentityCache: PasteIdentityCache list = []
 let private pasteIdentityCacheBySource =
     System.Collections.Generic.Dictionary<CellGridReferenceKey, PasteIdentityCache>(cellGridReferenceComparer)
 let private pasteIdentityFastSlots = Array.zeroCreate<PasteIdentityCache> 256
-let private pasteIdentityCacheMaxEntries = 64
+let private pasteIdentityCacheMaxEntries = 256
 let private pasteIdentityCacheMaxSources = 64
 let private pasteIdentityCacheMaxTotalCells = 200000
 let private pasteIdentityCacheMaxTotalClipboardCells = 200000

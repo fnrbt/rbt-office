@@ -1399,6 +1399,44 @@ check "paste values cache hot hit allocation"
      && pasteIdentityHotHitSw.Elapsed.TotalMilliseconds < 100.0
      && pasteIdentityHotHitAllocated < 2L * 1024L * 1024L)
     true
+let pasteIdentityCycleClipRows = 100
+let pasteIdentityCycleTargetCount = 80
+let pasteIdentityCycleTargets =
+    [| for index in 0 .. pasteIdentityCycleTargetCount - 1 -> { Row = 0; Col = index * 2 } |]
+let pasteIdentityCycleClip =
+    { Cells = [ for row in 0 .. pasteIdentityCycleClipRows - 1 -> row, 0, cell (CellValue.Number (float row)) ]
+      IsCut = false
+      SourceStartRow = 0
+      SourceStartCol = 0 }
+let pasteIdentityCycleModel =
+    pasteIdentityCycleTargets
+    |> Array.fold
+        (fun model target -> pasteClipboard target pasteIdentityCycleClip model)
+        (createEmpty (pasteIdentityCycleClipRows + 5) (pasteIdentityCycleTargetCount * 2 + 1))
+for target in pasteIdentityCycleTargets do
+    pasteClipboard target pasteIdentityCycleClip pasteIdentityCycleModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let pasteIdentityCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let pasteIdentityCycleSw = Stopwatch.StartNew()
+let mutable pasteIdentityCycleHits = 0
+for index in 1 .. 800 do
+    let pasted = pasteClipboard pasteIdentityCycleTargets.[index % pasteIdentityCycleTargets.Length] pasteIdentityCycleClip pasteIdentityCycleModel
+    if obj.ReferenceEquals(pasted, pasteIdentityCycleModel) then
+        pasteIdentityCycleHits <- pasteIdentityCycleHits + 1
+pasteIdentityCycleSw.Stop()
+let pasteIdentityCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - pasteIdentityCycleAllocatedBefore
+check "paste values cache target cycle hits" pasteIdentityCycleHits 800
+check "paste values cache target cycle allocation" (pasteIdentityCycleAllocated < 512L * 1024L) true
+if pasteIdentityCycleSw.Elapsed.TotalMilliseconds < 80.0 then
+    pass <- pass + 1
+else
+    fail <- fail + 1
+    printfn "FAIL %-26s expected under %.1f ms got %.1f ms" "paste cache target cycle perf" 80.0 pasteIdentityCycleSw.Elapsed.TotalMilliseconds
 let pasteIdentityManyModelCount = 24
 let pasteIdentityManyModels =
     [| for modelIndex in 0 .. pasteIdentityManyModelCount - 1 ->
