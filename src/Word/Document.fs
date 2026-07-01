@@ -3200,10 +3200,10 @@ let findParagraph (doc: Document) paragraphId =
     | None -> findParagraphFromParagraphLookup doc paragraphId
 
 let private tryReplaceTopLevelParagraphBeforeNestedContent doc paragraphId newPara =
-    let prefix = ResizeArray<Block>()
     let mutable remaining = doc.Blocks
     let mutable result: Document voption = ValueNone
     let mutable blockedByNestedContent = false
+    let mutable index = 0
 
     while result.IsNone && not blockedByNestedContent do
         match remaining with
@@ -3214,26 +3214,26 @@ let private tryReplaceTopLevelParagraphBeforeNestedContent doc paragraphId newPa
                 if paragraphReplacementMatches para newPara then
                     ValueSome doc
                 else
-                    ValueSome { doc with Blocks = prependResizeArray prefix (Paragraph newPara :: tail) }
+                    ValueSome { doc with Blocks = replaceTopLevelBlockAtIndex index (Paragraph newPara) doc.Blocks }
         | Heading (level, para) :: tail when para.Id = paragraphId ->
             result <-
                 if paragraphReplacementMatches para newPara then
                     ValueSome doc
                 else
-                    ValueSome { doc with Blocks = prependResizeArray prefix (Heading (level, newPara) :: tail) }
+                    ValueSome { doc with Blocks = replaceTopLevelBlockAtIndex index (Heading (level, newPara)) doc.Blocks }
         | (Table _ | TextBox _) :: _ ->
             blockedByNestedContent <- true
         | block :: tail ->
-            prefix.Add block
             remaining <- tail
+            index <- index + 1
 
     if blockedByNestedContent then ValueNone else result
 
 let private tryUpdateTopLevelParagraphBeforeNestedContent doc paragraphId updateParagraph =
-    let prefix = ResizeArray<Block>()
     let mutable remaining = doc.Blocks
     let mutable result: Document voption = ValueNone
     let mutable blockedByNestedContent = false
+    let mutable index = 0
 
     while result.IsNone && not blockedByNestedContent do
         match remaining with
@@ -3245,19 +3245,19 @@ let private tryUpdateTopLevelParagraphBeforeNestedContent doc paragraphId update
                 if paragraphReplacementMatches para nextPara then
                     ValueSome doc
                 else
-                    ValueSome { doc with Blocks = prependResizeArray prefix (Paragraph nextPara :: tail) }
+                    ValueSome { doc with Blocks = replaceTopLevelBlockAtIndex index (Paragraph nextPara) doc.Blocks }
         | Heading (level, para) :: tail when para.Id = paragraphId ->
             let nextPara = updateParagraph para
             result <-
                 if paragraphReplacementMatches para nextPara then
                     ValueSome doc
                 else
-                    ValueSome { doc with Blocks = prependResizeArray prefix (Heading (level, nextPara) :: tail) }
+                    ValueSome { doc with Blocks = replaceTopLevelBlockAtIndex index (Heading (level, nextPara)) doc.Blocks }
         | (Table _ | TextBox _) :: _ ->
             blockedByNestedContent <- true
         | block :: tail ->
-            prefix.Add block
             remaining <- tail
+            index <- index + 1
 
     if blockedByNestedContent then ValueNone else result
 
