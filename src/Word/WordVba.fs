@@ -20,7 +20,7 @@ module Vba =
 
     let mutable private compiledSourceCache: CompiledSourceCacheEntry list = []
     let private compiledSourceFastSlots = Array.zeroCreate<CompiledSourceCacheEntry> 256
-    let private compiledSourceCacheMaxEntries = 64
+    let private compiledSourceCacheMaxEntries = 256
     let private compiledSourceCacheMaxTotalRetainedUnits = 1000000
 
     let private clearCompiledSourceFastSlots () =

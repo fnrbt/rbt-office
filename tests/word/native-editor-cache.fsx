@@ -2131,6 +2131,42 @@ else
          && vbaCompileCacheHits = 320000)
         true
 
+    let vbaCompileCycleSources =
+        [| for sourceIndex in 0 .. 79 ->
+            System.String.Join(
+                "\n",
+                [|
+                    yield "Dim x"
+                    yield sprintf "' native compile source cycle %02d" sourceIndex
+                    for line in 1 .. 20 do
+                        yield sprintf "x = %d" (sourceIndex + line)
+                |]) |]
+
+    for source in vbaCompileCycleSources do
+        vbaCompileSourceCached.Invoke(null, [| box vbaCompileOptions; box source |]) |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let vbaCompileCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let vbaCompileCycleSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable vbaCompileCycleHits = 0
+    for _pass in 1 .. 20 do
+        for source in vbaCompileCycleSources do
+            let result = vbaCompileSourceCached.Invoke(null, [| box vbaCompileOptions; box source |])
+            if not (isNull result) then
+                vbaCompileCycleHits <- vbaCompileCycleHits + 1
+    vbaCompileCycleSw.Stop()
+    let vbaCompileCycleAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - vbaCompileCycleAllocatedBefore
+
+    check "native vba compile cache source cycle"
+        (vbaCompileCycleSw.Elapsed.TotalMilliseconds < 80.0
+         && vbaCompileCycleAllocated < 8L * 1024L * 1024L
+         && vbaCompileCycleHits = 1600)
+        true
+
 if isNull tryLoadWordFont || isNull wordFontCacheProperty then
     fail <- fail + 1
     printfn "FAIL %-34s expected private font cache helpers" "native font cache reflection"
