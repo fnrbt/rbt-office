@@ -429,6 +429,63 @@ ok "calc-chain-sparse-dirty-recalc-time"
         sparseDirtyValue
         (Set.count sparseDirtyRecalcEngine.DirtySet))
 
+let criteriaRecalcFormulaCount = 4000
+let criteriaRecalcSourceRows = 32
+let criteriaRecalcFormula = "=COUNTIF($A$1:$A$32,\">=16\")"
+let criteriaRecalcCells =
+    seq {
+        for row in 0 .. criteriaRecalcSourceRows - 1 do
+            yield { Row = row; Col = 0 }, cell (CellValue.Number (float row))
+        for row in 0 .. criteriaRecalcFormulaCount - 1 do
+            yield { Row = row; Col = 1 }, cell (CellValue.Formula (criteriaRecalcFormula, CellValue.Empty))
+    }
+    |> Map.ofSeq
+let criteriaRecalcModel =
+    { createEmpty (criteriaRecalcFormulaCount + 10) 4 with Cells = criteriaRecalcCells }
+let criteriaRecalcWb =
+    { Sheets = Map.ofList [ "criteria", { Id = "criteria"; Name = "Criteria"; Model = criteriaRecalcModel; Visible = true } ]
+      SheetOrder = [ "criteria" ]; ActiveSheet = "criteria"; Tables = Map.empty; Names = Map.empty }
+let mutable criteriaRecalcEngine = emptyEngine
+for row in 0 .. criteriaRecalcFormulaCount - 1 do
+    criteriaRecalcEngine <-
+        buildDependencies
+            { Sheet = "criteria"; Cell = { Row = row; Col = 1 } }
+            criteriaRecalcFormula
+            criteriaRecalcWb
+            criteriaRecalcEngine
+criteriaRecalcEngine <- rebuildCalcChain criteriaRecalcWb criteriaRecalcEngine
+let criteriaRecalcInitialWb, criteriaRecalcInitialEngine =
+    smartRecalculate criteriaRecalcWb criteriaRecalcEngine
+let criteriaRecalcDirtyWb, criteriaRecalcDirtyEngine =
+    updateCell
+        { Sheet = "criteria"; Cell = { Row = 0; Col = 0 } }
+        (CellValue.Number 99.0)
+        (cell (CellValue.Number 99.0))
+        criteriaRecalcInitialWb
+        criteriaRecalcInitialEngine
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let criteriaRecalcAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let criteriaRecalcSw = System.Diagnostics.Stopwatch.StartNew()
+let criteriaRecalcResultWb, criteriaRecalcResultEngine =
+    smartRecalculate criteriaRecalcDirtyWb criteriaRecalcDirtyEngine
+criteriaRecalcSw.Stop()
+let criteriaRecalcAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - criteriaRecalcAllocatedBefore
+let criteriaRecalcValue =
+    readWb { Sheet = "criteria"; Cell = { Row = 0; Col = 1 } } criteriaRecalcResultWb
+ok "criteria-cache-shared-incremental-recalc"
+   (criteriaRecalcValue = CellValue.Number 17.0
+    && Set.isEmpty criteriaRecalcResultEngine.DirtySet
+    && criteriaRecalcAllocated < 33L * 1024L * 1024L
+    && criteriaRecalcSw.Elapsed.TotalMilliseconds < 500.0)
+   (sprintf "criteria recalc took %.1f ms allocated=%d value=%A dirty=%d"
+        criteriaRecalcSw.Elapsed.TotalMilliseconds
+        criteriaRecalcAllocated
+        criteriaRecalcValue
+        (Set.count criteriaRecalcResultEngine.DirtySet))
+
 // --- Range-granular dependency: a large range is one rectangle, not N edges -
 // A1:A5000 (> rangeDepThreshold) feeding B1=SUM(...) must NOT reify 5000 edges,
 // yet an edit to any data cell inside it must still dirty + recalc the SUM.

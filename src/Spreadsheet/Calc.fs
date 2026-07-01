@@ -711,7 +711,7 @@ let markDirtyForCell (cell: SheetCell) (engine: CalcEngine): CalcEngine =
 
 /// Recalculate a single cell from its cached formula AST, evaluating
 /// against its own sheet's model with the full workbook in context.
-let recalculateCell (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine): CellValue option =
+let private recalculateCellWithCriteriaCache criteriaCache (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine): CellValue option =
     match Map.tryFind cell engine.Metadata with
     | Some metadata ->
         match metadata.ParsedFormula, sheetModel cell.Sheet workbook with
@@ -720,11 +720,14 @@ let recalculateCell (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine):
                 { Model = model
                   Workbook = Some workbook
                   Sheet = Some cell.Sheet
-                  CriteriaCache = Some (CriteriaPredicateCache())
+                  CriteriaCache = criteriaCache
                   CurrentCell = Some cell.Cell }
             Some (eval expr ctx)
         | _ -> None
     | None -> None
+
+let recalculateCell (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine): CellValue option =
+    recalculateCellWithCriteriaCache (Some (CriteriaPredicateCache())) cell workbook engine
 
 let private canSkipUnchangedCellUpdate (cell: SheetCell) (targetCellData: CellData)
                                        (workbook: Workbook) (engine: CalcEngine) =
@@ -754,12 +757,13 @@ let smartRecalculate (workbook: Workbook) (engine: CalcEngine): Workbook * CalcE
     if Set.isEmpty engine.DirtySet then
         (workbook, engine)
     else
+        let criteriaCache = Some (CriteriaPredicateCache())
         let mutable wb = workbook
         let mutable eng = engine
         for cell in recalculateVisitOrder engine do
             match Map.tryFind cell eng.Metadata with
             | Some metadata when Set.contains cell eng.DirtySet ->
-                match recalculateCell cell wb eng with
+                match recalculateCellWithCriteriaCache criteriaCache cell wb eng with
                 | Some newValue ->
                     match sheetModel cell.Sheet wb with
                     | Some model ->
