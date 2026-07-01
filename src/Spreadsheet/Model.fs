@@ -6371,6 +6371,99 @@ let private hasAnyFormatChange (cells: ResizeArray<CellAddress * float * CellDat
         index <- index + 1
     changed
 
+[<Struct>]
+type private DataBarApplyCacheKey = {
+    StartRow: int
+    StartCol: int
+    EndRow: int
+    EndCol: int
+    Color: string
+}
+
+[<Struct>]
+type private IconSetApplyCacheKey = {
+    StartRow: int
+    StartCol: int
+    EndRow: int
+    EndCol: int
+    Count: int
+}
+
+[<Struct>]
+type private ColorScaleApplyCacheKey = {
+    StartRow: int
+    StartCol: int
+    EndRow: int
+    EndCol: int
+    LoColor: string
+    MidColor: string option
+    HiColor: string
+}
+
+let private dataBarApplyCacheKeyHash (key: DataBarApplyCacheKey) =
+    let mutable hashCode = key.StartRow
+    hashCode <- (hashCode * 397) ^^^ key.StartCol
+    hashCode <- (hashCode * 397) ^^^ key.EndRow
+    hashCode <- (hashCode * 397) ^^^ key.EndCol
+    hashCode <- (hashCode * 397) ^^^ hash key.Color
+    hashCode
+
+let private dataBarApplyCacheKeyComparer =
+    { new System.Collections.Generic.IEqualityComparer<DataBarApplyCacheKey> with
+        member _.Equals(left, right) =
+            left.StartRow = right.StartRow
+            && left.StartCol = right.StartCol
+            && left.EndRow = right.EndRow
+            && left.EndCol = right.EndCol
+            && left.Color = right.Color
+
+        member _.GetHashCode(key) =
+            dataBarApplyCacheKeyHash key }
+
+let private iconSetApplyCacheKeyHash (key: IconSetApplyCacheKey) =
+    let mutable hashCode = key.StartRow
+    hashCode <- (hashCode * 397) ^^^ key.StartCol
+    hashCode <- (hashCode * 397) ^^^ key.EndRow
+    hashCode <- (hashCode * 397) ^^^ key.EndCol
+    hashCode <- (hashCode * 397) ^^^ key.Count
+    hashCode
+
+let private iconSetApplyCacheKeyComparer =
+    { new System.Collections.Generic.IEqualityComparer<IconSetApplyCacheKey> with
+        member _.Equals(left, right) =
+            left.StartRow = right.StartRow
+            && left.StartCol = right.StartCol
+            && left.EndRow = right.EndRow
+            && left.EndCol = right.EndCol
+            && left.Count = right.Count
+
+        member _.GetHashCode(key) =
+            iconSetApplyCacheKeyHash key }
+
+let private colorScaleApplyCacheKeyHash (key: ColorScaleApplyCacheKey) =
+    let mutable hashCode = key.StartRow
+    hashCode <- (hashCode * 397) ^^^ key.StartCol
+    hashCode <- (hashCode * 397) ^^^ key.EndRow
+    hashCode <- (hashCode * 397) ^^^ key.EndCol
+    hashCode <- (hashCode * 397) ^^^ hash key.LoColor
+    hashCode <- (hashCode * 397) ^^^ hash key.MidColor
+    hashCode <- (hashCode * 397) ^^^ hash key.HiColor
+    hashCode
+
+let private colorScaleApplyCacheKeyComparer =
+    { new System.Collections.Generic.IEqualityComparer<ColorScaleApplyCacheKey> with
+        member _.Equals(left, right) =
+            left.StartRow = right.StartRow
+            && left.StartCol = right.StartCol
+            && left.EndRow = right.EndRow
+            && left.EndCol = right.EndCol
+            && left.LoColor = right.LoColor
+            && left.MidColor = right.MidColor
+            && left.HiColor = right.HiColor
+
+        member _.GetHashCode(key) =
+            colorScaleApplyCacheKeyHash key }
+
 type private DataBarApplyCache = {
     Cells: Map<CellAddress, CellData>
     CellCount: int
@@ -6380,28 +6473,12 @@ type private DataBarApplyCache = {
     mutable TotalKeyCharCount: int
 }
 
-and private DataBarApplyCacheKey = {
-    StartRow: int
-    StartCol: int
-    EndRow: int
-    EndCol: int
-    Color: string
-}
-
 type private IconSetApplyCache = {
     Cells: Map<CellAddress, CellData>
     CellCount: int
     SourceTextCharCount: int
     Entries: System.Collections.Generic.Dictionary<IconSetApplyCacheKey, unit>
     Order: System.Collections.Generic.Queue<IconSetApplyCacheKey>
-}
-
-and private IconSetApplyCacheKey = {
-    StartRow: int
-    StartCol: int
-    EndRow: int
-    EndCol: int
-    Count: int
 }
 
 type private ColorScaleApplyCache = {
@@ -6413,16 +6490,7 @@ type private ColorScaleApplyCache = {
     mutable TotalKeyCharCount: int
 }
 
-and private ColorScaleApplyCacheKey = {
-    StartRow: int
-    StartCol: int
-    EndRow: int
-    EndCol: int
-    LoColor: string
-    MidColor: string option
-    HiColor: string
-}
-
+[<Struct>]
 type private DataBarApplyLast = {
     Cells: Map<CellAddress, CellData>
     StartRow: int
@@ -6432,6 +6500,7 @@ type private DataBarApplyLast = {
     Color: string
 }
 
+[<Struct>]
 type private IconSetApplyLast = {
     Cells: Map<CellAddress, CellData>
     StartRow: int
@@ -6441,6 +6510,7 @@ type private IconSetApplyLast = {
     Count: int
 }
 
+[<Struct>]
 type private ColorScaleApplyLast = {
     Cells: Map<CellAddress, CellData>
     StartRow: int
@@ -6457,10 +6527,16 @@ let mutable private iconSetApplyCache: IconSetApplyCache list = []
 let mutable private colorScaleApplyCache: ColorScaleApplyCache list = []
 let mutable private dataBarApplyLastSet = false
 let mutable private dataBarApplyLast = Unchecked.defaultof<DataBarApplyLast>
+let mutable private dataBarApplyPreviousLastSet = false
+let mutable private dataBarApplyPreviousLast = Unchecked.defaultof<DataBarApplyLast>
 let mutable private iconSetApplyLastSet = false
 let mutable private iconSetApplyLast = Unchecked.defaultof<IconSetApplyLast>
+let mutable private iconSetApplyPreviousLastSet = false
+let mutable private iconSetApplyPreviousLast = Unchecked.defaultof<IconSetApplyLast>
 let mutable private colorScaleApplyLastSet = false
 let mutable private colorScaleApplyLast = Unchecked.defaultof<ColorScaleApplyLast>
+let mutable private colorScaleApplyPreviousLastSet = false
+let mutable private colorScaleApplyPreviousLast = Unchecked.defaultof<ColorScaleApplyLast>
 let private dataBarApplyCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, DataBarApplyCache>(cellMapReferenceComparer)
 let private dataBarApplyFastSlots = Array.zeroCreate<DataBarApplyCache> 256
@@ -6503,6 +6579,10 @@ let private dataBarApplyLastMatches sr sc er ec color cells (cached: DataBarAppl
     && cached.Color = color
 
 let private rememberDataBarApplyLast sr sc er ec color cells =
+    if dataBarApplyLastSet
+       && not (dataBarApplyLastMatches sr sc er ec color cells dataBarApplyLast) then
+        dataBarApplyPreviousLastSet <- true
+        dataBarApplyPreviousLast <- dataBarApplyLast
     dataBarApplyLastSet <- true
     dataBarApplyLast <-
         { Cells = cells
@@ -6513,8 +6593,10 @@ let private rememberDataBarApplyLast sr sc er ec color cells =
           Color = color }
 
 let private tryGetDataBarApplyLast sr sc er ec color cells =
-    dataBarApplyLastSet
-    && dataBarApplyLastMatches sr sc er ec color cells dataBarApplyLast
+    (dataBarApplyLastSet
+     && dataBarApplyLastMatches sr sc er ec color cells dataBarApplyLast)
+    || (dataBarApplyPreviousLastSet
+        && dataBarApplyLastMatches sr sc er ec color cells dataBarApplyPreviousLast)
 
 let private iconSetApplyLastMatches sr sc er ec count cells (cached: IconSetApplyLast) =
     obj.ReferenceEquals(cached.Cells, cells)
@@ -6525,6 +6607,10 @@ let private iconSetApplyLastMatches sr sc er ec count cells (cached: IconSetAppl
     && cached.Count = count
 
 let private rememberIconSetApplyLast sr sc er ec count cells =
+    if iconSetApplyLastSet
+       && not (iconSetApplyLastMatches sr sc er ec count cells iconSetApplyLast) then
+        iconSetApplyPreviousLastSet <- true
+        iconSetApplyPreviousLast <- iconSetApplyLast
     iconSetApplyLastSet <- true
     iconSetApplyLast <-
         { Cells = cells
@@ -6535,8 +6621,10 @@ let private rememberIconSetApplyLast sr sc er ec count cells =
           Count = count }
 
 let private tryGetIconSetApplyLast sr sc er ec count cells =
-    iconSetApplyLastSet
-    && iconSetApplyLastMatches sr sc er ec count cells iconSetApplyLast
+    (iconSetApplyLastSet
+     && iconSetApplyLastMatches sr sc er ec count cells iconSetApplyLast)
+    || (iconSetApplyPreviousLastSet
+        && iconSetApplyLastMatches sr sc er ec count cells iconSetApplyPreviousLast)
 
 let private colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells (cached: ColorScaleApplyLast) =
     obj.ReferenceEquals(cached.Cells, cells)
@@ -6549,6 +6637,10 @@ let private colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells (ca
     && cached.HiColor = hiColor
 
 let private rememberColorScaleApplyLast sr sc er ec loColor mid hiColor cells =
+    if colorScaleApplyLastSet
+       && not (colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyLast) then
+        colorScaleApplyPreviousLastSet <- true
+        colorScaleApplyPreviousLast <- colorScaleApplyLast
     colorScaleApplyLastSet <- true
     colorScaleApplyLast <-
         { Cells = cells
@@ -6561,8 +6653,10 @@ let private rememberColorScaleApplyLast sr sc er ec loColor mid hiColor cells =
           HiColor = hiColor }
 
 let private tryGetColorScaleApplyLast sr sc er ec loColor mid hiColor cells =
-    colorScaleApplyLastSet
-    && colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyLast
+    (colorScaleApplyLastSet
+     && colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyLast)
+    || (colorScaleApplyPreviousLastSet
+        && colorScaleApplyLastMatches sr sc er ec loColor mid hiColor cells colorScaleApplyPreviousLast)
 
 let private setDataBarApplyCache entries =
     dataBarApplyCache <- entries
@@ -6881,7 +6975,7 @@ let applyDataBars (sr: int) (sc: int) (er: int) (ec: int) (color: string) (model
                         Cells = cells
                         CellCount = conditionalFormatApplyCacheCellCount cells
                         SourceTextCharCount = sourceTextCharCount
-                        Entries = System.Collections.Generic.Dictionary<DataBarApplyCacheKey, unit>()
+                        Entries = System.Collections.Generic.Dictionary<DataBarApplyCacheKey, unit>(dataBarApplyCacheKeyComparer)
                         Order = System.Collections.Generic.Queue<DataBarApplyCacheKey>()
                         TotalKeyCharCount = 0
                     }
@@ -6977,7 +7071,7 @@ let applyColorScale (sr: int) (sc: int) (er: int) (ec: int) (loColor: string) (m
                         Cells = cells
                         CellCount = conditionalFormatApplyCacheCellCount cells
                         SourceTextCharCount = sourceTextCharCount
-                        Entries = System.Collections.Generic.Dictionary<ColorScaleApplyCacheKey, unit>()
+                        Entries = System.Collections.Generic.Dictionary<ColorScaleApplyCacheKey, unit>(colorScaleApplyCacheKeyComparer)
                         Order = System.Collections.Generic.Queue<ColorScaleApplyCacheKey>()
                         TotalKeyCharCount = 0
                     }
@@ -7079,7 +7173,7 @@ let applyIconSet (sr: int) (sc: int) (er: int) (ec: int) (count: int) (model: Sp
                         Cells = cells
                         CellCount = conditionalFormatApplyCacheCellCount cells
                         SourceTextCharCount = sourceTextCharCount
-                        Entries = System.Collections.Generic.Dictionary<IconSetApplyCacheKey, unit>()
+                        Entries = System.Collections.Generic.Dictionary<IconSetApplyCacheKey, unit>(iconSetApplyCacheKeyComparer)
                         Order = System.Collections.Generic.Queue<IconSetApplyCacheKey>()
                     }
             addConditionalFormatApplyCacheEntry key cache.Entries cache.Order

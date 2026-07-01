@@ -796,6 +796,50 @@ check "native conditional format no-op hot hits"
      && conditionalFormatHits = 300000)
     true
 
+let conditionalNoNumberCells =
+    [ for row in 0 .. conditionalFormatRows - 1 ->
+        { Row = row; Col = 0 }, cell (CellValue.String (sprintf "text-%d" row)) ]
+    |> Map.ofList
+let conditionalNoNumberModel = { createEmpty conditionalFormatRows 4 with Cells = conditionalNoNumberCells }
+applyDataBars 0 0 (conditionalFormatRows - 1) 0 "#63C384" conditionalNoNumberModel |> ignore
+applyDataBars 0 0 (conditionalFormatRows - 1) 0 "#FF0000" conditionalNoNumberModel |> ignore
+applyColorScale 0 0 (conditionalFormatRows - 1) 0 "#FF0000" None "#00FF00" conditionalNoNumberModel |> ignore
+applyColorScale 0 0 (conditionalFormatRows - 1) 0 "#0000FF" None "#00FF00" conditionalNoNumberModel |> ignore
+applyIconSet 0 0 (conditionalFormatRows - 1) 0 3 conditionalNoNumberModel |> ignore
+applyIconSet 0 0 (conditionalFormatRows - 1) 0 4 conditionalNoNumberModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let conditionalNoNumberAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let conditionalNoNumberSw = Stopwatch.StartNew()
+let mutable conditionalNoNumberHits = 0
+for index in 1 .. 100000 do
+    let dataBarColor = if index % 2 = 0 then "#63C384" else "#FF0000"
+    if obj.ReferenceEquals(
+        applyDataBars 0 0 (conditionalFormatRows - 1) 0 dataBarColor conditionalNoNumberModel,
+        conditionalNoNumberModel) then
+        conditionalNoNumberHits <- conditionalNoNumberHits + 1
+    let scaleLowColor = if index % 2 = 0 then "#FF0000" else "#0000FF"
+    if obj.ReferenceEquals(
+        applyColorScale 0 0 (conditionalFormatRows - 1) 0 scaleLowColor None "#00FF00" conditionalNoNumberModel,
+        conditionalNoNumberModel) then
+        conditionalNoNumberHits <- conditionalNoNumberHits + 1
+    let iconCount = if index % 2 = 0 then 3 else 4
+    if obj.ReferenceEquals(
+        applyIconSet 0 0 (conditionalFormatRows - 1) 0 iconCount conditionalNoNumberModel,
+        conditionalNoNumberModel) then
+        conditionalNoNumberHits <- conditionalNoNumberHits + 1
+conditionalNoNumberSw.Stop()
+let conditionalNoNumberAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - conditionalNoNumberAllocatedBefore
+check "native conditional format alternating no-number cache"
+    (conditionalNoNumberSw.Elapsed.TotalMilliseconds < 80.0
+     && conditionalNoNumberAllocated < 512L * 1024L
+     && conditionalNoNumberHits = 300000)
+    true
+
 let pasteIdentityCells =
     [ { Row = 1; Col = 1 }, cell (CellValue.String "same") ]
     |> Map.ofList
