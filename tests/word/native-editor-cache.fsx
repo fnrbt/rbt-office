@@ -26,6 +26,7 @@ let check label got expected =
 
 let pos blockId offset : Doc.Position = { BlockId = blockId; Offset = offset }
 let para id text : Doc.ParagraphBlock = { Id = id; Buffer = TB.ofString text; Metadata = Doc.defaultMetadata }
+let cloneString (text: string) = System.String(text.ToCharArray())
 
 let paragraphCount = 10000
 let selectionProbeCount = 80
@@ -1458,6 +1459,39 @@ check "native selection text cache hot hit"
      && selectionTextHotTotal = selectionTextHotFirst.Length * selectionTextHotProbeCount)
     true
 
+let clonedSelectionTextBlockId = "native-selection-text-cloned"
+let clonedSelectionTextBlocks = [ Doc.Paragraph (para clonedSelectionTextBlockId "abcdef") ]
+let clonedSelectionTextDocs =
+    [| for _ in 1 .. 200 ->
+        { Doc.empty with
+            Blocks = clonedSelectionTextBlocks
+            Selection =
+                Some {
+                    Anchor = pos (cloneString clonedSelectionTextBlockId) 1
+                    Focus = pos (cloneString clonedSelectionTextBlockId) 4
+                } } |]
+for doc in clonedSelectionTextDocs do
+    Doc.getSelectionText doc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let clonedSelectionTextAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let clonedSelectionTextSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable clonedSelectionTextTotal = 0
+for _pass in 1 .. 500 do
+    for doc in clonedSelectionTextDocs do
+        clonedSelectionTextTotal <- clonedSelectionTextTotal + (Doc.getSelectionText doc).Length
+clonedSelectionTextSw.Stop()
+let clonedSelectionTextAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - clonedSelectionTextAllocatedBefore
+check "native selection text cloned id cache"
+    (clonedSelectionTextSw.Elapsed.TotalMilliseconds < 80.0
+     && clonedSelectionTextAllocated < 512L * 1024L
+     && clonedSelectionTextTotal = 300000)
+    true
+
 let sameBlockSelectionTextParagraphCount = 50000
 let sameBlockSelectionTextDoc =
     { Doc.empty with
@@ -1484,6 +1518,37 @@ check "native selection text same-block cold"
     (sameBlockSelectionText = "bc"
      && sameBlockSelectionTextSw.Elapsed.TotalMilliseconds < 30.0
      && sameBlockSelectionTextAllocated < 200000L)
+    true
+
+let normalizedRangeClonedId = "native-normalized-range-cloned"
+let normalizedRangeClonedDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (para normalizedRangeClonedId "abcdef") ] }
+let normalizedRangeClonedSelections : Doc.Selection array =
+    [| for _ in 1 .. 2000 ->
+        { Anchor = pos (cloneString normalizedRangeClonedId) 1
+          Focus = pos (cloneString normalizedRangeClonedId) 4 } |]
+for selection in normalizedRangeClonedSelections do
+    Doc.getNormalizedRange selection normalizedRangeClonedDoc |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let normalizedRangeClonedAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let normalizedRangeClonedSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable normalizedRangeClonedTotal = 0
+for _pass in 1 .. 100 do
+    for selection in normalizedRangeClonedSelections do
+        let startPos, endPos, blockIds = Doc.getNormalizedRange selection normalizedRangeClonedDoc
+        normalizedRangeClonedTotal <- normalizedRangeClonedTotal + startPos.Offset + endPos.Offset + blockIds.Length
+normalizedRangeClonedSw.Stop()
+let normalizedRangeClonedAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - normalizedRangeClonedAllocatedBefore
+check "native normalized range cloned id cache"
+    (normalizedRangeClonedSw.Elapsed.TotalMilliseconds < 180.0
+     && normalizedRangeClonedAllocated < 512L * 1024L
+     && normalizedRangeClonedTotal = 1200000)
     true
 
 let normalizedRangeCapacityIds =

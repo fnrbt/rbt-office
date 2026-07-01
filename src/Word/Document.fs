@@ -1572,6 +1572,31 @@ let private rememberDocumentText cached =
     |> trim
     |> setDocumentTextCache
 
+let private blockIdKeyEquals (left: BlockId) (right: BlockId) =
+    obj.ReferenceEquals(left, right)
+    || System.String.Equals(left, right, System.StringComparison.Ordinal)
+
+let private blockIdKeyHash (blockId: BlockId) =
+    if isNull blockId then
+        0
+    else
+        let length = blockId.Length
+        let mutable hashCode = length
+        if length > 0 then
+            hashCode <- (hashCode * 397) ^^^ int blockId.[0]
+        if length > 1 then
+            hashCode <- (hashCode * 397) ^^^ int blockId.[length / 4]
+            hashCode <- (hashCode * 397) ^^^ int blockId.[length / 2]
+            hashCode <- (hashCode * 397) ^^^ int blockId.[(length * 3) / 4]
+            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 1]
+        if length > 2 then
+            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 2]
+        if length > 3 then
+            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 3]
+        if length > 4 then
+            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 4]
+        hashCode ^^^ (hashCode >>> 16)
+
 type private SelectionTextCache = {
     SourceBlocks: Block list
     SourceParagraphCount: int
@@ -1609,18 +1634,18 @@ let private selectionTextCacheMaxTotalSourceParagraphs = sourceParagraphCountCac
 let private selectionTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
 let private selectionTextKeyHash anchorBlockId anchorOffset focusBlockId focusOffset =
-    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(anchorBlockId)
+    let mutable hashCode = blockIdKeyHash anchorBlockId
     hashCode <- (hashCode * 397) ^^^ anchorOffset
-    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(focusBlockId)
+    hashCode <- (hashCode * 397) ^^^ blockIdKeyHash focusBlockId
     hashCode <- (hashCode * 397) ^^^ focusOffset
     hashCode
 
 let private selectionTextCacheKeyComparer =
     { new IEqualityComparer<SelectionTextCacheKey> with
         member _.Equals(left, right) =
-            obj.ReferenceEquals(left.AnchorBlockId, right.AnchorBlockId)
+            blockIdKeyEquals left.AnchorBlockId right.AnchorBlockId
             && left.AnchorOffset = right.AnchorOffset
-            && obj.ReferenceEquals(left.FocusBlockId, right.FocusBlockId)
+            && blockIdKeyEquals left.FocusBlockId right.FocusBlockId
             && left.FocusOffset = right.FocusOffset
 
         member _.GetHashCode(key) =
@@ -1643,9 +1668,9 @@ let private clearSelectionTextEntryFastSlots (slots: SelectionTextFastEntry arra
         slots.[index] <- Unchecked.defaultof<SelectionTextFastEntry>
 
 let private selectionTextKeyMatchesSelection (selection: Selection) (key: SelectionTextCacheKey) =
-    obj.ReferenceEquals(key.AnchorBlockId, selection.Anchor.BlockId)
+    blockIdKeyEquals key.AnchorBlockId selection.Anchor.BlockId
     && key.AnchorOffset = selection.Anchor.Offset
-    && obj.ReferenceEquals(key.FocusBlockId, selection.Focus.BlockId)
+    && blockIdKeyEquals key.FocusBlockId selection.Focus.BlockId
     && key.FocusOffset = selection.Focus.Offset
 
 let private tryGetSelectionTextEntryFastSlot (cache: SelectionTextCache) (selection: Selection) =
@@ -4668,18 +4693,18 @@ let private normalizedRangeCacheMaxTotalSourceParagraphs = sourceParagraphCountC
 let private normalizedRangeCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
 let private normalizedRangeKeyHash anchorBlockId anchorOffset focusBlockId focusOffset =
-    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(anchorBlockId)
+    let mutable hashCode = blockIdKeyHash anchorBlockId
     hashCode <- (hashCode * 397) ^^^ anchorOffset
-    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(focusBlockId)
+    hashCode <- (hashCode * 397) ^^^ blockIdKeyHash focusBlockId
     hashCode <- (hashCode * 397) ^^^ focusOffset
     hashCode ^^^ (hashCode >>> 16)
 
 let private normalizedRangeCacheKeyComparer =
     { new IEqualityComparer<NormalizedRangeCacheKey> with
         member _.Equals(left, right) =
-            obj.ReferenceEquals(left.AnchorBlockId, right.AnchorBlockId)
+            blockIdKeyEquals left.AnchorBlockId right.AnchorBlockId
             && left.AnchorOffset = right.AnchorOffset
-            && obj.ReferenceEquals(left.FocusBlockId, right.FocusBlockId)
+            && blockIdKeyEquals left.FocusBlockId right.FocusBlockId
             && left.FocusOffset = right.FocusOffset
 
         member _.GetHashCode(key) =
@@ -4702,9 +4727,9 @@ let private clearNormalizedRangeEntryFastSlots (slots: NormalizedRangeFastEntry 
         slots.[index] <- Unchecked.defaultof<NormalizedRangeFastEntry>
 
 let private normalizedRangeKeyMatchesSelection (sel: Selection) (key: NormalizedRangeCacheKey) =
-    obj.ReferenceEquals(key.AnchorBlockId, sel.Anchor.BlockId)
+    blockIdKeyEquals key.AnchorBlockId sel.Anchor.BlockId
     && key.AnchorOffset = sel.Anchor.Offset
-    && obj.ReferenceEquals(key.FocusBlockId, sel.Focus.BlockId)
+    && blockIdKeyEquals key.FocusBlockId sel.Focus.BlockId
     && key.FocusOffset = sel.Focus.Offset
 
 let private tryGetNormalizedRangeEntryFastSlot (cache: NormalizedRangeCache) (sel: Selection) =
@@ -9721,8 +9746,7 @@ let private selectionTextSourceSmallEnoughForColdCache doc =
     smallEnough
 
 let private sameBlockId (left: BlockId) (right: BlockId) =
-    obj.ReferenceEquals(left, right)
-    || System.String.Equals(left, right, System.StringComparison.Ordinal)
+    blockIdKeyEquals left right
 
 let private samePosition (left: Position) (right: Position) =
     left.Offset = right.Offset
