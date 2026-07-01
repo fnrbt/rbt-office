@@ -1136,6 +1136,43 @@ check "native last used column row cycle cache"
      && lastUsedColumnTotal = 12250000)
     true
 
+let lastUsedColumnEntryCollisionMergeCount = 60000
+let lastUsedColumnEntryCollisionQueryRows = [| for index in 0 .. 79 -> index * 256 |]
+let lastUsedColumnEntryCollisionMerges =
+    [ for index in 0 .. lastUsedColumnEntryCollisionMergeCount - 1 ->
+        let row = index * 2
+        { StartRow = row
+          StartCol = index % 8
+          EndRow = row + 1
+          EndCol = (index % 8) + 12 } ]
+let lastUsedColumnEntryCollisionModel =
+    { createEmpty (lastUsedColumnEntryCollisionMergeCount * 2 + 10) 32 with
+        MergedCells = lastUsedColumnEntryCollisionMerges }
+
+for row in lastUsedColumnEntryCollisionQueryRows do
+    lastUsedColumnInRow row lastUsedColumnEntryCollisionModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let lastUsedColumnEntryCollisionAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let lastUsedColumnEntryCollisionSw = Stopwatch.StartNew()
+let mutable lastUsedColumnEntryCollisionTotal = 0
+for _pass in 1 .. 20 do
+    for row in lastUsedColumnEntryCollisionQueryRows do
+        match lastUsedColumnInRow row lastUsedColumnEntryCollisionModel with
+        | Some col -> lastUsedColumnEntryCollisionTotal <- lastUsedColumnEntryCollisionTotal + col
+        | None -> lastUsedColumnEntryCollisionTotal <- lastUsedColumnEntryCollisionTotal - 1
+lastUsedColumnEntryCollisionSw.Stop()
+let lastUsedColumnEntryCollisionAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - lastUsedColumnEntryCollisionAllocatedBefore
+check "native last used column entry collision cycle"
+    (lastUsedColumnEntryCollisionSw.Elapsed.TotalMilliseconds < 80.0
+     && lastUsedColumnEntryCollisionAllocated < 512L * 1024L
+     && lastUsedColumnEntryCollisionTotal = 19200)
+    true
+
 let mergeRangeCycleMergeCount = 40000
 let mergeRangeCycleQueryCount = 80
 let mergeRangeCycleMerges =
