@@ -443,6 +443,59 @@ check "native revision navigation source cycle"
      && revisionNavigationCycleTotal = revisionCacheCycleDocs.Length * 100 * (3 + 15))
     true
 
+let pageBreakLookupCycleDocCount = 65
+let pageBreakLookupCycleStyleCount = 2000
+let pageBreakLookupCycleParagraphCount = 500
+let pageBreakLookupCycleDocs =
+    [| for docIndex in 0 .. pageBreakLookupCycleDocCount - 1 ->
+        let styleIds =
+            [| for styleIndex in 0 .. pageBreakLookupCycleStyleCount - 1 ->
+                sprintf "pb%02d%04d" docIndex styleIndex |]
+        let styles =
+            [ for styleIndex in 0 .. pageBreakLookupCycleStyleCount - 1 ->
+                { namedStyle styleIds.[styleIndex] None None with
+                    StyleType = "paragraph"
+                    PageBreakBefore = Some (styleIndex % 8 = 0) } ]
+        { Doc.empty with
+            Styles = styles
+            Blocks =
+                [ for paragraphIndex in 0 .. pageBreakLookupCycleParagraphCount - 1 ->
+                    Doc.Paragraph {
+                        Id = sprintf "native-page-break-source-cycle-%02d-%04d" docIndex paragraphIndex
+                        Buffer = TB.ofString "paragraph text"
+                        Metadata =
+                            { Doc.defaultMetadata with
+                                Style = Some styleIds.[paragraphIndex % styleIds.Length] }
+                    } ] } |]
+
+for doc in pageBreakLookupCycleDocs do
+    Doc.buildPageMap doc |> ignore
+
+let pageBreakLookupCycleExpectedPerDoc =
+    let pageMap = Doc.buildPageMap pageBreakLookupCycleDocs.[0]
+    pageMap.PageCount + pageMap.BlockAnchors.Length
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let pageBreakLookupCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let pageBreakLookupCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable pageBreakLookupCycleTotal = 0
+for _pass in 1 .. 20 do
+    for doc in pageBreakLookupCycleDocs do
+        let pageMap = Doc.buildPageMap doc
+        pageBreakLookupCycleTotal <-
+            pageBreakLookupCycleTotal + pageMap.PageCount + pageMap.BlockAnchors.Length
+pageBreakLookupCycleSw.Stop()
+let pageBreakLookupCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - pageBreakLookupCycleAllocatedBefore
+check "native page break lookup source cycle"
+    (pageBreakLookupCycleSw.Elapsed.TotalMilliseconds < 800.0
+     && pageBreakLookupCycleAllocated < 250L * 1024L * 1024L
+     && pageBreakLookupCycleTotal = pageBreakLookupCycleDocs.Length * 20 * pageBreakLookupCycleExpectedPerDoc)
+    true
+
 let styleContextCycleDocCount = 80
 let styleContextCycleStyleCount = 160
 let styleContextCycleDocs =

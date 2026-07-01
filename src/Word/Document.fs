@@ -3701,7 +3701,7 @@ let private pageBreakBeforeLookupStylesComparer =
 let private pageBreakBeforeLookupCacheByStyles =
     Dictionary<NamedStyle list, PageBreakBeforeLookupCache>(pageBreakBeforeLookupStylesComparer)
 let private pageBreakBeforeLookupFastSlots = Array.zeroCreate<PageBreakBeforeLookupCache> 256
-let private pageBreakBeforeLookupCacheMaxEntries = 64
+let private pageBreakBeforeLookupCacheMaxEntries = 256
 let private pageBreakBeforeLookupCacheMaxTotalStyles = 200000
 let private pageBreakBeforeLookupCacheMaxTotalStyleTextChars = documentSourceTextCacheMaxTotalChars
 
