@@ -11,6 +11,7 @@ open Renderer
 module Doc = RedBat.Word.Document
 module Layout = RedBat.Word.Layout
 module Paint = RedBat.Word.Paint
+module Styles = RedBat.Word.WordStyles
 module TB = RedBat.Word.TextBuffer
 
 let mutable pass = 0
@@ -193,6 +194,35 @@ else
     check "native glyph layout cache perf"
         (glyphSw.Elapsed.TotalMilliseconds < 50.0 && glyphProbeCount = 20000)
         true
+
+let effectiveBufferContext = Styles.styleContext Doc.empty
+let effectiveBufferStyle = Styles.normal
+let effectiveBufferSource = TB.ofString "abcdef"
+let effectiveBufferA = Styles.effectiveBufferInContext effectiveBufferContext effectiveBufferStyle effectiveBufferSource
+let effectiveBufferB = Styles.effectiveBufferInContext effectiveBufferContext effectiveBufferStyle effectiveBufferSource
+check "native effective buffer cache reuse"
+    (obj.ReferenceEquals(effectiveBufferA, effectiveBufferB))
+    true
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let effectiveBufferAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let effectiveBufferSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable effectiveBufferTotal = 0
+for _ in 1 .. 100000 do
+    effectiveBufferTotal <-
+        effectiveBufferTotal
+        + TB.length (Styles.effectiveBufferInContext effectiveBufferContext effectiveBufferStyle effectiveBufferSource)
+effectiveBufferSw.Stop()
+let effectiveBufferAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - effectiveBufferAllocatedBefore
+check "native effective buffer cache hot hit"
+    (effectiveBufferSw.Elapsed.TotalMilliseconds < 20.0
+     && effectiveBufferAllocated < 8L * 1024L * 1024L
+     && effectiveBufferTotal = TB.length effectiveBufferA * 100000)
+    true
 
 let rendererCommandParagraphCount = 5000
 let rendererCommandDoc =
