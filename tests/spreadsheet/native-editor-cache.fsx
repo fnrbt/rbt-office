@@ -266,6 +266,42 @@ else
          && viewportTotal < 10000)
         true
 
+    let sparseFrameRows = 20000
+    let sparseFrameCells =
+        [ for row in 0 .. 1999 ->
+            { Row = row; Col = 0 }, cell (CellValue.Number (float row)) ]
+        |> Map.ofList
+    let sparseFrameModel = { createEmpty sparseFrameRows 20 with Cells = sparseFrameCells }
+    let sparseFrameViewports =
+        [| for index in 0 .. 79 ->
+            0.0, float index * 420.0, 900.0, 600.0 |]
+    let invokeSparseFrameViewport (scrollX, scrollY, viewportWidth, viewportHeight) =
+        cellCommandsInViewport.Invoke(
+            null,
+            [| box sparseFrameModel; box scrollX; box scrollY; box viewportWidth; box viewportHeight |])
+        :?> Renderer.Cmd list
+
+    for viewport in sparseFrameViewports do
+        invokeSparseFrameViewport viewport |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let sparseFrameAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let sparseFrameSw = Stopwatch.StartNew()
+    let mutable sparseFrameTotal = 0
+    for _pass in 1 .. 20 do
+        for viewport in sparseFrameViewports do
+            sparseFrameTotal <- sparseFrameTotal + (invokeSparseFrameViewport viewport).Length
+    sparseFrameSw.Stop()
+    let sparseFrameAllocated = System.GC.GetAllocatedBytesForCurrentThread() - sparseFrameAllocatedBefore
+    check "native grid sparse frame entry cycle"
+        (sparseFrameSw.Elapsed.TotalMilliseconds < 250.0
+         && sparseFrameAllocated < 8L * 1024L * 1024L
+         && sparseFrameTotal = 265540)
+        true
+
 if isNull measureText then
     fail <- fail + 1
     printfn "FAIL %-38s expected grid measureText helper" "native text measure reflection"

@@ -647,7 +647,7 @@ type private SparseDefaultRendererFrameCacheEntry = {
 }
 
 let mutable private sparseDefaultRendererFrameCache: SparseDefaultRendererFrameCacheEntry list = []
-let private sparseDefaultRendererFrameCacheMaxEntries = 16
+let private sparseDefaultRendererFrameCacheMaxEntries = 256
 let private sparseDefaultRendererFrameCacheMaxCommands = 200000
 
 let private sparseDefaultRendererFrameMatches (parts: SparseDefaultPaintParts) (entry: SparseDefaultRendererFrameCacheEntry) =
@@ -906,6 +906,8 @@ let private measureText
         rememberLastTextMeasure text fontPt fontName bold italic width
         width
 
+let private viewportTextMeasurer = Some measureText
+
 let private viewportOfCore scrollX scrollY width height : Viewport =
     // Match Excel's column/row header pixel sizes at 96 DPI / 100% zoom so
     // parity screenshots align cell-for-cell with our PNG renders. Measured
@@ -921,7 +923,7 @@ let private viewportOfCore scrollX scrollY width height : Viewport =
       Height = height
       HeaderHeight = headerHeight
       RowHeaderWidth = rowHeaderWidth
-      Measurer = Some measureText }
+      Measurer = viewportTextMeasurer }
 
 let viewportOf (model: SpreadsheetModel) width height : Viewport =
     viewportOfCore 0.0 0.0 width height
