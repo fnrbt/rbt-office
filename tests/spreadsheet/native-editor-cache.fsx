@@ -1136,6 +1136,42 @@ check "native import csv hot hit"
      && importCsvSame = 200000)
     true
 
+let importCsvCycleSourceCount = 80
+let importCsvCycleRowCount = 3000
+let importCsvCycleText =
+    [ for row in 0 .. importCsvCycleRowCount - 1 -> string row ]
+    |> String.concat "\n"
+let importCsvCycleModels =
+    [| for _sourceIndex in 0 .. importCsvCycleSourceCount - 1 ->
+        let cells =
+            [ for row in 0 .. importCsvCycleRowCount - 1 ->
+                { Row = row; Col = 0 }, cell (CellValue.Number (float row)) ]
+            |> Map.ofList
+        { createEmpty importCsvCycleRowCount 1 with Cells = cells } |]
+
+for model in importCsvCycleModels do
+    importCSV importCsvCycleText 0 0 model |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let importCsvCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let importCsvCycleSw = Stopwatch.StartNew()
+let mutable importCsvCycleSame = 0
+for _pass in 1 .. 20 do
+    for model in importCsvCycleModels do
+        if obj.ReferenceEquals(importCSV importCsvCycleText 0 0 model, model) then
+            importCsvCycleSame <- importCsvCycleSame + 1
+importCsvCycleSw.Stop()
+let importCsvCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - importCsvCycleAllocatedBefore
+check "native import csv source cycle"
+    (importCsvCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && importCsvCycleAllocated < 512L * 1024L
+     && importCsvCycleSame = 1600)
+    true
+
 let formulaPresenceCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.Number 1.0)
       { Row = 1; Col = 0 }, cell (CellValue.String "plain") ]

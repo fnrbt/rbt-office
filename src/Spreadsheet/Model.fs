@@ -7494,7 +7494,7 @@ type private ImportCsvChanges = {
 
 let mutable private importCsvCache: ImportCsvCache list = []
 let private importCsvFastSlots = Array.zeroCreate<ImportCsvCache> 256
-let private importCsvCacheMaxSources = 64
+let private importCsvCacheMaxSources = 256
 let private importCsvCacheMaxTotalChars = 5000000
 let private importCsvCacheMaxTotalCells = 250000
 let private importCsvCacheMaxTotalSourceTextChars = 5000000
