@@ -869,6 +869,35 @@ check "native paragraph lookup long id perf"
      && paragraphLookupHits = 1024000)
     true
 
+let normalizedRangeLookupIdPrefix = System.String('r', 5000)
+let normalizedRangeLookupIds =
+    [| for index in 0 .. 63 -> normalizedRangeLookupIdPrefix + sprintf "%04d" index |]
+let normalizedRangeLookupDoc =
+    { Doc.empty with
+        Blocks =
+            [ for blockId in normalizedRangeLookupIds ->
+                Doc.Paragraph (para blockId "lookup text") ] }
+let normalizedRangeLookupSelections : Doc.Selection array =
+    [| for index in 0 .. 63 ->
+        { Anchor = pos normalizedRangeLookupIds.[index] 0
+          Focus = pos normalizedRangeLookupIds.[index] 3 } |]
+for selection in normalizedRangeLookupSelections do
+    Doc.getNormalizedRange selection normalizedRangeLookupDoc |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let normalizedRangeLookupSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable normalizedRangeLookupTotal = 0
+for _pass in 1 .. 10000 do
+    for selection in normalizedRangeLookupSelections do
+        let startPos, endPos, blockIds = Doc.getNormalizedRange selection normalizedRangeLookupDoc
+        normalizedRangeLookupTotal <- normalizedRangeLookupTotal + startPos.Offset + endPos.Offset + blockIds.Length
+normalizedRangeLookupSw.Stop()
+check "native normalized range long id perf"
+    (normalizedRangeLookupSw.Elapsed.TotalMilliseconds < 2600.0
+     && normalizedRangeLookupTotal = 2560000)
+    true
+
 if isNull documentCaptionIdMetrics || isNull documentBookmarkIdMetrics || isNull documentRevisionIdMetrics then
     fail <- fail + 1
     printfn "FAIL %-34s expected private document id metrics helpers" "native id metrics reflection"

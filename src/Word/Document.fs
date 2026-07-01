@@ -4512,12 +4512,18 @@ type private NormalizedRangeCacheEntry = {
     BlockIdCount: int
 }
 
+type private NormalizedRangeFastEntry = {
+    Key: NormalizedRangeCacheKey
+    Entry: NormalizedRangeCacheEntry
+}
+
 type private NormalizedRangeCache = {
     SourceBlocks: Block list
     SourceParagraphCount: int
     SourceTextCharCount: int
     Entries: Dictionary<NormalizedRangeCacheKey, NormalizedRangeCacheEntry>
     Order: Queue<NormalizedRangeCacheKey>
+    EntryFastSlots: NormalizedRangeFastEntry array
     mutable TotalBlockIds: int
 }
 
@@ -4529,6 +4535,56 @@ let private normalizedRangeCacheMaxSources = 64
 let private normalizedRangeCacheMaxTotalBlockIds = 200000
 let private normalizedRangeCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private normalizedRangeCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private normalizedRangeEntryFastSlot
+    (slots: NormalizedRangeFastEntry array)
+    anchorBlockId
+    anchorOffset
+    focusBlockId
+    focusOffset =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(anchorBlockId)
+    hashCode <- (hashCode * 397) ^^^ anchorOffset
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(focusBlockId)
+    hashCode <- (hashCode * 397) ^^^ focusOffset
+    hashCode &&& (slots.Length - 1)
+
+let private clearNormalizedRangeEntryFastSlots (slots: NormalizedRangeFastEntry array) =
+    for index = 0 to slots.Length - 1 do
+        slots.[index] <- Unchecked.defaultof<NormalizedRangeFastEntry>
+
+let private normalizedRangeKeyMatchesSelection (sel: Selection) (key: NormalizedRangeCacheKey) =
+    obj.ReferenceEquals(key.AnchorBlockId, sel.Anchor.BlockId)
+    && key.AnchorOffset = sel.Anchor.Offset
+    && obj.ReferenceEquals(key.FocusBlockId, sel.Focus.BlockId)
+    && key.FocusOffset = sel.Focus.Offset
+
+let private tryGetNormalizedRangeEntryFastSlot (cache: NormalizedRangeCache) (sel: Selection) =
+    let slot =
+        normalizedRangeEntryFastSlot
+            cache.EntryFastSlots
+            sel.Anchor.BlockId
+            sel.Anchor.Offset
+            sel.Focus.BlockId
+            sel.Focus.Offset
+    let fast = cache.EntryFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && normalizedRangeKeyMatchesSelection sel fast.Key then
+        ValueSome fast.Entry
+    else
+        ValueNone
+
+let private setNormalizedRangeEntryFastSlot (cache: NormalizedRangeCache) key entry =
+    let slot =
+        normalizedRangeEntryFastSlot
+            cache.EntryFastSlots
+            key.AnchorBlockId
+            key.AnchorOffset
+            key.FocusBlockId
+            key.FocusOffset
+    cache.EntryFastSlots.[slot] <- {
+        Key = key
+        Entry = entry
+    }
 
 let private normalizedRangeCacheMatches blocks (cached: NormalizedRangeCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
@@ -4634,6 +4690,7 @@ let private normalizedRangeSourceTextCharCountFor blockIdCount sourceParagraphCo
 let private removeNormalizedRangeEntry key (cache: NormalizedRangeCache) =
     let mutable entry = Unchecked.defaultof<NormalizedRangeCacheEntry>
     if cache.Entries.TryGetValue(key, &entry) then
+        clearNormalizedRangeEntryFastSlots cache.EntryFastSlots
         cache.TotalBlockIds <- cache.TotalBlockIds - entry.BlockIdCount
         cache.Entries.Remove key |> ignore
 
@@ -4641,6 +4698,7 @@ let private addNormalizedRangeEntry key entry (cache: NormalizedRangeCache) =
     if entry.BlockIdCount > normalizedRangeCacheMaxTotalBlockIds then
         removeNormalizedRangeEntry key cache
     else
+        let mutable removedEntry = false
         if not (cache.Entries.ContainsKey key) then
             cache.Order.Enqueue key
             cache.TotalBlockIds <- cache.TotalBlockIds + entry.BlockIdCount
@@ -4654,6 +4712,7 @@ let private addNormalizedRangeEntry key entry (cache: NormalizedRangeCache) =
               && cache.Order.Count > 0 do
             let oldest = cache.Order.Dequeue()
             if oldest <> key then
+                removedEntry <- true
                 removeNormalizedRangeEntry oldest cache
         if cache.Entries.Count > normalizedRangeCacheMaxEntries
            || cache.TotalBlockIds > normalizedRangeCacheMaxTotalBlockIds then
@@ -4663,16 +4722,26 @@ let private addNormalizedRangeEntry key entry (cache: NormalizedRangeCache) =
             cache.Order.Enqueue key
             cache.Entries.[key] <- current
             cache.TotalBlockIds <- current.BlockIdCount
+            clearNormalizedRangeEntryFastSlots cache.EntryFastSlots
+        elif removedEntry then
+            clearNormalizedRangeEntryFastSlots cache.EntryFastSlots
+        setNormalizedRangeEntryFastSlot cache key entry
 
 let private cachedNormalizedRange doc sel =
     match tryGetNormalizedRangeCache doc.Blocks with
     | ValueSome cached when normalizedRangeCacheRetainable cached ->
-        let key = normalizedRangeKey sel
-        let mutable entry = Unchecked.defaultof<NormalizedRangeCacheEntry>
-        if cached.Entries.TryGetValue(key, &entry) then
+        match tryGetNormalizedRangeEntryFastSlot cached sel with
+        | ValueSome entry ->
             Some (entry.StartPos, entry.EndPos, entry.BlockIds)
-        else
-            None
+        | ValueNone ->
+            let key = normalizedRangeKey sel
+            let mutable entry = Unchecked.defaultof<NormalizedRangeCacheEntry>
+            if cached.Entries.TryGetValue(key, &entry) then
+                if normalizedRangeKeyMatchesSelection sel key then
+                    setNormalizedRangeEntryFastSlot cached key entry
+                Some (entry.StartPos, entry.EndPos, entry.BlockIds)
+            else
+                None
     | ValueSome cached ->
         rememberNormalizedRangeCache cached
         None
@@ -4697,6 +4766,7 @@ let private rememberNormalizedRange doc sel startPos endPos blockIds =
                 SourceTextCharCount = normalizedRangeSourceTextCharCountFor entry.BlockIdCount sourceParagraphCount doc.Blocks
                 Entries = Dictionary<NormalizedRangeCacheKey, NormalizedRangeCacheEntry>()
                 Order = Queue<NormalizedRangeCacheKey>()
+                EntryFastSlots = Array.zeroCreate<NormalizedRangeFastEntry> 2048
                 TotalBlockIds = 0
             }
     addNormalizedRangeEntry key entry cache
