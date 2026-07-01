@@ -218,7 +218,7 @@ let private columnPrefixSizeCache = {
     LastEntrySet = false
     LastEntry = Unchecked.defaultof<PrefixSizeCacheEntry>
 }
-let private prefixSizeCacheMaxSources = 64
+let private prefixSizeCacheMaxSources = 256
 let private prefixSizeCacheMaxTotalKeys = 1000000
 let private prefixSizeTinyUncachedThreshold = 32
 let private prefixSizeDirectIndexThreshold = 4096

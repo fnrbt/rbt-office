@@ -390,6 +390,46 @@ check "native prefix coordinate cache hot hits"
      && prefixCoordinateTotal > 0.0)
     true
 
+let prefixCoordinateCycleModelCount = 80
+let prefixCoordinateCycleOverrideCount = 5000
+let prefixCoordinateCycleModels =
+    [| for modelIndex in 0 .. prefixCoordinateCycleModelCount - 1 ->
+        { createEmpty 8000 8000 with
+            RowHeights =
+                [ for row in 0 .. prefixCoordinateCycleOverrideCount - 1 ->
+                    row, 20.0 + float ((row + modelIndex) % 5) ]
+                |> Map.ofList
+            ColumnWidths =
+                [ for col in 0 .. prefixCoordinateCycleOverrideCount - 1 ->
+                    col, 90.0 + float ((col + modelIndex) % 7) ]
+                |> Map.ofList } |]
+for model in prefixCoordinateCycleModels do
+    RedBat.Spreadsheet.Layout.rowTop model prefixCoordinateCycleOverrideCount |> ignore
+    RedBat.Spreadsheet.Layout.columnLeft model prefixCoordinateCycleOverrideCount |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let prefixCoordinateCyclePasses = 20
+let prefixCoordinateCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let prefixCoordinateCycleSw = Stopwatch.StartNew()
+let mutable prefixCoordinateCycleTotal = 0.0
+for _pass in 1 .. prefixCoordinateCyclePasses do
+    for model in prefixCoordinateCycleModels do
+        prefixCoordinateCycleTotal <-
+            prefixCoordinateCycleTotal
+            + RedBat.Spreadsheet.Layout.rowTop model prefixCoordinateCycleOverrideCount
+            + RedBat.Spreadsheet.Layout.columnLeft model prefixCoordinateCycleOverrideCount
+prefixCoordinateCycleSw.Stop()
+let prefixCoordinateCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - prefixCoordinateCycleAllocatedBefore
+check "native prefix coordinate source cycle"
+    (prefixCoordinateCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && prefixCoordinateCycleAllocated < 512L * 1024L
+     && abs (prefixCoordinateCycleTotal - 919999820.0) < 0.001)
+    true
+
 let shallowPrefixCoordinateModel =
     { createEmpty 120000 120000 with
         RowHeights =
