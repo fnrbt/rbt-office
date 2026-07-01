@@ -3717,7 +3717,7 @@ let mutable private tableColumnUniqueValuesCache: TableColumnUniqueValuesCache l
 let private tableColumnUniqueValuesCacheByCells =
     System.Collections.Generic.Dictionary<Map<CellAddress, CellData>, TableColumnUniqueValuesCache>(cellMapReferenceComparer)
 let private tableColumnUniqueValuesFastSlots = Array.zeroCreate<TableColumnUniqueValuesCache> 256
-let private tableColumnUniqueValuesCacheMaxEntries = 64
+let private tableColumnUniqueValuesCacheMaxEntries = 256
 let private tableColumnUniqueValuesCacheMaxSources = 64
 let private tableColumnUniqueValuesCacheMaxTotalValues = 200000
 let private tableColumnUniqueValuesCacheMaxTotalValueTextChars = 5000000
@@ -3980,7 +3980,7 @@ let tableColumnUniqueValues (table: Table) (col: int) (model: SpreadsheetModel):
                     model.Cells
             Entries = entries
             Order = order
-            EntryFastSlots = Array.zeroCreate<TableColumnUniqueValuesFastEntry> 128
+            EntryFastSlots = Array.zeroCreate<TableColumnUniqueValuesFastEntry> 256
             TotalValueCount = 0
             TotalValueTextCharCount = 0
         }

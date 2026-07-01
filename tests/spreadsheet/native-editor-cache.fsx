@@ -806,6 +806,51 @@ check "native table unique values hot hit"
      && tableUniqueValuesTotal = tableUniqueValues.Length * 200000)
     true
 
+let tableUniqueValuesCycleRows = 250
+let tableUniqueValuesCycleCols = 80
+let tableUniqueValuesCycleCells =
+    [ for col in 0 .. tableUniqueValuesCycleCols - 1 do
+        yield { Row = 0; Col = col }, cell (CellValue.String (sprintf "Header-%02d" col))
+        for row in 1 .. tableUniqueValuesCycleRows - 1 ->
+            { Row = row; Col = col }, cell (CellValue.String (sprintf "C%02d-V%02d" col (row % 20))) ]
+    |> Map.ofList
+let tableUniqueValuesCycleTable =
+    { Name = "CycleValues"
+      StartRow = 1
+      StartCol = 1
+      EndRow = tableUniqueValuesCycleRows
+      EndCol = tableUniqueValuesCycleCols
+      HeaderRowCount = 1
+      Style = None
+      AutoFilter = None
+      HasTotals = false }
+let tableUniqueValuesCycleModel =
+    { createEmpty tableUniqueValuesCycleRows tableUniqueValuesCycleCols with
+        Cells = tableUniqueValuesCycleCells
+        Tables = [ tableUniqueValuesCycleTable ] }
+for col in 0 .. tableUniqueValuesCycleCols - 1 do
+    tableColumnUniqueValues tableUniqueValuesCycleTable col tableUniqueValuesCycleModel |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let tableUniqueValuesCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let tableUniqueValuesCycleSw = Stopwatch.StartNew()
+let mutable tableUniqueValuesCycleTotal = 0
+for index in 1 .. 800 do
+    tableUniqueValuesCycleTotal <-
+        tableUniqueValuesCycleTotal
+        + (tableColumnUniqueValues tableUniqueValuesCycleTable (index % tableUniqueValuesCycleCols) tableUniqueValuesCycleModel).Length
+tableUniqueValuesCycleSw.Stop()
+let tableUniqueValuesCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - tableUniqueValuesCycleAllocatedBefore
+check "native table unique values column cycle"
+    (tableUniqueValuesCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && tableUniqueValuesCycleAllocated < 512L * 1024L
+     && tableUniqueValuesCycleTotal = 16000)
+    true
+
 let sortIdentityCells =
     [ { Row = 0; Col = 0 }, cell (CellValue.Number 1.0)
       { Row = 1; Col = 0 }, cell (CellValue.Number 2.0)
