@@ -87,6 +87,35 @@ let private addBoundedStringCacheEntry
         key
         value
 
+type private StringFastCacheEntry<'V> = {
+    Key: string
+    Value: 'V
+}
+
+let private clearStringFastSlots (slots: StringFastCacheEntry<'V> array) =
+    for index = 0 to slots.Length - 1 do
+        slots.[index] <- Unchecked.defaultof<StringFastCacheEntry<'V>>
+
+let private stringFastSlot (slots: StringFastCacheEntry<'V> array) (key: string) =
+    let hashCode =
+        if isNull key then 0
+        else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key)
+    hashCode &&& (slots.Length - 1)
+
+let private setStringFastSlot (slots: StringFastCacheEntry<'V> array) key value =
+    slots.[stringFastSlot slots key] <- {
+        Key = key
+        Value = value
+    }
+
+let private tryGetStringFastSlot (slots: StringFastCacheEntry<'V> array) key =
+    let fast = slots.[stringFastSlot slots key]
+    if not (System.Object.ReferenceEquals(fast, null))
+       && System.Object.ReferenceEquals(fast.Key, key) then
+        ValueSome fast.Value
+    else
+        ValueNone
+
 /// Interpret common Excel date/time format codes (m/d/yyyy, h:mm, etc.) and
 /// render the Excel serial number as a date string. Excel serial 1 ==
 /// 1900-01-01; the 1900 leap-year bug means dates after 1900-02-28 need an
@@ -131,6 +160,7 @@ let private splitSectionsCacheMaxTotalChars = 5000000
 let private splitSectionsCacheMaxTotalSections = 200000
 let mutable private splitSectionsCacheTotalChars = 0
 let mutable private splitSectionsCacheTotalSections = 0
+let private splitSectionsFastSlots = Array.zeroCreate<StringFastCacheEntry<string list>> 256
 
 let private splitSectionsEntryMetrics (code: string) (sections: string list) =
     let mutable textChars = addStringCacheCharsCapped splitSectionsCacheMaxTotalChars code.Length 0
@@ -149,12 +179,14 @@ let private splitSectionsEntryMetrics (code: string) (sections: string list) =
 let private splitSectionsRemoveCacheEntry (code: string) =
     let mutable previous = Unchecked.defaultof<string list>
     if splitSectionsCache.TryGetValue(code, &previous) then
+        clearStringFastSlots splitSectionsFastSlots
         splitSectionsCache.Remove code |> ignore
         let struct (entryChars, entrySections) = splitSectionsEntryMetrics code previous
         splitSectionsCacheTotalChars <- max 0 (splitSectionsCacheTotalChars - entryChars)
         splitSectionsCacheTotalSections <- max 0 (splitSectionsCacheTotalSections - entrySections)
 
 let private addSplitSectionsCacheEntry (code: string) (sections: string list) =
+    clearStringFastSlots splitSectionsFastSlots
     let struct (entryChars, entrySections) = splitSectionsEntryMetrics code sections
     if entryChars > splitSectionsCacheMaxTotalChars
        || entrySections > splitSectionsCacheMaxTotalSections then
@@ -191,12 +223,19 @@ let private addSplitSectionsCacheEntry (code: string) (sections: string list) =
         sections
 
 let private splitSectionsCached (code: string) =
-    let mutable sections = Unchecked.defaultof<string list>
-    if splitSectionsCache.TryGetValue(code, &sections) then
-        sections
-    else
-        sections <- splitSections code
-        addSplitSectionsCacheEntry code sections
+    match tryGetStringFastSlot splitSectionsFastSlots code with
+    | ValueSome sections -> sections
+    | ValueNone ->
+        let mutable sections = Unchecked.defaultof<string list>
+        if splitSectionsCache.TryGetValue(code, &sections) then
+            setStringFastSlot splitSectionsFastSlots code sections
+            sections
+        else
+            sections <- splitSections code
+            let result = addSplitSectionsCacheEntry code sections
+            if splitSectionsCache.ContainsKey code then
+                setStringFastSlot splitSectionsFastSlots code result
+            result
 
 let private firstSection (code: string) =
     if code.IndexOf(';') < 0 then code
@@ -285,14 +324,31 @@ let private sectionConditionCacheOrder = Queue<string>()
 let private sectionConditionCacheMaxEntries = 4096
 let private sectionConditionCacheMaxTotalChars = 5000000
 let mutable private sectionConditionCacheTotalChars = 0
+let private sectionConditionFastSlots = Array.zeroCreate<StringFastCacheEntry<(string * float) option>> 256
 
 let private sectionConditionCached section =
-    let mutable condition = Unchecked.defaultof<(string * float) option>
-    if sectionConditionCache.TryGetValue(section, &condition) then
-        condition
-    else
-        condition <- sectionCondition section
-        addBoundedStringCacheEntry sectionConditionCacheMaxEntries sectionConditionCacheMaxTotalChars &sectionConditionCacheTotalChars sectionConditionCache sectionConditionCacheOrder section condition
+    match tryGetStringFastSlot sectionConditionFastSlots section with
+    | ValueSome condition -> condition
+    | ValueNone ->
+        let mutable condition = Unchecked.defaultof<(string * float) option>
+        if sectionConditionCache.TryGetValue(section, &condition) then
+            setStringFastSlot sectionConditionFastSlots section condition
+            condition
+        else
+            condition <- sectionCondition section
+            clearStringFastSlots sectionConditionFastSlots
+            let result =
+                addBoundedStringCacheEntry
+                    sectionConditionCacheMaxEntries
+                    sectionConditionCacheMaxTotalChars
+                    &sectionConditionCacheTotalChars
+                    sectionConditionCache
+                    sectionConditionCacheOrder
+                    section
+                    condition
+            if sectionConditionCache.ContainsKey section then
+                setStringFastSlot sectionConditionFastSlots section result
+            result
 
 let private conditionMatches (op: string) (threshold: float) (n: float) : bool =
     match op with
@@ -1195,6 +1251,7 @@ let private numberFormatSectionInfoCacheOrder = Queue<string>()
 let private numberFormatSectionInfoCacheMaxEntries = 4096
 let private numberFormatSectionInfoCacheMaxTotalChars = 5000000
 let mutable private numberFormatSectionInfoCacheTotalChars = 0
+let private numberFormatSectionInfoFastSlots = Array.zeroCreate<StringFastCacheEntry<NumberFormatSectionInfo>> 256
 
 let private numberFormatSectionInfoValueTextCharCount section (info: NumberFormatSectionInfo) =
     let mutable total = 0
@@ -1206,55 +1263,64 @@ let private numberFormatSectionInfoValueTextCharCount section (info: NumberForma
     total
 
 let private numberFormatSectionInfo section =
-    let mutable info = Unchecked.defaultof<NumberFormatSectionInfo>
-    if numberFormatSectionInfoCache.TryGetValue(section, &info) then
-        info
-    else
-        let pos, scaleDivisor = trailingScale section
-        let isSimple = isSimpleDotNetNumberFormat pos
-        let cleaned =
-            if isSimple then
-                pos
-            else
-                let withoutPlaceholders = stripExcelWidthPlaceholders pos
-                let translated =
-                    let sb = System.Text.StringBuilder(withoutPlaceholders.Length)
-                    let mutable i = 0
-                    let mutable inDquote = false
-                    while i < withoutPlaceholders.Length do
-                        let c = withoutPlaceholders.[i]
-                        if c = '\\' && i + 1 < withoutPlaceholders.Length then
-                            sb.Append('\'').Append(withoutPlaceholders.[i + 1]).Append('\'') |> ignore
-                            i <- i + 2
-                        elif c = '"' then
-                            sb.Append('\'') |> ignore
-                            inDquote <- not inDquote
-                            i <- i + 1
-                        else
-                            sb.Append(c) |> ignore
-                            i <- i + 1
-                    sb.ToString()
-                translated
-                |> replaceCurrencyLocaleTags
-                |> removeColorAndConditionTags
-        info <-
-            {
-                Pos = pos
-                ScaleDivisor = scaleDivisor
-                IsSimple = isSimple
-                Cleaned = cleaned
-                ContainsTextPlaceholder = pos.Contains "@"
-                HasCondition = (sectionConditionCached pos).IsSome
-            }
-        addBoundedStringCacheEntryWithValueChars
-            numberFormatSectionInfoCacheMaxEntries
-            numberFormatSectionInfoCacheMaxTotalChars
-            numberFormatSectionInfoValueTextCharCount
-            &numberFormatSectionInfoCacheTotalChars
-            numberFormatSectionInfoCache
-            numberFormatSectionInfoCacheOrder
-            section
+    match tryGetStringFastSlot numberFormatSectionInfoFastSlots section with
+    | ValueSome info -> info
+    | ValueNone ->
+        let mutable info = Unchecked.defaultof<NumberFormatSectionInfo>
+        if numberFormatSectionInfoCache.TryGetValue(section, &info) then
+            setStringFastSlot numberFormatSectionInfoFastSlots section info
             info
+        else
+            let pos, scaleDivisor = trailingScale section
+            let isSimple = isSimpleDotNetNumberFormat pos
+            let cleaned =
+                if isSimple then
+                    pos
+                else
+                    let withoutPlaceholders = stripExcelWidthPlaceholders pos
+                    let translated =
+                        let sb = System.Text.StringBuilder(withoutPlaceholders.Length)
+                        let mutable i = 0
+                        let mutable inDquote = false
+                        while i < withoutPlaceholders.Length do
+                            let c = withoutPlaceholders.[i]
+                            if c = '\\' && i + 1 < withoutPlaceholders.Length then
+                                sb.Append('\'').Append(withoutPlaceholders.[i + 1]).Append('\'') |> ignore
+                                i <- i + 2
+                            elif c = '"' then
+                                sb.Append('\'') |> ignore
+                                inDquote <- not inDquote
+                                i <- i + 1
+                            else
+                                sb.Append(c) |> ignore
+                                i <- i + 1
+                        sb.ToString()
+                    translated
+                    |> replaceCurrencyLocaleTags
+                    |> removeColorAndConditionTags
+            info <-
+                {
+                    Pos = pos
+                    ScaleDivisor = scaleDivisor
+                    IsSimple = isSimple
+                    Cleaned = cleaned
+                    ContainsTextPlaceholder = pos.Contains "@"
+                    HasCondition = (sectionConditionCached pos).IsSome
+                }
+            clearStringFastSlots numberFormatSectionInfoFastSlots
+            let result =
+                addBoundedStringCacheEntryWithValueChars
+                    numberFormatSectionInfoCacheMaxEntries
+                    numberFormatSectionInfoCacheMaxTotalChars
+                    numberFormatSectionInfoValueTextCharCount
+                    &numberFormatSectionInfoCacheTotalChars
+                    numberFormatSectionInfoCache
+                    numberFormatSectionInfoCacheOrder
+                    section
+                    info
+            if numberFormatSectionInfoCache.ContainsKey section then
+                setStringFastSlot numberFormatSectionInfoFastSlots section result
+            result
 
 /// Apply an Excel non-date number-format code (`0.000`, `#,##0.00`, `0%`,
 /// `0.00E+00`, etc.) using .NET's custom-format-string support. Excel's

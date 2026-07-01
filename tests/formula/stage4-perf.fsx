@@ -107,6 +107,24 @@ ok "format-condition-cache"
    (conditionalActual = conditionalExpected)
    "conditional number-format sections and colours should be stable"
 
+let repeatedLongColorFormat =
+    "[Red][<0]" + String.replicate 5200 "0" + ";[Blue][>=1000]" + String.replicate 120 "#" + "0;0"
+numberFormatColorForValue repeatedLongColorFormat -12.34 |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let repeatedLongColorSw = Stopwatch.StartNew()
+let mutable repeatedLongColorHits = 0
+for _pass in 1 .. 100 do
+    for i in 1 .. 5000 do
+        match numberFormatColorForValue repeatedLongColorFormat (float -i) with
+        | Some _ -> repeatedLongColorHits <- repeatedLongColorHits + 1
+        | None -> ()
+repeatedLongColorSw.Stop()
+ok "format-color-large-cache-hit-perf"
+   (repeatedLongColorSw.Elapsed.TotalMilliseconds < 650.0 && repeatedLongColorHits = 500000)
+   (sprintf "500k color lookups took %.1f ms, hits=%d" repeatedLongColorSw.Elapsed.TotalMilliseconds repeatedLongColorHits)
+
 let manyFormatTexts () =
     [ for i in 0 .. 1199 ->
         let format =
