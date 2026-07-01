@@ -2065,7 +2065,7 @@ type private DocumentPaintCommandsCacheKey = {
 }
 
 let mutable private documentPaintCommandsCache: DocumentPaintCommandsCacheEntry list = []
-let private documentPaintCommandsCacheMaxEntries = 64
+let private documentPaintCommandsCacheMaxEntries = 256
 let private documentPaintCommandsCacheMaxTotalItems = 200000
 let private documentPaintCommandsCacheMaxTotalSourceParagraphs = 100000
 let private documentPaintCommandsCacheMaxTotalSourceTextChars = 5000000

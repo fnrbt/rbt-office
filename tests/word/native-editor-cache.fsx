@@ -742,6 +742,64 @@ check "native document paint cache hot hit"
      && documentPaintTotal = documentPaintCommandsA.Length * documentPaintProbeCount)
     true
 
+let documentPaintCycleSources =
+    [| for index in 0 .. 79 ->
+        let blockId = sprintf "native-document-paint-cycle-%02d" index
+        let line = documentPaintLine
+        let layout : Layout.BlockLayout =
+            { BlockId = blockId
+              Lines = [ line ]
+              Y = 0.0
+              Height = line.Height
+              AvailableWidth = 120.0
+              Metadata = Doc.defaultMetadata
+              Prefix = ""
+              PrefixStyle = None
+              PrefixWidth = 0.0
+              Indent = 0.0
+              VAlignOffset = 0.0 }
+        { Doc.empty with
+            Blocks = [ Doc.Paragraph (para blockId "abcdef") ]
+            Selection = None },
+        [ layout ] |]
+
+for doc, layouts in documentPaintCycleSources do
+    Paint.collectDocumentCommandsWithLayouts
+        documentPaintSettings
+        "Calibri"
+        documentPaintMeasureText
+        documentPaintRangeMeasure
+        doc
+        (Some layouts)
+    |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let documentPaintCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let documentPaintCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable documentPaintCycleTotal = 0
+for _pass in 1 .. 500 do
+    for doc, layouts in documentPaintCycleSources do
+        let _, commands, _ =
+            Paint.collectDocumentCommandsWithLayouts
+                documentPaintSettings
+                "Calibri"
+                documentPaintMeasureText
+                documentPaintRangeMeasure
+                doc
+                (Some layouts)
+        documentPaintCycleTotal <- documentPaintCycleTotal + commands.Length
+documentPaintCycleSw.Stop()
+let documentPaintCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - documentPaintCycleAllocatedBefore
+check "native document paint cache document cycle"
+    (documentPaintCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && documentPaintCycleAllocated < 8L * 1024L * 1024L
+     && documentPaintCycleTotal = 40000)
+    true
+
 if isNull commandsInViewport then
     fail <- fail + 1
     printfn "FAIL %-34s expected private commandsInViewport method" "native viewport commands reflection"
