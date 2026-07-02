@@ -2426,7 +2426,7 @@ let cursorBoundaryDownDoc =
                 Anchor = pos blockLookupIds.[blockLookupIds.Length - 1] 0
                 Focus = pos blockLookupIds.[blockLookupIds.Length - 1] 0
             } }
-Doc.findBlock cursorBoundaryDownDoc blockLookupIds.[blockLookupIds.Length - 1] |> ignore
+Doc.moveCursorDown cursorBoundaryDownDoc |> ignore
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()
@@ -2440,8 +2440,8 @@ cursorBoundaryDownSw.Stop()
 let cursorBoundaryDownAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - cursorBoundaryDownAllocatedBefore
 check "native cursor down boundary cache hot hit"
-    (cursorBoundaryDownSw.Elapsed.TotalMilliseconds < 500.0
-     && cursorBoundaryDownAllocated < 2L * 1024L * 1024L
+    (cursorBoundaryDownSw.Elapsed.TotalMilliseconds < 30.0
+     && cursorBoundaryDownAllocated < 4L * 1024L
      && cursorBoundaryDownSame = 1024000)
     true
 let cursorBoundaryUpDoc =
@@ -2451,7 +2451,7 @@ let cursorBoundaryUpDoc =
                 Anchor = pos blockLookupIds.[0] 0
                 Focus = pos blockLookupIds.[0] 0
             } }
-Doc.findBlock cursorBoundaryUpDoc blockLookupIds.[0] |> ignore
+Doc.moveCursorUp cursorBoundaryUpDoc |> ignore
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()
@@ -2465,8 +2465,8 @@ cursorBoundaryUpSw.Stop()
 let cursorBoundaryUpAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - cursorBoundaryUpAllocatedBefore
 check "native cursor up boundary cache hot hit"
-    (cursorBoundaryUpSw.Elapsed.TotalMilliseconds < 500.0
-     && cursorBoundaryUpAllocated < 2L * 1024L * 1024L
+    (cursorBoundaryUpSw.Elapsed.TotalMilliseconds < 30.0
+     && cursorBoundaryUpAllocated < 4L * 1024L
      && cursorBoundaryUpSame = 1024000)
     true
 let headingNoopPara =

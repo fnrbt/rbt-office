@@ -6443,40 +6443,72 @@ let private setSelectionIfChanged selection doc =
     | Some current when current = selection -> doc
     | _ -> { doc with Selection = Some selection }
 
+let mutable private moveCursorUpNoopCacheSet = false
+let mutable private moveCursorUpNoopCacheDoc = Unchecked.defaultof<Document>
+
+let private rememberMoveCursorUpNoop doc =
+    moveCursorUpNoopCacheSet <- true
+    moveCursorUpNoopCacheDoc <- doc
+    doc
+
 /// Move cursor up to previous block
 let moveCursorUp doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match tryFindAdjacentTopBlock doc sel.Focus.BlockId -1 with
-        | None -> doc
-        | Some prevBlock ->
-            let prevPara = getParagraph prevBlock
-            let prevLen = TextBuffer.length prevPara.Buffer
+    if moveCursorUpNoopCacheSet && obj.ReferenceEquals(moveCursorUpNoopCacheDoc, doc) then
+        doc
+    else
+        let mutable resultDoc = doc
+        match doc.Selection with
+        | None -> ()
+        | Some sel ->
+            match tryFindAdjacentTopBlock doc sel.Focus.BlockId -1 with
+            | None -> ()
+            | Some prevBlock ->
+                let prevPara = getParagraph prevBlock
+                let prevLen = TextBuffer.length prevPara.Buffer
 
-            // Move to end of previous block
-            let newSel = {
-                Anchor = { BlockId = prevPara.Id; Offset = prevLen }
-                Focus = { BlockId = prevPara.Id; Offset = prevLen }
-            }
-            setSelectionIfChanged newSel doc
+                // Move to end of previous block
+                let newSel = {
+                    Anchor = { BlockId = prevPara.Id; Offset = prevLen }
+                    Focus = { BlockId = prevPara.Id; Offset = prevLen }
+                }
+                resultDoc <- setSelectionIfChanged newSel doc
+        if obj.ReferenceEquals(resultDoc, doc) then
+            rememberMoveCursorUpNoop doc
+        else
+            resultDoc
+
+let mutable private moveCursorDownNoopCacheSet = false
+let mutable private moveCursorDownNoopCacheDoc = Unchecked.defaultof<Document>
+
+let private rememberMoveCursorDownNoop doc =
+    moveCursorDownNoopCacheSet <- true
+    moveCursorDownNoopCacheDoc <- doc
+    doc
 
 /// Move cursor down to next block
 let moveCursorDown doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match tryFindAdjacentTopBlock doc sel.Focus.BlockId 1 with
-        | None -> doc
-        | Some nextBlock ->
-            let nextPara = getParagraph nextBlock
+    if moveCursorDownNoopCacheSet && obj.ReferenceEquals(moveCursorDownNoopCacheDoc, doc) then
+        doc
+    else
+        let mutable resultDoc = doc
+        match doc.Selection with
+        | None -> ()
+        | Some sel ->
+            match tryFindAdjacentTopBlock doc sel.Focus.BlockId 1 with
+            | None -> ()
+            | Some nextBlock ->
+                let nextPara = getParagraph nextBlock
 
-            // Move to start of next block
-            let newSel = {
-                Anchor = { BlockId = nextPara.Id; Offset = 0 }
-                Focus = { BlockId = nextPara.Id; Offset = 0 }
-            }
-            setSelectionIfChanged newSel doc
+                // Move to start of next block
+                let newSel = {
+                    Anchor = { BlockId = nextPara.Id; Offset = 0 }
+                    Focus = { BlockId = nextPara.Id; Offset = 0 }
+                }
+                resultDoc <- setSelectionIfChanged newSel doc
+        if obj.ReferenceEquals(resultDoc, doc) then
+            rememberMoveCursorDownNoop doc
+        else
+            resultDoc
 
 /// Move cursor to start of current block (Home key)
 let moveCursorToLineStart doc =
