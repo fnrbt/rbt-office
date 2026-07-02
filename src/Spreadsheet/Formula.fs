@@ -11543,43 +11543,78 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
                             (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
                             (model: SpreadsheetModel) : SpreadsheetModel * bool =
     let previousSpill = model.Spill
-    let anchors = ResizeArray<CellAddress * CellData * string * Expr>()
-    let arrayFormulaCache = Dictionary<string, Expr option>()
-    let arrayFormulaCacheOrder = Queue<string>()
-    let arrayFormulaFastSlots = Array.zeroCreate<RecalcArrayFormulaFastCacheEntry> recalcLocalFastSlotCount
+    let mutable anchors = Unchecked.defaultof<ResizeArray<CellAddress * CellData * string * Expr>>
+    let mutable arrayFormulaCache = Unchecked.defaultof<Dictionary<string, Expr option>>
+    let mutable arrayFormulaCacheOrder = Unchecked.defaultof<Queue<string>>
+    let mutable arrayFormulaFastSlots = Unchecked.defaultof<RecalcArrayFormulaFastCacheEntry array>
     let mutable arrayFormulaCacheTotalChars = 0
-    let arrayFormulaExpr formula =
-        match tryGetRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula with
-        | ValueSome cached -> cached
-        | ValueNone ->
-            let mutable cached = Unchecked.defaultof<Expr option>
-            if arrayFormulaCache.TryGetValue(formula, &cached) then
-                setRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula cached
-                cached
-            else
-                cached <-
-                    match parseFormulaShared formula with
-                    | Ok expr when containsArrayFunction expr -> Some expr
-                    | _ -> None
+    let mutable hasFirstFormula = false
+    let mutable firstFormula = Unchecked.defaultof<string>
+    let mutable firstCached = Unchecked.defaultof<Expr option>
+    let parseArrayFormula formula =
+        match parseFormulaShared formula with
+        | Ok expr when containsArrayFunction expr -> Some expr
+        | _ -> None
+    let ensureArrayFormulaScratch () =
+        if isNull arrayFormulaCache then
+            arrayFormulaCache <- Dictionary<string, Expr option>()
+            arrayFormulaCacheOrder <- Queue<string>()
+            arrayFormulaFastSlots <- Array.zeroCreate<RecalcArrayFormulaFastCacheEntry> recalcLocalFastSlotCount
+            if hasFirstFormula then
                 rememberRecalcArrayFormulaCacheEntry
                     arrayFormulaCache
                     arrayFormulaCacheOrder
                     &arrayFormulaCacheTotalChars
-                    formula
-                    cached
-                clearRecalcArrayFormulaFastSlots arrayFormulaFastSlots
-                if arrayFormulaCache.ContainsKey formula then
-                    setRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula cached
+                    firstFormula
+                    firstCached
+                if arrayFormulaCache.ContainsKey firstFormula then
+                    setRecalcArrayFormulaFastSlot arrayFormulaFastSlots firstFormula firstCached
+    let rec arrayFormulaExpr formula =
+        if isNull arrayFormulaCache then
+            if not hasFirstFormula then
+                let cached = parseArrayFormula formula
+                hasFirstFormula <- true
+                firstFormula <- formula
+                firstCached <- cached
                 cached
+            elif firstFormula = formula then
+                firstCached
+            else
+                ensureArrayFormulaScratch ()
+                arrayFormulaExpr formula
+        else
+            match tryGetRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula with
+            | ValueSome cached -> cached
+            | ValueNone ->
+                let mutable cached = Unchecked.defaultof<Expr option>
+                if arrayFormulaCache.TryGetValue(formula, &cached) then
+                    setRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula cached
+                    cached
+                else
+                    cached <- parseArrayFormula formula
+                    rememberRecalcArrayFormulaCacheEntry
+                        arrayFormulaCache
+                        arrayFormulaCacheOrder
+                        &arrayFormulaCacheTotalChars
+                        formula
+                        cached
+                    clearRecalcArrayFormulaFastSlots arrayFormulaFastSlots
+                    if arrayFormulaCache.ContainsKey formula then
+                        setRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula cached
+                    cached
+    let addAnchor anchor =
+        if isNull anchors then
+            anchors <- ResizeArray<CellAddress * CellData * string * Expr>()
+        anchors.Add anchor
     model.Cells
     |> Map.iter (fun addr cell ->
         match cell.Value with
         | CellValue.Formula (formula, _) ->
             match arrayFormulaExpr formula with
-            | Some expr -> anchors.Add(addr, cell, formula, expr)
+            | Some expr -> addAnchor (addr, cell, formula, expr)
             | _ -> ()
         | _ -> ())
-    if anchors.Count = 0 then
+    if isNull anchors || anchors.Count = 0 then
         if Map.isEmpty previousSpill then
             model, false
         else
