@@ -603,8 +603,8 @@ prefixCoordinateSw.Stop()
 let prefixCoordinateAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - prefixCoordinateAllocatedBefore
 check "native prefix coordinate cache hot hits"
-    (prefixCoordinateSw.Elapsed.TotalMilliseconds < 140.0
-     && prefixCoordinateAllocated < 1024L * 1024L
+    (prefixCoordinateSw.Elapsed.TotalMilliseconds < 45.0
+     && prefixCoordinateAllocated < 64L * 1024L
      && prefixCoordinateTotal > 0.0)
     true
 
@@ -716,8 +716,8 @@ shallowPrefixCoordinateSw.Stop()
 let shallowPrefixCoordinateAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - shallowPrefixCoordinateAllocatedBefore
 check "native prefix coordinate shallow cache"
-    (shallowPrefixCoordinateSw.Elapsed.TotalMilliseconds < 40.0
-     && shallowPrefixCoordinateAllocated < 128L * 1024L
+    (shallowPrefixCoordinateSw.Elapsed.TotalMilliseconds < 3.0
+     && shallowPrefixCoordinateAllocated < 64L * 1024L
      && shallowPrefixCoordinateTotal > 0.0)
     true
 

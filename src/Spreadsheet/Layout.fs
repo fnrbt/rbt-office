@@ -495,13 +495,120 @@ let private hiddenPrefixSize defaultSize (overrides: Map<int, float>) (hiddenRow
                     defaultSize * float hiddenCount
                     + cache.PrefixDeltas.[lowerBound cache.CustomRows clipped]
 
+[<Struct>]
+type private RowTopCoordinateCacheEntry = {
+    Set: bool
+    RowHeights: Map<int, float>
+    HasFilters: bool
+    FilterHiddenRows: int array
+    Index: int
+    Value: float
+}
+
+[<Struct>]
+type private ColumnLeftCoordinateCacheEntry = {
+    Set: bool
+    ColumnWidths: Map<int, float>
+    Index: int
+    Value: float
+}
+
+let private coordinateCacheSlotCount = 2048
+let private rowTopFastSlots = Array.zeroCreate<RowTopCoordinateCacheEntry> coordinateCacheSlotCount
+let private columnLeftFastSlots = Array.zeroCreate<ColumnLeftCoordinateCacheEntry> coordinateCacheSlotCount
+
+let private rowTopHiddenRowsHash hasFilters (hiddenRows: int array) =
+    if hasFilters && not (isNull hiddenRows) then
+        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(hiddenRows)
+    else
+        0
+
+let private rowTopFastSlot rowHeights hasFilters hiddenRows index slotCount =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(rowHeights)
+    hashCode <- (hashCode * 397) ^^^ (if hasFilters then 1 else 0)
+    hashCode <- (hashCode * 397) ^^^ rowTopHiddenRowsHash hasFilters hiddenRows
+    hashCode <- (hashCode * 397) ^^^ index
+    hashCode <- hashCode ^^^ (hashCode >>> 16)
+    hashCode &&& (slotCount - 1)
+
+let private tryGetRowTopFastSlot (slots: RowTopCoordinateCacheEntry array) rowHeights hasFilters hiddenRows index =
+    let slot = rowTopFastSlot rowHeights hasFilters hiddenRows index slots.Length
+    let entry = slots.[slot]
+    if entry.Set
+       && entry.Index = index
+       && entry.HasFilters = hasFilters
+       && obj.ReferenceEquals(entry.RowHeights, rowHeights)
+       && (not hasFilters || obj.ReferenceEquals(entry.FilterHiddenRows, hiddenRows)) then
+        ValueSome entry.Value
+    else
+        ValueNone
+
+let private rowTopCoordinateSourceRetainable rowHeights hasFilters (hiddenRows: int array) =
+    if Map.count rowHeights > prefixSizeCacheMaxTotalKeys then
+        false
+    elif hasFilters then
+        Map.count rowHeights + hiddenRows.Length <= hiddenPrefixSizeCacheMaxTotalKeys
+    else
+        true
+
+let private setRowTopFastSlot (slots: RowTopCoordinateCacheEntry array) rowHeights hasFilters hiddenRows index value =
+    if rowTopCoordinateSourceRetainable rowHeights hasFilters hiddenRows then
+        let slot = rowTopFastSlot rowHeights hasFilters hiddenRows index slots.Length
+        slots.[slot] <- {
+            Set = true
+            RowHeights = rowHeights
+            HasFilters = hasFilters
+            FilterHiddenRows = if hasFilters then hiddenRows else Unchecked.defaultof<int array>
+            Index = index
+            Value = value
+        }
+
+let private columnLeftFastSlot columnWidths index slotCount =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(columnWidths)
+    hashCode <- (hashCode * 397) ^^^ index
+    hashCode <- hashCode ^^^ (hashCode >>> 16)
+    hashCode &&& (slotCount - 1)
+
+let private tryGetColumnLeftFastSlot (slots: ColumnLeftCoordinateCacheEntry array) columnWidths index =
+    let slot = columnLeftFastSlot columnWidths index slots.Length
+    let entry = slots.[slot]
+    if entry.Set
+       && entry.Index = index
+       && obj.ReferenceEquals(entry.ColumnWidths, columnWidths) then
+        ValueSome entry.Value
+    else
+        ValueNone
+
+let private setColumnLeftFastSlot (slots: ColumnLeftCoordinateCacheEntry array) columnWidths index value =
+    if Map.count columnWidths <= prefixSizeCacheMaxTotalKeys then
+        let slot = columnLeftFastSlot columnWidths index slots.Length
+        slots.[slot] <- {
+            Set = true
+            ColumnWidths = columnWidths
+            Index = index
+            Value = value
+        }
+
 let rowTop (model: SpreadsheetModel) (row: int): float =
-    let total = prefixSize defaultRowHeight model.RowHeights rowPrefixSizeCache row
-    if Map.isEmpty model.Filters then total
-    else total - hiddenPrefixSize defaultRowHeight model.RowHeights model.FilterHiddenRows row
+    let hasFilters = not (Map.isEmpty model.Filters)
+    let hiddenRows = if hasFilters then model.FilterHiddenRows else Unchecked.defaultof<int array>
+    match tryGetRowTopFastSlot rowTopFastSlots model.RowHeights hasFilters hiddenRows row with
+    | ValueSome value -> value
+    | ValueNone ->
+        let total = prefixSize defaultRowHeight model.RowHeights rowPrefixSizeCache row
+        let value =
+            if not hasFilters then total
+            else total - hiddenPrefixSize defaultRowHeight model.RowHeights model.FilterHiddenRows row
+        setRowTopFastSlot rowTopFastSlots model.RowHeights hasFilters hiddenRows row value
+        value
 
 let columnLeft (model: SpreadsheetModel) (col: int): float =
-    prefixSize defaultColumnWidth model.ColumnWidths columnPrefixSizeCache col
+    match tryGetColumnLeftFastSlot columnLeftFastSlots model.ColumnWidths col with
+    | ValueSome value -> value
+    | ValueNone ->
+        let value = prefixSize defaultColumnWidth model.ColumnWidths columnPrefixSizeCache col
+        setColumnLeftFastSlot columnLeftFastSlots model.ColumnWidths col value
+        value
 
 let private nextVisibleRowAtOrAfter (model: SpreadsheetModel) row =
     let row = max 0 row
