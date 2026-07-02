@@ -2333,9 +2333,9 @@ for model in recalcResultKeyColdModels do
 recalcResultKeyColdSw.Stop()
 let recalcResultKeyColdAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - recalcResultKeyColdAllocatedBefore
-check "native recalc result key cold alloc"
+check "native recalc result cold alloc"
     (recalcResultKeyColdSw.Elapsed.TotalMilliseconds < 220.0
-     && recalcResultKeyColdAllocated < 23L * 1024L * 1024L
+     && recalcResultKeyColdAllocated < 21L * 1024L * 1024L
      && recalcResultKeyColdTotal = 131328.0)
     true
 

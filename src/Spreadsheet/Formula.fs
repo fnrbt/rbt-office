@@ -10764,6 +10764,7 @@ let private recalcArrayFormulaCacheMaxEntries = 8192
 let private recalcArrayFormulaCacheMaxTotalChars = 5000000
 
 let private recalcIndependentResultCacheMaxEntries = 1024
+let private recalcLocalFastSlotCount = 64
 
 let private recalcCacheAddCapped (maxTotal: int) (amount: int) (total: int) =
     if amount <= 0 then total
@@ -11172,7 +11173,7 @@ let private collectFormulaCells (model: SpreadsheetModel) =
     let formulaCells = ResizeArray<FormulaCell>()
     let parseCache = Dictionary<string, Result<Expr, string>>()
     let parseCacheOrder = Queue<string>()
-    let parseCacheFastSlots = Array.zeroCreate<ParsedFormulaFastCacheEntry> 256
+    let parseCacheFastSlots = Array.zeroCreate<ParsedFormulaFastCacheEntry> recalcLocalFastSlotCount
     let mutable parseCacheTotalChars = 0
     let mutable repeatedFormulas: HashSet<string> = null
     let mutable canCacheResult = true
@@ -11329,7 +11330,8 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
         let mutable hasDependencies = false
         let referencedFormulaCellsCache = Dictionary<string, CellAddress array>()
         let referencedFormulaCellsCacheOrder = Queue<string>()
-        let referencedFormulaCellsFastSlots = Array.zeroCreate<RecalcReferenceFastCacheEntry> 256
+        let referencedFormulaCellsFastSlots =
+            Array.zeroCreate<RecalcReferenceFastCacheEntry> recalcLocalFastSlotCount
         let mutable referencedFormulaCellsCacheTotalFormulaChars = 0
         let mutable referencedFormulaCellsCacheTotalRefs = 0
         let referencedFormulaCellsFor (fc: FormulaCell) =
@@ -11507,7 +11509,7 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
     let anchors = ResizeArray<CellAddress * CellData * string * Expr>()
     let arrayFormulaCache = Dictionary<string, Expr option>()
     let arrayFormulaCacheOrder = Queue<string>()
-    let arrayFormulaFastSlots = Array.zeroCreate<RecalcArrayFormulaFastCacheEntry> 256
+    let arrayFormulaFastSlots = Array.zeroCreate<RecalcArrayFormulaFastCacheEntry> recalcLocalFastSlotCount
     let mutable arrayFormulaCacheTotalChars = 0
     let arrayFormulaExpr formula =
         match tryGetRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula with
