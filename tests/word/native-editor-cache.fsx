@@ -3075,7 +3075,7 @@ let selectionTextSourceColdAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - selectionTextSourceColdAllocatedBefore
 check "native selection text source cold"
     (selectionTextSourceColdSw.Elapsed.TotalMilliseconds < 80.0
-     && selectionTextSourceColdAllocated < 4350L * 1024L
+     && selectionTextSourceColdAllocated < 3850L * 1024L
      && selectionTextSourceColdTotal = 768)
     true
 

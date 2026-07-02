@@ -1654,7 +1654,7 @@ let private selectionTextCacheMaxSources = 256
 let private selectionTextCacheMaxTotalChars = 5000000
 let private selectionTextCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private selectionTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
-let private selectionTextEntryFastSlotCount = 512
+let private selectionTextEntryFastSlotCount = selectionTextCacheMaxEntries
 
 let private selectionTextKeyHash anchorBlockId anchorOffset focusBlockId focusOffset =
     let mutable hashCode = blockIdKeyHash anchorBlockId
