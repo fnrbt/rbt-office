@@ -473,6 +473,14 @@ and WordLayoutCache = {
     mutable RendererFramePreviousSelectionCommands: WordPaint.PaintCommand list option
     mutable RendererFramePreviousHoverCommands: WordPaint.PaintCommand list option
     mutable RendererFramePreviousCommands: Cmd list option
+    mutable RendererViewportContentLayouts: WordLayout.BlockLayout array option
+    mutable RendererViewportContentScrollY: float
+    mutable RendererViewportContentHeight: float
+    mutable RendererViewportContentCommands: Cmd list option
+    mutable RendererViewportContentPreviousLayouts: WordLayout.BlockLayout array option
+    mutable RendererViewportContentPreviousScrollY: float
+    mutable RendererViewportContentPreviousHeight: float
+    mutable RendererViewportContentPreviousCommands: Cmd list option
     mutable ViewportSupportDocument: Document option
     mutable ViewportSupportsContentCommands: bool option
 }
@@ -954,6 +962,14 @@ let private createLayoutCache () = {
     RendererFramePreviousSelectionCommands = None
     RendererFramePreviousHoverCommands = None
     RendererFramePreviousCommands = None
+    RendererViewportContentLayouts = None
+    RendererViewportContentScrollY = 0.0
+    RendererViewportContentHeight = 0.0
+    RendererViewportContentCommands = None
+    RendererViewportContentPreviousLayouts = None
+    RendererViewportContentPreviousScrollY = 0.0
+    RendererViewportContentPreviousHeight = 0.0
+    RendererViewportContentPreviousCommands = None
     ViewportSupportDocument = None
     ViewportSupportsContentCommands = None
 }
@@ -1056,6 +1072,10 @@ let private cachedLayouts width (state: WordEditorState) doc =
         cache.RendererFramePreviousSelectionCommands <- None
         cache.RendererFramePreviousHoverCommands <- None
         cache.RendererFramePreviousCommands <- None
+        cache.RendererViewportContentLayouts <- None
+        cache.RendererViewportContentCommands <- None
+        cache.RendererViewportContentPreviousLayouts <- None
+        cache.RendererViewportContentPreviousCommands <- None
         cache.ViewportSupportDocument <- None
         cache.ViewportSupportsContentCommands <- None
         settings, layouts
@@ -2030,6 +2050,51 @@ let private viewportContentPaintCommands
         index <- index + 1
     resizeArrayToList commands
 
+let private rendererViewportContentCommands
+    (resolveImage: string -> Framebuffer option)
+    state
+    settings
+    measureRange
+    (layouts: WordLayout.BlockLayout array)
+    scrollY
+    viewportHeight =
+    match state.LayoutCache.RendererViewportContentLayouts, state.LayoutCache.RendererViewportContentCommands with
+    | Some cachedLayouts, Some cachedCommands
+        when obj.ReferenceEquals(cachedLayouts, layouts)
+             && state.LayoutCache.RendererViewportContentScrollY = scrollY
+             && state.LayoutCache.RendererViewportContentHeight = viewportHeight ->
+        cachedCommands
+    | _ ->
+        match state.LayoutCache.RendererViewportContentPreviousLayouts, state.LayoutCache.RendererViewportContentPreviousCommands with
+        | Some cachedLayouts, Some cachedCommands
+            when obj.ReferenceEquals(cachedLayouts, layouts)
+                 && state.LayoutCache.RendererViewportContentPreviousScrollY = scrollY
+                 && state.LayoutCache.RendererViewportContentPreviousHeight = viewportHeight ->
+            cachedCommands
+        | _ ->
+            let contentPaintCommands =
+                viewportContentPaintCommands settings measureRange layouts scrollY viewportHeight
+            let rendererCommands = ResizeArray<Cmd>()
+            for paintCommand in contentPaintCommands do
+                rendererCommands.AddRange(toRendererCommand resolveImage paintCommand)
+            let rendered = resizeArrayToList rendererCommands
+
+            if rendererContentCommandsCacheable contentPaintCommands then
+                state.LayoutCache.RendererViewportContentPreviousLayouts <-
+                    state.LayoutCache.RendererViewportContentLayouts
+                state.LayoutCache.RendererViewportContentPreviousScrollY <-
+                    state.LayoutCache.RendererViewportContentScrollY
+                state.LayoutCache.RendererViewportContentPreviousHeight <-
+                    state.LayoutCache.RendererViewportContentHeight
+                state.LayoutCache.RendererViewportContentPreviousCommands <-
+                    state.LayoutCache.RendererViewportContentCommands
+                state.LayoutCache.RendererViewportContentLayouts <- Some layouts
+                state.LayoutCache.RendererViewportContentScrollY <- scrollY
+                state.LayoutCache.RendererViewportContentHeight <- viewportHeight
+                state.LayoutCache.RendererViewportContentCommands <- Some rendered
+
+            rendered
+
 let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) state (doc: Document) =
     let settings, cached = cachedLayouts width state doc
     let _, layoutLookup = cachedLayoutLookup width state doc
@@ -2060,12 +2125,15 @@ let private commandsInViewport
         let settings, layoutArray = cachedLayoutArray width state doc
         let _, layoutLookup = cachedLayoutLookup width state doc
         let measureRange = WordLayout.rangeMeasurerFromTextMeasurer measureText
-        let contentPaintCommands = viewportContentPaintCommands settings measureRange layoutArray scrollY viewportHeight
         let contentRendererCommands =
-            let rendererCommands = ResizeArray<Cmd>()
-            for paintCommand in contentPaintCommands do
-                rendererCommands.AddRange(toRendererCommand resolveImage paintCommand)
-            resizeArrayToList rendererCommands
+            rendererViewportContentCommands
+                resolveImage
+                state
+                settings
+                measureRange
+                layoutArray
+                scrollY
+                viewportHeight
         let cachedLayouts = state.LayoutCache.Layouts |> Option.defaultValue []
         let selectionCommands = rendererSelectionCommandsForState state cachedLayouts settings measureRange doc layoutLookup
         let hoverCommands = WordPaint.hoverCommandsLookup settings layoutLookup hoveredImage

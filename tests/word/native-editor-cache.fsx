@@ -1242,8 +1242,10 @@ else
     let invokeViewportCommands scrollY =
         commandsInViewport.Invoke(null, [| box 900.0; box 600.0; box scrollY; box noImage; box None; box viewportCommandState; box viewportCommandDoc |]) :?> Renderer.Cmd list
     let viewportCommandsA = invokeViewportCommands 200000.0
+    let viewportCommandsB = invokeViewportCommands 200000.0
     check "native viewport command size"
-        (viewportCommandsA.Length < 100)
+        (obj.ReferenceEquals(viewportCommandsA, viewportCommandsB)
+         && viewportCommandsA.Length < 100)
         true
 
     System.GC.Collect()
@@ -1259,7 +1261,7 @@ else
     let viewportAllocated = System.GC.GetAllocatedBytesForCurrentThread() - viewportAllocatedBefore
     check "native viewport command alloc"
         (viewportSw.Elapsed.TotalMilliseconds < 40.0
-         && viewportAllocated < 4L * 1024L * 1024L
+         && viewportAllocated < 256L * 1024L
          && viewportTotal < 2000)
         true
 
