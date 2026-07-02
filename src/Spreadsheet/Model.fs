@@ -54,6 +54,7 @@ let private appendItem item items =
     resizeArrayToList values
 
 /// Cell address (0-indexed)
+[<Struct>]
 type CellAddress = {
     Row: int
     Col: int

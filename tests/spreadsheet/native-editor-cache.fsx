@@ -2353,7 +2353,7 @@ let pasteIdentityCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - pasteIdentityCycleAllocatedBefore
 check "native paste identity source cycle"
     (pasteIdentityCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && pasteIdentityCycleAllocated < 512L * 1024L
+     && pasteIdentityCycleAllocated < 16L * 1024L
      && pasteIdentityCycleSame = 1600)
     true
 
