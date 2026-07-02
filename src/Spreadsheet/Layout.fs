@@ -1620,7 +1620,7 @@ let visibleCells (model: SpreadsheetModel) (viewport: Viewport): CellGeometry li
                 SourceTextCharCount = sourceTextCharCount
                 Entries = entries
                 Order = order
-                EntryFastSlots = Array.zeroCreate<ViewportGeometryFastEntry<CellGeometry list>> 128
+                EntryFastSlots = Array.zeroCreate<ViewportGeometryFastEntry<CellGeometry list>> 64
                 LastEntrySet = false
                 LastEntryKey = Unchecked.defaultof<ViewportGeometryKey>
                 LastEntryValue = Unchecked.defaultof<CellGeometry list>
@@ -1709,7 +1709,7 @@ let headers (model: SpreadsheetModel) (viewport: Viewport): HeaderGeometry list 
                 SourceTextCharCount = sourceTextCharCount
                 Entries = entries
                 Order = order
-                EntryFastSlots = Array.zeroCreate<ViewportGeometryFastEntry<HeaderGeometry list>> 128
+                EntryFastSlots = Array.zeroCreate<ViewportGeometryFastEntry<HeaderGeometry list>> 64
                 LastEntrySet = false
                 LastEntryKey = Unchecked.defaultof<ViewportGeometryKey>
                 LastEntryValue = Unchecked.defaultof<HeaderGeometry list>

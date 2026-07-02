@@ -3131,7 +3131,7 @@ let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem li
                 SourceTextCharCount = sourceTextCharCount
                 Entries = entries
                 Order = order
-                EntryFastSlots = Array.zeroCreate<StaticPaintGeometryFastEntry> 128
+                EntryFastSlots = Array.zeroCreate<StaticPaintGeometryFastEntry> 64
                 TotalItemCount = 0
                 TotalItemTextCharCount = 0
             }
@@ -3574,7 +3574,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                 SourceTextCharCount = sourceTextCharCount
                 Entries = entries
                 Order = order
-                EntryFastSlots = Array.zeroCreate<ViewportPaintGeometryFastEntry> 128
+                EntryFastSlots = Array.zeroCreate<ViewportPaintGeometryFastEntry> 64
                 TotalItemCount = 0
                 TotalItemTextCharCount = 0
             }

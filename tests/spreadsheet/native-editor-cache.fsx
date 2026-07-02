@@ -501,6 +501,47 @@ check "native viewport geometry cache hot hits"
      && geometryHotHitTotal = (firstVisibleCells.Length + firstHeaders.Length) * 50000)
     true
 
+let viewportSlotColdSourceCount = 256
+let viewportSlotColdViewport : RedBat.Spreadsheet.Layout.Viewport =
+    { ScrollX = 0.0
+      ScrollY = 0.0
+      Width = 900.0
+      Height = 600.0
+      HeaderHeight = 24.0
+      RowHeaderWidth = 28.0
+      Measurer = None }
+let viewportSlotColdModels =
+    [| for sourceIndex in 0 .. viewportSlotColdSourceCount - 1 ->
+        let cells =
+            [ for row in 0 .. 7 ->
+                { Row = row; Col = 0 },
+                cell (CellValue.String (sprintf "slot-%03d-%02d" sourceIndex row)) ]
+            |> Map.ofList
+        { createEmpty 64 16 with Cells = cells } |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let viewportSlotColdAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let viewportSlotColdSw = Stopwatch.StartNew()
+let mutable viewportSlotColdTotal = 0
+for model in viewportSlotColdModels do
+    viewportSlotColdTotal <-
+        viewportSlotColdTotal
+        + (RedBat.Spreadsheet.Layout.visibleCells model viewportSlotColdViewport).Length
+        + (RedBat.Spreadsheet.Layout.headers model viewportSlotColdViewport).Length
+        + (RedBat.Spreadsheet.Paint.buildPaintItems model viewportSlotColdViewport).Length
+        + (RedBat.Spreadsheet.Paint.buildViewportPaintItems model viewportSlotColdViewport).Length
+viewportSlotColdSw.Stop()
+let viewportSlotColdAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - viewportSlotColdAllocatedBefore
+check "native viewport slot cold alloc"
+    (viewportSlotColdSw.Elapsed.TotalMilliseconds < 260.0
+     && viewportSlotColdAllocated < 76000L * 1024L
+     && viewportSlotColdTotal = 139264)
+    true
+
 let geometrySourceCycleCount = 80
 let geometrySourceCycleRows = 200
 let geometrySourceCycleCols = 10
