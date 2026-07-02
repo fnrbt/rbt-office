@@ -2570,9 +2570,28 @@ tableCellMarginSw.Stop()
 let tableCellMarginAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - tableCellMarginAllocatedBefore
 check "native table margin noop cache hot hit"
-    (tableCellMarginSw.Elapsed.TotalMilliseconds < 250.0
-     && tableCellMarginAllocated < 512L * 1024L
+    (tableCellMarginSw.Elapsed.TotalMilliseconds < 30.0
+     && tableCellMarginAllocated < 4L * 1024L
      && tableCellMarginSame = 200000)
+    true
+
+Doc.setCurrentTableCellMarginsAndSpacing None None None None None tableCellMarginDoc |> ignore
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+let tableCellMarginSpacingAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let tableCellMarginSpacingSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable tableCellMarginSpacingSame = 0
+for _pass in 1 .. 200000 do
+    if obj.ReferenceEquals(Doc.setCurrentTableCellMarginsAndSpacing None None None None None tableCellMarginDoc, tableCellMarginDoc) then
+        tableCellMarginSpacingSame <- tableCellMarginSpacingSame + 1
+tableCellMarginSpacingSw.Stop()
+let tableCellMarginSpacingAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - tableCellMarginSpacingAllocatedBefore
+check "native table margin spacing noop cache hot hit"
+    (tableCellMarginSpacingSw.Elapsed.TotalMilliseconds < 30.0
+     && tableCellMarginSpacingAllocated < 4L * 1024L
+     && tableCellMarginSpacingSame = 200000)
     true
 
 let clonedTableCellMarginIdPrefix = System.String('c', 5000)

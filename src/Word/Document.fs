@@ -8249,27 +8249,69 @@ let private setTableMarginsAtIndex paddingTop paddingRight paddingBottom padding
             | [] -> ()
     resultDoc
 
+let private floatOptionEquals (left: float option) (right: float option) =
+    match left with
+    | Some leftValue ->
+        match right with
+        | Some rightValue -> leftValue = rightValue
+        | None -> false
+    | None ->
+        match right with
+        | Some _ -> false
+        | None -> true
+
+let mutable private setCurrentTableCellMarginsNoopCacheSet = false
+let mutable private setCurrentTableCellMarginsNoopCacheDoc = Unchecked.defaultof<Document>
+let mutable private setCurrentTableCellMarginsNoopCacheTop: float option = None
+let mutable private setCurrentTableCellMarginsNoopCacheRight: float option = None
+let mutable private setCurrentTableCellMarginsNoopCacheBottom: float option = None
+let mutable private setCurrentTableCellMarginsNoopCacheLeft: float option = None
+
+let private setCurrentTableCellMarginsNoopCacheMatches paddingTop paddingRight paddingBottom paddingLeft doc =
+    setCurrentTableCellMarginsNoopCacheSet
+    && obj.ReferenceEquals(setCurrentTableCellMarginsNoopCacheDoc, doc)
+    && floatOptionEquals setCurrentTableCellMarginsNoopCacheTop paddingTop
+    && floatOptionEquals setCurrentTableCellMarginsNoopCacheRight paddingRight
+    && floatOptionEquals setCurrentTableCellMarginsNoopCacheBottom paddingBottom
+    && floatOptionEquals setCurrentTableCellMarginsNoopCacheLeft paddingLeft
+
+let private rememberSetCurrentTableCellMarginsNoop paddingTop paddingRight paddingBottom paddingLeft doc =
+    setCurrentTableCellMarginsNoopCacheSet <- true
+    setCurrentTableCellMarginsNoopCacheDoc <- doc
+    setCurrentTableCellMarginsNoopCacheTop <- paddingTop
+    setCurrentTableCellMarginsNoopCacheRight <- paddingRight
+    setCurrentTableCellMarginsNoopCacheBottom <- paddingBottom
+    setCurrentTableCellMarginsNoopCacheLeft <- paddingLeft
+    doc
+
 let setCurrentTableCellMargins paddingTop paddingRight paddingBottom paddingLeft doc =
-    match doc.Selection with
-    | Some sel ->
-        let mutable handled = false
+    if setCurrentTableCellMarginsNoopCacheMatches paddingTop paddingRight paddingBottom paddingLeft doc then
+        doc
+    else
         let mutable resultDoc = doc
-        match tryGetCurrentTableCellCache doc.Blocks with
-        | ValueSome cached ->
-            match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
-            | ValueSome (struct (tableIndex, _, _)) ->
-                resultDoc <- setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
-                handled <- true
+        match doc.Selection with
+        | Some sel ->
+            let mutable handled = false
+            match tryGetCurrentTableCellCache doc.Blocks with
+            | ValueSome cached ->
+                match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
+                | ValueSome (struct (tableIndex, _, _)) ->
+                    resultDoc <- setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
+                    handled <- true
+                | ValueNone -> ()
             | ValueNone -> ()
-        | ValueNone -> ()
-        if handled then
-            resultDoc
+            if handled then
+                ()
+            else
+                match currentTableCell doc with
+                | ValueNone -> ()
+                | ValueSome (struct (tableIndex, _, _)) ->
+                    resultDoc <- setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
+        | None -> ()
+        if obj.ReferenceEquals(resultDoc, doc) then
+            rememberSetCurrentTableCellMarginsNoop paddingTop paddingRight paddingBottom paddingLeft doc
         else
-            match currentTableCell doc with
-            | ValueNone -> doc
-            | ValueSome (struct (tableIndex, _, _)) ->
-                setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
-    | None -> doc
+            resultDoc
 
 let private setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex =
     let mutable resultDoc = doc
@@ -8303,27 +8345,61 @@ let private setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBott
             | [] -> ()
     resultDoc
 
+let mutable private setCurrentTableCellMarginsAndSpacingNoopCacheSet = false
+let mutable private setCurrentTableCellMarginsAndSpacingNoopCacheDoc = Unchecked.defaultof<Document>
+let mutable private setCurrentTableCellMarginsAndSpacingNoopCacheTop: float option = None
+let mutable private setCurrentTableCellMarginsAndSpacingNoopCacheRight: float option = None
+let mutable private setCurrentTableCellMarginsAndSpacingNoopCacheBottom: float option = None
+let mutable private setCurrentTableCellMarginsAndSpacingNoopCacheLeft: float option = None
+let mutable private setCurrentTableCellMarginsAndSpacingNoopCacheSpacing: float option = None
+
+let private setCurrentTableCellMarginsAndSpacingNoopCacheMatches paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc =
+    setCurrentTableCellMarginsAndSpacingNoopCacheSet
+    && obj.ReferenceEquals(setCurrentTableCellMarginsAndSpacingNoopCacheDoc, doc)
+    && floatOptionEquals setCurrentTableCellMarginsAndSpacingNoopCacheTop paddingTop
+    && floatOptionEquals setCurrentTableCellMarginsAndSpacingNoopCacheRight paddingRight
+    && floatOptionEquals setCurrentTableCellMarginsAndSpacingNoopCacheBottom paddingBottom
+    && floatOptionEquals setCurrentTableCellMarginsAndSpacingNoopCacheLeft paddingLeft
+    && floatOptionEquals setCurrentTableCellMarginsAndSpacingNoopCacheSpacing cellSpacing
+
+let private rememberSetCurrentTableCellMarginsAndSpacingNoop paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc =
+    setCurrentTableCellMarginsAndSpacingNoopCacheSet <- true
+    setCurrentTableCellMarginsAndSpacingNoopCacheDoc <- doc
+    setCurrentTableCellMarginsAndSpacingNoopCacheTop <- paddingTop
+    setCurrentTableCellMarginsAndSpacingNoopCacheRight <- paddingRight
+    setCurrentTableCellMarginsAndSpacingNoopCacheBottom <- paddingBottom
+    setCurrentTableCellMarginsAndSpacingNoopCacheLeft <- paddingLeft
+    setCurrentTableCellMarginsAndSpacingNoopCacheSpacing <- cellSpacing
+    doc
+
 let setCurrentTableCellMarginsAndSpacing paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc =
-    match doc.Selection with
-    | Some sel ->
-        let mutable handled = false
+    if setCurrentTableCellMarginsAndSpacingNoopCacheMatches paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc then
+        doc
+    else
         let mutable resultDoc = doc
-        match tryGetCurrentTableCellCache doc.Blocks with
-        | ValueSome cached ->
-            match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
-            | ValueSome (struct (tableIndex, _, _)) ->
-                resultDoc <- setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
-                handled <- true
+        match doc.Selection with
+        | Some sel ->
+            let mutable handled = false
+            match tryGetCurrentTableCellCache doc.Blocks with
+            | ValueSome cached ->
+                match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
+                | ValueSome (struct (tableIndex, _, _)) ->
+                    resultDoc <- setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
+                    handled <- true
+                | ValueNone -> ()
             | ValueNone -> ()
-        | ValueNone -> ()
-        if handled then
-            resultDoc
+            if handled then
+                ()
+            else
+                match currentTableCell doc with
+                | ValueNone -> ()
+                | ValueSome (struct (tableIndex, _, _)) ->
+                    resultDoc <- setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
+        | None -> ()
+        if obj.ReferenceEquals(resultDoc, doc) then
+            rememberSetCurrentTableCellMarginsAndSpacingNoop paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc
         else
-            match currentTableCell doc with
-            | ValueNone -> doc
-            | ValueSome (struct (tableIndex, _, _)) ->
-                setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
-    | None -> doc
+            resultDoc
 
 let private headingFontSize level =
     match level with
