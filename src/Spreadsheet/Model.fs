@@ -6449,11 +6449,55 @@ let replaceAtSelection (findText: string) (replaceText: string) (caseSensitive: 
             | None -> None
         | _ -> None
 
+let private replaceAllSimpleWithChangeCapture captureChanges findText replaceText caseSensitive (model: SpreadsheetModel) =
+    match model.Cells.Count with
+    | 0 ->
+        rememberSearchCellsSimple findText caseSensitive model.Cells emptySearchResults
+        ValueSome (model, 0, None)
+    | 1 ->
+        let addr, cellData = Map.maxKeyValue model.Cells
+        let currentText = displayValue cellData.Value
+        if containsSearchText findText caseSensitive currentText then
+            let newText =
+                if caseSensitive then
+                    currentText.Replace(findText, replaceText)
+                elif findText = replaceText && not (caseInsensitiveIdentityReplacementWouldChange findText currentText) then
+                    currentText
+                else
+                    replaceLiteralText findText replaceText caseSensitive currentText
+            if newText = currentText then
+                ValueSome (model, 0, None)
+            else
+                let newCellData = { cellData with Value = String newText }
+                let changes =
+                    if captureChanges then
+                        let captured = {
+                            OldCells = ResizeArray<CellAddress * CellData option>(1)
+                            NewCells = ResizeArray<CellAddress * CellData option>(1)
+                        }
+                        captured.OldCells.Add(addr, Some cellData)
+                        captured.NewCells.Add(addr, Some newCellData)
+                        Some captured
+                    else
+                        None
+                ValueSome ({ model with Cells = Map.add addr newCellData model.Cells }, 1, changes)
+        else
+            rememberSearchCellsSimple findText caseSensitive model.Cells emptySearchResults
+            ValueSome (model, 0, None)
+    | _ ->
+        ValueNone
+
 let private replaceAllWithChangeCapture (captureChanges: bool) (findText: string) (replaceText: string) (caseSensitive: bool) (model: SpreadsheetModel): SpreadsheetModel * int * ReplaceAllChanges option =
     if String.IsNullOrEmpty findText then
         model, 0, None
     elif caseSensitive && findText = replaceText then
         model, 0, None
+    elif model.Cells.Count <= 1 then
+        match replaceAllSimpleWithChangeCapture captureChanges findText replaceText caseSensitive model with
+        | ValueSome result ->
+            result
+        | ValueNone ->
+            model, 0, None
     elif cachedEmptySearchResults findText caseSensitive model then
         model, 0, None
     elif cachedReplaceIdentity findText replaceText caseSensitive model then

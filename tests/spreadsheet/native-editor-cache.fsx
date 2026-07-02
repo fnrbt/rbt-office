@@ -1704,6 +1704,82 @@ check "native search source cycle cache"
      && searchSourceCycleTotal = 0)
     true
 
+let replaceSimpleColdCount = 512
+let replaceSimpleMissModels =
+    [| for index in 0 .. replaceSimpleColdCount - 1 ->
+        { createEmpty 1 1 with
+            Cells =
+                [ { Row = 0; Col = 0 },
+                  cell (CellValue.String (sprintf "hay-%04d" index)) ]
+                |> Map.ofList } |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let replaceSimpleMissAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let replaceSimpleMissSw = Stopwatch.StartNew()
+let mutable replaceSimpleMissSame = 0
+for model in replaceSimpleMissModels do
+    if obj.ReferenceEquals(replaceAll "needle" "x" false model, model) then
+        replaceSimpleMissSame <- replaceSimpleMissSame + 1
+replaceSimpleMissSw.Stop()
+let replaceSimpleMissAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - replaceSimpleMissAllocatedBefore
+check "native replace simple cold miss"
+    (replaceSimpleMissSw.Elapsed.TotalMilliseconds < 80.0
+     && replaceSimpleMissAllocated < 512L * 1024L
+     && replaceSimpleMissSame = replaceSimpleColdCount)
+    true
+
+let replaceSimpleHitModels =
+    [| for _ in 0 .. replaceSimpleColdCount - 1 ->
+        { createEmpty 1 1 with
+            Cells = [ { Row = 0; Col = 0 }, cell (CellValue.String "needle") ] |> Map.ofList } |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let replaceSimpleHitAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let replaceSimpleHitSw = Stopwatch.StartNew()
+let mutable replaceSimpleHitChanged = 0
+for model in replaceSimpleHitModels do
+    let next = replaceAll "needle" "x" false model
+    if not (obj.ReferenceEquals(next, model))
+       && getCellValue { Row = 0; Col = 0 } next = CellValue.String "x" then
+        replaceSimpleHitChanged <- replaceSimpleHitChanged + 1
+replaceSimpleHitSw.Stop()
+let replaceSimpleHitAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - replaceSimpleHitAllocatedBefore
+check "native replace simple cold hit"
+    (replaceSimpleHitSw.Elapsed.TotalMilliseconds < 80.0
+     && replaceSimpleHitAllocated < 1024L * 1024L
+     && replaceSimpleHitChanged = replaceSimpleColdCount)
+    true
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let replaceSimpleChangesAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let replaceSimpleChangesSw = Stopwatch.StartNew()
+let mutable replaceSimpleChangesTotal = 0
+for model in replaceSimpleMissModels do
+    let next, count, oldCells, newCells = replaceAllWithChanges "needle" "x" false model
+    if obj.ReferenceEquals(next, model) then
+        replaceSimpleChangesTotal <- replaceSimpleChangesTotal + count + oldCells.Count + newCells.Count
+    else
+        replaceSimpleChangesTotal <- replaceSimpleChangesTotal - 1000000
+replaceSimpleChangesSw.Stop()
+let replaceSimpleChangesAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - replaceSimpleChangesAllocatedBefore
+check "native replace simple changes miss"
+    (replaceSimpleChangesSw.Elapsed.TotalMilliseconds < 80.0
+     && replaceSimpleChangesAllocated < 512L * 1024L
+     && replaceSimpleChangesTotal = 0)
+    true
+
 let replaceIdentityCycleCount = 80
 let replaceIdentityCycleRows = 3000
 let replaceIdentityCycleModels =
