@@ -1602,6 +1602,25 @@ let private blockIdLookupComparer =
         member _.Equals(left, right) = blockIdKeyEquals left right
         member _.GetHashCode(value) = blockIdKeyHash value }
 
+[<Struct>]
+type private SelectionTextCacheKey = {
+    AnchorBlockId: BlockId
+    AnchorOffset: int
+    FocusBlockId: BlockId
+    FocusOffset: int
+}
+
+[<Struct>]
+type private SelectionTextCacheEntry = {
+    Text: string
+    TextLength: int
+}
+
+type private SelectionTextFastEntry = {
+    Key: SelectionTextCacheKey
+    Entry: SelectionTextCacheEntry
+}
+
 type private SelectionTextCache = {
     SourceBlocks: Block list
     SourceParagraphCount: int
@@ -1610,23 +1629,6 @@ type private SelectionTextCache = {
     Order: Queue<SelectionTextCacheKey>
     EntryFastSlots: SelectionTextFastEntry array
     mutable TotalChars: int
-}
-
-and private SelectionTextCacheKey = {
-    AnchorBlockId: BlockId
-    AnchorOffset: int
-    FocusBlockId: BlockId
-    FocusOffset: int
-}
-
-and private SelectionTextCacheEntry = {
-    Text: string
-    TextLength: int
-}
-
-and private SelectionTextFastEntry = {
-    Key: SelectionTextCacheKey
-    Entry: SelectionTextCacheEntry
 }
 
 let mutable private selectionTextCache: SelectionTextCache list = []
@@ -1643,7 +1645,7 @@ let private selectionTextKeyHash anchorBlockId anchorOffset focusBlockId focusOf
     hashCode <- (hashCode * 397) ^^^ anchorOffset
     hashCode <- (hashCode * 397) ^^^ blockIdKeyHash focusBlockId
     hashCode <- (hashCode * 397) ^^^ focusOffset
-    hashCode
+    hashCode ^^^ (hashCode >>> 16)
 
 let private selectionTextCacheKeyComparer =
     { new IEqualityComparer<SelectionTextCacheKey> with
@@ -1884,9 +1886,12 @@ let private rememberSelectionText (doc: Document) (text: string) =
     | Some selection ->
         let key = selectionTextKey selection
         match tryGetSelectionTextCache doc.Blocks with
-        | ValueSome cached ->
+        | ValueSome cached when selectionTextCacheWithinBudget cached ->
             addSelectionTextCacheEntry key text cached
-            rememberSelectionTextCache cached
+            if not (selectionTextCacheWithinBudget cached) then
+                removeSelectionTextCacheForBlocks cached.SourceBlocks
+        | ValueSome cached ->
+            removeSelectionTextCacheForBlocks cached.SourceBlocks
         | ValueNone ->
             let entries = Dictionary<SelectionTextCacheKey, SelectionTextCacheEntry>(selectionTextCacheKeyComparer)
             let order = Queue<SelectionTextCacheKey>()

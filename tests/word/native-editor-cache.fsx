@@ -2406,14 +2406,18 @@ for doc in selectionTextLookupDocs do
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()
+let selectionTextLookupAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
 let selectionTextLookupSw = System.Diagnostics.Stopwatch.StartNew()
 let mutable selectionTextLookupTotal = 0
 for _pass in 1 .. 10000 do
     for doc in selectionTextLookupDocs do
         selectionTextLookupTotal <- selectionTextLookupTotal + (Doc.getSelectionText doc).Length
 selectionTextLookupSw.Stop()
+let selectionTextLookupAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - selectionTextLookupAllocatedBefore
 check "native selection text long id perf"
-    (selectionTextLookupSw.Elapsed.TotalMilliseconds < 1000.0
+    (selectionTextLookupSw.Elapsed.TotalMilliseconds < 500.0
+     && selectionTextLookupAllocated < 128L * 1024L
      && selectionTextLookupTotal = 1920000)
     true
 
