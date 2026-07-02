@@ -3157,6 +3157,40 @@ check "native normalized range capacity perf"
      && normalizedRangeCapacityTotal = 2048000)
     true
 
+let normalizedRangeExactColdCount = 2048
+let normalizedRangeExactColdIds =
+    [| for index in 0 .. normalizedRangeExactColdCount - 1 ->
+        sprintf "native-range-exact-cold-%04d" index |]
+let normalizedRangeExactColdDoc =
+    { Doc.empty with
+        Blocks =
+            [ for blockId in normalizedRangeExactColdIds ->
+                Doc.Paragraph (para blockId "abcdef") ] }
+let normalizedRangeExactColdSelections : Doc.Selection array =
+    [| for index in 0 .. normalizedRangeExactColdCount - 1 ->
+        { Anchor = pos normalizedRangeExactColdIds.[index] 1
+          Focus = pos normalizedRangeExactColdIds.[index] 4 } |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let normalizedRangeExactColdAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let normalizedRangeExactColdSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable normalizedRangeExactColdTotal = 0
+for selection in normalizedRangeExactColdSelections do
+    let startPos, endPos, blockIds = Doc.getNormalizedRange selection normalizedRangeExactColdDoc
+    normalizedRangeExactColdTotal <-
+        normalizedRangeExactColdTotal + startPos.Offset + endPos.Offset + blockIds.Length
+normalizedRangeExactColdSw.Stop()
+let normalizedRangeExactColdAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - normalizedRangeExactColdAllocatedBefore
+check "native normalized range exact cold alloc"
+    (normalizedRangeExactColdSw.Elapsed.TotalMilliseconds < 120.0
+     && normalizedRangeExactColdAllocated < 1450L * 1024L
+     && normalizedRangeExactColdTotal = 12288)
+    true
+
 let normalizedRangeSourceCycleCount = 80
 let normalizedRangeSourceCycleParagraphCount = 1000
 let normalizedRangeSourceCycleDocs =

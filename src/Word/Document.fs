@@ -5666,8 +5666,8 @@ type private NormalizedRangeExactCacheKey = {
     FocusOffset: int
 }
 
+[<Struct>]
 type private NormalizedRangeExactCacheEntry = {
-    Key: NormalizedRangeExactCacheKey
     Result: Position * Position * BlockId list
 }
 
@@ -5712,10 +5712,7 @@ let private rememberNormalizedRangeExact doc sel result =
     let mutable existing = Unchecked.defaultof<NormalizedRangeExactCacheEntry>
     if not (normalizedRangeExactCache.TryGetValue(key, &existing)) then
         normalizedRangeExactOrder.Enqueue key
-    normalizedRangeExactCache.[key] <- {
-        Key = key
-        Result = result
-    }
+    normalizedRangeExactCache.[key] <- { Result = result }
     while normalizedRangeExactCache.Count > normalizedRangeExactCacheMaxEntries
           && normalizedRangeExactOrder.Count > 0 do
         let oldest = normalizedRangeExactOrder.Dequeue()
