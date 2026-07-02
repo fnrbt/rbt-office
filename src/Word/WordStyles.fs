@@ -656,6 +656,7 @@ let private resolvedCharacterStylesMatch (left: Map<string, NamedStyle> option) 
     | Some a, Some b -> obj.ReferenceEquals(a, b)
     | _ -> false
 
+[<Struct>]
 type private EffectiveBufferCacheKey = {
     SourceRope: RedBat.Word.Rope.Rope
     SourceRuns: Run list

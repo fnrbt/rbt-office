@@ -748,6 +748,38 @@ check "native effective buffer source cycle"
      && effectiveBufferSourceCycleTotal = 1600000)
     true
 
+let effectiveBufferColdKeySourceCount = 4096
+let effectiveBufferColdKeySources =
+    [| for sourceIndex in 0 .. effectiveBufferColdKeySourceCount - 1 ->
+        let text = sprintf "effective-buffer-key-%04d" sourceIndex
+        let style =
+            { TB.defaultStyle with
+                Bold = sourceIndex % 2 = 0
+                Italic = sourceIndex % 3 = 0
+                FontSize = 10.0 + float (sourceIndex % 9) }
+        { Rope = RedBat.Word.Rope.ofString text
+          Runs = [ TB.Text { Start = 0; Length = text.Length; Style = style } ] } : TB.TextBuffer |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let effectiveBufferColdKeyAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let effectiveBufferColdKeySw = System.Diagnostics.Stopwatch.StartNew()
+let mutable effectiveBufferColdKeyTotal = 0
+for source in effectiveBufferColdKeySources do
+    effectiveBufferColdKeyTotal <-
+        effectiveBufferColdKeyTotal
+        + TB.length (Styles.effectiveBufferInContext effectiveBufferContext effectiveBufferStyle source)
+effectiveBufferColdKeySw.Stop()
+let effectiveBufferColdKeyAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - effectiveBufferColdKeyAllocatedBefore
+check "native effective buffer cold key alloc"
+    (effectiveBufferColdKeySw.Elapsed.TotalMilliseconds < 1500.0
+     && effectiveBufferColdKeyAllocated < 75000L * 1024L
+     && effectiveBufferColdKeyTotal = 102400)
+    true
+
 let runArraySourceCycleCount = 80
 let runArraySourceCycleRunCount = 1000
 let makeRunArrayCycleSource sourceIndex =
