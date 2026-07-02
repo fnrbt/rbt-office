@@ -918,6 +918,7 @@ and private MarkupMarkerCommandsCacheEntry =
       CommandCount: int
       Commands: PaintCommand list }
 
+[<Struct>]
 type private MarkupMarkerCommandsCacheKey = {
     PaddingLeft: float
     Layouts: BlockLayout list
@@ -2051,6 +2052,7 @@ type private DocumentPaintCommandsCacheEntry = {
     RetainedStyleCharCount: int
 }
 
+[<Struct>]
 type private DocumentPaintCommandsCacheKey = {
     Settings: LayoutSettings
     FontFamily: string

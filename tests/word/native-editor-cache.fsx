@@ -1439,6 +1439,71 @@ check "native markup marker cache entry cycle"
      && markupMarkerCycleTotal = 800000)
     true
 
+let paintKeyColdSourceCount = 1024
+let documentPaintKeyColdSources =
+    [| for index in 0 .. paintKeyColdSourceCount - 1 ->
+        let blockId = sprintf "native-document-paint-key-cold-%04d" index
+        let layout : Layout.BlockLayout =
+            { BlockId = blockId
+              Lines = [ documentPaintLine ]
+              Y = 0.0
+              Height = documentPaintLine.Height
+              AvailableWidth = 120.0
+              Metadata = Doc.defaultMetadata
+              Prefix = ""
+              PrefixStyle = None
+              PrefixWidth = 0.0
+              Indent = 0.0
+              VAlignOffset = 0.0 }
+        { Doc.empty with
+            Blocks = [ Doc.Paragraph (para blockId "abcdef") ]
+            Selection = None },
+        [ layout ] |]
+let markupMarkerKeyColdSources =
+    [| for index in 0 .. paintKeyColdSourceCount - 1 ->
+        [ for blockIndex in 0 .. 9 ->
+            ({ BlockId = sprintf "native-marker-key-cold-%04d-%02d" index blockIndex
+               Lines = [ documentPaintLine ]
+               Y = float blockIndex * 24.0
+               Height = documentPaintLine.Height
+               AvailableWidth = 120.0
+               Metadata =
+                 { Doc.defaultMetadata with
+                     ContentControlId = Some (sprintf "cc-key-%04d-%02d" index blockIndex) }
+               Prefix = ""
+               PrefixStyle = None
+               PrefixWidth = 0.0
+               Indent = 0.0
+               VAlignOffset = 0.0 } : Layout.BlockLayout) ] |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let paintKeyColdAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let paintKeyColdSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable paintKeyColdTotal = 0
+for doc, layouts in documentPaintKeyColdSources do
+    let _, commands, _ =
+        Paint.collectDocumentCommandsWithLayouts
+            documentPaintSettings
+            "Calibri"
+            documentPaintMeasureText
+            documentPaintRangeMeasure
+            doc
+            (Some layouts)
+    paintKeyColdTotal <- paintKeyColdTotal + commands.Length
+for layouts in markupMarkerKeyColdSources do
+    paintKeyColdTotal <- paintKeyColdTotal + (Paint.markupMarkerCommands documentPaintSettings layouts).Length
+paintKeyColdSw.Stop()
+let paintKeyColdAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - paintKeyColdAllocatedBefore
+check "native word paint key cold alloc"
+    (paintKeyColdSw.Elapsed.TotalMilliseconds < 800.0
+     && paintKeyColdAllocated < 48L * 1024L * 1024L
+     && paintKeyColdTotal = 21504)
+    true
+
 if isNull commandsInViewport then
     fail <- fail + 1
     printfn "FAIL %-34s expected private commandsInViewport method" "native viewport commands reflection"
