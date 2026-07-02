@@ -1699,6 +1699,176 @@ let private rememberClearedCellsFormulaPresence oldCells newCells removedFormula
     | ValueNone ->
         ()
 
+#if !FABLE_COMPILER
+let private cellMapReflectionFlags =
+    System.Reflection.BindingFlags.NonPublic
+    ||| System.Reflection.BindingFlags.Public
+    ||| System.Reflection.BindingFlags.Instance
+
+let private cellMapTreeField =
+    typeof<Map<CellAddress, CellData>>.GetField("tree@690", cellMapReflectionFlags)
+
+let private cellMapComparerField =
+    typeof<Map<CellAddress, CellData>>.GetField("comparer@686", cellMapReflectionFlags)
+
+let private cellMapConstructor =
+    typeof<Map<CellAddress, CellData>>.GetConstructors(cellMapReflectionFlags)
+    |> Array.tryFind (fun ctor -> ctor.GetParameters().Length = 2)
+
+let private cellMapTreeModule =
+    typeof<Map<CellAddress, CellData>>.Assembly.GetType("Microsoft.FSharp.Collections.MapTreeModule")
+
+let private cellMapTreeRebalanceMethod =
+    if isNull cellMapTreeModule then
+        null
+    else
+        let methodInfo =
+            cellMapTreeModule.GetMethod(
+                "rebalance",
+                System.Reflection.BindingFlags.NonPublic ||| System.Reflection.BindingFlags.Static)
+        if isNull methodInfo then
+            null
+        else
+            methodInfo.MakeGenericMethod(typeof<CellAddress>, typeof<CellData>)
+
+let private cellMapTreeSpliceSuccessorMethod =
+    if isNull cellMapTreeModule then
+        null
+    else
+        let methodInfo =
+            cellMapTreeModule.GetMethod(
+                "spliceOutSuccessor",
+                System.Reflection.BindingFlags.NonPublic ||| System.Reflection.BindingFlags.Static)
+        if isNull methodInfo then
+            null
+        else
+            methodInfo.MakeGenericMethod(typeof<CellAddress>, typeof<CellData>)
+
+let private cellMapTreeLeftmostMethod =
+    if isNull cellMapTreeModule then
+        null
+    else
+        let methodInfo =
+            cellMapTreeModule.GetMethod(
+                "leftmost",
+                System.Reflection.BindingFlags.NonPublic ||| System.Reflection.BindingFlags.Static)
+        if isNull methodInfo then
+            null
+        else
+            methodInfo.MakeGenericMethod(typeof<CellAddress>, typeof<CellData>)
+
+let private cellMapTreeRightmostMethod =
+    if isNull cellMapTreeModule then
+        null
+    else
+        let methodInfo =
+            cellMapTreeModule.GetMethod(
+                "rightmost",
+                System.Reflection.BindingFlags.NonPublic ||| System.Reflection.BindingFlags.Static)
+        if isNull methodInfo then
+            null
+        else
+            methodInfo.MakeGenericMethod(typeof<CellAddress>, typeof<CellData>)
+
+let private cellMapTreeFieldValue name (node: obj) =
+    if isNull node then
+        null
+    else
+        let fieldInfo = node.GetType().GetField(name, cellMapReflectionFlags)
+        if isNull fieldInfo then null else fieldInfo.GetValue node
+
+let private cellMapTreeTupleItem index (value: obj) =
+    value.GetType().GetProperty(sprintf "Item%d" index).GetValue(value)
+
+let private tryPruneCellMapKeyRange startKey endKey (source: Map<CellAddress, CellData>) =
+    try
+        match cellMapConstructor with
+        | None ->
+            ValueNone
+        | Some mapConstructor
+            when isNull cellMapTreeField
+                 || isNull cellMapComparerField
+                 || isNull cellMapTreeRebalanceMethod
+                 || isNull cellMapTreeSpliceSuccessorMethod ->
+            ValueNone
+        | Some mapConstructor ->
+            if isNull cellMapTreeLeftmostMethod || isNull cellMapTreeRightmostMethod then
+                ValueNone
+            else
+                let rebalance left key value right =
+                    cellMapTreeRebalanceMethod.Invoke(null, [| left; box key; box value; right |])
+
+                let spliceSuccessor node =
+                    let tuple = cellMapTreeSpliceSuccessorMethod.Invoke(null, [| node |])
+                    cellMapTreeTupleItem 1 tuple :?> CellAddress,
+                    cellMapTreeTupleItem 2 tuple :?> CellData,
+                    cellMapTreeTupleItem 3 tuple
+
+                let leftmostKey node =
+                    let tuple = cellMapTreeLeftmostMethod.Invoke(null, [| node |])
+                    cellMapTreeTupleItem 1 tuple :?> CellAddress
+
+                let rightmostKey node =
+                    let tuple = cellMapTreeRightmostMethod.Invoke(null, [| node |])
+                    cellMapTreeTupleItem 1 tuple :?> CellAddress
+
+                let rec joinTrees left right =
+                    if isNull left then
+                        right
+                    elif isNull right then
+                        left
+                    else
+                        let key, value, nextRight = spliceSuccessor right
+                        rebalance left key value nextRight
+
+                let rec prune node =
+                    if isNull node then
+                        null
+                    else
+                        let minKey = leftmostKey node
+                        let maxKey = rightmostKey node
+                        if maxKey < startKey || minKey > endKey then
+                            node
+                        elif startKey <= minKey && maxKey <= endKey then
+                            null
+                        else
+                            let key = cellMapTreeFieldValue "k" node :?> CellAddress
+                            if key < startKey then
+                                let right = cellMapTreeFieldValue "right" node
+                                let nextRight = prune right
+                                if obj.ReferenceEquals(nextRight, right) then
+                                    node
+                                else
+                                    rebalance
+                                        (cellMapTreeFieldValue "left" node)
+                                        key
+                                        (cellMapTreeFieldValue "v" node :?> CellData)
+                                        nextRight
+                            elif key > endKey then
+                                let left = cellMapTreeFieldValue "left" node
+                                let nextLeft = prune left
+                                if obj.ReferenceEquals(nextLeft, left) then
+                                    node
+                                else
+                                    rebalance
+                                        nextLeft
+                                        key
+                                        (cellMapTreeFieldValue "v" node :?> CellData)
+                                        (cellMapTreeFieldValue "right" node)
+                            else
+                                joinTrees
+                                    (prune (cellMapTreeFieldValue "left" node))
+                                    (prune (cellMapTreeFieldValue "right" node))
+
+                let nextTree = prune (cellMapTreeField.GetValue source)
+                let next =
+                    mapConstructor.Invoke([| cellMapComparerField.GetValue source; nextTree |])
+                    :?> Map<CellAddress, CellData>
+                ValueSome next
+    with _ ->
+        ValueNone
+#endif
+
 /// Clear all cells in a selection, preserving identity when nothing changes.
 let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): SpreadsheetModel =
     match selection with
@@ -1753,10 +1923,14 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
                && area >= (int64 model.Cells.Count + 3L) / 4L then
                 let mutable removedCount = 0
                 let mutable keptCount = 0
+                let mutable selectedRowsHaveOutsideCells = false
                 model.Cells
                 |> Map.iter (fun addr _ ->
                     if inRange addr then
                         removedCount <- removedCount + 1
+                    elif addr.Row >= startRow && addr.Row <= endRow then
+                        selectedRowsHaveOutsideCells <- true
+                        keptCount <- keptCount + 1
                     else
                         keptCount <- keptCount + 1)
                 if removedCount > 0 then
@@ -1765,8 +1939,29 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
                     if keptCount = 0 then
                         cells <- Map.empty
                         clearedAllCells <- true
-                    elif int64 removedCount * 3L >= int64 model.Cells.Count * 2L then
-                        cells <- model.Cells |> Map.filter (fun addr _ -> not (inRange addr))
+                    elif not selectedRowsHaveOutsideCells then
+#if !FABLE_COMPILER
+                        match
+                            tryPruneCellMapKeyRange
+                                { Row = startRow; Col = startCol }
+                                { Row = endRow; Col = endCol }
+                                model.Cells
+                            with
+                        | ValueSome pruned ->
+                            cells <- pruned
+                        | ValueNone ->
+                            model.Cells
+                            |> Map.iter (fun addr _ ->
+                                if inRange addr then
+                                    cells <- Map.remove addr cells)
+#else
+                        model.Cells
+                        |> Map.iter (fun addr _ ->
+                            if inRange addr then
+                                cells <- Map.remove addr cells)
+#endif
+                    elif int64 removedCount * 4L >= int64 model.Cells.Count then
+                        cells <- rebuildWithKeptCells keptCount
                     else
                         model.Cells
                         |> Map.iter (fun addr _ ->
@@ -3231,29 +3426,96 @@ let private intArraysEqual (left: int array) (right: int array) =
 type private FilterProjectionCacheEntry = {
     Source: SpreadsheetModel
     Projected: SpreadsheetModel
+    CellCount: int
+    SourceTextCharCount: int
+    HiddenRowCount: int
 }
 
 let private filterProjectionCache = ConditionalWeakTable<SpreadsheetModel, SpreadsheetModel>()
 let private filterProjectionFastSlots = Array.zeroCreate<FilterProjectionCacheEntry> 2048
-let private filterProjectionRecent = Array.zeroCreate<FilterProjectionCacheEntry> 128
-let mutable private filterProjectionRecentNext = 0
-let mutable private filterProjectionRecentCount = 0
+let mutable private filterProjectionStrongCache: FilterProjectionCacheEntry list = []
+let private filterProjectionStrongCacheMaxEntries = 128
+let private filterProjectionStrongCacheMaxTotalCells = filterHiddenRowsCacheMaxTotalCells
+let private filterProjectionStrongCacheMaxTotalSourceTextChars = filterHiddenRowsCacheMaxTotalSourceTextChars
+let private filterProjectionStrongCacheMaxTotalHiddenRows = filterHiddenRowsCacheMaxTotalRowCount
 
-let private tryGetFilterProjectionRecent model =
-    let mutable i = 0
-    let mutable found = Unchecked.defaultof<SpreadsheetModel>
-    while obj.ReferenceEquals(found, null) && i < filterProjectionRecentCount do
-        let entry = filterProjectionRecent.[i]
-        if not (obj.ReferenceEquals(entry, null)) && obj.ReferenceEquals(entry.Source, model) then
-            found <- entry.Projected
-        i <- i + 1
-    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
+let private filterProjectionEntryMatches (model: SpreadsheetModel) entry =
+    obj.ReferenceEquals(entry.Source, model)
 
-let private rememberFilterProjectionRecent source projected =
-    filterProjectionRecent.[filterProjectionRecentNext] <- { Source = source; Projected = projected }
-    filterProjectionRecentNext <- (filterProjectionRecentNext + 1) % filterProjectionRecent.Length
-    if filterProjectionRecentCount < filterProjectionRecent.Length then
-        filterProjectionRecentCount <- filterProjectionRecentCount + 1
+let private setFilterProjectionStrongCache entries =
+    filterProjectionStrongCache <- entries
+    clearArray filterProjectionFastSlots
+    for entry in entries do
+        let slot = referenceSlot entry.Source filterProjectionFastSlots.Length
+        if obj.ReferenceEquals(filterProjectionFastSlots.[slot], null) then
+            filterProjectionFastSlots.[slot] <- entry
+
+let private filterProjectionEntryRetainable entry =
+    entry.CellCount <= filterProjectionStrongCacheMaxTotalCells
+    && entry.SourceTextCharCount <= filterProjectionStrongCacheMaxTotalSourceTextChars
+    && entry.HiddenRowCount <= filterProjectionStrongCacheMaxTotalHiddenRows
+
+let private tryGetFilterProjectionStrong (model: SpreadsheetModel) =
+    let slot = referenceSlot model filterProjectionFastSlots.Length
+    let fast = filterProjectionFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null)) && filterProjectionEntryMatches model fast then
+        ValueSome fast.Projected
+    else
+        match filterProjectionStrongCache |> List.tryFind (filterProjectionEntryMatches model) with
+        | Some entry ->
+            filterProjectionFastSlots.[slot] <- entry
+            ValueSome entry.Projected
+        | None ->
+            ValueNone
+
+let private rememberFilterProjectionStrong (model: SpreadsheetModel) (projected: SpreadsheetModel) =
+    match tryFilterHiddenRowsCachedMetrics model.Cells model.RowCount model.Filters with
+    | ValueSome (struct (sourceTextChars, _, _)) ->
+        let entry = {
+            Source = model
+            Projected = projected
+            CellCount = model.Cells.Count
+            SourceTextCharCount = sourceTextChars
+            HiddenRowCount = projected.FilterHiddenRows.Length
+        }
+        if filterProjectionEntryRetainable entry then
+            let mutable keptCount = 1
+            let mutable keptCells = max 1 entry.CellCount
+            let mutable keptSourceTextChars = max 1 entry.SourceTextCharCount
+            let mutable keptHiddenRows = entry.HiddenRowCount
+            let retained =
+                filterProjectionStrongCache
+                |> List.choose (fun candidate ->
+                    let candidateCells = max 1 candidate.CellCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    let candidateHiddenRows = candidate.HiddenRowCount
+                    if filterProjectionEntryRetainable candidate
+                       && not (filterProjectionEntryMatches model candidate)
+                       && keptCount < filterProjectionStrongCacheMaxEntries
+                       && keptCells + candidateCells <= filterProjectionStrongCacheMaxTotalCells
+                       && keptSourceTextChars + candidateSourceTextChars <= filterProjectionStrongCacheMaxTotalSourceTextChars
+                       && keptHiddenRows + candidateHiddenRows <= filterProjectionStrongCacheMaxTotalHiddenRows then
+                        keptCount <- keptCount + 1
+                        keptCells <- keptCells + candidateCells
+                        keptSourceTextChars <- keptSourceTextChars + candidateSourceTextChars
+                        keptHiddenRows <- keptHiddenRows + candidateHiddenRows
+                        Some candidate
+                    else
+                        None)
+            entry :: retained |> setFilterProjectionStrongCache
+        else
+            filterProjectionStrongCache
+            |> List.filter (filterProjectionEntryMatches model >> not)
+            |> setFilterProjectionStrongCache
+    | ValueNone ->
+        filterProjectionStrongCache
+        |> List.filter (filterProjectionEntryMatches model >> not)
+        |> setFilterProjectionStrongCache
+
+let private filterProjectionCacheable (model: SpreadsheetModel) =
+    match tryFilterHiddenRowsCachedMetrics model.Cells model.RowCount model.Filters with
+    | ValueSome _ -> true
+    | ValueNone -> false
 
 let private filterProjectionMatchesCurrent (model: SpreadsheetModel) =
     match tryGetFilterHiddenRowsCache model.Cells model.RowCount with
@@ -3778,60 +4040,49 @@ let getVisibleRowsHashSet (model: SpreadsheetModel): System.Collections.Generic.
 
 /// Get visible rows based on all active filters
 let getVisibleRows (model: SpreadsheetModel): Set<int> =
-    match tryGetVisibleRowsModelRecent model with
+    match tryGetVisibleRowsSimpleLast model.Cells model.Filters with
     | ValueSome rows ->
         rows
     | ValueNone ->
-        match tryGetVisibleRowsSimpleLast model.Cells model.Filters with
-        | ValueSome rows ->
-            rememberVisibleRowsModelRecent model rows
-            rows
+        match tryGetVisibleRowsCache model.Cells with
+        | ValueSome cached ->
+            match tryGetVisibleRowsCacheEntry cached model.Filters with
+            | ValueSome entry ->
+                entry.Rows
+            | ValueNone ->
+                match tryVisibleRowsSimple model with
+                | ValueSome rows ->
+                    rememberVisibleRowsSimple model.Cells model.Filters rows
+                    rememberVisibleRows rows model
+                    rows
+                | ValueNone ->
+                    let rows = collectVisibleRowsArray model |> Set.ofArray
+                    rememberVisibleRows rows model
+                    rows
         | ValueNone ->
             match tryVisibleRowsSimple model with
             | ValueSome rows ->
                 rememberVisibleRowsSimple model.Cells model.Filters rows
-                rememberVisibleRowsModelRecent model rows
+                rememberVisibleRows rows model
                 rows
             | ValueNone ->
-                match tryGetVisibleRowsCache model.Cells with
-                | ValueSome cached ->
-                    match tryGetVisibleRowsCacheEntry cached model.Filters with
-                    | ValueSome entry ->
-                        rememberVisibleRowsModelRecent model entry.Rows
-                        entry.Rows
-                    | ValueNone ->
-                        let rows = collectVisibleRowsArray model |> Set.ofArray
-                        rememberVisibleRows rows model
-                        rememberVisibleRowsModelRecent model rows
-                        rows
-                | ValueNone ->
-                    let rows = collectVisibleRowsArray model |> Set.ofArray
-                    rememberVisibleRows rows model
-                    rememberVisibleRowsModelRecent model rows
-                    rows
+                let rows = collectVisibleRowsArray model |> Set.ofArray
+                rememberVisibleRows rows model
+                rows
 
 /// Ensure the filter-hidden row projection exists for callers that constructed
 /// or modified Filters directly instead of going through applyFilter/removeFilter.
 let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
     if Map.isEmpty model.Filters then
         if model.FilterHiddenRows.Length = 0 then model else { model with FilterHiddenRows = [||] }
-    elif model.Cells.Count <= 1 then
-        if model.FilterHiddenRows.Length = 0 then model else { model with FilterHiddenRows = [||] }
     else
-        match tryGetFilterProjectionRecent model with
+        match tryGetFilterProjectionStrong model with
         | ValueSome projected ->
             projected
         | ValueNone ->
             let mutable projected = Unchecked.defaultof<SpreadsheetModel>
-            let slot = referenceSlot model filterProjectionFastSlots.Length
-            let fast = filterProjectionFastSlots.[slot]
-            if not (obj.ReferenceEquals(fast, null))
-               && obj.ReferenceEquals(fast.Source, model) then
-                rememberFilterProjectionRecent model fast.Projected
-                fast.Projected
-            elif filterProjectionCache.TryGetValue(model, &projected) then
-                filterProjectionFastSlots.[slot] <- { Source = model; Projected = projected }
-                rememberFilterProjectionRecent model projected
+            if filterProjectionCache.TryGetValue(model, &projected) then
+                rememberFilterProjectionStrong model projected
                 projected
             else
                 let hiddenRows = filterHiddenRows model
@@ -3841,10 +4092,9 @@ let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
                         model
                     else
                         { model with FilterHiddenRows = hiddenRows }
-                if not (obj.ReferenceEquals(projected, model)) then
-                    filterProjectionFastSlots.[slot] <- { Source = model; Projected = projected }
-                    rememberFilterProjectionRecent model projected
+                if not (obj.ReferenceEquals(projected, model)) && filterProjectionCacheable model then
                     filterProjectionCache.Add(model, projected)
+                    rememberFilterProjectionStrong model projected
                 projected
 
 /// Distinct, sorted display strings in a column — the AutoFilter checklist's
@@ -6269,12 +6519,22 @@ let private tryGetSearchCellsSimpleLast query caseSensitive cells =
     else
         ValueNone
 
+let private searchCellsSimpleRetainable (query: string) (cells: Map<CellAddress, CellData>) (results: CellAddress array) =
+    query.Length <= searchCellsCacheMaxTotalQueryChars
+    && results.Length <= searchCellsCacheMaxResultCount
+    && cells.Count <= searchCellsCacheMaxTotalCells
+    && cellMapSourceTextCharCountFor
+        searchCellsCacheMaxTotalCells
+        searchCellsCacheMaxTotalSourceTextChars
+        cells <= searchCellsCacheMaxTotalSourceTextChars
+
 let private rememberSearchCellsSimple query caseSensitive cells results =
-    searchCellsSimpleLastSet <- true
-    searchCellsSimpleLastCells <- cells
-    searchCellsSimpleLastQuery <- query
-    searchCellsSimpleLastCaseSensitive <- caseSensitive
-    searchCellsSimpleLastResults <- results
+    if searchCellsSimpleRetainable query cells results then
+        searchCellsSimpleLastSet <- true
+        searchCellsSimpleLastCells <- cells
+        searchCellsSimpleLastQuery <- query
+        searchCellsSimpleLastCaseSensitive <- caseSensitive
+        searchCellsSimpleLastResults <- results
 
 let private searchCellMatches
     query
@@ -6323,16 +6583,16 @@ let searchCells (query: string) (caseSensitive: bool) (model: SpreadsheetModel):
         | ValueSome results ->
             results
         | ValueNone ->
-            let numberQueryPossible = numberDisplayMayContainSearchText query
-            let booleanQueryPossible = booleanDisplayMayContainSearchText query
-            let errorMatchesSearchText = errorSearchTextMatcher query caseSensitive
-            match trySearchCellsSimple query caseSensitive numberQueryPossible booleanQueryPossible errorMatchesSearchText model with
+            match cachedSearchCells query caseSensitive model with
             | ValueSome results ->
-                rememberSearchCellsSimple query caseSensitive model.Cells results
                 results
             | ValueNone ->
-                match cachedSearchCells query caseSensitive model with
+                let numberQueryPossible = numberDisplayMayContainSearchText query
+                let booleanQueryPossible = booleanDisplayMayContainSearchText query
+                let errorMatchesSearchText = errorSearchTextMatcher query caseSensitive
+                match trySearchCellsSimple query caseSensitive numberQueryPossible booleanQueryPossible errorMatchesSearchText model with
                 | ValueSome results ->
+                    rememberSearchCellsSimple query caseSensitive model.Cells results
                     results
                 | ValueNone ->
                     let key = struct (query, caseSensitive)
