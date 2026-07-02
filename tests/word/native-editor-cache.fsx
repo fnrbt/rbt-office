@@ -1128,7 +1128,7 @@ let documentPaintCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - documentPaintCycleAllocatedBefore
 check "native document paint cache document cycle"
     (documentPaintCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && documentPaintCycleAllocated < 8L * 1024L * 1024L
+     && documentPaintCycleAllocated < 4L * 1024L * 1024L
      && documentPaintCycleTotal = 40000)
     true
 

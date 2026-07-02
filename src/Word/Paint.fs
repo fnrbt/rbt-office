@@ -2240,7 +2240,7 @@ let private documentPaintCommandsCacheKeyComparer =
 
 let private documentPaintCommandsCacheByKey =
     Dictionary<DocumentPaintCommandsCacheKey, DocumentPaintCommandsCacheEntry>(documentPaintCommandsCacheKeyComparer)
-let private documentPaintCommandsFastSlots = Array.zeroCreate<DocumentPaintCommandsCacheEntry> 256
+let private documentPaintCommandsFastSlots = Array.zeroCreate<DocumentPaintCommandsCacheEntry> 4096
 let mutable private documentPaintCommandsLastSet = false
 let mutable private documentPaintCommandsLast = Unchecked.defaultof<DocumentPaintCommandsCacheEntry>
 
