@@ -2244,7 +2244,7 @@ let private blockLookupCacheMaxEntries = 256
 let private blockLookupCacheMaxTotalEntries = 200000
 let private blockLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private blockLookupCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
-let private lookupEntryFastSlotMin = 2048
+let private lookupEntryFastSlotMin = 512
 let private lookupEntryFastSlotMax = 8192
 
 let private lookupEntryFastSlotSize entryCount =

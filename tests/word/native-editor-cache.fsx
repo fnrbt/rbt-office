@@ -2808,6 +2808,67 @@ check "native paragraph lookup source cycle"
      && paragraphLookupSourceCycleHits = paragraphLookupSourceCycleDocs.Length * 100)
     true
 
+let lookupFastSlotColdSourceCount = 256
+let lookupFastSlotColdBlockDocs =
+    [| for sourceIndex in 0 .. lookupFastSlotColdSourceCount - 1 ->
+        let blockId = sprintf "native-lookup-fast-slot-block-%03d" sourceIndex
+        { Doc.empty with
+            Blocks = [ Doc.Paragraph (para blockId "x") ] },
+        blockId |]
+
+let lookupFastSlotColdParagraphDocs =
+    [| for sourceIndex in 0 .. lookupFastSlotColdSourceCount - 1 ->
+        let paragraphId = sprintf "native-lookup-fast-slot-paragraph-%03d" sourceIndex
+        { Doc.empty with
+            Blocks = [ Doc.Paragraph (para paragraphId "x") ] },
+        paragraphId |]
+
+let lookupFastSlotColdTableDocs =
+    [| for sourceIndex in 0 .. lookupFastSlotColdSourceCount - 1 ->
+        let paragraphId = sprintf "native-lookup-fast-slot-table-%03d" sourceIndex
+        let table =
+            { tableCellMarginTable with
+                Id = sprintf "native-lookup-fast-slot-table-%03d" sourceIndex
+                Rows =
+                    [ { tableCellMarginRow with
+                            Cells =
+                                [ { tableCellMarginCell with
+                                        Content = [ para paragraphId "x" ] } ] } ] }
+        { Doc.empty with
+            Blocks = [ Doc.Table table ]
+            Selection =
+                Some {
+                    Anchor = pos paragraphId 0
+                    Focus = pos paragraphId 0
+                } } |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let lookupFastSlotColdAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let lookupFastSlotColdSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable lookupFastSlotColdHits = 0
+for doc, blockId in lookupFastSlotColdBlockDocs do
+    match Doc.findBlock doc blockId with
+    | Some _ -> lookupFastSlotColdHits <- lookupFastSlotColdHits + 1
+    | None -> ()
+for doc, paragraphId in lookupFastSlotColdParagraphDocs do
+    match Doc.findParagraph doc paragraphId with
+    | Some _ -> lookupFastSlotColdHits <- lookupFastSlotColdHits + 1
+    | None -> ()
+for doc in lookupFastSlotColdTableDocs do
+    if obj.ReferenceEquals(Doc.setCurrentTableCellMargins None None None None doc, doc) then
+        lookupFastSlotColdHits <- lookupFastSlotColdHits + 1
+lookupFastSlotColdSw.Stop()
+let lookupFastSlotColdAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - lookupFastSlotColdAllocatedBefore
+check "native lookup fast slot cold alloc"
+    (lookupFastSlotColdSw.Elapsed.TotalMilliseconds < 180.0
+     && lookupFastSlotColdAllocated < 14000L * 1024L
+     && lookupFastSlotColdHits = lookupFastSlotColdSourceCount * 3)
+    true
+
 let normalizedRangeLookupIdPrefix = System.String('r', 5000)
 let normalizedRangeLookupIds =
     [| for index in 0 .. 63 -> normalizedRangeLookupIdPrefix + sprintf "%04d" index |]
