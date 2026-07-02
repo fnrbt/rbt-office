@@ -2820,8 +2820,8 @@ selectionTextLookupSw.Stop()
 let selectionTextLookupAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - selectionTextLookupAllocatedBefore
 check "native selection text long id perf"
-    (selectionTextLookupSw.Elapsed.TotalMilliseconds < 500.0
-     && selectionTextLookupAllocated < 128L * 1024L
+    (selectionTextLookupSw.Elapsed.TotalMilliseconds < 140.0
+     && selectionTextLookupAllocated < 64L * 1024L
      && selectionTextLookupTotal = 1920000)
     true
 
@@ -2889,8 +2889,8 @@ for _ in 1 .. selectionTextHotProbeCount do
 selectionTextHotSw.Stop()
 let selectionTextHotAllocated = System.GC.GetAllocatedBytesForCurrentThread() - selectionTextHotAllocatedBefore
 check "native selection text cache hot hit"
-    (selectionTextHotSw.Elapsed.TotalMilliseconds < 80.0
-     && selectionTextHotAllocated < 1024L * 1024L
+    (selectionTextHotSw.Elapsed.TotalMilliseconds < 45.0
+     && selectionTextHotAllocated < 64L * 1024L
      && selectionTextHotFirst = "bcd"
      && selectionTextHotTotal = selectionTextHotFirst.Length * selectionTextHotProbeCount)
     true
@@ -2923,8 +2923,8 @@ clonedSelectionTextSw.Stop()
 let clonedSelectionTextAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - clonedSelectionTextAllocatedBefore
 check "native selection text cloned id cache"
-    (clonedSelectionTextSw.Elapsed.TotalMilliseconds < 80.0
-     && clonedSelectionTextAllocated < 512L * 1024L
+    (clonedSelectionTextSw.Elapsed.TotalMilliseconds < 30.0
+     && clonedSelectionTextAllocated < 64L * 1024L
      && clonedSelectionTextTotal = 300000)
     true
 

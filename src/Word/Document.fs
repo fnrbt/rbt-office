@@ -1816,6 +1816,112 @@ let private selectionTextKey (selection: Selection) = {
     FocusOffset = selection.Focus.Offset
 }
 
+[<Struct>]
+type private SelectionTextExactCacheKey = {
+    SourceBlocks: Block list
+    AnchorBlockId: BlockId
+    AnchorOffset: int
+    FocusBlockId: BlockId
+    FocusOffset: int
+}
+
+[<Struct>]
+type private SelectionTextExactCacheEntry = {
+    Key: SelectionTextExactCacheKey
+    Text: string
+    TextLength: int
+}
+
+let private selectionTextExactCacheMaxEntries = selectionTextCacheMaxEntries
+let private selectionTextExactCacheMaxTotalChars = selectionTextCacheMaxTotalChars
+
+let private selectionTextExactKeyHash (key: SelectionTextExactCacheKey) =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.SourceBlocks)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.AnchorBlockId)
+    hashCode <- (hashCode * 397) ^^^ key.AnchorOffset
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.FocusBlockId)
+    hashCode <- (hashCode * 397) ^^^ key.FocusOffset
+    hashCode <- hashCode ^^^ (hashCode >>> 16)
+    hashCode
+
+let private selectionTextExactKeyComparer =
+    { new IEqualityComparer<SelectionTextExactCacheKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.SourceBlocks, right.SourceBlocks)
+            && obj.ReferenceEquals(left.AnchorBlockId, right.AnchorBlockId)
+            && left.AnchorOffset = right.AnchorOffset
+            && obj.ReferenceEquals(left.FocusBlockId, right.FocusBlockId)
+            && left.FocusOffset = right.FocusOffset
+
+        member _.GetHashCode(key) = selectionTextExactKeyHash key }
+
+let private selectionTextExactCache =
+    Dictionary<SelectionTextExactCacheKey, SelectionTextExactCacheEntry>(
+        selectionTextExactCacheMaxEntries,
+        selectionTextExactKeyComparer)
+let private selectionTextExactOrder = Queue<SelectionTextExactCacheKey>(selectionTextExactCacheMaxEntries)
+let mutable private selectionTextExactTotalChars = 0
+
+let private selectionTextExactKey (doc: Document) (selection: Selection) = {
+    SourceBlocks = doc.Blocks
+    AnchorBlockId = selection.Anchor.BlockId
+    AnchorOffset = selection.Anchor.Offset
+    FocusBlockId = selection.Focus.BlockId
+    FocusOffset = selection.Focus.Offset
+}
+
+let private removeSelectionTextExactEntry key =
+    let mutable existing = Unchecked.defaultof<SelectionTextExactCacheEntry>
+    if selectionTextExactCache.TryGetValue(key, &existing) then
+        selectionTextExactCache.Remove key |> ignore
+        selectionTextExactTotalChars <- max 0 (selectionTextExactTotalChars - existing.TextLength)
+
+let private rememberSelectionTextExact (doc: Document) (text: string) =
+    match doc.Selection with
+    | None -> ()
+    | Some selection ->
+        let key = selectionTextExactKey doc selection
+        let textLength = max 1 text.Length
+        if textLength > selectionTextExactCacheMaxTotalChars then
+            removeSelectionTextExactEntry key
+        else
+            let mutable existing = Unchecked.defaultof<SelectionTextExactCacheEntry>
+            if selectionTextExactCache.TryGetValue(key, &existing) then
+                selectionTextExactTotalChars <- max 0 (selectionTextExactTotalChars - existing.TextLength)
+            else
+                selectionTextExactOrder.Enqueue key
+            let entry = {
+                Key = key
+                Text = text
+                TextLength = textLength
+            }
+            selectionTextExactCache.[key] <- entry
+            selectionTextExactTotalChars <- selectionTextExactTotalChars + textLength
+            while (selectionTextExactCache.Count > selectionTextExactCacheMaxEntries
+                   || selectionTextExactTotalChars > selectionTextExactCacheMaxTotalChars)
+                  && selectionTextExactOrder.Count > 0 do
+                let oldest = selectionTextExactOrder.Dequeue()
+                if not (selectionTextExactKeyComparer.Equals(oldest, key)) then
+                    removeSelectionTextExactEntry oldest
+            if selectionTextExactCache.Count > selectionTextExactCacheMaxEntries
+               || selectionTextExactTotalChars > selectionTextExactCacheMaxTotalChars then
+                selectionTextExactCache.Clear()
+                selectionTextExactOrder.Clear()
+                selectionTextExactOrder.Enqueue key
+                selectionTextExactCache.[key] <- entry
+                selectionTextExactTotalChars <- textLength
+
+let private tryGetSelectionTextExact (doc: Document) =
+    match doc.Selection with
+    | None -> ValueNone
+    | Some selection ->
+        let key = selectionTextExactKey doc selection
+        let mutable entry = Unchecked.defaultof<SelectionTextExactCacheEntry>
+        if selectionTextExactCache.TryGetValue(key, &entry) then
+            ValueSome entry.Text
+        else
+            ValueNone
+
 let private removeSelectionTextCacheEntry key (cache: SelectionTextCache) =
     let mutable existing = Unchecked.defaultof<SelectionTextCacheEntry>
     if cache.Entries.TryGetValue(key, &existing) then
@@ -1866,26 +1972,32 @@ let private addSelectionTextCacheEntry key (text: string) (cache: SelectionTextC
                 setSelectionTextEntryFastSlot cache key current
 
 let private cachedSelectionText (doc: Document) =
-    match doc.Selection with
-    | None -> ValueNone
-    | Some selection ->
-        match tryGetSelectionTextCache doc.Blocks with
-        | ValueSome cached when selectionTextCacheWithinBudget cached ->
-            match tryGetSelectionTextEntryFastSlot cached selection with
-            | ValueSome entry -> ValueSome entry.Text
-            | ValueNone ->
-                let key = selectionTextKey selection
-                let mutable entry = Unchecked.defaultof<SelectionTextCacheEntry>
-                if cached.Entries.TryGetValue(key, &entry) then
-                    if selectionTextKeyMatchesSelection selection key then
-                        setSelectionTextEntryFastSlot cached key entry
+    match tryGetSelectionTextExact doc with
+    | ValueSome text -> ValueSome text
+    | ValueNone ->
+        match doc.Selection with
+        | None -> ValueNone
+        | Some selection ->
+            match tryGetSelectionTextCache doc.Blocks with
+            | ValueSome cached when selectionTextCacheWithinBudget cached ->
+                match tryGetSelectionTextEntryFastSlot cached selection with
+                | ValueSome entry ->
+                    rememberSelectionTextExact doc entry.Text
                     ValueSome entry.Text
-                else
-                    ValueNone
-        | ValueSome cached ->
-            rememberSelectionTextCache cached
-            ValueNone
-        | ValueNone -> ValueNone
+                | ValueNone ->
+                    let key = selectionTextKey selection
+                    let mutable entry = Unchecked.defaultof<SelectionTextCacheEntry>
+                    if cached.Entries.TryGetValue(key, &entry) then
+                        if selectionTextKeyMatchesSelection selection key then
+                            setSelectionTextEntryFastSlot cached key entry
+                        rememberSelectionTextExact doc entry.Text
+                        ValueSome entry.Text
+                    else
+                        ValueNone
+            | ValueSome cached ->
+                rememberSelectionTextCache cached
+                ValueNone
+            | ValueNone -> ValueNone
 
 let private rememberSelectionText (doc: Document) (text: string) =
     match doc.Selection with
@@ -1895,7 +2007,9 @@ let private rememberSelectionText (doc: Document) (text: string) =
         match tryGetSelectionTextCache doc.Blocks with
         | ValueSome cached when selectionTextCacheWithinBudget cached ->
             addSelectionTextCacheEntry key text cached
-            if not (selectionTextCacheWithinBudget cached) then
+            if selectionTextCacheWithinBudget cached then
+                rememberSelectionTextExact doc text
+            else
                 removeSelectionTextCacheForBlocks cached.SourceBlocks
         | ValueSome cached ->
             removeSelectionTextCacheForBlocks cached.SourceBlocks
@@ -1918,6 +2032,8 @@ let private rememberSelectionText (doc: Document) (text: string) =
             }
             addSelectionTextCacheEntry key text cache
             rememberSelectionTextCache cache
+            if selectionTextCacheWithinBudget cache then
+                rememberSelectionTextExact doc text
 
 type PageBlockAnchor = {
     PageBlockId: BlockId
