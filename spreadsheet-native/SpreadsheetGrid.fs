@@ -8,6 +8,9 @@ open RedBat.Spreadsheet.Model
 open RedBat.Spreadsheet.Layout
 open RedBat.Spreadsheet.Paint
 
+open System.Collections.Generic
+open System.Runtime.CompilerServices
+
 let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasure v
 
 let private resizeArrayToList (items: System.Collections.Generic.List<'T>) =
@@ -15,6 +18,9 @@ let private resizeArrayToList (items: System.Collections.Generic.List<'T>) =
     for i = items.Count - 1 downto 0 do
         result <- items.[i] :: result
     result
+
+let private clearArray (items: 'T array) =
+    System.Array.Clear(items, 0, items.Length)
 
 let private defaultFont () = Composit.Ui.Layout.font()
 
@@ -537,9 +543,19 @@ type private RendererPaintItemsCacheEntry = {
 }
 
 let mutable private cellRendererCommandsCache: RendererPaintItemsCacheEntry list = []
+let private paintItemsReferenceComparer =
+    { new IEqualityComparer<PaintItem list> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = RuntimeHelpers.GetHashCode(value) }
+let private cellRendererCommandsCacheByItems =
+    Dictionary<PaintItem list, RendererPaintItemsCacheEntry>(paintItemsReferenceComparer)
+let private cellRendererCommandsFastSlots = Array.zeroCreate<RendererPaintItemsCacheEntry> 256
 let private cellRendererCommandsCacheMaxEntries = 256
 let private cellRendererCommandsCacheMaxCommands = 200000
 let private cellRendererCommandsCacheMaxTextChars = 5000000
+
+let private rendererCommandsPaintItemsSlot paintItems slotCount =
+    RuntimeHelpers.GetHashCode(paintItems) &&& (slotCount - 1)
 
 let private addCapped limit value total =
     if total > limit then
@@ -572,6 +588,28 @@ let private paintItemsTextCharCount limit (items: PaintItem list) =
 let private rendererCommandsCacheEntryMatches paintItems entry =
     obj.ReferenceEquals(entry.PaintItems, paintItems)
 
+let private setRendererCommandsCache entries =
+    cellRendererCommandsCache <- entries
+    cellRendererCommandsCacheByItems.Clear()
+    clearArray cellRendererCommandsFastSlots
+    for entry in entries do
+        cellRendererCommandsCacheByItems.[entry.PaintItems] <- entry
+        cellRendererCommandsFastSlots.[rendererCommandsPaintItemsSlot entry.PaintItems cellRendererCommandsFastSlots.Length] <- entry
+
+let private tryGetRendererCommandsForPaintItems paintItems =
+    let slot = rendererCommandsPaintItemsSlot paintItems cellRendererCommandsFastSlots.Length
+    let fast = cellRendererCommandsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && obj.ReferenceEquals(fast.PaintItems, paintItems) then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<RendererPaintItemsCacheEntry>
+        if cellRendererCommandsCacheByItems.TryGetValue(paintItems, &cached) then
+            cellRendererCommandsFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            ValueNone
+
 let private rememberRendererCommandsForPaintItems paintItems commands commandCount textCharCount =
     let rec removeMatching acc remaining =
         match remaining with
@@ -582,7 +620,7 @@ let private rememberRendererCommandsForPaintItems paintItems commands commandCou
             removeMatching (candidate :: acc) tail
     if commandCount > cellRendererCommandsCacheMaxCommands
        || textCharCount > cellRendererCommandsCacheMaxTextChars then
-        cellRendererCommandsCache <- removeMatching [] cellRendererCommandsCache
+        setRendererCommandsCache (removeMatching [] cellRendererCommandsCache)
     else
         let entry = {
             PaintItems = paintItems
@@ -609,13 +647,15 @@ let private rememberRendererCommandsForPaintItems paintItems commands commandCou
                     else
                         loop keptCount keptCommands keptTextChars acc tail
             loop 0 0 0 [] entries
-        cellRendererCommandsCache <- (entry :: removeMatching [] cellRendererCommandsCache) |> trim
+        (entry :: removeMatching [] cellRendererCommandsCache)
+        |> trim
+        |> setRendererCommandsCache
 
 let private rendererCommandsForPaintItems (paintItems: PaintItem list) =
-    match cellRendererCommandsCache |> List.tryFind (rendererCommandsCacheEntryMatches paintItems) with
-    | Some cached ->
+    match tryGetRendererCommandsForPaintItems paintItems with
+    | ValueSome cached ->
         cached.Commands
-    | _ ->
+    | ValueNone ->
         let commands = System.Collections.Generic.List<Cmd>()
         for item in paintItems do
             appendPaintItem commands item
@@ -635,7 +675,127 @@ let private rendererCommandsForPaintItemsUncached (paintItems: PaintItem list) =
         appendPaintItem commands item
     resizeArrayToList commands
 
+type private ViewportFrameCommandsCacheEntry = {
+    Commands: Cmd list
+    ScrollX: float
+    ScrollY: float
+    Width: float
+    Height: float
+    Result: Cmd list
+    CommandCount: int
+}
+
+let mutable private viewportFrameCommandsCache: ViewportFrameCommandsCacheEntry list = []
+let private viewportFrameCommandsFastSlots = Array.zeroCreate<ViewportFrameCommandsCacheEntry> 256
+let private viewportFrameCommandsCacheMaxEntries = 256
+let private viewportFrameCommandsCacheMaxCommands = 200000
+
+let private viewportFrameCommandsSlot commands scrollX scrollY width height slotCount =
+    let mutable hashCode = RuntimeHelpers.GetHashCode(commands)
+    hashCode <- (hashCode * 397) ^^^ scrollX.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ scrollY.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ width.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ height.GetHashCode()
+    hashCode &&& (slotCount - 1)
+
+let private viewportFrameCommandsEntryMatches commands scrollX scrollY width height entry =
+    obj.ReferenceEquals(entry.Commands, commands)
+    && entry.ScrollX = scrollX
+    && entry.ScrollY = scrollY
+    && entry.Width = width
+    && entry.Height = height
+
+let private setViewportFrameCommandsCache entries =
+    viewportFrameCommandsCache <- entries
+    clearArray viewportFrameCommandsFastSlots
+    for entry in entries do
+        let slot =
+            viewportFrameCommandsSlot
+                entry.Commands
+                entry.ScrollX
+                entry.ScrollY
+                entry.Width
+                entry.Height
+                viewportFrameCommandsFastSlots.Length
+        viewportFrameCommandsFastSlots.[slot] <- entry
+
+let private viewportFrameCommandCount (commands: Cmd list) =
+    let mutable count = 0
+    let mutable remaining = commands
+    while count <= viewportFrameCommandsCacheMaxCommands && not remaining.IsEmpty do
+        count <- count + 1
+        remaining <- remaining.Tail
+    count
+
+let private tryGetViewportFrameCommands (commands: Cmd list) scrollX scrollY width height =
+    let slot =
+        viewportFrameCommandsSlot
+            commands
+            scrollX
+            scrollY
+            width
+            height
+            viewportFrameCommandsFastSlots.Length
+    let fast = viewportFrameCommandsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && viewportFrameCommandsEntryMatches commands scrollX scrollY width height fast then
+        ValueSome fast.Result
+    else
+        match viewportFrameCommandsCache |> List.tryFind (viewportFrameCommandsEntryMatches commands scrollX scrollY width height) with
+        | Some cached ->
+            viewportFrameCommandsFastSlots.[slot] <- cached
+            ValueSome cached.Result
+        | None -> ValueNone
+
+let private rememberViewportFrameCommands (commands: Cmd list) scrollX scrollY width height result commandCount =
+    if commandCount <= viewportFrameCommandsCacheMaxCommands then
+        let entry = {
+            Commands = commands
+            ScrollX = scrollX
+            ScrollY = scrollY
+            Width = width
+            Height = height
+            Result = result
+            CommandCount = commandCount
+        }
+        let rec removeMatching acc remaining =
+            match remaining with
+            | [] -> List.rev acc
+            | candidate :: tail when viewportFrameCommandsEntryMatches commands scrollX scrollY width height candidate ->
+                List.rev acc @ tail
+            | candidate :: tail ->
+                removeMatching (candidate :: acc) tail
+        let trim entries =
+            let rec loop keptCount keptCommands acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let commandCount = max 1 candidate.CommandCount
+                    if keptCount < viewportFrameCommandsCacheMaxEntries
+                       && keptCommands + commandCount <= viewportFrameCommandsCacheMaxCommands then
+                        loop (keptCount + 1) (keptCommands + commandCount) (candidate :: acc) tail
+                    else
+                        loop keptCount keptCommands acc tail
+            loop 0 0 [] entries
+        (entry :: removeMatching [] viewportFrameCommandsCache)
+        |> trim
+        |> setViewportFrameCommandsCache
+
+let private commandsWithViewportFrame scrollX scrollY viewportWidth viewportHeight (commands: Cmd list) =
+    match tryGetViewportFrameCommands commands scrollX scrollY viewportWidth viewportHeight with
+    | ValueSome result -> result
+    | ValueNone ->
+        let commandCount = viewportFrameCommandCount commands
+        let result =
+            Cmd.FillRect(
+                Renderer.Types.rect scrollX scrollY viewportWidth viewportHeight,
+                parseHexColor "#FFFFFF")
+            :: commands
+        rememberViewportFrameCommands commands scrollX scrollY viewportWidth viewportHeight result (commandCount + 1)
+        result
+
 type private SparseDefaultRendererFrameCacheEntry = {
+    Parts: SparseDefaultPaintParts
     PrefixItems: PaintItem list
     SelectionFills: PaintItem list
     GridItems: PaintItem list
@@ -647,22 +807,60 @@ type private SparseDefaultRendererFrameCacheEntry = {
 }
 
 let mutable private sparseDefaultRendererFrameCache: SparseDefaultRendererFrameCacheEntry list = []
+let private sparseDefaultPartsReferenceComparer =
+    { new IEqualityComparer<SparseDefaultPaintParts> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = RuntimeHelpers.GetHashCode(value) }
+let private sparseDefaultRendererFrameCacheByParts =
+    Dictionary<SparseDefaultPaintParts, SparseDefaultRendererFrameCacheEntry>(sparseDefaultPartsReferenceComparer)
+let private sparseDefaultRendererFrameFastSlots = Array.zeroCreate<SparseDefaultRendererFrameCacheEntry> 256
 let private sparseDefaultRendererFrameCacheMaxEntries = 256
 let private sparseDefaultRendererFrameCacheMaxCommands = 200000
 
+let private sparseDefaultPartsSlot parts slotCount =
+    RuntimeHelpers.GetHashCode(parts) &&& (slotCount - 1)
+
 let private sparseDefaultRendererFrameMatches (parts: SparseDefaultPaintParts) (entry: SparseDefaultRendererFrameCacheEntry) =
-    entry.PrefixItems = parts.PrefixItems
-    && obj.ReferenceEquals(entry.GridItems, parts.GridItems)
-    && obj.ReferenceEquals(entry.TextItems, parts.TextItems)
-    && entry.SelectionFills = parts.SelectionFills
-    && entry.SelectionStrokes = parts.SelectionStrokes
-    && entry.SuffixItems = parts.SuffixItems
+    obj.ReferenceEquals(entry.Parts, parts)
+    || (entry.PrefixItems = parts.PrefixItems
+        && obj.ReferenceEquals(entry.GridItems, parts.GridItems)
+        && obj.ReferenceEquals(entry.TextItems, parts.TextItems)
+        && entry.SelectionFills = parts.SelectionFills
+        && entry.SelectionStrokes = parts.SelectionStrokes
+        && entry.SuffixItems = parts.SuffixItems)
+
+let private setSparseDefaultRendererFrameCache entries =
+    sparseDefaultRendererFrameCache <- entries
+    sparseDefaultRendererFrameCacheByParts.Clear()
+    clearArray sparseDefaultRendererFrameFastSlots
+    for entry in entries do
+        sparseDefaultRendererFrameCacheByParts.[entry.Parts] <- entry
+        sparseDefaultRendererFrameFastSlots.[sparseDefaultPartsSlot entry.Parts sparseDefaultRendererFrameFastSlots.Length] <- entry
+
+let private tryGetSparseDefaultRendererFrame parts =
+    let slot = sparseDefaultPartsSlot parts sparseDefaultRendererFrameFastSlots.Length
+    let fast = sparseDefaultRendererFrameFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && sparseDefaultRendererFrameMatches parts fast then
+        ValueSome fast
+    else
+        let mutable cached = Unchecked.defaultof<SparseDefaultRendererFrameCacheEntry>
+        if sparseDefaultRendererFrameCacheByParts.TryGetValue(parts, &cached) then
+            sparseDefaultRendererFrameFastSlots.[slot] <- cached
+            ValueSome cached
+        else
+            match sparseDefaultRendererFrameCache |> List.tryFind (sparseDefaultRendererFrameMatches parts) with
+            | Some cached ->
+                sparseDefaultRendererFrameFastSlots.[slot] <- cached
+                ValueSome cached
+            | None -> ValueNone
 
 let private rememberSparseDefaultRendererFrame (parts: SparseDefaultPaintParts) commands commandCount =
     if commandCount > sparseDefaultRendererFrameCacheMaxCommands then
         ()
     else
         let entry = {
+            Parts = parts
             PrefixItems = parts.PrefixItems
             SelectionFills = parts.SelectionFills
             GridItems = parts.GridItems
@@ -695,7 +893,9 @@ let private rememberSparseDefaultRendererFrame (parts: SparseDefaultPaintParts) 
                     else
                         loop keptCount keptCommands acc tail
             loop 0 0 [] entries
-        sparseDefaultRendererFrameCache <- (entry :: removeMatching [] sparseDefaultRendererFrameCache) |> trim
+        (entry :: removeMatching [] sparseDefaultRendererFrameCache)
+        |> trim
+        |> setSparseDefaultRendererFrameCache
 
 let private addRendererCommands (target: System.Collections.Generic.List<Cmd>) commands =
     for command in commands do
@@ -711,9 +911,9 @@ let private prependRendererCommands prefix tail =
     result
 
 let private rendererCommandsForSparseDefaultParts (parts: SparseDefaultPaintParts) =
-    match sparseDefaultRendererFrameCache |> List.tryFind (sparseDefaultRendererFrameMatches parts) with
-    | Some cached -> cached.Commands
-    | None ->
+    match tryGetSparseDefaultRendererFrame parts with
+    | ValueSome cached -> cached.Commands
+    | ValueNone ->
         let prefixCommands = rendererCommandsForPaintItems parts.PrefixItems
         let fillCommands = rendererCommandsForPaintItemsUncached parts.SelectionFills
         let gridCommands = rendererCommandsForPaintItems parts.GridItems
@@ -944,10 +1144,7 @@ let private cellCommandsInViewport (model: SpreadsheetModel) scrollX scrollY vie
         | None ->
             buildPaintItems model viewport
             |> rendererCommandsForPaintItems
-    Cmd.FillRect(
-        Renderer.Types.rect scrollX scrollY viewportWidth viewportHeight,
-        parseHexColor "#FFFFFF")
-    :: commands
+    commandsWithViewportFrame scrollX scrollY viewportWidth viewportHeight commands
 
 let widget width height (model: SpreadsheetModel) =
     canvas width height (fun w h -> cellCommands model w h)

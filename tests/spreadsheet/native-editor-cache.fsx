@@ -207,7 +207,7 @@ else
     let alternatingAllocated = System.GC.GetAllocatedBytesForCurrentThread() - alternatingAllocatedBefore
     check "native grid command cache alternates"
         (alternatingSw.Elapsed.TotalMilliseconds < 30.0
-         && alternatingAllocated < 1024L * 1024L
+         && alternatingAllocated < 128L * 1024L
          && alternatingTotal = (rendererCommandsA.Length + rendererCommandsWide.Length) * 20)
         true
 
@@ -261,8 +261,8 @@ else
     viewportSw.Stop()
     let viewportAllocated = System.GC.GetAllocatedBytesForCurrentThread() - viewportAllocatedBefore
     check "native grid viewport render bounded"
-        (viewportSw.Elapsed.TotalMilliseconds < 80.0
-         && viewportAllocated < 16L * 1024L * 1024L
+        (viewportSw.Elapsed.TotalMilliseconds < 40.0
+         && viewportAllocated < 1024L * 1024L
          && viewportTotal < 10000)
         true
 
@@ -297,8 +297,8 @@ else
     sparseFrameSw.Stop()
     let sparseFrameAllocated = System.GC.GetAllocatedBytesForCurrentThread() - sparseFrameAllocatedBefore
     check "native grid sparse frame entry cycle"
-        (sparseFrameSw.Elapsed.TotalMilliseconds < 250.0
-         && sparseFrameAllocated < 8L * 1024L * 1024L
+        (sparseFrameSw.Elapsed.TotalMilliseconds < 80.0
+         && sparseFrameAllocated < 2L * 1024L * 1024L
          && sparseFrameTotal = 265540)
         true
 
@@ -342,8 +342,8 @@ else
     denseRendererSw.Stop()
     let denseRendererAllocated = System.GC.GetAllocatedBytesForCurrentThread() - denseRendererAllocatedBefore
     check "native grid renderer command entry cycle"
-        (denseRendererSw.Elapsed.TotalMilliseconds < 100.0
-         && denseRendererAllocated < 8L * 1024L * 1024L
+        (denseRendererSw.Elapsed.TotalMilliseconds < 40.0
+         && denseRendererAllocated < 1024L * 1024L
          && denseRendererTotal = 582820)
         true
 
