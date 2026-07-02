@@ -669,12 +669,6 @@ let private rendererCommandsForPaintItems (paintItems: PaintItem list) =
         rememberRendererCommandsForPaintItems paintItems rendered commandCount textCharCount
         rendered
 
-let private rendererCommandsForPaintItemsUncached (paintItems: PaintItem list) =
-    let commands = System.Collections.Generic.List<Cmd>()
-    for item in paintItems do
-        appendPaintItem commands item
-    resizeArrayToList commands
-
 type private ViewportFrameCommandsCacheEntry = {
     Commands: Cmd list
     ScrollX: float
@@ -901,39 +895,37 @@ let private addRendererCommands (target: System.Collections.Generic.List<Cmd>) c
     for command in commands do
         target.Add command
 
-let private prependRendererCommands prefix tail =
-    let mutable result = tail
-    let buffer = System.Collections.Generic.List<Cmd>()
-    for command in prefix do
-        buffer.Add command
-    for i = buffer.Count - 1 downto 0 do
-        result <- buffer.[i] :: result
-    result
+let private groupedRendererCommands (commands: Cmd list) =
+    if commands.IsEmpty then []
+    else [ Cmd.Group(Matrix3x2.identity, 1.0, commands) ]
+
+let private appendPaintItemsAndCount (target: System.Collections.Generic.List<Cmd>) (paintItems: PaintItem list) =
+    let before = target.Count
+    for item in paintItems do
+        appendPaintItem target item
+    target.Count - before
 
 let private rendererCommandsForSparseDefaultParts (parts: SparseDefaultPaintParts) =
     match tryGetSparseDefaultRendererFrame parts with
     | ValueSome cached -> cached.Commands
     | ValueNone ->
         let prefixCommands = rendererCommandsForPaintItems parts.PrefixItems
-        let fillCommands = rendererCommandsForPaintItemsUncached parts.SelectionFills
         let gridCommands = rendererCommandsForPaintItems parts.GridItems
-        let strokeCommands = rendererCommandsForPaintItemsUncached parts.SelectionStrokes
         let textCommands = rendererCommandsForPaintItems parts.TextItems
         let suffixCommands = rendererCommandsForPaintItems parts.SuffixItems
-        let rendered =
-            let tail =
-                if suffixCommands.IsEmpty then textCommands
-                else prependRendererCommands textCommands suffixCommands
-            tail
-            |> prependRendererCommands strokeCommands
-            |> prependRendererCommands gridCommands
-            |> prependRendererCommands fillCommands
-            |> prependRendererCommands prefixCommands
+        let renderedCommands = System.Collections.Generic.List<Cmd>()
+        addRendererCommands renderedCommands (groupedRendererCommands prefixCommands)
+        let fillCommandCount = appendPaintItemsAndCount renderedCommands parts.SelectionFills
+        addRendererCommands renderedCommands (groupedRendererCommands gridCommands)
+        let strokeCommandCount = appendPaintItemsAndCount renderedCommands parts.SelectionStrokes
+        addRendererCommands renderedCommands (groupedRendererCommands textCommands)
+        addRendererCommands renderedCommands (groupedRendererCommands suffixCommands)
+        let rendered = resizeArrayToList renderedCommands
         let commandCount =
             prefixCommands.Length
-            + fillCommands.Length
+            + fillCommandCount
             + gridCommands.Length
-            + strokeCommands.Length
+            + strokeCommandCount
             + textCommands.Length
             + suffixCommands.Length
         rememberSparseDefaultRendererFrame parts rendered commandCount

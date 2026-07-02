@@ -1069,20 +1069,51 @@ let private sparseDefaultSelectionParts
     (visibleRows: (int * float * float) array)
     (visibleCols: (int * float * float) array)
     (selection: Selection) =
-    let sr, sc, er, ec =
-        match selection with
-        | SingleCell (row, col) -> row, col, row, col
-        | Range (sr, sc, er, ec) -> sr, sc, er, ec
-    let fills = ResizeArray<PaintItem>()
-    let strokes = ResizeArray<PaintItem>()
-    for row, y, height in visibleRows do
-        if row >= sr && row <= er then
-            for col, x, width in visibleCols do
-                if col >= sc && col <= ec then
-                    let rect = { X = x; Y = y; Width = width; Height = height }
-                    fills.Add(FillRect (rect, "#E8F5E9"))
-                    strokes.Add(StrokeRect (rect, "#217346", 2.0))
-    resizeArrayToList fills, resizeArrayToList strokes
+    match selection with
+    | SingleCell (selectedRow, selectedCol) ->
+        let mutable rowIndex = 0
+        let mutable foundRow = false
+        let mutable rowYValue = 0.0
+        let mutable rowHeight = 0.0
+        while not foundRow && rowIndex < visibleRows.Length do
+            let row, y, height = visibleRows.[rowIndex]
+            if row = selectedRow then
+                foundRow <- true
+                rowYValue <- y
+                rowHeight <- height
+            else
+                rowIndex <- rowIndex + 1
+        if not foundRow then
+            [], []
+        else
+            let mutable colIndex = 0
+            let mutable foundCol = false
+            let mutable colXValue = 0.0
+            let mutable colWidth = 0.0
+            while not foundCol && colIndex < visibleCols.Length do
+                let col, x, width = visibleCols.[colIndex]
+                if col = selectedCol then
+                    foundCol <- true
+                    colXValue <- x
+                    colWidth <- width
+                else
+                    colIndex <- colIndex + 1
+            if not foundCol then
+                [], []
+            else
+                let rect = { X = colXValue; Y = rowYValue; Width = colWidth; Height = rowHeight }
+                [ FillRect (rect, "#E8F5E9") ], [ StrokeRect (rect, "#217346", 2.0) ]
+    | Range (sr, sc, er, ec) ->
+        let fills = ResizeArray<PaintItem>()
+        let strokes = ResizeArray<PaintItem>()
+        for row, y, height in visibleRows do
+            if row >= sr && row <= er then
+                for col, x, width in visibleCols do
+                    if col >= sc && col <= ec then
+                        let rect = { X = x; Y = y; Width = width; Height = height }
+                        fills.Add(FillRect (rect, "#E8F5E9"))
+                        strokes.Add(StrokeRect (rect, "#217346", 2.0))
+        resizeArrayToList fills, resizeArrayToList strokes
 
 let private buildSparseDefaultPaintCacheEntry
     (model: SpreadsheetModel)

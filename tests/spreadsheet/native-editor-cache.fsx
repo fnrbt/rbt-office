@@ -229,8 +229,8 @@ else
     movingSelectionSw.Stop()
     let movingSelectionAllocated = System.GC.GetAllocatedBytesForCurrentThread() - movingSelectionAllocatedBefore
     check "native grid moving selection cache"
-        (movingSelectionSw.Elapsed.TotalMilliseconds < 120.0
-         && movingSelectionAllocated < 8L * 1024L * 1024L
+        (movingSelectionSw.Elapsed.TotalMilliseconds < 80.0
+         && movingSelectionAllocated < 512L * 1024L
          && movingSelectionTotal = rendererCommandsA.Length * 40)
         true
 
@@ -299,7 +299,7 @@ else
     check "native grid sparse frame entry cycle"
         (sparseFrameSw.Elapsed.TotalMilliseconds < 80.0
          && sparseFrameAllocated < 2L * 1024L * 1024L
-         && sparseFrameTotal = 265540)
+         && sparseFrameTotal = 6440)
         true
 
     let denseRendererRows = 2000
