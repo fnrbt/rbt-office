@@ -197,6 +197,8 @@ let private measureText (text: string) (style: RedBat.Word.TextBuffer.TextStyle)
         rememberWordMeasure key width
         width
 
+let private measureRange = WordLayout.rangeMeasurerFromTextMeasurer measureText
+
 [<Struct>]
 type private WordGlyphLayoutCacheKey = {
     Text: string
@@ -1032,20 +1034,7 @@ let private layoutInputsEqual (left: Document) (right: Document) =
 
 let private cachedLayouts width (state: WordEditorState) doc =
     let cache = state.LayoutCache
-    let matches =
-        cache.Width = width &&
-        match cache.CachedDocument with
-        | Some cachedDoc when Object.ReferenceEquals(cachedDoc, doc) -> true
-        | _ ->
-            match cache.CachedLayoutDocument with
-            | Some cachedLayoutDoc -> layoutInputsEqual cachedLayoutDoc doc
-            | None -> false
-
-    match matches, cache.Settings, cache.Layouts with
-    | true, Some settings, Some layouts ->
-        cache.CachedDocument <- Some doc
-        settings, layouts
-    | _ ->
+    let rebuild () =
         let settings = layoutSettings width doc
         let layouts = WordLayout.layoutDocument settings measureText doc
         cache.Width <- width
@@ -1080,6 +1069,33 @@ let private cachedLayouts width (state: WordEditorState) doc =
         cache.ViewportSupportsContentCommands <- None
         settings, layouts
 
+    let exactDocumentMatch =
+        cache.Width = width
+        &&
+        match cache.CachedDocument with
+        | Some cachedDoc -> Object.ReferenceEquals(cachedDoc, doc)
+        | None -> false
+    let layoutDocumentMatch =
+        cache.Width = width
+        && not exactDocumentMatch
+        &&
+        match cache.CachedLayoutDocument with
+        | Some cachedLayoutDoc -> layoutInputsEqual cachedLayoutDoc doc
+        | None -> false
+
+    if exactDocumentMatch || layoutDocumentMatch then
+        match cache.Settings with
+        | Some settings ->
+            match cache.Layouts with
+            | Some layouts ->
+                if layoutDocumentMatch then
+                    cache.CachedDocument <- Some doc
+                settings, layouts
+            | None -> rebuild ()
+        | None -> rebuild ()
+    else
+        rebuild ()
+
 let private cachedLayoutArray width (state: WordEditorState) doc =
     let settings, layouts = cachedLayouts width state doc
     match state.LayoutCache.LayoutArray with
@@ -1110,7 +1126,7 @@ let hitTest width doc x y =
 
 let private hitTestCached width (state: WordEditorState) doc x y =
     let settings, layouts = cachedLayoutArray width state doc
-    WordLayout.hitTestLayoutArrayWithRange (WordLayout.rangeMeasurerFromTextMeasurer measureText) settings.PaddingLeft layouts x y
+    WordLayout.hitTestLayoutArrayWithRange measureRange settings.PaddingLeft layouts x y
 
 let documentHeight width doc =
     let settings = layoutSettings width doc
@@ -1932,9 +1948,23 @@ let private rendererContentCommandsCacheable (paintCommands: WordPaint.PaintComm
     cacheable
 
 let private rendererCommandsForContent resolveImage state contentCommands =
-    match state.LayoutCache.RendererContentPaintCommands, state.LayoutCache.RendererContentCommands with
-    | Some cachedPaintCommands, Some cachedRendererCommands when obj.ReferenceEquals(cachedPaintCommands, contentCommands) ->
-        cachedRendererCommands
+    match state.LayoutCache.RendererContentPaintCommands with
+    | Some cachedPaintCommands when obj.ReferenceEquals(cachedPaintCommands, contentCommands) ->
+        match state.LayoutCache.RendererContentCommands with
+        | Some cachedRendererCommands -> cachedRendererCommands
+        | None ->
+            let rendererCommands = ResizeArray<Cmd>()
+            for paintCommand in contentCommands do
+                rendererCommands.AddRange(toRendererCommand resolveImage paintCommand)
+            let rendered = resizeArrayToList rendererCommands
+            if rendererContentCommandsCacheable contentCommands then
+                state.LayoutCache.RendererContentPaintCommands <- Some contentCommands
+                state.LayoutCache.RendererContentCommands <- Some rendered
+            else
+                state.LayoutCache.RendererContentPaintCommands <- None
+                state.LayoutCache.RendererContentCommands <- None
+                clearRendererFrameCommands state
+            rendered
     | _ ->
         let rendererCommands = ResizeArray<Cmd>()
         for paintCommand in contentCommands do
@@ -2097,19 +2127,23 @@ let private rendererViewportContentCommands
 
 let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) state (doc: Document) =
     let settings, cached = cachedLayouts width state doc
-    let _, layoutLookup = cachedLayoutLookup width state doc
-    let measureRange = WordLayout.rangeMeasurerFromTextMeasurer measureText
+    let cachedLayouts = state.LayoutCache.Layouts
     let layouts, contentCommands, _ =
-        WordPaint.collectDocumentCommandsWithLayouts settings "Calibri" measureText measureRange doc (Some cached)
+        WordPaint.collectDocumentCommandsWithLayouts settings "Calibri" measureText measureRange doc cachedLayouts
     let contentRendererCommands = rendererCommandsForContent resolveImage state contentCommands
-    let selectionCommands = rendererSelectionCommandsForState state cached settings measureRange doc layoutLookup
-    let hoverCommands = WordPaint.hoverCommandsLookup settings layoutLookup hoveredImage
-
-    if selectionCommands.IsEmpty && hoverCommands.IsEmpty then
+    if doc.Selection.IsNone && hoveredImage.IsNone then
         clearRendererFrameCommands state
         contentRendererCommands
     else
-        rendererCommandsForFrame resolveImage state contentRendererCommands selectionCommands hoverCommands
+        let _, layoutLookup = cachedLayoutLookup width state doc
+        let selectionCommands = rendererSelectionCommandsForState state cached settings measureRange doc layoutLookup
+        let hoverCommands = WordPaint.hoverCommandsLookup settings layoutLookup hoveredImage
+
+        if selectionCommands.IsEmpty && hoverCommands.IsEmpty then
+            clearRendererFrameCommands state
+            contentRendererCommands
+        else
+            rendererCommandsForFrame resolveImage state contentRendererCommands selectionCommands hoverCommands
 
 let private commandsInViewport
     (width: float)
@@ -2124,7 +2158,6 @@ let private commandsInViewport
     else
         let settings, layoutArray = cachedLayoutArray width state doc
         let _, layoutLookup = cachedLayoutLookup width state doc
-        let measureRange = WordLayout.rangeMeasurerFromTextMeasurer measureText
         let contentRendererCommands =
             rendererViewportContentCommands
                 resolveImage

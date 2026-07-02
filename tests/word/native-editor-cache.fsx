@@ -710,6 +710,26 @@ check "native renderer command cache perf"
      && rendererCommandTotal = rendererCommandsA.Length * 10)
     true
 
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let rendererCommandsAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let rendererCommandsAllocSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable rendererCommandAllocTotal = 0
+for _ in 1 .. 50000 do
+    rendererCommandAllocTotal <-
+        rendererCommandAllocTotal
+        + (Composit.Ui.WordEditor.commands 900.0 600.0 noImage None rendererCommandState rendererCommandDoc).Length
+rendererCommandsAllocSw.Stop()
+let rendererCommandsAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - rendererCommandsAllocatedBefore
+check "native renderer command cache alloc"
+    (rendererCommandsAllocSw.Elapsed.TotalMilliseconds < 500.0
+     && rendererCommandsAllocated < 4L * 1024L * 1024L
+     && rendererCommandAllocTotal = rendererCommandsA.Length * 50000)
+    true
+
 let documentPaintSettings : Layout.LayoutSettings =
     { Width = 240.0
       PageHeight = 1000.0
