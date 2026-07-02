@@ -9112,7 +9112,46 @@ let private rememberEmptyFindTextMatchesWithSourceMetrics query matchCase doc so
         (ValueSome sourceParagraphCount)
         (ValueSome sourceTextCharCount)
 
-let private findTextMatchesArray query matchCase doc =
+let private findTextSimpleEntryForParagraph (query: string) (matchCase: bool) (para: ParagraphBlock) =
+    let result =
+        match TextBuffer.trySliceNoCopyV 0 (TextBuffer.length para.Buffer) para.Buffer with
+        | ValueSome text when query.Length <= text.Length ->
+            let firstIndex = indexOfQueryInString matchCase query text 0
+            if firstIndex < 0 then
+                [||]
+            else
+                let matches = ResizeArray<FindMatch>()
+                iterMatchesInStringFromFirst matchCase query text firstIndex (fun matchInfo ->
+                    matches.Add { matchInfo with BlockId = para.Id })
+                matches.ToArray()
+        | ValueSome _ ->
+            [||]
+        | ValueNone ->
+            let matches = ResizeArray<FindMatch>()
+            iterMatchesInBuffer matchCase query para.Buffer (fun matchInfo ->
+                matches.Add { matchInfo with BlockId = para.Id })
+            matches.ToArray()
+    {
+        Matches = result
+        MatchesList = None
+        ResultTextCharCount = findTextCacheResultTextCharCount matchCase result
+    }
+
+let private tryFindTextSimpleEntry (query: string) (matchCase: bool) (doc: Document) =
+    match doc.Blocks with
+    | [] ->
+        ValueSome {
+            Matches = [||]
+            MatchesList = Some []
+            ResultTextCharCount = 0
+        }
+    | [ Paragraph para ]
+    | [ Heading (_, para) ] ->
+        ValueSome (findTextSimpleEntryForParagraph query matchCase para)
+    | _ ->
+        ValueNone
+
+let private findTextMatchesArray (query: string) matchCase doc =
     if System.String.IsNullOrEmpty query then
         [||]
     else
@@ -9120,21 +9159,26 @@ let private findTextMatchesArray query matchCase doc =
         | ValueSome cached ->
             cached.Matches
         | _ ->
-            let matches = ResizeArray<FindMatch>()
-            iterEditableParagraphs doc (fun para ->
-                match TextBuffer.trySliceNoCopyV 0 (TextBuffer.length para.Buffer) para.Buffer with
-                | ValueSome text when query.Length <= text.Length ->
-                    let firstIndex = indexOfQueryInString matchCase query text 0
-                    if firstIndex >= 0 then
-                        iterMatchesInStringFromFirst matchCase query text firstIndex (fun matchInfo ->
-                            matches.Add { matchInfo with BlockId = para.Id })
-                | ValueSome _ -> ()
-                | ValueNone ->
-                    iterMatchesInBuffer matchCase query para.Buffer (fun matchInfo ->
-                        matches.Add { matchInfo with BlockId = para.Id }))
-            let result = matches.ToArray()
-            rememberFindTextMatches query matchCase doc result None
-            result
+            match tryFindTextSimpleEntry query matchCase doc with
+            | ValueSome entry ->
+                rememberFindTextLast query matchCase doc.Blocks entry
+                entry.Matches
+            | ValueNone ->
+                let matches = ResizeArray<FindMatch>()
+                iterEditableParagraphs doc (fun para ->
+                    match TextBuffer.trySliceNoCopyV 0 (TextBuffer.length para.Buffer) para.Buffer with
+                    | ValueSome text when query.Length <= text.Length ->
+                        let firstIndex = indexOfQueryInString matchCase query text 0
+                        if firstIndex >= 0 then
+                            iterMatchesInStringFromFirst matchCase query text firstIndex (fun matchInfo ->
+                                matches.Add { matchInfo with BlockId = para.Id })
+                    | ValueSome _ -> ()
+                    | ValueNone ->
+                        iterMatchesInBuffer matchCase query para.Buffer (fun matchInfo ->
+                            matches.Add { matchInfo with BlockId = para.Id }))
+                let result = matches.ToArray()
+                rememberFindTextMatches query matchCase doc result None
+                result
 
 let findTextArray query matchCase doc =
     findTextMatchesArray query matchCase doc
