@@ -2841,6 +2841,38 @@ check "native normalized range long id perf"
      && normalizedRangeLookupTotal = 2560000)
     true
 
+let normalizedRangeSourceColdCount = 256
+let normalizedRangeSourceColdDocsAndSelections =
+    [| for sourceIndex in 0 .. normalizedRangeSourceColdCount - 1 ->
+        let blockId = sprintf "native-range-source-cold-%04d" sourceIndex
+        let doc =
+            { Doc.empty with
+                Blocks = [ Doc.Paragraph (para blockId "abcdef") ] }
+        let selection : Doc.Selection =
+            { Anchor = pos blockId 1
+              Focus = pos blockId 4 }
+        doc, selection |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let normalizedRangeSourceColdAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let normalizedRangeSourceColdSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable normalizedRangeSourceColdTotal = 0
+for doc, selection in normalizedRangeSourceColdDocsAndSelections do
+    let startPos, endPos, blockIds = Doc.getNormalizedRange selection doc
+    normalizedRangeSourceColdTotal <-
+        normalizedRangeSourceColdTotal + startPos.Offset + endPos.Offset + blockIds.Length
+normalizedRangeSourceColdSw.Stop()
+let normalizedRangeSourceColdAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - normalizedRangeSourceColdAllocatedBefore
+check "native normalized range source cold"
+    (normalizedRangeSourceColdSw.Elapsed.TotalMilliseconds < 120.0
+     && normalizedRangeSourceColdAllocated < 8400L * 1024L
+     && normalizedRangeSourceColdTotal = 1536)
+    true
+
 let selectionTextLookupIdPrefix = System.String('u', 5000)
 let selectionTextLookupIds =
     [| for index in 0 .. 63 -> selectionTextLookupIdPrefix + sprintf "%04d" index |]

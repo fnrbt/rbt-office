@@ -5394,6 +5394,7 @@ let private normalizedRangeCacheMaxSources = 256
 let private normalizedRangeCacheMaxTotalBlockIds = 200000
 let private normalizedRangeCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private normalizedRangeCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+let private normalizedRangeEntryFastSlotCount = 1024
 
 let private normalizedRangeKeyHash anchorBlockId anchorOffset focusBlockId focusOffset =
     let mutable hashCode = blockIdKeyHash anchorBlockId
@@ -5652,7 +5653,7 @@ let private rememberNormalizedRange
             SourceTextCharCount = normalizedRangeSourceTextCharCountFor entry.BlockIdCount sourceParagraphCount doc.Blocks
             Entries = Dictionary<NormalizedRangeCacheKey, NormalizedRangeCacheEntry>(normalizedRangeCacheKeyComparer)
             Order = Queue<NormalizedRangeCacheKey>()
-            EntryFastSlots = Array.zeroCreate<NormalizedRangeFastEntry> 2048
+            EntryFastSlots = Array.zeroCreate<NormalizedRangeFastEntry> normalizedRangeEntryFastSlotCount
             TotalBlockIds = 0
         }
         addNormalizedRangeEntry key entry cache
