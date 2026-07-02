@@ -378,6 +378,23 @@ else
         (measureBestElapsed < 50.0)
         true
 
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let measureAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let measureAllocSw = Stopwatch.StartNew()
+    let mutable measureAllocTotal = 0.0
+    for _ in 1 .. 100000 do
+        measureAllocTotal <- measureAllocTotal + invokeMeasure "Repeated spreadsheet text 12345"
+    measureAllocSw.Stop()
+    let measureAllocated = System.GC.GetAllocatedBytesForCurrentThread() - measureAllocatedBefore
+    check "native text measure cache alloc"
+        (measureAllocSw.Elapsed.TotalMilliseconds < 80.0
+         && measureAllocated < 64L * 1024L
+         && abs (measureAllocTotal - firstWidth * 100000.0) < 0.01)
+        true
+
 let stablePaintMeasure (text: string) (fontSize: float) (fontName: string option) (bold: bool) (italic: bool) =
     float text.Length * fontSize * (if bold then 0.65 else 0.6)
     + (if italic then 1.0 else 0.0)

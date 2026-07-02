@@ -1067,10 +1067,15 @@ let private sameMeasureString (left: string) (right: string) =
     obj.ReferenceEquals(left, right) || left = right
 
 let private sameMeasureStringOption (left: string option) (right: string option) =
-    match left, right with
-    | None, None -> true
-    | Some left, Some right -> sameMeasureString left right
-    | _ -> false
+    match left with
+    | None ->
+        match right with
+        | None -> true
+        | Some _ -> false
+    | Some left ->
+        match right with
+        | Some right -> sameMeasureString left right
+        | None -> false
 
 let private measureFontNameRetainable (fontName: string option) =
     match fontName with
