@@ -1841,8 +1841,16 @@ type private SelectionTextExactCacheEntry = {
     TextLength: int
 }
 
+type private ExactSourceMetrics = {
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+    mutable RefCount: int
+}
+
 let private selectionTextExactCacheMaxEntries = selectionTextCacheMaxEntries
 let private selectionTextExactCacheMaxTotalChars = selectionTextCacheMaxTotalChars
+let private selectionTextExactCacheMaxTotalSourceParagraphs = selectionTextCacheMaxTotalSourceParagraphs
+let private selectionTextExactCacheMaxTotalSourceTextChars = selectionTextCacheMaxTotalSourceTextChars
 
 let private selectionTextExactKeyHash (key: SelectionTextExactCacheKey) =
     let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.SourceBlocks)
@@ -1869,7 +1877,10 @@ let private selectionTextExactCache =
         selectionTextExactCacheMaxEntries,
         selectionTextExactKeyComparer)
 let private selectionTextExactOrder = Queue<SelectionTextExactCacheKey>(selectionTextExactCacheMaxEntries)
+let private selectionTextExactSources = Dictionary<Block list, ExactSourceMetrics>(documentInfoBlocksComparer)
 let mutable private selectionTextExactTotalChars = 0
+let mutable private selectionTextExactTotalSourceParagraphs = 0
+let mutable private selectionTextExactTotalSourceTextChars = 0
 
 let private selectionTextExactKey (doc: Document) (selection: Selection) = {
     SourceBlocks = doc.Blocks
@@ -1879,11 +1890,56 @@ let private selectionTextExactKey (doc: Document) (selection: Selection) = {
     FocusOffset = selection.Focus.Offset
 }
 
+let private removeSelectionTextExactSource blocks =
+    let mutable metrics = Unchecked.defaultof<ExactSourceMetrics>
+    if selectionTextExactSources.TryGetValue(blocks, &metrics) then
+        metrics.RefCount <- metrics.RefCount - 1
+        if metrics.RefCount <= 0 then
+            selectionTextExactSources.Remove blocks |> ignore
+            selectionTextExactTotalSourceParagraphs <-
+                max 0 (selectionTextExactTotalSourceParagraphs - max 1 metrics.SourceParagraphCount)
+            selectionTextExactTotalSourceTextChars <-
+                max 0 (selectionTextExactTotalSourceTextChars - max 1 metrics.SourceTextCharCount)
+
+let private addSelectionTextExactSource blocks sourceParagraphCount sourceTextCharCount =
+    let mutable metrics = Unchecked.defaultof<ExactSourceMetrics>
+    if selectionTextExactSources.TryGetValue(blocks, &metrics) then
+        metrics.RefCount <- metrics.RefCount + 1
+    else
+        selectionTextExactSources.[blocks] <- {
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = sourceTextCharCount
+            RefCount = 1
+        }
+        selectionTextExactTotalSourceParagraphs <-
+            selectionTextExactTotalSourceParagraphs + max 1 sourceParagraphCount
+        selectionTextExactTotalSourceTextChars <-
+            selectionTextExactTotalSourceTextChars + max 1 sourceTextCharCount
+
 let private removeSelectionTextExactEntry key =
     let mutable existing = Unchecked.defaultof<SelectionTextExactCacheEntry>
     if selectionTextExactCache.TryGetValue(key, &existing) then
         selectionTextExactCache.Remove key |> ignore
         selectionTextExactTotalChars <- max 0 (selectionTextExactTotalChars - existing.TextLength)
+        removeSelectionTextExactSource key.SourceBlocks
+
+let private selectionTextExactEntryRetainable textLength sourceParagraphCount sourceTextCharCount =
+    textLength <= selectionTextExactCacheMaxTotalChars
+    && sourceParagraphCount <= selectionTextExactCacheMaxTotalSourceParagraphs
+    && sourceTextCharCount <= selectionTextExactCacheMaxTotalSourceTextChars
+
+let private selectionTextExactSourceMetricsFor textLength (doc: Document) =
+    if textLength > selectionTextExactCacheMaxTotalChars then
+        struct (selectionTextExactCacheMaxTotalSourceParagraphs + 1,
+                selectionTextExactCacheMaxTotalSourceTextChars + 1)
+    else
+        match tryGetSelectionTextCache doc.Blocks with
+        | ValueSome cached ->
+            struct (cached.SourceParagraphCount, cached.SourceTextCharCount)
+        | ValueNone ->
+            let sourceParagraphCount = selectionTextSourceParagraphCountFor textLength doc.Blocks
+            struct (sourceParagraphCount,
+                    selectionTextSourceTextCharCountFor textLength sourceParagraphCount doc.Blocks)
 
 let private rememberSelectionTextExact (doc: Document) (text: string) =
     match doc.Selection with
@@ -1891,12 +1947,14 @@ let private rememberSelectionTextExact (doc: Document) (text: string) =
     | Some selection ->
         let key = selectionTextExactKey doc selection
         let textLength = max 1 text.Length
-        if textLength > selectionTextExactCacheMaxTotalChars then
+        let struct (sourceParagraphCount, sourceTextCharCount) =
+            selectionTextExactSourceMetricsFor textLength doc
+        if not (selectionTextExactEntryRetainable textLength sourceParagraphCount sourceTextCharCount) then
             removeSelectionTextExactEntry key
         else
             let mutable existing = Unchecked.defaultof<SelectionTextExactCacheEntry>
             if selectionTextExactCache.TryGetValue(key, &existing) then
-                selectionTextExactTotalChars <- max 0 (selectionTextExactTotalChars - existing.TextLength)
+                removeSelectionTextExactEntry key
             else
                 selectionTextExactOrder.Enqueue key
             let entry = {
@@ -1906,19 +1964,28 @@ let private rememberSelectionTextExact (doc: Document) (text: string) =
             }
             selectionTextExactCache.[key] <- entry
             selectionTextExactTotalChars <- selectionTextExactTotalChars + textLength
+            addSelectionTextExactSource key.SourceBlocks sourceParagraphCount sourceTextCharCount
             while (selectionTextExactCache.Count > selectionTextExactCacheMaxEntries
-                   || selectionTextExactTotalChars > selectionTextExactCacheMaxTotalChars)
+                   || selectionTextExactTotalChars > selectionTextExactCacheMaxTotalChars
+                   || selectionTextExactTotalSourceParagraphs > selectionTextExactCacheMaxTotalSourceParagraphs
+                   || selectionTextExactTotalSourceTextChars > selectionTextExactCacheMaxTotalSourceTextChars)
                   && selectionTextExactOrder.Count > 0 do
                 let oldest = selectionTextExactOrder.Dequeue()
                 if not (selectionTextExactKeyComparer.Equals(oldest, key)) then
                     removeSelectionTextExactEntry oldest
             if selectionTextExactCache.Count > selectionTextExactCacheMaxEntries
-               || selectionTextExactTotalChars > selectionTextExactCacheMaxTotalChars then
+               || selectionTextExactTotalChars > selectionTextExactCacheMaxTotalChars
+               || selectionTextExactTotalSourceParagraphs > selectionTextExactCacheMaxTotalSourceParagraphs
+               || selectionTextExactTotalSourceTextChars > selectionTextExactCacheMaxTotalSourceTextChars then
                 selectionTextExactCache.Clear()
                 selectionTextExactOrder.Clear()
+                selectionTextExactSources.Clear()
                 selectionTextExactOrder.Enqueue key
                 selectionTextExactCache.[key] <- entry
                 selectionTextExactTotalChars <- textLength
+                selectionTextExactTotalSourceParagraphs <- 0
+                selectionTextExactTotalSourceTextChars <- 0
+                addSelectionTextExactSource key.SourceBlocks sourceParagraphCount sourceTextCharCount
 
 let private tryGetSelectionTextExact (doc: Document) =
     match doc.Selection with
@@ -1991,7 +2058,6 @@ let private cachedSelectionText (doc: Document) =
             | ValueSome cached when selectionTextCacheWithinBudget cached ->
                 match tryGetSelectionTextEntryFastSlot cached selection with
                 | ValueSome entry ->
-                    rememberSelectionTextExact doc entry.Text
                     ValueSome entry.Text
                 | ValueNone ->
                     let key = selectionTextKey selection
@@ -1999,7 +2065,6 @@ let private cachedSelectionText (doc: Document) =
                     if cached.Entries.TryGetValue(key, &entry) then
                         if selectionTextKeyMatchesSelection selection key then
                             setSelectionTextEntryFastSlot cached key entry
-                        rememberSelectionTextExact doc entry.Text
                         ValueSome entry.Text
                     else
                         ValueNone
@@ -2241,7 +2306,7 @@ let private blockLookupBlocksComparer =
 let private blockLookupCacheByBlocks = Dictionary<Block list, BlockLookupCache>(blockLookupBlocksComparer)
 let private blockLookupFastSlots = Array.zeroCreate<BlockLookupCache> 256
 let private blockLookupCacheMaxEntries = 256
-let private blockLookupCacheMaxTotalEntries = 200000
+let private blockLookupCacheMaxTotalEntries = sourceParagraphCountCacheLimit
 let private blockLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private blockLookupCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 let private lookupEntryFastSlotMin = 512
@@ -3175,7 +3240,7 @@ let mutable private paragraphLookupCache: ParagraphLookupCache list = []
 let private paragraphLookupCacheByBlocks = Dictionary<Block list, ParagraphLookupCache>(blockLookupBlocksComparer)
 let private paragraphLookupFastSlots = Array.zeroCreate<ParagraphLookupCache> 256
 let private paragraphLookupCacheMaxEntries = 256
-let private paragraphLookupCacheMaxTotalEntries = 200000
+let private paragraphLookupCacheMaxTotalEntries = sourceParagraphCountCacheLimit
 let private paragraphLookupCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private paragraphLookupCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
 
@@ -5689,9 +5754,13 @@ type private NormalizedRangeExactCacheKey = {
 [<Struct>]
 type private NormalizedRangeExactCacheEntry = {
     Result: Position * Position * BlockId list
+    BlockIdCount: int
 }
 
 let private normalizedRangeExactCacheMaxEntries = 4096
+let private normalizedRangeExactCacheMaxTotalBlockIds = normalizedRangeCacheMaxTotalBlockIds
+let private normalizedRangeExactCacheMaxTotalSourceParagraphs = normalizedRangeCacheMaxTotalSourceParagraphs
+let private normalizedRangeExactCacheMaxTotalSourceTextChars = normalizedRangeCacheMaxTotalSourceTextChars
 
 let private normalizedRangeExactKeyHash (key: NormalizedRangeExactCacheKey) =
     let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.SourceBlocks)
@@ -5718,6 +5787,10 @@ let private normalizedRangeExactCache =
         normalizedRangeExactCacheMaxEntries,
         normalizedRangeExactKeyComparer)
 let private normalizedRangeExactOrder = Queue<NormalizedRangeExactCacheKey>(normalizedRangeExactCacheMaxEntries)
+let private normalizedRangeExactSources = Dictionary<Block list, ExactSourceMetrics>(documentInfoBlocksComparer)
+let mutable private normalizedRangeExactTotalBlockIds = 0
+let mutable private normalizedRangeExactTotalSourceParagraphs = 0
+let mutable private normalizedRangeExactTotalSourceTextChars = 0
 
 let private normalizedRangeExactKey (doc: Document) (sel: Selection) = {
     SourceBlocks = doc.Blocks
@@ -5727,16 +5800,99 @@ let private normalizedRangeExactKey (doc: Document) (sel: Selection) = {
     FocusOffset = sel.Focus.Offset
 }
 
-let private rememberNormalizedRangeExact doc sel result =
-    let key = normalizedRangeExactKey doc sel
+let private removeNormalizedRangeExactSource blocks =
+    let mutable metrics = Unchecked.defaultof<ExactSourceMetrics>
+    if normalizedRangeExactSources.TryGetValue(blocks, &metrics) then
+        metrics.RefCount <- metrics.RefCount - 1
+        if metrics.RefCount <= 0 then
+            normalizedRangeExactSources.Remove blocks |> ignore
+            normalizedRangeExactTotalSourceParagraphs <-
+                max 0 (normalizedRangeExactTotalSourceParagraphs - max 1 metrics.SourceParagraphCount)
+            normalizedRangeExactTotalSourceTextChars <-
+                max 0 (normalizedRangeExactTotalSourceTextChars - max 1 metrics.SourceTextCharCount)
+
+let private addNormalizedRangeExactSource blocks sourceParagraphCount sourceTextCharCount =
+    let mutable metrics = Unchecked.defaultof<ExactSourceMetrics>
+    if normalizedRangeExactSources.TryGetValue(blocks, &metrics) then
+        metrics.RefCount <- metrics.RefCount + 1
+    else
+        normalizedRangeExactSources.[blocks] <- {
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = sourceTextCharCount
+            RefCount = 1
+        }
+        normalizedRangeExactTotalSourceParagraphs <-
+            normalizedRangeExactTotalSourceParagraphs + max 1 sourceParagraphCount
+        normalizedRangeExactTotalSourceTextChars <-
+            normalizedRangeExactTotalSourceTextChars + max 1 sourceTextCharCount
+
+let private removeNormalizedRangeExactEntry key =
     let mutable existing = Unchecked.defaultof<NormalizedRangeExactCacheEntry>
-    if not (normalizedRangeExactCache.TryGetValue(key, &existing)) then
-        normalizedRangeExactOrder.Enqueue key
-    normalizedRangeExactCache.[key] <- { Result = result }
-    while normalizedRangeExactCache.Count > normalizedRangeExactCacheMaxEntries
-          && normalizedRangeExactOrder.Count > 0 do
-        let oldest = normalizedRangeExactOrder.Dequeue()
-        normalizedRangeExactCache.Remove oldest |> ignore
+    if normalizedRangeExactCache.TryGetValue(key, &existing) then
+        normalizedRangeExactCache.Remove key |> ignore
+        normalizedRangeExactTotalBlockIds <- max 0 (normalizedRangeExactTotalBlockIds - max 1 existing.BlockIdCount)
+        removeNormalizedRangeExactSource key.SourceBlocks
+
+let private normalizedRangeExactEntryRetainable blockIdCount sourceParagraphCount sourceTextCharCount =
+    blockIdCount <= normalizedRangeExactCacheMaxTotalBlockIds
+    && sourceParagraphCount <= normalizedRangeExactCacheMaxTotalSourceParagraphs
+    && sourceTextCharCount <= normalizedRangeExactCacheMaxTotalSourceTextChars
+
+let private normalizedRangeExactSourceMetricsFor blockIdCount (doc: Document) =
+    if blockIdCount > normalizedRangeExactCacheMaxTotalBlockIds then
+        struct (normalizedRangeExactCacheMaxTotalSourceParagraphs + 1,
+                normalizedRangeExactCacheMaxTotalSourceTextChars + 1)
+    else
+        match tryGetNormalizedRangeCache doc.Blocks with
+        | ValueSome cached ->
+            struct (cached.SourceParagraphCount, cached.SourceTextCharCount)
+        | ValueNone ->
+            let sourceParagraphCount = normalizedRangeSourceParagraphCountFor blockIdCount doc.Blocks
+            struct (sourceParagraphCount,
+                    normalizedRangeSourceTextCharCountFor blockIdCount sourceParagraphCount doc.Blocks)
+
+let private rememberNormalizedRangeExact (doc: Document) (sel: Selection) (result: Position * Position * BlockId list) =
+    let key = normalizedRangeExactKey doc sel
+    let _, _, blockIds = result
+    let blockIdCount = blockIds.Length
+    let struct (sourceParagraphCount, sourceTextCharCount) =
+        normalizedRangeExactSourceMetricsFor blockIdCount doc
+    if not (normalizedRangeExactEntryRetainable blockIdCount sourceParagraphCount sourceTextCharCount) then
+        removeNormalizedRangeExactEntry key
+    else
+        let mutable existing = Unchecked.defaultof<NormalizedRangeExactCacheEntry>
+        if normalizedRangeExactCache.TryGetValue(key, &existing) then
+            removeNormalizedRangeExactEntry key
+        else
+            normalizedRangeExactOrder.Enqueue key
+        let entry = {
+            Result = result
+            BlockIdCount = blockIdCount
+        }
+        normalizedRangeExactCache.[key] <- entry
+        normalizedRangeExactTotalBlockIds <- normalizedRangeExactTotalBlockIds + max 1 blockIdCount
+        addNormalizedRangeExactSource key.SourceBlocks sourceParagraphCount sourceTextCharCount
+        while (normalizedRangeExactCache.Count > normalizedRangeExactCacheMaxEntries
+               || normalizedRangeExactTotalBlockIds > normalizedRangeExactCacheMaxTotalBlockIds
+               || normalizedRangeExactTotalSourceParagraphs > normalizedRangeExactCacheMaxTotalSourceParagraphs
+               || normalizedRangeExactTotalSourceTextChars > normalizedRangeExactCacheMaxTotalSourceTextChars)
+              && normalizedRangeExactOrder.Count > 0 do
+            let oldest = normalizedRangeExactOrder.Dequeue()
+            if not (normalizedRangeExactKeyComparer.Equals(oldest, key)) then
+                removeNormalizedRangeExactEntry oldest
+        if normalizedRangeExactCache.Count > normalizedRangeExactCacheMaxEntries
+           || normalizedRangeExactTotalBlockIds > normalizedRangeExactCacheMaxTotalBlockIds
+           || normalizedRangeExactTotalSourceParagraphs > normalizedRangeExactCacheMaxTotalSourceParagraphs
+           || normalizedRangeExactTotalSourceTextChars > normalizedRangeExactCacheMaxTotalSourceTextChars then
+            normalizedRangeExactCache.Clear()
+            normalizedRangeExactOrder.Clear()
+            normalizedRangeExactSources.Clear()
+            normalizedRangeExactOrder.Enqueue key
+            normalizedRangeExactCache.[key] <- entry
+            normalizedRangeExactTotalBlockIds <- max 1 blockIdCount
+            normalizedRangeExactTotalSourceParagraphs <- 0
+            normalizedRangeExactTotalSourceTextChars <- 0
+            addNormalizedRangeExactSource key.SourceBlocks sourceParagraphCount sourceTextCharCount
 
 let private tryGetNormalizedRangeExact doc sel =
     let key = normalizedRangeExactKey doc sel
@@ -5770,7 +5926,6 @@ let getNormalizedRange (sel: Selection) (doc: Document) =
     | ValueNone ->
         match cachedNormalizedRange doc sel with
         | ValueSome cached ->
-            rememberNormalizedRangeExact doc sel cached
             cached
         | ValueNone ->
             match trySimpleTopLevelNormalizedRange sel doc with
@@ -9099,6 +9254,12 @@ let private rememberFindTextMatchesWithSourceMetrics query matchCase doc matches
 let private rememberFindTextMatches query matchCase doc matches matchesList =
     rememberFindTextMatchesWithSourceMetrics query matchCase doc matches matchesList ValueNone ValueNone
 
+let private rememberFindTextEntry query matchCase doc (entry: FindTextCacheEntry) =
+    rememberFindTextMatches query matchCase doc entry.Matches entry.MatchesList
+    match cachedFindTextMatches query matchCase doc with
+    | ValueSome cached -> cached
+    | ValueNone -> entry
+
 let private rememberEmptyFindTextMatches query matchCase doc =
     rememberFindTextMatches query matchCase doc [||] (Some [])
 
@@ -9161,8 +9322,7 @@ let private findTextMatchesArray (query: string) matchCase doc =
         | _ ->
             match tryFindTextSimpleEntry query matchCase doc with
             | ValueSome entry ->
-                rememberFindTextLast query matchCase doc.Blocks entry
-                entry.Matches
+                (rememberFindTextEntry query matchCase doc entry).Matches
             | ValueNone ->
                 let matches = ResizeArray<FindMatch>()
                 iterEditableParagraphs doc (fun para ->
@@ -9267,7 +9427,7 @@ let private replaceAllTextSimpleParagraph
 
 let private tryReplaceAllTextSimple (query: string) (replacement: string) (matchCase: bool) (doc: Document) =
     let rememberNoMatches () =
-        rememberFindTextLast query matchCase doc.Blocks emptyFindTextEntry
+        rememberEmptyFindTextMatches query matchCase doc
     match doc.Blocks with
     | [] ->
         rememberNoMatches()

@@ -1145,7 +1145,7 @@ module Vba =
     let private layoutFastSlots = Array.zeroCreate<LayoutCache> 256
     let private layoutCacheMaxEntries = 256
     let private layoutCacheMaxTotalLayouts = 200000
-    let private vbaSourceTextCacheMaxTotalChars = 8000000
+    let private vbaSourceTextCacheMaxTotalChars = 5000000
     let private vbaSourceParagraphCountLimit = 100000
 
     let private vbaAddCapped total value =
@@ -1953,7 +1953,8 @@ module Vba =
     let private textStatisticsCacheMaxEntries = 256
     let private textStatisticsCacheMaxSources = 256
     let private textStatisticsCacheMaxTotalSourceParagraphs = vbaSourceParagraphCountLimit
-    let private textStatisticsCacheMaxTotalSourceTextChars = vbaSourceTextCacheMaxTotalChars
+    let private textStatisticsCacheMaxSourceTextChars = vbaSourceTextCacheMaxTotalChars
+    let private textStatisticsCacheMaxTotalSourceTextChars = 8000000
     let private textStatisticsCacheByBlocks =
         Dictionary<Doc.Block list, TextStatisticsCache>(documentBlocksReferenceComparer)
     let private textStatisticsFastSlots = Array.zeroCreate<TextStatisticsCache> 256
@@ -2001,7 +2002,7 @@ module Vba =
         cached.Entries.Count > 0
         && cached.Entries.Count <= textStatisticsCacheMaxEntries
         && cached.SourceParagraphCount <= textStatisticsCacheMaxTotalSourceParagraphs
-        && cached.SourceTextCharCount <= textStatisticsCacheMaxTotalSourceTextChars
+        && cached.SourceTextCharCount <= textStatisticsCacheMaxSourceTextChars
 
     let private rememberTextStatisticsCache cached =
         if not (textStatisticsCacheRetainable cached) then
@@ -2056,15 +2057,15 @@ module Vba =
         finish - start
 
     let private textStatisticsSourceParagraphCountFor rangeTextLength doc =
-        if rangeTextLength > textStatisticsCacheMaxTotalSourceTextChars then
+        if rangeTextLength > textStatisticsCacheMaxSourceTextChars then
             textStatisticsCacheMaxTotalSourceParagraphs + 1
         else
             countDocumentSourceParagraphs doc
 
     let private textStatisticsSourceTextCharCountFor rangeTextLength sourceParagraphCount blocks =
-        if rangeTextLength > textStatisticsCacheMaxTotalSourceTextChars
+        if rangeTextLength > textStatisticsCacheMaxSourceTextChars
            || sourceParagraphCount > textStatisticsCacheMaxTotalSourceParagraphs then
-            textStatisticsCacheMaxTotalSourceTextChars + 1
+            textStatisticsCacheMaxSourceTextChars + 1
         else
             countDocumentBlocksSourceTextCharsFor sourceParagraphCount blocks
 
