@@ -16,6 +16,20 @@ module Shapes = RedBat.Word.Shapes
 module Styles = RedBat.Word.WordStyles
 module TB = RedBat.Word.TextBuffer
 
+type CachedLayoutArrayDelegate =
+    delegate of float * Composit.Ui.WordEditor.WordEditorState * Doc.Document -> Layout.LayoutSettings * Layout.BlockLayout array
+
+type RendererViewportContentCommandsDelegate =
+    delegate of
+        (string -> Framebuffer option)
+        * Composit.Ui.WordEditor.WordEditorState
+        * Layout.LayoutSettings
+        * Layout.TextRangeMeasurer
+        * Layout.BlockLayout array
+        * float
+        * float
+            -> Cmd list
+
 let mutable pass = 0
 let mutable fail = 0
 
@@ -87,6 +101,28 @@ let documentHeightCached =
     wordEditorType.GetMethod("documentHeightCached", staticBindingFlags)
 let commandsInViewport =
     wordEditorType.GetMethod("commandsInViewport", BindingFlags.NonPublic ||| BindingFlags.Static)
+let cachedLayoutArray =
+    wordEditorType.GetMethod("cachedLayoutArray", staticBindingFlags)
+let rendererViewportContentCommands =
+    wordEditorType.GetMethod("rendererViewportContentCommands", staticBindingFlags)
+let measureRangeProperty =
+    wordEditorType.GetProperty("measureRange", staticBindingFlags)
+let cachedLayoutArrayDelegate =
+    if isNull cachedLayoutArray then
+        Unchecked.defaultof<CachedLayoutArrayDelegate>
+    else
+        cachedLayoutArray.CreateDelegate(typeof<CachedLayoutArrayDelegate>) :?> CachedLayoutArrayDelegate
+let rendererViewportContentCommandsDelegate =
+    if isNull rendererViewportContentCommands then
+        Unchecked.defaultof<RendererViewportContentCommandsDelegate>
+    else
+        rendererViewportContentCommands.CreateDelegate(typeof<RendererViewportContentCommandsDelegate>)
+        :?> RendererViewportContentCommandsDelegate
+let measureRange =
+    if isNull measureRangeProperty then
+        Unchecked.defaultof<Layout.TextRangeMeasurer>
+    else
+        measureRangeProperty.GetValue(null) :?> Layout.TextRangeMeasurer
 let imageMoveTarget =
     wordEditorType.GetMethod("imageMoveTarget", BindingFlags.NonPublic ||| BindingFlags.Static)
 let measureText =
@@ -1284,6 +1320,62 @@ else
          && viewportAllocated < 256L * 1024L
          && viewportTotal < 2000)
         true
+
+    if isNull cachedLayoutArray || isNull rendererViewportContentCommands || isNull measureRangeProperty then
+        fail <- fail + 1
+        printfn "FAIL %-34s expected private renderer viewport cache helpers" "native renderer viewport reflection"
+    else
+        let viewportSettings, viewportLayouts =
+            cachedLayoutArrayDelegate.Invoke(900.0, viewportCommandState, viewportCommandDoc)
+        let viewportContentCommandsA =
+            rendererViewportContentCommandsDelegate.Invoke(
+                noImage,
+                viewportCommandState,
+                viewportSettings,
+                measureRange,
+                viewportLayouts,
+                200000.0,
+                600.0)
+        let viewportContentCommandsB =
+            rendererViewportContentCommandsDelegate.Invoke(
+                noImage,
+                viewportCommandState,
+                viewportSettings,
+                measureRange,
+                viewportLayouts,
+                200000.0,
+                600.0)
+        check "native renderer viewport cache reuse"
+            (obj.ReferenceEquals(viewportContentCommandsA, viewportContentCommandsB)
+             && viewportContentCommandsA.Length < 100)
+            true
+
+        System.GC.Collect()
+        System.GC.WaitForPendingFinalizers()
+        System.GC.Collect()
+
+        let rendererViewportAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+        let rendererViewportSw = System.Diagnostics.Stopwatch.StartNew()
+        let mutable rendererViewportTotal = 0
+        for _ in 1 .. 100000 do
+            rendererViewportTotal <-
+                rendererViewportTotal
+                + rendererViewportContentCommandsDelegate.Invoke(
+                    noImage,
+                    viewportCommandState,
+                    viewportSettings,
+                    measureRange,
+                    viewportLayouts,
+                    200000.0,
+                    600.0).Length
+        rendererViewportSw.Stop()
+        let rendererViewportAllocated =
+            System.GC.GetAllocatedBytesForCurrentThread() - rendererViewportAllocatedBefore
+        check "native renderer viewport cache alloc"
+            (rendererViewportSw.Elapsed.TotalMilliseconds < 200.0
+             && rendererViewportAllocated < 64L * 1024L
+             && rendererViewportTotal = viewportContentCommandsA.Length * 100000)
+            true
 
 if isNull imageMoveTarget then
     fail <- fail + 1

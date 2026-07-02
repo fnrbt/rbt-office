@@ -2109,6 +2109,37 @@ let private viewportContentPaintCommands
         index <- index + 1
     resizeArrayToList commands
 
+let private refreshRendererViewportContentCommands
+    (resolveImage: string -> Framebuffer option)
+    state
+    settings
+    measureRange
+    (layouts: WordLayout.BlockLayout array)
+    scrollY
+    viewportHeight =
+    let contentPaintCommands =
+        viewportContentPaintCommands settings measureRange layouts scrollY viewportHeight
+    let rendererCommands = ResizeArray<Cmd>()
+    for paintCommand in contentPaintCommands do
+        rendererCommands.AddRange(toRendererCommand resolveImage paintCommand)
+    let rendered = resizeArrayToList rendererCommands
+
+    if rendererContentCommandsCacheable contentPaintCommands then
+        state.LayoutCache.RendererViewportContentPreviousLayouts <-
+            state.LayoutCache.RendererViewportContentLayouts
+        state.LayoutCache.RendererViewportContentPreviousScrollY <-
+            state.LayoutCache.RendererViewportContentScrollY
+        state.LayoutCache.RendererViewportContentPreviousHeight <-
+            state.LayoutCache.RendererViewportContentHeight
+        state.LayoutCache.RendererViewportContentPreviousCommands <-
+            state.LayoutCache.RendererViewportContentCommands
+        state.LayoutCache.RendererViewportContentLayouts <- Some layouts
+        state.LayoutCache.RendererViewportContentScrollY <- scrollY
+        state.LayoutCache.RendererViewportContentHeight <- viewportHeight
+        state.LayoutCache.RendererViewportContentCommands <- Some rendered
+
+    rendered
+
 let private rendererViewportContentCommands
     (resolveImage: string -> Framebuffer option)
     state
@@ -2117,42 +2148,30 @@ let private rendererViewportContentCommands
     (layouts: WordLayout.BlockLayout array)
     scrollY
     viewportHeight =
-    match state.LayoutCache.RendererViewportContentLayouts, state.LayoutCache.RendererViewportContentCommands with
-    | Some cachedLayouts, Some cachedCommands
+    match state.LayoutCache.RendererViewportContentLayouts with
+    | Some cachedLayouts
         when obj.ReferenceEquals(cachedLayouts, layouts)
              && state.LayoutCache.RendererViewportContentScrollY = scrollY
              && state.LayoutCache.RendererViewportContentHeight = viewportHeight ->
-        cachedCommands
+        match state.LayoutCache.RendererViewportContentCommands with
+        | Some cachedCommands -> cachedCommands
+        | None ->
+            refreshRendererViewportContentCommands
+                resolveImage state settings measureRange layouts scrollY viewportHeight
     | _ ->
-        match state.LayoutCache.RendererViewportContentPreviousLayouts, state.LayoutCache.RendererViewportContentPreviousCommands with
-        | Some cachedLayouts, Some cachedCommands
+        match state.LayoutCache.RendererViewportContentPreviousLayouts with
+        | Some cachedLayouts
             when obj.ReferenceEquals(cachedLayouts, layouts)
                  && state.LayoutCache.RendererViewportContentPreviousScrollY = scrollY
                  && state.LayoutCache.RendererViewportContentPreviousHeight = viewportHeight ->
-            cachedCommands
+            match state.LayoutCache.RendererViewportContentPreviousCommands with
+            | Some cachedCommands -> cachedCommands
+            | None ->
+                refreshRendererViewportContentCommands
+                    resolveImage state settings measureRange layouts scrollY viewportHeight
         | _ ->
-            let contentPaintCommands =
-                viewportContentPaintCommands settings measureRange layouts scrollY viewportHeight
-            let rendererCommands = ResizeArray<Cmd>()
-            for paintCommand in contentPaintCommands do
-                rendererCommands.AddRange(toRendererCommand resolveImage paintCommand)
-            let rendered = resizeArrayToList rendererCommands
-
-            if rendererContentCommandsCacheable contentPaintCommands then
-                state.LayoutCache.RendererViewportContentPreviousLayouts <-
-                    state.LayoutCache.RendererViewportContentLayouts
-                state.LayoutCache.RendererViewportContentPreviousScrollY <-
-                    state.LayoutCache.RendererViewportContentScrollY
-                state.LayoutCache.RendererViewportContentPreviousHeight <-
-                    state.LayoutCache.RendererViewportContentHeight
-                state.LayoutCache.RendererViewportContentPreviousCommands <-
-                    state.LayoutCache.RendererViewportContentCommands
-                state.LayoutCache.RendererViewportContentLayouts <- Some layouts
-                state.LayoutCache.RendererViewportContentScrollY <- scrollY
-                state.LayoutCache.RendererViewportContentHeight <- viewportHeight
-                state.LayoutCache.RendererViewportContentCommands <- Some rendered
-
-            rendered
+            refreshRendererViewportContentCommands
+                resolveImage state settings measureRange layouts scrollY viewportHeight
 
 let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) state (doc: Document) =
     let struct (settings, cached) =
