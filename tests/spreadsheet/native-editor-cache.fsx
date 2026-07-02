@@ -1263,7 +1263,7 @@ let mergeRangeCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - mergeRangeCycleAllocatedBefore
 check "native merge range query cycle cache"
     (mergeRangeCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && mergeRangeCycleAllocated < 512L * 1024L
+     && mergeRangeCycleAllocated < 16L * 1024L
      && mergeRangeCycleTotal = 24000)
     true
 

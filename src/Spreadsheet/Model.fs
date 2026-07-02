@@ -7994,6 +7994,7 @@ type private MergeRangeOrderingCache = {
     IsStartRowAscending: bool
 }
 
+[<Struct>]
 type private MergeRangeQueryKey = {
     StartRow: int
     EndRowExclusive: int
@@ -8305,13 +8306,13 @@ let private cachedMergeRangeQuery startRow endRowExclusive startCol endColExclus
     | ValueSome cached when mergeRangeQueryCacheRetainable cached ->
         let mutable entry = Unchecked.defaultof<MergeRangeQueryCacheEntry>
         if cached.Entries.TryGetValue(key, &entry) then
-            Some entry.Results
+            ValueSome entry.Results
         else
-            None
+            ValueNone
     | ValueSome cached ->
         rememberMergeRangeQueryCache cached
-        None
-    | ValueNone -> None
+        ValueNone
+    | ValueNone -> ValueNone
 
 let private rememberMergeRangeQuery startRow endRowExclusive startCol endColExclusive merges results =
     let key = mergeRangeQueryKey startRow endRowExclusive startCol endColExclusive
@@ -8458,8 +8459,8 @@ let mergedCellsIntersectingRange startRow endRowExclusive startCol endColExclusi
         []
     else
         match cachedMergeRangeQuery startRow endRowExclusive startCol endColExclusive model.MergedCells with
-        | Some cached -> cached
-        | None ->
+        | ValueSome cached -> cached
+        | ValueNone ->
             let intersectsVisibleRange (merge: MergedCell) =
                 merge.EndRow >= startRow &&
                 merge.StartRow < endRowExclusive &&
