@@ -8715,86 +8715,178 @@ let private mergedCellsIntersectingRangeLinear startRow endRowExclusive startCol
         remaining <- remaining.Tail
     resizeArrayToList result
 
+let mutable private mergeLookupSimpleLastSet = false
+let mutable private mergeLookupSimpleLastSource = Unchecked.defaultof<MergedCell list>
+let mutable private mergeLookupSimpleLastRow = 0
+let mutable private mergeLookupSimpleLastCol = 0
+let mutable private mergeLookupSimpleLastResult = Unchecked.defaultof<MergedCell option>
+
+let private tryGetMergeLookupSimpleLast (addr: CellAddress) merges =
+    if mergeLookupSimpleLastSet
+       && addr.Row = mergeLookupSimpleLastRow
+       && addr.Col = mergeLookupSimpleLastCol
+       && obj.ReferenceEquals(merges, mergeLookupSimpleLastSource) then
+        ValueSome mergeLookupSimpleLastResult
+    else
+        ValueNone
+
+let private rememberMergeLookupSimple (addr: CellAddress) merges result =
+    mergeLookupSimpleLastSet <- true
+    mergeLookupSimpleLastSource <- merges
+    mergeLookupSimpleLastRow <- addr.Row
+    mergeLookupSimpleLastCol <- addr.Col
+    mergeLookupSimpleLastResult <- result
+
+let private tryFindMergedCellSimple (addr: CellAddress) merges =
+    match merges with
+    | [] ->
+        ValueSome None
+    | [ merge ] ->
+        if isInMergedRange addr merge then
+            ValueSome (Some merge)
+        else
+            ValueSome None
+    | _ ->
+        ValueNone
+
+let mutable private mergeRangeSimpleLastSet = false
+let mutable private mergeRangeSimpleLastSource = Unchecked.defaultof<MergedCell list>
+let mutable private mergeRangeSimpleLastStartRow = 0
+let mutable private mergeRangeSimpleLastEndRowExclusive = 0
+let mutable private mergeRangeSimpleLastStartCol = 0
+let mutable private mergeRangeSimpleLastEndColExclusive = 0
+let mutable private mergeRangeSimpleLastResults = Unchecked.defaultof<MergedCell list>
+
+let private tryGetMergeRangeSimpleLast startRow endRowExclusive startCol endColExclusive merges =
+    if mergeRangeSimpleLastSet
+       && startRow = mergeRangeSimpleLastStartRow
+       && endRowExclusive = mergeRangeSimpleLastEndRowExclusive
+       && startCol = mergeRangeSimpleLastStartCol
+       && endColExclusive = mergeRangeSimpleLastEndColExclusive
+       && obj.ReferenceEquals(merges, mergeRangeSimpleLastSource) then
+        ValueSome mergeRangeSimpleLastResults
+    else
+        ValueNone
+
+let private rememberMergeRangeSimple startRow endRowExclusive startCol endColExclusive merges results =
+    mergeRangeSimpleLastSet <- true
+    mergeRangeSimpleLastSource <- merges
+    mergeRangeSimpleLastStartRow <- startRow
+    mergeRangeSimpleLastEndRowExclusive <- endRowExclusive
+    mergeRangeSimpleLastStartCol <- startCol
+    mergeRangeSimpleLastEndColExclusive <- endColExclusive
+    mergeRangeSimpleLastResults <- results
+
+let private mergeIntersectsRange startRow endRowExclusive startCol endColExclusive (merge: MergedCell) =
+    merge.EndRow >= startRow &&
+    merge.StartRow < endRowExclusive &&
+    merge.EndCol >= startCol &&
+    merge.StartCol < endColExclusive
+
+let private tryMergedCellsIntersectingRangeSimple startRow endRowExclusive startCol endColExclusive merges =
+    match merges with
+    | [] ->
+        ValueSome []
+    | [ merge ] ->
+        if mergeIntersectsRange startRow endRowExclusive startCol endColExclusive merge then
+            ValueSome [ merge ]
+        else
+            ValueSome []
+    | _ ->
+        ValueNone
+
 /// Find merged cell containing this address (if any)
 let findMergedCell (addr: CellAddress) (model: SpreadsheetModel): MergedCell option =
-    match mergeLookupRows model.MergedCells with
-    | Some rows ->
-        match rows.TryGetValue addr.Row with
-        | true, rowMerges ->
-            let mutable found = None
-            let mutable index = 0
-            while found.IsNone && index < rowMerges.Count do
-                let merge = rowMerges.[index]
-                if addr.Col >= merge.StartCol && addr.Col <= merge.EndCol then
-                    found <- Some merge
-                index <- index + 1
-            found
-        | false, _ ->
-            None
-    | None ->
-        let mutable found = None
-        let mutable remaining = model.MergedCells
-        while found.IsNone && not remaining.IsEmpty do
-            match remaining with
-            | merge :: tail ->
-                if isInMergedRange addr merge then
-                    found <- Some merge
-                remaining <- tail
-            | [] -> ()
-        found
+    match tryGetMergeLookupSimpleLast addr model.MergedCells with
+    | ValueSome result ->
+        result
+    | ValueNone ->
+        match tryFindMergedCellSimple addr model.MergedCells with
+        | ValueSome result ->
+            rememberMergeLookupSimple addr model.MergedCells result
+            result
+        | ValueNone ->
+            match mergeLookupRows model.MergedCells with
+            | Some rows ->
+                match rows.TryGetValue addr.Row with
+                | true, rowMerges ->
+                    let mutable found = None
+                    let mutable index = 0
+                    while found.IsNone && index < rowMerges.Count do
+                        let merge = rowMerges.[index]
+                        if addr.Col >= merge.StartCol && addr.Col <= merge.EndCol then
+                            found <- Some merge
+                        index <- index + 1
+                    found
+                | false, _ ->
+                    None
+            | None ->
+                let mutable found = None
+                let mutable remaining = model.MergedCells
+                while found.IsNone && not remaining.IsEmpty do
+                    match remaining with
+                    | merge :: tail ->
+                        if isInMergedRange addr merge then
+                            found <- Some merge
+                        remaining <- tail
+                    | [] -> ()
+                found
 
 /// Find merged cells intersecting a row/column range, preserving merge-list order.
 let mergedCellsIntersectingRange startRow endRowExclusive startCol endColExclusive (model: SpreadsheetModel) =
     if startRow >= endRowExclusive || startCol >= endColExclusive then
         []
     else
-        match cachedMergeRangeQuery startRow endRowExclusive startCol endColExclusive model.MergedCells with
-        | ValueSome cached -> cached
-        | ValueNone ->
-            let intersectsVisibleRange (merge: MergedCell) =
-                merge.EndRow >= startRow &&
-                merge.StartRow < endRowExclusive &&
-                merge.EndCol >= startCol &&
-                merge.StartCol < endColExclusive
-
-            let results =
-                if mergeRangeIsStartRowAscending model.MergedCells then
-                    let result = ResizeArray<MergedCell>()
-                    let mutable remaining = model.MergedCells
-                    let mutable keepScanning = true
-                    while keepScanning && not remaining.IsEmpty do
-                        match remaining with
-                        | merge :: tail ->
-                            if merge.StartRow >= endRowExclusive then
-                                keepScanning <- false
-                            else
-                                if intersectsVisibleRange merge then
-                                    result.Add merge
-                                remaining <- tail
-                        | [] -> ()
-                    resizeArrayToList result
-                elif mergeSourceCountCapped model.MergedCells > mergeIndexCacheMaxTotalSourceMerges then
-                    mergedCellsIntersectingRangeLinear startRow endRowExclusive startCol endColExclusive model.MergedCells
-                else
-                    let byStartRow = mergeRangeRows model.MergedCells
-                    let matches = ResizeArray<IndexedMerge>()
-                    let mutable index = 0
-                    while index < byStartRow.Length && byStartRow.[index].Merge.StartRow < endRowExclusive do
-                        let indexed = byStartRow.[index]
-                        if intersectsVisibleRange indexed.Merge then
-                            matches.Add indexed
-                        index <- index + 1
-                    if matches.Count = 0 then
-                        []
-                    else
-                        let arr = matches.ToArray()
-                        Array.sortInPlaceWith (fun left right -> compare left.Index right.Index) arr
-                        let result = ResizeArray<MergedCell>(arr.Length)
-                        for indexed in arr do
-                            result.Add indexed.Merge
-                        resizeArrayToList result
-            rememberMergeRangeQuery startRow endRowExclusive startCol endColExclusive model.MergedCells results
+        match tryGetMergeRangeSimpleLast startRow endRowExclusive startCol endColExclusive model.MergedCells with
+        | ValueSome results ->
             results
+        | ValueNone ->
+            match tryMergedCellsIntersectingRangeSimple startRow endRowExclusive startCol endColExclusive model.MergedCells with
+            | ValueSome results ->
+                rememberMergeRangeSimple startRow endRowExclusive startCol endColExclusive model.MergedCells results
+                results
+            | ValueNone ->
+                match cachedMergeRangeQuery startRow endRowExclusive startCol endColExclusive model.MergedCells with
+                | ValueSome cached -> cached
+                | ValueNone ->
+                    let results =
+                        if mergeRangeIsStartRowAscending model.MergedCells then
+                            let result = ResizeArray<MergedCell>()
+                            let mutable remaining = model.MergedCells
+                            let mutable keepScanning = true
+                            while keepScanning && not remaining.IsEmpty do
+                                match remaining with
+                                | merge :: tail ->
+                                    if merge.StartRow >= endRowExclusive then
+                                        keepScanning <- false
+                                    else
+                                        if mergeIntersectsRange startRow endRowExclusive startCol endColExclusive merge then
+                                            result.Add merge
+                                        remaining <- tail
+                                | [] -> ()
+                            resizeArrayToList result
+                        elif mergeSourceCountCapped model.MergedCells > mergeIndexCacheMaxTotalSourceMerges then
+                            mergedCellsIntersectingRangeLinear startRow endRowExclusive startCol endColExclusive model.MergedCells
+                        else
+                            let byStartRow = mergeRangeRows model.MergedCells
+                            let matches = ResizeArray<IndexedMerge>()
+                            let mutable index = 0
+                            while index < byStartRow.Length && byStartRow.[index].Merge.StartRow < endRowExclusive do
+                                let indexed = byStartRow.[index]
+                                if mergeIntersectsRange startRow endRowExclusive startCol endColExclusive indexed.Merge then
+                                    matches.Add indexed
+                                index <- index + 1
+                            if matches.Count = 0 then
+                                []
+                            else
+                                let arr = matches.ToArray()
+                                Array.sortInPlaceWith (fun left right -> compare left.Index right.Index) arr
+                                let result = ResizeArray<MergedCell>(arr.Length)
+                                for indexed in arr do
+                                    result.Add indexed.Merge
+                                resizeArrayToList result
+                    rememberMergeRangeQuery startRow endRowExclusive startCol endColExclusive model.MergedCells results
+                    results
 
 /// Get primary cell address (top-left) of a merge
 let getPrimaryCell (merge: MergedCell): CellAddress =
