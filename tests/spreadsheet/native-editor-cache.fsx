@@ -730,7 +730,7 @@ let paintEntryCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - paintEntryCycleAllocatedBefore
 check "native paint viewport entry cycle"
     (paintEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && paintEntryCycleAllocated < 512L * 1024L
+     && paintEntryCycleAllocated < 256L * 1024L
      && paintEntryCycleTotal = 618020)
     true
 
@@ -778,7 +778,7 @@ let staticPaintEntryCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - staticPaintEntryCycleAllocatedBefore
 check "native static paint entry cycle"
     (staticPaintEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && staticPaintEntryCycleAllocated < 512L * 1024L
+     && staticPaintEntryCycleAllocated < 256L * 1024L
      && staticPaintEntryCycleTotal = 618020)
     true
 

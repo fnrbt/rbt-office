@@ -2238,6 +2238,7 @@ let private estimatedPaintItemCount (model: SpreadsheetModel) (viewport: Viewpor
     let sharedGridlines = visibleRows + visibleCols + 2
     max 16 (1 + headers + visibleCells + sharedGridlines + 2)
 
+[<Struct>]
 type private StaticPaintGeometryKey = {
     ScrollX: float
     ScrollY: float
@@ -3169,6 +3170,7 @@ let private iterViewportPaintItemsUncached (model: SpreadsheetModel) (viewport: 
         emit zone (translatePaintItem viewport zone item)
     )
 
+[<Struct>]
 type private ViewportPaintGeometryKey = {
     ScrollX: float
     ScrollY: float
