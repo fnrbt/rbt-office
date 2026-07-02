@@ -9213,6 +9213,90 @@ let selectFindMatch (matchInfo: FindMatch) doc =
                     Focus = { BlockId = matchInfo.BlockId; Offset = matchInfo.End }
                 } }
 
+let private emptyFindTextEntry = {
+    Matches = [||]
+    MatchesList = Some []
+    ResultTextCharCount = 0
+}
+
+let private replaceAllTextSimpleParagraph
+    (query: string)
+    (replacement: string)
+    (matchCase: bool)
+    (para: ParagraphBlock) =
+    match TextBuffer.trySliceNoCopyV 0 (TextBuffer.length para.Buffer) para.Buffer with
+    | ValueSome text when query.Length <= text.Length ->
+        let firstIndex = indexOfQueryInString matchCase query text 0
+        if firstIndex < 0 then
+            ValueSome (para, 0, false)
+        elif allStringMatchesEqualReplacement matchCase query replacement text firstIndex then
+            ValueSome (para, 0, true)
+        else
+            match tryReplaceSingleRunTextFromFirst matchCase query replacement text firstIndex para.Buffer with
+            | Some (buffer, matchCount) ->
+                ValueSome ({ para with Buffer = buffer }, matchCount, true)
+            | None ->
+                let estimate =
+                    if query.Length = 0 then 4
+                    else max 4 (min 256 (text.Length / query.Length))
+                let matches = ResizeArray<struct (int * int)>(estimate)
+                iterMatchRangesInStringFromFirst matchCase query text firstIndex (fun start finish ->
+                    matches.Add(struct (start, finish)))
+                ValueSome ({ para with Buffer = TextBuffer.replaceRanges matches replacement para.Buffer }, matches.Count, true)
+    | ValueSome _ ->
+        ValueSome (para, 0, false)
+    | ValueNone ->
+        let mutable matches = Unchecked.defaultof<ResizeArray<struct (int * int)>>
+        let mutable changesText = false
+        let addMatch start finish =
+            if obj.ReferenceEquals(matches, null) then
+                let estimate =
+                    if query.Length = 0 then 4
+                    else max 4 (min 256 (TextBuffer.length para.Buffer / query.Length))
+                matches <- ResizeArray<struct (int * int)>(estimate)
+            matches.Add(struct (start, finish))
+            if not changesText && not (bufferRangeEqualsReplacement start finish replacement para.Buffer) then
+                changesText <- true
+        TextBuffer.iterMatchRanges matchCase query para.Buffer addMatch
+        if obj.ReferenceEquals(matches, null) then
+            ValueSome (para, 0, false)
+        elif not changesText then
+            ValueSome (para, 0, true)
+        else
+            ValueSome ({ para with Buffer = TextBuffer.replaceRanges matches replacement para.Buffer }, matches.Count, true)
+
+let private tryReplaceAllTextSimple (query: string) (replacement: string) (matchCase: bool) (doc: Document) =
+    let rememberNoMatches () =
+        rememberFindTextLast query matchCase doc.Blocks emptyFindTextEntry
+    match doc.Blocks with
+    | [] ->
+        rememberNoMatches()
+        ValueSome (doc, 0)
+    | [ Paragraph para ] ->
+        match replaceAllTextSimpleParagraph query replacement matchCase para with
+        | ValueSome (_, 0, false) ->
+            rememberNoMatches()
+            ValueSome (doc, 0)
+        | ValueSome (_, 0, true) ->
+            ValueSome (doc, 0)
+        | ValueSome (nextPara, count, true) ->
+            ValueSome ({ doc with Blocks = [ Paragraph nextPara ] }, count)
+        | _ ->
+            ValueNone
+    | [ Heading (level, para) ] ->
+        match replaceAllTextSimpleParagraph query replacement matchCase para with
+        | ValueSome (_, 0, false) ->
+            rememberNoMatches()
+            ValueSome (doc, 0)
+        | ValueSome (_, 0, true) ->
+            ValueSome (doc, 0)
+        | ValueSome (nextPara, count, true) ->
+            ValueSome ({ doc with Blocks = [ Heading (level, nextPara) ] }, count)
+        | _ ->
+            ValueNone
+    | _ ->
+        ValueNone
+
 let replaceAllText query replacement matchCase doc =
     if query = "" then
         (doc, 0)
@@ -9225,190 +9309,194 @@ let replaceAllText query replacement matchCase doc =
     then
         (doc, 0)
     else
-        let mutable foundAnyMatch = false
+        match tryReplaceAllTextSimple query replacement matchCase doc with
+        | ValueSome result ->
+            result
+        | ValueNone ->
+            let mutable foundAnyMatch = false
 
-        let tryReplaceParagraph (para: ParagraphBlock) =
-            match TextBuffer.trySliceNoCopyV 0 (TextBuffer.length para.Buffer) para.Buffer with
-            | ValueSome text when query.Length <= text.Length ->
-                let firstIndex = indexOfQueryInString matchCase query text 0
-                if firstIndex >= 0 then
-                    foundAnyMatch <- true
-                    if allStringMatchesEqualReplacement matchCase query replacement text firstIndex then
-                        ValueNone
+            let tryReplaceParagraph (para: ParagraphBlock) =
+                match TextBuffer.trySliceNoCopyV 0 (TextBuffer.length para.Buffer) para.Buffer with
+                | ValueSome text when query.Length <= text.Length ->
+                    let firstIndex = indexOfQueryInString matchCase query text 0
+                    if firstIndex >= 0 then
+                        foundAnyMatch <- true
+                        if allStringMatchesEqualReplacement matchCase query replacement text firstIndex then
+                            ValueNone
+                        else
+                            match tryReplaceSingleRunTextFromFirst matchCase query replacement text firstIndex para.Buffer with
+                            | Some (buffer, matchCount) ->
+                                ValueSome ({ para with Buffer = buffer }, matchCount)
+                            | None ->
+                                let estimate =
+                                    if query.Length = 0 then 4
+                                    else max 4 (min 256 (text.Length / query.Length))
+                                let matches = ResizeArray<struct (int * int)>(estimate)
+                                iterMatchRangesInStringFromFirst matchCase query text firstIndex (fun start finish ->
+                                    matches.Add(struct (start, finish)))
+                                ValueSome ({ para with Buffer = TextBuffer.replaceRanges matches replacement para.Buffer }, matches.Count)
                     else
-                        match tryReplaceSingleRunTextFromFirst matchCase query replacement text firstIndex para.Buffer with
-                        | Some (buffer, matchCount) ->
-                            ValueSome ({ para with Buffer = buffer }, matchCount)
-                        | None ->
+                        ValueNone
+                | ValueSome _ -> ValueNone
+                | ValueNone ->
+                    let mutable matches = Unchecked.defaultof<ResizeArray<struct (int * int)>>
+                    let mutable changesText = false
+                    let addMatch start finish =
+                        foundAnyMatch <- true
+                        if obj.ReferenceEquals(matches, null) then
                             let estimate =
                                 if query.Length = 0 then 4
-                                else max 4 (min 256 (text.Length / query.Length))
-                            let matches = ResizeArray<struct (int * int)>(estimate)
-                            iterMatchRangesInStringFromFirst matchCase query text firstIndex (fun start finish ->
-                                matches.Add(struct (start, finish)))
-                            ValueSome ({ para with Buffer = TextBuffer.replaceRanges matches replacement para.Buffer }, matches.Count)
-                else
-                    ValueNone
-            | ValueSome _ -> ValueNone
-            | ValueNone ->
-                let mutable matches = Unchecked.defaultof<ResizeArray<struct (int * int)>>
-                let mutable changesText = false
-                let addMatch start finish =
-                    foundAnyMatch <- true
-                    if obj.ReferenceEquals(matches, null) then
-                        let estimate =
-                            if query.Length = 0 then 4
-                            else max 4 (min 256 (TextBuffer.length para.Buffer / query.Length))
-                        matches <- ResizeArray<struct (int * int)>(estimate)
-                    matches.Add(struct (start, finish))
-                    if not changesText && not (bufferRangeEqualsReplacement start finish replacement para.Buffer) then
-                        changesText <- true
-                TextBuffer.iterMatchRanges matchCase query para.Buffer addMatch
-                if obj.ReferenceEquals(matches, null) || not changesText then
-                    ValueNone
-                else
-                    ValueSome ({ para with Buffer = TextBuffer.replaceRanges matches replacement para.Buffer }, matches.Count)
+                                else max 4 (min 256 (TextBuffer.length para.Buffer / query.Length))
+                            matches <- ResizeArray<struct (int * int)>(estimate)
+                        matches.Add(struct (start, finish))
+                        if not changesText && not (bufferRangeEqualsReplacement start finish replacement para.Buffer) then
+                            changesText <- true
+                    TextBuffer.iterMatchRanges matchCase query para.Buffer addMatch
+                    if obj.ReferenceEquals(matches, null) || not changesText then
+                        ValueNone
+                    else
+                        ValueSome ({ para with Buffer = TextBuffer.replaceRanges matches replacement para.Buffer }, matches.Count)
 
-        let replaceGeneric () =
+            let replaceGeneric () =
+                let mutable count = 0
+                let mutable replacements = Unchecked.defaultof<Dictionary<BlockId, ParagraphBlock>>
+
+                iterEditableParagraphs doc (fun para ->
+                    match tryReplaceParagraph para with
+                    | ValueSome (para, matchCount) ->
+                        count <- count + matchCount
+                        if obj.ReferenceEquals(replacements, null) then
+                            replacements <- Dictionary<BlockId, ParagraphBlock>()
+                        replacements.[para.Id] <- para
+                    | ValueNone -> ())
+
+                if not foundAnyMatch then
+                    rememberEmptyFindTextMatches query matchCase doc
+
+                let doc =
+                    if obj.ReferenceEquals(replacements, null) then doc
+                    else replaceParagraphs doc replacements
+                (doc, count)
+
             let mutable count = 0
-            let mutable replacements = Unchecked.defaultof<Dictionary<BlockId, ParagraphBlock>>
+            let mutable changed = false
+            let mutable nestedBlock = false
+            let mutable prefixCount = 0
+            let mutable blocks = Unchecked.defaultof<ResizeArray<Block>>
+            let mutable pendingUnchangedBlocks = Unchecked.defaultof<ResizeArray<Block>>
+            let mutable tailAfterLastChange: Block list = []
+            let mutable trackEmptyFindSourceMetrics = true
+            let mutable emptyFindSourceParagraphCount = 0
+            let mutable emptyFindSourceTextCharCount = 0
 
-            iterEditableParagraphs doc (fun para ->
-                match tryReplaceParagraph para with
-                | ValueSome (para, matchCount) ->
-                    count <- count + matchCount
-                    if obj.ReferenceEquals(replacements, null) then
-                        replacements <- Dictionary<BlockId, ParagraphBlock>()
-                    replacements.[para.Id] <- para
-                | ValueNone -> ())
+            let trackEmptyFindParagraphSource para =
+                if trackEmptyFindSourceMetrics then
+                    if emptyFindSourceParagraphCount <= findTextCacheMaxTotalSourceParagraphs then
+                        emptyFindSourceParagraphCount <- emptyFindSourceParagraphCount + 1
+                    if emptyFindSourceTextCharCount <= findTextCacheMaxTotalSourceTextChars then
+                        emptyFindSourceTextCharCount <-
+                            documentAddCapped
+                                emptyFindSourceTextCharCount
+                                (documentParagraphSourceTextCharCount para)
 
-            if not foundAnyMatch then
-                rememberEmptyFindTextMatches query matchCase doc
+            let stopEmptyFindSourceTracking () =
+                trackEmptyFindSourceMetrics <- false
 
-            let doc =
-                if obj.ReferenceEquals(replacements, null) then doc
-                else replaceParagraphs doc replacements
-            (doc, count)
+            let rememberTopLevelEmptyFind () =
+                let sourceParagraphCount =
+                    if emptyFindSourceParagraphCount > findTextCacheMaxTotalSourceParagraphs then
+                        findTextCacheMaxTotalSourceParagraphs + 1
+                    else
+                        emptyFindSourceParagraphCount
+                let sourceTextCharCount =
+                    if sourceParagraphCount > findTextCacheMaxTotalSourceParagraphs then
+                        findTextCacheMaxTotalSourceTextChars + 1
+                    else
+                        min emptyFindSourceTextCharCount (findTextCacheMaxTotalSourceTextChars + 1)
+                rememberEmptyFindTextMatchesWithSourceMetrics
+                    query
+                    matchCase
+                    doc
+                    sourceParagraphCount
+                    sourceTextCharCount
 
-        let mutable count = 0
-        let mutable changed = false
-        let mutable nestedBlock = false
-        let mutable prefixCount = 0
-        let mutable blocks = Unchecked.defaultof<ResizeArray<Block>>
-        let mutable pendingUnchangedBlocks = Unchecked.defaultof<ResizeArray<Block>>
-        let mutable tailAfterLastChange: Block list = []
-        let mutable trackEmptyFindSourceMetrics = true
-        let mutable emptyFindSourceParagraphCount = 0
-        let mutable emptyFindSourceTextCharCount = 0
+            let copyPrefix () =
+                blocks <- ResizeArray<Block>()
+                let mutable copied = 0
+                let mutable prefix = doc.Blocks
+                while copied < prefixCount do
+                    match prefix with
+                    | block :: tail ->
+                        blocks.Add block
+                        prefix <- tail
+                        copied <- copied + 1
+                    | [] ->
+                        copied <- prefixCount
 
-        let trackEmptyFindParagraphSource para =
-            if trackEmptyFindSourceMetrics then
-                if emptyFindSourceParagraphCount <= findTextCacheMaxTotalSourceParagraphs then
-                    emptyFindSourceParagraphCount <- emptyFindSourceParagraphCount + 1
-                if emptyFindSourceTextCharCount <= findTextCacheMaxTotalSourceTextChars then
-                    emptyFindSourceTextCharCount <-
-                        documentAddCapped
-                            emptyFindSourceTextCharCount
-                            (documentParagraphSourceTextCharCount para)
+            let ensureChanged () =
+                if not changed then
+                    changed <- true
+                    copyPrefix ()
 
-        let stopEmptyFindSourceTracking () =
-            trackEmptyFindSourceMetrics <- false
+            let flushPendingUnchangedBlocks () =
+                if not (obj.ReferenceEquals(pendingUnchangedBlocks, null)) && pendingUnchangedBlocks.Count > 0 then
+                    blocks.AddRange pendingUnchangedBlocks
+                    pendingUnchangedBlocks.Clear()
 
-        let rememberTopLevelEmptyFind () =
-            let sourceParagraphCount =
-                if emptyFindSourceParagraphCount > findTextCacheMaxTotalSourceParagraphs then
-                    findTextCacheMaxTotalSourceParagraphs + 1
+            let addChangedBlock block tail =
+                if changed then
+                    flushPendingUnchangedBlocks ()
                 else
-                    emptyFindSourceParagraphCount
-            let sourceTextCharCount =
-                if sourceParagraphCount > findTextCacheMaxTotalSourceParagraphs then
-                    findTextCacheMaxTotalSourceTextChars + 1
+                    ensureChanged ()
+                blocks.Add block
+                tailAfterLastChange <- tail
+
+            let addUnchangedBlock block =
+                if changed then
+                    if obj.ReferenceEquals(pendingUnchangedBlocks, null) then
+                        pendingUnchangedBlocks <- ResizeArray<Block>()
+                    pendingUnchangedBlocks.Add block
                 else
-                    min emptyFindSourceTextCharCount (findTextCacheMaxTotalSourceTextChars + 1)
-            rememberEmptyFindTextMatchesWithSourceMetrics
-                query
-                matchCase
-                doc
-                sourceParagraphCount
-                sourceTextCharCount
+                    prefixCount <- prefixCount + 1
 
-        let copyPrefix () =
-            blocks <- ResizeArray<Block>()
-            let mutable copied = 0
-            let mutable prefix = doc.Blocks
-            while copied < prefixCount do
-                match prefix with
-                | block :: tail ->
-                    blocks.Add block
-                    prefix <- tail
-                    copied <- copied + 1
-                | [] ->
-                    copied <- prefixCount
-
-        let ensureChanged () =
-            if not changed then
-                changed <- true
-                copyPrefix ()
-
-        let flushPendingUnchangedBlocks () =
-            if not (obj.ReferenceEquals(pendingUnchangedBlocks, null)) && pendingUnchangedBlocks.Count > 0 then
-                blocks.AddRange pendingUnchangedBlocks
-                pendingUnchangedBlocks.Clear()
-
-        let addChangedBlock block tail =
-            if changed then
-                flushPendingUnchangedBlocks ()
-            else
-                ensureChanged ()
-            blocks.Add block
-            tailAfterLastChange <- tail
-
-        let addUnchangedBlock block =
-            if changed then
-                if obj.ReferenceEquals(pendingUnchangedBlocks, null) then
-                    pendingUnchangedBlocks <- ResizeArray<Block>()
-                pendingUnchangedBlocks.Add block
-            else
-                prefixCount <- prefixCount + 1
-
-        let mutable remainingBlocks = doc.Blocks
-        while not nestedBlock && not remainingBlocks.IsEmpty do
-            match remainingBlocks with
-            | Paragraph para :: tail ->
-                trackEmptyFindParagraphSource para
-                match tryReplaceParagraph para with
-                | ValueSome (para, matchCount) ->
-                    stopEmptyFindSourceTracking ()
-                    count <- count + matchCount
-                    addChangedBlock (Paragraph para) tail
-                | ValueNone ->
-                    if foundAnyMatch then
+            let mutable remainingBlocks = doc.Blocks
+            while not nestedBlock && not remainingBlocks.IsEmpty do
+                match remainingBlocks with
+                | Paragraph para :: tail ->
+                    trackEmptyFindParagraphSource para
+                    match tryReplaceParagraph para with
+                    | ValueSome (para, matchCount) ->
                         stopEmptyFindSourceTracking ()
-                    addUnchangedBlock (Paragraph para)
-                remainingBlocks <- tail
-            | Heading (level, para) :: tail ->
-                trackEmptyFindParagraphSource para
-                match tryReplaceParagraph para with
-                | ValueSome (para, matchCount) ->
-                    stopEmptyFindSourceTracking ()
-                    count <- count + matchCount
-                    addChangedBlock (Heading (level, para)) tail
-                | ValueNone ->
-                    if foundAnyMatch then
+                        count <- count + matchCount
+                        addChangedBlock (Paragraph para) tail
+                    | ValueNone ->
+                        if foundAnyMatch then
+                            stopEmptyFindSourceTracking ()
+                        addUnchangedBlock (Paragraph para)
+                    remainingBlocks <- tail
+                | Heading (level, para) :: tail ->
+                    trackEmptyFindParagraphSource para
+                    match tryReplaceParagraph para with
+                    | ValueSome (para, matchCount) ->
                         stopEmptyFindSourceTracking ()
-                    addUnchangedBlock (Heading (level, para))
-                remainingBlocks <- tail
-            | _ ->
-                nestedBlock <- true
+                        count <- count + matchCount
+                        addChangedBlock (Heading (level, para)) tail
+                    | ValueNone ->
+                        if foundAnyMatch then
+                            stopEmptyFindSourceTracking ()
+                        addUnchangedBlock (Heading (level, para))
+                    remainingBlocks <- tail
+                | _ ->
+                    nestedBlock <- true
 
-        if nestedBlock then
-            replaceGeneric ()
-        elif changed then
-            { doc with Blocks = prependResizeArray blocks tailAfterLastChange }, count
-        else
-            if not foundAnyMatch then
-                rememberTopLevelEmptyFind ()
-            doc, 0
+            if nestedBlock then
+                replaceGeneric ()
+            elif changed then
+                { doc with Blocks = prependResizeArray blocks tailAfterLastChange }, count
+            else
+                if not foundAnyMatch then
+                    rememberTopLevelEmptyFind ()
+                doc, 0
 
 /// Set selection range
 let setSelection anchor focus doc =
