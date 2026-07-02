@@ -5040,6 +5040,85 @@ let private rememberExportCsv cached =
         |> trim
         |> setExportCsvCache
 
+let private csvFieldQuoteState (valueText: string) =
+    let hasQuotes = valueText.Contains("\"")
+    let needsQuotes =
+        hasQuotes
+        || valueText.Contains(",")
+        || valueText.Contains("\n")
+        || valueText.Contains("\r")
+    struct (hasQuotes, needsQuotes)
+
+let private appendCsvFieldTextWithState (sb: System.Text.StringBuilder) (valueText: string) hasQuotes needsQuotes =
+    if needsQuotes then
+        sb.Append('"') |> ignore
+        if hasQuotes then
+            let mutable start = 0
+            for i = 0 to valueText.Length - 1 do
+                if valueText.[i] = '"' then
+                    if i > start then
+                        sb.Append(valueText, start, i - start) |> ignore
+                    sb.Append("\"\"") |> ignore
+                    start <- i + 1
+            if start < valueText.Length then
+                sb.Append(valueText, start, valueText.Length - start) |> ignore
+        else
+            sb.Append(valueText) |> ignore
+        sb.Append('"') |> ignore
+    else
+        sb.Append(valueText) |> ignore
+
+let private appendCsvFieldText (sb: System.Text.StringBuilder) (valueText: string) =
+    let struct (hasQuotes, needsQuotes) = csvFieldQuoteState valueText
+    appendCsvFieldTextWithState sb valueText hasQuotes needsQuotes
+
+let private appendCsvCellField (sb: System.Text.StringBuilder) (cellData: CellData) =
+    appendCsvFieldText sb (displayValueWithFormat cellData.Value cellData.Format)
+
+let private csvCellFieldText (cellData: CellData) =
+    let valueText = displayValueWithFormat cellData.Value cellData.Format
+    let struct (hasQuotes, needsQuotes) = csvFieldQuoteState valueText
+    if needsQuotes then
+        let sb = System.Text.StringBuilder(valueText.Length + 2)
+        appendCsvFieldTextWithState sb valueText hasQuotes needsQuotes
+        sb.ToString()
+    else
+        valueText
+
+let mutable private exportCsvSimpleLastSet = false
+let mutable private exportCsvSimpleLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
+let mutable private exportCsvSimpleLastMergedCells = Unchecked.defaultof<MergedCell list>
+let mutable private exportCsvSimpleLastText = ""
+
+let private tryGetExportCsvSimpleLast cells mergedCells =
+    if exportCsvSimpleLastSet
+       && obj.ReferenceEquals(cells, exportCsvSimpleLastCells)
+       && obj.ReferenceEquals(mergedCells, exportCsvSimpleLastMergedCells) then
+        ValueSome exportCsvSimpleLastText
+    else
+        ValueNone
+
+let private rememberExportCsvSimple cells mergedCells text =
+    exportCsvSimpleLastSet <- true
+    exportCsvSimpleLastCells <- cells
+    exportCsvSimpleLastMergedCells <- mergedCells
+    exportCsvSimpleLastText <- text
+
+let private tryExportSimpleCsv (model: SpreadsheetModel) =
+    if List.isEmpty model.MergedCells then
+        match model.Cells.Count with
+        | 0 -> ValueSome ""
+        | 1 ->
+            let addr, cellData = Map.minKeyValue model.Cells
+            if addr.Row = 0 && addr.Col = 0 then
+                ValueSome (csvCellFieldText cellData)
+            else
+                ValueNone
+        | _ ->
+            ValueNone
+    else
+        ValueNone
+
 let usedBounds (model: SpreadsheetModel) : (int * int) option =
     match tryGetUsedBoundsCache model.Cells model.MergedCells with
     | ValueSome cached when usedBoundsCacheRetainable cached ->
@@ -7980,91 +8059,79 @@ let importCSVWithChanges (csvText: string) (startRow: int) (startCol: int) (mode
 
 /// Export spreadsheet to CSV string
 let exportCSV (model: SpreadsheetModel): string =
-    match tryGetExportCsvCache model.Cells model.MergedCells with
-    | ValueSome cached when exportCsvCacheRetainable cached ->
-        cached.Text
-    | ValueSome cached ->
-        rememberExportCsv cached
-        cached.Text
-    | ValueNone ->
-        let text =
-            match usedBounds model with
-            | None ->
-                ""
-            | Some (maxRow, maxCol) ->
-                let sb = System.Text.StringBuilder()
-                let appendField (cellData: CellData) =
-                    let valueText = displayValueWithFormat cellData.Value cellData.Format
-                    let hasQuotes = valueText.Contains("\"")
-                    let needsQuotes = hasQuotes || valueText.Contains(",") || valueText.Contains("\n") || valueText.Contains("\r")
-                    if needsQuotes then
-                        sb.Append('"') |> ignore
-                        if hasQuotes then
-                            let mutable start = 0
-                            for i = 0 to valueText.Length - 1 do
-                                if valueText.[i] = '"' then
-                                    if i > start then
-                                        sb.Append(valueText, start, i - start) |> ignore
-                                    sb.Append("\"\"") |> ignore
-                                    start <- i + 1
-                            if start < valueText.Length then
-                                sb.Append(valueText, start, valueText.Length - start) |> ignore
-                        else
-                            sb.Append(valueText) |> ignore
-                        sb.Append('"') |> ignore
-                    else
-                        sb.Append(valueText) |> ignore
-
-                use cells = (model.Cells :> seq<_>).GetEnumerator()
-                let mutable hasCurrent = cells.MoveNext()
-                let advance () =
-                    hasCurrent <- cells.MoveNext()
-
-                for row in 0 .. maxRow do
-                    if row > 0 then sb.Append('\n') |> ignore
-                    let mutable nextCol = 0
-                    let mutable rowDone = false
-                    while hasCurrent && not rowDone do
-                        let (KeyValue(addr, cellData)) = cells.Current
-                        if addr.Row < row || (addr.Row = row && (addr.Col < 0 || addr.Col > maxCol)) then
-                            advance ()
-                        elif addr.Row > row then
-                            rowDone <- true
-                        else
-                            if nextCol < addr.Col then
-                                let commaCount =
-                                    if nextCol = 0 then
-                                        addr.Col - 1
-                                    else
-                                        addr.Col - nextCol
-                                if commaCount > 0 then
-                                    sb.Append(',', commaCount) |> ignore
-                                nextCol <- addr.Col
-                            if addr.Col > 0 then sb.Append(',') |> ignore
-                            appendField cellData
-                            nextCol <- addr.Col + 1
-                            advance ()
-                    let trailingCommaStart = max 1 nextCol
-                    let trailingCommaCount = maxCol - trailingCommaStart + 1
-                    if trailingCommaCount > 0 then
-                        sb.Append(',', trailingCommaCount) |> ignore
-                sb.ToString()
-        let mergedCellCount = mergedCellCountCapped exportCsvCacheMaxTotalMergedCells model.MergedCells
-        rememberExportCsv {
-            Cells = model.Cells
-            CellCount = model.Cells.Count
-            SourceTextCharCount =
-                exportCsvSourceTextCharCountFor
-                    text.Length
-                    model.Cells.Count
-                    mergedCellCount
-                    model.Cells
-            MergedCells = model.MergedCells
-            MergedCellCount = mergedCellCount
-            TextLength = text.Length
-            Text = text
-        }
+    match tryGetExportCsvSimpleLast model.Cells model.MergedCells with
+    | ValueSome text ->
         text
+    | ValueNone ->
+        match tryExportSimpleCsv model with
+        | ValueSome text ->
+            rememberExportCsvSimple model.Cells model.MergedCells text
+            text
+        | ValueNone ->
+            match tryGetExportCsvCache model.Cells model.MergedCells with
+            | ValueSome cached when exportCsvCacheRetainable cached ->
+                cached.Text
+            | ValueSome cached ->
+                rememberExportCsv cached
+                cached.Text
+            | ValueNone ->
+                let text =
+                    match usedBounds model with
+                    | None ->
+                        ""
+                    | Some (maxRow, maxCol) ->
+                        let sb = System.Text.StringBuilder()
+
+                        use cells = (model.Cells :> seq<_>).GetEnumerator()
+                        let mutable hasCurrent = cells.MoveNext()
+                        let advance () =
+                            hasCurrent <- cells.MoveNext()
+
+                        for row in 0 .. maxRow do
+                            if row > 0 then sb.Append('\n') |> ignore
+                            let mutable nextCol = 0
+                            let mutable rowDone = false
+                            while hasCurrent && not rowDone do
+                                let (KeyValue(addr, cellData)) = cells.Current
+                                if addr.Row < row || (addr.Row = row && (addr.Col < 0 || addr.Col > maxCol)) then
+                                    advance ()
+                                elif addr.Row > row then
+                                    rowDone <- true
+                                else
+                                    if nextCol < addr.Col then
+                                        let commaCount =
+                                            if nextCol = 0 then
+                                                addr.Col - 1
+                                            else
+                                                addr.Col - nextCol
+                                        if commaCount > 0 then
+                                            sb.Append(',', commaCount) |> ignore
+                                        nextCol <- addr.Col
+                                    if addr.Col > 0 then sb.Append(',') |> ignore
+                                    appendCsvCellField sb cellData
+                                    nextCol <- addr.Col + 1
+                                    advance ()
+                            let trailingCommaStart = max 1 nextCol
+                            let trailingCommaCount = maxCol - trailingCommaStart + 1
+                            if trailingCommaCount > 0 then
+                                sb.Append(',', trailingCommaCount) |> ignore
+                        sb.ToString()
+                let mergedCellCount = mergedCellCountCapped exportCsvCacheMaxTotalMergedCells model.MergedCells
+                rememberExportCsv {
+                    Cells = model.Cells
+                    CellCount = model.Cells.Count
+                    SourceTextCharCount =
+                        exportCsvSourceTextCharCountFor
+                            text.Length
+                            model.Cells.Count
+                            mergedCellCount
+                            model.Cells
+                    MergedCells = model.MergedCells
+                    MergedCellCount = mergedCellCount
+                    TextLength = text.Length
+                    Text = text
+                }
+                text
 
 /// Check if a cell address is within a merged range
 let isInMergedRange (addr: CellAddress) (merge: MergedCell): bool =
