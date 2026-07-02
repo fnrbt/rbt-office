@@ -3497,6 +3497,38 @@ let private tryVisibleRowsCached filters cells =
         if cached.Entries.TryGetValue(filters, &entry) then ValueSome entry.Rows else ValueNone
     | ValueNone -> ValueNone
 
+let mutable private visibleRowsSimpleLastSet = false
+let mutable private visibleRowsSimpleLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
+let mutable private visibleRowsSimpleLastFilters = Unchecked.defaultof<Map<int, ColumnFilter>>
+let mutable private visibleRowsSimpleLastRows = Unchecked.defaultof<Set<int>>
+
+let private tryGetVisibleRowsSimpleLast cells filters =
+    if visibleRowsSimpleLastSet
+       && obj.ReferenceEquals(cells, visibleRowsSimpleLastCells)
+       && obj.ReferenceEquals(filters, visibleRowsSimpleLastFilters) then
+        ValueSome visibleRowsSimpleLastRows
+    else
+        ValueNone
+
+let private rememberVisibleRowsSimple cells filters rows =
+    visibleRowsSimpleLastSet <- true
+    visibleRowsSimpleLastCells <- cells
+    visibleRowsSimpleLastFilters <- filters
+    visibleRowsSimpleLastRows <- rows
+
+let private tryVisibleRowsSimple (model: SpreadsheetModel) =
+    match model.Cells.Count with
+    | 0 ->
+        ValueSome Set.empty
+    | 1 ->
+        let addr, _ = Map.maxKeyValue model.Cells
+        if Map.isEmpty model.Filters || rowPassesFilters model addr.Row then
+            ValueSome (Set.singleton addr.Row)
+        else
+            ValueSome Set.empty
+    | _ ->
+        ValueNone
+
 let private rememberVisibleRows (rows: Set<int>) (model: SpreadsheetModel) =
     match tryGetVisibleRowsCache model.Cells with
     | ValueSome cached ->
@@ -3610,24 +3642,35 @@ let getVisibleRowsHashSet (model: SpreadsheetModel): System.Collections.Generic.
 
 /// Get visible rows based on all active filters
 let getVisibleRows (model: SpreadsheetModel): Set<int> =
-    match tryGetVisibleRowsCache model.Cells with
-    | ValueSome cached ->
-        let mutable entry = Unchecked.defaultof<VisibleRowsCacheEntry>
-        if cached.Entries.TryGetValue(model.Filters, &entry) then
-            entry.Rows
-        else
-            let rows = collectVisibleRowsArray model |> Set.ofArray
-            rememberVisibleRows rows model
-            rows
-    | ValueNone ->
-        let rows = collectVisibleRowsArray model |> Set.ofArray
-        rememberVisibleRows rows model
+    match tryGetVisibleRowsSimpleLast model.Cells model.Filters with
+    | ValueSome rows ->
         rows
+    | ValueNone ->
+        match tryVisibleRowsSimple model with
+        | ValueSome rows ->
+            rememberVisibleRowsSimple model.Cells model.Filters rows
+            rows
+        | ValueNone ->
+            match tryGetVisibleRowsCache model.Cells with
+            | ValueSome cached ->
+                let mutable entry = Unchecked.defaultof<VisibleRowsCacheEntry>
+                if cached.Entries.TryGetValue(model.Filters, &entry) then
+                    entry.Rows
+                else
+                    let rows = collectVisibleRowsArray model |> Set.ofArray
+                    rememberVisibleRows rows model
+                    rows
+            | ValueNone ->
+                let rows = collectVisibleRowsArray model |> Set.ofArray
+                rememberVisibleRows rows model
+                rows
 
 /// Ensure the filter-hidden row projection exists for callers that constructed
 /// or modified Filters directly instead of going through applyFilter/removeFilter.
 let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
     if Map.isEmpty model.Filters then
+        if model.FilterHiddenRows.Length = 0 then model else { model with FilterHiddenRows = [||] }
+    elif model.Cells.Count <= 1 then
         if model.FilterHiddenRows.Length = 0 then model else { model with FilterHiddenRows = [||] }
     else
         let mutable projected = Unchecked.defaultof<SpreadsheetModel>
