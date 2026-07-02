@@ -39,6 +39,7 @@ type Viewport = {
     Measurer: TextMeasurer option
 }
 
+[<Struct>]
 type private ViewportGeometryKey = {
     ScrollX: float
     ScrollY: float
@@ -48,6 +49,28 @@ type private ViewportGeometryKey = {
     RowHeaderWidth: float
 }
 
+let private viewportGeometryKeyHash (key: ViewportGeometryKey) =
+    let mutable hashCode = key.ScrollX.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ key.ScrollY.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ key.Width.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ key.Height.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ key.HeaderHeight.GetHashCode()
+    (hashCode * 397) ^^^ key.RowHeaderWidth.GetHashCode()
+
+let private viewportGeometryKeyEquals (left: ViewportGeometryKey) (right: ViewportGeometryKey) =
+    left.ScrollX = right.ScrollX
+    && left.ScrollY = right.ScrollY
+    && left.Width = right.Width
+    && left.Height = right.Height
+    && left.HeaderHeight = right.HeaderHeight
+    && left.RowHeaderWidth = right.RowHeaderWidth
+
+let private viewportGeometryKeyComparer =
+    { new System.Collections.Generic.IEqualityComparer<ViewportGeometryKey> with
+        member _.Equals(left, right) = viewportGeometryKeyEquals left right
+        member _.GetHashCode(value) = viewportGeometryKeyHash value }
+
+[<Struct>]
 type private ViewportGeometryFastEntry<'T> = {
     Key: ViewportGeometryKey
     Value: 'T
@@ -75,8 +98,7 @@ let private viewportGeometrySlot
     hashCode <- (hashCode * 397) ^^^ width.GetHashCode()
     hashCode <- (hashCode * 397) ^^^ height.GetHashCode()
     hashCode <- (hashCode * 397) ^^^ headerHeight.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ rowHeaderWidth.GetHashCode()
-    hashCode &&& (slotCount - 1)
+    ((hashCode * 397) ^^^ rowHeaderWidth.GetHashCode()) &&& (slotCount - 1)
 
 let private viewportGeometryKeyMatchesViewport key (viewport: Viewport) =
     key.ScrollX = viewport.ScrollX
@@ -99,7 +121,7 @@ let private tryGetViewportGeometryFastSlot
             viewport.HeaderHeight
             viewport.RowHeaderWidth
     let fast = slots.[slot]
-    if not (obj.ReferenceEquals(fast, null))
+    if not (obj.ReferenceEquals(fast.Value, null))
        && viewportGeometryKeyMatchesViewport fast.Key viewport then
         ValueSome fast.Value
     else
@@ -1588,7 +1610,8 @@ let visibleCells (model: SpreadsheetModel) (viewport: Viewport): CellGeometry li
         let cells = resizeArrayToList values
         if cellCount <= viewportGeometryCacheMaxTotalItems then
             let key = viewportGeometryKey viewport
-            let entries = System.Collections.Generic.Dictionary<ViewportGeometryKey, CellGeometry list>()
+            let entries =
+                System.Collections.Generic.Dictionary<ViewportGeometryKey, CellGeometry list>(viewportGeometryKeyComparer)
             let order = System.Collections.Generic.Queue<ViewportGeometryKey>()
             let sourceItemCount, sourceTextCharCount = viewportGeometrySourceMetrics model
             let cache: VisibleCellsCache = {
@@ -1676,7 +1699,8 @@ let headers (model: SpreadsheetModel) (viewport: Viewport): HeaderGeometry list 
         let headers = resizeArrayToList values
         if headerCount <= viewportGeometryCacheMaxTotalItems then
             let key = viewportGeometryKey viewport
-            let entries = System.Collections.Generic.Dictionary<ViewportGeometryKey, HeaderGeometry list>()
+            let entries =
+                System.Collections.Generic.Dictionary<ViewportGeometryKey, HeaderGeometry list>(viewportGeometryKeyComparer)
             let order = System.Collections.Generic.Queue<ViewportGeometryKey>()
             let sourceItemCount, sourceTextCharCount = viewportGeometrySourceMetrics model
             let cache: HeadersCache = {

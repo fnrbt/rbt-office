@@ -570,6 +570,40 @@ check "native viewport geometry entry cycle"
      && geometryEntryCycleTotal = 445560)
     true
 
+let geometryEntryCycleCells =
+    geometryEntryCycleViewports
+    |> Array.map (fun viewport -> RedBat.Spreadsheet.Layout.visibleCells paintCacheModel viewport)
+let geometryEntryCycleHeaders =
+    geometryEntryCycleViewports
+    |> Array.map (fun viewport -> RedBat.Spreadsheet.Layout.headers paintCacheModel viewport)
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let geometryEntryCycleHotAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let geometryEntryCycleHotSw = Stopwatch.StartNew()
+let mutable geometryEntryCycleHotHits = 0
+for index in 0 .. 49999 do
+    let entryIndex = index % geometryEntryCycleViewports.Length
+    let viewport = geometryEntryCycleViewports.[entryIndex]
+    if obj.ReferenceEquals(
+        RedBat.Spreadsheet.Layout.visibleCells paintCacheModel viewport,
+        geometryEntryCycleCells.[entryIndex]) then
+        geometryEntryCycleHotHits <- geometryEntryCycleHotHits + 1
+    if obj.ReferenceEquals(
+        RedBat.Spreadsheet.Layout.headers paintCacheModel viewport,
+        geometryEntryCycleHeaders.[entryIndex]) then
+        geometryEntryCycleHotHits <- geometryEntryCycleHotHits + 1
+geometryEntryCycleHotSw.Stop()
+let geometryEntryCycleHotAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - geometryEntryCycleHotAllocatedBefore
+check "native viewport geometry entry hot cycle"
+    (geometryEntryCycleHotSw.Elapsed.TotalMilliseconds < 80.0
+     && geometryEntryCycleHotAllocated < 64L * 1024L
+     && geometryEntryCycleHotHits = 100000)
+    true
+
 let prefixCoordinateRows = 10000
 let prefixCoordinateModel =
     { createEmpty 120000 120000 with
