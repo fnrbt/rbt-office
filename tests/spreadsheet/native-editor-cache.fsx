@@ -496,7 +496,7 @@ for _ in 1 .. 50000 do
 geometryHotHitSw.Stop()
 let geometryHotHitAllocated = System.GC.GetAllocatedBytesForCurrentThread() - geometryHotHitAllocatedBefore
 check "native viewport geometry cache hot hits"
-    (geometryHotHitSw.Elapsed.TotalMilliseconds < 140.0
+    (geometryHotHitSw.Elapsed.TotalMilliseconds < 90.0
      && geometryHotHitAllocated < 512L * 1024L
      && geometryHotHitTotal = (firstVisibleCells.Length + firstHeaders.Length) * 50000)
     true

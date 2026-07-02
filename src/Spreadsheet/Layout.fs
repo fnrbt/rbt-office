@@ -738,6 +738,9 @@ type private VisibleCellsCache = {
     Entries: System.Collections.Generic.Dictionary<ViewportGeometryKey, CellGeometry list>
     Order: System.Collections.Generic.Queue<ViewportGeometryKey>
     EntryFastSlots: ViewportGeometryFastEntry<CellGeometry list> array
+    mutable LastEntrySet: bool
+    mutable LastEntryKey: ViewportGeometryKey
+    mutable LastEntryValue: CellGeometry list
     mutable TotalItemCount: int
 }
 
@@ -748,6 +751,9 @@ type private HeadersCache = {
     Entries: System.Collections.Generic.Dictionary<ViewportGeometryKey, HeaderGeometry list>
     Order: System.Collections.Generic.Queue<ViewportGeometryKey>
     EntryFastSlots: ViewportGeometryFastEntry<HeaderGeometry list> array
+    mutable LastEntrySet: bool
+    mutable LastEntryKey: ViewportGeometryKey
+    mutable LastEntryValue: HeaderGeometry list
     mutable TotalItemCount: int
 }
 
@@ -1223,6 +1229,40 @@ let private tryGetHeadersCache model =
         else
             ValueNone
 
+let private tryGetVisibleCellsLastEntry (cache: VisibleCellsCache) viewport =
+    if cache.LastEntrySet
+       && viewportGeometryKeyMatchesViewport cache.LastEntryKey viewport then
+        ValueSome cache.LastEntryValue
+    else
+        ValueNone
+
+let private setVisibleCellsLastEntry key cells (cache: VisibleCellsCache) =
+    cache.LastEntrySet <- true
+    cache.LastEntryKey <- key
+    cache.LastEntryValue <- cells
+
+let private clearVisibleCellsLastEntry (cache: VisibleCellsCache) =
+    cache.LastEntrySet <- false
+    cache.LastEntryKey <- Unchecked.defaultof<ViewportGeometryKey>
+    cache.LastEntryValue <- Unchecked.defaultof<CellGeometry list>
+
+let private tryGetHeadersLastEntry (cache: HeadersCache) viewport =
+    if cache.LastEntrySet
+       && viewportGeometryKeyMatchesViewport cache.LastEntryKey viewport then
+        ValueSome cache.LastEntryValue
+    else
+        ValueNone
+
+let private setHeadersLastEntry key headers (cache: HeadersCache) =
+    cache.LastEntrySet <- true
+    cache.LastEntryKey <- key
+    cache.LastEntryValue <- headers
+
+let private clearHeadersLastEntry (cache: HeadersCache) =
+    cache.LastEntrySet <- false
+    cache.LastEntryKey <- Unchecked.defaultof<ViewportGeometryKey>
+    cache.LastEntryValue <- Unchecked.defaultof<HeaderGeometry list>
+
 let private visibleCellsCacheWithoutModel model =
     let mutable cached = Unchecked.defaultof<VisibleCellsCache>
     if visibleCellsCacheByModel.TryGetValue(model, &cached) then
@@ -1309,6 +1349,7 @@ let private removeVisibleCellsCacheEntry key (cache: VisibleCellsCache) =
     let mutable existing = Unchecked.defaultof<CellGeometry list>
     if cache.Entries.TryGetValue(key, &existing) then
         clearArray cache.EntryFastSlots
+        clearVisibleCellsLastEntry cache
         cache.TotalItemCount <- max 0 (cache.TotalItemCount - existing.Length)
         cache.Entries.Remove key |> ignore
 
@@ -1324,6 +1365,7 @@ let private addVisibleCellsCacheEntryWithCount key (cells: CellGeometry list) ce
         cache.Entries.[key] <- cells
         cache.TotalItemCount <- cache.TotalItemCount + cellCount
         setViewportGeometryFastSlot cache.EntryFastSlots key cells
+        setVisibleCellsLastEntry key cells cache
         let mutable removedEntry = false
         while (cache.Entries.Count > viewportGeometryCacheMaxEntries
                || cache.TotalItemCount > viewportGeometryCacheMaxTotalItems)
@@ -1342,11 +1384,14 @@ let private addVisibleCellsCacheEntryWithCount key (cells: CellGeometry list) ce
             cache.TotalItemCount <- current.Length
             clearArray cache.EntryFastSlots
             setViewportGeometryFastSlot cache.EntryFastSlots key current
+            setVisibleCellsLastEntry key current cache
         elif removedEntry then
             clearArray cache.EntryFastSlots
+            clearVisibleCellsLastEntry cache
             let mutable current = Unchecked.defaultof<CellGeometry list>
             if cache.Entries.TryGetValue(key, &current) then
                 setViewportGeometryFastSlot cache.EntryFastSlots key current
+                setVisibleCellsLastEntry key current cache
 
 let private addVisibleCellsCacheEntry key (cells: CellGeometry list) (cache: VisibleCellsCache) =
     addVisibleCellsCacheEntryWithCount key cells cells.Length cache
@@ -1355,6 +1400,7 @@ let private removeHeadersCacheEntry key (cache: HeadersCache) =
     let mutable existing = Unchecked.defaultof<HeaderGeometry list>
     if cache.Entries.TryGetValue(key, &existing) then
         clearArray cache.EntryFastSlots
+        clearHeadersLastEntry cache
         cache.TotalItemCount <- max 0 (cache.TotalItemCount - existing.Length)
         cache.Entries.Remove key |> ignore
 
@@ -1370,6 +1416,7 @@ let private addHeadersCacheEntryWithCount key (headers: HeaderGeometry list) hea
         cache.Entries.[key] <- headers
         cache.TotalItemCount <- cache.TotalItemCount + headerCount
         setViewportGeometryFastSlot cache.EntryFastSlots key headers
+        setHeadersLastEntry key headers cache
         let mutable removedEntry = false
         while (cache.Entries.Count > viewportGeometryCacheMaxEntries
                || cache.TotalItemCount > viewportGeometryCacheMaxTotalItems)
@@ -1388,11 +1435,14 @@ let private addHeadersCacheEntryWithCount key (headers: HeaderGeometry list) hea
             cache.TotalItemCount <- current.Length
             clearArray cache.EntryFastSlots
             setViewportGeometryFastSlot cache.EntryFastSlots key current
+            setHeadersLastEntry key current cache
         elif removedEntry then
             clearArray cache.EntryFastSlots
+            clearHeadersLastEntry cache
             let mutable current = Unchecked.defaultof<HeaderGeometry list>
             if cache.Entries.TryGetValue(key, &current) then
                 setViewportGeometryFastSlot cache.EntryFastSlots key current
+                setHeadersLastEntry key current cache
 
 let private addHeadersCacheEntry key (headers: HeaderGeometry list) (cache: HeadersCache) =
     addHeadersCacheEntryWithCount key headers headers.Length cache
@@ -1506,22 +1556,26 @@ let iterVisibleCells (model: SpreadsheetModel) (viewport: Viewport) (emit: CellG
 let visibleCells (model: SpreadsheetModel) (viewport: Viewport): CellGeometry list =
     match tryGetVisibleCellsCache model with
     | ValueSome cached when visibleCellsCacheRetainable cached ->
-        match tryGetViewportGeometryFastSlot cached.EntryFastSlots viewport with
+        match tryGetVisibleCellsLastEntry cached viewport with
         | ValueSome cells -> cells
         | ValueNone ->
-            let key = viewportGeometryKey viewport
-            let mutable cells = Unchecked.defaultof<CellGeometry list>
-            if cached.Entries.TryGetValue(key, &cells) then
-                setViewportGeometryFastSlot cached.EntryFastSlots key cells
-                cells
-            else
-                let values = System.Collections.Generic.List<CellGeometry>()
-                iterVisibleCells model viewport values.Add
-                let cellCount = values.Count
-                let cells = resizeArrayToList values
-                addVisibleCellsCacheEntryWithCount key cells cellCount cached
-                rememberVisibleCellsCache cached
-                cells
+            match tryGetViewportGeometryFastSlot cached.EntryFastSlots viewport with
+            | ValueSome cells -> cells
+            | ValueNone ->
+                let key = viewportGeometryKey viewport
+                let mutable cells = Unchecked.defaultof<CellGeometry list>
+                if cached.Entries.TryGetValue(key, &cells) then
+                    setViewportGeometryFastSlot cached.EntryFastSlots key cells
+                    setVisibleCellsLastEntry key cells cached
+                    cells
+                else
+                    let values = System.Collections.Generic.List<CellGeometry>()
+                    iterVisibleCells model viewport values.Add
+                    let cellCount = values.Count
+                    let cells = resizeArrayToList values
+                    addVisibleCellsCacheEntryWithCount key cells cellCount cached
+                    rememberVisibleCellsCache cached
+                    cells
     | ValueSome cached ->
         rememberVisibleCellsCache cached
         let values = System.Collections.Generic.List<CellGeometry>()
@@ -1544,6 +1598,9 @@ let visibleCells (model: SpreadsheetModel) (viewport: Viewport): CellGeometry li
                 Entries = entries
                 Order = order
                 EntryFastSlots = Array.zeroCreate<ViewportGeometryFastEntry<CellGeometry list>> 128
+                LastEntrySet = false
+                LastEntryKey = Unchecked.defaultof<ViewportGeometryKey>
+                LastEntryValue = Unchecked.defaultof<CellGeometry list>
                 TotalItemCount = 0
             }
             addVisibleCellsCacheEntryWithCount key cells cellCount cache
@@ -1587,22 +1644,26 @@ let iterHeaders (model: SpreadsheetModel) (viewport: Viewport) (emit: HeaderGeom
 let headers (model: SpreadsheetModel) (viewport: Viewport): HeaderGeometry list =
     match tryGetHeadersCache model with
     | ValueSome cached when headersCacheRetainable cached ->
-        match tryGetViewportGeometryFastSlot cached.EntryFastSlots viewport with
+        match tryGetHeadersLastEntry cached viewport with
         | ValueSome headers -> headers
         | ValueNone ->
-            let key = viewportGeometryKey viewport
-            let mutable headers = Unchecked.defaultof<HeaderGeometry list>
-            if cached.Entries.TryGetValue(key, &headers) then
-                setViewportGeometryFastSlot cached.EntryFastSlots key headers
-                headers
-            else
-                let values = System.Collections.Generic.List<HeaderGeometry>()
-                iterHeaders model viewport values.Add
-                let headerCount = values.Count
-                let headers = resizeArrayToList values
-                addHeadersCacheEntryWithCount key headers headerCount cached
-                rememberHeadersCache cached
-                headers
+            match tryGetViewportGeometryFastSlot cached.EntryFastSlots viewport with
+            | ValueSome headers -> headers
+            | ValueNone ->
+                let key = viewportGeometryKey viewport
+                let mutable headers = Unchecked.defaultof<HeaderGeometry list>
+                if cached.Entries.TryGetValue(key, &headers) then
+                    setViewportGeometryFastSlot cached.EntryFastSlots key headers
+                    setHeadersLastEntry key headers cached
+                    headers
+                else
+                    let values = System.Collections.Generic.List<HeaderGeometry>()
+                    iterHeaders model viewport values.Add
+                    let headerCount = values.Count
+                    let headers = resizeArrayToList values
+                    addHeadersCacheEntryWithCount key headers headerCount cached
+                    rememberHeadersCache cached
+                    headers
     | ValueSome cached ->
         rememberHeadersCache cached
         let values = System.Collections.Generic.List<HeaderGeometry>()
@@ -1625,6 +1686,9 @@ let headers (model: SpreadsheetModel) (viewport: Viewport): HeaderGeometry list 
                 Entries = entries
                 Order = order
                 EntryFastSlots = Array.zeroCreate<ViewportGeometryFastEntry<HeaderGeometry list>> 128
+                LastEntrySet = false
+                LastEntryKey = Unchecked.defaultof<ViewportGeometryKey>
+                LastEntryValue = Unchecked.defaultof<HeaderGeometry list>
                 TotalItemCount = 0
             }
             addHeadersCacheEntryWithCount key headers headerCount cache
