@@ -2592,20 +2592,18 @@ let private columnUniqueValuesCached includeBlanks col (model: SpreadsheetModel)
 /// Sort spreadsheet by column
 let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): SpreadsheetModel =
     let hasRequestedSortState = sortStateMatches col ascending model.SortState
-    let modelWithSortState () =
-        if hasRequestedSortState then model else { model with SortState = makeSortState col ascending }
 
     if hasSortIdentity model.Cells col ascending then
-        modelWithSortState()
+        if hasRequestedSortState then model else { model with SortState = makeSortState col ascending }
     else
         let hasRows, alreadyIdentitySorted, sourceTextCharCount = sortRowsAreIdentitySorted col ascending model.Cells
         if not hasRows then
             // No data to sort
             rememberSortIdentityWithSourceTextCharCount sourceTextCharCount model.Cells col ascending
-            modelWithSortState()
+            if hasRequestedSortState then model else { model with SortState = makeSortState col ascending }
         elif alreadyIdentitySorted then
             rememberSortIdentityWithSourceTextCharCount sourceTextCharCount model.Cells col ascending
-            modelWithSortState()
+            if hasRequestedSortState then model else { model with SortState = makeSortState col ascending }
         else
             // Collect all rows that have data in any column, plus the value in
             // the sort column when present. Map iteration is row-major, so this
@@ -2634,7 +2632,7 @@ let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): Spreads
 
             if identityMapping then
                 rememberSortIdentity model.Cells col ascending
-                modelWithSortState()
+                if hasRequestedSortState then model else { model with SortState = makeSortState col ascending }
             else
                 // Rebuild cells with new row indices
                 let reorderedCells = Array.zeroCreate<CellAddress * CellData> model.Cells.Count

@@ -1811,7 +1811,7 @@ let sortIdentityCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - sortIdentityCycleAllocatedBefore
 check "native sort identity source cycle"
     (sortIdentityCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && sortIdentityCycleAllocated < 512L * 1024L
+     && sortIdentityCycleAllocated < 16L * 1024L
      && sortIdentityCycleSame = sortIdentityCycleModelCount * 20)
     true
 
@@ -1847,7 +1847,7 @@ let sortIdentityEntryCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - sortIdentityEntryCycleAllocatedBefore
 check "native sort identity entry cycle"
     (sortIdentityEntryCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && sortIdentityEntryCycleAllocated < 512L * 1024L
+     && sortIdentityEntryCycleAllocated < 16L * 1024L
      && sortIdentityEntryCycleSame = sortIdentityEntryCycleColumnCount * 20)
     true
 
