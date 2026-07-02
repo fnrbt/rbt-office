@@ -420,12 +420,14 @@ and TableVerticalMerge =
     | ContinueMerge
 
 /// Cursor position
+[<Struct>]
 type Position = {
     BlockId: BlockId
     Offset: int  // Character offset in block
 }
 
 /// Selection (anchor = start, focus = end/cursor)
+[<Struct>]
 type Selection = {
     Anchor: Position
     Focus: Position
