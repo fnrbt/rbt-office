@@ -10833,6 +10833,17 @@ let private samePosition (left: Position) (right: Position) =
     left.Offset = right.Offset
     && sameBlockId left.BlockId right.BlockId
 
+let private selectionTextCanUseExactOnly doc =
+    match doc.Selection, doc.Blocks with
+    | Some sel, [ Paragraph para ]
+    | Some sel, [ Heading (_, para) ] ->
+        sameBlockId sel.Anchor.BlockId sel.Focus.BlockId
+        && sameBlockId sel.Anchor.BlockId para.Id
+    | _ -> false
+
+let private selectionTextExactOnlySourceWithinBudget doc textLength =
+    selectionTextSourceTextCharCountFor textLength 1 doc.Blocks <= selectionTextCacheMaxTotalSourceTextChars
+
 /// Get selected text as plain text
 let getSelectionText doc =
     match cachedSelectionText doc with
@@ -10890,9 +10901,12 @@ let getSelectionText doc =
                     not foundBoth)
 
                 if foundBoth then selectedText.ToString() else ""
-        if text.Length > 0
-           && selectionTextSourceSmallEnoughForColdCache doc then
-            rememberSelectionText doc text
+        if text.Length > 0 then
+            if selectionTextCanUseExactOnly doc
+               && selectionTextExactOnlySourceWithinBudget doc text.Length then
+                rememberSelectionTextExact doc text
+            elif selectionTextSourceSmallEnoughForColdCache doc then
+                rememberSelectionText doc text
         text
 
 let private updateCurrentParagraphMaybe (update: ParagraphBlock -> ParagraphBlock option) doc =
