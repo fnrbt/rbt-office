@@ -2784,8 +2784,8 @@ normalizedRangeLookupSw.Stop()
 let normalizedRangeLookupAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - normalizedRangeLookupAllocatedBefore
 check "native normalized range long id perf"
-    (normalizedRangeLookupSw.Elapsed.TotalMilliseconds < 2600.0
-     && normalizedRangeLookupAllocated < 30L * 1024L * 1024L
+    (normalizedRangeLookupSw.Elapsed.TotalMilliseconds < 140.0
+     && normalizedRangeLookupAllocated < 64L * 1024L
      && normalizedRangeLookupTotal = 2560000)
     true
 

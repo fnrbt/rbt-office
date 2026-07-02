@@ -5530,72 +5530,150 @@ let private rememberNormalizedRange
         addNormalizedRangeEntry key entry cache
         rememberNormalizedRangeCache cache
 
+[<Struct>]
+type private NormalizedRangeExactCacheKey = {
+    SourceBlocks: Block list
+    AnchorBlockId: BlockId
+    AnchorOffset: int
+    FocusBlockId: BlockId
+    FocusOffset: int
+}
+
+type private NormalizedRangeExactCacheEntry = {
+    Key: NormalizedRangeExactCacheKey
+    Result: Position * Position * BlockId list
+}
+
+let private normalizedRangeExactCacheMaxEntries = 4096
+
+let private normalizedRangeExactKeyHash (key: NormalizedRangeExactCacheKey) =
+    let mutable hashCode = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.SourceBlocks)
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.AnchorBlockId)
+    hashCode <- (hashCode * 397) ^^^ key.AnchorOffset
+    hashCode <- (hashCode * 397) ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.FocusBlockId)
+    hashCode <- (hashCode * 397) ^^^ key.FocusOffset
+    hashCode <- hashCode ^^^ (hashCode >>> 16)
+    hashCode
+
+let private normalizedRangeExactKeyComparer =
+    { new IEqualityComparer<NormalizedRangeExactCacheKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.SourceBlocks, right.SourceBlocks)
+            && obj.ReferenceEquals(left.AnchorBlockId, right.AnchorBlockId)
+            && left.AnchorOffset = right.AnchorOffset
+            && obj.ReferenceEquals(left.FocusBlockId, right.FocusBlockId)
+            && left.FocusOffset = right.FocusOffset
+
+        member _.GetHashCode(key) = normalizedRangeExactKeyHash key }
+
+let private normalizedRangeExactCache =
+    Dictionary<NormalizedRangeExactCacheKey, NormalizedRangeExactCacheEntry>(
+        normalizedRangeExactCacheMaxEntries,
+        normalizedRangeExactKeyComparer)
+let private normalizedRangeExactOrder = Queue<NormalizedRangeExactCacheKey>(normalizedRangeExactCacheMaxEntries)
+
+let private normalizedRangeExactKey (doc: Document) (sel: Selection) = {
+    SourceBlocks = doc.Blocks
+    AnchorBlockId = sel.Anchor.BlockId
+    AnchorOffset = sel.Anchor.Offset
+    FocusBlockId = sel.Focus.BlockId
+    FocusOffset = sel.Focus.Offset
+}
+
+let private rememberNormalizedRangeExact doc sel result =
+    let key = normalizedRangeExactKey doc sel
+    let mutable existing = Unchecked.defaultof<NormalizedRangeExactCacheEntry>
+    if not (normalizedRangeExactCache.TryGetValue(key, &existing)) then
+        normalizedRangeExactOrder.Enqueue key
+    normalizedRangeExactCache.[key] <- {
+        Key = key
+        Result = result
+    }
+    while normalizedRangeExactCache.Count > normalizedRangeExactCacheMaxEntries
+          && normalizedRangeExactOrder.Count > 0 do
+        let oldest = normalizedRangeExactOrder.Dequeue()
+        normalizedRangeExactCache.Remove oldest |> ignore
+
+let private tryGetNormalizedRangeExact doc sel =
+    let key = normalizedRangeExactKey doc sel
+    let mutable entry = Unchecked.defaultof<NormalizedRangeExactCacheEntry>
+    if normalizedRangeExactCache.TryGetValue(key, &entry) then
+        ValueSome entry.Result
+    else
+        ValueNone
+
 /// Get normalized range with block IDs for multi-block selection
 let getNormalizedRange (sel: Selection) (doc: Document) =
-    match cachedNormalizedRange doc sel with
+    match tryGetNormalizedRangeExact doc sel with
     | ValueSome cached -> cached
     | ValueNone ->
-        let result =
-            let ordered = orderedEditableParagraphs doc
-            let mutable anchorIndex = 0
-            let mutable focusIndex = 0
-            if ordered.OrderedIndexById.TryGetValue(sel.Anchor.BlockId, &anchorIndex)
-               && ordered.OrderedIndexById.TryGetValue(sel.Focus.BlockId, &focusIndex) then
-                if sel.Anchor.BlockId = sel.Focus.BlockId then
-                    if sel.Anchor.Offset <= sel.Focus.Offset then
-                        sel.Anchor, sel.Focus, [ sel.Anchor.BlockId ]
+        match cachedNormalizedRange doc sel with
+        | ValueSome cached ->
+            rememberNormalizedRangeExact doc sel cached
+            cached
+        | ValueNone ->
+            let result =
+                let ordered = orderedEditableParagraphs doc
+                let mutable anchorIndex = 0
+                let mutable focusIndex = 0
+                if ordered.OrderedIndexById.TryGetValue(sel.Anchor.BlockId, &anchorIndex)
+                   && ordered.OrderedIndexById.TryGetValue(sel.Focus.BlockId, &focusIndex) then
+                    if sel.Anchor.BlockId = sel.Focus.BlockId then
+                        if sel.Anchor.Offset <= sel.Focus.Offset then
+                            sel.Anchor, sel.Focus, [ sel.Anchor.BlockId ]
+                        else
+                            sel.Focus, sel.Anchor, [ sel.Anchor.BlockId ]
                     else
-                        sel.Focus, sel.Anchor, [ sel.Anchor.BlockId ]
+                        let anchorFirst = anchorIndex <= focusIndex
+                        let startPos, endPos, startIndex, endIndex =
+                            if anchorFirst then
+                                sel.Anchor, sel.Focus, anchorIndex, focusIndex
+                            else
+                                sel.Focus, sel.Anchor, focusIndex, anchorIndex
+                        let blockIds = ResizeArray<BlockId>(endIndex - startIndex + 1)
+                        for i = startIndex to endIndex do
+                            blockIds.Add ordered.OrderedParagraphs.[i].Id
+                        startPos, endPos, resizeArrayToList blockIds
                 else
-                    let anchorFirst = anchorIndex <= focusIndex
-                    let startPos, endPos, startIndex, endIndex =
-                        if anchorFirst then
-                            sel.Anchor, sel.Focus, anchorIndex, focusIndex
-                        else
-                            sel.Focus, sel.Anchor, focusIndex, anchorIndex
-                    let blockIds = ResizeArray<BlockId>(endIndex - startIndex + 1)
-                    for i = startIndex to endIndex do
-                        blockIds.Add ordered.OrderedParagraphs.[i].Id
-                    startPos, endPos, resizeArrayToList blockIds
-            else
-                let blockIds = ResizeArray<BlockId>()
-                let mutable collecting = false
-                let mutable foundBoth = false
-                let mutable foundAnchor = false
-                let mutable foundFocus = false
-                let mutable anchorFirst = false
+                    let blockIds = ResizeArray<BlockId>()
+                    let mutable collecting = false
+                    let mutable foundBoth = false
+                    let mutable foundAnchor = false
+                    let mutable foundFocus = false
+                    let mutable anchorFirst = false
 
-                iterEditableParagraphsUntil doc (fun para ->
-                    let isAnchor = para.Id = sel.Anchor.BlockId
-                    let isFocus = para.Id = sel.Focus.BlockId
-                    if isAnchor || isFocus then
-                        if not collecting then
-                            collecting <- true
-                            anchorFirst <- isAnchor
-                        blockIds.Add para.Id
-                        foundAnchor <- foundAnchor || isAnchor
-                        foundFocus <- foundFocus || isFocus
-                        foundBoth <- foundAnchor && foundFocus
-                    elif collecting then
-                        blockIds.Add para.Id
-                    not foundBoth)
+                    iterEditableParagraphsUntil doc (fun para ->
+                        let isAnchor = para.Id = sel.Anchor.BlockId
+                        let isFocus = para.Id = sel.Focus.BlockId
+                        if isAnchor || isFocus then
+                            if not collecting then
+                                collecting <- true
+                                anchorFirst <- isAnchor
+                            blockIds.Add para.Id
+                            foundAnchor <- foundAnchor || isAnchor
+                            foundFocus <- foundFocus || isFocus
+                            foundBoth <- foundAnchor && foundFocus
+                        elif collecting then
+                            blockIds.Add para.Id
+                        not foundBoth)
 
-                if foundAnchor && foundFocus then
-                    let startPos, endPos =
-                        if sel.Anchor.BlockId = sel.Focus.BlockId then
-                            if sel.Anchor.Offset <= sel.Focus.Offset then sel.Anchor, sel.Focus
-                            else sel.Focus, sel.Anchor
-                        elif anchorFirst then
-                            sel.Anchor, sel.Focus
-                        else
-                            sel.Focus, sel.Anchor
-                    (startPos, endPos, resizeArrayToList blockIds)
-                else
-                    // Fallback if blocks not found
-                    (sel.Anchor, sel.Focus, [])
-        let startPos, endPos, blockIds = result
-        rememberNormalizedRange doc sel startPos endPos blockIds
-        result
+                    if foundAnchor && foundFocus then
+                        let startPos, endPos =
+                            if sel.Anchor.BlockId = sel.Focus.BlockId then
+                                if sel.Anchor.Offset <= sel.Focus.Offset then sel.Anchor, sel.Focus
+                                else sel.Focus, sel.Anchor
+                            elif anchorFirst then
+                                sel.Anchor, sel.Focus
+                            else
+                                sel.Focus, sel.Anchor
+                        (startPos, endPos, resizeArrayToList blockIds)
+                    else
+                        // Fallback if blocks not found
+                        (sel.Anchor, sel.Focus, [])
+            let startPos, endPos, blockIds = result
+            rememberNormalizedRange doc sel startPos endPos blockIds
+            rememberNormalizedRangeExact doc sel result
+            result
 
 let private selectedParagraphIds doc includeCollapsed =
     match doc.Selection with
