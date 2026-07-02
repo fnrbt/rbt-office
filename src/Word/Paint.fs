@@ -2108,10 +2108,15 @@ let private documentPaintSectionColumnsStringCharCount (columns: SectionColumns 
     | None -> 0
 
 let private cachedLayoutsMatch left right =
-    match left, right with
-    | Some leftLayouts, Some rightLayouts -> obj.ReferenceEquals(leftLayouts, rightLayouts)
-    | None, None -> true
-    | _ -> false
+    match left with
+    | Some leftLayouts ->
+        match right with
+        | Some rightLayouts -> obj.ReferenceEquals(leftLayouts, rightLayouts)
+        | None -> false
+    | None ->
+        match right with
+        | Some _ -> false
+        | None -> true
 
 let private cachedLayoutsHash = function
     | Some layouts -> System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(layouts)

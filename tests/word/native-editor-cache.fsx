@@ -1070,7 +1070,7 @@ let documentPaintAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - documentPaintAllocatedBefore
 check "native document paint cache hot hit"
     (documentPaintSw.Elapsed.TotalMilliseconds < 40.0
-     && documentPaintAllocated < 4L * 1024L * 1024L
+     && documentPaintAllocated < 64L * 1024L
      && documentPaintTotal = documentPaintCommandsA.Length * documentPaintProbeCount)
     true
 
