@@ -1528,7 +1528,7 @@ let replaceIdentityCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - replaceIdentityCycleAllocatedBefore
 check "native replace identity source cycle"
     (replaceIdentityCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && replaceIdentityCycleAllocated < 512L * 1024L
+     && replaceIdentityCycleAllocated < 16L * 1024L
      && replaceIdentityCycleSame = 1600)
     true
 

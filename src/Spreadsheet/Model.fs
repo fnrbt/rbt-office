@@ -6242,8 +6242,17 @@ let replaceAllWithChanges (findText: string) (replaceText: string) (caseSensitiv
 
 /// Replace all occurrences
 let replaceAll (findText: string) (replaceText: string) (caseSensitive: bool) (model: SpreadsheetModel): SpreadsheetModel =
-    let updated, _ = replaceAllWithCount findText replaceText caseSensitive model
-    updated
+    if String.IsNullOrEmpty findText then
+        model
+    elif caseSensitive && findText = replaceText then
+        model
+    elif cachedEmptySearchResults findText caseSensitive model then
+        model
+    elif cachedReplaceIdentity findText replaceText caseSensitive model then
+        model
+    else
+        let updated, _ = replaceAllWithCount findText replaceText caseSensitive model
+        updated
 
 /// Evaluate if a cell value matches a conditional format rule
 let evaluateRule (rule: ConditionalFormatRule) (value: CellValue): bool =
