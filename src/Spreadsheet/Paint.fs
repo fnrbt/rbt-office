@@ -656,14 +656,34 @@ type private SparseDefaultPaintPartsLastEntry = {
 }
 
 let private sparseSameMeasurer (left: TextMeasurer option) (right: TextMeasurer option) =
-    match left, right with
-    | None, None -> true
-    | Some a, Some b -> obj.ReferenceEquals(a, b)
-    | _ -> false
+    match left with
+    | None ->
+        match right with
+        | None -> true
+        | Some _ -> false
+    | Some a ->
+        match right with
+        | Some b -> obj.ReferenceEquals(a, b)
+        | None -> false
 
 let private sparseMeasurerHash = function
     | Some measurer -> RuntimeHelpers.GetHashCode(measurer)
     | None -> 0
+
+let private selectionEquals left right =
+    match left with
+    | SingleCell (leftRow, leftCol) ->
+        match right with
+        | SingleCell (rightRow, rightCol) -> leftRow = rightRow && leftCol = rightCol
+        | Range _ -> false
+    | Range (leftStartRow, leftStartCol, leftEndRow, leftEndCol) ->
+        match right with
+        | Range (rightStartRow, rightStartCol, rightEndRow, rightEndCol) ->
+            leftStartRow = rightStartRow
+            && leftStartCol = rightStartCol
+            && leftEndRow = rightEndRow
+            && leftEndCol = rightEndCol
+        | SingleCell _ -> false
 
 let private sparseDefaultPaintCacheKeyHash (key: SparseDefaultPaintCacheKey) =
     let mutable hashCode = RuntimeHelpers.GetHashCode(key.Cells)
@@ -759,7 +779,7 @@ let private sparseDefaultPaintPartsLastMatches (model: SpreadsheetModel) (viewpo
     && obj.ReferenceEquals(cached.PageSetup, model.PageSetup)
     && cached.RowCount = model.RowCount
     && cached.ColCount = model.ColCount
-    && cached.Selection = model.Selection
+    && selectionEquals cached.Selection model.Selection
     && cached.ScrollX = viewport.ScrollX
     && cached.ScrollY = viewport.ScrollY
     && cached.Width = viewport.Width
@@ -1314,7 +1334,7 @@ let private tryGetSparseDefaultPaintCacheEntry (model: SpreadsheetModel) (viewpo
 let private sparseDefaultPartsFromEntry prefixItems suffixItems (model: SpreadsheetModel) (entry: SparseDefaultPaintCacheEntry) =
     match entry.CachedParts with
     | Some parts
-        when entry.CachedPartsSelection = model.Selection
+        when selectionEquals entry.CachedPartsSelection model.Selection
              && obj.ReferenceEquals(entry.CachedPartsPrefixItems, prefixItems)
              && obj.ReferenceEquals(entry.CachedPartsSuffixItems, suffixItems) ->
         parts
@@ -2827,10 +2847,15 @@ let tryBuildSparseDefaultPaintParts (model: SpreadsheetModel) (viewport: Viewpor
         | None -> None
 
 let private sameMeasurer (left: TextMeasurer option) (right: TextMeasurer option) =
-    match left, right with
-    | None, None -> true
-    | Some a, Some b -> obj.ReferenceEquals(a, b)
-    | _ -> false
+    match left with
+    | None ->
+        match right with
+        | None -> true
+        | Some _ -> false
+    | Some a ->
+        match right with
+        | Some b -> obj.ReferenceEquals(a, b)
+        | None -> false
 
 let private staticPaintGeometryKey (viewport: Viewport) = {
     ScrollX = viewport.ScrollX

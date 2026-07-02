@@ -928,7 +928,7 @@ let sparsePaintPartsAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - sparsePaintPartsAllocatedBefore
 check "native sparse default paint parts hot hits"
     (sparsePaintPartsSw.Elapsed.TotalMilliseconds < 80.0
-     && sparsePaintPartsAllocated < 8L * 1024L * 1024L
+     && sparsePaintPartsAllocated < 64L * 1024L
      && sparsePaintPartsTotal > 0)
     true
 
@@ -960,7 +960,7 @@ let sparsePaintPartsAltAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - sparsePaintPartsAltAllocatedBefore
 check "native sparse default paint parts alternates"
     (sparsePaintPartsAltSw.Elapsed.TotalMilliseconds < 120.0
-     && sparsePaintPartsAltAllocated < 16L * 1024L * 1024L
+     && sparsePaintPartsAltAllocated < 512L * 1024L
      && (match sparsePaintPartsAltExpected with
          | Some expected -> sparsePaintPartsAltTotal = expected * 100000
          | None -> false))
@@ -998,7 +998,7 @@ let sparsePaintPartsCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - sparsePaintPartsCycleAllocatedBefore
 check "native sparse default paint parts three-position cycle"
     (sparsePaintPartsCycleSw.Elapsed.TotalMilliseconds < 140.0
-     && sparsePaintPartsCycleAllocated < 16L * 1024L * 1024L
+     && sparsePaintPartsCycleAllocated < 512L * 1024L
      && (sparsePaintPartsCycleCounts |> Array.forall Option.isSome)
      && sparsePaintPartsCycleTotal = sparsePaintPartsCycleExpectedTotal
      && sparsePaintPartsCycleTotal > 0)
