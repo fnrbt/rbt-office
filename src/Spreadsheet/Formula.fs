@@ -11326,35 +11326,39 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
                         stack.Add(struct (seen, arg))
             refs.ToArray()
 
-        let dependencies = Dictionary<CellAddress, CellAddress array>(formulaCells.Count)
+        let mutable dependencies = Unchecked.defaultof<Dictionary<CellAddress, CellAddress array>>
         let mutable hasDependencies = false
-        let referencedFormulaCellsCache = Dictionary<string, CellAddress array>()
-        let referencedFormulaCellsCacheOrder = Queue<string>()
-        let referencedFormulaCellsFastSlots =
-            Array.zeroCreate<RecalcReferenceFastCacheEntry> recalcLocalFastSlotCount
-        let mutable referencedFormulaCellsCacheTotalFormulaChars = 0
-        let mutable referencedFormulaCellsCacheTotalRefs = 0
-        let referencedFormulaCellsFor (fc: FormulaCell) =
-            match tryGetRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula with
-            | ValueSome refs -> refs
-            | ValueNone ->
-                let mutable refs = Unchecked.defaultof<CellAddress array>
-                if referencedFormulaCellsCache.TryGetValue(fc.Formula, &refs) then
-                    setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
-                    refs
-                else
-                    refs <- referencedFormulaCells fc.Expr
-                    rememberRecalcReferenceCacheEntry
-                        referencedFormulaCellsCache
-                        referencedFormulaCellsCacheOrder
-                        &referencedFormulaCellsCacheTotalFormulaChars
-                        &referencedFormulaCellsCacheTotalRefs
-                        fc.Formula
-                        refs
-                    clearRecalcReferenceFastSlots referencedFormulaCellsFastSlots
-                    if referencedFormulaCellsCache.ContainsKey fc.Formula then
-                        setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
-                    refs
+        let referencedFormulaCellsFor : FormulaCell -> CellAddress array =
+            if formulaCells.Count <= 1 then
+                fun fc -> referencedFormulaCells fc.Expr
+            else
+                let referencedFormulaCellsCache = Dictionary<string, CellAddress array>()
+                let referencedFormulaCellsCacheOrder = Queue<string>()
+                let referencedFormulaCellsFastSlots =
+                    Array.zeroCreate<RecalcReferenceFastCacheEntry> recalcLocalFastSlotCount
+                let mutable referencedFormulaCellsCacheTotalFormulaChars = 0
+                let mutable referencedFormulaCellsCacheTotalRefs = 0
+                fun fc ->
+                    match tryGetRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula with
+                    | ValueSome refs -> refs
+                    | ValueNone ->
+                        let mutable refs = Unchecked.defaultof<CellAddress array>
+                        if referencedFormulaCellsCache.TryGetValue(fc.Formula, &refs) then
+                            setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
+                            refs
+                        else
+                            refs <- referencedFormulaCells fc.Expr
+                            rememberRecalcReferenceCacheEntry
+                                referencedFormulaCellsCache
+                                referencedFormulaCellsCacheOrder
+                                &referencedFormulaCellsCacheTotalFormulaChars
+                                &referencedFormulaCellsCacheTotalRefs
+                                fc.Formula
+                                refs
+                            clearRecalcReferenceFastSlots referencedFormulaCellsFastSlots
+                            if referencedFormulaCellsCache.ContainsKey fc.Formula then
+                                setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
+                            refs
 
         for fc in formulaCells do
             match fc.ParseError with
@@ -11363,6 +11367,8 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
                 let refs = referencedFormulaCellsFor fc
                 if refs.Length > 0 then
                     hasDependencies <- true
+                    if isNull dependencies then
+                        dependencies <- Dictionary<CellAddress, CellAddress array>(formulaCells.Count)
                     dependencies.[fc.Address] <- refs
 
         let mutable updatedCells = model.Cells
