@@ -2340,6 +2340,28 @@ let private rememberColumnUniqueValuesLast cells col valuesWithBlanks valuesWith
     columnUniqueValuesLastWithBlanks <- valuesWithBlanks
     columnUniqueValuesLastWithoutBlanks <- valuesWithoutBlanks
 
+let private singleCellColumnUniqueValues col addr cellData =
+    if addr.Col <> col then
+        [], []
+    else
+        match displayValue cellData.Value with
+        | "" -> [ "" ], []
+        | value ->
+            let values = [ value ]
+            values, values
+
+let private tryColumnUniqueValuesSimple includeBlanks col (model: SpreadsheetModel) =
+    match model.Cells.Count with
+    | 0 ->
+        ValueSome []
+    | 1 ->
+        let addr, cellData = Map.maxKeyValue model.Cells
+        let valuesWithBlanks, valuesWithoutBlanks = singleCellColumnUniqueValues col addr cellData
+        rememberColumnUniqueValuesLast model.Cells col valuesWithBlanks valuesWithoutBlanks
+        ValueSome (if includeBlanks then valuesWithBlanks else valuesWithoutBlanks)
+    | _ ->
+        ValueNone
+
 type private SortIdentityCache = {
     Cells: Map<CellAddress, CellData>
     CellCount: int
@@ -2554,8 +2576,9 @@ let private columnUniqueValuesCached includeBlanks col (model: SpreadsheetModel)
                     rememberColumnUniqueValuesLast model.Cells col entry.ValuesWithBlanks entry.ValuesWithoutBlanks
                     ValueSome (if includeBlanks then entry.ValuesWithBlanks else entry.ValuesWithoutBlanks)
                 else
-                    ValueNone
-            | ValueNone -> ValueNone
+                    tryColumnUniqueValuesSimple includeBlanks col model
+            | ValueNone ->
+                tryColumnUniqueValuesSimple includeBlanks col model
 
     match cachedResult with
     | ValueSome values -> values
@@ -2899,6 +2922,7 @@ type private FilterHiddenRowsCache = {
     SourceTextCharCount: int
     RowCount: int
     Entries: System.Collections.Generic.Dictionary<Map<int, ColumnFilter>, FilterHiddenRowsCacheEntry>
+    EntryFastSlots: FilterHiddenRowsFastEntry array
     Order: System.Collections.Generic.Queue<Map<int, ColumnFilter>>
     mutable TotalRowCount: int
     mutable TotalFilterValueCount: int
@@ -2909,6 +2933,11 @@ and private FilterHiddenRowsCacheEntry = {
     Rows: int array
     FilterValueCount: int
     FilterTextCharCount: int
+}
+
+and private FilterHiddenRowsFastEntry = {
+    Key: Map<int, ColumnFilter>
+    Entry: FilterHiddenRowsCacheEntry
 }
 
 let mutable private filterHiddenRowsCache: FilterHiddenRowsCache list = []
@@ -2925,6 +2954,7 @@ let private filterHiddenRowsCacheMaxFilterValues = 100000
 let private filterHiddenRowsCacheMaxTotalFilterValues = 200000
 let private filterHiddenRowsCacheMaxFilterTextChars = 5000000
 let private filterHiddenRowsCacheMaxTotalFilterTextChars = 5000000
+let private filterEntryFastSlotCount = 2048
 
 let private filterValueCount (filters: Map<int, ColumnFilter>) =
     let mutable count = 0
@@ -3053,6 +3083,27 @@ let private removeFilterHiddenRowsCacheEntry filters (cache: FilterHiddenRowsCac
         cache.TotalFilterValueCount <- max 0 (cache.TotalFilterValueCount - existing.FilterValueCount)
         cache.TotalFilterTextCharCount <- max 0 (cache.TotalFilterTextCharCount - existing.FilterTextCharCount)
         cache.Entries.Remove filters |> ignore
+        let slot = referenceSlot filters cache.EntryFastSlots.Length
+        let fast = cache.EntryFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null)) && obj.ReferenceEquals(fast.Key, filters) then
+            cache.EntryFastSlots.[slot] <- Unchecked.defaultof<FilterHiddenRowsFastEntry>
+
+let private setFilterHiddenRowsEntryFastSlot (cache: FilterHiddenRowsCache) filters entry =
+    cache.EntryFastSlots.[referenceSlot filters cache.EntryFastSlots.Length] <-
+        { Key = filters; Entry = entry }
+
+let private tryGetFilterHiddenRowsCacheEntry (cache: FilterHiddenRowsCache) filters =
+    let slot = referenceSlot filters cache.EntryFastSlots.Length
+    let fast = cache.EntryFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null)) && obj.ReferenceEquals(fast.Key, filters) then
+        ValueSome fast.Entry
+    else
+        let mutable entry = Unchecked.defaultof<FilterHiddenRowsCacheEntry>
+        if cache.Entries.TryGetValue(filters, &entry) then
+            setFilterHiddenRowsEntryFastSlot cache filters entry
+            ValueSome entry
+        else
+            ValueNone
 
 let private addFilterHiddenRowsCacheEntryWithMetrics filters (rows: int array) filterValues filterTextChars (cache: FilterHiddenRowsCache) =
     let mutable existing = Unchecked.defaultof<FilterHiddenRowsCacheEntry>
@@ -3069,7 +3120,9 @@ let private addFilterHiddenRowsCacheEntryWithMetrics filters (rows: int array) f
             cache.TotalFilterTextCharCount <- max 0 (cache.TotalFilterTextCharCount - existing.FilterTextCharCount)
         else
             cache.Order.Enqueue filters
-        cache.Entries.[filters] <- { Rows = rows; FilterValueCount = filterValues; FilterTextCharCount = filterTextChars }
+        let entry = { Rows = rows; FilterValueCount = filterValues; FilterTextCharCount = filterTextChars }
+        cache.Entries.[filters] <- entry
+        setFilterHiddenRowsEntryFastSlot cache filters entry
         cache.TotalRowCount <- cache.TotalRowCount + rows.Length
         cache.TotalFilterValueCount <- cache.TotalFilterValueCount + filterValues
         cache.TotalFilterTextCharCount <- cache.TotalFilterTextCharCount + filterTextChars
@@ -3087,9 +3140,11 @@ let private addFilterHiddenRowsCacheEntryWithMetrics filters (rows: int array) f
            || cache.TotalFilterTextCharCount > filterHiddenRowsCacheMaxTotalFilterTextChars then
             let current = cache.Entries.[filters]
             cache.Entries.Clear()
+            clearArray cache.EntryFastSlots
             cache.Order.Clear()
             cache.Order.Enqueue filters
             cache.Entries.[filters] <- current
+            setFilterHiddenRowsEntryFastSlot cache filters current
             cache.TotalRowCount <- current.Rows.Length
             cache.TotalFilterValueCount <- current.FilterValueCount
             cache.TotalFilterTextCharCount <- current.FilterTextCharCount
@@ -3107,10 +3162,10 @@ let private addFilterHiddenRowsCacheEntry filters (rows: int array) (cache: Filt
 let private filterHiddenRows (model: SpreadsheetModel) =
     match tryGetFilterHiddenRowsCache model.Cells model.RowCount with
     | ValueSome cached ->
-        let mutable entry = Unchecked.defaultof<FilterHiddenRowsCacheEntry>
-        if cached.Entries.TryGetValue(model.Filters, &entry) then
+        match tryGetFilterHiddenRowsCacheEntry cached model.Filters with
+        | ValueSome entry ->
             entry.Rows
-        else
+        | ValueNone ->
             let rows = filterHiddenRowsUncached model
             addFilterHiddenRowsCacheEntry model.Filters rows cached
             rememberFilterHiddenRowsCache cached
@@ -3139,6 +3194,7 @@ let private filterHiddenRows (model: SpreadsheetModel) =
                     model.Cells
             RowCount = model.RowCount
             Entries = entries
+            EntryFastSlots = Array.zeroCreate<FilterHiddenRowsFastEntry> filterEntryFastSlotCount
             Order = order
             TotalRowCount = 0
             TotalFilterValueCount = 0
@@ -3152,10 +3208,10 @@ let private filterHiddenRows (model: SpreadsheetModel) =
 let private tryFilterHiddenRowsCachedMetrics cells rowCount filters =
     match tryGetFilterHiddenRowsCache cells rowCount with
     | ValueSome cached ->
-        let mutable entry = Unchecked.defaultof<FilterHiddenRowsCacheEntry>
-        if cached.Entries.TryGetValue(filters, &entry) then
+        match tryGetFilterHiddenRowsCacheEntry cached filters with
+        | ValueSome entry ->
             ValueSome (struct (cached.SourceTextCharCount, entry.FilterValueCount, entry.FilterTextCharCount))
-        else
+        | ValueNone ->
             ValueNone
     | ValueNone ->
         ValueNone
@@ -3178,15 +3234,36 @@ type private FilterProjectionCacheEntry = {
 }
 
 let private filterProjectionCache = ConditionalWeakTable<SpreadsheetModel, SpreadsheetModel>()
-let private filterProjectionFastSlots = Array.zeroCreate<FilterProjectionCacheEntry> 256
+let private filterProjectionFastSlots = Array.zeroCreate<FilterProjectionCacheEntry> 2048
+let private filterProjectionRecent = Array.zeroCreate<FilterProjectionCacheEntry> 128
+let mutable private filterProjectionRecentNext = 0
+let mutable private filterProjectionRecentCount = 0
+
+let private tryGetFilterProjectionRecent model =
+    let mutable i = 0
+    let mutable found = Unchecked.defaultof<SpreadsheetModel>
+    while obj.ReferenceEquals(found, null) && i < filterProjectionRecentCount do
+        let entry = filterProjectionRecent.[i]
+        if not (obj.ReferenceEquals(entry, null)) && obj.ReferenceEquals(entry.Source, model) then
+            found <- entry.Projected
+        i <- i + 1
+    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
+
+let private rememberFilterProjectionRecent source projected =
+    filterProjectionRecent.[filterProjectionRecentNext] <- { Source = source; Projected = projected }
+    filterProjectionRecentNext <- (filterProjectionRecentNext + 1) % filterProjectionRecent.Length
+    if filterProjectionRecentCount < filterProjectionRecent.Length then
+        filterProjectionRecentCount <- filterProjectionRecentCount + 1
 
 let private filterProjectionMatchesCurrent (model: SpreadsheetModel) =
     match tryGetFilterHiddenRowsCache model.Cells model.RowCount with
     | ValueSome cached ->
-        let mutable entry = Unchecked.defaultof<FilterHiddenRowsCacheEntry>
-        cached.Entries.TryGetValue(model.Filters, &entry)
-            && (obj.ReferenceEquals(model.FilterHiddenRows, entry.Rows)
-                || intArraysEqual model.FilterHiddenRows entry.Rows)
+        match tryGetFilterHiddenRowsCacheEntry cached model.Filters with
+        | ValueSome entry ->
+            obj.ReferenceEquals(model.FilterHiddenRows, entry.Rows)
+            || intArraysEqual model.FilterHiddenRows entry.Rows
+        | ValueNone ->
+            false
     | ValueNone -> false
 
 /// Apply filter to a column
@@ -3281,6 +3358,7 @@ type private VisibleRowsCache = {
     CellCount: int
     SourceTextCharCount: int
     Entries: System.Collections.Generic.Dictionary<Map<int, ColumnFilter>, VisibleRowsCacheEntry>
+    EntryFastSlots: VisibleRowsFastEntry array
     Order: System.Collections.Generic.Queue<Map<int, ColumnFilter>>
     mutable TotalRowCount: int
     mutable TotalFilterValueCount: int
@@ -3291,6 +3369,11 @@ and private VisibleRowsCacheEntry = {
     Rows: Set<int>
     FilterValueCount: int
     FilterTextCharCount: int
+}
+
+and private VisibleRowsFastEntry = {
+    Key: Map<int, ColumnFilter>
+    Entry: VisibleRowsCacheEntry
 }
 
 let mutable private visibleRowsCache: VisibleRowsCache list = []
@@ -3439,6 +3522,27 @@ let private removeVisibleRowsCacheEntry filters (cache: VisibleRowsCache) =
         cache.TotalFilterValueCount <- max 0 (cache.TotalFilterValueCount - existing.FilterValueCount)
         cache.TotalFilterTextCharCount <- max 0 (cache.TotalFilterTextCharCount - existing.FilterTextCharCount)
         cache.Entries.Remove filters |> ignore
+        let slot = referenceSlot filters cache.EntryFastSlots.Length
+        let fast = cache.EntryFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null)) && obj.ReferenceEquals(fast.Key, filters) then
+            cache.EntryFastSlots.[slot] <- Unchecked.defaultof<VisibleRowsFastEntry>
+
+let private setVisibleRowsEntryFastSlot (cache: VisibleRowsCache) filters entry =
+    cache.EntryFastSlots.[referenceSlot filters cache.EntryFastSlots.Length] <-
+        { Key = filters; Entry = entry }
+
+let private tryGetVisibleRowsCacheEntry (cache: VisibleRowsCache) filters =
+    let slot = referenceSlot filters cache.EntryFastSlots.Length
+    let fast = cache.EntryFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null)) && obj.ReferenceEquals(fast.Key, filters) then
+        ValueSome fast.Entry
+    else
+        let mutable entry = Unchecked.defaultof<VisibleRowsCacheEntry>
+        if cache.Entries.TryGetValue(filters, &entry) then
+            setVisibleRowsEntryFastSlot cache filters entry
+            ValueSome entry
+        else
+            ValueNone
 
 let private addVisibleRowsCacheEntryWithMetrics filters (rows: Set<int>) filterValues filterTextChars (cache: VisibleRowsCache) =
     let mutable existing = Unchecked.defaultof<VisibleRowsCacheEntry>
@@ -3455,7 +3559,9 @@ let private addVisibleRowsCacheEntryWithMetrics filters (rows: Set<int>) filterV
             cache.TotalFilterTextCharCount <- max 0 (cache.TotalFilterTextCharCount - existing.FilterTextCharCount)
         else
             cache.Order.Enqueue filters
-        cache.Entries.[filters] <- { Rows = rows; FilterValueCount = filterValues; FilterTextCharCount = filterTextChars }
+        let entry = { Rows = rows; FilterValueCount = filterValues; FilterTextCharCount = filterTextChars }
+        cache.Entries.[filters] <- entry
+        setVisibleRowsEntryFastSlot cache filters entry
         cache.TotalRowCount <- cache.TotalRowCount + rows.Count
         cache.TotalFilterValueCount <- cache.TotalFilterValueCount + filterValues
         cache.TotalFilterTextCharCount <- cache.TotalFilterTextCharCount + filterTextChars
@@ -3473,9 +3579,11 @@ let private addVisibleRowsCacheEntryWithMetrics filters (rows: Set<int>) filterV
            || cache.TotalFilterTextCharCount > visibleRowsCacheMaxTotalFilterTextChars then
             let current = cache.Entries.[filters]
             cache.Entries.Clear()
+            clearArray cache.EntryFastSlots
             cache.Order.Clear()
             cache.Order.Enqueue filters
             cache.Entries.[filters] <- current
+            setVisibleRowsEntryFastSlot cache filters current
             cache.TotalRowCount <- current.Rows.Count
             cache.TotalFilterValueCount <- current.FilterValueCount
             cache.TotalFilterTextCharCount <- current.FilterTextCharCount
@@ -3493,14 +3601,40 @@ let private addVisibleRowsCacheEntry filters (rows: Set<int>) (cache: VisibleRow
 let private tryVisibleRowsCached filters cells =
     match tryGetVisibleRowsCache cells with
     | ValueSome cached ->
-        let mutable entry = Unchecked.defaultof<VisibleRowsCacheEntry>
-        if cached.Entries.TryGetValue(filters, &entry) then ValueSome entry.Rows else ValueNone
+        match tryGetVisibleRowsCacheEntry cached filters with
+        | ValueSome entry -> ValueSome entry.Rows
+        | ValueNone -> ValueNone
     | ValueNone -> ValueNone
 
 let mutable private visibleRowsSimpleLastSet = false
 let mutable private visibleRowsSimpleLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
 let mutable private visibleRowsSimpleLastFilters = Unchecked.defaultof<Map<int, ColumnFilter>>
 let mutable private visibleRowsSimpleLastRows = Unchecked.defaultof<Set<int>>
+
+type private VisibleRowsModelCacheEntry = {
+    Source: SpreadsheetModel
+    Rows: Set<int>
+}
+
+let private visibleRowsModelRecent = Array.zeroCreate<VisibleRowsModelCacheEntry> 128
+let mutable private visibleRowsModelRecentNext = 0
+let mutable private visibleRowsModelRecentCount = 0
+
+let private tryGetVisibleRowsModelRecent model =
+    let mutable i = 0
+    let mutable found = Unchecked.defaultof<Set<int>>
+    while obj.ReferenceEquals(found, null) && i < visibleRowsModelRecentCount do
+        let entry = visibleRowsModelRecent.[i]
+        if not (obj.ReferenceEquals(entry, null)) && obj.ReferenceEquals(entry.Source, model) then
+            found <- entry.Rows
+        i <- i + 1
+    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
+
+let private rememberVisibleRowsModelRecent source rows =
+    visibleRowsModelRecent.[visibleRowsModelRecentNext] <- { Source = source; Rows = rows }
+    visibleRowsModelRecentNext <- (visibleRowsModelRecentNext + 1) % visibleRowsModelRecent.Length
+    if visibleRowsModelRecentCount < visibleRowsModelRecent.Length then
+        visibleRowsModelRecentCount <- visibleRowsModelRecentCount + 1
 
 let private tryGetVisibleRowsSimpleLast cells filters =
     if visibleRowsSimpleLastSet
@@ -3532,8 +3666,9 @@ let private tryVisibleRowsSimple (model: SpreadsheetModel) =
 let private rememberVisibleRows (rows: Set<int>) (model: SpreadsheetModel) =
     match tryGetVisibleRowsCache model.Cells with
     | ValueSome cached ->
-        let mutable entry = Unchecked.defaultof<VisibleRowsCacheEntry>
-        if not (cached.Entries.TryGetValue(model.Filters, &entry)) then
+        match tryGetVisibleRowsCacheEntry cached model.Filters with
+        | ValueSome _ -> ()
+        | ValueNone ->
             let struct (filterValues, filterTextChars, _) =
                 visibleRowsCacheMetricsFor rows.Count model.Cells model.RowCount model.Filters
             addVisibleRowsCacheEntryWithMetrics model.Filters rows filterValues filterTextChars cached
@@ -3550,6 +3685,7 @@ let private rememberVisibleRows (rows: Set<int>) (model: SpreadsheetModel) =
             CellCount = model.Cells.Count
             SourceTextCharCount = sourceTextCharCount
             Entries = entries
+            EntryFastSlots = Array.zeroCreate<VisibleRowsFastEntry> filterEntryFastSlotCount
             Order = order
             TotalRowCount = 0
             TotalFilterValueCount = 0
@@ -3642,28 +3778,37 @@ let getVisibleRowsHashSet (model: SpreadsheetModel): System.Collections.Generic.
 
 /// Get visible rows based on all active filters
 let getVisibleRows (model: SpreadsheetModel): Set<int> =
-    match tryGetVisibleRowsSimpleLast model.Cells model.Filters with
+    match tryGetVisibleRowsModelRecent model with
     | ValueSome rows ->
         rows
     | ValueNone ->
-        match tryVisibleRowsSimple model with
+        match tryGetVisibleRowsSimpleLast model.Cells model.Filters with
         | ValueSome rows ->
-            rememberVisibleRowsSimple model.Cells model.Filters rows
+            rememberVisibleRowsModelRecent model rows
             rows
         | ValueNone ->
-            match tryGetVisibleRowsCache model.Cells with
-            | ValueSome cached ->
-                let mutable entry = Unchecked.defaultof<VisibleRowsCacheEntry>
-                if cached.Entries.TryGetValue(model.Filters, &entry) then
-                    entry.Rows
-                else
+            match tryVisibleRowsSimple model with
+            | ValueSome rows ->
+                rememberVisibleRowsSimple model.Cells model.Filters rows
+                rememberVisibleRowsModelRecent model rows
+                rows
+            | ValueNone ->
+                match tryGetVisibleRowsCache model.Cells with
+                | ValueSome cached ->
+                    match tryGetVisibleRowsCacheEntry cached model.Filters with
+                    | ValueSome entry ->
+                        rememberVisibleRowsModelRecent model entry.Rows
+                        entry.Rows
+                    | ValueNone ->
+                        let rows = collectVisibleRowsArray model |> Set.ofArray
+                        rememberVisibleRows rows model
+                        rememberVisibleRowsModelRecent model rows
+                        rows
+                | ValueNone ->
                     let rows = collectVisibleRowsArray model |> Set.ofArray
                     rememberVisibleRows rows model
+                    rememberVisibleRowsModelRecent model rows
                     rows
-            | ValueNone ->
-                let rows = collectVisibleRowsArray model |> Set.ofArray
-                rememberVisibleRows rows model
-                rows
 
 /// Ensure the filter-hidden row projection exists for callers that constructed
 /// or modified Filters directly instead of going through applyFilter/removeFilter.
@@ -3673,27 +3818,34 @@ let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
     elif model.Cells.Count <= 1 then
         if model.FilterHiddenRows.Length = 0 then model else { model with FilterHiddenRows = [||] }
     else
-        let mutable projected = Unchecked.defaultof<SpreadsheetModel>
-        let slot = referenceSlot model filterProjectionFastSlots.Length
-        let fast = filterProjectionFastSlots.[slot]
-        if not (obj.ReferenceEquals(fast, null))
-           && obj.ReferenceEquals(fast.Source, model) then
-            fast.Projected
-        elif filterProjectionCache.TryGetValue(model, &projected) then
-            filterProjectionFastSlots.[slot] <- { Source = model; Projected = projected }
+        match tryGetFilterProjectionRecent model with
+        | ValueSome projected ->
             projected
-        else
-            let hiddenRows = filterHiddenRows model
-            let projected =
-                if obj.ReferenceEquals(model.FilterHiddenRows, hiddenRows)
-                   || intArraysEqual model.FilterHiddenRows hiddenRows then
-                    model
-                else
-                    { model with FilterHiddenRows = hiddenRows }
-            if not (obj.ReferenceEquals(projected, model)) then
+        | ValueNone ->
+            let mutable projected = Unchecked.defaultof<SpreadsheetModel>
+            let slot = referenceSlot model filterProjectionFastSlots.Length
+            let fast = filterProjectionFastSlots.[slot]
+            if not (obj.ReferenceEquals(fast, null))
+               && obj.ReferenceEquals(fast.Source, model) then
+                rememberFilterProjectionRecent model fast.Projected
+                fast.Projected
+            elif filterProjectionCache.TryGetValue(model, &projected) then
                 filterProjectionFastSlots.[slot] <- { Source = model; Projected = projected }
-                filterProjectionCache.Add(model, projected)
-            projected
+                rememberFilterProjectionRecent model projected
+                projected
+            else
+                let hiddenRows = filterHiddenRows model
+                let projected =
+                    if obj.ReferenceEquals(model.FilterHiddenRows, hiddenRows)
+                       || intArraysEqual model.FilterHiddenRows hiddenRows then
+                        model
+                    else
+                        { model with FilterHiddenRows = hiddenRows }
+                if not (obj.ReferenceEquals(projected, model)) then
+                    filterProjectionFastSlots.[slot] <- { Source = model; Projected = projected }
+                    rememberFilterProjectionRecent model projected
+                    filterProjectionCache.Add(model, projected)
+                projected
 
 /// Distinct, sorted display strings in a column — the AutoFilter checklist's
 /// values. Blanks excluded; uses the same `displayValue` as the filter test.
