@@ -298,7 +298,7 @@ else
     let sparseFrameAllocated = System.GC.GetAllocatedBytesForCurrentThread() - sparseFrameAllocatedBefore
     check "native grid sparse frame entry cycle"
         (sparseFrameSw.Elapsed.TotalMilliseconds < 80.0
-         && sparseFrameAllocated < 2L * 1024L * 1024L
+         && sparseFrameAllocated < 768L * 1024L
          && sparseFrameTotal = 6440)
         true
 

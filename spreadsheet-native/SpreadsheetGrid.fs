@@ -679,10 +679,43 @@ type private ViewportFrameCommandsCacheEntry = {
     CommandCount: int
 }
 
+[<Struct>]
+type private ViewportFrameCommandsKey = {
+    Commands: Cmd list
+    ScrollX: float
+    ScrollY: float
+    Width: float
+    Height: float
+}
+
 let mutable private viewportFrameCommandsCache: ViewportFrameCommandsCacheEntry list = []
+let private viewportFrameCommandsKeyComparer =
+    { new IEqualityComparer<ViewportFrameCommandsKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.Commands, right.Commands)
+            && left.ScrollX = right.ScrollX
+            && left.ScrollY = right.ScrollY
+            && left.Width = right.Width
+            && left.Height = right.Height
+        member _.GetHashCode(value) =
+            let mutable hashCode = RuntimeHelpers.GetHashCode(value.Commands)
+            hashCode <- (hashCode * 397) ^^^ value.ScrollX.GetHashCode()
+            hashCode <- (hashCode * 397) ^^^ value.ScrollY.GetHashCode()
+            hashCode <- (hashCode * 397) ^^^ value.Width.GetHashCode()
+            (hashCode * 397) ^^^ value.Height.GetHashCode() }
+let private viewportFrameCommandsCacheByKey =
+    Dictionary<ViewportFrameCommandsKey, ViewportFrameCommandsCacheEntry>(viewportFrameCommandsKeyComparer)
 let private viewportFrameCommandsFastSlots = Array.zeroCreate<ViewportFrameCommandsCacheEntry> 256
 let private viewportFrameCommandsCacheMaxEntries = 256
 let private viewportFrameCommandsCacheMaxCommands = 200000
+
+let private viewportFrameCommandsKey commands scrollX scrollY width height : ViewportFrameCommandsKey = {
+    Commands = commands
+    ScrollX = scrollX
+    ScrollY = scrollY
+    Width = width
+    Height = height
+}
 
 let private viewportFrameCommandsSlot commands scrollX scrollY width height slotCount =
     let mutable hashCode = RuntimeHelpers.GetHashCode(commands)
@@ -692,7 +725,7 @@ let private viewportFrameCommandsSlot commands scrollX scrollY width height slot
     hashCode <- (hashCode * 397) ^^^ height.GetHashCode()
     hashCode &&& (slotCount - 1)
 
-let private viewportFrameCommandsEntryMatches commands scrollX scrollY width height entry =
+let private viewportFrameCommandsEntryMatches commands scrollX scrollY width height (entry: ViewportFrameCommandsCacheEntry) =
     obj.ReferenceEquals(entry.Commands, commands)
     && entry.ScrollX = scrollX
     && entry.ScrollY = scrollY
@@ -701,8 +734,17 @@ let private viewportFrameCommandsEntryMatches commands scrollX scrollY width hei
 
 let private setViewportFrameCommandsCache entries =
     viewportFrameCommandsCache <- entries
+    viewportFrameCommandsCacheByKey.Clear()
     clearArray viewportFrameCommandsFastSlots
     for entry in entries do
+        let key =
+            viewportFrameCommandsKey
+                entry.Commands
+                entry.ScrollX
+                entry.ScrollY
+                entry.Width
+                entry.Height
+        viewportFrameCommandsCacheByKey.[key] <- entry
         let slot =
             viewportFrameCommandsSlot
                 entry.Commands
@@ -735,15 +777,17 @@ let private tryGetViewportFrameCommands (commands: Cmd list) scrollX scrollY wid
        && viewportFrameCommandsEntryMatches commands scrollX scrollY width height fast then
         ValueSome fast.Result
     else
-        match viewportFrameCommandsCache |> List.tryFind (viewportFrameCommandsEntryMatches commands scrollX scrollY width height) with
-        | Some cached ->
+        let key = viewportFrameCommandsKey commands scrollX scrollY width height
+        let mutable cached = Unchecked.defaultof<ViewportFrameCommandsCacheEntry>
+        if viewportFrameCommandsCacheByKey.TryGetValue(key, &cached) then
             viewportFrameCommandsFastSlots.[slot] <- cached
             ValueSome cached.Result
-        | None -> ValueNone
+        else
+            ValueNone
 
 let private rememberViewportFrameCommands (commands: Cmd list) scrollX scrollY width height result commandCount =
     if commandCount <= viewportFrameCommandsCacheMaxCommands then
-        let entry = {
+        let entry: ViewportFrameCommandsCacheEntry = {
             Commands = commands
             ScrollX = scrollX
             ScrollY = scrollY
@@ -1120,23 +1164,133 @@ let private viewportOfCore scrollX scrollY width height : Viewport =
 let viewportOf (model: SpreadsheetModel) width height : Viewport =
     viewportOfCore 0.0 0.0 width height
 
+[<Struct>]
+type private ViewportCommandsKey = {
+    Model: SpreadsheetModel
+    ScrollX: float
+    ScrollY: float
+    Width: float
+    Height: float
+}
+
+type private ViewportCommandsCacheEntry = {
+    Key: ViewportCommandsKey
+    Commands: Cmd list
+    CommandCount: int
+}
+
+let mutable private viewportCommandsCache: ViewportCommandsCacheEntry list = []
+let private viewportCommandsKeyComparer =
+    { new IEqualityComparer<ViewportCommandsKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.Model, right.Model)
+            && left.ScrollX = right.ScrollX
+            && left.ScrollY = right.ScrollY
+            && left.Width = right.Width
+            && left.Height = right.Height
+        member _.GetHashCode(value) =
+            let mutable hashCode = RuntimeHelpers.GetHashCode(value.Model)
+            hashCode <- (hashCode * 397) ^^^ value.ScrollX.GetHashCode()
+            hashCode <- (hashCode * 397) ^^^ value.ScrollY.GetHashCode()
+            hashCode <- (hashCode * 397) ^^^ value.Width.GetHashCode()
+            (hashCode * 397) ^^^ value.Height.GetHashCode() }
+let private viewportCommandsCacheByKey =
+    Dictionary<ViewportCommandsKey, ViewportCommandsCacheEntry>(viewportCommandsKeyComparer)
+let private viewportCommandsFastSlots = Array.zeroCreate<ViewportCommandsCacheEntry> 256
+let private viewportCommandsCacheMaxEntries = 256
+let private viewportCommandsCacheMaxCommands = 200000
+
+let private viewportCommandsKey model scrollX scrollY width height = {
+    Model = model
+    ScrollX = scrollX
+    ScrollY = scrollY
+    Width = width
+    Height = height
+}
+
+let private viewportCommandsSlot (key: ViewportCommandsKey) slotCount =
+    viewportCommandsKeyComparer.GetHashCode key &&& (slotCount - 1)
+
+let private viewportCommandsEntryMatches key (entry: ViewportCommandsCacheEntry) =
+    viewportCommandsKeyComparer.Equals(key, entry.Key)
+
+let private setViewportCommandsCache entries =
+    viewportCommandsCache <- entries
+    viewportCommandsCacheByKey.Clear()
+    clearArray viewportCommandsFastSlots
+    for entry in entries do
+        viewportCommandsCacheByKey.[entry.Key] <- entry
+        viewportCommandsFastSlots.[viewportCommandsSlot entry.Key viewportCommandsFastSlots.Length] <- entry
+
+let private tryGetViewportCommands model scrollX scrollY width height =
+    let key = viewportCommandsKey model scrollX scrollY width height
+    let slot = viewportCommandsSlot key viewportCommandsFastSlots.Length
+    let fast = viewportCommandsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null)) && viewportCommandsEntryMatches key fast then
+        ValueSome fast.Commands
+    else
+        let mutable cached = Unchecked.defaultof<ViewportCommandsCacheEntry>
+        if viewportCommandsCacheByKey.TryGetValue(key, &cached) then
+            viewportCommandsFastSlots.[slot] <- cached
+            ValueSome cached.Commands
+        else
+            ValueNone
+
+let private rememberViewportCommands model scrollX scrollY width height commands commandCount =
+    if commandCount <= viewportCommandsCacheMaxCommands then
+        let key = viewportCommandsKey model scrollX scrollY width height
+        let entry = {
+            Key = key
+            Commands = commands
+            CommandCount = commandCount
+        }
+        let rec removeMatching acc remaining =
+            match remaining with
+            | [] -> List.rev acc
+            | candidate :: tail when viewportCommandsEntryMatches key candidate ->
+                List.rev acc @ tail
+            | candidate :: tail ->
+                removeMatching (candidate :: acc) tail
+        let trim entries =
+            let rec loop keptCount keptCommands acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let commandCount = max 1 candidate.CommandCount
+                    if keptCount < viewportCommandsCacheMaxEntries
+                       && keptCommands + commandCount <= viewportCommandsCacheMaxCommands then
+                        loop (keptCount + 1) (keptCommands + commandCount) (candidate :: acc) tail
+                    else
+                        loop keptCount keptCommands acc tail
+            loop 0 0 [] entries
+        (entry :: removeMatching [] viewportCommandsCache)
+        |> trim
+        |> setViewportCommandsCache
+
 let private cellCommands (model: SpreadsheetModel) width height =
     let viewport = viewportOf model width height
-    match tryBuildSparseDefaultPaintParts model viewport with
-    | Some parts -> rendererCommandsForSparseDefaultParts parts
-    | None ->
+    match tryBuildSparseDefaultPaintPartsValue model viewport with
+    | ValueSome parts -> rendererCommandsForSparseDefaultParts parts
+    | ValueNone ->
         buildPaintItems model viewport
         |> rendererCommandsForPaintItems
 
 let private cellCommandsInViewport (model: SpreadsheetModel) scrollX scrollY viewportWidth viewportHeight =
-    let viewport = viewportOfCore scrollX scrollY viewportWidth viewportHeight
-    let commands =
-        match tryBuildSparseDefaultPaintParts model viewport with
-        | Some parts -> rendererCommandsForSparseDefaultParts parts
-        | None ->
-            buildPaintItems model viewport
-            |> rendererCommandsForPaintItems
-    commandsWithViewportFrame scrollX scrollY viewportWidth viewportHeight commands
+    match tryGetViewportCommands model scrollX scrollY viewportWidth viewportHeight with
+    | ValueSome commands -> commands
+    | ValueNone ->
+        let viewport = viewportOfCore scrollX scrollY viewportWidth viewportHeight
+        let commands, cacheable =
+            match tryBuildSparseDefaultPaintPartsValue model viewport with
+            | ValueSome parts -> rendererCommandsForSparseDefaultParts parts, true
+            | ValueNone ->
+                buildPaintItems model viewport
+                |> rendererCommandsForPaintItems,
+                false
+        let framed = commandsWithViewportFrame scrollX scrollY viewportWidth viewportHeight commands
+        if cacheable then
+            rememberViewportCommands model scrollX scrollY viewportWidth viewportHeight framed framed.Length
+        framed
 
 let widget width height (model: SpreadsheetModel) =
     canvas width height (fun w h -> cellCommands model w h)

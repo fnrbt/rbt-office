@@ -651,7 +651,8 @@ type private SparseDefaultPaintPartsLastEntry = {
     HeaderHeight: float
     RowHeaderWidth: float
     Measurer: TextMeasurer option
-    Result: SparseDefaultPaintParts option
+    Result: SparseDefaultPaintParts
+    ResultOption: SparseDefaultPaintParts option
 }
 
 let private sparseSameMeasurer (left: TextMeasurer option) (right: TextMeasurer option) =
@@ -767,63 +768,65 @@ let private sparseDefaultPaintPartsLastMatches (model: SpreadsheetModel) (viewpo
     && cached.RowHeaderWidth = viewport.RowHeaderWidth
     && sparseSameMeasurer cached.Measurer viewport.Measurer
 
-let private tryGetSparseDefaultPaintPartsLast model viewport =
+let private tryGetSparseDefaultPaintPartsLastEntry model viewport =
     if sparseDefaultPaintPartsLastSet
        && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsLast then
-        ValueSome sparseDefaultPaintPartsLast.Result
+        ValueSome sparseDefaultPaintPartsLast
     elif sparseDefaultPaintPartsPreviousSet
          && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsPrevious then
-        ValueSome sparseDefaultPaintPartsPrevious.Result
+        ValueSome sparseDefaultPaintPartsPrevious
     elif sparseDefaultPaintPartsOlder1Set
          && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsOlder1 then
-        ValueSome sparseDefaultPaintPartsOlder1.Result
+        ValueSome sparseDefaultPaintPartsOlder1
     elif sparseDefaultPaintPartsOlder2Set
          && sparseDefaultPaintPartsLastMatches model viewport sparseDefaultPaintPartsOlder2 then
-        ValueSome sparseDefaultPaintPartsOlder2.Result
+        ValueSome sparseDefaultPaintPartsOlder2
     else
         ValueNone
 
-let private rememberSparseDefaultPaintPartsLast (model: SpreadsheetModel) (viewport: Viewport) result =
-    match result with
-    | Some _ ->
-        if sparseDefaultPaintPartsOlder1Set then
-            sparseDefaultPaintPartsOlder2Set <- true
-            sparseDefaultPaintPartsOlder2 <- sparseDefaultPaintPartsOlder1
-        if sparseDefaultPaintPartsPreviousSet then
-            sparseDefaultPaintPartsOlder1Set <- true
-            sparseDefaultPaintPartsOlder1 <- sparseDefaultPaintPartsPrevious
-        if sparseDefaultPaintPartsLastSet then
-            sparseDefaultPaintPartsPreviousSet <- true
-            sparseDefaultPaintPartsPrevious <- sparseDefaultPaintPartsLast
-        sparseDefaultPaintPartsLastSet <- true
-        sparseDefaultPaintPartsLast <-
-            { Cells = model.Cells
-              Tables = model.Tables
-              ConditionalFormats = model.ConditionalFormats
-              MergedCells = model.MergedCells
-              RichRuns = model.RichRuns
-              RowHeights = model.RowHeights
-              ColumnWidths = model.ColumnWidths
-              Filters = model.Filters
-              FilterHiddenRows = model.FilterHiddenRows
-              Spill = model.Spill
-              Validations = model.Validations
-              SearchResults = model.SearchResults
-              CfBoldCells = model.CfBoldCells
-              PageSetup = model.PageSetup
-              RowCount = model.RowCount
-              ColCount = model.ColCount
-              Selection = model.Selection
-              ScrollX = viewport.ScrollX
-              ScrollY = viewport.ScrollY
-              Width = viewport.Width
-              Height = viewport.Height
-              HeaderHeight = viewport.HeaderHeight
-              RowHeaderWidth = viewport.RowHeaderWidth
-              Measurer = viewport.Measurer
-              Result = result }
-    | None -> ()
-    result
+let private tryGetSparseDefaultPaintPartsLast model viewport =
+    match tryGetSparseDefaultPaintPartsLastEntry model viewport with
+    | ValueSome entry -> ValueSome entry.Result
+    | ValueNone -> ValueNone
+
+let private rememberSparseDefaultPaintPartsLast (model: SpreadsheetModel) (viewport: Viewport) result resultOption =
+    if sparseDefaultPaintPartsOlder1Set then
+        sparseDefaultPaintPartsOlder2Set <- true
+        sparseDefaultPaintPartsOlder2 <- sparseDefaultPaintPartsOlder1
+    if sparseDefaultPaintPartsPreviousSet then
+        sparseDefaultPaintPartsOlder1Set <- true
+        sparseDefaultPaintPartsOlder1 <- sparseDefaultPaintPartsPrevious
+    if sparseDefaultPaintPartsLastSet then
+        sparseDefaultPaintPartsPreviousSet <- true
+        sparseDefaultPaintPartsPrevious <- sparseDefaultPaintPartsLast
+    sparseDefaultPaintPartsLastSet <- true
+    sparseDefaultPaintPartsLast <-
+        { Cells = model.Cells
+          Tables = model.Tables
+          ConditionalFormats = model.ConditionalFormats
+          MergedCells = model.MergedCells
+          RichRuns = model.RichRuns
+          RowHeights = model.RowHeights
+          ColumnWidths = model.ColumnWidths
+          Filters = model.Filters
+          FilterHiddenRows = model.FilterHiddenRows
+          Spill = model.Spill
+          Validations = model.Validations
+          SearchResults = model.SearchResults
+          CfBoldCells = model.CfBoldCells
+          PageSetup = model.PageSetup
+          RowCount = model.RowCount
+          ColCount = model.ColCount
+          Selection = model.Selection
+          ScrollX = viewport.ScrollX
+          ScrollY = viewport.ScrollY
+          Width = viewport.Width
+          Height = viewport.Height
+          HeaderHeight = viewport.HeaderHeight
+          RowHeaderWidth = viewport.RowHeaderWidth
+          Measurer = viewport.Measurer
+          Result = result
+          ResultOption = resultOption }
 
 let private sparseDefaultPaintGeometryKey (viewport: Viewport) : SparseDefaultPaintGeometryKey = {
     ScrollX = viewport.ScrollX
@@ -2792,18 +2795,35 @@ let private withFilterRowHeights (model: SpreadsheetModel) =
                 filterPaintProjectionCache.Add(model, projected)
             projected
 
-let tryBuildSparseDefaultPaintParts (model: SpreadsheetModel) (viewport: Viewport) =
+let tryBuildSparseDefaultPaintPartsValue (model: SpreadsheetModel) (viewport: Viewport) =
     let model = model |> withFilterRowHeights
     match tryGetSparseDefaultPaintPartsLast model viewport with
-    | ValueSome cached -> cached
+    | ValueSome cached -> ValueSome cached
     | ValueNone ->
         match tryGetSparseDefaultPaintCacheEntry model viewport with
         | Some entry ->
-            let result = Some (sparseDefaultPartsFromEntry entry.PrefixItems [] model entry)
+            let result = sparseDefaultPartsFromEntry entry.PrefixItems [] model entry
             if sparseDefaultPaintCacheEntryRetainable entry then
-                rememberSparseDefaultPaintPartsLast model viewport result
+                rememberSparseDefaultPaintPartsLast model viewport result (Some result)
             else
-                result
+                ()
+            ValueSome result
+        | None -> ValueNone
+
+let tryBuildSparseDefaultPaintParts (model: SpreadsheetModel) (viewport: Viewport) =
+    let model = model |> withFilterRowHeights
+    match tryGetSparseDefaultPaintPartsLastEntry model viewport with
+    | ValueSome cached -> cached.ResultOption
+    | ValueNone ->
+        match tryGetSparseDefaultPaintCacheEntry model viewport with
+        | Some entry ->
+            let result = sparseDefaultPartsFromEntry entry.PrefixItems [] model entry
+            let resultOption = Some result
+            if sparseDefaultPaintCacheEntryRetainable entry then
+                rememberSparseDefaultPaintPartsLast model viewport result resultOption
+            else
+                ()
+            resultOption
         | None -> None
 
 let private sameMeasurer (left: TextMeasurer option) (right: TextMeasurer option) =
