@@ -10997,7 +10997,9 @@ let private rememberRecalcResultCache workbook currentSheet sourceCells sourceSp
         |> setRecalcResultCache
 
 let private modelWithCachedRecalcCells (model: SpreadsheetModel) (cached: RecalcResultCacheEntry) =
-    rememberCellsFormulaCount cached.ResultCells cached.FormulaCount
+    match cellsFormulaCountIfKnown cached.ResultCells with
+    | Some count when count = cached.FormulaCount -> ()
+    | _ -> rememberCellsFormulaCount cached.ResultCells cached.FormulaCount
     if obj.ReferenceEquals(cached.ResultCells, model.Cells) then
         model
     else
