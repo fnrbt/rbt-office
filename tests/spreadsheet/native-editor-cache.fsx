@@ -241,7 +241,7 @@ else
     let rendererCommandsHotAllocated =
         System.GC.GetAllocatedBytesForCurrentThread() - rendererCommandsHotAllocatedBefore
     check "native grid command cache hot hits"
-        (rendererCommandsHotSw.Elapsed.TotalMilliseconds < 200.0
+        (rendererCommandsHotSw.Elapsed.TotalMilliseconds < 50.0
          && rendererCommandsHotAllocated < 64L * 1024L
          && rendererCommandsHotTotal = rendererCommandsA.Length * 100000)
         true

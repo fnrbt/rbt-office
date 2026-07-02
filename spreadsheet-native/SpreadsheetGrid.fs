@@ -1301,6 +1301,10 @@ let private cellCommandsCacheByKey =
 let private cellCommandsFastSlots = Array.zeroCreate<CellCommandsCacheEntry> 256
 let private cellCommandsCacheMaxEntries = 256
 let private cellCommandsCacheMaxCommands = 200000
+let mutable private cellCommandsLastEntrySet = false
+let mutable private cellCommandsLastEntry = Unchecked.defaultof<CellCommandsCacheEntry>
+let mutable private cellCommandsPreviousEntrySet = false
+let mutable private cellCommandsPreviousEntry = Unchecked.defaultof<CellCommandsCacheEntry>
 
 let private cellCommandsKey model width height : CellCommandsKey = {
     Model = model
@@ -1314,27 +1318,69 @@ let private cellCommandsSlot (key: CellCommandsKey) slotCount =
 let private cellCommandsEntryMatches key (entry: CellCommandsCacheEntry) =
     cellCommandsKeyComparer.Equals(key, entry.Key)
 
+let private cellCommandsEntryMatchesRaw model width height (entry: CellCommandsCacheEntry) =
+    obj.ReferenceEquals(entry.Key.Model, model)
+    && entry.Key.Width = width
+    && entry.Key.Height = height
+
+let private rememberCellCommandsLastEntry entry =
+    if cellCommandsLastEntrySet && obj.ReferenceEquals(cellCommandsLastEntry, entry) then
+        ()
+    elif cellCommandsPreviousEntrySet && obj.ReferenceEquals(cellCommandsPreviousEntry, entry) then
+        let current = cellCommandsLastEntry
+        cellCommandsLastEntry <- entry
+        cellCommandsPreviousEntry <- current
+        cellCommandsPreviousEntrySet <- cellCommandsLastEntrySet
+        cellCommandsLastEntrySet <- true
+    else
+        if cellCommandsLastEntrySet then
+            cellCommandsPreviousEntry <- cellCommandsLastEntry
+            cellCommandsPreviousEntrySet <- true
+        cellCommandsLastEntry <- entry
+        cellCommandsLastEntrySet <- true
+
+let private clearCellCommandsLastEntries () =
+    cellCommandsLastEntrySet <- false
+    cellCommandsLastEntry <- Unchecked.defaultof<CellCommandsCacheEntry>
+    cellCommandsPreviousEntrySet <- false
+    cellCommandsPreviousEntry <- Unchecked.defaultof<CellCommandsCacheEntry>
+
 let private setCellCommandsCache entries =
     cellCommandsCache <- entries
     cellCommandsCacheByKey.Clear()
     clearArray cellCommandsFastSlots
+    clearCellCommandsLastEntries ()
     for entry in entries do
         cellCommandsCacheByKey.[entry.Key] <- entry
         cellCommandsFastSlots.[cellCommandsSlot entry.Key cellCommandsFastSlots.Length] <- entry
+        if not cellCommandsLastEntrySet
+           || not cellCommandsPreviousEntrySet then
+            rememberCellCommandsLastEntry entry
 
 let private tryGetCellCommands model width height =
-    let key = cellCommandsKey model width height
-    let slot = cellCommandsSlot key cellCommandsFastSlots.Length
-    let fast = cellCommandsFastSlots.[slot]
-    if not (obj.ReferenceEquals(fast, null)) && cellCommandsEntryMatches key fast then
-        ValueSome fast.Commands
+    if cellCommandsLastEntrySet
+       && cellCommandsEntryMatchesRaw model width height cellCommandsLastEntry then
+        ValueSome cellCommandsLastEntry.Commands
+    elif cellCommandsPreviousEntrySet
+         && cellCommandsEntryMatchesRaw model width height cellCommandsPreviousEntry then
+        let entry = cellCommandsPreviousEntry
+        rememberCellCommandsLastEntry entry
+        ValueSome entry.Commands
     else
-        let mutable cached = Unchecked.defaultof<CellCommandsCacheEntry>
-        if cellCommandsCacheByKey.TryGetValue(key, &cached) then
-            cellCommandsFastSlots.[slot] <- cached
-            ValueSome cached.Commands
+        let key = cellCommandsKey model width height
+        let slot = cellCommandsSlot key cellCommandsFastSlots.Length
+        let fast = cellCommandsFastSlots.[slot]
+        if not (obj.ReferenceEquals(fast, null)) && cellCommandsEntryMatches key fast then
+            rememberCellCommandsLastEntry fast
+            ValueSome fast.Commands
         else
-            ValueNone
+            let mutable cached = Unchecked.defaultof<CellCommandsCacheEntry>
+            if cellCommandsCacheByKey.TryGetValue(key, &cached) then
+                cellCommandsFastSlots.[slot] <- cached
+                rememberCellCommandsLastEntry cached
+                ValueSome cached.Commands
+            else
+                ValueNone
 
 let private rememberCellCommands model width height commands commandCount =
     if commandCount <= cellCommandsCacheMaxCommands then
