@@ -1043,6 +1043,59 @@ check "native table style cells entry cycle"
      && tableStyleCellsEntryCycleTotal = 816000)
     true
 
+let sparseDefaultKeyColdSourceCount = 256
+let sparseDefaultKeyColdViewport : RedBat.Spreadsheet.Layout.Viewport =
+    { ScrollX = 0.0
+      ScrollY = 0.0
+      Width = 900.0
+      Height = 600.0
+      HeaderHeight = 20.0
+      RowHeaderWidth = 28.0
+      Measurer = None }
+let sparseDefaultKeyColdModels =
+    [| for sourceIndex in 0 .. sparseDefaultKeyColdSourceCount - 1 ->
+        let cells =
+            [ for row in 0 .. 63 ->
+                { Row = row; Col = 0 },
+                cell (CellValue.String (sprintf "key-%03d-%02d" sourceIndex row)) ]
+            |> Map.ofList
+        { createEmpty 20000 50 with Cells = cells } |]
+let sparseDefaultKeyColdEntryModel =
+    let cells =
+        [ for row in 0 .. 1999 ->
+            { Row = row; Col = 0 }, cell (CellValue.String (sprintf "R%d" row)) ]
+        |> Map.ofList
+    { createEmpty 20000 50 with Cells = cells }
+let sparseDefaultKeyColdEntryViewports =
+    [| for index in 0 .. 79 ->
+        { sparseDefaultKeyColdViewport with ScrollY = float index * 420.0 } |]
+let sparseDefaultKeyItemCount (parts: RedBat.Spreadsheet.Paint.SparseDefaultPaintParts) =
+    parts.GridItems.Length + parts.TextItems.Length
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let sparseDefaultKeyColdAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let sparseDefaultKeyColdSw = Stopwatch.StartNew()
+let mutable sparseDefaultKeyColdTotal = 0
+for model in sparseDefaultKeyColdModels do
+    match RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts model sparseDefaultKeyColdViewport with
+    | Some parts -> sparseDefaultKeyColdTotal <- sparseDefaultKeyColdTotal + sparseDefaultKeyItemCount parts
+    | None -> ()
+for viewport in sparseDefaultKeyColdEntryViewports do
+    match RedBat.Spreadsheet.Paint.tryBuildSparseDefaultPaintParts sparseDefaultKeyColdEntryModel viewport with
+    | Some parts -> sparseDefaultKeyColdTotal <- sparseDefaultKeyColdTotal + sparseDefaultKeyItemCount parts
+    | None -> ()
+sparseDefaultKeyColdSw.Stop()
+let sparseDefaultKeyColdAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - sparseDefaultKeyColdAllocatedBefore
+check "native sparse default key cold alloc"
+    (sparseDefaultKeyColdSw.Elapsed.TotalMilliseconds < 220.0
+     && sparseDefaultKeyColdAllocated < 58000L * 1024L
+     && sparseDefaultKeyColdTotal = 19950)
+    true
+
 let sparsePaintCells =
     [ for row in 0 .. 1999 ->
         { Row = row; Col = 0 }, cell (CellValue.String (sprintf "R%d" row)) ]

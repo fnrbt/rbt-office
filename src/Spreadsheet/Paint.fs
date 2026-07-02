@@ -563,6 +563,7 @@ let private borderPriority (style: string) : int =
 let private borderColor (side: BorderStyle) : string =
     side.Color |> Option.defaultValue "#000000"
 
+[<Struct>]
 type private SparseDefaultPaintGeometryKey = {
     ScrollX: float
     ScrollY: float
@@ -605,6 +606,7 @@ type private SparseDefaultPaintCacheEntry = {
     mutable CachedParts: SparseDefaultPaintParts option
 }
 
+[<Struct>]
 type private SparseDefaultPaintCacheKey = {
     Cells: Map<CellAddress, CellData>
     Tables: Table list
