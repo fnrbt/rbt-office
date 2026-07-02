@@ -2992,6 +2992,18 @@ let private arrayFunctionSet = HashSet<string>(arrayFunctionNames, StringCompare
 let isArrayFunction (name: string) = arrayFunctionSet.Contains name
 #endif
 
+let private formulaTextMayContainArrayFunctionName (formula: string) =
+    if isNull formula then
+        false
+    else
+        let mutable found = false
+        let mutable index = 0
+        while not found && index < arrayFunctionNames.Length do
+            if indexOfOrdinalIgnoreCase arrayFunctionNames.[index] formula 0 >= 0 then
+                found <- true
+            index <- index + 1
+        found
+
 /// Does this expression evaluate to an array (a spill)? An array function, or
 /// an operator whose operand is itself an array (`SEQUENCE(5)*2`, `A1:A8>2`).
 /// Aggregates consume such an argument over its whole array, not its top-left.
@@ -11552,9 +11564,12 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
     let mutable firstFormula = Unchecked.defaultof<string>
     let mutable firstCached = Unchecked.defaultof<Expr option>
     let parseArrayFormula formula =
-        match parseFormulaShared formula with
-        | Ok expr when containsArrayFunction expr -> Some expr
-        | _ -> None
+        if not (formulaTextMayContainArrayFunctionName formula) then
+            None
+        else
+            match parseFormulaShared formula with
+            | Ok expr when containsArrayFunction expr -> Some expr
+            | _ -> None
     let ensureArrayFormulaScratch () =
         if isNull arrayFormulaCache then
             arrayFormulaCache <- Dictionary<string, Expr option>()
