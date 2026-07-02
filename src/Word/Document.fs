@@ -1654,6 +1654,7 @@ let private selectionTextCacheMaxSources = 256
 let private selectionTextCacheMaxTotalChars = 5000000
 let private selectionTextCacheMaxTotalSourceParagraphs = sourceParagraphCountCacheLimit
 let private selectionTextCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+let private selectionTextEntryFastSlotCount = 512
 
 let private selectionTextKeyHash anchorBlockId anchorOffset focusBlockId focusOffset =
     let mutable hashCode = blockIdKeyHash anchorBlockId
@@ -2035,7 +2036,7 @@ let private rememberSelectionText (doc: Document) (text: string) =
                         doc.Blocks
                 Entries = entries
                 Order = order
-                EntryFastSlots = Array.zeroCreate<SelectionTextFastEntry> 2048
+                EntryFastSlots = Array.zeroCreate<SelectionTextFastEntry> selectionTextEntryFastSlotCount
                 TotalChars = 0
             }
             addSelectionTextCacheEntry key text cache

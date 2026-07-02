@@ -3017,6 +3017,36 @@ check "native selection text source cycle"
      && selectionTextSourceCycleTotal = 11171200)
     true
 
+let selectionTextSourceColdCount = 256
+let selectionTextSourceColdDocs =
+    [| for sourceIndex in 0 .. selectionTextSourceColdCount - 1 ->
+        let blockId = sprintf "native-selection-source-cold-%04d" sourceIndex
+        { Doc.empty with
+            Blocks = [ Doc.Paragraph (para blockId "abcdef") ]
+            Selection =
+                Some {
+                    Anchor = pos blockId 1
+                    Focus = pos blockId 4
+                } } |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let selectionTextSourceColdAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let selectionTextSourceColdSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable selectionTextSourceColdTotal = 0
+for doc in selectionTextSourceColdDocs do
+    selectionTextSourceColdTotal <- selectionTextSourceColdTotal + (Doc.getSelectionText doc).Length
+selectionTextSourceColdSw.Stop()
+let selectionTextSourceColdAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - selectionTextSourceColdAllocatedBefore
+check "native selection text source cold"
+    (selectionTextSourceColdSw.Elapsed.TotalMilliseconds < 80.0
+     && selectionTextSourceColdAllocated < 4350L * 1024L
+     && selectionTextSourceColdTotal = 768)
+    true
+
 let sameBlockSelectionTextParagraphCount = 50000
 let sameBlockSelectionTextDoc =
     { Doc.empty with
