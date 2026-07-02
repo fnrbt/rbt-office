@@ -2070,15 +2070,21 @@ let private supportsViewportContentCommands (doc: Document) =
     && doc.PageSetup.Columns.IsNone
     && (doc.Blocks |> List.forall (RedBat.Word.Document.tryGetParagraph >> Option.isSome))
 
+let private refreshViewportContentCommandSupport (state: WordEditorState) (doc: Document) =
+    let supported = supportsViewportContentCommands doc
+    state.LayoutCache.ViewportSupportDocument <- Some doc
+    state.LayoutCache.ViewportSupportsContentCommands <- Some supported
+    supported
+
 let private supportsViewportContentCommandsCached (state: WordEditorState) (doc: Document) =
-    match state.LayoutCache.ViewportSupportDocument, state.LayoutCache.ViewportSupportsContentCommands with
-    | Some cachedDoc, Some cached when layoutInputsEqual cachedDoc doc ->
-        cached
-    | _ ->
-        let supported = supportsViewportContentCommands doc
-        state.LayoutCache.ViewportSupportDocument <- Some doc
-        state.LayoutCache.ViewportSupportsContentCommands <- Some supported
-        supported
+    match state.LayoutCache.ViewportSupportDocument with
+    | Some cachedDoc
+        when Object.ReferenceEquals(cachedDoc, doc)
+             || layoutInputsEqual cachedDoc doc ->
+        match state.LayoutCache.ViewportSupportsContentCommands with
+        | Some cached -> cached
+        | None -> refreshViewportContentCommandSupport state doc
+    | _ -> refreshViewportContentCommandSupport state doc
 
 let private viewportContentPaintCommands
     (settings: WordLayout.LayoutSettings)

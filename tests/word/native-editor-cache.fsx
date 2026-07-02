@@ -30,6 +30,9 @@ type RendererViewportContentCommandsDelegate =
         * float
             -> Cmd list
 
+type SupportsViewportContentCommandsCachedDelegate =
+    delegate of Composit.Ui.WordEditor.WordEditorState * Doc.Document -> bool
+
 let mutable pass = 0
 let mutable fail = 0
 
@@ -101,6 +104,8 @@ let documentHeightCached =
     wordEditorType.GetMethod("documentHeightCached", staticBindingFlags)
 let commandsInViewport =
     wordEditorType.GetMethod("commandsInViewport", BindingFlags.NonPublic ||| BindingFlags.Static)
+let supportsViewportContentCommandsCached =
+    wordEditorType.GetMethod("supportsViewportContentCommandsCached", staticBindingFlags)
 let cachedLayoutArray =
     wordEditorType.GetMethod("cachedLayoutArray", staticBindingFlags)
 let rendererViewportContentCommands =
@@ -118,6 +123,12 @@ let rendererViewportContentCommandsDelegate =
     else
         rendererViewportContentCommands.CreateDelegate(typeof<RendererViewportContentCommandsDelegate>)
         :?> RendererViewportContentCommandsDelegate
+let supportsViewportContentCommandsCachedDelegate =
+    if isNull supportsViewportContentCommandsCached then
+        Unchecked.defaultof<SupportsViewportContentCommandsCachedDelegate>
+    else
+        supportsViewportContentCommandsCached.CreateDelegate(typeof<SupportsViewportContentCommandsCachedDelegate>)
+        :?> SupportsViewportContentCommandsCachedDelegate
 let measureRange =
     if isNull measureRangeProperty then
         Unchecked.defaultof<Layout.TextRangeMeasurer>
@@ -1320,6 +1331,37 @@ else
          && viewportAllocated < 256L * 1024L
          && viewportTotal < 2000)
         true
+
+    if isNull supportsViewportContentCommandsCached then
+        fail <- fail + 1
+        printfn "FAIL %-34s expected private viewport support cache helper" "native viewport support reflection"
+    else
+        let viewportSupportA =
+            supportsViewportContentCommandsCachedDelegate.Invoke(viewportCommandState, viewportCommandDoc)
+        let viewportSupportB =
+            supportsViewportContentCommandsCachedDelegate.Invoke(viewportCommandState, viewportCommandDoc)
+        check "native viewport support cache reuse"
+            (viewportSupportA && viewportSupportB)
+            true
+
+        System.GC.Collect()
+        System.GC.WaitForPendingFinalizers()
+        System.GC.Collect()
+
+        let viewportSupportAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+        let viewportSupportSw = System.Diagnostics.Stopwatch.StartNew()
+        let mutable viewportSupportTotal = 0
+        for _ in 1 .. 100000 do
+            if supportsViewportContentCommandsCachedDelegate.Invoke(viewportCommandState, viewportCommandDoc) then
+                viewportSupportTotal <- viewportSupportTotal + 1
+        viewportSupportSw.Stop()
+        let viewportSupportAllocated =
+            System.GC.GetAllocatedBytesForCurrentThread() - viewportSupportAllocatedBefore
+        check "native viewport support cache alloc"
+            (viewportSupportSw.Elapsed.TotalMilliseconds < 80.0
+             && viewportSupportAllocated < 64L * 1024L
+             && viewportSupportTotal = 100000)
+            true
 
     if isNull cachedLayoutArray || isNull rendererViewportContentCommands || isNull measureRangeProperty then
         fail <- fail + 1
