@@ -1096,6 +1096,35 @@ let private cachedLayouts width (state: WordEditorState) doc =
     else
         rebuild ()
 
+let private tryCachedLayoutsValue width (state: WordEditorState) doc =
+    let cache = state.LayoutCache
+    let exactDocumentMatch =
+        cache.Width = width
+        &&
+        match cache.CachedDocument with
+        | Some cachedDoc -> Object.ReferenceEquals(cachedDoc, doc)
+        | None -> false
+    let layoutDocumentMatch =
+        cache.Width = width
+        && not exactDocumentMatch
+        &&
+        match cache.CachedLayoutDocument with
+        | Some cachedLayoutDoc -> layoutInputsEqual cachedLayoutDoc doc
+        | None -> false
+
+    if exactDocumentMatch || layoutDocumentMatch then
+        match cache.Settings with
+        | Some settings ->
+            match cache.Layouts with
+            | Some layouts ->
+                if layoutDocumentMatch then
+                    cache.CachedDocument <- Some doc
+                ValueSome (struct (settings, layouts))
+            | None -> ValueNone
+        | None -> ValueNone
+    else
+        ValueNone
+
 let private cachedLayoutArray width (state: WordEditorState) doc =
     let settings, layouts = cachedLayouts width state doc
     match state.LayoutCache.LayoutArray with
@@ -2126,7 +2155,12 @@ let private rendererViewportContentCommands
             rendered
 
 let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) state (doc: Document) =
-    let settings, cached = cachedLayouts width state doc
+    let struct (settings, cached) =
+        match tryCachedLayoutsValue width state doc with
+        | ValueSome cached -> cached
+        | ValueNone ->
+            let settings, cached = cachedLayouts width state doc
+            struct (settings, cached)
     let cachedLayouts = state.LayoutCache.Layouts
     let layouts, contentCommands, _ =
         WordPaint.collectDocumentCommandsWithLayouts settings "Calibri" measureText measureRange doc cachedLayouts

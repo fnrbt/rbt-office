@@ -726,7 +726,7 @@ let rendererCommandsAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - rendererCommandsAllocatedBefore
 check "native renderer command cache alloc"
     (rendererCommandsAllocSw.Elapsed.TotalMilliseconds < 500.0
-     && rendererCommandsAllocated < 4L * 1024L * 1024L
+     && rendererCommandsAllocated < 64L * 1024L
      && rendererCommandAllocTotal = rendererCommandsA.Length * 50000)
     true
 
