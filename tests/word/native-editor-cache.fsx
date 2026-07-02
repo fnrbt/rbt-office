@@ -440,7 +440,7 @@ let revisionNavigationCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - revisionNavigationCycleAllocatedBefore
 check "native revision navigation source cycle"
     (revisionNavigationCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && revisionNavigationCycleAllocated < 4L * 1024L * 1024L
+     && revisionNavigationCycleAllocated < 16L * 1024L
      && revisionNavigationCycleTotal = revisionCacheCycleDocs.Length * 100 * (3 + 15))
     true
 

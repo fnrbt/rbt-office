@@ -9820,13 +9820,91 @@ type private RevisionNavigationCache = {
     ParagraphIndexesComplete: bool
 }
 
+[<Struct>]
+type private RevisionSelectionDocumentCacheKey = {
+    Source: Document
+    Previous: bool
+}
+
+type private RevisionSelectionDocumentCacheEntry = {
+    Key: RevisionSelectionDocumentCacheKey
+    Result: Document
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+}
+
 let mutable private revisionNavigationCache: RevisionNavigationCache list = []
 let private revisionNavigationCacheByBlocks = Dictionary<Block list, RevisionNavigationCache>(documentInfoBlocksComparer)
 let private revisionNavigationFastSlots = Array.zeroCreate<RevisionNavigationCache> 256
+let mutable private revisionSelectionDocumentCache: RevisionSelectionDocumentCacheEntry list = []
+let private revisionSelectionDocumentKeyComparer =
+    { new IEqualityComparer<RevisionSelectionDocumentCacheKey> with
+        member _.Equals(left, right) =
+            left.Previous = right.Previous
+            && obj.ReferenceEquals(left.Source, right.Source)
+
+        member _.GetHashCode(key) =
+            (System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Source) * 397)
+            ^^^ (if key.Previous then 1 else 0) }
+let private revisionSelectionDocumentCacheByKey =
+    Dictionary<RevisionSelectionDocumentCacheKey, RevisionSelectionDocumentCacheEntry>(revisionSelectionDocumentKeyComparer)
+let private revisionSelectionDocumentFastSlots = Array.zeroCreate<RevisionSelectionDocumentCacheEntry> 256
 let private revisionNavigationCacheMaxEntries = 256
 let private revisionNavigationCacheMaxTotalSpans = 200000
 let private revisionNavigationCacheMaxTotalParagraphs = 100000
 let private revisionNavigationCacheMaxTotalSourceTextChars = documentSourceTextCacheMaxTotalChars
+
+let private revisionSelectionDocumentKey previous source = {
+    Source = source
+    Previous = previous
+}
+
+let private revisionSelectionDocumentCacheMatches previous source (cached: RevisionSelectionDocumentCacheEntry) =
+    cached.Key.Previous = previous
+    && obj.ReferenceEquals(cached.Key.Source, source)
+
+let private revisionSelectionDocumentSlot previous source =
+    revisionSelectionDocumentKeyComparer.GetHashCode(revisionSelectionDocumentKey previous source)
+    &&& (revisionSelectionDocumentFastSlots.Length - 1)
+
+let private setRevisionSelectionDocumentCache entries =
+    revisionSelectionDocumentCache <- entries
+    revisionSelectionDocumentCacheByKey.Clear()
+    clearArray revisionSelectionDocumentFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<RevisionSelectionDocumentCacheEntry>
+        if not (revisionSelectionDocumentCacheByKey.TryGetValue(entry.Key, &existing)) then
+            revisionSelectionDocumentCacheByKey.[entry.Key] <- entry
+            revisionSelectionDocumentFastSlots.[revisionSelectionDocumentSlot entry.Key.Previous entry.Key.Source] <- entry
+
+let private tryGetRevisionSelectionDocument previous source =
+    let slot = revisionSelectionDocumentSlot previous source
+    let fast = revisionSelectionDocumentFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && revisionSelectionDocumentCacheMatches previous source fast then
+        ValueSome fast.Result
+    else
+        let key = revisionSelectionDocumentKey previous source
+        let mutable cached = Unchecked.defaultof<RevisionSelectionDocumentCacheEntry>
+        if revisionSelectionDocumentCacheByKey.TryGetValue(key, &cached) then
+            revisionSelectionDocumentFastSlots.[slot] <- cached
+            ValueSome cached.Result
+        else
+            ValueNone
+
+let private revisionSelectionDocumentCacheWithoutSource previous source =
+    let key = revisionSelectionDocumentKey previous source
+    let mutable cached = Unchecked.defaultof<RevisionSelectionDocumentCacheEntry>
+    if revisionSelectionDocumentCacheByKey.TryGetValue(key, &cached)
+       && revisionSelectionDocumentCacheMatches previous source cached then
+        revisionSelectionDocumentCache
+        |> List.filter (revisionSelectionDocumentCacheMatches previous source >> not)
+    else
+        revisionSelectionDocumentCache
+
+let private revisionSelectionDocumentCacheRetainable (cached: RevisionSelectionDocumentCacheEntry) =
+    cached.SourceParagraphCount <= revisionNavigationCacheMaxTotalParagraphs
+    && cached.SourceTextCharCount <= revisionNavigationCacheMaxTotalSourceTextChars
 
 let private revisionNavigationCacheMatches blocks (cached: RevisionNavigationCache) =
     obj.ReferenceEquals(cached.SourceBlocks, blocks)
@@ -9991,6 +10069,35 @@ let private revisionNavigationSpans doc =
         }
         rememberRevisionNavigation cached
         cached
+
+let private rememberRevisionSelectionDocument previous source result =
+    if not (obj.ReferenceEquals(source, result)) then
+        let navigation = revisionNavigationSpans source
+        let entry = {
+            Key = revisionSelectionDocumentKey previous source
+            Result = result
+            SourceParagraphCount = navigation.SourceParagraphCount
+            SourceTextCharCount = navigation.SourceTextCharCount
+        }
+        if revisionSelectionDocumentCacheRetainable entry then
+            let rec trim remaining kept count totalParagraphs totalSourceTextChars =
+                match remaining with
+                | [] -> List.rev kept
+                | candidate :: rest ->
+                    let candidateParagraphs = max 1 candidate.SourceParagraphCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    let nextTotalParagraphs = totalParagraphs + candidateParagraphs
+                    let nextTotalSourceTextChars = totalSourceTextChars + candidateSourceTextChars
+                    if revisionSelectionDocumentCacheRetainable candidate
+                       && count < revisionNavigationCacheMaxEntries
+                       && nextTotalParagraphs <= revisionNavigationCacheMaxTotalParagraphs
+                       && nextTotalSourceTextChars <= revisionNavigationCacheMaxTotalSourceTextChars then
+                        trim rest (candidate :: kept) (count + 1) nextTotalParagraphs nextTotalSourceTextChars
+                    else
+                        trim rest kept count totalParagraphs totalSourceTextChars
+            let entries = entry :: revisionSelectionDocumentCacheWithoutSource previous source
+            trim entries [] 0 0 0
+            |> setRevisionSelectionDocumentCache
 
 let private applyRevisionDecision accept doc =
     let selectedBlockIds, selectionRangeForParagraph =
@@ -10208,9 +10315,15 @@ let private tryFindNextRevisionSpan doc =
 
 /// Select next revision, wrapping to the first revision when needed.
 let selectNextRevision doc =
-    match tryFindNextRevisionSpan doc with
-    | ValueSome (struct (blockId, start, endPos)) -> selectRevisionRange blockId start endPos doc
-    | ValueNone -> doc
+    match tryGetRevisionSelectionDocument false doc with
+    | ValueSome cached -> cached
+    | ValueNone ->
+        let result =
+            match tryFindNextRevisionSpan doc with
+            | ValueSome (struct (blockId, start, endPos)) -> selectRevisionRange blockId start endPos doc
+            | ValueNone -> doc
+        rememberRevisionSelectionDocument false doc result
+        result
 
 let private tryFindPreviousRevisionSpan doc =
     let cache = revisionNavigationSpans doc
@@ -10268,9 +10381,15 @@ let private tryFindPreviousRevisionSpan doc =
 
 /// Select previous revision, wrapping to the last revision when needed.
 let selectPreviousRevision doc =
-    match tryFindPreviousRevisionSpan doc with
-    | ValueSome (struct (blockId, start, endPos)) -> selectRevisionRange blockId start endPos doc
-    | ValueNone -> doc
+    match tryGetRevisionSelectionDocument true doc with
+    | ValueSome cached -> cached
+    | ValueNone ->
+        let result =
+            match tryFindPreviousRevisionSpan doc with
+            | ValueSome (struct (blockId, start, endPos)) -> selectRevisionRange blockId start endPos doc
+            | ValueNone -> doc
+        rememberRevisionSelectionDocument true doc result
+        result
 
 /// Set font size on selection
 let setFontSize size doc =
