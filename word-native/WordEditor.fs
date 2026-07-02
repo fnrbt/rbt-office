@@ -2029,56 +2029,77 @@ let private rendererCommandsForContent resolveImage state contentCommands =
 let private samePaintCommands left right =
     obj.ReferenceEquals(left, right) || left = right
 
+let private refreshRendererFrameCommands
+    resolveImage
+    state
+    (contentRendererCommands: Cmd list)
+    (selectionCommands: WordPaint.PaintCommand list)
+    (hoverCommands: WordPaint.PaintCommand list) =
+    let overlayCommands = ResizeArray<Cmd>()
+    for paintCommand in selectionCommands do
+        overlayCommands.AddRange(toRendererCommand resolveImage paintCommand)
+    for paintCommand in hoverCommands do
+        overlayCommands.AddRange(toRendererCommand resolveImage paintCommand)
+    let rendered =
+        let overlay = resizeArrayToList overlayCommands
+        if contentRendererCommands.IsEmpty then
+            overlay
+        else
+            Cmd.Group(Matrix3x2.identity, 1.0, contentRendererCommands) :: overlay
+    state.LayoutCache.RendererFramePreviousContentCommands <- state.LayoutCache.RendererFrameContentCommands
+    state.LayoutCache.RendererFramePreviousSelectionCommands <- state.LayoutCache.RendererFrameSelectionCommands
+    state.LayoutCache.RendererFramePreviousHoverCommands <- state.LayoutCache.RendererFrameHoverCommands
+    state.LayoutCache.RendererFramePreviousCommands <- state.LayoutCache.RendererFrameCommands
+    state.LayoutCache.RendererFrameContentCommands <- Some contentRendererCommands
+    state.LayoutCache.RendererFrameSelectionCommands <- Some selectionCommands
+    state.LayoutCache.RendererFrameHoverCommands <- Some hoverCommands
+    state.LayoutCache.RendererFrameCommands <- Some rendered
+    rendered
+
 let private rendererCommandsForFrame
     resolveImage
     state
     (contentRendererCommands: Cmd list)
     (selectionCommands: WordPaint.PaintCommand list)
     (hoverCommands: WordPaint.PaintCommand list) =
-    match
-        state.LayoutCache.RendererFrameContentCommands,
-        state.LayoutCache.RendererFrameSelectionCommands,
-        state.LayoutCache.RendererFrameHoverCommands,
-        state.LayoutCache.RendererFrameCommands
-    with
-    | Some cachedContentCommands, Some cachedSelectionCommands, Some cachedHoverCommands, Some cachedFrameCommands
-        when obj.ReferenceEquals(cachedContentCommands, contentRendererCommands)
-             && samePaintCommands cachedSelectionCommands selectionCommands
-             && samePaintCommands cachedHoverCommands hoverCommands ->
-        cachedFrameCommands
-    | _ ->
-        match
-            state.LayoutCache.RendererFramePreviousContentCommands,
-            state.LayoutCache.RendererFramePreviousSelectionCommands,
-            state.LayoutCache.RendererFramePreviousHoverCommands,
-            state.LayoutCache.RendererFramePreviousCommands
-        with
-        | Some cachedContentCommands, Some cachedSelectionCommands, Some cachedHoverCommands, Some cachedFrameCommands
-            when obj.ReferenceEquals(cachedContentCommands, contentRendererCommands)
-                 && samePaintCommands cachedSelectionCommands selectionCommands
-                 && samePaintCommands cachedHoverCommands hoverCommands ->
-            cachedFrameCommands
+    match state.LayoutCache.RendererFrameContentCommands with
+    | Some cachedContentCommands when obj.ReferenceEquals(cachedContentCommands, contentRendererCommands) ->
+        match state.LayoutCache.RendererFrameSelectionCommands with
+        | Some cachedSelectionCommands when samePaintCommands cachedSelectionCommands selectionCommands ->
+            match state.LayoutCache.RendererFrameHoverCommands with
+            | Some cachedHoverCommands when samePaintCommands cachedHoverCommands hoverCommands ->
+                match state.LayoutCache.RendererFrameCommands with
+                | Some cachedFrameCommands -> cachedFrameCommands
+                | None ->
+                    refreshRendererFrameCommands
+                        resolveImage state contentRendererCommands selectionCommands hoverCommands
+            | _ ->
+                refreshRendererFrameCommands
+                    resolveImage state contentRendererCommands selectionCommands hoverCommands
         | _ ->
-            let overlayCommands = ResizeArray<Cmd>()
-            for paintCommand in selectionCommands do
-                overlayCommands.AddRange(toRendererCommand resolveImage paintCommand)
-            for paintCommand in hoverCommands do
-                overlayCommands.AddRange(toRendererCommand resolveImage paintCommand)
-            let rendered =
-                let overlay = resizeArrayToList overlayCommands
-                if contentRendererCommands.IsEmpty then
-                    overlay
-                else
-                    Cmd.Group(Matrix3x2.identity, 1.0, contentRendererCommands) :: overlay
-            state.LayoutCache.RendererFramePreviousContentCommands <- state.LayoutCache.RendererFrameContentCommands
-            state.LayoutCache.RendererFramePreviousSelectionCommands <- state.LayoutCache.RendererFrameSelectionCommands
-            state.LayoutCache.RendererFramePreviousHoverCommands <- state.LayoutCache.RendererFrameHoverCommands
-            state.LayoutCache.RendererFramePreviousCommands <- state.LayoutCache.RendererFrameCommands
-            state.LayoutCache.RendererFrameContentCommands <- Some contentRendererCommands
-            state.LayoutCache.RendererFrameSelectionCommands <- Some selectionCommands
-            state.LayoutCache.RendererFrameHoverCommands <- Some hoverCommands
-            state.LayoutCache.RendererFrameCommands <- Some rendered
-            rendered
+            refreshRendererFrameCommands
+                resolveImage state contentRendererCommands selectionCommands hoverCommands
+    | _ ->
+        match state.LayoutCache.RendererFramePreviousContentCommands with
+        | Some cachedContentCommands when obj.ReferenceEquals(cachedContentCommands, contentRendererCommands) ->
+            match state.LayoutCache.RendererFramePreviousSelectionCommands with
+            | Some cachedSelectionCommands when samePaintCommands cachedSelectionCommands selectionCommands ->
+                match state.LayoutCache.RendererFramePreviousHoverCommands with
+                | Some cachedHoverCommands when samePaintCommands cachedHoverCommands hoverCommands ->
+                    match state.LayoutCache.RendererFramePreviousCommands with
+                    | Some cachedFrameCommands -> cachedFrameCommands
+                    | None ->
+                        refreshRendererFrameCommands
+                            resolveImage state contentRendererCommands selectionCommands hoverCommands
+                | _ ->
+                    refreshRendererFrameCommands
+                        resolveImage state contentRendererCommands selectionCommands hoverCommands
+            | _ ->
+                refreshRendererFrameCommands
+                    resolveImage state contentRendererCommands selectionCommands hoverCommands
+        | _ ->
+            refreshRendererFrameCommands
+                resolveImage state contentRendererCommands selectionCommands hoverCommands
 
 let private supportsViewportContentCommands (doc: Document) =
     doc.Headers.IsEmpty

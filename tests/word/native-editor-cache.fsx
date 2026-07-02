@@ -35,6 +35,15 @@ type RendererSelectionCommandsForStateDelegate =
         * (Doc.BlockId -> Layout.BlockLayout option)
             -> Paint.PaintCommand list
 
+type RendererCommandsForFrameDelegate =
+    delegate of
+        (string -> Framebuffer option)
+        * Composit.Ui.WordEditor.WordEditorState
+        * Cmd list
+        * Paint.PaintCommand list
+        * Paint.PaintCommand list
+            -> Cmd list
+
 type RendererViewportContentCommandsDelegate =
     delegate of
         (string -> Framebuffer option)
@@ -124,6 +133,8 @@ let cachedLayoutLookup =
     wordEditorType.GetMethod("cachedLayoutLookup", staticBindingFlags)
 let rendererSelectionCommandsForState =
     wordEditorType.GetMethod("rendererSelectionCommandsForState", staticBindingFlags)
+let rendererCommandsForFrame =
+    wordEditorType.GetMethod("rendererCommandsForFrame", staticBindingFlags)
 let supportsViewportContentCommandsCached =
     wordEditorType.GetMethod("supportsViewportContentCommandsCached", staticBindingFlags)
 let cachedLayoutArray =
@@ -153,6 +164,12 @@ let rendererSelectionCommandsForStateDelegate =
     else
         rendererSelectionCommandsForState.CreateDelegate(typeof<RendererSelectionCommandsForStateDelegate>)
         :?> RendererSelectionCommandsForStateDelegate
+let rendererCommandsForFrameDelegate =
+    if isNull rendererCommandsForFrame then
+        Unchecked.defaultof<RendererCommandsForFrameDelegate>
+    else
+        rendererCommandsForFrame.CreateDelegate(typeof<RendererCommandsForFrameDelegate>)
+        :?> RendererCommandsForFrameDelegate
 let rendererViewportContentCommandsDelegate =
     if isNull rendererViewportContentCommands then
         Unchecked.defaultof<RendererViewportContentCommandsDelegate>
@@ -1595,6 +1612,55 @@ else
          && rendererSelectionDirectAllocated < 64L * 1024L
          && rendererSelectionDirectTotal = rendererSelectionPaintCommandsA.Length * 100000)
         true
+
+    if isNull rendererCommandsForFrame then
+        fail <- fail + 1
+        printfn "FAIL %-34s expected private renderer frame cache helper" "native renderer frame reflection"
+    else
+        let rendererFrameContentCommands : Cmd list = []
+        let rendererFrameHoverCommands : Paint.PaintCommand list = []
+        let rendererFrameCommandsA =
+            rendererCommandsForFrameDelegate.Invoke(
+                noImage,
+                rendererSelectionState,
+                rendererFrameContentCommands,
+                rendererSelectionPaintCommandsA,
+                rendererFrameHoverCommands)
+        let rendererFrameCommandsB =
+            rendererCommandsForFrameDelegate.Invoke(
+                noImage,
+                rendererSelectionState,
+                rendererFrameContentCommands,
+                rendererSelectionPaintCommandsA,
+                rendererFrameHoverCommands)
+        check "native renderer frame cache reuse"
+            (obj.ReferenceEquals(rendererFrameCommandsA, rendererFrameCommandsB))
+            true
+
+        System.GC.Collect()
+        System.GC.WaitForPendingFinalizers()
+        System.GC.Collect()
+
+        let rendererFrameAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+        let rendererFrameSw = System.Diagnostics.Stopwatch.StartNew()
+        let mutable rendererFrameTotal = 0
+        for _ in 1 .. 100000 do
+            rendererFrameTotal <-
+                rendererFrameTotal
+                + rendererCommandsForFrameDelegate.Invoke(
+                    noImage,
+                    rendererSelectionState,
+                    rendererFrameContentCommands,
+                    rendererSelectionPaintCommandsA,
+                    rendererFrameHoverCommands).Length
+        rendererFrameSw.Stop()
+        let rendererFrameAllocated =
+            System.GC.GetAllocatedBytesForCurrentThread() - rendererFrameAllocatedBefore
+        check "native renderer frame cache alloc"
+            (rendererFrameSw.Elapsed.TotalMilliseconds < 200.0
+             && rendererFrameAllocated < 64L * 1024L
+             && rendererFrameTotal = rendererFrameCommandsA.Length * 100000)
+            true
 
 let rendererMovingSelectionState = Composit.Ui.WordEditor.createState rendererSelectionDoc
 let rendererMovingSelectionCommandLength =
