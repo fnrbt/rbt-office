@@ -297,7 +297,7 @@ let editableEndpointCycleAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - editableEndpointCycleAllocatedBefore
 check "native select all endpoint source cycle"
     (editableEndpointCycleSw.Elapsed.TotalMilliseconds < 80.0
-     && editableEndpointCycleAllocated < 2L * 1024L * 1024L
+     && editableEndpointCycleAllocated < 16L * 1024L
      && editableEndpointCycleTotal > 0)
     true
 

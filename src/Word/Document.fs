@@ -1252,6 +1252,11 @@ type Document = {
     FooterParts: HeaderFooterPart list
 }
 
+let private documentReferenceComparer =
+    { new IEqualityComparer<Document> with
+        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+        member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
+
 let setPageSetup (setup: PageSetup) (doc: Document) =
     if doc.PageSetup = setup then doc else { doc with PageSetup = setup }
 
@@ -3668,6 +3673,100 @@ let private editableParagraphEndpoints doc =
                     doc.Blocks
         }
         firstPara, lastPara
+
+type private SelectAllDocumentCacheEntry = {
+    Source: Document
+    Result: Document
+    SourceParagraphCount: int
+    SourceTextCharCount: int
+}
+
+let mutable private selectAllDocumentCache: SelectAllDocumentCacheEntry list = []
+let private selectAllDocumentCacheBySource =
+    Dictionary<Document, SelectAllDocumentCacheEntry>(documentReferenceComparer)
+let private selectAllDocumentFastSlots = Array.zeroCreate<SelectAllDocumentCacheEntry> 256
+let private selectAllDocumentCacheMaxEntries = 256
+let private selectAllDocumentCacheMaxTotalSourceParagraphs = editableParagraphEndpointsCacheMaxTotalParagraphs
+let private selectAllDocumentCacheMaxTotalSourceTextChars = editableParagraphEndpointsCacheMaxTotalSourceTextChars
+
+let private selectAllDocumentCacheMatches doc (cached: SelectAllDocumentCacheEntry) =
+    obj.ReferenceEquals(cached.Source, doc)
+
+let private setSelectAllDocumentCache entries =
+    selectAllDocumentCache <- entries
+    selectAllDocumentCacheBySource.Clear()
+    clearArray selectAllDocumentFastSlots
+    for entry in entries do
+        let mutable existing = Unchecked.defaultof<SelectAllDocumentCacheEntry>
+        if not (selectAllDocumentCacheBySource.TryGetValue(entry.Source, &existing)) then
+            selectAllDocumentCacheBySource.[entry.Source] <- entry
+            let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(entry.Source) &&& (selectAllDocumentFastSlots.Length - 1)
+            selectAllDocumentFastSlots.[slot] <- entry
+
+let private tryGetSelectAllDocument doc =
+    let slot = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(doc) &&& (selectAllDocumentFastSlots.Length - 1)
+    let fast = selectAllDocumentFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null))
+       && selectAllDocumentCacheMatches doc fast then
+        ValueSome fast.Result
+    else
+        let mutable cached = Unchecked.defaultof<SelectAllDocumentCacheEntry>
+        if selectAllDocumentCacheBySource.TryGetValue(doc, &cached) then
+            selectAllDocumentFastSlots.[slot] <- cached
+            ValueSome cached.Result
+        else
+            ValueNone
+
+let private selectAllDocumentCacheWithoutSource doc =
+    let mutable cached = Unchecked.defaultof<SelectAllDocumentCacheEntry>
+    if selectAllDocumentCacheBySource.TryGetValue(doc, &cached)
+       && selectAllDocumentCacheMatches doc cached then
+        selectAllDocumentCache
+        |> List.filter (selectAllDocumentCacheMatches doc >> not)
+    else
+        selectAllDocumentCache
+
+let private selectAllDocumentCacheRetainable (cached: SelectAllDocumentCacheEntry) =
+    cached.SourceParagraphCount <= selectAllDocumentCacheMaxTotalSourceParagraphs
+    && cached.SourceTextCharCount <= selectAllDocumentCacheMaxTotalSourceTextChars
+
+let private rememberSelectAllDocument source result =
+    if not (obj.ReferenceEquals(source, result)) then
+        let sourceParagraphCount, sourceTextCharCount =
+            match tryGetEditableParagraphEndpointsCache source.Blocks with
+            | ValueSome cached -> cached.EndpointParagraphCount, cached.EndpointSourceTextCharCount
+            | ValueNone ->
+                let paragraphCount = countSourceParagraphs source.Blocks
+                paragraphCount,
+                documentBlocksSourceTextCharCountFor
+                    selectAllDocumentCacheMaxTotalSourceParagraphs
+                    paragraphCount
+                    source.Blocks
+        let entry = {
+            Source = source
+            Result = result
+            SourceParagraphCount = sourceParagraphCount
+            SourceTextCharCount = sourceTextCharCount
+        }
+        if selectAllDocumentCacheRetainable entry then
+            let rec trim remaining kept count totalParagraphs totalSourceTextChars =
+                match remaining with
+                | [] -> List.rev kept
+                | candidate :: rest ->
+                    let candidateParagraphs = max 1 candidate.SourceParagraphCount
+                    let candidateSourceTextChars = max 1 candidate.SourceTextCharCount
+                    let nextTotalParagraphs = totalParagraphs + candidateParagraphs
+                    let nextTotalSourceTextChars = totalSourceTextChars + candidateSourceTextChars
+                    if selectAllDocumentCacheRetainable candidate
+                       && count < selectAllDocumentCacheMaxEntries
+                       && nextTotalParagraphs <= selectAllDocumentCacheMaxTotalSourceParagraphs
+                       && nextTotalSourceTextChars <= selectAllDocumentCacheMaxTotalSourceTextChars then
+                        trim rest (candidate :: kept) (count + 1) nextTotalParagraphs nextTotalSourceTextChars
+                    else
+                        trim rest kept count totalParagraphs totalSourceTextChars
+            let entries = entry :: selectAllDocumentCacheWithoutSource source
+            trim entries [] 0 0 0
+            |> setSelectAllDocumentCache
 
 let private iterEditableParagraphsUntil doc f =
     let mutable keepGoing = true
@@ -8874,35 +8973,41 @@ let selectRange startOffset endOffset doc =
 
 /// Select all text in document (all blocks)
 let selectAll doc =
-    let singleParagraphAlreadySelected (para: ParagraphBlock) (current: Selection) =
-        current.Anchor.BlockId = para.Id &&
-        current.Anchor.Offset = 0 &&
-        current.Focus.BlockId = para.Id &&
-        current.Focus.Offset = TextBuffer.length para.Buffer
+    match tryGetSelectAllDocument doc with
+    | ValueSome cached -> cached
+    | ValueNone ->
+        let singleParagraphAlreadySelected (para: ParagraphBlock) (current: Selection) =
+            current.Anchor.BlockId = para.Id &&
+            current.Anchor.Offset = 0 &&
+            current.Focus.BlockId = para.Id &&
+            current.Focus.Offset = TextBuffer.length para.Buffer
 
-    match doc.Blocks, doc.Selection with
-    | [ Paragraph para ], Some current when singleParagraphAlreadySelected para current -> doc
-    | [ Heading (_, para) ], Some current when singleParagraphAlreadySelected para current -> doc
-    | _ ->
-        let firstPara, lastPara = editableParagraphEndpoints doc
-        match firstPara, lastPara with
-        | ValueSome firstPara, ValueSome lastPara ->
-            let lastLen = TextBuffer.length lastPara.Buffer
-            match doc.Selection with
-            | Some current
-                when current.Anchor.BlockId = firstPara.Id &&
-                     current.Anchor.Offset = 0 &&
-                     current.Focus.BlockId = lastPara.Id &&
-                     current.Focus.Offset = lastLen ->
-                doc
-            | _ ->
-                { doc with
-                    Selection =
-                        Some {
-                            Anchor = { BlockId = firstPara.Id; Offset = 0 }
-                            Focus = { BlockId = lastPara.Id; Offset = lastLen }
-                        } }
-        | _ -> doc
+        match doc.Blocks, doc.Selection with
+        | [ Paragraph para ], Some current when singleParagraphAlreadySelected para current -> doc
+        | [ Heading (_, para) ], Some current when singleParagraphAlreadySelected para current -> doc
+        | _ ->
+            let firstPara, lastPara = editableParagraphEndpoints doc
+            match firstPara, lastPara with
+            | ValueSome firstPara, ValueSome lastPara ->
+                let lastLen = TextBuffer.length lastPara.Buffer
+                match doc.Selection with
+                | Some current
+                    when current.Anchor.BlockId = firstPara.Id &&
+                         current.Anchor.Offset = 0 &&
+                         current.Focus.BlockId = lastPara.Id &&
+                         current.Focus.Offset = lastLen ->
+                    doc
+                | _ ->
+                    let result =
+                        { doc with
+                            Selection =
+                                Some {
+                                    Anchor = { BlockId = firstPara.Id; Offset = 0 }
+                                    Focus = { BlockId = lastPara.Id; Offset = lastLen }
+                                } }
+                    rememberSelectAllDocument doc result
+                    result
+            | _ -> doc
 
 let private collectSelectionBufferReplacements
     (doc: Document)
