@@ -2423,15 +2423,15 @@ let findBlock doc blockId =
 let private scanTopBlockUntil blocks blockId =
     let rec loop remaining =
         match remaining with
-        | block :: _ when getBlockId block = blockId -> Some block
+        | block :: _ when blockIdKeyEquals (getBlockId block) blockId -> ValueSome block
         | _ :: tail -> loop tail
-        | [] -> None
+        | [] -> ValueNone
     loop blocks
 
 let private scanTopBlockWithIndexUntil blocks blockId =
     let rec loop index remaining =
         match remaining with
-        | block :: _ when getBlockId block = blockId -> ValueSome (struct (block, index))
+        | block :: _ when blockIdKeyEquals (getBlockId block) blockId -> ValueSome (struct (block, index))
         | _ :: tail -> loop (index + 1) tail
         | [] -> ValueNone
     loop 0 blocks
@@ -2440,15 +2440,15 @@ let private scanAdjacentTopBlock blocks blockId offset =
     if offset = 1 then
         let rec loop remaining =
             match remaining with
-            | block :: next :: _ when getBlockId block = blockId -> Some next
-            | block :: [] when getBlockId block = blockId -> None
+            | block :: next :: _ when blockIdKeyEquals (getBlockId block) blockId -> Some next
+            | block :: [] when blockIdKeyEquals (getBlockId block) blockId -> None
             | _ :: tail -> loop tail
             | [] -> None
         loop blocks
     elif offset = -1 then
         let rec loop hasPrevious previous remaining =
             match remaining with
-            | block :: _ when getBlockId block = blockId ->
+            | block :: _ when blockIdKeyEquals (getBlockId block) blockId ->
                 if hasPrevious then Some previous else None
             | block :: tail -> loop true block tail
             | [] -> None
@@ -2460,8 +2460,11 @@ let private tryFindTopBlockUntil doc blockId =
     match tryGetBlockLookup doc.Blocks with
     | ValueSome lookup ->
         match tryFindBlockLookupEntry lookup blockId with
-        | ValueSome entry -> entry.TopBlockResult
-        | ValueNone -> None
+        | ValueSome entry ->
+            match entry.TopBlockResult with
+            | Some block -> ValueSome block
+            | None -> ValueNone
+        | ValueNone -> ValueNone
     | ValueNone -> scanTopBlockUntil doc.Blocks blockId
 
 let private tryFindTopBlockWithIndexUntil doc blockId =
@@ -8345,42 +8348,59 @@ let private hasHeadingStyle level buffer =
     matches
 
 let private styleHeadingBuffer level buffer =
-    let len = TextBuffer.length buffer
-    if len = 0 || hasHeadingStyle level buffer then buffer
+    if hasHeadingStyle level buffer then buffer
     else
-        TextBuffer.applyStyle 0 len (fun style ->
-            { style with
-                Bold = level >= 1 && level <= 3
-                FontSize = headingFontSize level }) buffer
+        let len = TextBuffer.length buffer
+        if len = 0 then buffer
+        else
+            TextBuffer.applyStyle 0 len (fun style ->
+                { style with
+                    Bold = level >= 1 && level <= 3
+                    FontSize = headingFontSize level }) buffer
+
+let mutable private setHeadingLevelNoopCacheSet = false
+let mutable private setHeadingLevelNoopCacheDoc = Unchecked.defaultof<Document>
+let mutable private setHeadingLevelNoopCacheLevel = 0
+
+let private rememberSetHeadingLevelNoop boundedLevel doc =
+    setHeadingLevelNoopCacheSet <- true
+    setHeadingLevelNoopCacheDoc <- doc
+    setHeadingLevelNoopCacheLevel <- boundedLevel
+    doc
 
 let setHeadingLevel level doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match tryFindTopBlockUntil doc sel.Focus.BlockId with
-        | Some block ->
-            match block with
-            | Paragraph para
-            | Heading (_, para) ->
-                let boundedLevel = max 1 (min 3 level)
-                let styledBuffer = styleHeadingBuffer boundedLevel para.Buffer
+    let boundedLevel = max 1 (min 3 level)
+    if setHeadingLevelNoopCacheSet
+       && setHeadingLevelNoopCacheLevel = boundedLevel
+       && obj.ReferenceEquals(setHeadingLevelNoopCacheDoc, doc) then
+        doc
+    else
+        match doc.Selection with
+        | None -> rememberSetHeadingLevelNoop boundedLevel doc
+        | Some sel ->
+            match tryFindTopBlockUntil doc sel.Focus.BlockId with
+            | ValueSome block ->
                 match block with
-                | Heading (currentLevel, _) when currentLevel = boundedLevel && obj.ReferenceEquals(styledBuffer, para.Buffer) ->
-                    doc
-                | _ ->
-                    let styledPara =
-                        if obj.ReferenceEquals(styledBuffer, para.Buffer) then para
-                        else { para with Buffer = styledBuffer }
-                    replaceFirstTopLevelBlock doc para.Id (Heading (boundedLevel, styledPara))
-            | _ -> doc
-        | _ -> doc
+                | Paragraph para
+                | Heading (_, para) ->
+                    match block with
+                    | Heading (currentLevel, _) when currentLevel = boundedLevel && hasHeadingStyle boundedLevel para.Buffer ->
+                        rememberSetHeadingLevelNoop boundedLevel doc
+                    | _ ->
+                        let styledBuffer = styleHeadingBuffer boundedLevel para.Buffer
+                        let styledPara =
+                            if obj.ReferenceEquals(styledBuffer, para.Buffer) then para
+                            else { para with Buffer = styledBuffer }
+                        replaceFirstTopLevelBlock doc para.Id (Heading (boundedLevel, styledPara))
+                | _ -> rememberSetHeadingLevelNoop boundedLevel doc
+            | ValueNone -> rememberSetHeadingLevelNoop boundedLevel doc
 
 let clearHeading doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
         match tryFindTopBlockUntil doc sel.Focus.BlockId with
-        | Some (Heading (_, para)) -> replaceFirstTopLevelBlock doc para.Id (Paragraph para)
+        | ValueSome (Heading (_, para)) -> replaceFirstTopLevelBlock doc para.Id (Paragraph para)
         | _ -> doc
 
 /// Move cursor left

@@ -2481,7 +2481,7 @@ let headingNoopDoc =
     { Doc.empty with
         Blocks = [ Doc.Heading (1, headingNoopPara) ]
         Selection = Some { Anchor = pos "native-heading-noop" 0; Focus = pos "native-heading-noop" 0 } }
-Doc.findBlock headingNoopDoc "native-heading-noop" |> ignore
+Doc.setHeadingLevel 1 headingNoopDoc |> ignore
 System.GC.Collect()
 System.GC.WaitForPendingFinalizers()
 System.GC.Collect()
@@ -2494,8 +2494,8 @@ for _pass in 1 .. 200000 do
 headingNoopSw.Stop()
 let headingNoopAllocated = System.GC.GetAllocatedBytesForCurrentThread() - headingNoopAllocatedBefore
 check "native heading noop cache hot hit"
-    (headingNoopSw.Elapsed.TotalMilliseconds < 250.0
-     && headingNoopAllocated < 128L * 1024L
+    (headingNoopSw.Elapsed.TotalMilliseconds < 75.0
+     && headingNoopAllocated < 4L * 1024L
      && headingNoopSame = 200000)
     true
 let tableCellMarginCell : Doc.TableCell =
