@@ -11179,6 +11179,7 @@ let private collectFormulaCells (model: SpreadsheetModel) =
     let mutable firstFormula = Unchecked.defaultof<string>
     let mutable firstParsed = Unchecked.defaultof<Result<Expr, string>>
     let mutable repeatedFormulas: HashSet<string> = null
+    let mutable mayUseCriteriaCache = false
     let markRepeatedFormula formula =
         if isNull repeatedFormulas then
             repeatedFormulas <- HashSet<string>()
@@ -11229,6 +11230,9 @@ let private collectFormulaCells (model: SpreadsheetModel) =
     |> Map.iter (fun addr cell ->
         match cell.Value with
         | CellValue.Formula (formula, _) ->
+            if not mayUseCriteriaCache
+               && formula.IndexOf("IF", StringComparison.OrdinalIgnoreCase) >= 0 then
+                mayUseCriteriaCache <- true
             match parseFormulaCached formula with
             | Ok expr ->
                 if containsVolatile expr || exprUsesSubtotal expr then
@@ -11249,7 +11253,7 @@ let private collectFormulaCells (model: SpreadsheetModel) =
                     ParseError = Some error
                 }
         | _ -> ())
-    formulaCells, repeatedFormulas, canCacheResult
+    formulaCells, repeatedFormulas, canCacheResult, mayUseCriteriaCache
 
 /// Recalculate every formula cell in a model, in dependency order.
 /// `currentSheet` scopes defined-name resolution to the sheet being
@@ -11260,10 +11264,11 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
     match cellsFormulaCountIfKnown model.Cells with
     | Some 0 -> model
     | _ ->
-        let formulaCells, repeatedFormulas, canCacheResult = collectFormulaCells model
+        let formulaCells, repeatedFormulas, canCacheResult, mayUseCriteriaCache = collectFormulaCells model
         rememberCellsFormulaCount model.Cells formulaCells.Count
         if formulaCells.Count = 0 then model else
-        let criteriaCache = CriteriaPredicateCache()
+        let criteriaCache =
+            if mayUseCriteriaCache then Some (CriteriaPredicateCache()) else None
 
         let formulaByAddress = Dictionary<CellAddress, FormulaCell>(formulaCells.Count)
         let addIndexed (index: Dictionary<int, ResizeArray<CellAddress>>) key addr =
@@ -11406,10 +11411,10 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
                 changed <- true
         let evaluateFormulaCell addr (fc: FormulaCell) =
             let updated = { model with Cells = updatedCells }
-            let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some criteriaCache; CurrentCell = Some addr }
+            let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = criteriaCache; CurrentCell = Some addr }
             eval fc.Expr ctx
         let evaluateIndependentFormulaCell addr (fc: FormulaCell) =
-            let ctx = { Model = model; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some criteriaCache; CurrentCell = Some addr }
+            let ctx = { Model = model; Workbook = workbook; Sheet = currentSheet; CriteriaCache = criteriaCache; CurrentCell = Some addr }
             eval fc.Expr ctx
         let evaluateCachedIndependentFormulaCell (independentResultCache: Dictionary<string, CellValue>) addr (fc: FormulaCell) =
             let mutable cached = Unchecked.defaultof<CellValue>
