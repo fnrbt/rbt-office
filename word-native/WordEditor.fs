@@ -475,6 +475,8 @@ and WordLayoutCache = {
     mutable RendererFramePreviousSelectionCommands: WordPaint.PaintCommand list option
     mutable RendererFramePreviousHoverCommands: WordPaint.PaintCommand list option
     mutable RendererFramePreviousCommands: Cmd list option
+    mutable RendererCommandsExact: RendererCommandsExactCacheEntry option
+    mutable RendererCommandsPreviousExact: RendererCommandsExactCacheEntry option
     mutable RendererViewportContentLayouts: WordLayout.BlockLayout array option
     mutable RendererViewportContentScrollY: float
     mutable RendererViewportContentHeight: float
@@ -485,6 +487,15 @@ and WordLayoutCache = {
     mutable RendererViewportContentPreviousCommands: Cmd list option
     mutable ViewportSupportDocument: Document option
     mutable ViewportSupportsContentCommands: bool option
+}
+
+and RendererCommandsExactCacheEntry = {
+    ExactDocument: Document
+    ExactWidth: float
+    ExactHeight: float
+    ExactResolveImage: string -> Framebuffer option
+    ExactHoveredImage: (BlockId * int) option
+    ExactCommands: Cmd list
 }
 
 let private maxUndoDepth = 50
@@ -964,6 +975,8 @@ let private createLayoutCache () = {
     RendererFramePreviousSelectionCommands = None
     RendererFramePreviousHoverCommands = None
     RendererFramePreviousCommands = None
+    RendererCommandsExact = None
+    RendererCommandsPreviousExact = None
     RendererViewportContentLayouts = None
     RendererViewportContentScrollY = 0.0
     RendererViewportContentHeight = 0.0
@@ -1000,6 +1013,10 @@ let createState doc = {
     LayoutCache = createLayoutCache()
     FocusId = Focus.allocId()
 }
+
+let private clearRendererCommandsExactCache (cache: WordLayoutCache) =
+    cache.RendererCommandsExact <- None
+    cache.RendererCommandsPreviousExact <- None
 
 let private layoutSettings width (doc: Document) : WordLayout.LayoutSettings =
     let sourceWidth = max 1.0 doc.PageSetup.PageWidth
@@ -1061,6 +1078,7 @@ let private cachedLayouts width (state: WordEditorState) doc =
         cache.RendererFramePreviousSelectionCommands <- None
         cache.RendererFramePreviousHoverCommands <- None
         cache.RendererFramePreviousCommands <- None
+        clearRendererCommandsExactCache cache
         cache.RendererViewportContentLayouts <- None
         cache.RendererViewportContentCommands <- None
         cache.RendererViewportContentPreviousLayouts <- None
@@ -2112,33 +2130,37 @@ let private rendererCommandsForContent resolveImage state contentCommands =
     match state.LayoutCache.RendererContentPaintCommands with
     | Some cachedPaintCommands when obj.ReferenceEquals(cachedPaintCommands, contentCommands) ->
         match state.LayoutCache.RendererContentCommands with
-        | Some cachedRendererCommands -> cachedRendererCommands
+        | Some cachedRendererCommands -> struct (cachedRendererCommands, true)
         | None ->
             let rendererCommands = ResizeArray<Cmd>()
             for paintCommand in contentCommands do
                 rendererCommands.AddRange(toRendererCommand resolveImage paintCommand)
             let rendered = resizeArrayToList rendererCommands
-            if rendererContentCommandsCacheable contentCommands then
+            let cacheable = rendererContentCommandsCacheable contentCommands
+            if cacheable then
                 state.LayoutCache.RendererContentPaintCommands <- Some contentCommands
                 state.LayoutCache.RendererContentCommands <- Some rendered
             else
                 state.LayoutCache.RendererContentPaintCommands <- None
                 state.LayoutCache.RendererContentCommands <- None
                 clearRendererFrameCommands state
-            rendered
+                clearRendererCommandsExactCache state.LayoutCache
+            struct (rendered, cacheable)
     | _ ->
         let rendererCommands = ResizeArray<Cmd>()
         for paintCommand in contentCommands do
             rendererCommands.AddRange(toRendererCommand resolveImage paintCommand)
         let rendered = resizeArrayToList rendererCommands
-        if rendererContentCommandsCacheable contentCommands then
+        let cacheable = rendererContentCommandsCacheable contentCommands
+        if cacheable then
             state.LayoutCache.RendererContentPaintCommands <- Some contentCommands
             state.LayoutCache.RendererContentCommands <- Some rendered
         else
             state.LayoutCache.RendererContentPaintCommands <- None
             state.LayoutCache.RendererContentCommands <- None
             clearRendererFrameCommands state
-        rendered
+            clearRendererCommandsExactCache state.LayoutCache
+        struct (rendered, cacheable)
 
 let private samePaintCommands left right =
     obj.ReferenceEquals(left, right) || left = right
@@ -2332,30 +2354,100 @@ let private rendererViewportContentCommands
             refreshRendererViewportContentCommands
                 resolveImage state settings measureRange layouts scrollY viewportHeight
 
-let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) state (doc: Document) =
-    let struct (settings, cached) =
-        match tryCachedLayoutsValue width state doc with
-        | ValueSome cached -> cached
-        | ValueNone ->
-            let settings, cached = cachedLayouts width state doc
-            struct (settings, cached)
-    let cachedLayouts = state.LayoutCache.Layouts
-    let layouts, contentCommands, _ =
-        WordPaint.collectDocumentCommandsWithLayouts settings "Calibri" measureText measureRange doc cachedLayouts
-    let contentRendererCommands = rendererCommandsForContent resolveImage state contentCommands
-    if doc.Selection.IsNone && hoveredImage.IsNone then
-        clearRendererFrameCommands state
-        contentRendererCommands
-    else
-        let _, layoutLookup = cachedLayoutLookup width state doc
-        let selectionCommands = rendererSelectionCommandsForState state cached settings measureRange doc layoutLookup
-        let hoverCommands = WordPaint.hoverCommandsLookup settings layoutLookup hoveredImage
+let private sameHoveredImage left right =
+    match left with
+    | Some (leftBlockId, leftIndex) ->
+        match right with
+        | Some (rightBlockId, rightIndex) ->
+            leftIndex = rightIndex && leftBlockId = rightBlockId
+        | None -> false
+    | None -> right.IsNone
 
-        if selectionCommands.IsEmpty && hoverCommands.IsEmpty then
+let private rendererCommandsExactEntryMatches
+    width
+    height
+    (resolveImage: string -> Framebuffer option)
+    hoveredImage
+    (doc: Document)
+    (entry: RendererCommandsExactCacheEntry) =
+    entry.ExactWidth = width
+    && entry.ExactHeight = height
+    && sameHoveredImage entry.ExactHoveredImage hoveredImage
+    && obj.ReferenceEquals(entry.ExactDocument, doc)
+    && obj.ReferenceEquals(entry.ExactResolveImage, resolveImage)
+
+let private tryRendererCommandsExact
+    width
+    height
+    (resolveImage: string -> Framebuffer option)
+    hoveredImage
+    state
+    doc =
+    let cache = state.LayoutCache
+    match cache.RendererCommandsExact with
+    | Some entry when rendererCommandsExactEntryMatches width height resolveImage hoveredImage doc entry ->
+        ValueSome entry.ExactCommands
+    | _ ->
+        match cache.RendererCommandsPreviousExact with
+        | Some entry when rendererCommandsExactEntryMatches width height resolveImage hoveredImage doc entry ->
+            ValueSome entry.ExactCommands
+        | _ -> ValueNone
+
+let private rememberRendererCommandsExact
+    width
+    height
+    (resolveImage: string -> Framebuffer option)
+    hoveredImage
+    state
+    doc
+    commands =
+    let cache = state.LayoutCache
+    cache.RendererCommandsPreviousExact <- cache.RendererCommandsExact
+    cache.RendererCommandsExact <-
+        Some {
+            ExactDocument = doc
+            ExactWidth = width
+            ExactHeight = height
+            ExactResolveImage = resolveImage
+            ExactHoveredImage = hoveredImage
+            ExactCommands = commands
+        }
+
+let commands (width: float) (height: float) (resolveImage: string -> Framebuffer option) (hoveredImage: (BlockId * int) option) state (doc: Document) =
+    match tryRendererCommandsExact width height resolveImage hoveredImage state doc with
+    | ValueSome commands ->
+        if doc.Selection.IsNone && hoveredImage.IsNone then
             clearRendererFrameCommands state
-            contentRendererCommands
-        else
-            rendererCommandsForFrame resolveImage state contentRendererCommands selectionCommands hoverCommands
+        commands
+    | ValueNone ->
+        let struct (settings, cached) =
+            match tryCachedLayoutsValue width state doc with
+            | ValueSome cached -> cached
+            | ValueNone ->
+                let settings, cached = cachedLayouts width state doc
+                struct (settings, cached)
+        let cachedLayouts = state.LayoutCache.Layouts
+        let layouts, contentCommands, _ =
+            WordPaint.collectDocumentCommandsWithLayouts settings "Calibri" measureText measureRange doc cachedLayouts
+        let struct (contentRendererCommands, contentCommandsCacheable) =
+            rendererCommandsForContent resolveImage state contentCommands
+        let commands =
+            if doc.Selection.IsNone && hoveredImage.IsNone then
+                clearRendererFrameCommands state
+                contentRendererCommands
+            else
+                let _, layoutLookup = cachedLayoutLookup width state doc
+                let selectionCommands = rendererSelectionCommandsForState state cached settings measureRange doc layoutLookup
+                let hoverCommands = WordPaint.hoverCommandsLookup settings layoutLookup hoveredImage
+
+                if selectionCommands.IsEmpty && hoverCommands.IsEmpty then
+                    clearRendererFrameCommands state
+                    contentRendererCommands
+                else
+                    rendererCommandsForFrame resolveImage state contentRendererCommands selectionCommands hoverCommands
+        if contentCommandsCacheable then
+            rememberRendererCommandsExact width height resolveImage hoveredImage state doc commands
+        commands
 
 let private commandsInViewport
     (width: float)

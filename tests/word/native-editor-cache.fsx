@@ -1632,7 +1632,7 @@ System.GC.Collect()
 let rendererSelectionAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
 let rendererSelectionSw = System.Diagnostics.Stopwatch.StartNew()
 let mutable rendererSelectionTotal = 0
-for _ in 1 .. 50 do
+for _ in 1 .. 50000 do
     rendererSelectionTotal <-
         rendererSelectionTotal
         + (Composit.Ui.WordEditor.commands 900.0 600.0 noImage None rendererSelectionState rendererSelectionDoc).Length
@@ -1640,9 +1640,42 @@ rendererSelectionSw.Stop()
 let rendererSelectionAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - rendererSelectionAllocatedBefore
 check "native selection command cache alloc"
-    (rendererSelectionSw.Elapsed.TotalMilliseconds < 20.0
-     && rendererSelectionAllocated < 1024L * 1024L
-     && rendererSelectionTotal = rendererSelectionCommandsA.Length * 50)
+    (rendererSelectionSw.Elapsed.TotalMilliseconds < 80.0
+     && rendererSelectionAllocated < 64L * 1024L
+     && rendererSelectionTotal = rendererSelectionCommandsA.Length * 50000)
+    true
+
+let rendererExactCycleState = Composit.Ui.WordEditor.createState rendererCommandDoc
+let rendererExactCycleA =
+    Composit.Ui.WordEditor.commands 900.0 600.0 noImage None rendererExactCycleState rendererCommandDoc
+let rendererExactCycleB =
+    Composit.Ui.WordEditor.commands 900.0 600.0 noImage None rendererExactCycleState rendererSelectionDoc
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let rendererExactCycleAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let rendererExactCycleSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable rendererExactCycleHits = 0
+for index in 1 .. 50000 do
+    if index &&& 1 = 0 then
+        if obj.ReferenceEquals(
+            Composit.Ui.WordEditor.commands 900.0 600.0 noImage None rendererExactCycleState rendererCommandDoc,
+            rendererExactCycleA) then
+            rendererExactCycleHits <- rendererExactCycleHits + 1
+    else
+        if obj.ReferenceEquals(
+            Composit.Ui.WordEditor.commands 900.0 600.0 noImage None rendererExactCycleState rendererSelectionDoc,
+            rendererExactCycleB) then
+            rendererExactCycleHits <- rendererExactCycleHits + 1
+rendererExactCycleSw.Stop()
+let rendererExactCycleAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - rendererExactCycleAllocatedBefore
+check "native renderer exact command cycle"
+    (rendererExactCycleSw.Elapsed.TotalMilliseconds < 80.0
+     && rendererExactCycleAllocated < 64L * 1024L
+     && rendererExactCycleHits = 50000)
     true
 
 if isNull cachedLayouts
