@@ -8903,16 +8903,46 @@ let private rememberFindTextCache cached =
         cached :: retained
         |> setFindTextCache
 
-let private cachedFindTextMatches query matchCase doc =
-    let key = struct (query, matchCase)
-    match tryGetFindTextCache doc.Blocks with
-    | ValueSome cached when findTextCacheRetainable cached ->
-        let mutable entry = Unchecked.defaultof<FindTextCacheEntry>
-        if cached.Entries.TryGetValue(key, &entry) then ValueSome entry else ValueNone
-    | ValueSome cached ->
-        rememberFindTextCache cached
+let mutable private findTextLastSet = false
+let mutable private findTextLastBlocks = Unchecked.defaultof<Block list>
+let mutable private findTextLastQuery = ""
+let mutable private findTextLastMatchCase = false
+let mutable private findTextLastEntry = Unchecked.defaultof<FindTextCacheEntry>
+
+let private tryGetFindTextLast query matchCase blocks =
+    if findTextLastSet
+       && findTextLastMatchCase = matchCase
+       && obj.ReferenceEquals(findTextLastBlocks, blocks)
+       && (obj.ReferenceEquals(findTextLastQuery, query)
+           || System.String.Equals(findTextLastQuery, query, System.StringComparison.Ordinal)) then
+        ValueSome findTextLastEntry
+    else
         ValueNone
-    | ValueNone -> ValueNone
+
+let private rememberFindTextLast query matchCase blocks entry =
+    findTextLastSet <- true
+    findTextLastBlocks <- blocks
+    findTextLastQuery <- query
+    findTextLastMatchCase <- matchCase
+    findTextLastEntry <- entry
+
+let private cachedFindTextMatches query matchCase doc =
+    match tryGetFindTextLast query matchCase doc.Blocks with
+    | ValueSome entry -> ValueSome entry
+    | ValueNone ->
+        let key = struct (query, matchCase)
+        match tryGetFindTextCache doc.Blocks with
+        | ValueSome cached when findTextCacheRetainable cached ->
+            let mutable entry = Unchecked.defaultof<FindTextCacheEntry>
+            if cached.Entries.TryGetValue(key, &entry) then
+                rememberFindTextLast query matchCase doc.Blocks entry
+                ValueSome entry
+            else
+                ValueNone
+        | ValueSome cached ->
+            rememberFindTextCache cached
+            ValueNone
+        | ValueNone -> ValueNone
 
 let private removeFindTextCacheEntry key (cache: FindTextCache) =
     let mutable existing = Unchecked.defaultof<FindTextCacheEntry>

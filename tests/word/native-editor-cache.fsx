@@ -2201,8 +2201,8 @@ for _ in 1 .. findTextHotProbeCount do
 findTextHotSw.Stop()
 let findTextHotAllocated = System.GC.GetAllocatedBytesForCurrentThread() - findTextHotAllocatedBefore
 check "native find text cache hot hit"
-    (findTextHotSw.Elapsed.TotalMilliseconds < 120.0
-     && findTextHotAllocated < 1024L * 1024L
+    (findTextHotSw.Elapsed.TotalMilliseconds < 30.0
+     && findTextHotAllocated < 4L * 1024L
      && findTextHotFirst.Length = findTextHotParagraphCount / 100
      && findTextHotTotal = findTextHotFirst.Length * findTextHotProbeCount
      && findTextHotReused)
