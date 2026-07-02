@@ -1937,35 +1937,53 @@ let private clearRendererFrameCommands state =
     state.LayoutCache.RendererFramePreviousHoverCommands <- None
     state.LayoutCache.RendererFramePreviousCommands <- None
 
+let private samePosition (left: Position) (right: Position) =
+    left.Offset = right.Offset
+    && left.BlockId = right.BlockId
+
+let private sameSelection (left: Selection) (right: Selection) =
+    samePosition left.Anchor right.Anchor
+    && samePosition left.Focus right.Focus
+
+let private sameSelectionOption left right =
+    match left with
+    | Some leftSelection ->
+        match right with
+        | Some rightSelection -> sameSelection leftSelection rightSelection
+        | None -> false
+    | None -> right.IsNone
+
+let private refreshRendererSelectionCommands state layouts settings measureRange doc layoutLookup selection =
+    let commands = WordPaint.selectionCommandsWithRangeLookup settings measureRange doc layoutLookup
+    state.LayoutCache.RendererSelectionPreviousLayouts <- state.LayoutCache.RendererSelectionLayouts
+    state.LayoutCache.RendererSelectionPreviousValue <- state.LayoutCache.RendererSelectionValue
+    state.LayoutCache.RendererSelectionPreviousCommands <- state.LayoutCache.RendererSelectionCommands
+    state.LayoutCache.RendererSelectionLayouts <- Some layouts
+    state.LayoutCache.RendererSelectionValue <- selection
+    state.LayoutCache.RendererSelectionCommands <- Some commands
+    commands
+
 let private rendererSelectionCommandsForState state layouts settings measureRange doc layoutLookup =
-    match
-        state.LayoutCache.RendererSelectionLayouts,
-        state.LayoutCache.RendererSelectionValue,
-        state.LayoutCache.RendererSelectionCommands
-    with
-    | Some cachedLayouts, cachedSelection, Some cachedCommands
+    let selection = doc.Selection
+    match state.LayoutCache.RendererSelectionLayouts with
+    | Some cachedLayouts
         when obj.ReferenceEquals(cachedLayouts, layouts)
-             && cachedSelection = doc.Selection ->
-        cachedCommands
+             && sameSelectionOption state.LayoutCache.RendererSelectionValue selection ->
+        match state.LayoutCache.RendererSelectionCommands with
+        | Some cachedCommands -> cachedCommands
+        | None ->
+            refreshRendererSelectionCommands state layouts settings measureRange doc layoutLookup selection
     | _ ->
-        match
-            state.LayoutCache.RendererSelectionPreviousLayouts,
-            state.LayoutCache.RendererSelectionPreviousValue,
-            state.LayoutCache.RendererSelectionPreviousCommands
-        with
-        | Some cachedLayouts, cachedSelection, Some cachedCommands
+        match state.LayoutCache.RendererSelectionPreviousLayouts with
+        | Some cachedLayouts
             when obj.ReferenceEquals(cachedLayouts, layouts)
-                 && cachedSelection = doc.Selection ->
-            cachedCommands
+                 && sameSelectionOption state.LayoutCache.RendererSelectionPreviousValue selection ->
+            match state.LayoutCache.RendererSelectionPreviousCommands with
+            | Some cachedCommands -> cachedCommands
+            | None ->
+                refreshRendererSelectionCommands state layouts settings measureRange doc layoutLookup selection
         | _ ->
-            let commands = WordPaint.selectionCommandsWithRangeLookup settings measureRange doc layoutLookup
-            state.LayoutCache.RendererSelectionPreviousLayouts <- state.LayoutCache.RendererSelectionLayouts
-            state.LayoutCache.RendererSelectionPreviousValue <- state.LayoutCache.RendererSelectionValue
-            state.LayoutCache.RendererSelectionPreviousCommands <- state.LayoutCache.RendererSelectionCommands
-            state.LayoutCache.RendererSelectionLayouts <- Some layouts
-            state.LayoutCache.RendererSelectionValue <- doc.Selection
-            state.LayoutCache.RendererSelectionCommands <- Some commands
-            commands
+            refreshRendererSelectionCommands state layouts settings measureRange doc layoutLookup selection
 
 let private rendererContentCommandsCacheable (paintCommands: WordPaint.PaintCommand list) =
     let mutable remaining = paintCommands

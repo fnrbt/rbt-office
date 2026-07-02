@@ -19,6 +19,22 @@ module TB = RedBat.Word.TextBuffer
 type CachedLayoutArrayDelegate =
     delegate of float * Composit.Ui.WordEditor.WordEditorState * Doc.Document -> Layout.LayoutSettings * Layout.BlockLayout array
 
+type CachedLayoutsDelegate =
+    delegate of float * Composit.Ui.WordEditor.WordEditorState * Doc.Document -> Layout.LayoutSettings * Layout.BlockLayout list
+
+type CachedLayoutLookupDelegate =
+    delegate of float * Composit.Ui.WordEditor.WordEditorState * Doc.Document -> Layout.LayoutSettings * (Doc.BlockId -> Layout.BlockLayout option)
+
+type RendererSelectionCommandsForStateDelegate =
+    delegate of
+        Composit.Ui.WordEditor.WordEditorState
+        * Layout.BlockLayout list
+        * Layout.LayoutSettings
+        * Layout.TextRangeMeasurer
+        * Doc.Document
+        * (Doc.BlockId -> Layout.BlockLayout option)
+            -> Paint.PaintCommand list
+
 type RendererViewportContentCommandsDelegate =
     delegate of
         (string -> Framebuffer option)
@@ -104,6 +120,10 @@ let documentHeightCached =
     wordEditorType.GetMethod("documentHeightCached", staticBindingFlags)
 let commandsInViewport =
     wordEditorType.GetMethod("commandsInViewport", BindingFlags.NonPublic ||| BindingFlags.Static)
+let cachedLayoutLookup =
+    wordEditorType.GetMethod("cachedLayoutLookup", staticBindingFlags)
+let rendererSelectionCommandsForState =
+    wordEditorType.GetMethod("rendererSelectionCommandsForState", staticBindingFlags)
 let supportsViewportContentCommandsCached =
     wordEditorType.GetMethod("supportsViewportContentCommandsCached", staticBindingFlags)
 let cachedLayoutArray =
@@ -117,6 +137,22 @@ let cachedLayoutArrayDelegate =
         Unchecked.defaultof<CachedLayoutArrayDelegate>
     else
         cachedLayoutArray.CreateDelegate(typeof<CachedLayoutArrayDelegate>) :?> CachedLayoutArrayDelegate
+let cachedLayoutsDelegate =
+    if isNull cachedLayouts then
+        Unchecked.defaultof<CachedLayoutsDelegate>
+    else
+        cachedLayouts.CreateDelegate(typeof<CachedLayoutsDelegate>) :?> CachedLayoutsDelegate
+let cachedLayoutLookupDelegate =
+    if isNull cachedLayoutLookup then
+        Unchecked.defaultof<CachedLayoutLookupDelegate>
+    else
+        cachedLayoutLookup.CreateDelegate(typeof<CachedLayoutLookupDelegate>) :?> CachedLayoutLookupDelegate
+let rendererSelectionCommandsForStateDelegate =
+    if isNull rendererSelectionCommandsForState then
+        Unchecked.defaultof<RendererSelectionCommandsForStateDelegate>
+    else
+        rendererSelectionCommandsForState.CreateDelegate(typeof<RendererSelectionCommandsForStateDelegate>)
+        :?> RendererSelectionCommandsForStateDelegate
 let rendererViewportContentCommandsDelegate =
     if isNull rendererViewportContentCommands then
         Unchecked.defaultof<RendererViewportContentCommandsDelegate>
@@ -1502,6 +1538,63 @@ check "native selection command cache alloc"
      && rendererSelectionAllocated < 1024L * 1024L
      && rendererSelectionTotal = rendererSelectionCommandsA.Length * 50)
     true
+
+if isNull cachedLayouts
+   || isNull cachedLayoutLookup
+   || isNull rendererSelectionCommandsForState
+   || isNull measureRangeProperty then
+    fail <- fail + 1
+    printfn "FAIL %-34s expected private renderer selection cache helpers" "native renderer selection reflection"
+else
+    let rendererSelectionSettings, rendererSelectionLayouts =
+        cachedLayoutsDelegate.Invoke(900.0, rendererSelectionState, rendererSelectionDoc)
+    let _, rendererSelectionLayoutLookup =
+        cachedLayoutLookupDelegate.Invoke(900.0, rendererSelectionState, rendererSelectionDoc)
+    let rendererSelectionPaintCommandsA =
+        rendererSelectionCommandsForStateDelegate.Invoke(
+            rendererSelectionState,
+            rendererSelectionLayouts,
+            rendererSelectionSettings,
+            measureRange,
+            rendererSelectionDoc,
+            rendererSelectionLayoutLookup)
+    let rendererSelectionPaintCommandsB =
+        rendererSelectionCommandsForStateDelegate.Invoke(
+            rendererSelectionState,
+            rendererSelectionLayouts,
+            rendererSelectionSettings,
+            measureRange,
+            rendererSelectionDoc,
+            rendererSelectionLayoutLookup)
+    check "native renderer selection cache reuse"
+        (obj.ReferenceEquals(rendererSelectionPaintCommandsA, rendererSelectionPaintCommandsB))
+        true
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let rendererSelectionDirectAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let rendererSelectionDirectSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable rendererSelectionDirectTotal = 0
+    for _ in 1 .. 100000 do
+        rendererSelectionDirectTotal <-
+            rendererSelectionDirectTotal
+            + rendererSelectionCommandsForStateDelegate.Invoke(
+                rendererSelectionState,
+                rendererSelectionLayouts,
+                rendererSelectionSettings,
+                measureRange,
+                rendererSelectionDoc,
+                rendererSelectionLayoutLookup).Length
+    rendererSelectionDirectSw.Stop()
+    let rendererSelectionDirectAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - rendererSelectionDirectAllocatedBefore
+    check "native renderer selection cache alloc"
+        (rendererSelectionDirectSw.Elapsed.TotalMilliseconds < 200.0
+         && rendererSelectionDirectAllocated < 64L * 1024L
+         && rendererSelectionDirectTotal = rendererSelectionPaintCommandsA.Length * 100000)
+        true
 
 let rendererMovingSelectionState = Composit.Ui.WordEditor.createState rendererSelectionDoc
 let rendererMovingSelectionCommandLength =
