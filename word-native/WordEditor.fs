@@ -1257,7 +1257,94 @@ let private endOfParagraph blockId doc =
     | Some para -> { BlockId = blockId; Offset = WordTextBuffer.length para.Buffer }
     | None -> { BlockId = blockId; Offset = 0 }
 
-let private imageMoveTarget width x y blockId sourceOffset state doc =
+let mutable private imageMoveTargetLastSet = false
+let mutable private imageMoveTargetLastWidth = 0.0
+let mutable private imageMoveTargetLastX = 0.0
+let mutable private imageMoveTargetLastY = 0.0
+let mutable private imageMoveTargetLastBlockId = ""
+let mutable private imageMoveTargetLastSourceOffset = 0
+let mutable private imageMoveTargetLastState = Unchecked.defaultof<WordEditorState>
+let mutable private imageMoveTargetLastDoc = Unchecked.defaultof<Document>
+let mutable private imageMoveTargetLastTarget = Unchecked.defaultof<Position>
+let mutable private imageMoveTargetPreviousSet = false
+let mutable private imageMoveTargetPreviousWidth = 0.0
+let mutable private imageMoveTargetPreviousX = 0.0
+let mutable private imageMoveTargetPreviousY = 0.0
+let mutable private imageMoveTargetPreviousBlockId = ""
+let mutable private imageMoveTargetPreviousSourceOffset = 0
+let mutable private imageMoveTargetPreviousState = Unchecked.defaultof<WordEditorState>
+let mutable private imageMoveTargetPreviousDoc = Unchecked.defaultof<Document>
+let mutable private imageMoveTargetPreviousTarget = Unchecked.defaultof<Position>
+let mutable private imageMoveTargetOlder1Set = false
+let mutable private imageMoveTargetOlder1Width = 0.0
+let mutable private imageMoveTargetOlder1X = 0.0
+let mutable private imageMoveTargetOlder1Y = 0.0
+let mutable private imageMoveTargetOlder1BlockId = ""
+let mutable private imageMoveTargetOlder1SourceOffset = 0
+let mutable private imageMoveTargetOlder1State = Unchecked.defaultof<WordEditorState>
+let mutable private imageMoveTargetOlder1Doc = Unchecked.defaultof<Document>
+let mutable private imageMoveTargetOlder1Target = Unchecked.defaultof<Position>
+let mutable private imageMoveTargetOlder2Set = false
+let mutable private imageMoveTargetOlder2Width = 0.0
+let mutable private imageMoveTargetOlder2X = 0.0
+let mutable private imageMoveTargetOlder2Y = 0.0
+let mutable private imageMoveTargetOlder2BlockId = ""
+let mutable private imageMoveTargetOlder2SourceOffset = 0
+let mutable private imageMoveTargetOlder2State = Unchecked.defaultof<WordEditorState>
+let mutable private imageMoveTargetOlder2Doc = Unchecked.defaultof<Document>
+let mutable private imageMoveTargetOlder2Target = Unchecked.defaultof<Position>
+
+let private imageMoveTargetCacheEntryMatches width x y blockId sourceOffset state doc cachedWidth cachedX cachedY cachedBlockId cachedSourceOffset cachedState cachedDoc =
+    width = cachedWidth
+    && x = cachedX
+    && y = cachedY
+    && blockId = cachedBlockId
+    && sourceOffset = cachedSourceOffset
+    && obj.ReferenceEquals(state, cachedState)
+    && obj.ReferenceEquals(doc, cachedDoc)
+
+let private rememberImageMoveTarget width x y blockId sourceOffset state doc target =
+    if imageMoveTargetOlder1Set then
+        imageMoveTargetOlder2Set <- true
+        imageMoveTargetOlder2Width <- imageMoveTargetOlder1Width
+        imageMoveTargetOlder2X <- imageMoveTargetOlder1X
+        imageMoveTargetOlder2Y <- imageMoveTargetOlder1Y
+        imageMoveTargetOlder2BlockId <- imageMoveTargetOlder1BlockId
+        imageMoveTargetOlder2SourceOffset <- imageMoveTargetOlder1SourceOffset
+        imageMoveTargetOlder2State <- imageMoveTargetOlder1State
+        imageMoveTargetOlder2Doc <- imageMoveTargetOlder1Doc
+        imageMoveTargetOlder2Target <- imageMoveTargetOlder1Target
+    if imageMoveTargetPreviousSet then
+        imageMoveTargetOlder1Set <- true
+        imageMoveTargetOlder1Width <- imageMoveTargetPreviousWidth
+        imageMoveTargetOlder1X <- imageMoveTargetPreviousX
+        imageMoveTargetOlder1Y <- imageMoveTargetPreviousY
+        imageMoveTargetOlder1BlockId <- imageMoveTargetPreviousBlockId
+        imageMoveTargetOlder1SourceOffset <- imageMoveTargetPreviousSourceOffset
+        imageMoveTargetOlder1State <- imageMoveTargetPreviousState
+        imageMoveTargetOlder1Doc <- imageMoveTargetPreviousDoc
+        imageMoveTargetOlder1Target <- imageMoveTargetPreviousTarget
+    if imageMoveTargetLastSet then
+        imageMoveTargetPreviousSet <- true
+        imageMoveTargetPreviousWidth <- imageMoveTargetLastWidth
+        imageMoveTargetPreviousX <- imageMoveTargetLastX
+        imageMoveTargetPreviousY <- imageMoveTargetLastY
+        imageMoveTargetPreviousBlockId <- imageMoveTargetLastBlockId
+        imageMoveTargetPreviousSourceOffset <- imageMoveTargetLastSourceOffset
+        imageMoveTargetPreviousState <- imageMoveTargetLastState
+        imageMoveTargetPreviousDoc <- imageMoveTargetLastDoc
+        imageMoveTargetPreviousTarget <- imageMoveTargetLastTarget
+    imageMoveTargetLastSet <- true
+    imageMoveTargetLastWidth <- width
+    imageMoveTargetLastX <- x
+    imageMoveTargetLastY <- y
+    imageMoveTargetLastBlockId <- blockId
+    imageMoveTargetLastSourceOffset <- sourceOffset
+    imageMoveTargetLastState <- state
+    imageMoveTargetLastDoc <- doc
+    imageMoveTargetLastTarget <- target
+
+let private imageMoveTargetUncached width x y blockId sourceOffset state doc =
     let target =
         match hitTestCachedValue width state doc x y with
         | ValueSome (struct (targetBlockId, targetOffset)) -> { BlockId = targetBlockId; Offset = targetOffset }
@@ -1265,6 +1352,30 @@ let private imageMoveTarget width x y blockId sourceOffset state doc =
 
     if target.BlockId = blockId && target.Offset <= sourceOffset then endOfParagraph blockId doc
     else target
+
+let private imageMoveTarget width x y blockId sourceOffset state doc =
+    if imageMoveTargetLastSet
+       && imageMoveTargetCacheEntryMatches width x y blockId sourceOffset state doc imageMoveTargetLastWidth imageMoveTargetLastX imageMoveTargetLastY imageMoveTargetLastBlockId imageMoveTargetLastSourceOffset imageMoveTargetLastState imageMoveTargetLastDoc then
+        imageMoveTargetLastTarget
+    elif imageMoveTargetPreviousSet
+         && imageMoveTargetCacheEntryMatches width x y blockId sourceOffset state doc imageMoveTargetPreviousWidth imageMoveTargetPreviousX imageMoveTargetPreviousY imageMoveTargetPreviousBlockId imageMoveTargetPreviousSourceOffset imageMoveTargetPreviousState imageMoveTargetPreviousDoc then
+        let target = imageMoveTargetPreviousTarget
+        rememberImageMoveTarget width x y blockId sourceOffset state doc target
+        target
+    elif imageMoveTargetOlder1Set
+         && imageMoveTargetCacheEntryMatches width x y blockId sourceOffset state doc imageMoveTargetOlder1Width imageMoveTargetOlder1X imageMoveTargetOlder1Y imageMoveTargetOlder1BlockId imageMoveTargetOlder1SourceOffset imageMoveTargetOlder1State imageMoveTargetOlder1Doc then
+        let target = imageMoveTargetOlder1Target
+        rememberImageMoveTarget width x y blockId sourceOffset state doc target
+        target
+    elif imageMoveTargetOlder2Set
+         && imageMoveTargetCacheEntryMatches width x y blockId sourceOffset state doc imageMoveTargetOlder2Width imageMoveTargetOlder2X imageMoveTargetOlder2Y imageMoveTargetOlder2BlockId imageMoveTargetOlder2SourceOffset imageMoveTargetOlder2State imageMoveTargetOlder2Doc then
+        let target = imageMoveTargetOlder2Target
+        rememberImageMoveTarget width x y blockId sourceOffset state doc target
+        target
+    else
+        let target = imageMoveTargetUncached width x y blockId sourceOffset state doc
+        rememberImageMoveTarget width x y blockId sourceOffset state doc target
+        target
 
 let private documentStart doc : Position option =
     let mutable found = None

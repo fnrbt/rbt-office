@@ -58,6 +58,17 @@ type RendererViewportContentCommandsDelegate =
 type SupportsViewportContentCommandsCachedDelegate =
     delegate of Composit.Ui.WordEditor.WordEditorState * Doc.Document -> bool
 
+type ImageMoveTargetDelegate =
+    delegate of
+        float
+        * float
+        * float
+        * Doc.BlockId
+        * int
+        * Composit.Ui.WordEditor.WordEditorState
+        * Doc.Document
+            -> Doc.Position
+
 let mutable pass = 0
 let mutable fail = 0
 
@@ -189,6 +200,11 @@ let measureRange =
         measureRangeProperty.GetValue(null) :?> Layout.TextRangeMeasurer
 let imageMoveTarget =
     wordEditorType.GetMethod("imageMoveTarget", BindingFlags.NonPublic ||| BindingFlags.Static)
+let imageMoveTargetDelegate =
+    if isNull imageMoveTarget then
+        Unchecked.defaultof<ImageMoveTargetDelegate>
+    else
+        imageMoveTarget.CreateDelegate(typeof<ImageMoveTargetDelegate>) :?> ImageMoveTargetDelegate
 let measureText =
     wordEditorType.GetMethod("measureText", staticBindingFlags)
 let glyphLayoutForPaintText =
@@ -1562,6 +1578,35 @@ else
         (imageTargetSw.Elapsed.TotalMilliseconds < 80.0
          && imageTargetAllocated < 8L * 1024L * 1024L
          && imageTargetChecksum > 0)
+        true
+
+    let invokeImageMoveTargetDirect () =
+        imageMoveTargetDelegate.Invoke(
+            900.0,
+            160.0,
+            600000.0,
+            "native-image-target-00000",
+            0,
+            imageTargetState,
+            imageTargetDoc)
+    invokeImageMoveTargetDirect () |> ignore
+
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let imageTargetDirectAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let imageTargetDirectSw = System.Diagnostics.Stopwatch.StartNew()
+    let mutable imageTargetDirectChecksum = 0
+    for _ in 1 .. 100000 do
+        let target = invokeImageMoveTargetDirect ()
+        imageTargetDirectChecksum <- imageTargetDirectChecksum + target.Offset + target.BlockId.Length
+    imageTargetDirectSw.Stop()
+    let imageTargetDirectAllocated = System.GC.GetAllocatedBytesForCurrentThread() - imageTargetDirectAllocatedBefore
+    check "native image target direct hot hit"
+        (imageTargetDirectSw.Elapsed.TotalMilliseconds < 40.0
+         && imageTargetDirectAllocated < 64L * 1024L
+         && imageTargetDirectChecksum > 0)
         true
 
 let rendererSelectionDoc =
