@@ -4924,6 +4924,38 @@ let private rememberUsedBounds cached =
         |> trim
         |> setUsedBoundsCache
 
+let mutable private usedBoundsSimpleLastSet = false
+let mutable private usedBoundsSimpleLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
+let mutable private usedBoundsSimpleLastMergedCells = Unchecked.defaultof<MergedCell list>
+let mutable private usedBoundsSimpleLastBounds = Unchecked.defaultof<(int * int) option>
+
+let private tryGetUsedBoundsSimpleLast cells mergedCells =
+    if usedBoundsSimpleLastSet
+       && obj.ReferenceEquals(cells, usedBoundsSimpleLastCells)
+       && obj.ReferenceEquals(mergedCells, usedBoundsSimpleLastMergedCells) then
+        ValueSome usedBoundsSimpleLastBounds
+    else
+        ValueNone
+
+let private rememberUsedBoundsSimple cells mergedCells bounds =
+    usedBoundsSimpleLastSet <- true
+    usedBoundsSimpleLastCells <- cells
+    usedBoundsSimpleLastMergedCells <- mergedCells
+    usedBoundsSimpleLastBounds <- bounds
+
+let private tryUsedBoundsSimple (model: SpreadsheetModel) =
+    if List.isEmpty model.MergedCells then
+        match model.Cells.Count with
+        | 0 ->
+            ValueSome None
+        | 1 ->
+            let addr, _ = Map.maxKeyValue model.Cells
+            ValueSome (Some (addr.Row, max 0 addr.Col))
+        | _ ->
+            ValueNone
+    else
+        ValueNone
+
 type private ExportCsvCache = {
     Cells: Map<CellAddress, CellData>
     CellCount: int
@@ -5120,46 +5152,55 @@ let private tryExportSimpleCsv (model: SpreadsheetModel) =
         ValueNone
 
 let usedBounds (model: SpreadsheetModel) : (int * int) option =
-    match tryGetUsedBoundsCache model.Cells model.MergedCells with
-    | ValueSome cached when usedBoundsCacheRetainable cached ->
-        cached.Bounds
-    | ValueSome cached ->
-        rememberUsedBounds cached
-        cached.Bounds
-    | ValueNone ->
-        let mutable any = false
-        let mutable maxRow = 0
-        let mutable maxCol = 0
-
-        if not (Map.isEmpty model.Cells) then
-            any <- true
-            let maxAddr, _ = Map.maxKeyValue model.Cells
-            maxRow <- maxAddr.Row
-
-            model.Cells
-            |> Map.iter (fun addr _ ->
-                if addr.Col > maxCol then maxCol <- addr.Col)
-
-        for merge in model.MergedCells do
-            any <- true
-            if merge.EndRow > maxRow then maxRow <- merge.EndRow
-            if merge.EndCol > maxCol then maxCol <- merge.EndCol
-
-        let bounds = if any then Some (maxRow, maxCol) else None
-        let mergedCellCount = mergedCellCountCapped usedBoundsCacheMaxTotalMergedCells model.MergedCells
-        rememberUsedBounds {
-            Cells = model.Cells
-            CellCount = max 1 model.Cells.Count
-            SourceTextCharCount =
-                if mergedCellCount > usedBoundsCacheMaxTotalMergedCells then
-                    usedBoundsCacheMaxTotalSourceTextChars + 1
-                else
-                    structuralCellSourceTextCharCountFor model.Cells
-            MergedCells = model.MergedCells
-            MergedCellCount = mergedCellCount
-            Bounds = bounds
-        }
+    match tryGetUsedBoundsSimpleLast model.Cells model.MergedCells with
+    | ValueSome bounds ->
         bounds
+    | ValueNone ->
+        match tryUsedBoundsSimple model with
+        | ValueSome bounds ->
+            rememberUsedBoundsSimple model.Cells model.MergedCells bounds
+            bounds
+        | ValueNone ->
+            match tryGetUsedBoundsCache model.Cells model.MergedCells with
+            | ValueSome cached when usedBoundsCacheRetainable cached ->
+                cached.Bounds
+            | ValueSome cached ->
+                rememberUsedBounds cached
+                cached.Bounds
+            | ValueNone ->
+                let mutable any = false
+                let mutable maxRow = 0
+                let mutable maxCol = 0
+
+                if not (Map.isEmpty model.Cells) then
+                    any <- true
+                    let maxAddr, _ = Map.maxKeyValue model.Cells
+                    maxRow <- maxAddr.Row
+
+                    model.Cells
+                    |> Map.iter (fun addr _ ->
+                        if addr.Col > maxCol then maxCol <- addr.Col)
+
+                for merge in model.MergedCells do
+                    any <- true
+                    if merge.EndRow > maxRow then maxRow <- merge.EndRow
+                    if merge.EndCol > maxCol then maxCol <- merge.EndCol
+
+                let bounds = if any then Some (maxRow, maxCol) else None
+                let mergedCellCount = mergedCellCountCapped usedBoundsCacheMaxTotalMergedCells model.MergedCells
+                rememberUsedBounds {
+                    Cells = model.Cells
+                    CellCount = max 1 model.Cells.Count
+                    SourceTextCharCount =
+                        if mergedCellCount > usedBoundsCacheMaxTotalMergedCells then
+                            usedBoundsCacheMaxTotalSourceTextChars + 1
+                        else
+                            structuralCellSourceTextCharCountFor model.Cells
+                    MergedCells = model.MergedCells
+                    MergedCellCount = mergedCellCount
+                    Bounds = bounds
+                }
+                bounds
 
 /// Last populated column in a row. Used by End-key navigation; keeps that
 /// row-specific scan in one place and accounts for merged cells crossing
