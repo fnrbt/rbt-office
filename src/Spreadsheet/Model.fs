@@ -6101,76 +6101,127 @@ let private cachedEmptySearchResults query caseSensitive (model: SpreadsheetMode
 let private rememberEmptySearchResults query caseSensitive (model: SpreadsheetModel) =
     rememberSearchCells query caseSensitive model emptySearchResults
 
+let mutable private searchCellsSimpleLastSet = false
+let mutable private searchCellsSimpleLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
+let mutable private searchCellsSimpleLastQuery = ""
+let mutable private searchCellsSimpleLastCaseSensitive = false
+let mutable private searchCellsSimpleLastResults = Unchecked.defaultof<CellAddress array>
+
+let private tryGetSearchCellsSimpleLast query caseSensitive cells =
+    if searchCellsSimpleLastSet
+       && caseSensitive = searchCellsSimpleLastCaseSensitive
+       && obj.ReferenceEquals(cells, searchCellsSimpleLastCells)
+       && (obj.ReferenceEquals(query, searchCellsSimpleLastQuery)
+           || String.Equals(query, searchCellsSimpleLastQuery, StringComparison.Ordinal)) then
+        ValueSome searchCellsSimpleLastResults
+    else
+        ValueNone
+
+let private rememberSearchCellsSimple query caseSensitive cells results =
+    searchCellsSimpleLastSet <- true
+    searchCellsSimpleLastCells <- cells
+    searchCellsSimpleLastQuery <- query
+    searchCellsSimpleLastCaseSensitive <- caseSensitive
+    searchCellsSimpleLastResults <- results
+
+let private searchCellMatches
+    query
+    caseSensitive
+    numberQueryPossible
+    booleanQueryPossible
+    (errorMatchesSearchText: string -> bool)
+    (cellData: CellData) =
+    if numberQueryPossible || booleanQueryPossible then
+        let cellText =
+            match cellData.Value with
+            | Formula (formula, _) -> formula
+            | other -> displayValue other
+        containsSearchText query caseSensitive cellText
+    else
+        match cellData.Value with
+        | Formula (formula, _) ->
+            containsSearchText query caseSensitive formula
+        | Number _ ->
+            false
+        | Boolean _ when not booleanQueryPossible ->
+            false
+        | Error code ->
+            errorMatchesSearchText code
+        | other ->
+            containsSearchText query caseSensitive (displayValue other)
+
+let private trySearchCellsSimple query caseSensitive numberQueryPossible booleanQueryPossible errorMatchesSearchText (model: SpreadsheetModel) =
+    match model.Cells.Count with
+    | 0 ->
+        ValueSome emptySearchResults
+    | 1 ->
+        let addr, cellData = Map.maxKeyValue model.Cells
+        if searchCellMatches query caseSensitive numberQueryPossible booleanQueryPossible errorMatchesSearchText cellData then
+            ValueSome [| addr |]
+        else
+            ValueSome emptySearchResults
+    | _ ->
+        ValueNone
+
 let searchCells (query: string) (caseSensitive: bool) (model: SpreadsheetModel): CellAddress array =
     if String.IsNullOrEmpty query then
         emptySearchResults
     else
-        match cachedSearchCells query caseSensitive model with
+        match tryGetSearchCellsSimpleLast query caseSensitive model.Cells with
         | ValueSome results ->
             results
         | ValueNone ->
             let numberQueryPossible = numberDisplayMayContainSearchText query
             let booleanQueryPossible = booleanDisplayMayContainSearchText query
             let errorMatchesSearchText = errorSearchTextMatcher query caseSensitive
-            let key = struct (query, caseSensitive)
-            let keyCharCount = searchCellsCacheKeyCharCount key
-            let trackSourceText =
-                model.Cells.Count <= searchCellsCacheMaxTotalCells
-                && keyCharCount <= searchCellsCacheMaxTotalQueryChars
-            let mutable sourceTextCharCount =
-                if trackSourceText then 0 else searchCellsCacheMaxTotalSourceTextChars + 1
-            let results = System.Collections.Generic.List<CellAddress>()
-            let addResult addr =
-                results.Add addr
-                if results.Count > searchCellsCacheMaxResultCount then
-                    sourceTextCharCount <- searchCellsCacheMaxTotalSourceTextChars + 1
-            let trackCellSourceText cellData =
-                if sourceTextCharCount <= searchCellsCacheMaxTotalSourceTextChars
-                   && results.Count <= searchCellsCacheMaxResultCount then
-                    sourceTextCharCount <-
-                        sourceTextAddCapped
-                            searchCellsCacheMaxTotalSourceTextChars
-                            (cellDataTextCharCountFor searchCellsCacheMaxTotalSourceTextChars cellData)
-                            sourceTextCharCount
-            if numberQueryPossible || booleanQueryPossible then
-                model.Cells
-                |> Map.iter (fun addr cellData ->
-                    trackCellSourceText cellData
-                    let cellText =
-                        match cellData.Value with
-                        | Formula (formula, _) -> formula  // Search in formula text
-                        | other -> displayValue other
-
-                    if containsSearchText query caseSensitive cellText then
-                        addResult addr)
-            else
-                model.Cells
-                |> Map.iter (fun addr cellData ->
-                    trackCellSourceText cellData
-                    match cellData.Value with
-                    | Formula (formula, _) ->
-                        // Search in formula text
-                        if containsSearchText query caseSensitive formula then
-                            addResult addr
-                    | Number _ ->
-                        ()
-                    | Boolean _ when not booleanQueryPossible ->
-                        ()
-                    | Error code ->
-                        if errorMatchesSearchText code then
-                            addResult addr
-                    | other ->
-                        let cellText = displayValue other
-                        if containsSearchText query caseSensitive cellText then
+            match trySearchCellsSimple query caseSensitive numberQueryPossible booleanQueryPossible errorMatchesSearchText model with
+            | ValueSome results ->
+                rememberSearchCellsSimple query caseSensitive model.Cells results
+                results
+            | ValueNone ->
+                match cachedSearchCells query caseSensitive model with
+                | ValueSome results ->
+                    results
+                | ValueNone ->
+                    let key = struct (query, caseSensitive)
+                    let keyCharCount = searchCellsCacheKeyCharCount key
+                    let trackSourceText =
+                        model.Cells.Count <= searchCellsCacheMaxTotalCells
+                        && keyCharCount <= searchCellsCacheMaxTotalQueryChars
+                    let mutable sourceTextCharCount =
+                        if trackSourceText then 0 else searchCellsCacheMaxTotalSourceTextChars + 1
+                    let results = System.Collections.Generic.List<CellAddress>()
+                    let addResult addr =
+                        results.Add addr
+                        if results.Count > searchCellsCacheMaxResultCount then
+                            sourceTextCharCount <- searchCellsCacheMaxTotalSourceTextChars + 1
+                    let trackCellSourceText cellData =
+                        if sourceTextCharCount <= searchCellsCacheMaxTotalSourceTextChars
+                           && results.Count <= searchCellsCacheMaxResultCount then
+                            sourceTextCharCount <-
+                                sourceTextAddCapped
+                                    searchCellsCacheMaxTotalSourceTextChars
+                                    (cellDataTextCharCountFor searchCellsCacheMaxTotalSourceTextChars cellData)
+                                    sourceTextCharCount
+                    model.Cells
+                    |> Map.iter (fun addr cellData ->
+                        trackCellSourceText cellData
+                        if searchCellMatches
+                            query
+                            caseSensitive
+                            numberQueryPossible
+                            booleanQueryPossible
+                            errorMatchesSearchText
+                            cellData then
                             addResult addr)
-            let results = results.ToArray()
-            let sourceTextCharCount =
-                if trackSourceText then
-                    ValueSome (min sourceTextCharCount (searchCellsCacheMaxTotalSourceTextChars + 1))
-                else
-                    ValueNone
-            rememberSearchCellsWithSourceTextCharCount query caseSensitive model results sourceTextCharCount
-            results
+                    let results = results.ToArray()
+                    let sourceTextCharCount =
+                        if trackSourceText then
+                            ValueSome (min sourceTextCharCount (searchCellsCacheMaxTotalSourceTextChars + 1))
+                        else
+                            ValueNone
+                    rememberSearchCellsWithSourceTextCharCount query caseSensitive model results sourceTextCharCount
+                    results
 
 /// Initialize search with a query
 let startSearch (query: string) (caseSensitive: bool) (model: SpreadsheetModel): SpreadsheetModel =
