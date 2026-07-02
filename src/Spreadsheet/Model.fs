@@ -7915,9 +7915,53 @@ let private rememberImportCsvNoChange csvText startRow startCol cells =
     importCsvNoChangeLastStartCol <- startCol
     importCsvNoChangeLastCells <- cells
 
+let private csvTextIsSingleUnquotedField (csvText: string) =
+    let mutable single = true
+    let mutable index = 0
+    while single && index < csvText.Length do
+        match csvText.[index] with
+        | ',' | '\r' | '\n' | '"' -> single <- false
+        | _ -> ()
+        index <- index + 1
+    single
+
+let private csvSingleFieldValue (cellText: string) =
+    if String.IsNullOrEmpty(cellText) then
+        Empty
+    elif cellText.[0] = '=' then
+        Formula (cellText, Empty)
+    elif System.String.Equals(cellText, "true", System.StringComparison.OrdinalIgnoreCase) then
+        Boolean true
+    elif System.String.Equals(cellText, "false", System.StringComparison.OrdinalIgnoreCase) then
+        Boolean false
+    else
+        match tryParseNumber cellText with
+        | Some n -> Number n
+        | None -> String cellText
+
+let private importCsvSingleFieldNoChange (csvText: string) startRow startCol (model: SpreadsheetModel) =
+    if csvText.Length = 0 then
+        true
+    elif csvTextIsSingleUnquotedField csvText then
+        let addr = { Row = startRow; Col = startCol }
+        let value = csvSingleFieldValue csvText
+        if value = Empty then
+            not (model.Cells.ContainsKey addr)
+        else
+            let mutable existing = Unchecked.defaultof<CellData>
+            model.Cells.TryGetValue(addr, &existing)
+            && existing.Value = value
+            && existing.Format = defaultFormat
+            && Option.isNone existing.Comment
+    else
+        false
+
 /// Import CSV data into spreadsheet
 let importCSV (csvText: string) (startRow: int) (startCol: int) (model: SpreadsheetModel): SpreadsheetModel =
     if importCsvNoChangeLastMatches csvText startRow startCol model.Cells then
+        model
+    elif importCsvSingleFieldNoChange csvText startRow startCol model then
+        rememberImportCsvNoChange csvText startRow startCol model.Cells
         model
     else
         let struct (imported, _) = importCSVWithOptionalChanges false true csvText startRow startCol model
