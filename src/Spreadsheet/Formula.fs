@@ -11171,34 +11171,60 @@ let private tryGetRecalcArrayFormulaFastSlot (slots: RecalcArrayFormulaFastCache
 
 let private collectFormulaCells (model: SpreadsheetModel) =
     let formulaCells = ResizeArray<FormulaCell>()
-    let parseCache = Dictionary<string, Result<Expr, string>>()
-    let parseCacheOrder = Queue<string>()
-    let parseCacheFastSlots = Array.zeroCreate<ParsedFormulaFastCacheEntry> recalcLocalFastSlotCount
+    let mutable parseCache = Unchecked.defaultof<Dictionary<string, Result<Expr, string>>>
+    let mutable parseCacheOrder = Unchecked.defaultof<Queue<string>>
+    let mutable parseCacheFastSlots = Unchecked.defaultof<ParsedFormulaFastCacheEntry array>
     let mutable parseCacheTotalChars = 0
+    let mutable hasFirstFormula = false
+    let mutable firstFormula = Unchecked.defaultof<string>
+    let mutable firstParsed = Unchecked.defaultof<Result<Expr, string>>
     let mutable repeatedFormulas: HashSet<string> = null
+    let markRepeatedFormula formula =
+        if isNull repeatedFormulas then
+            repeatedFormulas <- HashSet<string>()
+        repeatedFormulas.Add formula |> ignore
+    let ensureParseScratch () =
+        if isNull parseCache then
+            parseCache <- Dictionary<string, Result<Expr, string>>()
+            parseCacheOrder <- Queue<string>()
+            parseCacheFastSlots <- Array.zeroCreate<ParsedFormulaFastCacheEntry> recalcLocalFastSlotCount
+            if hasFirstFormula then
+                rememberRecalcLocalParseCacheEntry parseCache parseCacheOrder &parseCacheTotalChars firstFormula firstParsed
+                if parseCache.ContainsKey firstFormula then
+                    setParsedFormulaFastSlotIn parseCacheFastSlots firstFormula firstParsed
     let mutable canCacheResult = true
-    let parseFormulaCached formula =
-        match tryGetParsedFormulaFastSlotIn parseCacheFastSlots formula with
-        | ValueSome parsed ->
-            if isNull repeatedFormulas then
-                repeatedFormulas <- HashSet<string>()
-            repeatedFormulas.Add formula |> ignore
-            parsed
-        | ValueNone ->
-            let mutable parsed = Unchecked.defaultof<Result<Expr, string>>
-            if parseCache.TryGetValue(formula, &parsed) then
-                if isNull repeatedFormulas then
-                    repeatedFormulas <- HashSet<string>()
-                repeatedFormulas.Add formula |> ignore
-                setParsedFormulaFastSlotIn parseCacheFastSlots formula parsed
+    let rec parseFormulaCached formula =
+        if isNull parseCache then
+            if not hasFirstFormula then
+                let parsed = parseFormulaShared formula
+                hasFirstFormula <- true
+                firstFormula <- formula
+                firstParsed <- parsed
                 parsed
+            elif firstFormula = formula then
+                markRepeatedFormula formula
+                firstParsed
             else
-                parsed <- parseFormulaShared formula
-                rememberRecalcLocalParseCacheEntry parseCache parseCacheOrder &parseCacheTotalChars formula parsed
-                clearParsedFormulaFastSlotsIn parseCacheFastSlots
-                if parseCache.ContainsKey formula then
-                    setParsedFormulaFastSlotIn parseCacheFastSlots formula parsed
+                ensureParseScratch ()
+                parseFormulaCached formula
+        else
+            match tryGetParsedFormulaFastSlotIn parseCacheFastSlots formula with
+            | ValueSome parsed ->
+                markRepeatedFormula formula
                 parsed
+            | ValueNone ->
+                let mutable parsed = Unchecked.defaultof<Result<Expr, string>>
+                if parseCache.TryGetValue(formula, &parsed) then
+                    markRepeatedFormula formula
+                    setParsedFormulaFastSlotIn parseCacheFastSlots formula parsed
+                    parsed
+                else
+                    parsed <- parseFormulaShared formula
+                    rememberRecalcLocalParseCacheEntry parseCache parseCacheOrder &parseCacheTotalChars formula parsed
+                    clearParsedFormulaFastSlotsIn parseCacheFastSlots
+                    if parseCache.ContainsKey formula then
+                        setParsedFormulaFastSlotIn parseCacheFastSlots formula parsed
+                    parsed
     model.Cells
     |> Map.iter (fun addr cell ->
         match cell.Value with
