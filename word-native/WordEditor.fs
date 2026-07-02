@@ -1153,9 +1153,9 @@ let private cachedLayoutLookup width (state: WordEditorState) doc =
 let hitTest width doc x y =
     WordLayout.hitTest (layoutSettings width doc) measureText doc x y
 
-let private hitTestCached width (state: WordEditorState) doc x y =
+let private hitTestCachedValue width (state: WordEditorState) doc x y =
     let settings, layouts = cachedLayoutArray width state doc
-    WordLayout.hitTestLayoutArrayWithRange measureRange settings.PaddingLeft layouts x y
+    WordLayout.hitTestLayoutArrayWithRangeValue measureRange settings.PaddingLeft layouts x y
 
 let documentHeight width doc =
     let settings = layoutSettings width doc
@@ -1185,15 +1185,16 @@ let private documentHeightCached width (state: WordEditorState) doc =
         height
 
 let setCursorAt width x y (state: WordEditorState) =
-    match hitTestCached width state state.Document.Value x y with
-    | None -> false
-    | Some (blockId, offset) ->
+    match hitTestCachedValue width state state.Document.Value x y with
+    | ValueNone -> false
+    | ValueSome (struct (blockId, offset)) ->
         state.Document.Value <- setCursor blockId offset state.Document.Value
         true
 
 let private positionAt width x y (state: WordEditorState) =
-    hitTestCached width state state.Document.Value x y
-    |> Option.map (fun (blockId, offset) -> { BlockId = blockId; Offset = offset })
+    match hitTestCachedValue width state state.Document.Value x y with
+    | ValueSome (struct (blockId, offset)) -> Some { BlockId = blockId; Offset = offset }
+    | ValueNone -> None
 
 let private imageAt width x y (state: WordEditorState) =
     let settings, layouts = cachedLayoutArray width state state.Document.Value
@@ -1258,9 +1259,9 @@ let private endOfParagraph blockId doc =
 
 let private imageMoveTarget width x y blockId sourceOffset state doc =
     let target =
-        match hitTestCached width state doc x y with
-        | Some (targetBlockId, targetOffset) -> { BlockId = targetBlockId; Offset = targetOffset }
-        | None -> endOfParagraph blockId doc
+        match hitTestCachedValue width state doc x y with
+        | ValueSome (struct (targetBlockId, targetOffset)) -> { BlockId = targetBlockId; Offset = targetOffset }
+        | ValueNone -> endOfParagraph blockId doc
 
     if target.BlockId = blockId && target.Offset <= sourceOffset then endOfParagraph blockId doc
     else target
@@ -1704,8 +1705,9 @@ let private movePage width height direction extendSelection state =
         match caretDocumentPoint width state doc with
         | Some (x, y) ->
             let targetY = y + amount * float direction
-            hitTestCached width state doc x targetY
-            |> Option.map (fun (blockId, offset) -> { BlockId = blockId; Offset = offset })
+            match hitTestCachedValue width state doc x targetY with
+            | ValueSome (struct (blockId, offset)) -> Some { BlockId = blockId; Offset = offset }
+            | ValueNone -> None
         | None -> None
 
     let nextDoc =
@@ -1728,8 +1730,9 @@ let private moveVisualLine width direction extendSelection state doc =
         | Some (x, y) ->
             let settings = layoutSettings width doc
             let targetY = y + settings.LineHeight * float direction
-            hitTestCached width state doc x targetY
-            |> Option.map (fun (blockId, offset) -> { BlockId = blockId; Offset = offset })
+            match hitTestCachedValue width state doc x targetY with
+            | ValueSome (struct (blockId, offset)) -> Some { BlockId = blockId; Offset = offset }
+            | ValueNone -> None
         | None -> None
 
     match doc.Selection, targetPosition with

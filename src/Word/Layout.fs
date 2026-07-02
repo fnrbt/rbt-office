@@ -1768,10 +1768,10 @@ let private tryFindLineForY (layout: BlockLayout) (mouseY: float) =
     else
         tryFindLineForYList layout.Lines mouseY
 
-let private hitTestLayoutWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layout: BlockLayout) (mouseX: float) (mouseY: float) =
+let private hitTestLayoutWithRangeValue (measureRange: TextRangeMeasurer) (paddingLeft: float) (layout: BlockLayout) (mouseX: float) (mouseY: float) =
     let lineOpt = tryFindLineForY layout mouseY
     match lineOpt with
-    | ValueNone -> Some (layout.BlockId, 0)
+    | ValueNone -> ValueSome (struct (layout.BlockId, 0))
     | ValueSome line ->
         let relativeX = mouseX - paddingLeft - alignmentOffset layout line
         let mutable offset = line.EndOffset
@@ -1818,14 +1818,88 @@ let private hitTestLayoutWithRange (measureRange: TextRangeMeasurer) (paddingLef
                     else
                         offset <- startOffset + length
 
-        Some (layout.BlockId, offset)
+        ValueSome (struct (layout.BlockId, offset))
+
+let private hitTestLayoutWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layout: BlockLayout) (mouseX: float) (mouseY: float) =
+    match hitTestLayoutWithRangeValue measureRange paddingLeft layout mouseX mouseY with
+    | ValueSome (struct (blockId, offset)) -> Some (blockId, offset)
+    | ValueNone -> None
 
 let hitTestLayoutsWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout list) (mouseX: float) (mouseY: float) =
     match layouts |> List.tryFind (layoutContainsY mouseY) with
     | None -> None
     | Some layout -> hitTestLayoutWithRange measureRange paddingLeft layout mouseX mouseY
 
-let hitTestLayoutArrayWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
+let mutable private hitTestArrayLastSet = false
+let mutable private hitTestArrayLastMeasureRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private hitTestArrayLastLayouts = Unchecked.defaultof<BlockLayout array>
+let mutable private hitTestArrayLastPaddingLeft = 0.0
+let mutable private hitTestArrayLastMouseX = 0.0
+let mutable private hitTestArrayLastMouseY = 0.0
+let mutable private hitTestArrayLastResult : struct (BlockId * int) voption = ValueNone
+let mutable private hitTestArrayPreviousSet = false
+let mutable private hitTestArrayPreviousMeasureRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private hitTestArrayPreviousLayouts = Unchecked.defaultof<BlockLayout array>
+let mutable private hitTestArrayPreviousPaddingLeft = 0.0
+let mutable private hitTestArrayPreviousMouseX = 0.0
+let mutable private hitTestArrayPreviousMouseY = 0.0
+let mutable private hitTestArrayPreviousResult : struct (BlockId * int) voption = ValueNone
+let mutable private hitTestArrayOlder1Set = false
+let mutable private hitTestArrayOlder1MeasureRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private hitTestArrayOlder1Layouts = Unchecked.defaultof<BlockLayout array>
+let mutable private hitTestArrayOlder1PaddingLeft = 0.0
+let mutable private hitTestArrayOlder1MouseX = 0.0
+let mutable private hitTestArrayOlder1MouseY = 0.0
+let mutable private hitTestArrayOlder1Result : struct (BlockId * int) voption = ValueNone
+let mutable private hitTestArrayOlder2Set = false
+let mutable private hitTestArrayOlder2MeasureRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private hitTestArrayOlder2Layouts = Unchecked.defaultof<BlockLayout array>
+let mutable private hitTestArrayOlder2PaddingLeft = 0.0
+let mutable private hitTestArrayOlder2MouseX = 0.0
+let mutable private hitTestArrayOlder2MouseY = 0.0
+let mutable private hitTestArrayOlder2Result : struct (BlockId * int) voption = ValueNone
+
+let private hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY cachedMeasureRange cachedPaddingLeft cachedLayouts cachedMouseX cachedMouseY =
+    obj.ReferenceEquals(measureRange, cachedMeasureRange)
+    && obj.ReferenceEquals(layouts, cachedLayouts)
+    && paddingLeft = cachedPaddingLeft
+    && mouseX = cachedMouseX
+    && mouseY = cachedMouseY
+
+let private rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result =
+    if hitTestArrayOlder1Set then
+        hitTestArrayOlder2Set <- true
+        hitTestArrayOlder2MeasureRange <- hitTestArrayOlder1MeasureRange
+        hitTestArrayOlder2Layouts <- hitTestArrayOlder1Layouts
+        hitTestArrayOlder2PaddingLeft <- hitTestArrayOlder1PaddingLeft
+        hitTestArrayOlder2MouseX <- hitTestArrayOlder1MouseX
+        hitTestArrayOlder2MouseY <- hitTestArrayOlder1MouseY
+        hitTestArrayOlder2Result <- hitTestArrayOlder1Result
+    if hitTestArrayPreviousSet then
+        hitTestArrayOlder1Set <- true
+        hitTestArrayOlder1MeasureRange <- hitTestArrayPreviousMeasureRange
+        hitTestArrayOlder1Layouts <- hitTestArrayPreviousLayouts
+        hitTestArrayOlder1PaddingLeft <- hitTestArrayPreviousPaddingLeft
+        hitTestArrayOlder1MouseX <- hitTestArrayPreviousMouseX
+        hitTestArrayOlder1MouseY <- hitTestArrayPreviousMouseY
+        hitTestArrayOlder1Result <- hitTestArrayPreviousResult
+    if hitTestArrayLastSet then
+        hitTestArrayPreviousSet <- true
+        hitTestArrayPreviousMeasureRange <- hitTestArrayLastMeasureRange
+        hitTestArrayPreviousLayouts <- hitTestArrayLastLayouts
+        hitTestArrayPreviousPaddingLeft <- hitTestArrayLastPaddingLeft
+        hitTestArrayPreviousMouseX <- hitTestArrayLastMouseX
+        hitTestArrayPreviousMouseY <- hitTestArrayLastMouseY
+        hitTestArrayPreviousResult <- hitTestArrayLastResult
+    hitTestArrayLastSet <- true
+    hitTestArrayLastMeasureRange <- measureRange
+    hitTestArrayLastLayouts <- layouts
+    hitTestArrayLastPaddingLeft <- paddingLeft
+    hitTestArrayLastMouseX <- mouseX
+    hitTestArrayLastMouseY <- mouseY
+    hitTestArrayLastResult <- result
+
+let private hitTestLayoutArrayWithRangeValueUncached (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
     let mutable low = 0
     let mutable high = layouts.Length
     while low < high do
@@ -1840,13 +1914,44 @@ let hitTestLayoutArrayWithRange (measureRange: TextRangeMeasurer) (paddingLeft: 
     while index > 0 && layouts.[index - 1].Y + layouts.[index - 1].Height > mouseY do
         index <- index - 1
 
-    let mutable result = None
-    while result.IsNone && index < layouts.Length && layouts.[index].Y <= mouseY do
+    let mutable result = ValueNone
+    let mutable found = false
+    while not found && index < layouts.Length && layouts.[index].Y <= mouseY do
         let layout = layouts.[index]
         if layoutContainsY mouseY layout then
-            result <- hitTestLayoutWithRange measureRange paddingLeft layout mouseX mouseY
+            result <- hitTestLayoutWithRangeValue measureRange paddingLeft layout mouseX mouseY
+            found <- true
         index <- index + 1
     result
+
+let hitTestLayoutArrayWithRangeValue (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
+    if hitTestArrayLastSet
+       && hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY hitTestArrayLastMeasureRange hitTestArrayLastPaddingLeft hitTestArrayLastLayouts hitTestArrayLastMouseX hitTestArrayLastMouseY then
+        hitTestArrayLastResult
+    elif hitTestArrayPreviousSet
+         && hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY hitTestArrayPreviousMeasureRange hitTestArrayPreviousPaddingLeft hitTestArrayPreviousLayouts hitTestArrayPreviousMouseX hitTestArrayPreviousMouseY then
+        let result = hitTestArrayPreviousResult
+        rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result
+        result
+    elif hitTestArrayOlder1Set
+         && hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY hitTestArrayOlder1MeasureRange hitTestArrayOlder1PaddingLeft hitTestArrayOlder1Layouts hitTestArrayOlder1MouseX hitTestArrayOlder1MouseY then
+        let result = hitTestArrayOlder1Result
+        rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result
+        result
+    elif hitTestArrayOlder2Set
+         && hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY hitTestArrayOlder2MeasureRange hitTestArrayOlder2PaddingLeft hitTestArrayOlder2Layouts hitTestArrayOlder2MouseX hitTestArrayOlder2MouseY then
+        let result = hitTestArrayOlder2Result
+        rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result
+        result
+    else
+        let result = hitTestLayoutArrayWithRangeValueUncached measureRange paddingLeft layouts mouseX mouseY
+        rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result
+        result
+
+let hitTestLayoutArrayWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
+    match hitTestLayoutArrayWithRangeValue measureRange paddingLeft layouts mouseX mouseY with
+    | ValueSome (struct (blockId, offset)) -> Some (blockId, offset)
+    | ValueNone -> None
 
 let hitTestLayouts (measureText: TextMeasurer) (paddingLeft: float) (layouts: BlockLayout list) (mouseX: float) (mouseY: float) =
     hitTestLayoutsWithRange (rangeMeasurerFromTextMeasurer measureText) paddingLeft layouts mouseX mouseY

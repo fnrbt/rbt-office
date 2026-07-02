@@ -985,6 +985,29 @@ check "native long line hit-test cache"
     (hitTestLongSw.Elapsed.TotalMilliseconds < 80.0
      && hitTestLongTotal = 999860000)
     true
+
+let hitTestLongLayoutArray = [| hitTestLongLayout |]
+Layout.hitTestLayoutArrayWithRangeValue hitTestMeasureRange 0.0 hitTestLongLayoutArray 3.0 hitTestLongY |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let hitTestArrayValueAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let hitTestArrayValueSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable hitTestArrayValueTotal = 0L
+for _ in 1 .. 200000 do
+    match Layout.hitTestLayoutArrayWithRangeValue hitTestMeasureRange 0.0 hitTestLongLayoutArray 3.0 hitTestLongY with
+    | ValueSome (struct (_, offset)) -> hitTestArrayValueTotal <- hitTestArrayValueTotal + int64 offset
+    | ValueNone -> ()
+hitTestArrayValueSw.Stop()
+let hitTestArrayValueAllocated = System.GC.GetAllocatedBytesForCurrentThread() - hitTestArrayValueAllocatedBefore
+check "native array hit-test value cache"
+    (hitTestArrayValueSw.Elapsed.TotalMilliseconds < 120.0
+     && hitTestArrayValueAllocated < 64L * 1024L
+     && hitTestArrayValueTotal = 9998600000L)
+    true
+
 let hitTestNonMonotonicLines =
     let high =
         { documentPaintLine with
