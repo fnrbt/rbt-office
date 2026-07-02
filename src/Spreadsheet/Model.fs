@@ -7865,10 +7865,36 @@ let private importCSVWithOptionalChanges (captureChanges: bool) (useCache: bool)
         let result = if changed then { model with Cells = cells } else model
         struct (result, changes)
 
+let mutable private importCsvNoChangeLastSet = false
+let mutable private importCsvNoChangeLastCsvText = ""
+let mutable private importCsvNoChangeLastStartRow = 0
+let mutable private importCsvNoChangeLastStartCol = 0
+let mutable private importCsvNoChangeLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
+
+let private importCsvNoChangeLastMatches csvText startRow startCol cells =
+    importCsvNoChangeLastSet
+    && startRow = importCsvNoChangeLastStartRow
+    && startCol = importCsvNoChangeLastStartCol
+    && obj.ReferenceEquals(cells, importCsvNoChangeLastCells)
+    && (obj.ReferenceEquals(csvText, importCsvNoChangeLastCsvText)
+        || String.Equals(csvText, importCsvNoChangeLastCsvText, StringComparison.Ordinal))
+
+let private rememberImportCsvNoChange csvText startRow startCol cells =
+    importCsvNoChangeLastSet <- true
+    importCsvNoChangeLastCsvText <- csvText
+    importCsvNoChangeLastStartRow <- startRow
+    importCsvNoChangeLastStartCol <- startCol
+    importCsvNoChangeLastCells <- cells
+
 /// Import CSV data into spreadsheet
 let importCSV (csvText: string) (startRow: int) (startCol: int) (model: SpreadsheetModel): SpreadsheetModel =
-    let struct (imported, _) = importCSVWithOptionalChanges false true csvText startRow startCol model
-    imported
+    if importCsvNoChangeLastMatches csvText startRow startCol model.Cells then
+        model
+    else
+        let struct (imported, _) = importCSVWithOptionalChanges false true csvText startRow startCol model
+        if obj.ReferenceEquals(imported, model) then
+            rememberImportCsvNoChange csvText startRow startCol model.Cells
+        imported
 
 /// Import CSV data and return changed old/new cells for sparse undo.
 let importCSVWithChanges (csvText: string) (startRow: int) (startCol: int) (model: SpreadsheetModel): SpreadsheetModel * ResizeArray<CellAddress * CellData option> * ResizeArray<CellAddress * CellData option> =

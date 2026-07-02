@@ -1973,8 +1973,8 @@ for _pass in 1 .. 200000 do
 importCsvSw.Stop()
 let importCsvAllocated = System.GC.GetAllocatedBytesForCurrentThread() - importCsvAllocatedBefore
 check "native import csv hot hit"
-    (importCsvSw.Elapsed.TotalMilliseconds < 150.0
-     && importCsvAllocated < 512L * 1024L
+    (importCsvSw.Elapsed.TotalMilliseconds < 20.0
+     && importCsvAllocated < 4L * 1024L
      && importCsvSame = 200000)
     true
 
