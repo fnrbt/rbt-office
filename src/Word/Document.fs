@@ -5224,6 +5224,24 @@ let private shouldBuildCurrentTableCellCacheForBlocks blocks =
     let count = countCurrentTableCellEntriesInBlocksWithLimit (currentTableCellCacheBuildEntryLimit + 1) blocks
     count > 0 && count <= currentTableCellCacheBuildEntryLimit
 
+let private tryFindSingleParagraphTopLevelTableForSelection doc blockId =
+    match doc.Blocks with
+    | [ Table table ] when countCurrentTableCellEntriesWithLimit 2 table = 1 ->
+        let mutable found = false
+        let mutable rows = table.Rows
+        while not found && not rows.IsEmpty do
+            let mutable cells = rows.Head.Cells
+            while not found && not cells.IsEmpty do
+                let mutable paragraphs = cells.Head.Content
+                while not found && not paragraphs.IsEmpty do
+                    if blockIdKeyEquals paragraphs.Head.Id blockId then
+                        found <- true
+                    paragraphs <- paragraphs.Tail
+                cells <- cells.Tail
+            rows <- rows.Tail
+        if found then ValueSome 0 else ValueNone
+    | _ -> ValueNone
+
 let private tryFindCurrentTableCellUntil doc blockId =
     match tryFindCachedCurrentTableCell doc.Blocks blockId with
     | ValueSome _ as cached -> cached
@@ -8354,14 +8372,19 @@ let setCurrentTableCellMargins paddingTop paddingRight paddingBottom paddingLeft
         match doc.Selection with
         | Some sel ->
             let mutable handled = false
-            match tryGetCurrentTableCellCache doc.Blocks with
-            | ValueSome cached ->
-                match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
-                | ValueSome (struct (tableIndex, _, _)) ->
-                    resultDoc <- setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
-                    handled <- true
+            match tryFindSingleParagraphTopLevelTableForSelection doc sel.Focus.BlockId with
+            | ValueSome tableIndex ->
+                resultDoc <- setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
+                handled <- true
+            | ValueNone ->
+                match tryGetCurrentTableCellCache doc.Blocks with
+                | ValueSome cached ->
+                    match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
+                    | ValueSome (struct (tableIndex, _, _)) ->
+                        resultDoc <- setTableMarginsAtIndex paddingTop paddingRight paddingBottom paddingLeft doc tableIndex
+                        handled <- true
+                    | ValueNone -> ()
                 | ValueNone -> ()
-            | ValueNone -> ()
             if handled then
                 ()
             else
@@ -8442,14 +8465,19 @@ let setCurrentTableCellMarginsAndSpacing paddingTop paddingRight paddingBottom p
         match doc.Selection with
         | Some sel ->
             let mutable handled = false
-            match tryGetCurrentTableCellCache doc.Blocks with
-            | ValueSome cached ->
-                match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
-                | ValueSome (struct (tableIndex, _, _)) ->
-                    resultDoc <- setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
-                    handled <- true
+            match tryFindSingleParagraphTopLevelTableForSelection doc sel.Focus.BlockId with
+            | ValueSome tableIndex ->
+                resultDoc <- setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
+                handled <- true
+            | ValueNone ->
+                match tryGetCurrentTableCellCache doc.Blocks with
+                | ValueSome cached ->
+                    match tryFindCurrentTableCellEntry cached sel.Focus.BlockId with
+                    | ValueSome (struct (tableIndex, _, _)) ->
+                        resultDoc <- setTableMarginsAndSpacingAtIndex paddingTop paddingRight paddingBottom paddingLeft cellSpacing doc tableIndex
+                        handled <- true
+                    | ValueNone -> ()
                 | ValueNone -> ()
-            | ValueNone -> ()
             if handled then
                 ()
             else
