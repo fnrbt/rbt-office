@@ -4603,28 +4603,63 @@ let private rememberMaxUsedColumn (cached: MaxUsedColumnCache) =
         |> trim
         |> setMaxUsedColumnCache
 
+let mutable private maxUsedColumnSimpleLastSet = false
+let mutable private maxUsedColumnSimpleLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
+let mutable private maxUsedColumnSimpleLastResult = Unchecked.defaultof<int option>
+
+let private tryGetMaxUsedColumnSimpleLast cells =
+    if maxUsedColumnSimpleLastSet
+       && obj.ReferenceEquals(cells, maxUsedColumnSimpleLastCells) then
+        ValueSome maxUsedColumnSimpleLastResult
+    else
+        ValueNone
+
+let private rememberMaxUsedColumnSimple cells result =
+    maxUsedColumnSimpleLastSet <- true
+    maxUsedColumnSimpleLastCells <- cells
+    maxUsedColumnSimpleLastResult <- result
+
+let private tryMaxUsedColumnSimple (model: SpreadsheetModel) =
+    match model.Cells.Count with
+    | 0 ->
+        ValueSome None
+    | 1 ->
+        let addr, _ = Map.maxKeyValue model.Cells
+        ValueSome (Some (max 0 addr.Col))
+    | _ ->
+        ValueNone
+
 let private maxUsedColumn (model: SpreadsheetModel) =
-    match tryGetMaxUsedColumnCache model.Cells with
-    | ValueSome cached when maxUsedColumnCacheRetainable cached ->
-        cached.MaxColumn
-    | ValueSome cached ->
-        rememberMaxUsedColumn cached
-        cached.MaxColumn
-    | ValueNone ->
-        let mutable found = false
-        let mutable maxCol = 0
-        model.Cells
-        |> Map.iter (fun addr _ ->
-            found <- true
-            if addr.Col > maxCol then maxCol <- addr.Col)
-        let result = if found then Some maxCol else None
-        rememberMaxUsedColumn {
-            Cells = model.Cells
-            CellCount = max 1 model.Cells.Count
-            SourceTextCharCount = structuralCellSourceTextCharCountFor model.Cells
-            MaxColumn = result
-        }
+    match tryGetMaxUsedColumnSimpleLast model.Cells with
+    | ValueSome result ->
         result
+    | ValueNone ->
+        match tryMaxUsedColumnSimple model with
+        | ValueSome result ->
+            rememberMaxUsedColumnSimple model.Cells result
+            result
+        | ValueNone ->
+            match tryGetMaxUsedColumnCache model.Cells with
+            | ValueSome cached when maxUsedColumnCacheRetainable cached ->
+                cached.MaxColumn
+            | ValueSome cached ->
+                rememberMaxUsedColumn cached
+                cached.MaxColumn
+            | ValueNone ->
+                let mutable found = false
+                let mutable maxCol = 0
+                model.Cells
+                |> Map.iter (fun addr _ ->
+                    found <- true
+                    if addr.Col > maxCol then maxCol <- addr.Col)
+                let result = if found then Some maxCol else None
+                rememberMaxUsedColumn {
+                    Cells = model.Cells
+                    CellCount = max 1 model.Cells.Count
+                    SourceTextCharCount = structuralCellSourceTextCharCountFor model.Cells
+                    MaxColumn = result
+                }
+                result
 
 /// Insert a column at the specified index (shifts columns right)
 let insertColumn (atCol: int) (model: SpreadsheetModel): SpreadsheetModel =
@@ -5425,54 +5460,101 @@ let private addLastUsedColumnInRowCacheEntry row result (entries: System.Collect
         order.Enqueue row
         entries.[row] <- result
 
+let mutable private lastUsedColumnInRowSimpleLastSet = false
+let mutable private lastUsedColumnInRowSimpleLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
+let mutable private lastUsedColumnInRowSimpleLastMergedCells = Unchecked.defaultof<MergedCell list>
+let mutable private lastUsedColumnInRowSimpleLastRow = 0
+let mutable private lastUsedColumnInRowSimpleLastResult = Unchecked.defaultof<int option>
+
+let private tryGetLastUsedColumnInRowSimpleLast row cells mergedCells =
+    if lastUsedColumnInRowSimpleLastSet
+       && row = lastUsedColumnInRowSimpleLastRow
+       && obj.ReferenceEquals(cells, lastUsedColumnInRowSimpleLastCells)
+       && obj.ReferenceEquals(mergedCells, lastUsedColumnInRowSimpleLastMergedCells) then
+        ValueSome lastUsedColumnInRowSimpleLastResult
+    else
+        ValueNone
+
+let private rememberLastUsedColumnInRowSimple row cells mergedCells result =
+    lastUsedColumnInRowSimpleLastSet <- true
+    lastUsedColumnInRowSimpleLastCells <- cells
+    lastUsedColumnInRowSimpleLastMergedCells <- mergedCells
+    lastUsedColumnInRowSimpleLastRow <- row
+    lastUsedColumnInRowSimpleLastResult <- result
+
+let private tryLastUsedColumnInRowSimple row (model: SpreadsheetModel) =
+    if List.isEmpty model.MergedCells then
+        match model.Cells.Count with
+        | 0 ->
+            ValueSome None
+        | 1 ->
+            let addr, _ = Map.maxKeyValue model.Cells
+            if addr.Row = row then
+                ValueSome (Some addr.Col)
+            else
+                ValueSome None
+        | _ ->
+            ValueNone
+    else
+        ValueNone
+
 let lastUsedColumnInRow (row: int) (model: SpreadsheetModel) : int option =
-    match tryGetLastUsedColumnInRowCache model.Cells model.MergedCells with
-    | ValueSome cached when lastUsedColumnInRowCacheRetainable cached ->
-        let mutable lastColumn = Unchecked.defaultof<int option>
-        match tryGetLastUsedColumnInRowEntryFastSlot cached row with
-        | ValueSome cachedResult -> cachedResult
-        | ValueNone ->
+    match tryGetLastUsedColumnInRowSimpleLast row model.Cells model.MergedCells with
+    | ValueSome result ->
+        result
+    | ValueNone ->
+        match tryGetLastUsedColumnInRowCache model.Cells model.MergedCells with
+        | ValueSome cached when lastUsedColumnInRowCacheRetainable cached ->
+            let mutable lastColumn = Unchecked.defaultof<int option>
+            match tryGetLastUsedColumnInRowEntryFastSlot cached row with
+            | ValueSome cachedResult -> cachedResult
+            | ValueNone ->
+                if cached.Entries.TryGetValue(row, &lastColumn) then
+                    setLastUsedColumnInRowEntryFastSlot cached row lastColumn
+                    lastColumn
+                else
+                    let computed = lastUsedColumnInRowFromIndex row cached.CellRowLastColumns cached.MergeRowLastColumns cached.MergedCells
+                    addLastUsedColumnInRowCacheEntry row computed cached.Entries cached.Order
+                    setLastUsedColumnInRowEntryFastSlot cached row computed
+                    computed
+        | ValueSome cached ->
+            rememberLastUsedColumnInRowCache cached
+            let mutable lastColumn = Unchecked.defaultof<int option>
             if cached.Entries.TryGetValue(row, &lastColumn) then
-                setLastUsedColumnInRowEntryFastSlot cached row lastColumn
                 lastColumn
             else
-                let computed = lastUsedColumnInRowFromIndex row cached.CellRowLastColumns cached.MergeRowLastColumns cached.MergedCells
-                addLastUsedColumnInRowCacheEntry row computed cached.Entries cached.Order
-                setLastUsedColumnInRowEntryFastSlot cached row computed
-                computed
-    | ValueSome cached ->
-        rememberLastUsedColumnInRowCache cached
-        let mutable lastColumn = Unchecked.defaultof<int option>
-        if cached.Entries.TryGetValue(row, &lastColumn) then
-            lastColumn
-        else
-            lastUsedColumnInRowFromIndex row cached.CellRowLastColumns cached.MergeRowLastColumns cached.MergedCells
-    | ValueNone ->
-        let mergedCellCount = mergedCellCountCapped lastUsedColumnInRowCacheMaxTotalMergedCells model.MergedCells
-        if model.Cells.Count > lastUsedColumnInRowCacheMaxTotalCells
-           || mergedCellCount > lastUsedColumnInRowCacheMaxTotalMergedCells then
-            scanLastUsedColumnInRow row model
-        else
-            let cellRowLastColumns = buildLastUsedColumnRowIndex model.Cells
-            let mergeRowLastColumns = buildLastUsedColumnMergeRowIndex model.MergedCells
-            let result = lastUsedColumnInRowFromIndex row cellRowLastColumns mergeRowLastColumns model.MergedCells
-            let entries = System.Collections.Generic.Dictionary<int, int option>()
-            let order = System.Collections.Generic.Queue<int>()
-            addLastUsedColumnInRowCacheEntry row result entries order
-            rememberLastUsedColumnInRowCache
-                {
-                    Cells = model.Cells
-                    CellCount = max 1 model.Cells.Count
-                    SourceTextCharCount = structuralCellSourceTextCharCountFor model.Cells
-                    MergedCells = model.MergedCells
-                    MergedCellCount = mergedCellCount
-                    CellRowLastColumns = cellRowLastColumns
-                    MergeRowLastColumns = mergeRowLastColumns
-                    Entries = entries
-                    Order = order
-                    EntryFastSlots = Array.zeroCreate<LastUsedColumnInRowFastEntry> 256
-                }
-            result
+                lastUsedColumnInRowFromIndex row cached.CellRowLastColumns cached.MergeRowLastColumns cached.MergedCells
+        | ValueNone ->
+            match tryLastUsedColumnInRowSimple row model with
+            | ValueSome result ->
+                rememberLastUsedColumnInRowSimple row model.Cells model.MergedCells result
+                result
+            | ValueNone ->
+                let mergedCellCount = mergedCellCountCapped lastUsedColumnInRowCacheMaxTotalMergedCells model.MergedCells
+                if model.Cells.Count > lastUsedColumnInRowCacheMaxTotalCells
+                   || mergedCellCount > lastUsedColumnInRowCacheMaxTotalMergedCells then
+                    scanLastUsedColumnInRow row model
+                else
+                    let cellRowLastColumns = buildLastUsedColumnRowIndex model.Cells
+                    let mergeRowLastColumns = buildLastUsedColumnMergeRowIndex model.MergedCells
+                    let result = lastUsedColumnInRowFromIndex row cellRowLastColumns mergeRowLastColumns model.MergedCells
+                    let entries = System.Collections.Generic.Dictionary<int, int option>()
+                    let order = System.Collections.Generic.Queue<int>()
+                    addLastUsedColumnInRowCacheEntry row result entries order
+                    rememberLastUsedColumnInRowCache
+                        {
+                            Cells = model.Cells
+                            CellCount = max 1 model.Cells.Count
+                            SourceTextCharCount = structuralCellSourceTextCharCountFor model.Cells
+                            MergedCells = model.MergedCells
+                            MergedCellCount = mergedCellCount
+                            CellRowLastColumns = cellRowLastColumns
+                            MergeRowLastColumns = mergeRowLastColumns
+                            Entries = entries
+                            Order = order
+                            EntryFastSlots = Array.zeroCreate<LastUsedColumnInRowFastEntry> 256
+                        }
+                    result
 
 /// Search cells for a query string
 let private containsSearchText (query: string) (caseSensitive: bool) (text: string) =
