@@ -10770,6 +10770,7 @@ let private recalcCacheAddCapped (maxTotal: int) (amount: int) (total: int) =
     elif total > maxTotal || amount > maxTotal - total then maxTotal + 1
     else total + amount
 
+[<Struct>]
 type private RecalcResultCacheKey = {
     SourceCells: Map<CellAddress, CellData>
     SourceSpill: Map<CellAddress, CellAddress>

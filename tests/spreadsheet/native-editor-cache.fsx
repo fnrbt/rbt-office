@@ -2306,6 +2306,39 @@ check "native independent criteria recalc stable model"
      && recalcCriteriaTotal = 120.0)
     true
 
+let recalcResultKeyColdSourceCount = 512
+let recalcResultKeyColdModels =
+    [| for sourceIndex in 0 .. recalcResultKeyColdSourceCount - 1 ->
+        let cells =
+            [ { Row = 0; Col = 0 }, cell (CellValue.Number (float sourceIndex))
+              { Row = 0; Col = 1 }, cell (CellValue.Formula ("=A1+1", CellValue.Empty)) ]
+            |> Map.ofList
+        { createEmpty 1 2 with Cells = cells } |]
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let recalcResultKeyColdAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let recalcResultKeyColdSw = Stopwatch.StartNew()
+let mutable recalcResultKeyColdTotal = 0.0
+for model in recalcResultKeyColdModels do
+    let recalculated =
+        RedBat.Spreadsheet.Formula.recalculateAllFormulas None None model
+    match Map.tryFind { Row = 0; Col = 1 } recalculated.Cells with
+    | Some { Value = CellValue.Formula (_, CellValue.Number value) } ->
+        recalcResultKeyColdTotal <- recalcResultKeyColdTotal + value
+    | _ ->
+        recalcResultKeyColdTotal <- recalcResultKeyColdTotal - 1000000.0
+recalcResultKeyColdSw.Stop()
+let recalcResultKeyColdAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - recalcResultKeyColdAllocatedBefore
+check "native recalc result key cold alloc"
+    (recalcResultKeyColdSw.Elapsed.TotalMilliseconds < 220.0
+     && recalcResultKeyColdAllocated < 23L * 1024L * 1024L
+     && recalcResultKeyColdTotal = 131328.0)
+    true
+
 let conditionalFormatRows = 20000
 let conditionalFormatCells =
     [ for row in 0 .. conditionalFormatRows - 1 ->
