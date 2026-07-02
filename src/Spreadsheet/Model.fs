@@ -2319,6 +2319,27 @@ let private addColumnUniqueValuesCacheEntry col entry (cache: ColumnUniqueValues
             cache.TotalValueCount <- current.ValueCount
             cache.TotalValueTextCharCount <- current.ValueTextCharCount
 
+let mutable private columnUniqueValuesLastSet = false
+let mutable private columnUniqueValuesLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
+let mutable private columnUniqueValuesLastCol = 0
+let mutable private columnUniqueValuesLastWithBlanks: string list = []
+let mutable private columnUniqueValuesLastWithoutBlanks: string list = []
+
+let private tryGetColumnUniqueValuesLast includeBlanks col cells =
+    if columnUniqueValuesLastSet
+       && columnUniqueValuesLastCol = col
+       && obj.ReferenceEquals(columnUniqueValuesLastCells, cells) then
+        ValueSome (if includeBlanks then columnUniqueValuesLastWithBlanks else columnUniqueValuesLastWithoutBlanks)
+    else
+        ValueNone
+
+let private rememberColumnUniqueValuesLast cells col valuesWithBlanks valuesWithoutBlanks =
+    columnUniqueValuesLastSet <- true
+    columnUniqueValuesLastCells <- cells
+    columnUniqueValuesLastCol <- col
+    columnUniqueValuesLastWithBlanks <- valuesWithBlanks
+    columnUniqueValuesLastWithoutBlanks <- valuesWithoutBlanks
+
 type private SortIdentityCache = {
     Cells: Map<CellAddress, CellData>
     CellCount: int
@@ -2523,14 +2544,18 @@ let private sortRowsAreIdentitySorted col ascending (cells: Map<CellAddress, Cel
 
 let private columnUniqueValuesCached includeBlanks col (model: SpreadsheetModel) =
     let cachedResult =
-        match tryGetColumnUniqueValuesCache model.Cells with
-        | ValueSome cached ->
-            let mutable entry = Unchecked.defaultof<ColumnUniqueValuesCacheEntry>
-            if cached.Entries.TryGetValue(col, &entry) then
-                ValueSome (if includeBlanks then entry.ValuesWithBlanks else entry.ValuesWithoutBlanks)
-            else
-                ValueNone
-        | ValueNone -> ValueNone
+        match tryGetColumnUniqueValuesLast includeBlanks col model.Cells with
+        | ValueSome values -> ValueSome values
+        | ValueNone ->
+            match tryGetColumnUniqueValuesCache model.Cells with
+            | ValueSome cached ->
+                let mutable entry = Unchecked.defaultof<ColumnUniqueValuesCacheEntry>
+                if cached.Entries.TryGetValue(col, &entry) then
+                    rememberColumnUniqueValuesLast model.Cells col entry.ValuesWithBlanks entry.ValuesWithoutBlanks
+                    ValueSome (if includeBlanks then entry.ValuesWithBlanks else entry.ValuesWithoutBlanks)
+                else
+                    ValueNone
+            | ValueNone -> ValueNone
 
     match cachedResult with
     | ValueSome values -> values
@@ -2587,6 +2612,10 @@ let private columnUniqueValuesCached includeBlanks col (model: SpreadsheetModel)
             ValueCount = valueCount
             ValueTextCharCount = valueTextCharCount
         } cache
+        if valueCount <= columnUniqueValuesCacheMaxTotalValues
+           && valueTextCharCount <= columnUniqueValuesCacheMaxTotalValueTextChars
+           && columnUniqueValuesCacheRetainable cache then
+            rememberColumnUniqueValuesLast model.Cells col withBlanks withoutBlanks
         rememberColumnUniqueValuesCache cache
         if includeBlanks then withBlanks else withoutBlanks
 

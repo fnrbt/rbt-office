@@ -1613,8 +1613,8 @@ for _pass in 1 .. 200000 do
 uniqueValuesSw.Stop()
 let uniqueValuesAllocated = System.GC.GetAllocatedBytesForCurrentThread() - uniqueValuesAllocatedBefore
 check "native column unique values hot hit"
-    (uniqueValuesSw.Elapsed.TotalMilliseconds < 250.0
-     && uniqueValuesAllocated < 2L * 1024L * 1024L
+    (uniqueValuesSw.Elapsed.TotalMilliseconds < 35.0
+     && uniqueValuesAllocated < 4L * 1024L
      && uniqueValuesTotal = 1000000)
     true
 
