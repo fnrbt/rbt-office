@@ -375,18 +375,23 @@ let private clearUsedBoundsCache state =
     state.UsedBoundsMergedCells <- None
     state.UsedBoundsValue <- None
 
+let private refreshUsedBoundsCache (state: SpreadsheetEditorState) (model: SpreadsheetModel) =
+    let bounds = usedBounds model
+    state.UsedBoundsCells <- Some model.Cells
+    state.UsedBoundsMergedCells <- Some model.MergedCells
+    state.UsedBoundsValue <- Some bounds
+    bounds
+
 let private usedBoundsCached (state: SpreadsheetEditorState) (model: SpreadsheetModel) =
-    match state.UsedBoundsCells, state.UsedBoundsMergedCells, state.UsedBoundsValue with
-    | Some cells, Some mergedCells, Some bounds
-        when System.Object.ReferenceEquals(cells, model.Cells)
-             && System.Object.ReferenceEquals(mergedCells, model.MergedCells) ->
-        bounds
-    | _ ->
-        let bounds = usedBounds model
-        state.UsedBoundsCells <- Some model.Cells
-        state.UsedBoundsMergedCells <- Some model.MergedCells
-        state.UsedBoundsValue <- Some bounds
-        bounds
+    match state.UsedBoundsCells with
+    | Some cells when System.Object.ReferenceEquals(cells, model.Cells) ->
+        match state.UsedBoundsMergedCells with
+        | Some mergedCells when System.Object.ReferenceEquals(mergedCells, model.MergedCells) ->
+            match state.UsedBoundsValue with
+            | Some bounds -> bounds
+            | None -> refreshUsedBoundsCache state model
+        | _ -> refreshUsedBoundsCache state model
+    | _ -> refreshUsedBoundsCache state model
 
 /// Replace the active sheet's model. Does not push undo; callers that
 /// want history should go through applyChange.

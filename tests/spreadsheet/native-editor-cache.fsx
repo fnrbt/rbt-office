@@ -10,6 +10,8 @@ open System.Reflection
 
 module Editor = Composit.Ui.SpreadsheetEditor
 
+type UsedBoundsCachedDelegate = delegate of Editor.SpreadsheetEditorState * SpreadsheetModel -> (int * int) option
+
 let mutable pass = 0
 let mutable fail = 0
 
@@ -47,6 +49,11 @@ let commitEdit =
     editorType.GetMethod("commitEdit", staticBindingFlags)
 let usedBoundsCached =
     editorType.GetMethod("usedBoundsCached", staticBindingFlags)
+let usedBoundsCachedDelegate =
+    if isNull usedBoundsCached then
+        Unchecked.defaultof<UsedBoundsCachedDelegate>
+    else
+        usedBoundsCached.CreateDelegate(typeof<UsedBoundsCachedDelegate>) :?> UsedBoundsCachedDelegate
 let paintModuleType = typeof<SpreadsheetModel>.Assembly.GetType("RedBat.Spreadsheet.Paint")
 let hasAnyRenderTimeTableStyle =
     paintModuleType.GetMethod("hasAnyRenderTimeTableStyle", staticBindingFlags)
@@ -1067,7 +1074,7 @@ else
     let usedBoundsModel = { createEmpty usedBoundsRows 20 with Cells = usedBoundsCells }
     let usedBoundsState = Editor.createState [| usedBoundsModel |] [| "Sheet1" |] 0
     let firstBounds =
-        usedBoundsCached.Invoke(null, [| box usedBoundsState; box usedBoundsModel |]) :?> (int * int) option
+        usedBoundsCachedDelegate.Invoke(usedBoundsState, usedBoundsModel)
     check "native used bounds cache value"
         firstBounds
         (Some (usedBoundsRows - 1, 11))
@@ -1078,17 +1085,17 @@ else
 
     let usedBoundsAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
     let usedBoundsSw = Stopwatch.StartNew()
-    let mutable usedBoundsTotal = 0
-    for _ in 1 .. 20 do
-        match usedBoundsCached.Invoke(null, [| box usedBoundsState; box usedBoundsModel |]) :?> (int * int) option with
-        | Some (row, col) -> usedBoundsTotal <- usedBoundsTotal + row + col
+    let mutable usedBoundsTotal = 0L
+    for _ in 1 .. 100000 do
+        match usedBoundsCachedDelegate.Invoke(usedBoundsState, usedBoundsModel) with
+        | Some (row, col) -> usedBoundsTotal <- usedBoundsTotal + int64 row + int64 col
         | None -> ()
     usedBoundsSw.Stop()
     let usedBoundsAllocated = System.GC.GetAllocatedBytesForCurrentThread() - usedBoundsAllocatedBefore
     check "native used bounds cache perf"
-        (usedBoundsSw.Elapsed.TotalMilliseconds < 20.0
-         && usedBoundsAllocated < 1024L * 1024L
-         && usedBoundsTotal = (usedBoundsRows - 1 + 11) * 20)
+        (usedBoundsSw.Elapsed.TotalMilliseconds < 80.0
+         && usedBoundsAllocated < 64L * 1024L
+         && usedBoundsTotal = int64 (usedBoundsRows - 1 + 11) * 100000L)
         true
 
 let usedBoundsCycleSourceCount = 80
