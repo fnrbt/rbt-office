@@ -830,12 +830,62 @@ let private linesSpanPages settings (lines: MeasuredLine list) =
 type TextMeasurer = string -> TextBuffer.TextStyle -> float
 type TextRangeMeasurer = string -> TextBuffer.TextStyle -> int -> int -> float
 
-let rangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : TextRangeMeasurer =
+let private createRangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : TextRangeMeasurer =
     fun text style start length ->
         let startIndex = max 0 (min text.Length start)
         let endIndex = max startIndex (min text.Length (start + length))
         if endIndex = startIndex then 0.0
         else measureText (text.Substring(startIndex, endIndex - startIndex)) style
+
+let mutable private rangeMeasurerLastSet = false
+let mutable private rangeMeasurerLastText = Unchecked.defaultof<TextMeasurer>
+let mutable private rangeMeasurerLastRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private rangeMeasurerPreviousSet = false
+let mutable private rangeMeasurerPreviousText = Unchecked.defaultof<TextMeasurer>
+let mutable private rangeMeasurerPreviousRange = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private rangeMeasurerOlder1Set = false
+let mutable private rangeMeasurerOlder1Text = Unchecked.defaultof<TextMeasurer>
+let mutable private rangeMeasurerOlder1Range = Unchecked.defaultof<TextRangeMeasurer>
+let mutable private rangeMeasurerOlder2Set = false
+let mutable private rangeMeasurerOlder2Text = Unchecked.defaultof<TextMeasurer>
+let mutable private rangeMeasurerOlder2Range = Unchecked.defaultof<TextRangeMeasurer>
+
+let private rememberRangeMeasurer measureText measureRange =
+    if rangeMeasurerOlder1Set then
+        rangeMeasurerOlder2Set <- true
+        rangeMeasurerOlder2Text <- rangeMeasurerOlder1Text
+        rangeMeasurerOlder2Range <- rangeMeasurerOlder1Range
+    if rangeMeasurerPreviousSet then
+        rangeMeasurerOlder1Set <- true
+        rangeMeasurerOlder1Text <- rangeMeasurerPreviousText
+        rangeMeasurerOlder1Range <- rangeMeasurerPreviousRange
+    if rangeMeasurerLastSet then
+        rangeMeasurerPreviousSet <- true
+        rangeMeasurerPreviousText <- rangeMeasurerLastText
+        rangeMeasurerPreviousRange <- rangeMeasurerLastRange
+    rangeMeasurerLastSet <- true
+    rangeMeasurerLastText <- measureText
+    rangeMeasurerLastRange <- measureRange
+
+let rangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : TextRangeMeasurer =
+    if rangeMeasurerLastSet && obj.ReferenceEquals(measureText, rangeMeasurerLastText) then
+        rangeMeasurerLastRange
+    elif rangeMeasurerPreviousSet && obj.ReferenceEquals(measureText, rangeMeasurerPreviousText) then
+        let measureRange = rangeMeasurerPreviousRange
+        rememberRangeMeasurer measureText measureRange
+        measureRange
+    elif rangeMeasurerOlder1Set && obj.ReferenceEquals(measureText, rangeMeasurerOlder1Text) then
+        let measureRange = rangeMeasurerOlder1Range
+        rememberRangeMeasurer measureText measureRange
+        measureRange
+    elif rangeMeasurerOlder2Set && obj.ReferenceEquals(measureText, rangeMeasurerOlder2Text) then
+        let measureRange = rangeMeasurerOlder2Range
+        rememberRangeMeasurer measureText measureRange
+        measureRange
+    else
+        let measureRange = createRangeMeasurerFromTextMeasurer measureText
+        rememberRangeMeasurer measureText measureRange
+        measureRange
 
 let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
     WordLayout.Table.tableColumnWidths WordLayout.canvasScale (Some maxWidth) tableBlock

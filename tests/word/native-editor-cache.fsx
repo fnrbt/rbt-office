@@ -1054,6 +1054,27 @@ check "native x offset cache hot hit"
      && xOffsetTotal = xOffsetHotX * 200000.0)
     true
 
+let xOffsetMeasureText (text: string) (_style: TB.TextStyle) =
+    float text.Length
+Layout.xForOffset xOffsetMeasureText xOffsetLine xOffsetHotOffset |> ignore
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let xOffsetPublicAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let xOffsetPublicSw = System.Diagnostics.Stopwatch.StartNew()
+let mutable xOffsetPublicTotal = 0.0
+for _ in 1 .. 200000 do
+    xOffsetPublicTotal <- xOffsetPublicTotal + Layout.xForOffset xOffsetMeasureText xOffsetLine xOffsetHotOffset
+xOffsetPublicSw.Stop()
+let xOffsetPublicAllocated = System.GC.GetAllocatedBytesForCurrentThread() - xOffsetPublicAllocatedBefore
+check "native public x offset cache hot hit"
+    (xOffsetPublicSw.Elapsed.TotalMilliseconds < 80.0
+     && xOffsetPublicAllocated < 64L * 1024L
+     && xOffsetPublicTotal = xOffsetHotX * 200000.0)
+    true
+
 let xOffsetCycleOffsets = [| 1279; 640; 7 |]
 for offset in xOffsetCycleOffsets do
     Layout.xForOffsetWithRange xOffsetMeasureRange xOffsetLine offset |> ignore
