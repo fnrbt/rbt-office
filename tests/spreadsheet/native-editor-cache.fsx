@@ -786,6 +786,32 @@ check "native paint viewport entry cycle"
      && paintEntryCycleTotal = 618020)
     true
 
+let paintEntryCycleItems =
+    geometryEntryCycleViewports
+    |> Array.map (fun viewport -> RedBat.Spreadsheet.Paint.buildViewportPaintItems paintCacheModel viewport)
+
+System.GC.Collect()
+System.GC.WaitForPendingFinalizers()
+System.GC.Collect()
+
+let paintEntryCycleHotAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+let paintEntryCycleHotSw = Stopwatch.StartNew()
+let mutable paintEntryCycleHotHits = 0
+for index in 0 .. 49999 do
+    let entryIndex = index % paintEntryCycleItems.Length
+    if obj.ReferenceEquals(
+        RedBat.Spreadsheet.Paint.buildViewportPaintItems paintCacheModel geometryEntryCycleViewports.[entryIndex],
+        paintEntryCycleItems.[entryIndex]) then
+        paintEntryCycleHotHits <- paintEntryCycleHotHits + 1
+paintEntryCycleHotSw.Stop()
+let paintEntryCycleHotAllocated =
+    System.GC.GetAllocatedBytesForCurrentThread() - paintEntryCycleHotAllocatedBefore
+check "native paint viewport entry hot cycle"
+    (paintEntryCycleHotSw.Elapsed.TotalMilliseconds < 50.0
+     && paintEntryCycleHotAllocated < 64L * 1024L
+     && paintEntryCycleHotHits = 50000)
+    true
+
 for model in geometrySourceCycleModels do
     RedBat.Spreadsheet.Paint.buildPaintItems model paintCacheViewport |> ignore
 

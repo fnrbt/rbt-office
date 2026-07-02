@@ -2292,6 +2292,14 @@ let private estimatedPaintItemCount (model: SpreadsheetModel) (viewport: Viewpor
     let sharedGridlines = visibleRows + visibleCols + 2
     max 16 (1 + headers + visibleCells + sharedGridlines + 2)
 
+let private paintGeometryHash scrollX scrollY width height headerHeight rowHeaderWidth =
+    let mutable hashCode = scrollX.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ scrollY.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ width.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ height.GetHashCode()
+    hashCode <- (hashCode * 397) ^^^ headerHeight.GetHashCode()
+    (hashCode * 397) ^^^ rowHeaderWidth.GetHashCode()
+
 [<Struct>]
 type private StaticPaintGeometryKey = {
     ScrollX: float
@@ -2302,6 +2310,22 @@ type private StaticPaintGeometryKey = {
     RowHeaderWidth: float
 }
 
+let private staticPaintGeometryKeyHash (key: StaticPaintGeometryKey) =
+    paintGeometryHash key.ScrollX key.ScrollY key.Width key.Height key.HeaderHeight key.RowHeaderWidth
+
+let private staticPaintGeometryKeyEquals (left: StaticPaintGeometryKey) (right: StaticPaintGeometryKey) =
+    left.ScrollX = right.ScrollX
+    && left.ScrollY = right.ScrollY
+    && left.Width = right.Width
+    && left.Height = right.Height
+    && left.HeaderHeight = right.HeaderHeight
+    && left.RowHeaderWidth = right.RowHeaderWidth
+
+let private staticPaintGeometryKeyComparer =
+    { new IEqualityComparer<StaticPaintGeometryKey> with
+        member _.Equals(left, right) = staticPaintGeometryKeyEquals left right
+        member _.GetHashCode(value) = staticPaintGeometryKeyHash value }
+
 type private StaticPaintItemsCacheEntry = {
     Measurer: TextMeasurer option
     Items: PaintItem list
@@ -2309,6 +2333,7 @@ type private StaticPaintItemsCacheEntry = {
     ItemTextCharCount: int
 }
 
+[<Struct>]
 type private StaticPaintGeometryFastEntry = {
     Key: StaticPaintGeometryKey
     Entry: StaticPaintItemsCacheEntry
@@ -2874,13 +2899,7 @@ let private staticPaintGeometrySlot
     height
     headerHeight
     rowHeaderWidth =
-    let mutable hashCode = scrollX.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ scrollY.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ width.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ height.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ headerHeight.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ rowHeaderWidth.GetHashCode()
-    hashCode &&& (slotCount - 1)
+    paintGeometryHash scrollX scrollY width height headerHeight rowHeaderWidth &&& (slotCount - 1)
 
 let private staticPaintGeometryKeyMatchesViewport key (viewport: Viewport) =
     key.ScrollX = viewport.ScrollX
@@ -2901,7 +2920,7 @@ let private tryGetStaticPaintGeometryFastSlot (cache: StaticPaintItemsCache) (vi
             viewport.HeaderHeight
             viewport.RowHeaderWidth
     let fast = cache.EntryFastSlots.[slot]
-    if not (obj.ReferenceEquals(fast, null))
+    if not (obj.ReferenceEquals(fast.Entry, null))
        && staticPaintGeometryKeyMatchesViewport fast.Key viewport
        && sameMeasurer fast.Entry.Measurer viewport.Measurer then
         ValueSome fast.Entry
@@ -3103,7 +3122,7 @@ let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem li
         let items = resizeArrayToList values
         if itemCount <= staticPaintItemsCacheMaxTotalItems then
             let key = staticPaintGeometryKey viewport
-            let entries = Dictionary<StaticPaintGeometryKey, StaticPaintItemsCacheEntry>()
+            let entries = Dictionary<StaticPaintGeometryKey, StaticPaintItemsCacheEntry>(staticPaintGeometryKeyComparer)
             let order = Queue<StaticPaintGeometryKey>()
             let sourceItemCount, sourceTextCharCount = staticPaintSourceMetrics model
             let cache = {
@@ -3256,6 +3275,22 @@ type private ViewportPaintGeometryKey = {
     RowHeaderWidth: float
 }
 
+let private viewportPaintGeometryKeyHash (key: ViewportPaintGeometryKey) =
+    paintGeometryHash key.ScrollX key.ScrollY key.Width key.Height key.HeaderHeight key.RowHeaderWidth
+
+let private viewportPaintGeometryKeyEquals (left: ViewportPaintGeometryKey) (right: ViewportPaintGeometryKey) =
+    left.ScrollX = right.ScrollX
+    && left.ScrollY = right.ScrollY
+    && left.Width = right.Width
+    && left.Height = right.Height
+    && left.HeaderHeight = right.HeaderHeight
+    && left.RowHeaderWidth = right.RowHeaderWidth
+
+let private viewportPaintGeometryKeyComparer =
+    { new IEqualityComparer<ViewportPaintGeometryKey> with
+        member _.Equals(left, right) = viewportPaintGeometryKeyEquals left right
+        member _.GetHashCode(value) = viewportPaintGeometryKeyHash value }
+
 type private ViewportPaintItemsCacheEntry = {
     Measurer: TextMeasurer option
     Items: ViewportPaintItem list
@@ -3263,6 +3298,7 @@ type private ViewportPaintItemsCacheEntry = {
     ItemTextCharCount: int
 }
 
+[<Struct>]
 type private ViewportPaintGeometryFastEntry = {
     Key: ViewportPaintGeometryKey
     Entry: ViewportPaintItemsCacheEntry
@@ -3307,13 +3343,7 @@ let private viewportPaintGeometrySlot
     height
     headerHeight
     rowHeaderWidth =
-    let mutable hashCode = scrollX.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ scrollY.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ width.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ height.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ headerHeight.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ rowHeaderWidth.GetHashCode()
-    hashCode &&& (slotCount - 1)
+    paintGeometryHash scrollX scrollY width height headerHeight rowHeaderWidth &&& (slotCount - 1)
 
 let private viewportPaintGeometryKeyMatchesViewport key (viewport: Viewport) =
     key.ScrollX = viewport.ScrollX
@@ -3334,7 +3364,7 @@ let private tryGetViewportPaintGeometryFastSlot (cache: ViewportPaintItemsCache)
             viewport.HeaderHeight
             viewport.RowHeaderWidth
     let fast = cache.EntryFastSlots.[slot]
-    if not (obj.ReferenceEquals(fast, null))
+    if not (obj.ReferenceEquals(fast.Entry, null))
        && viewportPaintGeometryKeyMatchesViewport fast.Key viewport
        && sameMeasurer fast.Entry.Measurer viewport.Measurer then
         ValueSome fast.Entry
@@ -3535,7 +3565,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
         let items = resizeArrayToList items
         if itemCount <= viewportPaintItemsCacheMaxTotalItems then
             let key = viewportPaintGeometryKey viewport
-            let entries = Dictionary<ViewportPaintGeometryKey, ViewportPaintItemsCacheEntry>()
+            let entries = Dictionary<ViewportPaintGeometryKey, ViewportPaintItemsCacheEntry>(viewportPaintGeometryKeyComparer)
             let order = Queue<ViewportPaintGeometryKey>()
             let sourceItemCount, sourceTextCharCount = staticPaintSourceMetrics model
             let cache = {
