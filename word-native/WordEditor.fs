@@ -462,10 +462,17 @@ and WordLayoutCache = {
     mutable RendererSelectionLayouts: WordLayout.BlockLayout list option
     mutable RendererSelectionValue: Selection option
     mutable RendererSelectionCommands: WordPaint.PaintCommand list option
+    mutable RendererSelectionPreviousLayouts: WordLayout.BlockLayout list option
+    mutable RendererSelectionPreviousValue: Selection option
+    mutable RendererSelectionPreviousCommands: WordPaint.PaintCommand list option
     mutable RendererFrameContentCommands: Cmd list option
     mutable RendererFrameSelectionCommands: WordPaint.PaintCommand list option
     mutable RendererFrameHoverCommands: WordPaint.PaintCommand list option
     mutable RendererFrameCommands: Cmd list option
+    mutable RendererFramePreviousContentCommands: Cmd list option
+    mutable RendererFramePreviousSelectionCommands: WordPaint.PaintCommand list option
+    mutable RendererFramePreviousHoverCommands: WordPaint.PaintCommand list option
+    mutable RendererFramePreviousCommands: Cmd list option
     mutable ViewportSupportDocument: Document option
     mutable ViewportSupportsContentCommands: bool option
 }
@@ -936,10 +943,17 @@ let private createLayoutCache () = {
     RendererSelectionLayouts = None
     RendererSelectionValue = None
     RendererSelectionCommands = None
+    RendererSelectionPreviousLayouts = None
+    RendererSelectionPreviousValue = None
+    RendererSelectionPreviousCommands = None
     RendererFrameContentCommands = None
     RendererFrameSelectionCommands = None
     RendererFrameHoverCommands = None
     RendererFrameCommands = None
+    RendererFramePreviousContentCommands = None
+    RendererFramePreviousSelectionCommands = None
+    RendererFramePreviousHoverCommands = None
+    RendererFramePreviousCommands = None
     ViewportSupportDocument = None
     ViewportSupportsContentCommands = None
 }
@@ -1031,10 +1045,17 @@ let private cachedLayouts width (state: WordEditorState) doc =
         cache.RendererSelectionLayouts <- None
         cache.RendererSelectionValue <- None
         cache.RendererSelectionCommands <- None
+        cache.RendererSelectionPreviousLayouts <- None
+        cache.RendererSelectionPreviousValue <- None
+        cache.RendererSelectionPreviousCommands <- None
         cache.RendererFrameContentCommands <- None
         cache.RendererFrameSelectionCommands <- None
         cache.RendererFrameHoverCommands <- None
         cache.RendererFrameCommands <- None
+        cache.RendererFramePreviousContentCommands <- None
+        cache.RendererFramePreviousSelectionCommands <- None
+        cache.RendererFramePreviousHoverCommands <- None
+        cache.RendererFramePreviousCommands <- None
         cache.ViewportSupportDocument <- None
         cache.ViewportSupportsContentCommands <- None
         settings, layouts
@@ -1846,6 +1867,10 @@ let private clearRendererFrameCommands state =
     state.LayoutCache.RendererFrameSelectionCommands <- None
     state.LayoutCache.RendererFrameHoverCommands <- None
     state.LayoutCache.RendererFrameCommands <- None
+    state.LayoutCache.RendererFramePreviousContentCommands <- None
+    state.LayoutCache.RendererFramePreviousSelectionCommands <- None
+    state.LayoutCache.RendererFramePreviousHoverCommands <- None
+    state.LayoutCache.RendererFramePreviousCommands <- None
 
 let private rendererSelectionCommandsForState state layouts settings measureRange doc layoutLookup =
     match
@@ -1858,11 +1883,24 @@ let private rendererSelectionCommandsForState state layouts settings measureRang
              && cachedSelection = doc.Selection ->
         cachedCommands
     | _ ->
-        let commands = WordPaint.selectionCommandsWithRangeLookup settings measureRange doc layoutLookup
-        state.LayoutCache.RendererSelectionLayouts <- Some layouts
-        state.LayoutCache.RendererSelectionValue <- doc.Selection
-        state.LayoutCache.RendererSelectionCommands <- Some commands
-        commands
+        match
+            state.LayoutCache.RendererSelectionPreviousLayouts,
+            state.LayoutCache.RendererSelectionPreviousValue,
+            state.LayoutCache.RendererSelectionPreviousCommands
+        with
+        | Some cachedLayouts, cachedSelection, Some cachedCommands
+            when obj.ReferenceEquals(cachedLayouts, layouts)
+                 && cachedSelection = doc.Selection ->
+            cachedCommands
+        | _ ->
+            let commands = WordPaint.selectionCommandsWithRangeLookup settings measureRange doc layoutLookup
+            state.LayoutCache.RendererSelectionPreviousLayouts <- state.LayoutCache.RendererSelectionLayouts
+            state.LayoutCache.RendererSelectionPreviousValue <- state.LayoutCache.RendererSelectionValue
+            state.LayoutCache.RendererSelectionPreviousCommands <- state.LayoutCache.RendererSelectionCommands
+            state.LayoutCache.RendererSelectionLayouts <- Some layouts
+            state.LayoutCache.RendererSelectionValue <- doc.Selection
+            state.LayoutCache.RendererSelectionCommands <- Some commands
+            commands
 
 let private rendererContentCommandsCacheable (paintCommands: WordPaint.PaintCommand list) =
     let mutable remaining = paintCommands
@@ -1912,22 +1950,38 @@ let private rendererCommandsForFrame
              && samePaintCommands cachedHoverCommands hoverCommands ->
         cachedFrameCommands
     | _ ->
-        let overlayCommands = ResizeArray<Cmd>()
-        for paintCommand in selectionCommands do
-            overlayCommands.AddRange(toRendererCommand resolveImage paintCommand)
-        for paintCommand in hoverCommands do
-            overlayCommands.AddRange(toRendererCommand resolveImage paintCommand)
-        let rendered =
-            let overlay = resizeArrayToList overlayCommands
-            if contentRendererCommands.IsEmpty then
-                overlay
-            else
-                Cmd.Group(Matrix3x2.identity, 1.0, contentRendererCommands) :: overlay
-        state.LayoutCache.RendererFrameContentCommands <- Some contentRendererCommands
-        state.LayoutCache.RendererFrameSelectionCommands <- Some selectionCommands
-        state.LayoutCache.RendererFrameHoverCommands <- Some hoverCommands
-        state.LayoutCache.RendererFrameCommands <- Some rendered
-        rendered
+        match
+            state.LayoutCache.RendererFramePreviousContentCommands,
+            state.LayoutCache.RendererFramePreviousSelectionCommands,
+            state.LayoutCache.RendererFramePreviousHoverCommands,
+            state.LayoutCache.RendererFramePreviousCommands
+        with
+        | Some cachedContentCommands, Some cachedSelectionCommands, Some cachedHoverCommands, Some cachedFrameCommands
+            when obj.ReferenceEquals(cachedContentCommands, contentRendererCommands)
+                 && samePaintCommands cachedSelectionCommands selectionCommands
+                 && samePaintCommands cachedHoverCommands hoverCommands ->
+            cachedFrameCommands
+        | _ ->
+            let overlayCommands = ResizeArray<Cmd>()
+            for paintCommand in selectionCommands do
+                overlayCommands.AddRange(toRendererCommand resolveImage paintCommand)
+            for paintCommand in hoverCommands do
+                overlayCommands.AddRange(toRendererCommand resolveImage paintCommand)
+            let rendered =
+                let overlay = resizeArrayToList overlayCommands
+                if contentRendererCommands.IsEmpty then
+                    overlay
+                else
+                    Cmd.Group(Matrix3x2.identity, 1.0, contentRendererCommands) :: overlay
+            state.LayoutCache.RendererFramePreviousContentCommands <- state.LayoutCache.RendererFrameContentCommands
+            state.LayoutCache.RendererFramePreviousSelectionCommands <- state.LayoutCache.RendererFrameSelectionCommands
+            state.LayoutCache.RendererFramePreviousHoverCommands <- state.LayoutCache.RendererFrameHoverCommands
+            state.LayoutCache.RendererFramePreviousCommands <- state.LayoutCache.RendererFrameCommands
+            state.LayoutCache.RendererFrameContentCommands <- Some contentRendererCommands
+            state.LayoutCache.RendererFrameSelectionCommands <- Some selectionCommands
+            state.LayoutCache.RendererFrameHoverCommands <- Some hoverCommands
+            state.LayoutCache.RendererFrameCommands <- Some rendered
+            rendered
 
 let private supportsViewportContentCommands (doc: Document) =
     doc.Headers.IsEmpty

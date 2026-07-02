@@ -1375,7 +1375,7 @@ let rendererMovingSelectionAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - rendererMovingSelectionAllocatedBefore
 check "native moving selection command alloc"
     (rendererMovingSelectionSw.Elapsed.TotalMilliseconds < 20.0
-     && rendererMovingSelectionAllocated < 1024L * 1024L
+     && rendererMovingSelectionAllocated < 128L * 1024L
      && rendererMovingSelectionTotal = rendererMovingSelectionCommandLength * 50)
     true
 
