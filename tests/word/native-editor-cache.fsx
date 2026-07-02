@@ -2340,7 +2340,7 @@ for _pass in 1 .. 2000 do
 blockLookupSw.Stop()
 let blockLookupAllocated = System.GC.GetAllocatedBytesForCurrentThread() - blockLookupAllocatedBefore
 check "native block lookup long id perf"
-    (blockLookupSw.Elapsed.TotalMilliseconds < 400.0
+    (blockLookupSw.Elapsed.TotalMilliseconds < 240.0
      && blockLookupAllocated < 2L * 1024L * 1024L
      && blockLookupHits = 1024000)
     true
@@ -2359,7 +2359,7 @@ blockLookupIndexSw.Stop()
 let blockLookupIndexAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - blockLookupIndexAllocatedBefore
 check "native block index lookup long id perf"
-    (blockLookupIndexSw.Elapsed.TotalMilliseconds < 400.0
+    (blockLookupIndexSw.Elapsed.TotalMilliseconds < 240.0
      && blockLookupIndexAllocated < 2L * 1024L * 1024L
      && blockLookupIndexHits = 1024000)
     true
@@ -2384,7 +2384,7 @@ clonedBlockLookupSw.Stop()
 let clonedBlockLookupAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - clonedBlockLookupAllocatedBefore
 check "native block lookup cloned long id cache"
-    (clonedBlockLookupSw.Elapsed.TotalMilliseconds < 380.0
+    (clonedBlockLookupSw.Elapsed.TotalMilliseconds < 240.0
      && clonedBlockLookupAllocated < 512L * 1024L
      && clonedBlockLookupHits = 768000)
     true
@@ -2718,7 +2718,7 @@ paragraphLookupSw.Stop()
 let paragraphLookupAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - paragraphLookupAllocatedBefore
 check "native paragraph lookup long id perf"
-    (paragraphLookupSw.Elapsed.TotalMilliseconds < 500.0
+    (paragraphLookupSw.Elapsed.TotalMilliseconds < 280.0
      && paragraphLookupAllocated < 2L * 1024L * 1024L
      && paragraphLookupHits = 1024000)
     true
@@ -2739,7 +2739,7 @@ clonedParagraphLookupSw.Stop()
 let clonedParagraphLookupAllocated =
     System.GC.GetAllocatedBytesForCurrentThread() - clonedParagraphLookupAllocatedBefore
 check "native paragraph lookup cloned long id cache"
-    (clonedParagraphLookupSw.Elapsed.TotalMilliseconds < 340.0
+    (clonedParagraphLookupSw.Elapsed.TotalMilliseconds < 180.0
      && clonedParagraphLookupAllocated < 512L * 1024L
      && clonedParagraphLookupHits = 384000)
     true

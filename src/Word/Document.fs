@@ -1589,19 +1589,27 @@ let private blockIdKeyHash (blockId: BlockId) =
     else
         let length = blockId.Length
         let mutable hashCode = length
-        if length > 0 then
+        if length > 64 then
             hashCode <- (hashCode * 397) ^^^ int blockId.[0]
-        if length > 1 then
-            hashCode <- (hashCode * 397) ^^^ int blockId.[length / 4]
             hashCode <- (hashCode * 397) ^^^ int blockId.[length / 2]
-            hashCode <- (hashCode * 397) ^^^ int blockId.[(length * 3) / 4]
-            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 1]
-        if length > 2 then
-            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 2]
-        if length > 3 then
-            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 3]
-        if length > 4 then
             hashCode <- (hashCode * 397) ^^^ int blockId.[length - 4]
+            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 3]
+            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 2]
+            hashCode <- (hashCode * 397) ^^^ int blockId.[length - 1]
+        else
+            if length > 0 then
+                hashCode <- (hashCode * 397) ^^^ int blockId.[0]
+            if length > 1 then
+                hashCode <- (hashCode * 397) ^^^ int blockId.[length / 4]
+                hashCode <- (hashCode * 397) ^^^ int blockId.[length / 2]
+                hashCode <- (hashCode * 397) ^^^ int blockId.[(length * 3) / 4]
+                hashCode <- (hashCode * 397) ^^^ int blockId.[length - 1]
+            if length > 2 then
+                hashCode <- (hashCode * 397) ^^^ int blockId.[length - 2]
+            if length > 3 then
+                hashCode <- (hashCode * 397) ^^^ int blockId.[length - 3]
+            if length > 4 then
+                hashCode <- (hashCode * 397) ^^^ int blockId.[length - 4]
         hashCode ^^^ (hashCode >>> 16)
 
 let private blockIdLookupComparer =
