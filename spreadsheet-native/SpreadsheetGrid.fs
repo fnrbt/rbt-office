@@ -1272,13 +1272,114 @@ let private rememberViewportCommands model scrollX scrollY width height commands
         |> trim
         |> setViewportCommandsCache
 
+[<Struct>]
+type private CellCommandsKey = {
+    Model: SpreadsheetModel
+    Width: float
+    Height: float
+}
+
+type private CellCommandsCacheEntry = {
+    Key: CellCommandsKey
+    Commands: Cmd list
+    CommandCount: int
+}
+
+let mutable private cellCommandsCache: CellCommandsCacheEntry list = []
+let private cellCommandsKeyComparer =
+    { new IEqualityComparer<CellCommandsKey> with
+        member _.Equals(left, right) =
+            obj.ReferenceEquals(left.Model, right.Model)
+            && left.Width = right.Width
+            && left.Height = right.Height
+        member _.GetHashCode(value) =
+            let mutable hashCode = RuntimeHelpers.GetHashCode(value.Model)
+            hashCode <- (hashCode * 397) ^^^ value.Width.GetHashCode()
+            (hashCode * 397) ^^^ value.Height.GetHashCode() }
+let private cellCommandsCacheByKey =
+    Dictionary<CellCommandsKey, CellCommandsCacheEntry>(cellCommandsKeyComparer)
+let private cellCommandsFastSlots = Array.zeroCreate<CellCommandsCacheEntry> 256
+let private cellCommandsCacheMaxEntries = 256
+let private cellCommandsCacheMaxCommands = 200000
+
+let private cellCommandsKey model width height : CellCommandsKey = {
+    Model = model
+    Width = width
+    Height = height
+}
+
+let private cellCommandsSlot (key: CellCommandsKey) slotCount =
+    cellCommandsKeyComparer.GetHashCode key &&& (slotCount - 1)
+
+let private cellCommandsEntryMatches key (entry: CellCommandsCacheEntry) =
+    cellCommandsKeyComparer.Equals(key, entry.Key)
+
+let private setCellCommandsCache entries =
+    cellCommandsCache <- entries
+    cellCommandsCacheByKey.Clear()
+    clearArray cellCommandsFastSlots
+    for entry in entries do
+        cellCommandsCacheByKey.[entry.Key] <- entry
+        cellCommandsFastSlots.[cellCommandsSlot entry.Key cellCommandsFastSlots.Length] <- entry
+
+let private tryGetCellCommands model width height =
+    let key = cellCommandsKey model width height
+    let slot = cellCommandsSlot key cellCommandsFastSlots.Length
+    let fast = cellCommandsFastSlots.[slot]
+    if not (obj.ReferenceEquals(fast, null)) && cellCommandsEntryMatches key fast then
+        ValueSome fast.Commands
+    else
+        let mutable cached = Unchecked.defaultof<CellCommandsCacheEntry>
+        if cellCommandsCacheByKey.TryGetValue(key, &cached) then
+            cellCommandsFastSlots.[slot] <- cached
+            ValueSome cached.Commands
+        else
+            ValueNone
+
+let private rememberCellCommands model width height commands commandCount =
+    if commandCount <= cellCommandsCacheMaxCommands then
+        let key = cellCommandsKey model width height
+        let entry = {
+            Key = key
+            Commands = commands
+            CommandCount = commandCount
+        }
+        let rec removeMatching acc remaining =
+            match remaining with
+            | [] -> List.rev acc
+            | candidate :: tail when cellCommandsEntryMatches key candidate ->
+                List.rev acc @ tail
+            | candidate :: tail ->
+                removeMatching (candidate :: acc) tail
+        let trim entries =
+            let rec loop keptCount keptCommands acc remaining =
+                match remaining with
+                | [] -> List.rev acc
+                | candidate :: tail ->
+                    let commandCount = max 1 candidate.CommandCount
+                    if keptCount < cellCommandsCacheMaxEntries
+                       && keptCommands + commandCount <= cellCommandsCacheMaxCommands then
+                        loop (keptCount + 1) (keptCommands + commandCount) (candidate :: acc) tail
+                    else
+                        loop keptCount keptCommands acc tail
+            loop 0 0 [] entries
+        (entry :: removeMatching [] cellCommandsCache)
+        |> trim
+        |> setCellCommandsCache
+
 let private cellCommands (model: SpreadsheetModel) width height =
-    let viewport = viewportOf model width height
-    match tryBuildSparseDefaultPaintPartsValue model viewport with
-    | ValueSome parts -> rendererCommandsForSparseDefaultParts parts
+    match tryGetCellCommands model width height with
+    | ValueSome commands -> commands
     | ValueNone ->
-        buildPaintItems model viewport
-        |> rendererCommandsForPaintItems
+        let viewport = viewportOf model width height
+        let commands =
+            match tryBuildSparseDefaultPaintPartsValue model viewport with
+            | ValueSome parts -> rendererCommandsForSparseDefaultParts parts
+            | ValueNone ->
+                buildPaintItems model viewport
+                |> rendererCommandsForPaintItems
+        rememberCellCommands model width height commands commands.Length
+        commands
 
 let private cellCommandsInViewport (model: SpreadsheetModel) scrollX scrollY viewportWidth viewportHeight =
     match tryGetViewportCommands model scrollX scrollY viewportWidth viewportHeight with

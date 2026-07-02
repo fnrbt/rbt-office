@@ -12,6 +12,8 @@ module Editor = Composit.Ui.SpreadsheetEditor
 
 type UsedBoundsCachedDelegate = delegate of Editor.SpreadsheetEditorState * SpreadsheetModel -> (int * int) option
 
+type CellCommandsDelegate = delegate of SpreadsheetModel * float * float -> Renderer.Cmd list
+
 let mutable pass = 0
 let mutable fail = 0
 
@@ -29,6 +31,11 @@ let staticBindingFlags = BindingFlags.NonPublic ||| BindingFlags.Public ||| Bind
 let gridType = typeof<Editor.SpreadsheetEditorState>.Assembly.GetType("Composit.Ui.SpreadsheetGrid")
 let cellCommands =
     gridType.GetMethod("cellCommands", staticBindingFlags)
+let cellCommandsDelegate =
+    if isNull cellCommands then
+        Unchecked.defaultof<CellCommandsDelegate>
+    else
+        cellCommands.CreateDelegate(typeof<CellCommandsDelegate>) :?> CellCommandsDelegate
 let cellCommandsInViewport =
     gridType.GetMethod("cellCommandsInViewport", staticBindingFlags)
 let measureText =
@@ -216,6 +223,27 @@ else
         (alternatingSw.Elapsed.TotalMilliseconds < 30.0
          && alternatingAllocated < 128L * 1024L
          && alternatingTotal = (rendererCommandsA.Length + rendererCommandsWide.Length) * 20)
+        true
+
+    invokeRendererCommands () |> ignore
+    System.GC.Collect()
+    System.GC.WaitForPendingFinalizers()
+    System.GC.Collect()
+
+    let rendererCommandsHotAllocatedBefore = System.GC.GetAllocatedBytesForCurrentThread()
+    let rendererCommandsHotSw = Stopwatch.StartNew()
+    let mutable rendererCommandsHotTotal = 0
+    for _ in 1 .. 100000 do
+        rendererCommandsHotTotal <-
+            rendererCommandsHotTotal
+            + cellCommandsDelegate.Invoke(rendererModel, 2400.0, 2400.0).Length
+    rendererCommandsHotSw.Stop()
+    let rendererCommandsHotAllocated =
+        System.GC.GetAllocatedBytesForCurrentThread() - rendererCommandsHotAllocatedBefore
+    check "native grid command cache hot hits"
+        (rendererCommandsHotSw.Elapsed.TotalMilliseconds < 200.0
+         && rendererCommandsHotAllocated < 64L * 1024L
+         && rendererCommandsHotTotal = rendererCommandsA.Length * 100000)
         true
 
     invokeRendererCommands () |> ignore
