@@ -326,6 +326,13 @@ let private boot () =
         "getSelectionInformation" ==> fun () -> ensureEditor state |> WordApi.getSelectionInformation
         "getRangeBounds" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.getRangeBounds editor blockId startOffset endOffset
         "computeRangeStatistics" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.computeRangeStatistics editor blockId startOffset endOffset
+        "getText" ==> fun () -> ensureEditor state |> WordApi.getText
+        "setContent" ==> fun (text: string) -> ensureEditor state |> fun editor -> WordApi.setContent editor text
+        "findText" ==> fun (query: string) (matchCase: bool) -> ensureEditor state |> fun editor -> WordApi.findText editor query matchCase
+        "selectFindMatch" ==> fun (matchObj: obj) -> ensureEditor state |> fun editor -> WordApi.selectFindMatch editor matchObj
+        "replaceAllText" ==> fun (query: string) (replacement: string) (matchCase: bool) -> ensureEditor state |> fun editor -> WordApi.replaceAllText editor query replacement matchCase
+        "insertTextAt" ==> fun (text: string) -> ensureEditor state |> fun editor -> WordApi.insertTextAt editor text
+        "selectAll" ==> fun () -> ensureEditor state |> WordApi.selectAll
         "runVba" ==> fun (source: string) (resultName: string) -> runVba state source resultName
         "runVbs" ==> fun (source: string) (resultName: string) -> runVbs state source resultName
         "getLayoutJson" ==> fun () -> stringify (box (getLayoutSegments state))

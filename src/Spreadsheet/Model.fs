@@ -3431,16 +3431,40 @@ type private FilterProjectionCacheEntry = {
     HiddenRowCount: int
 }
 
+type private FilterProjectionModelCacheEntry = {
+    Source: SpreadsheetModel
+    Projected: SpreadsheetModel
+}
+
 let private filterProjectionCache = ConditionalWeakTable<SpreadsheetModel, SpreadsheetModel>()
 let private filterProjectionFastSlots = Array.zeroCreate<FilterProjectionCacheEntry> 2048
 let mutable private filterProjectionStrongCache: FilterProjectionCacheEntry list = []
+let private filterProjectionModelRecent = Array.zeroCreate<FilterProjectionModelCacheEntry> 128
+let mutable private filterProjectionModelRecentNext = 0
+let mutable private filterProjectionModelRecentCount = 0
 let private filterProjectionStrongCacheMaxEntries = 128
 let private filterProjectionStrongCacheMaxTotalCells = filterHiddenRowsCacheMaxTotalCells
 let private filterProjectionStrongCacheMaxTotalSourceTextChars = filterHiddenRowsCacheMaxTotalSourceTextChars
 let private filterProjectionStrongCacheMaxTotalHiddenRows = filterHiddenRowsCacheMaxTotalRowCount
 
-let private filterProjectionEntryMatches (model: SpreadsheetModel) entry =
+let private filterProjectionEntryMatches (model: SpreadsheetModel) (entry: FilterProjectionCacheEntry) =
     obj.ReferenceEquals(entry.Source, model)
+
+let private tryGetFilterProjectionModelRecent model =
+    let mutable i = 0
+    let mutable found = Unchecked.defaultof<SpreadsheetModel>
+    while obj.ReferenceEquals(found, null) && i < filterProjectionModelRecentCount do
+        let entry = filterProjectionModelRecent.[i]
+        if not (obj.ReferenceEquals(entry, null)) && obj.ReferenceEquals(entry.Source, model) then
+            found <- entry.Projected
+        i <- i + 1
+    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
+
+let private rememberFilterProjectionModelRecent source projected =
+    filterProjectionModelRecent.[filterProjectionModelRecentNext] <- { Source = source; Projected = projected }
+    filterProjectionModelRecentNext <- (filterProjectionModelRecentNext + 1) % filterProjectionModelRecent.Length
+    if filterProjectionModelRecentCount < filterProjectionModelRecent.Length then
+        filterProjectionModelRecentCount <- filterProjectionModelRecentCount + 1
 
 let private setFilterProjectionStrongCache entries =
     filterProjectionStrongCache <- entries
@@ -4038,8 +4062,7 @@ let getVisibleRowsHashSet (model: SpreadsheetModel): System.Collections.Generic.
         | ValueNone ->
             collectVisibleRowsHashSetUncached model
 
-/// Get visible rows based on all active filters
-let getVisibleRows (model: SpreadsheetModel): Set<int> =
+let private getVisibleRowsCached (model: SpreadsheetModel): Set<int> =
     match tryGetVisibleRowsSimpleLast model.Cells model.Filters with
     | ValueSome rows ->
         rows
@@ -4070,37 +4093,70 @@ let getVisibleRows (model: SpreadsheetModel): Set<int> =
                 rememberVisibleRows rows model
                 rows
 
+/// Get visible rows based on all active filters
+let getVisibleRows (model: SpreadsheetModel): Set<int> =
+    match tryGetVisibleRowsModelRecent model with
+    | ValueSome rows ->
+        rows
+    | ValueNone ->
+        let rows = getVisibleRowsCached model
+        rememberVisibleRowsModelRecent model rows
+        rows
+
 /// Ensure the filter-hidden row projection exists for callers that constructed
 /// or modified Filters directly instead of going through applyFilter/removeFilter.
 let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
     if Map.isEmpty model.Filters then
         if model.FilterHiddenRows.Length = 0 then model else { model with FilterHiddenRows = [||] }
     else
-        match tryGetFilterProjectionStrong model with
+        match tryGetFilterProjectionModelRecent model with
         | ValueSome projected ->
             projected
         | ValueNone ->
-            let mutable projected = Unchecked.defaultof<SpreadsheetModel>
-            if filterProjectionCache.TryGetValue(model, &projected) then
-                rememberFilterProjectionStrong model projected
+            match tryGetFilterProjectionStrong model with
+            | ValueSome projected ->
+                rememberFilterProjectionModelRecent model projected
                 projected
-            else
-                let hiddenRows = filterHiddenRows model
-                let projected =
-                    if obj.ReferenceEquals(model.FilterHiddenRows, hiddenRows)
-                       || intArraysEqual model.FilterHiddenRows hiddenRows then
-                        model
-                    else
-                        { model with FilterHiddenRows = hiddenRows }
-                if not (obj.ReferenceEquals(projected, model)) && filterProjectionCacheable model then
-                    filterProjectionCache.Add(model, projected)
+            | ValueNone ->
+                let mutable projected = Unchecked.defaultof<SpreadsheetModel>
+                if filterProjectionCache.TryGetValue(model, &projected) then
                     rememberFilterProjectionStrong model projected
-                projected
+                    rememberFilterProjectionModelRecent model projected
+                    projected
+                else
+                    let hiddenRows = filterHiddenRows model
+                    let projected =
+                        if obj.ReferenceEquals(model.FilterHiddenRows, hiddenRows)
+                           || intArraysEqual model.FilterHiddenRows hiddenRows then
+                            model
+                        else
+                            { model with FilterHiddenRows = hiddenRows }
+                    if not (obj.ReferenceEquals(projected, model)) && filterProjectionCacheable model then
+                        filterProjectionCache.Add(model, projected)
+                        rememberFilterProjectionStrong model projected
+                    rememberFilterProjectionModelRecent model projected
+                    projected
 
 /// Distinct, sorted display strings in a column — the AutoFilter checklist's
 /// values. Blanks excluded; uses the same `displayValue` as the filter test.
 let columnUniqueValues (col: int) (model: SpreadsheetModel) : string list =
     columnUniqueValuesCached false col model
+
+/// JavaScript interop helper: create the filter set inside this module graph.
+let applyFilterValues (col: int) (visibleValues: string array) (model: SpreadsheetModel): SpreadsheetModel =
+    applyFilter col (Set.ofArray visibleValues) model
+
+/// JavaScript interop helper: avoid counting an F# list from another module graph.
+let columnUniqueValueCount (col: int) (model: SpreadsheetModel): int =
+    columnUniqueValues col model |> List.length
+
+/// JavaScript interop helper: avoid counting an F# set from another module graph.
+let visibleRowCount (model: SpreadsheetModel): int =
+    getVisibleRows model |> Set.count
+
+/// JavaScript interop helper: avoid counting an F# map from another module graph.
+let cellCount (model: SpreadsheetModel): int =
+    model.Cells.Count
 
 /// Create / register an Excel table over a 0-indexed region (header row r0,
 /// data rows r0+1..r1). Blank header cells are filled with "Column N";
@@ -5586,6 +5642,10 @@ let private appendCsvFieldText (sb: System.Text.StringBuilder) (valueText: strin
 
 let private appendCsvCellField (sb: System.Text.StringBuilder) (cellData: CellData) =
     appendCsvFieldText sb (displayValueWithFormat cellData.Value cellData.Format)
+
+let private appendRepeatedCsvChar (sb: System.Text.StringBuilder) (ch: char) count =
+    for _ in 1 .. count do
+        sb.Append(ch) |> ignore
 
 let private csvCellFieldText (cellData: CellData) =
     let valueText = displayValueWithFormat cellData.Value cellData.Format
@@ -8778,7 +8838,7 @@ let exportCSV (model: SpreadsheetModel): string =
                                             else
                                                 addr.Col - nextCol
                                         if commaCount > 0 then
-                                            sb.Append(',', commaCount) |> ignore
+                                            appendRepeatedCsvChar sb ',' commaCount
                                         nextCol <- addr.Col
                                     if addr.Col > 0 then sb.Append(',') |> ignore
                                     appendCsvCellField sb cellData
@@ -8787,7 +8847,7 @@ let exportCSV (model: SpreadsheetModel): string =
                             let trailingCommaStart = max 1 nextCol
                             let trailingCommaCount = maxCol - trailingCommaStart + 1
                             if trailingCommaCount > 0 then
-                                sb.Append(',', trailingCommaCount) |> ignore
+                                appendRepeatedCsvChar sb ',' trailingCommaCount
                         sb.ToString()
                 let mergedCellCount = mergedCellCountCapped exportCsvCacheMaxTotalMergedCells model.MergedCells
                 rememberExportCsv {
