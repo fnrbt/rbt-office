@@ -395,7 +395,11 @@ async function runSpreadsheetWorkflows(page, cdp) {
       });
       const fetchMs = performance.now() - fetchStarted;
       const loadStarted = performance.now();
-      const workbook = await OfficeFormats.default().excel.load(buffer);
+      const excelApi = OfficeFormats.default().excel;
+      const workbook =
+        typeof excelApi.loadSelected === 'function'
+          ? await excelApi.loadSelected(buffer, undefined)
+          : await excelApi.load(buffer);
       const workbookLoadMs = performance.now() - loadStarted;
       const sheetImportStarted = performance.now();
       const model = Importer.importSheet(workbook, undefined);
@@ -432,6 +436,7 @@ async function runSpreadsheetWorkflows(page, cdp) {
         usedBoundsMs: realUsedBoundsMs,
         searchCellsMs: realSearchCellsMs,
         exportCsvMs: realExportCsvMs,
+        loadedSheetCount: excelApi.sheetNames(workbook).length,
         sourceCellCount: Model.cellCount(model),
         rowCount: model.RowCount,
         colCount: model.ColCount,

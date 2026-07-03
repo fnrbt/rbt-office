@@ -2670,6 +2670,19 @@ module Xlsx =
                 }
             })
 
+let private sheetInfosForLoad loadAll sheetName (sheetInfos: Xlsx.SheetInfo list) =
+    let indexed = sheetInfos |> List.mapi (fun index info -> index, info)
+    if loadAll then
+        indexed
+    else
+        match sheetName with
+        | Some name ->
+            indexed |> List.filter (fun (_, info) -> info.Name = name)
+        | None ->
+            match indexed with
+            | first :: _ -> [ first ]
+            | [] -> []
+
 // Cell Comments parsing
 module CellComments =
     let parseComment (commentNode: XmlNode) : CellComment option =
@@ -3076,7 +3089,7 @@ let applyStyling (styles: CellStyle array) (sheet: Worksheet) : Worksheet =
     { sheet with Rows = sheet.Rows |> List.map applyToRow }
 
 // Parse XLSX archive
-let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option> =
+let private parseWorkbookFiltered loadAll sheetName (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option> =
     promise {
         // Load workbook.xml
         let! wbXml = getFileText archive "xl/workbook.xml"
@@ -3139,10 +3152,12 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
             let allNamedRanges = NamedRanges.parseNamedRanges wb
             let namedRanges, printNamesBySheet = NamedRanges.splitPrintNames allNamedRanges
 
-            // Load all worksheets with advanced features
+            let sheetInfosToLoad = sheetInfosForLoad loadAll sheetName sheetInfos
+
+            // Load requested worksheets with advanced features.
             let! worksheets =
-                sheetInfos
-                |> List.mapi (fun sheetIdx info ->
+                sheetInfosToLoad
+                |> List.map (fun (sheetIdx, info) ->
                     promise {
                         let sheetPrintNames =
                             Map.tryFind sheetIdx printNamesBySheet
@@ -3218,6 +3233,12 @@ let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option>
         | None -> return None
     }
 
+let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option> =
+    parseWorkbookFiltered true None archive
+
+let parseWorkbookSelected sheetName (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option> =
+    parseWorkbookFiltered false sheetName archive
+
 // Formula Evaluation Engine (stubbed - basic implementation for future)
 module FormulaEngine =
     type EvalContext = {
@@ -3248,6 +3269,12 @@ let load (data: obj) : Fable.Core.JS.Promise<Workbook option> =
     promise {
         let! archive = loadArchive data
         return! parseWorkbook archive
+    }
+
+let loadSelected (data: obj) (sheetName: string option) : Fable.Core.JS.Promise<Workbook option> =
+    promise {
+        let! archive = loadArchive data
+        return! parseWorkbookSelected sheetName archive
     }
 
 // Resolve shared string references
@@ -3326,7 +3353,7 @@ let private resolveArchivePath (basePath: string) (target: string) =
 
 // Synchronous native loader. Mirrors `parseWorkbook` but uses
 // `getFileTextNative` so the native runners don't need a Promise scheduler.
-let parseWorkbookNative (archive: ZipArchive) : Workbook option =
+let private parseWorkbookNativeFiltered loadAll sheetName (archive: ZipArchive) : Workbook option =
     match ZipInterop.getFileTextNative archive "xl/workbook.xml" with
     | None -> None
     | Some wbXml ->
@@ -3400,9 +3427,11 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
                 ZipInterop.getFileTextNative archive tablePath
                 |> Option.bind Xlsx.parseTable)
 
+        let sheetInfosToLoad = sheetInfosForLoad loadAll sheetName sheetInfos
+
         let worksheets =
-            sheetInfos
-            |> List.mapi (fun sheetIdx info ->
+            sheetInfosToLoad
+            |> List.map (fun (sheetIdx, info) ->
                 let sheetPrintNames =
                     Map.tryFind sheetIdx printNamesBySheet
                     |> Option.defaultValue emptyPrintNames
@@ -3451,8 +3480,19 @@ let parseWorkbookNative (archive: ZipArchive) : Workbook option =
             ThemeAccents = themeAccents
         }
 
+let parseWorkbookNative (archive: ZipArchive) : Workbook option =
+    parseWorkbookNativeFiltered true None archive
+
+let parseWorkbookNativeSelected sheetName (archive: ZipArchive) : Workbook option =
+    parseWorkbookNativeFiltered false sheetName archive
+
 /// Top-level native loader: bytes -> Workbook option.
 let loadBytesNative (data: byte[]) : Workbook option =
     let archive = ZipInterop.loadArchiveNative data
     parseWorkbookNative archive
+
+/// Top-level native selected-sheet loader: bytes -> Workbook option.
+let loadBytesNativeSelected (data: byte[]) (sheetName: string option) : Workbook option =
+    let archive = ZipInterop.loadArchiveNative data
+    parseWorkbookNativeSelected sheetName archive
 #endif

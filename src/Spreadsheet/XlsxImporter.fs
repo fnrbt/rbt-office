@@ -687,8 +687,14 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
                 let api = officeFormatApi?``default``()
                 let excel = api?excel
 
-                // Load workbook from buffer
-                let! workbook = excel?load(buffer) |> Async.AwaitPromise
+                // Load only the requested sheet when the office-format bundle
+                // supports it. Full workbook loading still exists for callers
+                // that need every sheet, but single-sheet import should not
+                // parse unrelated large worksheets.
+                let loadPromise =
+                    if isFunction excel?loadSelected then excel?loadSelected(buffer, sheetName)
+                    else excel?load(buffer)
+                let! workbook = loadPromise |> Async.AwaitPromise
 
                 // Import sheet
                 return importSheet workbook sheetName

@@ -776,6 +776,9 @@ module Excel =
     /// Load an XLSX file from array buffer or blob
     let load = XlsxReader.load
 
+    /// Load only one worksheet from an XLSX file. None selects the first sheet.
+    let loadSelected = XlsxReader.loadSelected
+
     /// Get all worksheet names
     let sheetNames (wb: XlsxReader.Workbook) =
         wb.Sheets |> List.map (fun s -> s.Name) |> List.toArray
@@ -1077,6 +1080,7 @@ let api () = {|
     |}
     excel = {|
         load = Excel.load
+        loadSelected = Excel.loadSelected
         sheetNames = Excel.sheetNames
         sheet = Excel.sheet
         toArray = Excel.toArray
