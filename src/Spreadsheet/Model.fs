@@ -5994,19 +5994,32 @@ type private UsedBoundsModelCacheEntry = {
 let private usedBoundsModelRecent = Array.zeroCreate<UsedBoundsModelCacheEntry> 128
 let mutable private usedBoundsModelRecentNext = 0
 let mutable private usedBoundsModelRecentCount = 0
+let mutable private usedBoundsModelRecentLastSet = false
+let mutable private usedBoundsModelRecentLastSource = Unchecked.defaultof<SpreadsheetModel>
+let mutable private usedBoundsModelRecentLastResult = Unchecked.defaultof<(int * int) option>
+
+let private rememberUsedBoundsModelRecentLast model bounds =
+    usedBoundsModelRecentLastSet <- true
+    usedBoundsModelRecentLastSource <- model
+    usedBoundsModelRecentLastResult <- bounds
 
 let private tryGetUsedBoundsModelRecent (model: SpreadsheetModel) : (int * int) option voption =
-    let mutable i = 0
-    let mutable found = false
-    let mutable result = Unchecked.defaultof<(int * int) option>
-    while not found && i < usedBoundsModelRecentCount do
-        let entry = usedBoundsModelRecent.[i]
-        if not (obj.ReferenceEquals(entry, null))
-           && obj.ReferenceEquals(entry.UsedBoundsSource, model) then
-            found <- true
-            result <- entry.UsedBoundsResult
-        i <- i + 1
-    if found then ValueSome result else ValueNone
+    if usedBoundsModelRecentLastSet
+       && obj.ReferenceEquals(usedBoundsModelRecentLastSource, model) then
+        ValueSome usedBoundsModelRecentLastResult
+    else
+        let mutable i = 0
+        let mutable found = false
+        let mutable result = Unchecked.defaultof<(int * int) option>
+        while not found && i < usedBoundsModelRecentCount do
+            let entry = usedBoundsModelRecent.[i]
+            if not (obj.ReferenceEquals(entry, null))
+               && obj.ReferenceEquals(entry.UsedBoundsSource, model) then
+                found <- true
+                result <- entry.UsedBoundsResult
+                rememberUsedBoundsModelRecentLast model result
+            i <- i + 1
+        if found then ValueSome result else ValueNone
 
 let private usedBoundsModelRecentMetrics (model: SpreadsheetModel) =
     if List.isEmpty model.MergedCells && model.Cells.Count <= 1 then
@@ -6028,6 +6041,7 @@ let private resetUsedBoundsModelRecent () =
     clearArray usedBoundsModelRecent
     usedBoundsModelRecentNext <- 0
     usedBoundsModelRecentCount <- 0
+    usedBoundsModelRecentLastSet <- false
 
 let private rememberUsedBoundsModelRecent (model: SpreadsheetModel) bounds =
     match usedBoundsModelRecentMetrics model with
@@ -6052,6 +6066,7 @@ let private rememberUsedBoundsModelRecent (model: SpreadsheetModel) bounds =
         usedBoundsModelRecentNext <- (usedBoundsModelRecentNext + 1) % usedBoundsModelRecent.Length
         if usedBoundsModelRecentCount < usedBoundsModelRecent.Length then
             usedBoundsModelRecentCount <- usedBoundsModelRecentCount + 1
+        rememberUsedBoundsModelRecentLast model bounds
     | ValueNone ->
         ()
 
@@ -7053,23 +7068,42 @@ type private SearchCellsModelCacheEntry = {
 let private searchCellsModelRecent = Array.zeroCreate<SearchCellsModelCacheEntry> 128
 let mutable private searchCellsModelRecentNext = 0
 let mutable private searchCellsModelRecentCount = 0
+let mutable private searchCellsModelRecentLastSet = false
+let mutable private searchCellsModelRecentLastSource = Unchecked.defaultof<SpreadsheetModel>
+let mutable private searchCellsModelRecentLastQuery = ""
+let mutable private searchCellsModelRecentLastCaseSensitive = false
+let mutable private searchCellsModelRecentLastResults = Unchecked.defaultof<CellAddress array>
+
+let private rememberSearchCellsModelRecentLast query caseSensitive model results =
+    searchCellsModelRecentLastSet <- true
+    searchCellsModelRecentLastSource <- model
+    searchCellsModelRecentLastQuery <- query
+    searchCellsModelRecentLastCaseSensitive <- caseSensitive
+    searchCellsModelRecentLastResults <- results
 
 let private tryGetSearchCellsModelRecent
     (query: string)
     (caseSensitive: bool)
     (model: SpreadsheetModel)
     : CellAddress array voption =
-    let mutable i = 0
-    let mutable found = Unchecked.defaultof<CellAddress array>
-    while obj.ReferenceEquals(found, null) && i < searchCellsModelRecentCount do
-        let entry = searchCellsModelRecent.[i]
-        if not (obj.ReferenceEquals(entry, null))
-           && obj.ReferenceEquals(entry.SearchSource, model)
-           && entry.SearchCaseSensitive = caseSensitive
-           && System.String.Equals(entry.SearchQueryText, query, System.StringComparison.Ordinal) then
-            found <- entry.SearchResults
-        i <- i + 1
-    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
+    if searchCellsModelRecentLastSet
+       && obj.ReferenceEquals(searchCellsModelRecentLastSource, model)
+       && searchCellsModelRecentLastCaseSensitive = caseSensitive
+       && System.String.Equals(searchCellsModelRecentLastQuery, query, System.StringComparison.Ordinal) then
+        ValueSome searchCellsModelRecentLastResults
+    else
+        let mutable i = 0
+        let mutable found = Unchecked.defaultof<CellAddress array>
+        while obj.ReferenceEquals(found, null) && i < searchCellsModelRecentCount do
+            let entry = searchCellsModelRecent.[i]
+            if not (obj.ReferenceEquals(entry, null))
+               && obj.ReferenceEquals(entry.SearchSource, model)
+               && entry.SearchCaseSensitive = caseSensitive
+               && System.String.Equals(entry.SearchQueryText, query, System.StringComparison.Ordinal) then
+                found <- entry.SearchResults
+                rememberSearchCellsModelRecentLast query caseSensitive model found
+            i <- i + 1
+        if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
 
 let private searchCellsModelRecentMetrics
     (query: string)
@@ -7100,6 +7134,7 @@ let private resetSearchCellsModelRecent () =
     clearArray searchCellsModelRecent
     searchCellsModelRecentNext <- 0
     searchCellsModelRecentCount <- 0
+    searchCellsModelRecentLastSet <- false
 
 let private rememberSearchCellsModelRecent
     (query: string)
@@ -7139,6 +7174,7 @@ let private rememberSearchCellsModelRecent
         searchCellsModelRecentNext <- (searchCellsModelRecentNext + 1) % searchCellsModelRecent.Length
         if searchCellsModelRecentCount < searchCellsModelRecent.Length then
             searchCellsModelRecentCount <- searchCellsModelRecentCount + 1
+        rememberSearchCellsModelRecentLast query caseSensitive model results
     | ValueNone ->
         ()
 
