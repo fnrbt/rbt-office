@@ -2979,6 +2979,32 @@ let private collectRowsWithCellsArray (model: SpreadsheetModel) =
             lastRow <- addr.Row)
     rows.ToArray()
 
+let mutable private rowsWithCellsSummaryLastSet = false
+let mutable private rowsWithCellsSummaryLastCells = Unchecked.defaultof<Map<CellAddress, CellData>>
+let mutable private rowsWithCellsSummaryLastCount = 0
+let mutable private rowsWithCellsSummaryLastFirst = ValueNone
+
+let private rowsWithCellsSummary (model: SpreadsheetModel) =
+    if rowsWithCellsSummaryLastSet
+       && obj.ReferenceEquals(rowsWithCellsSummaryLastCells, model.Cells) then
+        struct (rowsWithCellsSummaryLastCount, rowsWithCellsSummaryLastFirst)
+    else
+        let mutable count = 0
+        let mutable lastRow = System.Int32.MinValue
+        let mutable firstRow = ValueNone
+        model.Cells
+        |> Map.iter (fun addr _ ->
+            if addr.Row <> lastRow then
+                if count = 0 then
+                    firstRow <- ValueSome addr.Row
+                count <- count + 1
+                lastRow <- addr.Row)
+        rowsWithCellsSummaryLastSet <- true
+        rowsWithCellsSummaryLastCells <- model.Cells
+        rowsWithCellsSummaryLastCount <- count
+        rowsWithCellsSummaryLastFirst <- firstRow
+        struct (count, firstRow)
+
 let private collectRowsWithCells (model: SpreadsheetModel) =
     let rows = System.Collections.Generic.HashSet<int>()
     for row in collectRowsWithCellsArray model do
@@ -4410,7 +4436,16 @@ let columnUniqueValueCount (col: int) (model: SpreadsheetModel): int =
 
 /// JavaScript interop helper: avoid counting an F# set from another module graph.
 let visibleRowCount (model: SpreadsheetModel): int =
-    getVisibleRows model |> Set.count
+    let struct (rowCount, firstRow) = rowsWithCellsSummary model
+    if rowCount = 0 || Map.isEmpty model.Filters then
+        rowCount
+    else
+        let projected = applyFilterRowHeights model
+        let headerAdjustment =
+            match firstRow with
+            | ValueSome row when not (rowPassesFilters projected row) -> 1
+            | _ -> 0
+        max 0 (rowCount - projected.FilterHiddenRows.Length - headerAdjustment)
 
 /// JavaScript interop helper: avoid counting an F# map from another module graph.
 let cellCount (model: SpreadsheetModel): int =
