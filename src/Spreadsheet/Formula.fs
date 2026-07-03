@@ -10757,10 +10757,18 @@ let evaluateFormula (formula: string) (model: SpreadsheetModel)
 // incremental engine; this is the simple full pass the shared model uses.
 // ---------------------------------------------------------------------------
 
+[<Struct>]
+type private FastCellBinaryFormula = {
+    Left: CellAddress
+    Op: char
+    Right: CellAddress
+}
+
 type private FormulaCell = {
     Address: CellAddress
     Cell: CellData
     Formula: string
+    FastFormula: FastCellBinaryFormula voption
     Expr: Expr
     ParseError: string option
 }
@@ -11181,6 +11189,116 @@ let private tryGetRecalcArrayFormulaFastSlot (slots: RecalcArrayFormulaFastCache
     else
         ValueNone
 
+let inline private isFastFormulaRefLetter (c: char) =
+    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+
+let inline private isFastFormulaRefDigit (c: char) =
+    c >= '0' && c <= '9'
+
+let private skipFastFormulaWhitespace (formula: string) start =
+    let mutable index = start
+    while index < formula.Length && Char.IsWhiteSpace formula.[index] do
+        index <- index + 1
+    index
+
+let private tryParseFastFormulaCellRef (formula: string) start =
+    let len = formula.Length
+    let mutable index = start
+    if index < len && formula.[index] = '$' then
+        index <- index + 1
+
+    let mutable col = 0
+    let mutable hasCol = false
+    let mutable valid = true
+    let mutable readingCols = true
+    while valid && readingCols && index < len do
+        let c = formula.[index]
+        if isFastFormulaRefLetter c then
+            let digit =
+                if c <= 'Z' then int c - int 'A' + 1
+                else int c - int 'a' + 1
+            if col > (Int32.MaxValue - digit) / 26 then
+                valid <- false
+            else
+                hasCol <- true
+                col <- col * 26 + digit
+                index <- index + 1
+        else
+            readingCols <- false
+
+    if index < len && formula.[index] = '$' then
+        index <- index + 1
+
+    let mutable row = 0
+    let mutable hasRow = false
+    let mutable readingRows = true
+    while valid && readingRows && index < len do
+        let c = formula.[index]
+        if isFastFormulaRefDigit c then
+            let digit = int c - int '0'
+            if row > (Int32.MaxValue - digit) / 10 then
+                valid <- false
+            else
+                hasRow <- true
+                row <- row * 10 + digit
+                index <- index + 1
+        else
+            readingRows <- false
+
+    if valid && hasCol && hasRow && row >= 1 && col >= 1 then
+        ValueSome (struct ({ Row = row - 1; Col = col - 1 }, index))
+    else
+        ValueNone
+
+let private isFastFormulaPlainInput (model: SpreadsheetModel) addr =
+    match Map.tryFind addr model.Cells with
+    | Some cell ->
+        match cell.Value with
+        | CellValue.Formula _ -> false
+        | _ -> true
+    | None -> true
+
+let private tryParseFastCellBinaryFormula (model: SpreadsheetModel) (formula: string) =
+    if isNull formula
+       || formula.Length < 4
+       || formula.[0] <> '='
+       || not (Map.isEmpty model.Spill) then
+        ValueNone
+    else
+        let mutable index = skipFastFormulaWhitespace formula 1
+        match tryParseFastFormulaCellRef formula index with
+        | ValueNone -> ValueNone
+        | ValueSome (struct (left, nextIndex)) ->
+            index <- skipFastFormulaWhitespace formula nextIndex
+            if index >= formula.Length then
+                ValueNone
+            else
+                let op = formula.[index]
+                match op with
+                | '+' | '-' | '*' | '/' ->
+                    index <- skipFastFormulaWhitespace formula (index + 1)
+                    match tryParseFastFormulaCellRef formula index with
+                    | ValueNone -> ValueNone
+                    | ValueSome (struct (right, nextIndex)) ->
+                        index <- skipFastFormulaWhitespace formula nextIndex
+                        if index = formula.Length
+                           && isFastFormulaPlainInput model left
+                           && isFastFormulaPlainInput model right then
+                            ValueSome { Left = left; Op = op; Right = right }
+                        else
+                            ValueNone
+                | _ -> ValueNone
+
+let private evaluateFastCellBinaryFormula (model: SpreadsheetModel) (fast: FastCellBinaryFormula) =
+    let op =
+        match fast.Op with
+        | '+' -> "+"
+        | '-' -> "-"
+        | '*' -> "*"
+        | '/' -> "/"
+        | _ -> ""
+    applyBin op (getCellValue fast.Left model) (getCellValue fast.Right model)
+
 let private collectFormulaCells (model: SpreadsheetModel) =
     let formulaCells = ResizeArray<FormulaCell>()
     let mutable parseCache = Unchecked.defaultof<Dictionary<string, Result<Expr, string>>>
@@ -11245,25 +11363,38 @@ let private collectFormulaCells (model: SpreadsheetModel) =
             if not mayUseCriteriaCache
                && formula.IndexOf("IF", StringComparison.OrdinalIgnoreCase) >= 0 then
                 mayUseCriteriaCache <- true
-            match parseFormulaCached formula with
-            | Ok expr ->
-                if containsVolatile expr || exprUsesSubtotal expr then
-                    canCacheResult <- false
+            match tryParseFastCellBinaryFormula model formula with
+            | ValueSome fast ->
                 formulaCells.Add {
                     Address = addr
                     Cell = cell
                     Formula = formula
-                    Expr = expr
+                    FastFormula = ValueSome fast
+                    Expr = Number 0.0
                     ParseError = None
                 }
-            | Result.Error error ->
-                formulaCells.Add {
-                    Address = addr
-                    Cell = cell
-                    Formula = formula
-                    Expr = Number 0.0
-                    ParseError = Some error
-                }
+            | ValueNone ->
+                match parseFormulaCached formula with
+                | Ok expr ->
+                    if containsVolatile expr || exprUsesSubtotal expr then
+                        canCacheResult <- false
+                    formulaCells.Add {
+                        Address = addr
+                        Cell = cell
+                        Formula = formula
+                        FastFormula = ValueNone
+                        Expr = expr
+                        ParseError = None
+                    }
+                | Result.Error error ->
+                    formulaCells.Add {
+                        Address = addr
+                        Cell = cell
+                        Formula = formula
+                        FastFormula = ValueNone
+                        Expr = Number 0.0
+                        ParseError = Some error
+                    }
         | _ -> ())
     formulaCells, repeatedFormulas, canCacheResult, mayUseCriteriaCache
 
@@ -11373,7 +11504,10 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
         let mutable hasDependencies = false
         let referencedFormulaCellsFor : FormulaCell -> CellAddress array =
             if formulaCells.Count <= 1 then
-                fun fc -> referencedFormulaCells fc.Expr
+                fun fc ->
+                    match fc.FastFormula with
+                    | ValueSome _ -> Array.empty
+                    | ValueNone -> referencedFormulaCells fc.Expr
             else
                 let referencedFormulaCellsCache = Dictionary<string, CellAddress array>()
                 let referencedFormulaCellsCacheOrder = Queue<string>()
@@ -11382,26 +11516,29 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
                 let mutable referencedFormulaCellsCacheTotalFormulaChars = 0
                 let mutable referencedFormulaCellsCacheTotalRefs = 0
                 fun fc ->
-                    match tryGetRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula with
-                    | ValueSome refs -> refs
+                    match fc.FastFormula with
+                    | ValueSome _ -> Array.empty
                     | ValueNone ->
-                        let mutable refs = Unchecked.defaultof<CellAddress array>
-                        if referencedFormulaCellsCache.TryGetValue(fc.Formula, &refs) then
-                            setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
-                            refs
-                        else
-                            refs <- referencedFormulaCells fc.Expr
-                            rememberRecalcReferenceCacheEntry
-                                referencedFormulaCellsCache
-                                referencedFormulaCellsCacheOrder
-                                &referencedFormulaCellsCacheTotalFormulaChars
-                                &referencedFormulaCellsCacheTotalRefs
-                                fc.Formula
-                                refs
-                            clearRecalcReferenceFastSlots referencedFormulaCellsFastSlots
-                            if referencedFormulaCellsCache.ContainsKey fc.Formula then
+                        match tryGetRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula with
+                        | ValueSome refs -> refs
+                        | ValueNone ->
+                            let mutable refs = Unchecked.defaultof<CellAddress array>
+                            if referencedFormulaCellsCache.TryGetValue(fc.Formula, &refs) then
                                 setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
-                            refs
+                                refs
+                            else
+                                refs <- referencedFormulaCells fc.Expr
+                                rememberRecalcReferenceCacheEntry
+                                    referencedFormulaCellsCache
+                                    referencedFormulaCellsCacheOrder
+                                    &referencedFormulaCellsCacheTotalFormulaChars
+                                    &referencedFormulaCellsCacheTotalRefs
+                                    fc.Formula
+                                    refs
+                                clearRecalcReferenceFastSlots referencedFormulaCellsFastSlots
+                                if referencedFormulaCellsCache.ContainsKey fc.Formula then
+                                    setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
+                                refs
 
         for fc in formulaCells do
             match fc.ParseError with
@@ -11422,12 +11559,20 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
                 updatedCells <- Map.add addr { fc.Cell with Value = nextValue } updatedCells
                 changed <- true
         let evaluateFormulaCell addr (fc: FormulaCell) =
-            let updated = { model with Cells = updatedCells }
-            let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = criteriaCache; CurrentCell = Some addr }
-            eval fc.Expr ctx
+            match fc.FastFormula with
+            | ValueSome fast ->
+                evaluateFastCellBinaryFormula { model with Cells = updatedCells } fast
+            | ValueNone ->
+                let updated = { model with Cells = updatedCells }
+                let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = criteriaCache; CurrentCell = Some addr }
+                eval fc.Expr ctx
         let evaluateIndependentFormulaCell addr (fc: FormulaCell) =
-            let ctx = { Model = model; Workbook = workbook; Sheet = currentSheet; CriteriaCache = criteriaCache; CurrentCell = Some addr }
-            eval fc.Expr ctx
+            match fc.FastFormula with
+            | ValueSome fast ->
+                evaluateFastCellBinaryFormula model fast
+            | ValueNone ->
+                let ctx = { Model = model; Workbook = workbook; Sheet = currentSheet; CriteriaCache = criteriaCache; CurrentCell = Some addr }
+                eval fc.Expr ctx
         let evaluateCachedIndependentFormulaCell (independentResultCache: Dictionary<string, CellValue>) addr (fc: FormulaCell) =
             let mutable cached = Unchecked.defaultof<CellValue>
             if not (repeatedFormulas.Contains fc.Formula) then
