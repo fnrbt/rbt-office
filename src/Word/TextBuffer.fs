@@ -410,6 +410,9 @@ let appendToStringBuilder (sb: System.Text.StringBuilder) buffer =
 let appendSliceToStringBuilder (sb: System.Text.StringBuilder) start len buffer =
     Rope.appendSliceToStringBuilder sb start len buffer.Rope
 
+let sliceEqualsString start len (text: string) buffer =
+    Rope.sliceEqualsString start len text buffer.Rope
+
 /// Find non-overlapping literal matches without materializing the whole rope.
 let iterMatchRanges (matchCase: bool) (query: string) buffer (emit: int -> int -> unit) =
     if System.String.IsNullOrEmpty query || query.Length > length buffer then

@@ -179,18 +179,34 @@ async function runWordWorkflows(page, cdp) {
       const content = Array.from({ length: 180 }, (_, i) => `${i}: ${paragraph}${i % 7}`).join('\n');
       window.rbWordRunner.setContent(content);
       let checksum = 0;
+      let findTextMs = 0;
+      let selectMatchMs = 0;
+      let insertTextMs = 0;
+      let getTextMs = 0;
       const started = performance.now();
       for (let i = 0; i < iterations; i++) {
+        let t = performance.now();
         const matches = window.rbWordRunner.findText('gamma', false);
+        findTextMs += performance.now() - t;
         if (!matches.length) throw new Error('Word edit workflow could not find insertion target');
         const match = matches[i % matches.length];
+        t = performance.now();
         window.rbWordRunner.selectFindMatch(match);
+        selectMatchMs += performance.now() - t;
+        t = performance.now();
         window.rbWordRunner.insertTextAt('gamma');
+        insertTextMs += performance.now() - t;
+        t = performance.now();
         checksum += window.rbWordRunner.getText().length;
+        getTextMs += performance.now() - t;
       }
       return {
         iterations,
         durationMs: performance.now() - started,
+        findTextMs,
+        selectMatchMs,
+        insertTextMs,
+        getTextMs,
         checksum,
         finalTextLength: window.rbWordRunner.getText().length
       };
@@ -230,11 +246,20 @@ async function runSpreadsheetWorkflows(page, cdp) {
       const importMs = performance.now() - started;
 
       let checksum = 0;
+      let usedBoundsMs = 0;
+      let searchCellsMs = 0;
+      let uniqueValueCountMs = 0;
       let t = performance.now();
       for (let i = 0; i < 160; i++) {
+        let step = performance.now();
         checksum += Model.usedBounds(model)?.[0] ?? 0;
+        usedBoundsMs += performance.now() - step;
+        step = performance.now();
         checksum += Model.searchCells('needle', false, model).length;
+        searchCellsMs += performance.now() - step;
+        step = performance.now();
         checksum += Model.columnUniqueValueCount(0, model);
+        uniqueValueCountMs += performance.now() - step;
       }
       const queryMs = performance.now() - t;
 
@@ -272,11 +297,20 @@ async function runSpreadsheetWorkflows(page, cdp) {
       const filterProjectionHotMs = performance.now() - t;
 
       const filterToggleIterations = 30;
+      let filterToggleApplyMs = 0;
+      let filterToggleVisibleRowsMs = 0;
+      let filterToggleRowHeightsMs = 0;
       t = performance.now();
       for (let i = 0; i < filterToggleIterations; i++) {
+        let step = performance.now();
         const toggled = Model.applyFilterValues(0, visibleValues, model);
+        filterToggleApplyMs += performance.now() - step;
+        step = performance.now();
         checksum += Model.visibleRowCount(toggled);
+        filterToggleVisibleRowsMs += performance.now() - step;
+        step = performance.now();
         checksum += Model.applyFilterRowHeights(toggled).FilterHiddenRows.length;
+        filterToggleRowHeightsMs += performance.now() - step;
       }
       const filterToggleProjectionMs = performance.now() - t;
 
@@ -288,18 +322,30 @@ async function runSpreadsheetWorkflows(page, cdp) {
         + filterProjectionHotMs
         + filterToggleProjectionMs;
 
+      let clearSelectionMs = 0;
+      let exportCsvMs = 0;
       t = performance.now();
       for (let i = 0; i < 24; i++) {
         const selection = new Model.Selection$(1, [50, 0, 900, 5]);
+        let step = performance.now();
         const cleared = Model.clearSelectionCells(selection, model);
+        clearSelectionMs += performance.now() - step;
+        step = performance.now();
         checksum += Model.exportCSV(cleared).length;
+        exportCsvMs += performance.now() - step;
       }
       const clearExportMs = performance.now() - t;
 
+      let recalcAndSpillMs = 0;
+      let recalcSearchMs = 0;
       t = performance.now();
       for (let i = 0; i < 30; i++) {
+        let step = performance.now();
         const recalculated = Formula.recalcAndSpill(undefined, undefined, model);
+        recalcAndSpillMs += performance.now() - step;
+        step = performance.now();
         checksum += Model.searchCells('5400', false, recalculated).length;
+        recalcSearchMs += performance.now() - step;
       }
       const recalcMs = performance.now() - t;
 
@@ -308,6 +354,9 @@ async function runSpreadsheetWorkflows(page, cdp) {
         rows: rows.length,
         importMs,
         queryMs,
+        usedBoundsMs,
+        searchCellsMs,
+        uniqueValueCountMs,
         filterMs,
         filterApplyFirstMs,
         visibleRowsFirstMs,
@@ -315,12 +364,19 @@ async function runSpreadsheetWorkflows(page, cdp) {
         visibleRowsHotMs,
         filterProjectionHotMs,
         filterToggleProjectionMs,
+        filterToggleApplyMs,
+        filterToggleVisibleRowsMs,
+        filterToggleRowHeightsMs,
         hotFilterReadIterations,
         filterToggleIterations,
         filteredRowCount,
         hiddenRowCount,
         clearExportMs,
+        clearSelectionMs,
+        exportCsvMs,
         recalcMs,
+        recalcAndSpillMs,
+        recalcSearchMs,
         checksum
       };
     }, { moduleBase }));
@@ -328,30 +384,54 @@ async function runSpreadsheetWorkflows(page, cdp) {
   const realXlsx = await measure(page, cdp, 'spreadsheet.real-xlsx-import-query', () =>
     page.evaluate(async ({ moduleBase, xlsxUrl }) => {
       const Importer = await import(`${moduleBase}/XlsxImporter.js`);
+      const OfficeFormats = await import(`${moduleBase}/../office-formats/src/Main.js`);
       const Model = await import(`${moduleBase}/Model.js`);
-      const Async = await import(`${moduleBase}/fable_modules/fable-library-js.4.28.0/Async.js`);
 
       const started = performance.now();
+      const fetchStarted = performance.now();
       const buffer = await fetch(xlsxUrl).then(response => {
         if (!response.ok) throw new Error(`fetch failed ${response.status}: ${xlsxUrl}`);
         return response.arrayBuffer();
       });
-      const model = await Async.startAsPromise(Importer.importFromBuffer(buffer, undefined));
+      const fetchMs = performance.now() - fetchStarted;
+      const loadStarted = performance.now();
+      const workbook = await OfficeFormats.default().excel.load(buffer);
+      const workbookLoadMs = performance.now() - loadStarted;
+      const sheetImportStarted = performance.now();
+      const model = Importer.importSheet(workbook, undefined);
+      const sheetImportMs = performance.now() - sheetImportStarted;
+      const importFromBufferMs = workbookLoadMs + sheetImportMs;
       const importMs = performance.now() - started;
 
       let checksum = 0;
+      let realUsedBoundsMs = 0;
+      let realSearchCellsMs = 0;
+      let realExportCsvMs = 0;
       const queryStarted = performance.now();
       for (let i = 0; i < 80; i++) {
+        let step = performance.now();
         checksum += Model.usedBounds(model)?.[0] ?? 0;
+        realUsedBoundsMs += performance.now() - step;
+        step = performance.now();
         checksum += Model.searchCells('total', false, model).length;
+        realSearchCellsMs += performance.now() - step;
+        step = performance.now();
         checksum += Model.exportCSV(model).length;
+        realExportCsvMs += performance.now() - step;
       }
       const queryMs = performance.now() - queryStarted;
 
       return {
         durationMs: performance.now() - started,
         importMs,
+        fetchMs,
+        importFromBufferMs,
+        workbookLoadMs,
+        sheetImportMs,
         queryMs,
+        usedBoundsMs: realUsedBoundsMs,
+        searchCellsMs: realSearchCellsMs,
+        exportCsvMs: realExportCsvMs,
         sourceCellCount: Model.cellCount(model),
         rowCount: model.RowCount,
         colCount: model.ColCount,

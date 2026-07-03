@@ -1870,7 +1870,7 @@ let private tryPruneCellMapKeyRange startKey endKey (source: Map<CellAddress, Ce
 #endif
 
 /// Clear all cells in a selection, preserving identity when nothing changes.
-let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): SpreadsheetModel =
+let private clearSelectionCellsUncached (selection: Selection) (model: SpreadsheetModel): SpreadsheetModel =
     match selection with
     | SingleCell (row, col) ->
         clearCell { Row = row; Col = col } model
@@ -2029,6 +2029,68 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
                 { model with Cells = cells }
             else
                 model
+
+type private ClearSelectionCellsModelCacheEntry = {
+    ClearSource: SpreadsheetModel
+    ClearSelection: Selection
+    ClearResult: SpreadsheetModel
+}
+
+let private clearSelectionCellsRecent = Array.zeroCreate<ClearSelectionCellsModelCacheEntry> 1
+let mutable private clearSelectionCellsRecentNext = 0
+let mutable private clearSelectionCellsRecentCount = 0
+let private clearSelectionCellsRecentMaxCells = 500000
+let private clearSelectionCellsRecentMaxSourceTextChars = 5000000
+
+let private tryGetClearSelectionCellsRecent
+    (selection: Selection)
+    (model: SpreadsheetModel)
+    : SpreadsheetModel voption =
+    let mutable i = 0
+    let mutable found: SpreadsheetModel = Unchecked.defaultof<SpreadsheetModel>
+    while obj.ReferenceEquals(found, null) && i < clearSelectionCellsRecentCount do
+        let entry = clearSelectionCellsRecent.[i]
+        if not (obj.ReferenceEquals(entry, null))
+           && obj.ReferenceEquals(entry.ClearSource, model)
+           && entry.ClearSelection = selection then
+            found <- entry.ClearResult
+        i <- i + 1
+    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
+
+let private rememberClearSelectionCellsRecent
+    (selection: Selection)
+    (model: SpreadsheetModel)
+    (result: SpreadsheetModel)
+    : unit =
+    if model.Cells.Count <= clearSelectionCellsRecentMaxCells
+       && result.Cells.Count <= clearSelectionCellsRecentMaxCells
+       && cellMapSourceTextCharCountFor
+            clearSelectionCellsRecentMaxCells
+            clearSelectionCellsRecentMaxSourceTextChars
+            model.Cells <= clearSelectionCellsRecentMaxSourceTextChars
+       && (obj.ReferenceEquals(model.Cells, result.Cells)
+           || cellMapSourceTextCharCountFor
+                clearSelectionCellsRecentMaxCells
+                clearSelectionCellsRecentMaxSourceTextChars
+                result.Cells <= clearSelectionCellsRecentMaxSourceTextChars) then
+        clearSelectionCellsRecent.[clearSelectionCellsRecentNext] <- {
+            ClearSource = model
+            ClearSelection = selection
+            ClearResult = result
+        }
+        clearSelectionCellsRecentNext <- (clearSelectionCellsRecentNext + 1) % clearSelectionCellsRecent.Length
+        if clearSelectionCellsRecentCount < clearSelectionCellsRecent.Length then
+            clearSelectionCellsRecentCount <- clearSelectionCellsRecentCount + 1
+
+/// Clear all cells in a selection, preserving identity when nothing changes.
+let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): SpreadsheetModel =
+    match tryGetClearSelectionCellsRecent selection model with
+    | ValueSome result ->
+        result
+    | ValueNone ->
+        let result = clearSelectionCellsUncached selection model
+        rememberClearSelectionCellsRecent selection model result
+        result
 
 /// Format a number according to format code
 let formatNumber (format: string option) (value: float): string =
@@ -3434,6 +3496,11 @@ type private FilterProjectionCacheEntry = {
 type private FilterProjectionModelCacheEntry = {
     Source: SpreadsheetModel
     Projected: SpreadsheetModel
+    CellCount: int
+    SourceTextCharCount: int
+    HiddenRowCount: int
+    FilterValueCount: int
+    FilterTextCharCount: int
 }
 
 let private filterProjectionCache = ConditionalWeakTable<SpreadsheetModel, SpreadsheetModel>()
@@ -3460,11 +3527,63 @@ let private tryGetFilterProjectionModelRecent model =
         i <- i + 1
     if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
 
-let private rememberFilterProjectionModelRecent source projected =
-    filterProjectionModelRecent.[filterProjectionModelRecentNext] <- { Source = source; Projected = projected }
-    filterProjectionModelRecentNext <- (filterProjectionModelRecentNext + 1) % filterProjectionModelRecent.Length
-    if filterProjectionModelRecentCount < filterProjectionModelRecent.Length then
-        filterProjectionModelRecentCount <- filterProjectionModelRecentCount + 1
+let private resetFilterProjectionModelRecent () =
+    clearArray filterProjectionModelRecent
+    filterProjectionModelRecentNext <- 0
+    filterProjectionModelRecentCount <- 0
+
+let private rememberFilterProjectionModelRecent (source: SpreadsheetModel) (projected: SpreadsheetModel) =
+    let metrics =
+        match tryFilterHiddenRowsCachedMetrics source.Cells source.RowCount source.Filters with
+        | ValueSome (struct (sourceTextChars, filterValueCount, filterTextCharCount)) ->
+            let cellCount = max 1 source.Cells.Count
+            let hiddenRowCount = projected.FilterHiddenRows.Length
+            if cellCount <= filterProjectionStrongCacheMaxTotalCells
+               && sourceTextChars <= filterProjectionStrongCacheMaxTotalSourceTextChars
+               && hiddenRowCount <= filterProjectionStrongCacheMaxTotalHiddenRows
+               && filterValueCount <= filterHiddenRowsCacheMaxFilterValues
+               && filterTextCharCount <= filterHiddenRowsCacheMaxFilterTextChars then
+                ValueSome (struct (cellCount, sourceTextChars, hiddenRowCount, filterValueCount, filterTextCharCount))
+            else
+                ValueNone
+        | ValueNone ->
+            ValueNone
+    match metrics with
+    | ValueSome (struct (cellCount, sourceTextChars, hiddenRowCount, filterValueCount, filterTextCharCount)) ->
+        let mutable totalCells = cellCount
+        let mutable totalSourceTextChars = max 1 sourceTextChars
+        let mutable totalHiddenRows = hiddenRowCount
+        let mutable totalFilterValues = filterValueCount
+        let mutable totalFilterTextChars = max 1 filterTextCharCount
+        for i = 0 to filterProjectionModelRecentCount - 1 do
+            let entry = filterProjectionModelRecent.[i]
+            if not (obj.ReferenceEquals(entry, null))
+               && not (obj.ReferenceEquals(entry.Source, source)) then
+                totalCells <- totalCells + max 1 entry.CellCount
+                totalSourceTextChars <- totalSourceTextChars + max 1 entry.SourceTextCharCount
+                totalHiddenRows <- totalHiddenRows + entry.HiddenRowCount
+                totalFilterValues <- totalFilterValues + entry.FilterValueCount
+                totalFilterTextChars <- totalFilterTextChars + max 1 entry.FilterTextCharCount
+        if totalCells > filterProjectionStrongCacheMaxTotalCells
+           || totalSourceTextChars > filterProjectionStrongCacheMaxTotalSourceTextChars
+           || totalHiddenRows > filterProjectionStrongCacheMaxTotalHiddenRows
+           || totalFilterValues > filterHiddenRowsCacheMaxTotalFilterValues
+           || totalFilterTextChars > filterHiddenRowsCacheMaxTotalFilterTextChars then
+            resetFilterProjectionModelRecent ()
+        filterProjectionModelRecent.[filterProjectionModelRecentNext] <- {
+            Source = source
+            Projected = projected
+            CellCount = cellCount
+            SourceTextCharCount = sourceTextChars
+            HiddenRowCount = hiddenRowCount
+            FilterValueCount = filterValueCount
+            FilterTextCharCount = filterTextCharCount
+        }
+        filterProjectionModelRecentNext <- (filterProjectionModelRecentNext + 1) % filterProjectionModelRecent.Length
+        if filterProjectionModelRecentCount < filterProjectionModelRecent.Length then
+            filterProjectionModelRecentCount <- filterProjectionModelRecentCount + 1
+    | ValueNone ->
+        ()
 
 let private setFilterProjectionStrongCache entries =
     filterProjectionStrongCache <- entries
@@ -3474,7 +3593,7 @@ let private setFilterProjectionStrongCache entries =
         if obj.ReferenceEquals(filterProjectionFastSlots.[slot], null) then
             filterProjectionFastSlots.[slot] <- entry
 
-let private filterProjectionEntryRetainable entry =
+let private filterProjectionEntryRetainable (entry: FilterProjectionCacheEntry) =
     entry.CellCount <= filterProjectionStrongCacheMaxTotalCells
     && entry.SourceTextCharCount <= filterProjectionStrongCacheMaxTotalSourceTextChars
     && entry.HiddenRowCount <= filterProjectionStrongCacheMaxTotalHiddenRows
@@ -3495,7 +3614,7 @@ let private tryGetFilterProjectionStrong (model: SpreadsheetModel) =
 let private rememberFilterProjectionStrong (model: SpreadsheetModel) (projected: SpreadsheetModel) =
     match tryFilterHiddenRowsCachedMetrics model.Cells model.RowCount model.Filters with
     | ValueSome (struct (sourceTextChars, _, _)) ->
-        let entry = {
+        let entry: FilterProjectionCacheEntry = {
             Source = model
             Projected = projected
             CellCount = model.Cells.Count
@@ -3900,6 +4019,11 @@ let mutable private visibleRowsSimpleLastRows = Unchecked.defaultof<Set<int>>
 type private VisibleRowsModelCacheEntry = {
     Source: SpreadsheetModel
     Rows: Set<int>
+    CellCount: int
+    SourceTextCharCount: int
+    RowCount: int
+    FilterValueCount: int
+    FilterTextCharCount: int
 }
 
 let private visibleRowsModelRecent = Array.zeroCreate<VisibleRowsModelCacheEntry> 128
@@ -3916,11 +4040,77 @@ let private tryGetVisibleRowsModelRecent model =
         i <- i + 1
     if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
 
-let private rememberVisibleRowsModelRecent source rows =
-    visibleRowsModelRecent.[visibleRowsModelRecentNext] <- { Source = source; Rows = rows }
-    visibleRowsModelRecentNext <- (visibleRowsModelRecentNext + 1) % visibleRowsModelRecent.Length
-    if visibleRowsModelRecentCount < visibleRowsModelRecent.Length then
-        visibleRowsModelRecentCount <- visibleRowsModelRecentCount + 1
+let private resetVisibleRowsModelRecent () =
+    clearArray visibleRowsModelRecent
+    visibleRowsModelRecentNext <- 0
+    visibleRowsModelRecentCount <- 0
+
+let private rememberVisibleRowsModelRecent (source: SpreadsheetModel) (rows: Set<int>) =
+    let metrics =
+        match tryGetVisibleRowsCache source.Cells with
+        | ValueSome cached when visibleRowsCacheRetainable cached ->
+            match tryGetVisibleRowsCacheEntry cached source.Filters with
+            | ValueSome entry when obj.ReferenceEquals(entry.Rows, rows) || entry.Rows = rows ->
+                ValueSome (
+                    struct (
+                        max 1 cached.CellCount,
+                        cached.SourceTextCharCount,
+                        rows.Count,
+                        entry.FilterValueCount,
+                        entry.FilterTextCharCount))
+            | _ -> ValueNone
+        | _ ->
+            let filterValues = filterValueCount source.Filters
+            let filterTextChars = filterTextCharCount visibleRowsCacheMaxFilterTextChars source.Filters
+            let sourceTextChars =
+                cellMapSourceTextCharCountFor
+                    visibleRowsCacheMaxTotalCells
+                    visibleRowsCacheMaxTotalSourceTextChars
+                    source.Cells
+            if source.Cells.Count <= 1
+               && rows.Count <= visibleRowsCacheMaxRowCount
+               && filterValues <= visibleRowsCacheMaxFilterValues
+               && filterTextChars <= visibleRowsCacheMaxFilterTextChars
+               && sourceTextChars <= visibleRowsCacheMaxTotalSourceTextChars then
+                ValueSome (struct (max 1 source.Cells.Count, sourceTextChars, rows.Count, filterValues, filterTextChars))
+            else
+                ValueNone
+    match metrics with
+    | ValueSome (struct (cellCount, sourceTextChars, rowCount, filterValueCount, filterTextCharCount)) ->
+        let mutable totalCells = max 1 cellCount
+        let mutable totalSourceTextChars = max 1 sourceTextChars
+        let mutable totalRows = rowCount
+        let mutable totalFilterValues = filterValueCount
+        let mutable totalFilterTextChars = max 1 filterTextCharCount
+        for i = 0 to visibleRowsModelRecentCount - 1 do
+            let entry = visibleRowsModelRecent.[i]
+            if not (obj.ReferenceEquals(entry, null))
+               && not (obj.ReferenceEquals(entry.Source, source)) then
+                totalCells <- totalCells + max 1 entry.CellCount
+                totalSourceTextChars <- totalSourceTextChars + max 1 entry.SourceTextCharCount
+                totalRows <- totalRows + entry.RowCount
+                totalFilterValues <- totalFilterValues + entry.FilterValueCount
+                totalFilterTextChars <- totalFilterTextChars + max 1 entry.FilterTextCharCount
+        if totalCells > visibleRowsCacheMaxTotalCells
+           || totalSourceTextChars > visibleRowsCacheMaxTotalSourceTextChars
+           || totalRows > visibleRowsCacheMaxTotalRowCount
+           || totalFilterValues > visibleRowsCacheMaxTotalFilterValues
+           || totalFilterTextChars > visibleRowsCacheMaxTotalFilterTextChars then
+            resetVisibleRowsModelRecent ()
+        visibleRowsModelRecent.[visibleRowsModelRecentNext] <- {
+            Source = source
+            Rows = rows
+            CellCount = cellCount
+            SourceTextCharCount = sourceTextChars
+            RowCount = rowCount
+            FilterValueCount = filterValueCount
+            FilterTextCharCount = filterTextCharCount
+        }
+        visibleRowsModelRecentNext <- (visibleRowsModelRecentNext + 1) % visibleRowsModelRecent.Length
+        if visibleRowsModelRecentCount < visibleRowsModelRecent.Length then
+            visibleRowsModelRecentCount <- visibleRowsModelRecentCount + 1
+    | ValueNone ->
+        ()
 
 let private tryGetVisibleRowsSimpleLast cells filters =
     if visibleRowsSimpleLastSet
@@ -4142,9 +4332,77 @@ let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
 let columnUniqueValues (col: int) (model: SpreadsheetModel) : string list =
     columnUniqueValuesCached false col model
 
+type private ApplyFilterValuesModelCacheEntry = {
+    Source: SpreadsheetModel
+    Col: int
+    VisibleValues: string array
+    Result: SpreadsheetModel
+}
+
+let private applyFilterValuesRecent = Array.zeroCreate<ApplyFilterValuesModelCacheEntry> 1
+let mutable private applyFilterValuesRecentNext = 0
+let mutable private applyFilterValuesRecentCount = 0
+
+let private stringArraysEqual (left: string array) (right: string array) =
+    if left.Length <> right.Length then
+        false
+    else
+        let mutable equal = true
+        let mutable i = 0
+        while equal && i < left.Length do
+            if not (System.String.Equals(left.[i], right.[i], System.StringComparison.Ordinal)) then
+                equal <- false
+            i <- i + 1
+        equal
+
+let private tryGetApplyFilterValuesRecent
+    (col: int)
+    (visibleValues: string array)
+    (model: SpreadsheetModel)
+    : SpreadsheetModel voption =
+    let mutable i = 0
+    let mutable found: SpreadsheetModel = Unchecked.defaultof<SpreadsheetModel>
+    while obj.ReferenceEquals(found, null) && i < applyFilterValuesRecentCount do
+        let entry = applyFilterValuesRecent.[i]
+        if not (obj.ReferenceEquals(entry, null))
+           && obj.ReferenceEquals(entry.Source, model)
+           && entry.Col = col
+           && stringArraysEqual entry.VisibleValues visibleValues then
+            found <- entry.Result
+        i <- i + 1
+    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
+
+let private rememberApplyFilterValuesRecent
+    (col: int)
+    (visibleValues: string array)
+    (model: SpreadsheetModel)
+    (result: SpreadsheetModel)
+    : unit =
+    if model.Cells.Count <= visibleRowsCacheMaxTotalCells
+       && result.Cells.Count <= visibleRowsCacheMaxTotalCells
+       && cellMapSourceTextCharCountFor
+            visibleRowsCacheMaxTotalCells
+            visibleRowsCacheMaxTotalSourceTextChars
+            model.Cells <= visibleRowsCacheMaxTotalSourceTextChars then
+        applyFilterValuesRecent.[applyFilterValuesRecentNext] <- {
+            Source = model
+            Col = col
+            VisibleValues = Array.copy visibleValues
+            Result = result
+        }
+        applyFilterValuesRecentNext <- (applyFilterValuesRecentNext + 1) % applyFilterValuesRecent.Length
+        if applyFilterValuesRecentCount < applyFilterValuesRecent.Length then
+            applyFilterValuesRecentCount <- applyFilterValuesRecentCount + 1
+
 /// JavaScript interop helper: create the filter set inside this module graph.
 let applyFilterValues (col: int) (visibleValues: string array) (model: SpreadsheetModel): SpreadsheetModel =
-    applyFilter col (Set.ofArray visibleValues) model
+    match tryGetApplyFilterValuesRecent col visibleValues model with
+    | ValueSome result ->
+        result
+    | ValueNone ->
+        let result = applyFilter col (Set.ofArray visibleValues) model
+        rememberApplyFilterValuesRecent col visibleValues model result
+        result
 
 /// JavaScript interop helper: avoid counting an F# list from another module graph.
 let columnUniqueValueCount (col: int) (model: SpreadsheetModel): int =
@@ -5691,7 +5949,78 @@ let private tryExportSimpleCsv (model: SpreadsheetModel) =
     else
         ValueNone
 
-let usedBounds (model: SpreadsheetModel) : (int * int) option =
+type private UsedBoundsModelCacheEntry = {
+    UsedBoundsSource: SpreadsheetModel
+    UsedBoundsResult: (int * int) option
+    UsedBoundsCellCount: int
+    UsedBoundsSourceTextCharCount: int
+}
+
+let private usedBoundsModelRecent = Array.zeroCreate<UsedBoundsModelCacheEntry> 128
+let mutable private usedBoundsModelRecentNext = 0
+let mutable private usedBoundsModelRecentCount = 0
+
+let private tryGetUsedBoundsModelRecent (model: SpreadsheetModel) : (int * int) option voption =
+    let mutable i = 0
+    let mutable found = false
+    let mutable result = Unchecked.defaultof<(int * int) option>
+    while not found && i < usedBoundsModelRecentCount do
+        let entry = usedBoundsModelRecent.[i]
+        if not (obj.ReferenceEquals(entry, null))
+           && obj.ReferenceEquals(entry.UsedBoundsSource, model) then
+            found <- true
+            result <- entry.UsedBoundsResult
+        i <- i + 1
+    if found then ValueSome result else ValueNone
+
+let private usedBoundsModelRecentMetrics (model: SpreadsheetModel) =
+    if List.isEmpty model.MergedCells && model.Cells.Count <= 1 then
+        let sourceTextChars = structuralCellSourceTextCharCountFor model.Cells
+        if sourceTextChars <= usedBoundsCacheMaxTotalSourceTextChars then
+            ValueSome (struct (max 1 model.Cells.Count, sourceTextChars))
+        else
+            ValueNone
+    elif not (List.isEmpty model.MergedCells) then
+        ValueNone
+    else
+        match tryGetUsedBoundsCache model.Cells model.MergedCells with
+        | ValueSome cached when usedBoundsCacheRetainable cached ->
+            ValueSome (struct (max 1 cached.CellCount, cached.SourceTextCharCount))
+        | _ ->
+            ValueNone
+
+let private resetUsedBoundsModelRecent () =
+    clearArray usedBoundsModelRecent
+    usedBoundsModelRecentNext <- 0
+    usedBoundsModelRecentCount <- 0
+
+let private rememberUsedBoundsModelRecent (model: SpreadsheetModel) bounds =
+    match usedBoundsModelRecentMetrics model with
+    | ValueSome (struct (cellCount, sourceTextChars)) ->
+        let mutable totalCells = max 1 cellCount
+        let mutable totalSourceTextChars = max 1 sourceTextChars
+        for i = 0 to usedBoundsModelRecentCount - 1 do
+            let entry = usedBoundsModelRecent.[i]
+            if not (obj.ReferenceEquals(entry, null))
+               && not (obj.ReferenceEquals(entry.UsedBoundsSource, model)) then
+                totalCells <- totalCells + max 1 entry.UsedBoundsCellCount
+                totalSourceTextChars <- totalSourceTextChars + max 1 entry.UsedBoundsSourceTextCharCount
+        if totalCells > usedBoundsCacheMaxTotalCells
+           || totalSourceTextChars > usedBoundsCacheMaxTotalSourceTextChars then
+            resetUsedBoundsModelRecent ()
+        usedBoundsModelRecent.[usedBoundsModelRecentNext] <- {
+            UsedBoundsSource = model
+            UsedBoundsResult = bounds
+            UsedBoundsCellCount = cellCount
+            UsedBoundsSourceTextCharCount = sourceTextChars
+        }
+        usedBoundsModelRecentNext <- (usedBoundsModelRecentNext + 1) % usedBoundsModelRecent.Length
+        if usedBoundsModelRecentCount < usedBoundsModelRecent.Length then
+            usedBoundsModelRecentCount <- usedBoundsModelRecentCount + 1
+    | ValueNone ->
+        ()
+
+let private usedBoundsUncached (model: SpreadsheetModel) : (int * int) option =
     match tryGetUsedBoundsSimpleLast model.Cells model.MergedCells with
     | ValueSome bounds ->
         bounds
@@ -5708,6 +6037,16 @@ let usedBounds (model: SpreadsheetModel) : (int * int) option =
                 rememberUsedBounds cached
                 cached.Bounds
             | ValueNone ->
+                let cachedSourceTextCharCount =
+                    match structuralCellSourceTextCache with
+                    | Some cached when obj.ReferenceEquals(cached.Cells, model.Cells) ->
+                        ValueSome cached.SourceTextCharCount
+                    | _ ->
+                        ValueNone
+                let trackSourceText =
+                    model.Cells.Count <= usedBoundsCacheMaxTotalCells
+                    && ValueOption.isNone cachedSourceTextCharCount
+                let mutable sourceTextCharCount = 0
                 let mutable any = false
                 let mutable maxRow = 0
                 let mutable maxCol = 0
@@ -5718,8 +6057,14 @@ let usedBounds (model: SpreadsheetModel) : (int * int) option =
                     maxRow <- maxAddr.Row
 
                     model.Cells
-                    |> Map.iter (fun addr _ ->
-                        if addr.Col > maxCol then maxCol <- addr.Col)
+                    |> Map.iter (fun addr cellData ->
+                        if addr.Col > maxCol then maxCol <- addr.Col
+                        if trackSourceText && sourceTextCharCount <= usedBoundsCacheMaxTotalSourceTextChars then
+                            sourceTextCharCount <-
+                                sourceTextAddCapped
+                                    usedBoundsCacheMaxTotalSourceTextChars
+                                    (cellDataTextCharCountFor usedBoundsCacheMaxTotalSourceTextChars cellData)
+                                    sourceTextCharCount)
 
                 for merge in model.MergedCells do
                     any <- true
@@ -5728,6 +6073,21 @@ let usedBounds (model: SpreadsheetModel) : (int * int) option =
 
                 let bounds = if any then Some (maxRow, maxCol) else None
                 let mergedCellCount = mergedCellCountCapped usedBoundsCacheMaxTotalMergedCells model.MergedCells
+                let sourceTextCharCount =
+                    match cachedSourceTextCharCount with
+                    | ValueSome count ->
+                        count
+                    | ValueNone when not trackSourceText ->
+                        usedBoundsCacheMaxTotalSourceTextChars + 1
+                    | ValueNone ->
+                        let count = min sourceTextCharCount (usedBoundsCacheMaxTotalSourceTextChars + 1)
+                        if count <= usedBoundsCacheMaxTotalSourceTextChars then
+                            structuralCellSourceTextCache <-
+                                Some ({
+                                    Cells = model.Cells
+                                    SourceTextCharCount = count
+                                }: StructuralCellSourceTextCache)
+                        count
                 rememberUsedBounds {
                     Cells = model.Cells
                     CellCount = max 1 model.Cells.Count
@@ -5735,12 +6095,21 @@ let usedBounds (model: SpreadsheetModel) : (int * int) option =
                         if mergedCellCount > usedBoundsCacheMaxTotalMergedCells then
                             usedBoundsCacheMaxTotalSourceTextChars + 1
                         else
-                            structuralCellSourceTextCharCountFor model.Cells
+                            sourceTextCharCount
                     MergedCells = model.MergedCells
                     MergedCellCount = mergedCellCount
                     Bounds = bounds
                 }
                 bounds
+
+let usedBounds (model: SpreadsheetModel) : (int * int) option =
+    match tryGetUsedBoundsModelRecent model with
+    | ValueSome bounds ->
+        bounds
+    | ValueNone ->
+        let bounds = usedBoundsUncached model
+        rememberUsedBoundsModelRecent model bounds
+        bounds
 
 /// Last populated column in a row. Used by End-key navigation; keeps that
 /// row-specific scan in one place and accounts for merged cells crossing
@@ -6635,7 +7004,110 @@ let private trySearchCellsSimple query caseSensitive numberQueryPossible boolean
     | _ ->
         ValueNone
 
-let searchCells (query: string) (caseSensitive: bool) (model: SpreadsheetModel): CellAddress array =
+type private SearchCellsModelCacheEntry = {
+    SearchSource: SpreadsheetModel
+    SearchQueryText: string
+    SearchCaseSensitive: bool
+    SearchResults: CellAddress array
+    SearchCellCount: int
+    SearchSourceTextCharCount: int
+    SearchResultCount: int
+    SearchQueryCharCount: int
+}
+
+let private searchCellsModelRecent = Array.zeroCreate<SearchCellsModelCacheEntry> 128
+let mutable private searchCellsModelRecentNext = 0
+let mutable private searchCellsModelRecentCount = 0
+
+let private tryGetSearchCellsModelRecent
+    (query: string)
+    (caseSensitive: bool)
+    (model: SpreadsheetModel)
+    : CellAddress array voption =
+    let mutable i = 0
+    let mutable found = Unchecked.defaultof<CellAddress array>
+    while obj.ReferenceEquals(found, null) && i < searchCellsModelRecentCount do
+        let entry = searchCellsModelRecent.[i]
+        if not (obj.ReferenceEquals(entry, null))
+           && obj.ReferenceEquals(entry.SearchSource, model)
+           && entry.SearchCaseSensitive = caseSensitive
+           && System.String.Equals(entry.SearchQueryText, query, System.StringComparison.Ordinal) then
+            found <- entry.SearchResults
+        i <- i + 1
+    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
+
+let private searchCellsModelRecentMetrics
+    (query: string)
+    (model: SpreadsheetModel)
+    (results: CellAddress array)
+    =
+    if query.Length > searchCellsCacheMaxTotalQueryChars
+       || results.Length > searchCellsCacheMaxResultCount then
+        ValueNone
+    elif model.Cells.Count <= 1 then
+        let sourceTextCharCount =
+            cellMapSourceTextCharCountFor
+                searchCellsCacheMaxTotalCells
+                searchCellsCacheMaxTotalSourceTextChars
+                model.Cells
+        if sourceTextCharCount <= searchCellsCacheMaxTotalSourceTextChars then
+            ValueSome (struct (max 1 model.Cells.Count, sourceTextCharCount, results.Length, query.Length))
+        else
+            ValueNone
+    else
+        match tryGetSearchCellsCache model.Cells with
+        | ValueSome cached when searchCellsCacheRetainable cached ->
+            ValueSome (struct (cached.CellCount, cached.SourceTextCharCount, results.Length, query.Length))
+        | _ ->
+            ValueNone
+
+let private resetSearchCellsModelRecent () =
+    clearArray searchCellsModelRecent
+    searchCellsModelRecentNext <- 0
+    searchCellsModelRecentCount <- 0
+
+let private rememberSearchCellsModelRecent
+    (query: string)
+    (caseSensitive: bool)
+    (model: SpreadsheetModel)
+    (results: CellAddress array)
+    =
+    match searchCellsModelRecentMetrics query model results with
+    | ValueSome (struct (cellCount, sourceTextCharCount, resultCount, queryCharCount)) ->
+        let mutable totalCells = max 1 cellCount
+        let mutable totalSourceTextChars = max 1 sourceTextCharCount
+        let mutable totalResults = resultCount
+        let mutable totalQueryChars = max 1 queryCharCount
+        for i = 0 to searchCellsModelRecentCount - 1 do
+            let entry = searchCellsModelRecent.[i]
+            if not (obj.ReferenceEquals(entry, null))
+               && not (obj.ReferenceEquals(entry.SearchSource, model)) then
+                totalCells <- totalCells + max 1 entry.SearchCellCount
+                totalSourceTextChars <- totalSourceTextChars + max 1 entry.SearchSourceTextCharCount
+                totalResults <- totalResults + entry.SearchResultCount
+                totalQueryChars <- totalQueryChars + max 1 entry.SearchQueryCharCount
+        if totalCells > searchCellsCacheMaxTotalCells
+           || totalSourceTextChars > searchCellsCacheMaxTotalSourceTextChars
+           || totalResults > searchCellsCacheMaxTotalResultCount
+           || totalQueryChars > searchCellsCacheMaxTotalQueryChars then
+            resetSearchCellsModelRecent ()
+        searchCellsModelRecent.[searchCellsModelRecentNext] <- {
+            SearchSource = model
+            SearchQueryText = query
+            SearchCaseSensitive = caseSensitive
+            SearchResults = results
+            SearchCellCount = cellCount
+            SearchSourceTextCharCount = sourceTextCharCount
+            SearchResultCount = resultCount
+            SearchQueryCharCount = queryCharCount
+        }
+        searchCellsModelRecentNext <- (searchCellsModelRecentNext + 1) % searchCellsModelRecent.Length
+        if searchCellsModelRecentCount < searchCellsModelRecent.Length then
+            searchCellsModelRecentCount <- searchCellsModelRecentCount + 1
+    | ValueNone ->
+        ()
+
+let private searchCellsUncached (query: string) (caseSensitive: bool) (model: SpreadsheetModel): CellAddress array =
     if String.IsNullOrEmpty query then
         emptySearchResults
     else
@@ -6694,6 +7166,18 @@ let searchCells (query: string) (caseSensitive: bool) (model: SpreadsheetModel):
                             ValueNone
                     rememberSearchCellsWithSourceTextCharCount query caseSensitive model results sourceTextCharCount
                     results
+
+let searchCells (query: string) (caseSensitive: bool) (model: SpreadsheetModel): CellAddress array =
+    if String.IsNullOrEmpty query then
+        emptySearchResults
+    else
+        match tryGetSearchCellsModelRecent query caseSensitive model with
+        | ValueSome results ->
+            results
+        | ValueNone ->
+            let results = searchCellsUncached query caseSensitive model
+            rememberSearchCellsModelRecent query caseSensitive model results
+            results
 
 /// Initialize search with a query
 let startSearch (query: string) (caseSensitive: bool) (model: SpreadsheetModel): SpreadsheetModel =

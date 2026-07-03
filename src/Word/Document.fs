@@ -6797,27 +6797,50 @@ let insertText text doc =
     match doc.Selection with
     | None -> doc
     | Some sel ->
-        // Delete selection if not collapsed
-        let doc' = if sel.IsCollapsed then doc else deleteSelection doc
+        let insertAtCurrentSelection doc' =
+            match doc'.Selection with
+            | None -> doc'
+            | Some sel' ->
+                let mutable changed = false
+                let newDoc =
+                    updateParagraph doc' sel'.Focus.BlockId (fun para ->
+                        changed <- true
+                        let newBuffer = TextBuffer.insert sel'.Focus.Offset text para.Buffer
+                        { para with Buffer = newBuffer })
+                if changed then
+                    // Move cursor forward
+                    let newSel = {
+                        Anchor = { sel'.Focus with Offset = sel'.Focus.Offset + text.Length }
+                        Focus = { sel'.Focus with Offset = sel'.Focus.Offset + text.Length }
+                    }
+                    { newDoc with Selection = Some newSel }
+                else doc'
 
-        // Insert text at cursor (which is now at the selection start after deletion)
-        match doc'.Selection with
-        | None -> doc'
-        | Some sel' ->
-            let mutable changed = false
-            let newDoc =
-                updateParagraph doc' sel'.Focus.BlockId (fun para ->
-                    changed <- true
-                    let newBuffer = TextBuffer.insert sel'.Focus.Offset text para.Buffer
-                    { para with Buffer = newBuffer })
-            if changed then
-                // Move cursor forward
-                let newSel = {
-                    Anchor = { sel'.Focus with Offset = sel'.Focus.Offset + text.Length }
-                    Focus = { sel'.Focus with Offset = sel'.Focus.Offset + text.Length }
-                }
-                { newDoc with Selection = Some newSel }
-            else doc'
+        if not sel.IsCollapsed
+           && blockIdKeyEquals sel.Anchor.BlockId sel.Focus.BlockId then
+            let startOffset = min sel.Anchor.Offset sel.Focus.Offset
+            let endOffset = max sel.Anchor.Offset sel.Focus.Offset
+            let selectedLength = endOffset - startOffset
+            let selectedTextMatches =
+                selectedLength = text.Length
+                &&
+                    match findCursorParagraph doc sel.Anchor.BlockId with
+                    | Some para when endOffset <= TextBuffer.length para.Buffer ->
+                        TextBuffer.sliceEqualsString startOffset selectedLength text para.Buffer
+                    | _ -> false
+            if selectedTextMatches then
+                let endPos = { sel.Anchor with Offset = endOffset }
+                setSelectionIfChanged { Anchor = endPos; Focus = endPos } doc
+            else
+                // Delete selection if not collapsed
+                let doc' = deleteSelection doc
+                // Insert text at cursor (which is now at the selection start after deletion)
+                insertAtCurrentSelection doc'
+        else
+            // Delete selection if not collapsed
+            let doc' = if sel.IsCollapsed then doc else deleteSelection doc
+            // Insert text at cursor (which is now at the selection start after deletion)
+            insertAtCurrentSelection doc'
 
 let insertField fieldCode result doc =
     match doc.Selection with

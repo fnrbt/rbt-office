@@ -200,6 +200,47 @@ let appendSliceToStringBuilder (sb: Text.StringBuilder) start len rope =
                         appendSlice 0 (len - leftLen + start) right
         appendSlice start len rope
 
+let sliceEqualsString start len (text: string) rope =
+    if isNull text || len <> text.Length || start < 0 || len < 0 then
+        false
+    elif len = 0 then
+        true
+    else
+        let totalLength = length rope
+        if start > totalLength - len then
+            false
+        else
+            let mutable textIndex = 0
+            let mutable equal = true
+            let rec compareSlice start len rope =
+                if equal && len > 0 then
+                    match rope with
+                    | Empty ->
+                        equal <- false
+                    | Leaf s ->
+                        if start >= s.Length then
+                            equal <- false
+                        else
+                            let actualStart = max 0 start
+                            let actualLen = min len (s.Length - actualStart)
+                            let mutable index = 0
+                            while equal && index < actualLen do
+                                if s.[actualStart + index] <> text.[textIndex + index] then
+                                    equal <- false
+                                index <- index + 1
+                            textIndex <- textIndex + actualLen
+                    | Node (left, right, _) ->
+                        let leftLen = length left
+                        if start >= leftLen then
+                            compareSlice (start - leftLen) len right
+                        elif start + len <= leftLen then
+                            compareSlice start len left
+                        else
+                            compareSlice start (leftLen - start) left
+                            compareSlice 0 (len - leftLen + start) right
+            compareSlice start len rope
+            equal && textIndex = text.Length
+
 /// Insert text at position
 let rec insert pos (text: string) rope =
     if String.IsNullOrEmpty(text) then rope

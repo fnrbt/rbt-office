@@ -11741,6 +11741,47 @@ let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                 (model: SpreadsheetModel) : SpreadsheetModel =
     spillArraysCore workbook currentSheet model |> fst
 
+type private RecalcAndSpillModelCacheEntry = {
+    SourceModel: SpreadsheetModel
+    Workbook: RedBat.Spreadsheet.Workbook.Workbook option
+    CurrentSheet: RedBat.Spreadsheet.Workbook.SheetId option
+    ResultModel: SpreadsheetModel
+}
+
+let private recalcAndSpillModelRecent = Array.zeroCreate<RecalcAndSpillModelCacheEntry> 64
+let mutable private recalcAndSpillModelRecentNext = 0
+let mutable private recalcAndSpillModelRecentCount = 0
+
+let private tryGetRecalcAndSpillModelRecent workbook currentSheet (model: SpreadsheetModel) =
+    let mutable i = 0
+    let mutable found = Unchecked.defaultof<SpreadsheetModel>
+    while obj.ReferenceEquals(found, null) && i < recalcAndSpillModelRecentCount do
+        let entry = recalcAndSpillModelRecent.[i]
+        if not (obj.ReferenceEquals(entry, null))
+           && obj.ReferenceEquals(entry.SourceModel, model)
+           && recalcWorkbookMatches entry.Workbook workbook
+           && recalcSheetMatches entry.CurrentSheet currentSheet then
+            found <- entry.ResultModel
+        i <- i + 1
+    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
+
+let private canRememberRecalcAndSpillModelRecent workbook currentSheet (model: SpreadsheetModel) =
+    match tryGetRecalcResultCache workbook currentSheet model with
+    | ValueSome cached -> recalcResultCacheEntryRetainable cached
+    | ValueNone -> false
+
+let private rememberRecalcAndSpillModelRecent workbook currentSheet model result =
+    if canRememberRecalcAndSpillModelRecent workbook currentSheet model then
+        recalcAndSpillModelRecent.[recalcAndSpillModelRecentNext] <- {
+            SourceModel = model
+            Workbook = workbook
+            CurrentSheet = currentSheet
+            ResultModel = result
+        }
+        recalcAndSpillModelRecentNext <- (recalcAndSpillModelRecentNext + 1) % recalcAndSpillModelRecent.Length
+        if recalcAndSpillModelRecentCount < recalcAndSpillModelRecent.Length then
+            recalcAndSpillModelRecentCount <- recalcAndSpillModelRecentCount + 1
+
 /// Recalculate every formula and (re)materialize dynamic-array spills,
 /// clearing the previous spill's ghost cells. This is the interactive
 /// edit→recompute step: a spilling formula (FILTER/SORT/GROUPBY/…) updates and
@@ -11749,10 +11790,19 @@ let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
 let recalcAndSpill (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                    (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
                    (model: SpreadsheetModel) : SpreadsheetModel =
-    if Map.isEmpty model.Spill && not (cellsHaveFormulaCells model.Cells) then model else
-    let recalculated = recalculateAllFormulas workbook currentSheet model
-    let spilled, spillChanged = spillArraysCore workbook currentSheet recalculated
-    if spillChanged then
-        recalculateAllFormulas workbook currentSheet spilled
-    else
-        spilled
+    match tryGetRecalcAndSpillModelRecent workbook currentSheet model with
+    | ValueSome cached ->
+        cached
+    | ValueNone ->
+        if Map.isEmpty model.Spill && not (cellsHaveFormulaCells model.Cells) then
+            model
+        else
+            let recalculated = recalculateAllFormulas workbook currentSheet model
+            let spilled, spillChanged = spillArraysCore workbook currentSheet recalculated
+            let result =
+                if spillChanged then
+                    recalculateAllFormulas workbook currentSheet spilled
+                else
+                    spilled
+            rememberRecalcAndSpillModelRecent workbook currentSheet model result
+            result
