@@ -1478,8 +1478,13 @@ let lastUsedColumnInRow (row: int) (model: SpreadsheetModel) : int option =
 
 /// Search cells for a query string
 let private containsSearchText (query: string) (caseSensitive: bool) (text: string) =
+#if FABLE_COMPILER
+    if caseSensitive then text.Contains(query)
+    else text.ToLowerInvariant().Contains(query.ToLowerInvariant())
+#else
     let comparison = if caseSensitive then StringComparison.Ordinal else StringComparison.OrdinalIgnoreCase
     text.IndexOf(query, comparison) >= 0
+#endif
 
 let searchCells (query: string) (caseSensitive: bool) (model: SpreadsheetModel): CellAddress array =
     model.Cells
