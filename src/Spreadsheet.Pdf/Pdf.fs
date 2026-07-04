@@ -597,41 +597,11 @@ let private remapPrintDimensionDirect maxIndex remap (values: Map<int, float>) =
         | None -> ()
     mapped
 
-type private DirectPrintDimensionRemapCache = {
-    Source: WeakReference
-    MaxIndex: int
-    Mapped: Map<int, float>
-}
-
-let mutable private printColumnWidthDirectCache: DirectPrintDimensionRemapCache option = None
-let mutable private printRowHeightDirectCache: DirectPrintDimensionRemapCache option = None
-
-let private tryCachedPrintDimensionRemap values maxIndex cache =
-    match cache with
-    | Some cached when cached.MaxIndex = maxIndex ->
-        match cached.Source.Target with
-        | :? Map<int, float> as source when obj.ReferenceEquals(source, values) -> Some cached.Mapped
-        | _ -> None
-    | _ -> None
-
-let private rememberPrintDimensionRemap values maxIndex mapped =
-    { Source = WeakReference(values); MaxIndex = maxIndex; Mapped = mapped }
-
 let private remapPrintColumnWidthsDirect maxCol values =
-    match tryCachedPrintDimensionRemap values maxCol printColumnWidthDirectCache with
-    | Some mapped -> mapped
-    | None ->
-        let mapped = remapPrintDimensionDirect maxCol printColumnWidthPx values
-        printColumnWidthDirectCache <- Some (rememberPrintDimensionRemap values maxCol mapped)
-        mapped
+    remapPrintDimensionDirect maxCol printColumnWidthPx values
 
 let private remapPrintRowHeightsDirect maxRow values =
-    match tryCachedPrintDimensionRemap values maxRow printRowHeightDirectCache with
-    | Some mapped -> mapped
-    | None ->
-        let mapped = remapPrintDimensionDirect maxRow printRowHeightPx values
-        printRowHeightDirectCache <- Some (rememberPrintDimensionRemap values maxRow mapped)
-        mapped
+    remapPrintDimensionDirect maxRow printRowHeightPx values
 
 let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : SpreadsheetModel =
     if Map.isEmpty model.ColumnWidths then model else
@@ -848,13 +818,13 @@ let private iterSliceItems
     let dx = offsetX - scrollX
     let dy = offsetY - scrollY
     let commentMarkerKeys = commentMarkerStrokeKeysForSlice geometry model rowStart rowEnd colStart colEnd
-    iterPaintItems model viewport (fun item ->
+    for item in buildPaintItems model viewport do
         if not (isDegenerate item)
            && not (isDefaultPrintCellFill item)
            && not (isInteractiveCellStroke item)
            && not (shouldDropCommentMarkerForPrint commentMarkerKeys item)
            && (includeText || match item with DrawText _ -> false | _ -> true) then
-            emit (shiftItem dx dy item))
+            emit (shiftItem dx dy item)
 
 /// Build the paint items for a print slice.
 let private sliceItems
