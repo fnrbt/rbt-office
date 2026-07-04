@@ -2,27 +2,12 @@ module RedBat.Word.Renderer
 
 #if FABLE_COMPILER
 open System
-open System.Collections.Generic
 open Fable.Core
 open Browser.Types
 open RedBat.Word.Document
 open RedBat.Word.TextBuffer
 open RedBat.Word.Layout
 open RedBat.Word.Paint
-
-module Math = RedBat.Word.Math
-
-type RenderLayoutCacheEntry = {
-    mutable Document: Document
-    LayoutDocument: Document
-    Layouts: BlockLayout list
-    mutable LayoutArray: BlockLayout array option
-    mutable LayoutById: Dictionary<BlockId, BlockLayout> option
-    LayoutCount: int
-    SourceParagraphCount: int
-    SourceTextCharCount: int
-    SourceStyleCharCount: int
-}
 
 /// Rendering context
 type RenderContext = {
@@ -37,7 +22,8 @@ type RenderContext = {
     mutable TextMeasurer: TextMeasurer option
     mutable TextRangeMeasurer: TextRangeMeasurer option
     mutable TextPathPainter: (string -> TextPaintStyle -> float -> float -> float -> bool) option
-    mutable LayoutCache: RenderLayoutCacheEntry list
+    mutable LastDocument: Document option
+    mutable LastLayouts: BlockLayout list option
 }
 
 type CommentAnchor = {
@@ -85,99 +71,21 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextMeasurer = None
     TextRangeMeasurer = None
     TextPathPainter = None
-    LayoutCache = []
+    LastDocument = None
+    LastLayouts = None
 }
-
-let private layoutDictionary (layouts: BlockLayout list) =
-    let dict = Dictionary<BlockId, BlockLayout>()
-    for layout in layouts do
-        if not (dict.ContainsKey layout.BlockId) then
-            dict.[layout.BlockId] <- layout
-    dict
 
 let private cssFontFamily (family: string) =
     if family.Contains(" ") then sprintf "\"%s\"" (family.Replace("\"", "")) else family
 
-let private asciiCharStrings = Array.init 128 (fun code -> string (char code))
-
-let private singleCharString (ch: char) =
-    let code = int ch
-    if code < asciiCharStrings.Length then asciiCharStrings.[code]
-    else string ch
-
-let private resizeArrayToList (items: ResizeArray<'T>) =
-    let mutable result = []
-    for i = items.Count - 1 downto 0 do
-        result <- items.[i] :: result
-    result
-
-let private charEqualsIgnoreCase a b =
-    a = b || Char.ToUpperInvariant a = Char.ToUpperInvariant b
-
-let private equalsOrdinalIgnoreCase (left: string) (right: string) =
-    if left.Length <> right.Length then
-        false
-    else
-        let mutable matches = true
-        let mutable i = 0
-        while matches && i < left.Length do
-            if not (charEqualsIgnoreCase left.[i] right.[i]) then
-                matches <- false
-            i <- i + 1
-        matches
-
-let private trimmedEqualsOrdinalIgnoreCase (left: string) (right: string) =
-    let trimBounds (value: string) =
-        let mutable startIndex = 0
-        let mutable endIndex = value.Length - 1
-        while startIndex <= endIndex && Char.IsWhiteSpace value.[startIndex] do
-            startIndex <- startIndex + 1
-        while endIndex >= startIndex && Char.IsWhiteSpace value.[endIndex] do
-            endIndex <- endIndex - 1
-        startIndex, endIndex
-
-    let leftStart, leftEnd = trimBounds left
-    let rightStart, rightEnd = trimBounds right
-    let leftLength = leftEnd - leftStart + 1
-    let rightLength = rightEnd - rightStart + 1
-    if leftLength <> rightLength then
-        false
-    else
-        let mutable matches = true
-        let mutable i = 0
-        while matches && i < leftLength do
-            if not (charEqualsIgnoreCase left.[leftStart + i] right.[rightStart + i]) then
-                matches <- false
-            i <- i + 1
-        matches
-
-let private containsOrdinalIgnoreCase (needle: string) (text: string) =
-    if needle.Length = 0 then
-        true
-    elif needle.Length > text.Length then
-        false
-    else
-        let mutable found = false
-        let mutable startIndex = 0
-        while not found && startIndex <= text.Length - needle.Length do
-            let mutable matches = true
-            let mutable offset = 0
-            while matches && offset < needle.Length do
-                if not (charEqualsIgnoreCase text.[startIndex + offset] needle.[offset]) then
-                    matches <- false
-                offset <- offset + 1
-            if matches then
-                found <- true
-            startIndex <- startIndex + 1
-        found
-
 let private browserMetricScale (family: string) (style: TextBuffer.TextStyle) =
     // Chromium canvas metrics for loaded Windows faces diverge from Word/PDF
     // shaping enough to change centering and wrap decisions in real DOCX bodies.
-    if trimmedEqualsOrdinalIgnoreCase family "cambria" && not style.Bold && not style.Italic then 0.982
-    elif trimmedEqualsOrdinalIgnoreCase family "times new roman" && style.Bold && style.Italic then 0.945
-    elif trimmedEqualsOrdinalIgnoreCase family "times new roman" && not style.Bold && not style.Italic then 1.0185
-    else 1.0
+    match family.Trim().ToLowerInvariant() with
+    | "cambria" when not style.Bold && not style.Italic -> 0.982
+    | "times new roman" when style.Bold && style.Italic -> 0.945
+    | "times new roman" when not style.Bold && not style.Italic -> 1.0185
+    | _ -> 1.0
 
 /// Get image from cache (JS Map.get())
 [<Emit("$0.get($1)")>]
@@ -223,779 +131,55 @@ let measureRangeWithContext ctx text style start length =
     | Some measureRange -> measureRange text style start length
     | None -> rangeMeasurerFromTextMeasurer (measureWithContext ctx) text style start length
 
-let private renderLayoutCacheMaxEntries = 2
-let private renderLayoutCacheMaxTotalLayouts = 200000
-let private renderLayoutCacheMaxTotalSourceParagraphs = 100000
-let private renderLayoutCacheMaxTotalSourceTextChars = 5000000
-let private renderLayoutCacheMaxTotalStyleChars = 500000
-
-let private layoutInputsEqual (left: Document) (right: Document) =
-    obj.ReferenceEquals(left.Blocks, right.Blocks)
-    && left.PageSetup = right.PageSetup
-    && obj.ReferenceEquals(left.Styles, right.Styles)
-    && obj.ReferenceEquals(left.Headers, right.Headers)
-    && obj.ReferenceEquals(left.Footers, right.Footers)
-    && obj.ReferenceEquals(left.HeaderParts, right.HeaderParts)
-    && obj.ReferenceEquals(left.FooterParts, right.FooterParts)
-
-let private renderLayoutAddCapped limit value total =
-    if total > limit then
-        total
-    else
-        let value = max 0 value
-        let remaining = limit - total
-        if value > remaining then limit + 1
-        else total + value
-
-let private renderLayoutOptionStringCharCount (value: string option) =
-    match value with
-    | Some value -> value.Length
-    | None -> 0
-
-let private renderLayoutSectionColumnsStringCharCount (columns: SectionColumns option) =
-    match columns with
-    | Some columns ->
-        let mutable total = 0
-        let mutable seen = 0
-        let mutable widths = columns.Widths
-        while total <= renderLayoutCacheMaxTotalSourceTextChars
-              && seen <= renderLayoutCacheMaxTotalSourceParagraphs
-              && not widths.IsEmpty do
-            total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars 1 total
-            seen <- seen + 1
-            widths <- widths.Tail
-        if seen > renderLayoutCacheMaxTotalSourceParagraphs then
-            renderLayoutCacheMaxTotalSourceTextChars + 1
-        else
-            total
-    | None -> 0
-
-let private renderLayoutTextStyleStringCharCount (style: TextBuffer.TextStyle) =
-    let mutable total = 0
-    let add value =
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount value) total
-    add style.Style
-    add style.UnderlineStyle
-    add style.UnderlineColor
-    add style.EmphasisMark
-    add style.FontFamily
-    add style.Color
-    add style.Highlight
-    add style.Hyperlink
-    add style.CommentId
-    add style.CommentText
-    add style.CommentAuthor
-    add style.CommentDate
-    add style.NoteId
-    add style.NoteType
-    add style.NoteText
-    add style.BookmarkStartId
-    add style.BookmarkName
-    add style.BookmarkEndId
-    add style.FieldCode
-    add style.FieldResult
-    add style.EquationXml
-    add style.RevisionId
-    add style.RevisionType
-    add style.RevisionAuthor
-    add style.RevisionDate
-    add style.VertAlign
-    total
-
-let private renderLayoutImageStringCharCount (image: TextBuffer.ImageRun) =
-    let mutable total = image.Src.Length
-    let add value =
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount value) total
-    add image.Alt
-    add image.Name
-    add image.Title
-    add image.Wrap
-    add image.PositionHRelativeFrom
-    add image.PositionVRelativeFrom
-    add image.RelativeHeight
-    add image.CropLeft
-    add image.CropTop
-    add image.CropRight
-    add image.CropBottom
-    total
-
-let private renderLayoutRunStringCharCount = function
-    | TextBuffer.Text textRun -> renderLayoutTextStyleStringCharCount textRun.Style
-    | TextBuffer.Image image -> renderLayoutImageStringCharCount image
-
-let private renderLayoutParagraphBorderStringCharCount (border: ParagraphBorder option) =
-    match border with
-    | Some border ->
-        let mutable total = 0
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount border.Style) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount border.Color) total
-        total
-    | None -> 0
-
-let private renderLayoutParagraphBordersStringCharCount (borders: ParagraphBorders option) =
-    match borders with
-    | Some borders ->
-        let mutable total = 0
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutParagraphBorderStringCharCount borders.Top) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutParagraphBorderStringCharCount borders.Right) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutParagraphBorderStringCharCount borders.Bottom) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutParagraphBorderStringCharCount borders.Left) total
-        total
-    | None -> 0
-
-let private renderLayoutTabStopStringCharCount (tabStop: TabStop) =
-    renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount tabStop.Leader) tabStop.Alignment.Length
-
-let private renderLayoutParagraphMetadataStringCharCount (metadata: BlockMetadata) =
-    let mutable total = 0
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.Style) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.ContentControlId) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.ContentControlTag) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.ContentControlAlias) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.ListId) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.ListNumberFormat) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.ListLevelText) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.RightTabLeader) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.LineSpacingRule) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.BackgroundColor) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutParagraphBordersStringCharCount metadata.ParagraphBorders) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount metadata.SectionBreak) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutSectionColumnsStringCharCount metadata.SectionColumns) total
-    let mutable seen = 0
-    let mutable tabStops = metadata.TabStops
-    while total <= renderLayoutCacheMaxTotalSourceTextChars
-          && seen <= renderLayoutCacheMaxTotalSourceParagraphs
-          && not tabStops.IsEmpty do
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTabStopStringCharCount tabStops.Head) total
-        seen <- seen + 1
-        tabStops <- tabStops.Tail
-    let mutable headerReferences = metadata.HeaderReferences
-    while total <= renderLayoutCacheMaxTotalSourceTextChars
-          && seen <= renderLayoutCacheMaxTotalSourceParagraphs
-          && not headerReferences.IsEmpty do
-        let kind, relationshipId = headerReferences.Head
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars kind.Length total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars relationshipId.Length total
-        seen <- seen + 1
-        headerReferences <- headerReferences.Tail
-    let mutable footerReferences = metadata.FooterReferences
-    while total <= renderLayoutCacheMaxTotalSourceTextChars
-          && seen <= renderLayoutCacheMaxTotalSourceParagraphs
-          && not footerReferences.IsEmpty do
-        let kind, relationshipId = footerReferences.Head
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars kind.Length total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars relationshipId.Length total
-        seen <- seen + 1
-        footerReferences <- footerReferences.Tail
-    if seen > renderLayoutCacheMaxTotalSourceParagraphs then
-        renderLayoutCacheMaxTotalSourceTextChars + 1
-    else
-        total
-
-let private renderLayoutParagraphSourceTextCharCount (paragraph: ParagraphBlock) =
-    let limit = renderLayoutCacheMaxTotalSourceTextChars
-    let mutable total = 0
-    total <- renderLayoutAddCapped limit paragraph.Id.Length total
-    total <- renderLayoutAddCapped limit (TextBuffer.length paragraph.Buffer) total
-    let mutable seen = 0
-    let mutable runs = paragraph.Buffer.Runs
-    while total <= limit
-          && seen <= renderLayoutCacheMaxTotalSourceParagraphs
-          && not runs.IsEmpty do
-        total <- renderLayoutAddCapped limit (renderLayoutRunStringCharCount runs.Head) total
-        seen <- seen + 1
-        runs <- runs.Tail
-    if seen > renderLayoutCacheMaxTotalSourceParagraphs then
-        limit + 1
-    else
-        if total <= limit then
-            total <- renderLayoutAddCapped limit (renderLayoutParagraphMetadataStringCharCount paragraph.Metadata) total
-        total
-
-let private renderLayoutTableBorderStringCharCount (border: TableBorder option) =
-    match border with
-    | Some border ->
-        let mutable total = 0
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount border.Style) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount border.Color) total
-        total
-    | None -> 0
-
-let private renderLayoutTableBordersStringCharCount (borders: TableBorders option) =
-    match borders with
-    | Some borders ->
-        let mutable total = 0
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableBorderStringCharCount borders.Top) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableBorderStringCharCount borders.Right) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableBorderStringCharCount borders.Bottom) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableBorderStringCharCount borders.Left) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableBorderStringCharCount borders.InsideH) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableBorderStringCharCount borders.InsideV) total
-        total
-    | None -> 0
-
-let private renderLayoutShadingStringCharCount (shading: Shading option) =
-    match shading with
-    | Some shading ->
-        let mutable total = 0
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount shading.Pattern) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount shading.ForegroundColor) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount shading.BackgroundColor) total
-        total
-    | None -> 0
-
-let private renderLayoutTableStringCharCount (table: TableBlock) =
-    let mutable total = table.Id.Length
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount table.Alignment) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount table.BackgroundColor) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutShadingStringCharCount table.Shading) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableBordersStringCharCount table.Borders) total
-    total
-
-let private renderLayoutTableRowStringCharCount (row: TableRow) =
-    let mutable total = 0
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount row.HeightRule) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableBordersStringCharCount row.BordersOverride) total
-    total
-
-let private renderLayoutTableCellStringCharCount (cell: TableCell) =
-    let mutable total = 0
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount cell.BackgroundColor) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutShadingStringCharCount cell.Shading) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount cell.BorderColor) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableBordersStringCharCount cell.Borders) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount cell.VerticalAlignment) total
-    total
-
-let private renderLayoutPathSegmentsStringCharCount (segments: PathSeg list) =
-    let mutable total = 0
-    let mutable seen = 0
-    let mutable remaining = segments
-    while total <= renderLayoutCacheMaxTotalSourceTextChars
-          && seen <= renderLayoutCacheMaxTotalSourceParagraphs
-          && not remaining.IsEmpty do
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars 1 total
-        seen <- seen + 1
-        remaining <- remaining.Tail
-    if seen > renderLayoutCacheMaxTotalSourceParagraphs then
-        renderLayoutCacheMaxTotalSourceTextChars + 1
-    else
-        total
-
-let private renderLayoutShapeGeometryStringCharCount = function
-    | GeoRect -> 0
-    | GeoPreset preset -> preset.Length
-    | GeoCustom (segments, _, _) -> renderLayoutPathSegmentsStringCharCount segments
-
-let private renderLayoutGradientStringCharCount (gradient: GradientSpec option) =
-    match gradient with
-    | Some gradient ->
-        let mutable total = 0
-        let mutable seen = 0
-        let mutable stops = gradient.Stops
-        while total <= renderLayoutCacheMaxTotalSourceTextChars
-              && seen <= renderLayoutCacheMaxTotalSourceParagraphs
-              && not stops.IsEmpty do
-            total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars stops.Head.Color.Length total
-            seen <- seen + 1
-            stops <- stops.Tail
-        if seen > renderLayoutCacheMaxTotalSourceParagraphs then
-            renderLayoutCacheMaxTotalSourceTextChars + 1
-        else
-            total
-    | None -> 0
-
-let private renderLayoutTextBoxStringCharCount (textBox: TextBoxBlock) =
-    let mutable total = textBox.Id.Length
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount textBox.PositionHRelativeFrom) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount textBox.PositionVRelativeFrom) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount textBox.FillColor) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount textBox.BorderColor) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount textBox.RelativeHeight) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutShapeGeometryStringCharCount textBox.Geometry) total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutGradientStringCharCount textBox.Gradient) total
-    total
-
-let private renderLayoutSelectionStringCharCount (selection: Selection option) =
-    match selection with
-    | Some selection ->
-        renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars selection.Focus.BlockId.Length selection.Anchor.BlockId.Length
-    | None -> 0
-
-let private renderLayoutPageSetupStringCharCount (setup: PageSetup) =
-    renderLayoutAddCapped
-        renderLayoutCacheMaxTotalSourceTextChars
-        (renderLayoutSectionColumnsStringCharCount setup.Columns)
-        (renderLayoutOptionStringCharCount setup.SectionStart)
-
-let private renderLayoutHeaderFooterPartStringCharCount (part: HeaderFooterPart) =
-    renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount part.RelationshipId) part.Kind.Length
-
-let private renderLayoutHeaderFooterPartsMetadataStringCharCount (parts: HeaderFooterPart list) =
-    let mutable total = 0
-    let mutable seen = 0
-    let mutable remaining = parts
-    while total <= renderLayoutCacheMaxTotalSourceTextChars
-          && seen <= renderLayoutCacheMaxTotalSourceParagraphs
-          && not remaining.IsEmpty do
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutHeaderFooterPartStringCharCount remaining.Head) total
-        seen <- seen + 1
-        remaining <- remaining.Tail
-    if seen > renderLayoutCacheMaxTotalSourceParagraphs then
-        renderLayoutCacheMaxTotalSourceTextChars + 1
-    else
-        total
-
-type private RenderLayoutSourceMetrics = {
-    ParagraphCount: int
-    TextCharCount: int
-}
-
-let private renderLayoutDocumentSourceMetrics (doc: Document) =
-    let mutable paragraphCount = 0
-    let mutable textCharCount = 0
-    let mutable visitedItems = 0
-    let hasRoom () =
-        paragraphCount <= renderLayoutCacheMaxTotalSourceParagraphs
-        && textCharCount <= renderLayoutCacheMaxTotalSourceTextChars
-        && visitedItems <= renderLayoutCacheMaxTotalSourceParagraphs
-    let visitItem () =
-        visitedItems <- visitedItems + 1
-    let addParagraph (paragraph: ParagraphBlock) =
-        if hasRoom () then
-            visitItem ()
-            paragraphCount <- paragraphCount + 1
-            textCharCount <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutParagraphSourceTextCharCount paragraph) textCharCount
-    let addTable (table: TableBlock) =
-        let tables = Stack<TableBlock>()
-        tables.Push table
-        while tables.Count > 0 && hasRoom () do
-            let table = tables.Pop()
-            visitItem ()
-            textCharCount <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableStringCharCount table) textCharCount
-            let mutable rows = table.Rows
-            while hasRoom () && not rows.IsEmpty do
-                let row = rows.Head
-                visitItem ()
-                textCharCount <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableRowStringCharCount row) textCharCount
-                let mutable cells = row.Cells
-                while hasRoom () && not cells.IsEmpty do
-                    let cell = cells.Head
-                    visitItem ()
-                    textCharCount <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTableCellStringCharCount cell) textCharCount
-                    let mutable paragraphs = cell.Content
-                    while hasRoom () && not paragraphs.IsEmpty do
-                        addParagraph paragraphs.Head
-                        paragraphs <- paragraphs.Tail
-                    let mutable nestedTables = cell.NestedTables
-                    while hasRoom () && not nestedTables.IsEmpty do
-                        tables.Push nestedTables.Head
-                        nestedTables <- nestedTables.Tail
-                    cells <- cells.Tail
-                rows <- rows.Tail
-    let addBlock block =
-        if hasRoom () then
-            match block with
-            | Paragraph paragraph
-            | Heading (_, paragraph) -> addParagraph paragraph
-            | Table table -> addTable table
-            | TextBox textBox ->
-                visitItem ()
-                textCharCount <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTextBoxStringCharCount textBox) textCharCount
-                let mutable paragraphs = textBox.Content
-                while hasRoom () && not paragraphs.IsEmpty do
-                    addParagraph paragraphs.Head
-                    paragraphs <- paragraphs.Tail
-    if textCharCount <= renderLayoutCacheMaxTotalSourceTextChars then
-        textCharCount <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutSelectionStringCharCount doc.Selection) textCharCount
-        textCharCount <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutPageSetupStringCharCount doc.PageSetup) textCharCount
-        textCharCount <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutHeaderFooterPartsMetadataStringCharCount doc.HeaderParts) textCharCount
-        textCharCount <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutHeaderFooterPartsMetadataStringCharCount doc.FooterParts) textCharCount
-    let mutable blocks = doc.Blocks
-    while hasRoom () && not blocks.IsEmpty do
-        addBlock blocks.Head
-        blocks <- blocks.Tail
-    let mutable headers = doc.Headers
-    while hasRoom () && not headers.IsEmpty do
-        addParagraph headers.Head
-        headers <- headers.Tail
-    let mutable footers = doc.Footers
-    while hasRoom () && not footers.IsEmpty do
-        addParagraph footers.Head
-        footers <- footers.Tail
-    let mutable headerParts = doc.HeaderParts
-    while hasRoom () && not headerParts.IsEmpty do
-        let part = headerParts.Head
-        let mutable partBlocks = part.Blocks
-        while hasRoom () && not partBlocks.IsEmpty do
-            addBlock partBlocks.Head
-            partBlocks <- partBlocks.Tail
-        headerParts <- headerParts.Tail
-    let mutable footerParts = doc.FooterParts
-    while hasRoom () && not footerParts.IsEmpty do
-        let part = footerParts.Head
-        let mutable partBlocks = part.Blocks
-        while hasRoom () && not partBlocks.IsEmpty do
-            addBlock partBlocks.Head
-            partBlocks <- partBlocks.Tail
-        footerParts <- footerParts.Tail
-    if visitedItems > renderLayoutCacheMaxTotalSourceParagraphs then
-        {
-            ParagraphCount = renderLayoutCacheMaxTotalSourceParagraphs + 1
-            TextCharCount = renderLayoutCacheMaxTotalSourceTextChars + 1
-        }
-    else
-        {
-            ParagraphCount = min paragraphCount (renderLayoutCacheMaxTotalSourceParagraphs + 1)
-            TextCharCount = min textCharCount (renderLayoutCacheMaxTotalSourceTextChars + 1)
-        }
-
-let private renderLayoutStyleStringCharCount (style: NamedStyle) =
-    let mutable total = style.Id.Length + style.StyleType.Length
-    let add value =
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalStyleChars (renderLayoutOptionStringCharCount value) total
-    add style.Name
-    add style.BasedOn
-    add style.Next
-    add style.Linked
-    add style.Aliases
-    add style.LineSpacingRule
-    add style.BackgroundColor
-    match style.Text with
-    | Some textStyle ->
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalStyleChars (renderLayoutTextStyleStringCharCount textStyle) total
-    | None -> ()
-    total
-
-let private renderLayoutStylesStringCharCount (styles: NamedStyle list) =
-    let mutable total = 0
-    let mutable seen = 0
-    let mutable remaining = styles
-    while total <= renderLayoutCacheMaxTotalStyleChars
-          && seen <= renderLayoutCacheMaxTotalSourceParagraphs
-          && not remaining.IsEmpty do
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalStyleChars (renderLayoutStyleStringCharCount remaining.Head) total
-        seen <- seen + 1
-        remaining <- remaining.Tail
-    if seen > renderLayoutCacheMaxTotalSourceParagraphs then
-        renderLayoutCacheMaxTotalStyleChars + 1
-    else
-        total
-
-let private renderLayoutMathPrimsStringCharCount (prims: Math.MathPrim list) =
-    let mutable total = 0
-    let mutable seen = 0
-    let mutable remaining = prims
-    while total <= renderLayoutCacheMaxTotalSourceTextChars
-          && seen <= renderLayoutCacheMaxTotalLayouts
-          && not remaining.IsEmpty do
-        match remaining.Head with
-        | Math.MGlyph (text, _, _, _, _) ->
-            total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars text.Length total
-        | Math.MRule _ -> ()
-        seen <- seen + 1
-        remaining <- remaining.Tail
-    if seen > renderLayoutCacheMaxTotalLayouts then
-        renderLayoutCacheMaxTotalSourceTextChars + 1
-    else
-        total
-
-let private renderLayoutSegmentStringCharCount = function
-    | TextSegment (text, style, _, _, _) ->
-        let mutable total = text.Length
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTextStyleStringCharCount style) total
-        total
-    | ImageSegment (src, _, _, _, _, _, _, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom) ->
-        let mutable total = src.Length
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount wrap) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount relativeHeight) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount cropLeft) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount cropTop) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount cropRight) total
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutOptionStringCharCount cropBottom) total
-        total
-    | MathSegment (prims, style, _, _, _, _, _, _) ->
-        let mutable total = renderLayoutTextStyleStringCharCount style
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutMathPrimsStringCharCount prims) total
-        total
-
-let private renderLayoutLineStringCharCount total (line: MeasuredLine) =
-    let mutable total = total
-    let mutable seen = 0
-    let mutable remaining = line.Segments
-    while total <= renderLayoutCacheMaxTotalSourceTextChars
-          && seen <= renderLayoutCacheMaxTotalLayouts
-          && not remaining.IsEmpty do
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutSegmentStringCharCount remaining.Head) total
-        seen <- seen + 1
-        remaining <- remaining.Tail
-    if seen > renderLayoutCacheMaxTotalLayouts then
-        renderLayoutCacheMaxTotalSourceTextChars + 1
-    else
-        total
-
-let private renderLayoutBlockLayoutStringCharCount total (layout: BlockLayout) =
-    let mutable total = total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars layout.BlockId.Length total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars layout.Prefix.Length total
-    total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutParagraphMetadataStringCharCount layout.Metadata) total
-    match layout.PrefixStyle with
-    | Some style ->
-        total <- renderLayoutAddCapped renderLayoutCacheMaxTotalSourceTextChars (renderLayoutTextStyleStringCharCount style) total
-    | None -> ()
-    let mutable seen = 0
-    let mutable remaining = layout.Lines
-    while total <= renderLayoutCacheMaxTotalSourceTextChars
-          && seen <= renderLayoutCacheMaxTotalLayouts
-          && not remaining.IsEmpty do
-        total <- renderLayoutLineStringCharCount total remaining.Head
-        seen <- seen + 1
-        remaining <- remaining.Tail
-    if seen > renderLayoutCacheMaxTotalLayouts then
-        renderLayoutCacheMaxTotalSourceTextChars + 1
-    else
-        total
-
-let private renderLayoutLayoutsStringCharCount (layouts: BlockLayout list) =
-    let mutable total = 0
-    let mutable seen = 0
-    let mutable remaining = layouts
-    while total <= renderLayoutCacheMaxTotalSourceTextChars
-          && seen <= renderLayoutCacheMaxTotalLayouts
-          && not remaining.IsEmpty do
-        total <- renderLayoutBlockLayoutStringCharCount total remaining.Head
-        seen <- seen + 1
-        remaining <- remaining.Tail
-    if seen > renderLayoutCacheMaxTotalLayouts then
-        renderLayoutCacheMaxTotalSourceTextChars + 1
-    else
-        total
-
-let private renderLayoutItemCountAddCapped value total =
-    renderLayoutAddCapped renderLayoutCacheMaxTotalLayouts value total
-
-let private renderLayoutMathPrimsRetainedItemCount total (prims: Math.MathPrim list) =
-    let mutable total = total
-    let mutable remaining = prims
-    while total <= renderLayoutCacheMaxTotalLayouts && not remaining.IsEmpty do
-        total <- renderLayoutItemCountAddCapped 1 total
-        remaining <- remaining.Tail
-    total
-
-let private renderLayoutSegmentRetainedItemCount total segment =
-    let total = renderLayoutItemCountAddCapped 1 total
-    match segment with
-    | MathSegment (prims, _, _, _, _, _, _, _) when total <= renderLayoutCacheMaxTotalLayouts ->
-        renderLayoutMathPrimsRetainedItemCount total prims
-    | _ -> total
-
-let private renderLayoutLineRetainedItemCount total (line: MeasuredLine) =
-    let mutable total = renderLayoutItemCountAddCapped 1 total
-    let mutable remaining = line.Segments
-    while total <= renderLayoutCacheMaxTotalLayouts && not remaining.IsEmpty do
-        total <- renderLayoutSegmentRetainedItemCount total remaining.Head
-        remaining <- remaining.Tail
-    total
-
-let private renderLayoutBlockLayoutRetainedItemCount total (layout: BlockLayout) =
-    let mutable total = renderLayoutItemCountAddCapped 1 total
-    let mutable remaining = layout.Lines
-    while total <= renderLayoutCacheMaxTotalLayouts && not remaining.IsEmpty do
-        total <- renderLayoutLineRetainedItemCount total remaining.Head
-        remaining <- remaining.Tail
-    total
-
-let private renderLayoutLayoutsRetainedItemCount (layouts: BlockLayout list) =
-    let mutable total = 0
-    let mutable remaining = layouts
-    while total <= renderLayoutCacheMaxTotalLayouts && not remaining.IsEmpty do
-        total <- renderLayoutBlockLayoutRetainedItemCount total remaining.Head
-        remaining <- remaining.Tail
-    total
-
-let private renderLayoutDocumentSourceMetricsFor retainedLayoutItemCount doc =
-    if retainedLayoutItemCount > renderLayoutCacheMaxTotalLayouts then
-        {
-            ParagraphCount = renderLayoutCacheMaxTotalSourceParagraphs + 1
-            TextCharCount = renderLayoutCacheMaxTotalSourceTextChars + 1
-        }
-    else
-        renderLayoutDocumentSourceMetrics doc
-
-let private renderLayoutSourceMetricsWithLayouts sourceMetrics layouts =
-    if sourceMetrics.TextCharCount > renderLayoutCacheMaxTotalSourceTextChars then
-        sourceMetrics
-    else
-        {
-            sourceMetrics with
-                TextCharCount =
-                    renderLayoutAddCapped
-                        renderLayoutCacheMaxTotalSourceTextChars
-                        (renderLayoutLayoutsStringCharCount layouts)
-                        sourceMetrics.TextCharCount
-        }
-
-let private renderLayoutStylesStringCharCountFor retainedLayoutItemCount sourceMetrics styles =
-    if retainedLayoutItemCount > renderLayoutCacheMaxTotalLayouts
-       || sourceMetrics.ParagraphCount > renderLayoutCacheMaxTotalSourceParagraphs
-       || sourceMetrics.TextCharCount > renderLayoutCacheMaxTotalSourceTextChars then
-        renderLayoutCacheMaxTotalStyleChars + 1
-    else
-        renderLayoutStylesStringCharCount styles
-
-let private renderLayoutCacheEntryRetainable entry =
-    entry.LayoutCount <= renderLayoutCacheMaxTotalLayouts
-    && entry.SourceParagraphCount <= renderLayoutCacheMaxTotalSourceParagraphs
-    && entry.SourceTextCharCount <= renderLayoutCacheMaxTotalSourceTextChars
-    && entry.SourceStyleCharCount <= renderLayoutCacheMaxTotalStyleChars
-
-let private rememberLayoutCacheEntry (ctx: RenderContext) entry =
-    let trim entries =
-        let rec loop remaining kept count totalLayouts totalSourceParagraphs totalSourceTextChars totalStyleChars =
-            match remaining with
-            | [] -> List.rev kept
-            | candidate :: rest ->
-                let layoutCount = max 1 candidate.LayoutCount
-                let sourceParagraphCount = max 1 candidate.SourceParagraphCount
-                let sourceTextCharCount = max 1 candidate.SourceTextCharCount
-                let styleCharCount = max 1 candidate.SourceStyleCharCount
-                let nextTotalLayouts = totalLayouts + layoutCount
-                let nextTotalSourceParagraphs = totalSourceParagraphs + sourceParagraphCount
-                let nextTotalSourceTextChars = totalSourceTextChars + sourceTextCharCount
-                let nextTotalStyleChars = totalStyleChars + styleCharCount
-                if renderLayoutCacheEntryRetainable candidate
-                   && count < renderLayoutCacheMaxEntries
-                   && nextTotalLayouts <= renderLayoutCacheMaxTotalLayouts
-                   && nextTotalSourceParagraphs <= renderLayoutCacheMaxTotalSourceParagraphs
-                   && nextTotalSourceTextChars <= renderLayoutCacheMaxTotalSourceTextChars
-                   && nextTotalStyleChars <= renderLayoutCacheMaxTotalStyleChars then
-                    loop
-                        rest
-                        (candidate :: kept)
-                        (count + 1)
-                        nextTotalLayouts
-                        nextTotalSourceParagraphs
-                        nextTotalSourceTextChars
-                        nextTotalStyleChars
-                else
-                    loop rest kept count totalLayouts totalSourceParagraphs totalSourceTextChars totalStyleChars
-        loop entries [] 0 0 0 0 0
-    let retained =
-        ctx.LayoutCache
-        |> List.filter (fun cached -> not (layoutInputsEqual cached.LayoutDocument entry.LayoutDocument))
-    let entries =
-        if renderLayoutCacheEntryRetainable entry then entry :: retained
-        else retained
-    ctx.LayoutCache <- trim entries
-
-let private buildLayoutCacheEntry (ctx: RenderContext) (doc: Document) =
-    let layouts = RedBat.Word.Layout.layoutDocumentWithRange (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
-    let retainedLayoutItemCount = renderLayoutLayoutsRetainedItemCount layouts
-    let sourceMetrics =
-        renderLayoutDocumentSourceMetricsFor retainedLayoutItemCount doc
-        |> fun metrics -> renderLayoutSourceMetricsWithLayouts metrics layouts
-    {
-        Document = doc
-        LayoutDocument = doc
-        Layouts = layouts
-        LayoutArray = Some (Array.ofList layouts)
-        LayoutById = Some (layoutDictionary layouts)
-        LayoutCount = retainedLayoutItemCount
-        SourceParagraphCount = sourceMetrics.ParagraphCount
-        SourceTextCharCount = sourceMetrics.TextCharCount
-        SourceStyleCharCount = renderLayoutStylesStringCharCountFor retainedLayoutItemCount sourceMetrics doc.Styles
-    }
-
-let private tryLayoutCacheEntry (ctx: RenderContext) (doc: Document) =
-    ctx.LayoutCache
-    |> List.tryFind (fun cached ->
-        obj.ReferenceEquals(cached.Document, doc)
-        || layoutInputsEqual cached.LayoutDocument doc)
-    |> Option.map (fun cached ->
-        if not (obj.ReferenceEquals(cached.Document, doc)) then
-            cached.Document <- doc
-            rememberLayoutCacheEntry ctx cached
-        cached)
-
-let private layoutCacheEntryFor (ctx: RenderContext) (doc: Document) =
-    match tryLayoutCacheEntry ctx doc with
-    | Some cached -> cached
-    | None ->
-        let cached = buildLayoutCacheEntry ctx doc
-        rememberLayoutCacheEntry ctx cached
-        cached
-
 let layoutDocument (ctx: RenderContext) (doc: Document) =
-    let cached = buildLayoutCacheEntry ctx doc
-    rememberLayoutCacheEntry ctx cached
-    cached.Layouts
-
-let clearLayoutCache (ctx: RenderContext) =
-    ctx.LayoutCache <- []
+    let layouts = RedBat.Word.Layout.layoutDocumentWithRange (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
+    ctx.LastDocument <- Some doc
+    ctx.LastLayouts <- Some layouts
+    layouts
 
 let cachedLayouts (ctx: RenderContext) (doc: Document) =
-    tryLayoutCacheEntry ctx doc |> Option.map _.Layouts
+    match ctx.LastDocument, ctx.LastLayouts with
+    | Some cachedDoc, Some layouts when obj.ReferenceEquals(cachedDoc, doc) -> Some layouts
+    | _ -> None
 
-let private layoutsFor (ctx: RenderContext) (doc: Document) =
-    (layoutCacheEntryFor ctx doc).Layouts
-
-let private layoutArrayFor (ctx: RenderContext) (doc: Document) =
-    let cached = layoutCacheEntryFor ctx doc
-    match cached.LayoutArray with
-    | Some layoutArray when layoutArray.Length = cached.Layouts.Length -> layoutArray
-    | _ ->
-        let layoutArray = Array.ofList cached.Layouts
-        cached.LayoutArray <- Some layoutArray
-        layoutArray
-
-let private layoutLookupForEntry cached =
-    let dict =
-        match cached.LayoutById with
-        | Some dict when dict.Count = cached.Layouts.Length -> dict
-        | _ ->
-            let dict = layoutDictionary cached.Layouts
-            cached.LayoutById <- Some dict
-            dict
-    fun blockId ->
-        let mutable layout = Unchecked.defaultof<BlockLayout>
-        if dict.TryGetValue(blockId, &layout) then Some layout else None
+let clearLayoutCache (ctx: RenderContext) =
+    ctx.LastDocument <- None
+    ctx.LastLayouts <- None
 
 let layoutLookupFor (ctx: RenderContext) (doc: Document) =
-    layoutLookupForEntry (layoutCacheEntryFor ctx doc)
+    let layouts =
+        cachedLayouts ctx doc
+        |> Option.defaultWith (fun () -> layoutDocument ctx doc)
+    fun blockId ->
+        layouts |> List.tryFind (fun layout -> layout.BlockId = blockId)
 
 let private commentAnchorsForLayouts (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
-    match commentInfos doc with
-    | [] -> []
-    | infos ->
-        let settings = layoutSettings ctx doc
-        let layoutById = Dictionary<string, BlockLayout>()
-        for layout in layouts do
-            if not (layoutById.ContainsKey layout.BlockId) then
-                layoutById.[layout.BlockId] <- layout
-        let calloutX = max (settings.Width - settings.MarginRight + 12.0) (settings.PaddingLeft + 120.0)
+    let settings = layoutSettings ctx doc
+    let layoutById = layouts |> List.map (fun layout -> layout.BlockId, layout) |> Map.ofList
+    let calloutX = max (settings.Width - settings.MarginRight + 12.0) (settings.PaddingLeft + 120.0)
 
-        let isSelected blockId startOffset endOffset =
-            match doc.Selection with
-            | Some selection when selection.Anchor.BlockId = blockId && selection.Focus.BlockId = blockId ->
-                let selectionStart = min selection.Anchor.Offset selection.Focus.Offset
-                let selectionEnd = max selection.Anchor.Offset selection.Focus.Offset
-                selectionStart = startOffset && selectionEnd = endOffset
-            | _ -> false
+    let isSelected blockId startOffset endOffset =
+        match doc.Selection with
+        | Some selection when selection.Anchor.BlockId = blockId && selection.Focus.BlockId = blockId ->
+            let selectionStart = min selection.Anchor.Offset selection.Focus.Offset
+            let selectionEnd = max selection.Anchor.Offset selection.Focus.Offset
+            selectionStart = startOffset && selectionEnd = endOffset
+        | _ -> false
 
-        let anchors = ResizeArray<CommentAnchor>()
-        let measureRange = measureRangeWithContext ctx
-
-        for info in infos do
-            match layoutById.TryGetValue info.BlockId with
-            | false, _ -> ()
-            | true, layout ->
+    let anchors =
+        commentInfos doc
+        |> List.choose (fun info ->
+            match Map.tryFind info.BlockId layoutById with
+            | None -> None
+            | Some layout ->
                 let line = lineForOffset layout info.StartOffset
                 let lineEnd = min info.EndOffset line.EndOffset
-                if lineEnd > info.StartOffset then
+                if lineEnd <= info.StartOffset then None
+                else
                     let lineAlignmentOffset = alignmentOffset layout line
-                    let startX = xForOffsetWithRange measureRange line info.StartOffset
-                    let endX = xForOffsetWithRange measureRange line lineEnd
-                    anchors.Add {
+                    let startX = xForOffsetWithRange (measureRangeWithContext ctx) line info.StartOffset
+                    let endX = xForOffsetWithRange (measureRangeWithContext ctx) line lineEnd
+                    Some {
                         Id = info.Id
                         Text = info.Text
                         Author = info.Author
@@ -1011,73 +195,85 @@ let private commentAnchorsForLayouts (ctx: RenderContext) (doc: Document) (layou
                         CalloutX = calloutX
                         CalloutY = line.Y
                         IsSelected = isSelected info.BlockId info.StartOffset info.EndOffset
-                    }
+                    })
+        |> List.distinctBy (fun anchor -> anchor.Id, anchor.Text)
+        |> List.sortBy (fun anchor -> anchor.Y)
 
-        anchors.Sort(Comparison<CommentAnchor>(fun left right -> compare left.Y right.Y))
-
-        let minGap = 8.0
-        let defaultCalloutHeight = 58.0
-        let stacked = ResizeArray<CommentAnchor>(anchors.Count)
-        let mutable previousBottom = -100000.0
-        for anchor in anchors do
-            let calloutY = max anchor.Y (previousBottom + minGap)
-            stacked.Add { anchor with CalloutY = calloutY }
-            previousBottom <- calloutY + defaultCalloutHeight
-        resizeArrayToList stacked
+    let minGap = 8.0
+    let defaultCalloutHeight = 58.0
+    (([], -100000.0), anchors)
+    ||> List.fold (fun (acc, previousBottom) anchor ->
+        let calloutY = max anchor.Y (previousBottom + minGap)
+        ({ anchor with CalloutY = calloutY } :: acc, calloutY + defaultCalloutHeight))
+    |> fst
+    |> List.rev
 
 let commentAnchors (ctx: RenderContext) (doc: Document) =
-    commentAnchorsForLayouts ctx doc (layoutsFor ctx doc)
+    commentAnchorsForLayouts ctx doc (layoutDocument ctx doc)
 
 let private pageIndexForY settings y =
     let stride = pageHeight settings + pageGap
     int (floor (max 0.0 y / stride))
 
-let private endnoteStartYFromBottom (settings: LayoutSettings) bottom =
+let private endnoteAnchorsForLayouts (layouts: BlockLayout list) =
+    layouts
+    |> List.collect (fun layout ->
+        layout.Lines
+        |> List.collect (fun line ->
+            line.Segments
+            |> List.choose (function
+                | TextSegment (_, style, _, _, _) ->
+                    match style.NoteId, style.NoteType, style.NoteText with
+                    | Some id, Some "endnote", Some text when text <> "" -> Some { Id = id; Text = text }
+                    | _ -> None
+                | ImageSegment _ -> None
+                | MathSegment _ -> None)))
+    |> List.distinctBy _.Id
+
+let private footnoteAnchorsForLayouts (settings: LayoutSettings) (layouts: BlockLayout list) =
+    layouts
+    |> List.collect (fun layout ->
+        layout.Lines
+        |> List.collect (fun line ->
+            line.Segments
+            |> List.choose (function
+                | TextSegment (_, style, _, _, _) ->
+                    match style.NoteId, style.NoteType, style.NoteText with
+                    | Some id, noteType, Some text when noteType |> Option.defaultValue "footnote" = "footnote" && text <> "" ->
+                        Some { Id = id; Text = text; PageIndex = pageIndexForY settings line.Y }
+                    | _ -> None
+                | ImageSegment _ -> None
+                | MathSegment _ -> None)))
+    |> List.distinctBy (fun anchor -> anchor.PageIndex, anchor.Id)
+
+let private bodyBottom (settings: LayoutSettings) (layouts: BlockLayout list) =
+    layouts
+    |> List.map (fun layout -> layout.Y + layout.Height)
+    |> List.fold max settings.PaddingTop
+
+let private endnoteStartY (settings: LayoutSettings) (layouts: BlockLayout list) =
+    let bottom = bodyBottom settings layouts
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) bottom
     let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
     if bottom + 48.0 > contentBottom then WordLayout.Page.advanceToNextPage (pageHeight settings) settings.PaddingTop bottom else bottom + 24.0
 
 let private documentHeightWithNotes (settings: LayoutSettings) (layouts: BlockLayout list) =
-    let mutable bottom = settings.PaddingTop
-    let seenEndnotes = HashSet<string>()
-    let seenFootnotes = HashSet<string>()
-    let mutable endnoteLineCount = 0
-    let footnoteLineCountsByPage = Dictionary<int, int>()
-
-    let addFootnote pageIndex id text =
-        let key = string pageIndex + "\u0000" + id
-        if seenFootnotes.Add key then
-            let added = noteLineCount settings (sprintf "%s. %s" id text)
-            match footnoteLineCountsByPage.TryGetValue pageIndex with
-            | true, existing -> footnoteLineCountsByPage.[pageIndex] <- existing + added
-            | false, _ -> footnoteLineCountsByPage.[pageIndex] <- added
-
-    for layout in layouts do
-        bottom <- max bottom (layout.Y + layout.Height)
-        for line in layout.Lines do
-            let pageIndex = pageIndexForY settings line.Y
-            for segment in line.Segments do
-                match segment with
-                | TextSegment (_, style, _, _, _) ->
-                    match style.NoteId, style.NoteType, style.NoteText with
-                    | Some id, Some "endnote", Some text when text <> "" ->
-                        if seenEndnotes.Add id then
-                            endnoteLineCount <- endnoteLineCount + noteLineCount settings (sprintf "%s. %s" id text)
-                    | Some id, noteType, Some text when noteType |> Option.defaultValue "footnote" = "footnote" && text <> "" ->
-                        addFootnote pageIndex id text
-                    | _ -> ()
-                | ImageSegment _ -> ()
-                | MathSegment _ -> ()
-
+    let bottom = bodyBottom settings layouts
+    let endnotes = endnoteAnchorsForLayouts layouts
     let endnoteBottom =
-        if endnoteLineCount = 0 then bottom
+        if endnotes.IsEmpty then bottom
         else
-            endnoteStartYFromBottom settings bottom + 18.0 + float endnoteLineCount * 13.0
-    let mutable footnoteBottom = bottom
-    for KeyValue(pageIndex, lineCount) in footnoteLineCountsByPage do
-        let pageTop = float pageIndex * (pageHeight settings + pageGap)
-        let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-        footnoteBottom <- max footnoteBottom (contentBottom + 20.0 + float lineCount * 13.0)
+            let lineCount = endnotes |> List.sumBy (fun anchor -> noteLineCount settings (sprintf "%s. %s" anchor.Id anchor.Text))
+            endnoteStartY settings layouts + 18.0 + float lineCount * 13.0
+    let footnoteBottom =
+        footnoteAnchorsForLayouts settings layouts
+        |> List.groupBy _.PageIndex
+        |> List.map (fun (pageIndex, anchors) ->
+            let pageTop = float pageIndex * (pageHeight settings + pageGap)
+            let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+            let lineCount = anchors |> List.sumBy (fun anchor -> noteLineCount settings (sprintf "%s. %s" anchor.Id anchor.Text))
+            contentBottom + 20.0 + float lineCount * 13.0)
+        |> List.fold max bottom
     max endnoteBottom footnoteBottom
 
 let private renderPages (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
@@ -1163,10 +359,9 @@ let private paintCharacterSpacedText (ctx: RenderContext) (text: string) charact
     else
         let mutable cursor = 0.0
         for i in 0 .. text.Length - 1 do
-            let ch = text.[i]
-            let chText = singleCharString ch
-            ctx.Ctx.fillText(chText, cursor, 0.0)
-            cursor <- cursor + ctx.Ctx.measureText(chText).width
+            let ch = text.Substring(i, 1)
+            ctx.Ctx.fillText(ch, cursor, 0.0)
+            cursor <- cursor + ctx.Ctx.measureText(ch).width
             if i < text.Length - 1 || System.Char.IsWhiteSpace text.[i] then
                 cursor <- cursor + characterSpacing
 
@@ -1227,8 +422,8 @@ let private renderPaintCommand (ctx: RenderContext) = function
             fillTextFitted ctx style text x baseline width
     | DrawUnderline (color, lineStyle, x, y, width) ->
         ctx.Ctx.strokeStyle <- U3.Case1 color
-        let hasStylePart part = containsOrdinalIgnoreCase part lineStyle
-        let heavy = hasStylePart "heavy" || equalsOrdinalIgnoreCase lineStyle "thick"
+        let ls = lineStyle.ToLowerInvariant()
+        let heavy = ls.Contains("heavy") || ls = "thick"
         ctx.Ctx.lineWidth <- if heavy then 2.0 else 1.0
         let flat dy =
             ctx.Ctx.beginPath()
@@ -1251,14 +446,14 @@ let private renderPaintCommand (ctx: RenderContext) = function
                 cx <- nx
                 up <- not up
             ctx.Ctx.stroke()
-        if hasStylePart "wav" then
+        if ls.Contains("wav") then
             wavy 0.0
-            if hasStylePart "double" then wavy 2.6
-        elif hasStylePart "dotdotdash" || hasStylePart "dashdotdot" then dashed [|4.0;2.0;1.0;2.0;1.0;2.0|]
-        elif hasStylePart "dotdash" || hasStylePart "dashdot" then dashed [|4.0;2.0;1.0;2.0|]
-        elif hasStylePart "dash" then dashed [|4.0;2.0|]
-        elif hasStylePart "dot" then dashed [|1.0;2.0|]
-        elif equalsOrdinalIgnoreCase lineStyle "double" then
+            if ls.Contains("double") then wavy 2.6
+        elif ls.Contains("dotdotdash") || ls.Contains("dashdotdot") then dashed [|4.0;2.0;1.0;2.0;1.0;2.0|]
+        elif ls.Contains("dotdash") || ls.Contains("dashdot") then dashed [|4.0;2.0;1.0;2.0|]
+        elif ls.Contains("dash") then dashed [|4.0;2.0|]
+        elif ls.Contains("dot") then dashed [|1.0;2.0|]
+        elif ls = "double" then
             flat 0.0
             flat 2.0
         else
@@ -1308,7 +503,8 @@ let private renderCommentAnchors (ctx: RenderContext) (doc: Document) (layouts: 
         renderPaintCommand ctx (FillRect ("rgba(255, 230, 128, 0.42)", anchor.X, anchor.Y, anchor.Width, anchor.Height))
         renderPaintCommand ctx (StrokeRect ("#C79B00", 1.0, anchor.X + 0.5, anchor.Y + 0.5, max 1.0 (anchor.Width - 1.0), max 1.0 (anchor.Height - 1.0))))
 
-let private renderCore (ctx: RenderContext) (doc: Document) =
+/// Render document to canvas
+let render (ctx: RenderContext) (doc: Document) =
     // Clear canvas
     ctx.Ctx.clearRect(0.0, 0.0, ctx.Canvas.width, ctx.Canvas.height)
 
@@ -1317,10 +513,7 @@ let private renderCore (ctx: RenderContext) (doc: Document) =
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
     let settings = layoutSettings ctx doc
-    let cachedEntry = layoutCacheEntryFor ctx doc
-    let cached = cachedEntry.Layouts
-    let layouts, commands, _ =
-        collectDocumentCommandsWithLayouts settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc (Some cached)
+    let layouts, commands, _ = collectDocumentCommands settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc
     renderPages ctx doc layouts
     commands |> List.iter (renderPaintCommand ctx)
     // Footnotes and endnotes are laid out and painted via the shared Layout/Paint
@@ -1330,32 +523,27 @@ let private renderCore (ctx: RenderContext) (doc: Document) =
     // Reset style
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
-    selectionCommandsWithRangeLookup settings (measureRangeWithContext ctx) doc (layoutLookupForEntry cachedEntry)
+    selectionCommandsWithRange settings (measureRangeWithContext ctx) doc layouts
     |> List.iter (renderPaintCommand ctx)
 
     markupMarkerCommands settings layouts
     |> List.iter (renderPaintCommand ctx)
 
-    cachedEntry
-
-/// Render document to canvas
-let render (ctx: RenderContext) (doc: Document) =
-    renderCore ctx doc |> ignore
-
 /// Convert mouse position to document position
 let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) =
-    RedBat.Word.Layout.hitTestLayoutArrayWithRange (measureRangeWithContext ctx) (layoutSettings ctx doc).PaddingLeft (layoutArrayFor ctx doc) mouseX mouseY
+    RedBat.Word.Layout.hitTestWithRange (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
 
 /// Hit test for images - returns blockId, offset, and image dimensions if clicking on an image
 let hitTestForImage (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) : (string * int * float * float * float * float) option =
-    RedBat.Word.Layout.hitTestForImageLayoutArray (layoutSettings ctx doc).PaddingLeft (layoutArrayFor ctx doc) mouseX mouseY
+    RedBat.Word.Layout.hitTestForImage (layoutSettings ctx doc) (measureWithContext ctx) doc mouseX mouseY
 
 /// Render document with hover indicators for images
 let renderWithHover (ctx: RenderContext) (doc: Document) (hoveredImage: (string * int) option) =
     // Render the document normally
-    let cachedEntry = renderCore ctx doc
+    render ctx doc
 
-    hoverCommandsLookup (layoutSettings ctx doc) (layoutLookupForEntry cachedEntry) hoveredImage
+    let layouts = layoutDocument ctx doc
+    hoverCommands (layoutSettings ctx doc) layouts hoveredImage
     |> List.iter (renderPaintCommand ctx)
 
 #else
