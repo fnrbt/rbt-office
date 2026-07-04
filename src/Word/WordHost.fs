@@ -43,9 +43,6 @@ module Host =
         Annotation: WordDialogs.AnnotationState
         mutable FindMatches: obj array
         mutable FindIndex: int
-        mutable FindQuery: string
-        mutable FindMatchCase: bool
-        mutable FindBlocks: Document.Block list option
         Status: Signal<string>
         TrackChanges: Signal<bool>
         StyleCatalogVersion: Signal<int>
@@ -79,9 +76,6 @@ module Host =
         Annotation = WordDialogs.annotationState ()
         FindMatches = [||]
         FindIndex = -1
-        FindQuery = ""
-        FindMatchCase = false
-        FindBlocks = None
         Status = signal "Ready"
         TrackChanges = signal false
         StyleCatalogVersion = signal 0
@@ -104,13 +98,6 @@ module Host =
             match host.Editor with
             | Some editor -> WordApi.getRevisionInfos editor
             | None -> [||]
-
-    let clearFindCache host =
-        host.FindMatches <- [||]
-        host.FindIndex <- -1
-        host.FindQuery <- ""
-        host.FindMatchCase <- false
-        host.FindBlocks <- None
 
     let refreshReviewState host =
         refreshCommentAnchors host
@@ -432,30 +419,16 @@ module Host =
         let state = host.FindReplace
         let query = state.Query.Value
         if System.String.IsNullOrWhiteSpace query then
-            clearFindCache host
+            host.FindMatches <- [||]
+            host.FindIndex <- -1
             state.Result.Value <- "Enter text to find"
             host.Status.Value <- "Enter text to find"
         else
             match host.Editor with
             | None -> ()
             | Some editor ->
-                let matchCase = state.MatchCase.Value
-                let blocks = editor.Doc.Blocks
-                let matches =
-                    match host.FindBlocks with
-                    | Some cachedBlocks
-                        when obj.ReferenceEquals(cachedBlocks, blocks)
-                             && host.FindQuery = query
-                             && host.FindMatchCase = matchCase ->
-                        host.FindMatches
-                    | _ ->
-                        let matches = WordApi.findText editor query matchCase
-                        host.FindMatches <- matches
-                        host.FindQuery <- query
-                        host.FindMatchCase <- matchCase
-                        host.FindBlocks <- Some blocks
-                        host.FindIndex <- -1
-                        matches
+                let matches = WordApi.findText editor query state.MatchCase.Value
+                host.FindMatches <- matches
                 if matches.Length = 0 then
                     host.FindIndex <- -1
                     state.Result.Value <- "No matches"
@@ -477,7 +450,8 @@ module Host =
             | None -> ()
             | Some editor ->
                 let count = WordApi.replaceAllText editor query state.Replacement.Value state.MatchCase.Value
-                clearFindCache host
+                host.FindMatches <- [||]
+                host.FindIndex <- -1
                 state.Result.Value <- sprintf "Replaced %d matches" count
                 host.Status.Value <- state.Result.Value
 

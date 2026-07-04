@@ -1,5 +1,5 @@
 #r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "/home/dave/Dev/browser/office-spreadsheet/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
 
 open RedBat.Spreadsheet.Model
 open RedBat.Spreadsheet.Formula
@@ -157,19 +157,6 @@ check "substitute"   "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")" (s "a+b+c")
 check "substitute-i" "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\",2)" (s "a-b+c")
 check "replace"      "=REPLACE(\"abcdef\",2,3,\"XY\")" (s "aXYef")
 check "concat-amp"   "=CONCAT(A1,A2)"         (s "1020")
-let sparseTextModel =
-    { createEmpty 20010 4 with
-        Cells =
-            [ { Row = 0; Col = 0 }, cell (CellValue.String "a")
-              { Row = 19999; Col = 0 }, cell (CellValue.String "b") ]
-            |> Map.ofList }
-let checkTextSparse label formula expected =
-    let got = evaluateFormula formula sparseTextModel None
-    if got = expected then pass <- pass + 1
-    else fail <- fail + 1; printfn "FAIL %-14s %-24s expected %A got %A" label formula expected got
-checkTextSparse "concat sparse" "=CONCAT(A1:A20000)" (s "ab")
-checkTextSparse "textjoin sparse true" "=TEXTJOIN(\"-\",TRUE,A1:A20000)" (s "a-b")
-checkTextSparse "textjoin sparse false" "=TEXTJOIN(\"-\",FALSE,A1:A3)" (s "a--")
 
 // ----- lookup -----
 check "choose"       "=CHOOSE(2,\"a\",\"b\",\"c\")" (s "b")

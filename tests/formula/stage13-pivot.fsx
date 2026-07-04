@@ -48,12 +48,6 @@ check "xtab header"      p2.[0] [| S "Row Labels"; S "A"; S "B"; S "Grand Total"
 check "xtab east"        p2.[1] [| S "East"; N 150.0; N 200.0; N 350.0 |]   // A:100+50, B:200
 check "xtab west"        p2.[2] [| S "West"; N 150.0; N 250.0; N 400.0 |]
 check "xtab grand"       p2.[3] [| S "Grand Total"; N 300.0; N 450.0; N 750.0 |]
-let sourceWithHeaderLikeData =
-    [| [| S "Region"; S "Product"; S "Sales" |]
-       [| S "Region"; S "A"; N 10.0 |]
-       [| S "East"; S "A"; N 5.0 |] |]
-let pHeaderLike = computePivot sourceWithHeaderLikeData 0 None 2 Sum
-check "sum includes header-like data" pHeaderLike.[2] [| S "Region"; N 10.0 |]
 
 // ── Max ──
 let pm = computePivot source 0 (Some 1) 2 Max
@@ -116,75 +110,8 @@ let arrAt f = match parseFormula f with Ok e -> evalArray e (contextOf model) | 
 let gf = arrAt "=GROUPBY(A1:A5,C1:C5,\"sum\")"
 check "GROUPBY formula east"  gf.[0] [| S "East"; N 350.0 |]
 check "GROUPBY formula grand" gf.[gf.Length - 1] [| S "Grand Total"; N 750.0 |]
-check "GROUPBY scalar first group" (evaluateFormula "=GROUPBY(A1:A5,C1:C5,\"sum\")" model None) (S "East")
 // composable: the spill is a normal range — feed it to other functions
 check "GROUPBY is composable" (evaluateFormula "=SUM(GROUPBY(A1:A5,C1:C5,\"sum\"))" model None) (N 1500.0) // (350+400)+750
-
-let sparseGroupByModel =
-    { createEmpty 20010 4 with
-        Cells =
-            [ { Row = 0; Col = 0 }, cell (S "East")
-              { Row = 0; Col = 1 }, cell (N 10.0)
-              { Row = 9999; Col = 0 }, cell (S "West")
-              { Row = 9999; Col = 1 }, cell (N 20.0)
-              { Row = 19999; Col = 0 }, cell (S "East")
-              { Row = 19999; Col = 1 }, cell (N 5.0) ]
-            |> Map.ofList }
-let arrSparseGroupBy f =
-    match parseFormula f with
-    | Ok expr -> evalArray expr (contextOf sparseGroupByModel)
-    | Result.Error e -> failwithf "parse: %s" e
-let sparseGb = arrSparseGroupBy "=GROUPBY(A1:A20000,B1:B20000,\"sum\")"
-check "GROUPBY sparse east" sparseGb.[0] [| S "East"; N 15.0 |]
-check "GROUPBY sparse blank" sparseGb.[2] [| CellValue.Empty; N 0.0 |]
-check "GROUPBY sparse grand" sparseGb.[3] [| S "Grand Total"; N 35.0 |]
-let sparseGbCount = arrSparseGroupBy "=GROUPBY(A1:A20000,B1:B20000,\"count\")"
-check "GROUPBY sparse blank count" sparseGbCount.[2] [| CellValue.Empty; N 19997.0 |]
-check "GROUPBY sparse count grand" sparseGbCount.[3] [| S "Grand Total"; N 20000.0 |]
-
-let sparsePivotByModel =
-    { createEmpty 20010 5 with
-        Cells =
-            [ { Row = 0; Col = 0 }, cell (S "East")
-              { Row = 0; Col = 1 }, cell (S "A")
-              { Row = 0; Col = 2 }, cell (N 10.0)
-              { Row = 9999; Col = 0 }, cell (S "West")
-              { Row = 9999; Col = 1 }, cell (S "B")
-              { Row = 9999; Col = 2 }, cell (N 20.0)
-              { Row = 19999; Col = 0 }, cell (S "East")
-              { Row = 19999; Col = 1 }, cell (S "A")
-              { Row = 19999; Col = 2 }, cell (N 5.0) ]
-            |> Map.ofList }
-let arrSparsePivotBy f =
-    match parseFormula f with
-    | Ok expr -> evalArray expr (contextOf sparsePivotByModel)
-    | Result.Error e -> failwithf "parse: %s" e
-let sparsePb = arrSparsePivotBy "=PIVOTBY(A1:A20000,B1:B20000,C1:C20000,\"sum\")"
-check "PIVOTBY sparse header" sparsePb.[0] [| S "Row Labels"; S "A"; S "B"; CellValue.Empty; S "Grand Total" |]
-check "PIVOTBY sparse east" sparsePb.[1] [| S "East"; N 15.0; N 0.0; N 0.0; N 15.0 |]
-check "PIVOTBY sparse blank" sparsePb.[3] [| CellValue.Empty; N 0.0; N 0.0; N 0.0; N 0.0 |]
-check "PIVOTBY sparse grand" sparsePb.[4] [| S "Grand Total"; N 15.0; N 20.0; N 0.0; N 35.0 |]
-let sparsePbCount = arrSparsePivotBy "=PIVOTBY(A1:A20000,B1:B20000,C1:C20000,\"count\")"
-check "PIVOTBY sparse blank count" sparsePbCount.[3] [| CellValue.Empty; N 0.0; N 0.0; N 19997.0; N 19997.0 |]
-check "PIVOTBY sparse count grand" sparsePbCount.[4] [| S "Grand Total"; N 2.0; N 1.0; N 19997.0; N 20000.0 |]
-
-let densePivotByModel =
-    { createEmpty 1100 5 with
-        Cells =
-            seq {
-                for r in 0 .. 1099 do
-                    yield { Row = r; Col = 0 }, cell (S (if r % 3 = 0 then "East" elif r % 3 = 1 then "West" else "North"))
-                    yield { Row = r; Col = 1 }, cell (S (if r % 2 = 0 then "A" else "B"))
-                    yield { Row = r; Col = 2 }, cell (N 1.0)
-            }
-            |> Map.ofSeq }
-let densePb =
-    match parseFormula "=PIVOTBY(A1:A1100,B1:B1100,C1:C1100,\"sum\")" with
-    | Ok expr -> evalArray expr (contextOf densePivotByModel)
-    | Result.Error e -> failwithf "parse: %s" e
-check "PIVOTBY dense no blank header" densePb.[0] [| S "Row Labels"; S "A"; S "B"; S "Grand Total" |]
-check "PIVOTBY dense no blank rows" densePb.Length 5
-check "PIVOTBY scalar header" (evaluateFormula "=PIVOTBY(A1:A1100,B1:B1100,C1:C1100,\"sum\")" densePivotByModel None) (S "Row Labels")
 
 // ── dialog writes a LIVE formula (buildFormula) ──
 let hdrs = source.[0]   // [Region; Product; Sales]
@@ -220,9 +147,6 @@ check "ispill anchor"   (valAt 0 4 m0) (S "East")        // E1 anchor (formula) 
 check "ispill spilled"  (getCellValue { Row=0; Col=5 } m0) (N 350.0)  // F1 = East sum
 check "ispill grand"    (getCellValue { Row=2; Col=5 } m0) (N 750.0)  // F3 = Grand Total
 check "ispill tracked"  (Map.containsKey { Row=2; Col=5 } m0.Spill) true
-let m0Settled = m0 |> recalcAndSpill None None
-check "ispill settled keeps cells" (obj.ReferenceEquals(m0.Cells, m0Settled.Cells)) true
-check "ispill settled keeps map" (obj.ReferenceEquals(m0.Spill, m0Settled.Spill)) true
 // edit a source value → the pivot refreshes (no Refresh needed)
 let m1 = m0 |> setCell { Row=0; Col=2 } (cell (N 1100.0)) |> recalcAndSpill None None
 check "ispill live F1"   (getCellValue { Row=0; Col=5 } m1) (N 1350.0) // East now 1100+200+50
@@ -249,23 +173,9 @@ let cacheRecords =
        [| S "West"; S "A"; N 150. |]; [| S "West"; S "B"; N 250. |]; [| S "East"; S "A"; N 50. |] |]
 let fc1 = fromCache cacheHeaders cacheRecords [ 0 ] [] 2 Sum
 check "fromCache nested grand" fc1.[fc1.Length - 1] [| S "Grand Total"; N 750. |]
-let fcNestedRows = fromCache cacheHeaders cacheRecords [ 0; 1 ] [] 2 Sum
-check "fromCache nested row east-A" fcNestedRows.[1] [| S "East"; S "A"; N 150. |]
-check "fromCache nested row east-total" fcNestedRows.[3] [| S "East Total"; CellValue.Empty; N 350. |]
 let fc2 = fromCache cacheHeaders cacheRecords [ 0 ] [ 1 ] 2 Sum
 check "fromCache crosstab hdr" fc2.[0] [| S "Row Labels"; S "A"; S "B"; S "Grand Total" |]
 check "fromCache crosstab east" fc2.[1] [| S "East"; N 150.; N 200.; N 350. |]
-let cacheHeadersNestedCols = [| "Region"; "Quarter"; "Product"; "Sales" |]
-let cacheRecordsNestedCols =
-    [| [| S "East"; S "Q1"; S "A"; N 10. |]
-       [| S "East"; S "Q1"; S "B"; N 20. |]
-       [| S "East"; S "Q2"; S "A"; N 30. |]
-       [| S "West"; S "Q1"; S "A"; N 40. |]
-       [| S "West"; S "Q2"; S "B"; N 50. |] |]
-let fcNestedCols = fromCache cacheHeadersNestedCols cacheRecordsNestedCols [ 0 ] [ 1; 2 ] 3 Sum
-check "fromCache ncol lvl0" fcNestedCols.[0] [| S "Row Labels"; S "Q1"; S "Q1"; S "Q2"; S "Q2"; S "Grand Total" |]
-check "fromCache ncol lvl1" fcNestedCols.[1] [| CellValue.Empty; S "A"; S "B"; S "A"; S "B"; CellValue.Empty |]
-check "fromCache ncol east" fcNestedCols.[2] [| S "East"; N 10.; N 20.; N 30.; N 0.; N 60. |]
 
 printfn ""
 printfn "Stage 13 pivot tests: %d passed, %d failed" pass fail

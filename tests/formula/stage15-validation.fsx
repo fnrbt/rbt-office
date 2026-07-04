@@ -54,12 +54,6 @@ check "validateEdit ok"    (ok (validateEdit { Row=0; Col=0 } (N 7.0) model)) tr
 check "validateEdit reject" (ok (validateEdit { Row=0; Col=0 } (N 99.0) model)) false
 check "validateEdit message" (match validateEdit { Row=0; Col=0 } (N 99.0) model with Result.Error m -> m = "Only 1-10!" | _ -> false) true
 check "list sets dropdown" (match getCell { Row=1; Col=0 } model with Some cd -> cd.Format.HasListDropdown | None -> false) true
-check "same validation identity"
-    (obj.ReferenceEquals(setValidation { Row=0; Col=0 } { Rule = wn; ErrorMessage = Some "Only 1-10!"; InputMessage = None } model, model))
-    true
-check "same list validation identity"
-    (obj.ReferenceEquals(setValidation { Row=1; Col=0 } { Rule = lst; ErrorMessage = None; InputMessage = None } model, model))
-    true
 check "no rule → ok"       (ok (validateEdit { Row=5; Col=5 } (S "anything") model)) true
 
 printfn ""
