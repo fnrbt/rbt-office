@@ -147,13 +147,13 @@ async function runWordWorkflows(page, cdp) {
         const line = lines[i % lines.length];
         const info = window.rbWordRunner.getRangeInformation(line.BlockId, line.StartOffset, line.EndOffset);
         const stats = window.rbWordRunner.computeRangeStatistics(line.BlockId, line.StartOffset, line.EndOffset);
-        checksum += (info?.wdActiveEndPageNumber ?? 0) + (stats?.Words ?? 0) + (stats?.Characters ?? 0);
+      checksum += (info?.wdActiveEndPageNumber ?? 0) + (stats?.Words ?? 0) + (stats?.Characters ?? 0);
       }
       return {
         iterations,
         sampleLines: lines.length,
-        durationMs: performance.now() - started,
-        checksum
+      durationMs: performance.now() - started,
+      checksum
       };
     }, { iterations: 5000 }));
 
@@ -162,55 +162,56 @@ async function runWordWorkflows(page, cdp) {
       let checksum = 0;
       const started = performance.now();
       for (let i = 0; i < iterations; i++) {
-        checksum += window.rbWordRunner.findText('invoice', false).length;
-        checksum += window.rbWordRunner.findText('total', false).length;
-        checksum += window.rbWordRunner.replaceAllText('__missing_browser_perf__', 'x', false);
+      checksum += window.rbWordRunner.findText('invoice', false).length;
+      checksum += window.rbWordRunner.findText('total', false).length;
+      checksum += window.rbWordRunner.replaceAllText('__missing_browser_perf__', 'x', false);
       }
       return {
         iterations,
-        durationMs: performance.now() - started,
-        checksum
+      durationMs: performance.now() - started,
+      checksum
       };
     }, { iterations: 1000 }));
 
-  const editCycle = await measure(page, cdp, 'word.synthetic-edit-cycle', () =>
-    page.evaluate(({ iterations }) => {
-      const paragraph = 'browser perf paragraph alpha beta gamma delta epsilon ';
-      const content = Array.from({ length: 180 }, (_, i) => `${i}: ${paragraph}${i % 7}`).join('\n');
-      window.rbWordRunner.setContent(content);
+    const editCycle = await measure(page, cdp, 'word.synthetic-edit-cycle', () =>
+      page.evaluate(({ iterations }) => {
+        const paragraph = 'browser perf paragraph alpha beta gamma delta epsilon ';
+        const content = Array.from({ length: 300 }, (_, i) => `${i}: ${paragraph}${i % 7}`).join('\n');
+        const replacements = ['theta', 'lambda', 'sigma', 'omega', 'kappa', 'zeta'];
+        window.rbWordRunner.setContent(content);
       let checksum = 0;
-      let findTextMs = 0;
-      let selectMatchMs = 0;
-      let insertTextMs = 0;
-      let getTextMs = 0;
+        let findTextMs = 0;
+        let selectMatchMs = 0;
+        let insertTextMs = 0;
+        let getTextMs = 0;
       const started = performance.now();
-      for (let i = 0; i < iterations; i++) {
-        let t = performance.now();
-        const matches = window.rbWordRunner.findText('gamma', false);
-        findTextMs += performance.now() - t;
-        if (!matches.length) throw new Error('Word edit workflow could not find insertion target');
-        const match = matches[i % matches.length];
-        t = performance.now();
-        window.rbWordRunner.selectFindMatch(match);
-        selectMatchMs += performance.now() - t;
-        t = performance.now();
-        window.rbWordRunner.insertTextAt('gamma');
-        insertTextMs += performance.now() - t;
-        t = performance.now();
-        checksum += window.rbWordRunner.getText().length;
-        getTextMs += performance.now() - t;
+        for (let i = 0; i < iterations; i++) {
+          let t = performance.now();
+          const matches = window.rbWordRunner.findText('gamma', false);
+          findTextMs += performance.now() - t;
+          if (!matches.length) throw new Error('Word edit workflow could not find insertion target');
+          const match = matches[i % matches.length];
+          t = performance.now();
+          window.rbWordRunner.selectFindMatch(match);
+          selectMatchMs += performance.now() - t;
+          t = performance.now();
+          window.rbWordRunner.insertTextAt(replacements[i % replacements.length]);
+          insertTextMs += performance.now() - t;
+          t = performance.now();
+          checksum += window.rbWordRunner.getText().length;
+          getTextMs += performance.now() - t;
       }
       return {
-        iterations,
-        durationMs: performance.now() - started,
-        findTextMs,
-        selectMatchMs,
-        insertTextMs,
-        getTextMs,
-        checksum,
-        finalTextLength: window.rbWordRunner.getText().length
+          iterations,
+          durationMs: performance.now() - started,
+          findTextMs,
+          selectMatchMs,
+          insertTextMs,
+          getTextMs,
+          checksum,
+          finalTextLength: window.rbWordRunner.getText().length
       };
-    }, { iterations: 240 }));
+      }, { iterations: 240 }));
 
   return [rangeQueries, findReplace, editCycle];
 }
@@ -246,22 +247,27 @@ async function runSpreadsheetWorkflows(page, cdp) {
       const importMs = performance.now() - started;
 
       let checksum = 0;
-      let usedBoundsMs = 0;
-      let searchCellsMs = 0;
-      let uniqueValueCountMs = 0;
+      let queryEditMs = 0;
+      let usedBoundsAfterEditMs = 0;
+      let searchCellsAfterEditMs = 0;
+      let uniqueValueCountAfterEditMs = 0;
       let t = performance.now();
+      let queryModel = model;
       for (let i = 0; i < 160; i++) {
-        let step = performance.now();
-        checksum += Model.usedBounds(model)?.[0] ?? 0;
-        usedBoundsMs += performance.now() - step;
-        step = performance.now();
-        checksum += Model.searchCells('needle', false, model).length;
-        searchCellsMs += performance.now() - step;
-        step = performance.now();
-        checksum += Model.columnUniqueValueCount(0, model);
-        uniqueValueCountMs += performance.now() - step;
+          let step = performance.now();
+          queryModel = Model.importCSV(`query-scratch-${i}`, 1, 5, queryModel);
+          queryEditMs += performance.now() - step;
+          step = performance.now();
+          checksum += Model.usedBounds(queryModel)?.[0] ?? 0;
+          usedBoundsAfterEditMs += performance.now() - step;
+          step = performance.now();
+          checksum += Model.searchCells('needle', false, queryModel).length;
+          searchCellsAfterEditMs += performance.now() - step;
+          step = performance.now();
+          checksum += Model.columnUniqueValueCount(0, queryModel);
+          uniqueValueCountAfterEditMs += performance.now() - step;
       }
-      const queryMs = performance.now() - t;
+      const queryAfterEditMs = performance.now() - t;
 
       t = performance.now();
       const filtered = Model.applyFilterValues(0, visibleValues, model);
@@ -286,98 +292,126 @@ async function runSpreadsheetWorkflows(page, cdp) {
       const hotFilterReadIterations = 400;
       t = performance.now();
       for (let i = 0; i < hotFilterReadIterations; i++) {
-        checksum += Model.visibleRowCount(filtered);
+      checksum += Model.visibleRowCount(filtered);
       }
       const visibleRowsHotMs = performance.now() - t;
 
       t = performance.now();
       for (let i = 0; i < hotFilterReadIterations; i++) {
-        checksum += Model.applyFilterRowHeights(filtered).FilterHiddenRows.length;
+          checksum += Model.applyFilterRowHeights(filtered).FilterHiddenRows.length;
       }
       const filterProjectionHotMs = performance.now() - t;
 
-      const filterToggleIterations = 30;
-      let filterToggleApplyMs = 0;
-      let filterToggleVisibleRowsMs = 0;
-      let filterToggleRowHeightsMs = 0;
+      const filterAfterEditIterations = 30;
+      let filterEditMs = 0;
+      let filterApplyAfterEditMs = 0;
+      let filterVisibleRowsAfterEditMs = 0;
+      let filterProjectionAfterEditMs = 0;
       t = performance.now();
-      for (let i = 0; i < filterToggleIterations; i++) {
-        let step = performance.now();
-        const toggled = Model.applyFilterValues(0, visibleValues, model);
-        filterToggleApplyMs += performance.now() - step;
-        step = performance.now();
-        checksum += Model.visibleRowCount(toggled);
-        filterToggleVisibleRowsMs += performance.now() - step;
-        step = performance.now();
-        checksum += Model.applyFilterRowHeights(toggled).FilterHiddenRows.length;
-        filterToggleRowHeightsMs += performance.now() - step;
+      let filterModel = model;
+      for (let i = 0; i < filterAfterEditIterations; i++) {
+          let step = performance.now();
+          filterModel = Model.importCSV(`filter-scratch-${i}`, 1, 5, filterModel);
+          filterEditMs += performance.now() - step;
+          step = performance.now();
+          const filteredAfterEdit = Model.applyFilterValues(0, visibleValues, filterModel);
+          filterApplyAfterEditMs += performance.now() - step;
+          step = performance.now();
+          const visibleRowsAfterEdit = Model.visibleRowCount(filteredAfterEdit);
+          if (visibleRowsAfterEdit !== expectedVisibleRows) {
+            throw new Error(`unexpected edited filter result: visible ${visibleRowsAfterEdit}/${expectedVisibleRows}`);
+          }
+          checksum += visibleRowsAfterEdit;
+          filterVisibleRowsAfterEditMs += performance.now() - step;
+          step = performance.now();
+          const hiddenRowsAfterEdit = Model.applyFilterRowHeights(filteredAfterEdit).FilterHiddenRows.length;
+          if (hiddenRowsAfterEdit !== expectedHiddenRows) {
+            throw new Error(`unexpected edited filter projection: hidden ${hiddenRowsAfterEdit}/${expectedHiddenRows}`);
+          }
+          checksum += hiddenRowsAfterEdit;
+          filterProjectionAfterEditMs += performance.now() - step;
       }
-      const filterToggleProjectionMs = performance.now() - t;
+      const filterAfterEditMs = performance.now() - t;
 
-      const filterMs =
-        filterApplyFirstMs
-        + visibleRowsFirstMs
-        + filterProjectionFirstMs
-        + visibleRowsHotMs
-        + filterProjectionHotMs
-        + filterToggleProjectionMs;
+      const filterReadMs =
+          filterApplyFirstMs
+          + visibleRowsFirstMs
+          + filterProjectionFirstMs
+          + visibleRowsHotMs
+          + filterProjectionHotMs;
 
-      let clearSelectionMs = 0;
-      let exportCsvMs = 0;
+      let exportEditMs = 0;
+      let clearSelectionAfterEditMs = 0;
+      let exportCsvAfterEditMs = 0;
       t = performance.now();
+      let exportModel = model;
       for (let i = 0; i < 24; i++) {
-        const selection = new Model.Selection$(1, [50, 0, 900, 5]);
-        let step = performance.now();
-        const cleared = Model.clearSelectionCells(selection, model);
-        clearSelectionMs += performance.now() - step;
-        step = performance.now();
-        checksum += Model.exportCSV(cleared).length;
-        exportCsvMs += performance.now() - step;
+          const selection = new Model.Selection$(1, [50, 0, 900, 5]);
+          let step = performance.now();
+          exportModel = Model.importCSV(`export-scratch-${i}`, 1, 5, exportModel);
+          exportEditMs += performance.now() - step;
+          step = performance.now();
+          const cleared = Model.clearSelectionCells(selection, exportModel);
+          clearSelectionAfterEditMs += performance.now() - step;
+          step = performance.now();
+          checksum += Model.exportCSV(cleared).length;
+          exportCsvAfterEditMs += performance.now() - step;
       }
-      const clearExportMs = performance.now() - t;
+      const clearExportAfterEditMs = performance.now() - t;
 
-      let recalcAndSpillMs = 0;
-      let recalcSearchMs = 0;
+      let formulaEditMs = 0;
+      let recalcAndSpillAfterEditMs = 0;
+      let recalcSearchAfterEditMs = 0;
       t = performance.now();
+      let recalcModel = model;
       for (let i = 0; i < 30; i++) {
-        let step = performance.now();
-        const recalculated = Formula.recalcAndSpill(undefined, undefined, model);
-        recalcAndSpillMs += performance.now() - step;
-        step = performance.now();
-        checksum += Model.searchCells('5400', false, recalculated).length;
-        recalcSearchMs += performance.now() - step;
+          let step = performance.now();
+          const formula = i % 2 === 0 ? '=C3+D3' : '=C2+D2';
+          recalcModel = Model.importCSV(formula, 1, 4, recalcModel);
+          formulaEditMs += performance.now() - step;
+          step = performance.now();
+          const recalculated = Formula.recalcAndSpill(undefined, undefined, recalcModel);
+          recalcAndSpillAfterEditMs += performance.now() - step;
+          step = performance.now();
+          checksum += Model.searchCells('5400', false, recalculated).length;
+          recalcSearchAfterEditMs += performance.now() - step;
+          recalcModel = recalculated;
       }
-      const recalcMs = performance.now() - t;
+      const recalcAfterEditMs = performance.now() - t;
 
       return {
-        durationMs: performance.now() - started,
-        rows: rows.length,
-        importMs,
-        queryMs,
-        usedBoundsMs,
-        searchCellsMs,
-        uniqueValueCountMs,
-        filterMs,
-        filterApplyFirstMs,
-        visibleRowsFirstMs,
-        filterProjectionFirstMs,
-        visibleRowsHotMs,
-        filterProjectionHotMs,
-        filterToggleProjectionMs,
-        filterToggleApplyMs,
-        filterToggleVisibleRowsMs,
-        filterToggleRowHeightsMs,
-        hotFilterReadIterations,
-        filterToggleIterations,
-        filteredRowCount,
-        hiddenRowCount,
-        clearExportMs,
-        clearSelectionMs,
-        exportCsvMs,
-        recalcMs,
-        recalcAndSpillMs,
-        recalcSearchMs,
-        checksum
+          durationMs: performance.now() - started,
+          rows: rows.length,
+          importMs,
+          queryAfterEditMs,
+          queryEditMs,
+          usedBoundsAfterEditMs,
+          searchCellsAfterEditMs,
+          uniqueValueCountAfterEditMs,
+          filterReadMs,
+          filterApplyFirstMs,
+          visibleRowsFirstMs,
+          filterProjectionFirstMs,
+          visibleRowsHotMs,
+          filterProjectionHotMs,
+          filterAfterEditMs,
+          filterEditMs,
+          filterApplyAfterEditMs,
+          filterVisibleRowsAfterEditMs,
+          filterProjectionAfterEditMs,
+          hotFilterReadIterations,
+          filterAfterEditIterations,
+          filteredRowCount,
+          hiddenRowCount,
+          clearExportAfterEditMs,
+          exportEditMs,
+          clearSelectionAfterEditMs,
+          exportCsvAfterEditMs,
+          recalcAfterEditMs,
+          formulaEditMs,
+          recalcAndSpillAfterEditMs,
+          recalcSearchAfterEditMs,
+          checksum
       };
     }, { moduleBase }));
 
@@ -408,39 +442,45 @@ async function runSpreadsheetWorkflows(page, cdp) {
       const importMs = performance.now() - started;
 
       let checksum = 0;
-      let realUsedBoundsMs = 0;
-      let realSearchCellsMs = 0;
-      let realExportCsvMs = 0;
+      let realQueryEditMs = 0;
+      let realUsedBoundsAfterEditMs = 0;
+      let realSearchCellsAfterEditMs = 0;
+      let realExportCsvAfterEditMs = 0;
       const queryStarted = performance.now();
+      let queryModel = model;
       for (let i = 0; i < 80; i++) {
-        let step = performance.now();
-        checksum += Model.usedBounds(model)?.[0] ?? 0;
-        realUsedBoundsMs += performance.now() - step;
-        step = performance.now();
-        checksum += Model.searchCells('total', false, model).length;
-        realSearchCellsMs += performance.now() - step;
-        step = performance.now();
-        checksum += Model.exportCSV(model).length;
-        realExportCsvMs += performance.now() - step;
+          let step = performance.now();
+          queryModel = Model.importCSV(`real-scratch-${i}`, 0, 0, queryModel);
+          realQueryEditMs += performance.now() - step;
+          step = performance.now();
+          checksum += Model.usedBounds(queryModel)?.[0] ?? 0;
+          realUsedBoundsAfterEditMs += performance.now() - step;
+          step = performance.now();
+          checksum += Model.searchCells('total', false, queryModel).length;
+          realSearchCellsAfterEditMs += performance.now() - step;
+          step = performance.now();
+          checksum += Model.exportCSV(queryModel).length;
+          realExportCsvAfterEditMs += performance.now() - step;
       }
-      const queryMs = performance.now() - queryStarted;
+      const queryAfterEditMs = performance.now() - queryStarted;
 
       return {
-        durationMs: performance.now() - started,
-        importMs,
-        fetchMs,
-        importFromBufferMs,
-        workbookLoadMs,
-        sheetImportMs,
-        queryMs,
-        usedBoundsMs: realUsedBoundsMs,
-        searchCellsMs: realSearchCellsMs,
-        exportCsvMs: realExportCsvMs,
-        loadedSheetCount: excelApi.sheetNames(workbook).length,
-        sourceCellCount: Model.cellCount(model),
-        rowCount: model.RowCount,
+          durationMs: performance.now() - started,
+          importMs,
+          fetchMs,
+          importFromBufferMs,
+          workbookLoadMs,
+          sheetImportMs,
+          queryAfterEditMs,
+          queryEditMs: realQueryEditMs,
+          usedBoundsAfterEditMs: realUsedBoundsAfterEditMs,
+          searchCellsAfterEditMs: realSearchCellsAfterEditMs,
+          exportCsvAfterEditMs: realExportCsvAfterEditMs,
+          loadedSheetCount: excelApi.sheetNames(workbook).length,
+          sourceCellCount: Model.cellCount(model),
+          rowCount: model.RowCount,
         colCount: model.ColCount,
-        checksum
+      checksum
       };
     }, { moduleBase, xlsxUrl: fsUrl(xlsxFixture) }));
 

@@ -2,7 +2,6 @@ module RedBat.Word.WordLayout
 
 open System
 open System.Collections.Generic
-open System.Runtime.CompilerServices
 open RedBat.Word.Document
 open RedBat.Word.TextBuffer
 
@@ -135,312 +134,7 @@ module Page =
             | Table _
             | TextBox _ -> None)
 
-    type private HeaderFooterPartLookup = {
-        Parts: HeaderFooterPart list
-        PartCount: int
-        PartParagraphCount: int
-        PartTextCharCount: int
-        ByKind: Dictionary<string, HeaderFooterPart>
-        ByRelationshipId: Dictionary<string, HeaderFooterPart>
-    }
-
-    let mutable private headerFooterPartLookupCache: HeaderFooterPartLookup list = []
-    let private headerFooterPartLookupCacheByParts =
-        Dictionary<HeaderFooterPart list, HeaderFooterPartLookup>(
-            { new IEqualityComparer<HeaderFooterPart list> with
-                member _.Equals(left, right) = obj.ReferenceEquals(left, right)
-                member _.GetHashCode(value) = RuntimeHelpers.GetHashCode(value) })
-    let private headerFooterPartLookupFastSlots = Array.zeroCreate<HeaderFooterPartLookup> 256
-    let private headerFooterPartLookupCacheMaxEntries = 256
-    let private headerFooterPartLookupCacheMaxTotalParts = 200000
-    let private headerFooterPartLookupCacheMaxTotalPartParagraphs = 100000
-    let private headerFooterPartLookupCacheMaxTotalPartTextChars = 5000000
-
-    let private addHeaderFooterPartTextChars value total =
-        let limit = headerFooterPartLookupCacheMaxTotalPartTextChars
-        if total > limit then total
-        else min (limit + 1) (total + max 0 value)
-
-    let private countHeaderFooterTableParagraphs (table: TableBlock) =
-        let mutable count = 0
-        let mutable visitedItems = 0
-        let canContinue () =
-            count <= headerFooterPartLookupCacheMaxTotalPartParagraphs
-            && visitedItems <= headerFooterPartLookupCacheMaxTotalPartParagraphs
-        let visitItem () =
-            visitedItems <- visitedItems + 1
-        let addParagraphs (paragraphs: ParagraphBlock list) =
-            let mutable remaining = paragraphs
-            while canContinue () && not remaining.IsEmpty do
-                count <- count + 1
-                remaining <- remaining.Tail
-        let tables = Stack<TableBlock>()
-        tables.Push table
-        while canContinue () && tables.Count > 0 do
-            let table = tables.Pop()
-            visitItem ()
-            let mutable rows = table.Rows
-            while canContinue () && not rows.IsEmpty do
-                let row = rows.Head
-                visitItem ()
-                let mutable cells = row.Cells
-                while canContinue () && not cells.IsEmpty do
-                    let cell = cells.Head
-                    visitItem ()
-                    addParagraphs cell.Content
-                    let mutable nestedTables = cell.NestedTables
-                    while canContinue () && not nestedTables.IsEmpty do
-                        tables.Push nestedTables.Head
-                        nestedTables <- nestedTables.Tail
-                    cells <- cells.Tail
-                rows <- rows.Tail
-        if visitedItems > headerFooterPartLookupCacheMaxTotalPartParagraphs then
-            headerFooterPartLookupCacheMaxTotalPartParagraphs + 1
-        else
-            min count (headerFooterPartLookupCacheMaxTotalPartParagraphs + 1)
-
-    let private countHeaderFooterParagraphs (paragraphs: ParagraphBlock list) =
-        let mutable count = 0
-        let mutable remaining = paragraphs
-        while count <= headerFooterPartLookupCacheMaxTotalPartParagraphs && not remaining.IsEmpty do
-            count <- count + 1
-            remaining <- remaining.Tail
-        min count (headerFooterPartLookupCacheMaxTotalPartParagraphs + 1)
-
-    let private countHeaderFooterBlockParagraphs (block: Block) =
-        match block with
-        | Paragraph _
-        | Heading _ ->
-            1
-        | Table table ->
-            countHeaderFooterTableParagraphs table
-        | TextBox textBox ->
-            countHeaderFooterParagraphs textBox.Content
-
-    let private countHeaderFooterPartParagraphs (parts: HeaderFooterPart list) =
-        let mutable count = 0
-        let mutable remainingParts = parts
-        while count <= headerFooterPartLookupCacheMaxTotalPartParagraphs && not remainingParts.IsEmpty do
-            let mutable blocks = remainingParts.Head.Blocks
-            while count <= headerFooterPartLookupCacheMaxTotalPartParagraphs && not blocks.IsEmpty do
-                count <- count + countHeaderFooterBlockParagraphs blocks.Head
-                blocks <- blocks.Tail
-            remainingParts <- remainingParts.Tail
-        min count (headerFooterPartLookupCacheMaxTotalPartParagraphs + 1)
-
-    let private countHeaderFooterPartParagraphsFor partCount parts =
-        if partCount > headerFooterPartLookupCacheMaxTotalParts then
-            headerFooterPartLookupCacheMaxTotalPartParagraphs + 1
-        else
-            countHeaderFooterPartParagraphs parts
-
-    let private countHeaderFooterPartMetadataTextChars (parts: HeaderFooterPart list) =
-        let limit = headerFooterPartLookupCacheMaxTotalPartTextChars + 1
-        let mutable total = 0
-        let mutable remainingParts = parts
-        while total <= headerFooterPartLookupCacheMaxTotalPartTextChars && not remainingParts.IsEmpty do
-            let part = remainingParts.Head
-            total <- addHeaderFooterPartTextChars part.Kind.Length total
-            match part.RelationshipId with
-            | Some relationshipId ->
-                total <- addHeaderFooterPartTextChars relationshipId.Length total
-            | None -> ()
-            remainingParts <- remainingParts.Tail
-        min total limit
-
-    let private countHeaderFooterPartMetadataTextCharsFor partCount parts =
-        if partCount > headerFooterPartLookupCacheMaxTotalParts then
-            headerFooterPartLookupCacheMaxTotalPartTextChars + 1
-        else
-            countHeaderFooterPartMetadataTextChars parts
-
-    let private countHeaderFooterPartBlocksTextChars initialTextChars (parts: HeaderFooterPart list) =
-        let limit = headerFooterPartLookupCacheMaxTotalPartTextChars + 1
-        let mutable total = initialTextChars
-        let mutable visitedItems = 0
-        let canContinue () =
-            total <= headerFooterPartLookupCacheMaxTotalPartTextChars
-            && visitedItems <= headerFooterPartLookupCacheMaxTotalPartParagraphs
-        let visitItem () =
-            visitedItems <- visitedItems + 1
-        let addParagraph paragraph =
-            if canContinue () then
-                visitItem ()
-                total <- addHeaderFooterPartTextChars (length paragraph.Buffer) total
-        let addTable table =
-            let tables = Stack<TableBlock>()
-            tables.Push table
-            while tables.Count > 0 && canContinue () do
-                let table = tables.Pop()
-                visitItem ()
-                let mutable rows = table.Rows
-                while canContinue () && not rows.IsEmpty do
-                    let row = rows.Head
-                    visitItem ()
-                    let mutable cells = row.Cells
-                    while canContinue () && not cells.IsEmpty do
-                        let cell = cells.Head
-                        visitItem ()
-                        let mutable paragraphs = cell.Content
-                        while canContinue () && not paragraphs.IsEmpty do
-                            addParagraph paragraphs.Head
-                            paragraphs <- paragraphs.Tail
-                        let mutable nestedTables = cell.NestedTables
-                        while canContinue () && not nestedTables.IsEmpty do
-                            tables.Push nestedTables.Head
-                            nestedTables <- nestedTables.Tail
-                        cells <- cells.Tail
-                    rows <- rows.Tail
-        let mutable remainingParts = parts
-        while canContinue () && not remainingParts.IsEmpty do
-            let mutable blocks = remainingParts.Head.Blocks
-            while canContinue () && not blocks.IsEmpty do
-                match blocks.Head with
-                | Paragraph paragraph
-                | Heading (_, paragraph) ->
-                    addParagraph paragraph
-                | Table table ->
-                    addTable table
-                | TextBox textBox ->
-                    visitItem ()
-                    let mutable paragraphs = textBox.Content
-                    while canContinue () && not paragraphs.IsEmpty do
-                        addParagraph paragraphs.Head
-                        paragraphs <- paragraphs.Tail
-                blocks <- blocks.Tail
-            remainingParts <- remainingParts.Tail
-        min total limit
-
-    let private countHeaderFooterPartTextCharsFor partCount partParagraphCount metadataTextCharCount parts =
-        if partCount > headerFooterPartLookupCacheMaxTotalParts
-           || partParagraphCount > headerFooterPartLookupCacheMaxTotalPartParagraphs
-           || metadataTextCharCount > headerFooterPartLookupCacheMaxTotalPartTextChars then
-            headerFooterPartLookupCacheMaxTotalPartTextChars + 1
-        else
-            countHeaderFooterPartBlocksTextChars metadataTextCharCount parts
-
-    let private headerFooterPartLookupCacheMatches parts (cached: HeaderFooterPartLookup) =
-        obj.ReferenceEquals(cached.Parts, parts)
-
-    let private headerFooterPartLookupSlot parts slotCount =
-        RuntimeHelpers.GetHashCode(parts) &&& (slotCount - 1)
-
-    let private setHeaderFooterPartLookupCache entries =
-        headerFooterPartLookupCache <- entries
-        headerFooterPartLookupCacheByParts.Clear()
-        for i = 0 to headerFooterPartLookupFastSlots.Length - 1 do
-            headerFooterPartLookupFastSlots.[i] <- Unchecked.defaultof<HeaderFooterPartLookup>
-        for entry in entries do
-            headerFooterPartLookupCacheByParts.[entry.Parts] <- entry
-            headerFooterPartLookupFastSlots.[headerFooterPartLookupSlot entry.Parts headerFooterPartLookupFastSlots.Length] <- entry
-
-    let private tryGetHeaderFooterPartLookupCache parts =
-        let slot = headerFooterPartLookupSlot parts headerFooterPartLookupFastSlots.Length
-        let fast = headerFooterPartLookupFastSlots.[slot]
-        if not (obj.ReferenceEquals(fast, null))
-           && headerFooterPartLookupCacheMatches parts fast then
-            ValueSome fast
-        else
-            let mutable cached = Unchecked.defaultof<HeaderFooterPartLookup>
-            if headerFooterPartLookupCacheByParts.TryGetValue(parts, &cached) then
-                headerFooterPartLookupFastSlots.[slot] <- cached
-                ValueSome cached
-            else
-                ValueNone
-
-    let private headerFooterPartLookupRetainable entry =
-        entry.PartCount <= headerFooterPartLookupCacheMaxTotalParts
-        && entry.PartParagraphCount <= headerFooterPartLookupCacheMaxTotalPartParagraphs
-        && entry.PartTextCharCount <= headerFooterPartLookupCacheMaxTotalPartTextChars
-
-    let private headerFooterPartLookupCacheWithout parts =
-        let mutable cached = Unchecked.defaultof<HeaderFooterPartLookup>
-        if headerFooterPartLookupCacheByParts.TryGetValue(parts, &cached) then
-            headerFooterPartLookupCache
-            |> List.filter (headerFooterPartLookupCacheMatches parts >> not)
-        else
-            headerFooterPartLookupCache
-
-    let private trimHeaderFooterPartLookupCache entries =
-        let rec loop remaining kept count totalParts totalPartParagraphs totalPartTextChars =
-            match remaining with
-            | [] -> List.rev kept
-            | entry :: rest ->
-                let partCount = max 1 entry.PartCount
-                let partParagraphCount = max 1 entry.PartParagraphCount
-                let partTextCharCount = max 1 entry.PartTextCharCount
-                let nextTotalParts = totalParts + partCount
-                let nextTotalPartParagraphs = totalPartParagraphs + partParagraphCount
-                let nextTotalPartTextChars = totalPartTextChars + partTextCharCount
-                if headerFooterPartLookupRetainable entry
-                   && count < headerFooterPartLookupCacheMaxEntries
-                   && nextTotalParts <= headerFooterPartLookupCacheMaxTotalParts
-                   && nextTotalPartParagraphs <= headerFooterPartLookupCacheMaxTotalPartParagraphs
-                   && nextTotalPartTextChars <= headerFooterPartLookupCacheMaxTotalPartTextChars then
-                    loop
-                        rest
-                        (entry :: kept)
-                        (count + 1)
-                        nextTotalParts
-                        nextTotalPartParagraphs
-                        nextTotalPartTextChars
-                else
-                    loop rest kept count totalParts totalPartParagraphs totalPartTextChars
-        loop entries [] 0 0 0 0
-
-    let private rememberHeaderFooterPartLookup cached =
-        if not (headerFooterPartLookupRetainable cached) then
-            let entries = headerFooterPartLookupCacheWithout cached.Parts
-            if not (obj.ReferenceEquals(entries, headerFooterPartLookupCache)) then
-                setHeaderFooterPartLookupCache entries
-        else
-            cached
-            :: headerFooterPartLookupCacheWithout cached.Parts
-            |> trimHeaderFooterPartLookupCache
-            |> setHeaderFooterPartLookupCache
-
-    let private countHeaderFooterPartsCapped (parts: HeaderFooterPart list) =
-        let mutable count = 0
-        let mutable remaining = parts
-        while count <= headerFooterPartLookupCacheMaxTotalParts && not remaining.IsEmpty do
-            count <- count + 1
-            remaining <- remaining.Tail
-        count
-
-    let private cachedPartLookup (parts: HeaderFooterPart list) =
-        match tryGetHeaderFooterPartLookupCache parts with
-        | ValueSome cached -> Some cached
-        | ValueNone ->
-            let partCount = countHeaderFooterPartsCapped parts
-            let partMetadataTextCharCount = countHeaderFooterPartMetadataTextCharsFor partCount parts
-            if partCount > headerFooterPartLookupCacheMaxTotalParts
-               || partMetadataTextCharCount > headerFooterPartLookupCacheMaxTotalPartTextChars then
-                None
-            else
-                let byKind = Dictionary<string, HeaderFooterPart>()
-                let byRelationshipId = Dictionary<string, HeaderFooterPart>()
-                for part in parts do
-                    if not (byKind.ContainsKey part.Kind) then
-                        byKind.[part.Kind] <- part
-                    match part.RelationshipId with
-                    | Some relationshipId when not (byRelationshipId.ContainsKey relationshipId) ->
-                        byRelationshipId.[relationshipId] <- part
-                    | _ -> ()
-                let partParagraphCount =
-                    if partMetadataTextCharCount > headerFooterPartLookupCacheMaxTotalPartTextChars then
-                        headerFooterPartLookupCacheMaxTotalPartParagraphs + 1
-                    else
-                        countHeaderFooterPartParagraphsFor partCount parts
-                let cached = {
-                    Parts = parts
-                    PartCount = partCount
-                    PartParagraphCount = partParagraphCount
-                    PartTextCharCount = countHeaderFooterPartTextCharsFor partCount partParagraphCount partMetadataTextCharCount parts
-                    ByKind = byKind
-                    ByRelationshipId = byRelationshipId
-                }
-                rememberHeaderFooterPartLookup cached
-                if headerFooterPartLookupRetainable cached then Some cached else None
+    let private headerParagraphCountLimit = 100000
 
     let private firstPartBlocksByKind kind (parts: HeaderFooterPart list) =
         let mutable result = None
@@ -465,36 +159,18 @@ module Page =
         result
 
     let private partBlocks kind (parts: HeaderFooterPart list) =
-        match cachedPartLookup parts with
-        | Some lookup ->
-            let mutable part = Unchecked.defaultof<HeaderFooterPart>
-            if lookup.ByKind.TryGetValue(kind, &part) then Some part.Blocks else None
-        | None ->
-            firstPartBlocksByKind kind parts
+        firstPartBlocksByKind kind parts
 
     let private partBlocksForReferences kind (refs: (string * string) list) (parts: HeaderFooterPart list) =
         let mutable result = None
-        match cachedPartLookup parts with
-        | Some lookup ->
-            let mutable remaining = refs
-            while result.IsNone && not remaining.IsEmpty do
-                match remaining with
-                | (refKind, relationshipId) :: tail ->
-                    if refKind = kind then
-                        let mutable part = Unchecked.defaultof<HeaderFooterPart>
-                        if lookup.ByRelationshipId.TryGetValue(relationshipId, &part) then
-                            result <- Some part.Blocks
-                    remaining <- tail
-                | [] -> ()
-        | None ->
-            let mutable remaining = refs
-            while result.IsNone && not remaining.IsEmpty do
-                match remaining with
-                | (refKind, relationshipId) :: tail ->
-                    if refKind = kind then
-                        result <- firstPartBlocksByRelationshipId relationshipId parts
-                    remaining <- tail
-                | [] -> ()
+        let mutable remaining = refs
+        while result.IsNone && not remaining.IsEmpty do
+            match remaining with
+            | (refKind, relationshipId) :: tail ->
+                if refKind = kind then
+                    result <- firstPartBlocksByRelationshipId relationshipId parts
+                remaining <- tail
+            | [] -> ()
         result
 
     let private partParagraphs kind parts =
@@ -571,8 +247,6 @@ module Page =
 
     let minBodyTop paddingTop fontSize pageTop =
         pageTop + max paddingTop (fontSize * 2.0)
-
-    let private headerParagraphCountLimit = headerFooterPartLookupCacheMaxTotalPartParagraphs
 
     let private addHeaderParagraphCount total value =
         if total > headerParagraphCountLimit then total

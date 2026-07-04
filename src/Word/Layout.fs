@@ -837,55 +837,8 @@ let private createRangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : Te
         if endIndex = startIndex then 0.0
         else measureText (text.Substring(startIndex, endIndex - startIndex)) style
 
-let mutable private rangeMeasurerLastSet = false
-let mutable private rangeMeasurerLastText = Unchecked.defaultof<TextMeasurer>
-let mutable private rangeMeasurerLastRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private rangeMeasurerPreviousSet = false
-let mutable private rangeMeasurerPreviousText = Unchecked.defaultof<TextMeasurer>
-let mutable private rangeMeasurerPreviousRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private rangeMeasurerOlder1Set = false
-let mutable private rangeMeasurerOlder1Text = Unchecked.defaultof<TextMeasurer>
-let mutable private rangeMeasurerOlder1Range = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private rangeMeasurerOlder2Set = false
-let mutable private rangeMeasurerOlder2Text = Unchecked.defaultof<TextMeasurer>
-let mutable private rangeMeasurerOlder2Range = Unchecked.defaultof<TextRangeMeasurer>
-
-let private rememberRangeMeasurer measureText measureRange =
-    if rangeMeasurerOlder1Set then
-        rangeMeasurerOlder2Set <- true
-        rangeMeasurerOlder2Text <- rangeMeasurerOlder1Text
-        rangeMeasurerOlder2Range <- rangeMeasurerOlder1Range
-    if rangeMeasurerPreviousSet then
-        rangeMeasurerOlder1Set <- true
-        rangeMeasurerOlder1Text <- rangeMeasurerPreviousText
-        rangeMeasurerOlder1Range <- rangeMeasurerPreviousRange
-    if rangeMeasurerLastSet then
-        rangeMeasurerPreviousSet <- true
-        rangeMeasurerPreviousText <- rangeMeasurerLastText
-        rangeMeasurerPreviousRange <- rangeMeasurerLastRange
-    rangeMeasurerLastSet <- true
-    rangeMeasurerLastText <- measureText
-    rangeMeasurerLastRange <- measureRange
-
 let rangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : TextRangeMeasurer =
-    if rangeMeasurerLastSet && obj.ReferenceEquals(measureText, rangeMeasurerLastText) then
-        rangeMeasurerLastRange
-    elif rangeMeasurerPreviousSet && obj.ReferenceEquals(measureText, rangeMeasurerPreviousText) then
-        let measureRange = rangeMeasurerPreviousRange
-        rememberRangeMeasurer measureText measureRange
-        measureRange
-    elif rangeMeasurerOlder1Set && obj.ReferenceEquals(measureText, rangeMeasurerOlder1Text) then
-        let measureRange = rangeMeasurerOlder1Range
-        rememberRangeMeasurer measureText measureRange
-        measureRange
-    elif rangeMeasurerOlder2Set && obj.ReferenceEquals(measureText, rangeMeasurerOlder2Text) then
-        let measureRange = rangeMeasurerOlder2Range
-        rememberRangeMeasurer measureText measureRange
-        measureRange
-    else
-        let measureRange = createRangeMeasurerFromTextMeasurer measureText
-        rememberRangeMeasurer measureText measureRange
-        measureRange
+    createRangeMeasurerFromTextMeasurer measureText
 
 let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
     WordLayout.Table.tableColumnWidths WordLayout.canvasScale (Some maxWidth) tableBlock
@@ -1237,282 +1190,6 @@ let private maxLineBottomAndLayoutCount defaultValue (layouts: BlockLayout list)
                 bottom <- lineBottom
     (if found then bottom else defaultValue), layoutCount
 
-type private LineArrayCacheEntry = {
-    Lines: MeasuredLine list
-    LineArray: MeasuredLine array
-    MonotonicY: bool
-    TextCharCount: int
-    mutable LastLineSet: bool
-    mutable LastOffset: int
-    mutable LastLine: MeasuredLine
-    mutable PreviousLineSet: bool
-    mutable PreviousOffset: int
-    mutable PreviousLine: MeasuredLine
-    mutable Older1LineSet: bool
-    mutable Older1Offset: int
-    mutable Older1Line: MeasuredLine
-    mutable Older2LineSet: bool
-    mutable Older2Offset: int
-    mutable Older2Line: MeasuredLine
-}
-
-let mutable private lineArrayCache: LineArrayCacheEntry list = []
-let mutable private lastLineArrayCacheEntry: LineArrayCacheEntry option = None
-let private lineArrayCacheLinesComparer =
-    { new System.Collections.Generic.IEqualityComparer<MeasuredLine list> with
-        member _.Equals(left, right) = obj.ReferenceEquals(left, right)
-        member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
-let private lineArrayCacheByLines =
-    System.Collections.Generic.Dictionary<MeasuredLine list, LineArrayCacheEntry>(lineArrayCacheLinesComparer)
-let private lineArrayCacheThreshold = 32
-let private lineArrayCacheMaxEntries = 256
-let private lineArrayCacheMaxTotalLines = 200000
-let private lineArrayCacheMaxTotalTextChars = 5000000
-
-let private lineListExceeds threshold lines =
-    let rec loop count remaining =
-        count > threshold ||
-            match remaining with
-            | [] -> false
-            | _ :: tail -> loop (count + 1) tail
-    loop 0 lines
-
-let private lineArrayCacheEntryMatches lines (entry: LineArrayCacheEntry) =
-    obj.ReferenceEquals(entry.Lines, lines)
-
-let private setLineArrayCache entries =
-    lineArrayCache <- entries
-    lineArrayCacheByLines.Clear()
-    for entry in entries do
-        lineArrayCacheByLines.[entry.Lines] <- entry
-    match lastLineArrayCacheEntry with
-    | Some last ->
-        let mutable cached = Unchecked.defaultof<LineArrayCacheEntry>
-        if not (lineArrayCacheByLines.TryGetValue(last.Lines, &cached) && obj.ReferenceEquals(cached, last)) then
-            lastLineArrayCacheEntry <- None
-    | None -> ()
-
-let private tryFindLineArrayCacheEntry lines =
-    match lastLineArrayCacheEntry with
-    | Some entry when lineArrayCacheEntryMatches lines entry -> Some entry
-    | _ ->
-        let mutable cached = Unchecked.defaultof<LineArrayCacheEntry>
-        if lineArrayCacheByLines.TryGetValue(lines, &cached)
-           && lineArrayCacheEntryMatches lines cached then
-            lastLineArrayCacheEntry <- Some cached
-            Some cached
-        else
-            None
-
-let private lineArrayCacheOptionTextCharCount (value: string option) =
-    match value with
-    | Some value when not (isNull value) -> value.Length
-    | _ -> 0
-
-let private lineArrayCacheAddCapped value total =
-    if total > lineArrayCacheMaxTotalTextChars then
-        total
-    else
-        let value = max 0 value
-        let remaining = lineArrayCacheMaxTotalTextChars - total
-        if value > remaining then lineArrayCacheMaxTotalTextChars + 1
-        else total + value
-
-let private lineArrayCacheTextStyleStringCharCount (style: TextStyle) =
-    let mutable total = 0
-    let add (value: string option) =
-        total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount value) total
-    add style.Style
-    add style.UnderlineStyle
-    add style.UnderlineColor
-    add style.EmphasisMark
-    add style.FontFamily
-    add style.Color
-    add style.Highlight
-    add style.Hyperlink
-    add style.CommentId
-    add style.CommentText
-    add style.CommentAuthor
-    add style.CommentDate
-    add style.NoteId
-    add style.NoteType
-    add style.NoteText
-    add style.BookmarkStartId
-    add style.BookmarkName
-    add style.BookmarkEndId
-    add style.FieldCode
-    add style.FieldResult
-    add style.EquationXml
-    add style.RevisionId
-    add style.RevisionType
-    add style.RevisionAuthor
-    add style.RevisionDate
-    add style.VertAlign
-    total
-
-let private lineArrayCacheMathPrimsTextCharCount (prims: Eq.MathPrim list) =
-    let mutable total = 0
-    let mutable seen = 0
-    let mutable remaining = prims
-    while total <= lineArrayCacheMaxTotalTextChars
-          && seen <= lineArrayCacheMaxTotalLines
-          && not remaining.IsEmpty do
-        match remaining.Head with
-        | Eq.MGlyph (text, _, _, _, _) when not (isNull text) ->
-            total <- lineArrayCacheAddCapped text.Length total
-        | _ -> ()
-        seen <- seen + 1
-        remaining <- remaining.Tail
-    if seen > lineArrayCacheMaxTotalLines then
-        lineArrayCacheMaxTotalTextChars + 1
-    else
-        total
-
-let private lineArrayCacheImageTextCharCount
-    (src: string)
-    (wrap: string option)
-    (relativeHeight: string option)
-    (cropLeft: string option)
-    (cropTop: string option)
-    (cropRight: string option)
-    (cropBottom: string option) =
-    let mutable total = if isNull src then 0 else src.Length
-    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount wrap) total
-    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount relativeHeight) total
-    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount cropLeft) total
-    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount cropTop) total
-    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount cropRight) total
-    total <- lineArrayCacheAddCapped (lineArrayCacheOptionTextCharCount cropBottom) total
-    total
-
-let private lineArrayCacheSegmentTextCharCount segment =
-    match segment with
-    | TextSegment (text, style, _, _, _) ->
-        let mutable total = if isNull text then 0 else text.Length
-        total <- lineArrayCacheAddCapped (lineArrayCacheTextStyleStringCharCount style) total
-        total
-    | ImageSegment (src, _, _, _, _, _, _, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom) ->
-        lineArrayCacheImageTextCharCount src wrap relativeHeight cropLeft cropTop cropRight cropBottom
-    | MathSegment (prims, style, _, _, _, _, _, _) ->
-        let mutable total = lineArrayCacheTextStyleStringCharCount style
-        total <- lineArrayCacheAddCapped (lineArrayCacheMathPrimsTextCharCount prims) total
-        total
-
-let private lineArrayCacheTextCharCount (lines: MeasuredLine list) =
-    let limit = lineArrayCacheMaxTotalTextChars + 1
-    let mutable total = 0
-    let mutable remainingLines = lines
-    while total <= lineArrayCacheMaxTotalTextChars
-          && not remainingLines.IsEmpty do
-        let mutable remainingSegments = remainingLines.Head.Segments
-        while total <= lineArrayCacheMaxTotalTextChars
-              && not remainingSegments.IsEmpty do
-            total <- lineArrayCacheAddCapped (lineArrayCacheSegmentTextCharCount remainingSegments.Head) total
-            remainingSegments <- remainingSegments.Tail
-        remainingLines <- remainingLines.Tail
-    min total limit
-
-let private lineArrayMonotonicY (lineArray: MeasuredLine array) =
-    let mutable monotonic = true
-    let mutable index = 1
-    while monotonic && index < lineArray.Length do
-        if lineArray.[index].Y < lineArray.[index - 1].Y then
-            monotonic <- false
-        index <- index + 1
-    monotonic
-
-let private xForOffsetCacheMaxTextChars = lineArrayCacheMaxTotalTextChars
-let mutable private xForOffsetLineMetricSet = false
-let mutable private xForOffsetLineMetricLine = Unchecked.defaultof<MeasuredLine>
-let mutable private xForOffsetLineMetricTextCharCount = 0
-
-let private xForOffsetLineTextCharCount (line: MeasuredLine) =
-    if xForOffsetLineMetricSet && obj.ReferenceEquals(xForOffsetLineMetricLine, line) then
-        xForOffsetLineMetricTextCharCount
-    else
-        let limit = xForOffsetCacheMaxTextChars + 1
-        let mutable total = 0
-        let mutable remainingSegments = line.Segments
-        while total <= xForOffsetCacheMaxTextChars
-              && not remainingSegments.IsEmpty do
-            total <- lineArrayCacheAddCapped (lineArrayCacheSegmentTextCharCount remainingSegments.Head) total
-            remainingSegments <- remainingSegments.Tail
-        let total = min total limit
-        if total <= xForOffsetCacheMaxTextChars then
-            xForOffsetLineMetricSet <- true
-            xForOffsetLineMetricLine <- line
-            xForOffsetLineMetricTextCharCount <- total
-        total
-
-let private xForOffsetLineCacheable line =
-    xForOffsetLineTextCharCount line <= xForOffsetCacheMaxTextChars
-
-let private lineArrayCacheWithoutLines lines =
-    let mutable cached = Unchecked.defaultof<LineArrayCacheEntry>
-    if lineArrayCacheByLines.TryGetValue(lines, &cached)
-       && lineArrayCacheEntryMatches lines cached then
-        lineArrayCache
-        |> List.filter (lineArrayCacheEntryMatches lines >> not)
-    else
-        lineArrayCache
-
-let private rememberLineArrayCacheEntry entry =
-    if entry.LineArray.Length > lineArrayCacheMaxTotalLines
-       || entry.TextCharCount > lineArrayCacheMaxTotalTextChars then
-        let entries = lineArrayCacheWithoutLines entry.Lines
-        if not (obj.ReferenceEquals(entries, lineArrayCache)) then
-            setLineArrayCache entries
-    else
-        let mutable keptCount = 1
-        let mutable keptLines = entry.LineArray.Length
-        let mutable keptTextChars = max 1 entry.TextCharCount
-        let retained =
-            lineArrayCacheWithoutLines entry.Lines
-            |> List.choose (fun candidate ->
-                let candidateLines = candidate.LineArray.Length
-                let candidateTextChars = max 1 candidate.TextCharCount
-                if keptCount < lineArrayCacheMaxEntries
-                   && keptLines + candidateLines <= lineArrayCacheMaxTotalLines
-                   && keptTextChars + candidateTextChars <= lineArrayCacheMaxTotalTextChars then
-                    keptCount <- keptCount + 1
-                    keptLines <- keptLines + candidateLines
-                    keptTextChars <- keptTextChars + candidateTextChars
-                    Some candidate
-                else
-                        None)
-        setLineArrayCache (entry :: retained)
-        lastLineArrayCacheEntry <- Some entry
-
-let private cachedLineArrayEntry lines =
-    match tryFindLineArrayCacheEntry lines with
-    | Some entry ->
-        entry
-    | None ->
-        let lineArray = Array.ofList lines
-        let entry = {
-            Lines = lines
-            LineArray = lineArray
-            MonotonicY = lineArrayMonotonicY lineArray
-            TextCharCount = lineArrayCacheTextCharCount lines
-            LastLineSet = false
-            LastOffset = 0
-            LastLine = Unchecked.defaultof<MeasuredLine>
-            PreviousLineSet = false
-            PreviousOffset = 0
-            PreviousLine = Unchecked.defaultof<MeasuredLine>
-            Older1LineSet = false
-            Older1Offset = 0
-            Older1Line = Unchecked.defaultof<MeasuredLine>
-            Older2LineSet = false
-            Older2Offset = 0
-            Older2Line = Unchecked.defaultof<MeasuredLine>
-        }
-        rememberLineArrayCacheEntry entry
-        entry
-
-let private cachedLineArray lines =
-    (cachedLineArrayEntry lines).LineArray
-
 let private lineForOffsetArray (layout: BlockLayout) (lines: MeasuredLine array) (offset: int) =
     if lines.Length = 0 then
         emptyLine layout.Y layout.Height
@@ -1533,34 +1210,6 @@ let private lineForOffsetArray (layout: BlockLayout) (lines: MeasuredLine array)
             lines.[low - 1]
         else
             lines.[low]
-
-let private lineForOffsetCacheEntry layout entry offset =
-    if entry.LastLineSet && entry.LastOffset = offset then
-        entry.LastLine
-    elif entry.PreviousLineSet && entry.PreviousOffset = offset then
-        entry.PreviousLine
-    elif entry.Older1LineSet && entry.Older1Offset = offset then
-        entry.Older1Line
-    elif entry.Older2LineSet && entry.Older2Offset = offset then
-        entry.Older2Line
-    else
-        let line = lineForOffsetArray layout entry.LineArray offset
-        if entry.Older1LineSet then
-            entry.Older2LineSet <- true
-            entry.Older2Offset <- entry.Older1Offset
-            entry.Older2Line <- entry.Older1Line
-        if entry.PreviousLineSet then
-            entry.Older1LineSet <- true
-            entry.Older1Offset <- entry.PreviousOffset
-            entry.Older1Line <- entry.PreviousLine
-        if entry.LastLineSet then
-            entry.PreviousLineSet <- true
-            entry.PreviousOffset <- entry.LastOffset
-            entry.PreviousLine <- entry.LastLine
-        entry.LastLineSet <- true
-        entry.LastOffset <- offset
-        entry.LastLine <- line
-        line
 
 let private lineForOffsetList (layout: BlockLayout) (offset: int) : MeasuredLine =
     match layout.Lines with
@@ -1590,18 +1239,7 @@ let private lineForOffsetList (layout: BlockLayout) (offset: int) : MeasuredLine
         if found then first else result
 
 let lineForOffset (layout: BlockLayout) (offset: int) : MeasuredLine =
-    match lastLineArrayCacheEntry with
-    | Some entry when lineArrayCacheEntryMatches layout.Lines entry ->
-        lineForOffsetCacheEntry layout entry offset
-    | _ ->
-        match tryFindLineArrayCacheEntry layout.Lines with
-        | Some entry ->
-            lineForOffsetCacheEntry layout entry offset
-        | None ->
-            if lineListExceeds lineArrayCacheThreshold layout.Lines then
-                lineForOffsetCacheEntry layout (cachedLineArrayEntry layout.Lines) offset
-            else
-                lineForOffsetList layout offset
+    lineForOffsetList layout offset
 
 let maxOffsetInLayout (layout: BlockLayout) =
     match layout.Lines with
@@ -1612,58 +1250,6 @@ let maxOffsetInLayout (layout: BlockLayout) =
             if line.EndOffset > maxOffset then
                 maxOffset <- line.EndOffset
         maxOffset
-
-let mutable private xForOffsetLastSet = false
-let mutable private xForOffsetLastLine = Unchecked.defaultof<MeasuredLine>
-let mutable private xForOffsetLastMeasureRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private xForOffsetLastOffset = 0
-let mutable private xForOffsetLastX = 0.0
-let mutable private xForOffsetPreviousSet = false
-let mutable private xForOffsetPreviousLine = Unchecked.defaultof<MeasuredLine>
-let mutable private xForOffsetPreviousMeasureRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private xForOffsetPreviousOffset = 0
-let mutable private xForOffsetPreviousX = 0.0
-let mutable private xForOffsetOlder1Set = false
-let mutable private xForOffsetOlder1Line = Unchecked.defaultof<MeasuredLine>
-let mutable private xForOffsetOlder1MeasureRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private xForOffsetOlder1Offset = 0
-let mutable private xForOffsetOlder1X = 0.0
-let mutable private xForOffsetOlder2Set = false
-let mutable private xForOffsetOlder2Line = Unchecked.defaultof<MeasuredLine>
-let mutable private xForOffsetOlder2MeasureRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private xForOffsetOlder2Offset = 0
-let mutable private xForOffsetOlder2X = 0.0
-
-let private xForOffsetCacheEntryMatches measureRange line offset cachedMeasureRange cachedLine cachedOffset =
-    offset = cachedOffset
-    && obj.ReferenceEquals(cachedLine, line)
-    && obj.ReferenceEquals(cachedMeasureRange, measureRange)
-
-let private rememberXForOffset measureRange line offset x =
-    if xForOffsetLineCacheable line then
-        if xForOffsetOlder1Set then
-            xForOffsetOlder2Set <- true
-            xForOffsetOlder2Line <- xForOffsetOlder1Line
-            xForOffsetOlder2MeasureRange <- xForOffsetOlder1MeasureRange
-            xForOffsetOlder2Offset <- xForOffsetOlder1Offset
-            xForOffsetOlder2X <- xForOffsetOlder1X
-        if xForOffsetPreviousSet then
-            xForOffsetOlder1Set <- true
-            xForOffsetOlder1Line <- xForOffsetPreviousLine
-            xForOffsetOlder1MeasureRange <- xForOffsetPreviousMeasureRange
-            xForOffsetOlder1Offset <- xForOffsetPreviousOffset
-            xForOffsetOlder1X <- xForOffsetPreviousX
-        if xForOffsetLastSet then
-            xForOffsetPreviousSet <- true
-            xForOffsetPreviousLine <- xForOffsetLastLine
-            xForOffsetPreviousMeasureRange <- xForOffsetLastMeasureRange
-            xForOffsetPreviousOffset <- xForOffsetLastOffset
-            xForOffsetPreviousX <- xForOffsetLastX
-        xForOffsetLastSet <- true
-        xForOffsetLastLine <- line
-        xForOffsetLastMeasureRange <- measureRange
-        xForOffsetLastOffset <- offset
-        xForOffsetLastX <- x
 
 let private xForOffsetWithRangeUncached (measureRange: TextRangeMeasurer) (line: MeasuredLine) (offset: int) =
     let mutable x = 0.0
@@ -1693,22 +1279,7 @@ let private xForOffsetWithRangeUncached (measureRange: TextRangeMeasurer) (line:
     x
 
 let xForOffsetWithRange (measureRange: TextRangeMeasurer) (line: MeasuredLine) (offset: int) =
-    if xForOffsetLastSet
-       && xForOffsetCacheEntryMatches measureRange line offset xForOffsetLastMeasureRange xForOffsetLastLine xForOffsetLastOffset then
-        xForOffsetLastX
-    elif xForOffsetPreviousSet
-         && xForOffsetCacheEntryMatches measureRange line offset xForOffsetPreviousMeasureRange xForOffsetPreviousLine xForOffsetPreviousOffset then
-        xForOffsetPreviousX
-    elif xForOffsetOlder1Set
-         && xForOffsetCacheEntryMatches measureRange line offset xForOffsetOlder1MeasureRange xForOffsetOlder1Line xForOffsetOlder1Offset then
-        xForOffsetOlder1X
-    elif xForOffsetOlder2Set
-         && xForOffsetCacheEntryMatches measureRange line offset xForOffsetOlder2MeasureRange xForOffsetOlder2Line xForOffsetOlder2Offset then
-        xForOffsetOlder2X
-    else
-        let x = xForOffsetWithRangeUncached measureRange line offset
-        rememberXForOffset measureRange line offset x
-        x
+    xForOffsetWithRangeUncached measureRange line offset
 
 let xForOffset (measureText: TextMeasurer) (line: MeasuredLine) (offset: int) =
     xForOffsetWithRange (rangeMeasurerFromTextMeasurer measureText) line offset
@@ -1759,14 +1330,7 @@ let private tryFindLineForYArray (lines: MeasuredLine array) (mouseY: float) =
     if found then ValueSome result else ValueNone
 
 let private tryFindLineForY (layout: BlockLayout) (mouseY: float) =
-    if lineListExceeds lineArrayCacheThreshold layout.Lines then
-        let entry = cachedLineArrayEntry layout.Lines
-        if entry.MonotonicY then
-            tryFindLineForYArray entry.LineArray mouseY
-        else
-            tryFindLineForYList layout.Lines mouseY
-    else
-        tryFindLineForYList layout.Lines mouseY
+    tryFindLineForYList layout.Lines mouseY
 
 let private hitTestLayoutWithRangeValue (measureRange: TextRangeMeasurer) (paddingLeft: float) (layout: BlockLayout) (mouseX: float) (mouseY: float) =
     let lineOpt = tryFindLineForY layout mouseY
@@ -1830,76 +1394,7 @@ let hitTestLayoutsWithRange (measureRange: TextRangeMeasurer) (paddingLeft: floa
     | None -> None
     | Some layout -> hitTestLayoutWithRange measureRange paddingLeft layout mouseX mouseY
 
-let mutable private hitTestArrayLastSet = false
-let mutable private hitTestArrayLastMeasureRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private hitTestArrayLastLayouts = Unchecked.defaultof<BlockLayout array>
-let mutable private hitTestArrayLastPaddingLeft = 0.0
-let mutable private hitTestArrayLastMouseX = 0.0
-let mutable private hitTestArrayLastMouseY = 0.0
-let mutable private hitTestArrayLastResult : struct (BlockId * int) voption = ValueNone
-let mutable private hitTestArrayPreviousSet = false
-let mutable private hitTestArrayPreviousMeasureRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private hitTestArrayPreviousLayouts = Unchecked.defaultof<BlockLayout array>
-let mutable private hitTestArrayPreviousPaddingLeft = 0.0
-let mutable private hitTestArrayPreviousMouseX = 0.0
-let mutable private hitTestArrayPreviousMouseY = 0.0
-let mutable private hitTestArrayPreviousResult : struct (BlockId * int) voption = ValueNone
-let mutable private hitTestArrayOlder1Set = false
-let mutable private hitTestArrayOlder1MeasureRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private hitTestArrayOlder1Layouts = Unchecked.defaultof<BlockLayout array>
-let mutable private hitTestArrayOlder1PaddingLeft = 0.0
-let mutable private hitTestArrayOlder1MouseX = 0.0
-let mutable private hitTestArrayOlder1MouseY = 0.0
-let mutable private hitTestArrayOlder1Result : struct (BlockId * int) voption = ValueNone
-let mutable private hitTestArrayOlder2Set = false
-let mutable private hitTestArrayOlder2MeasureRange = Unchecked.defaultof<TextRangeMeasurer>
-let mutable private hitTestArrayOlder2Layouts = Unchecked.defaultof<BlockLayout array>
-let mutable private hitTestArrayOlder2PaddingLeft = 0.0
-let mutable private hitTestArrayOlder2MouseX = 0.0
-let mutable private hitTestArrayOlder2MouseY = 0.0
-let mutable private hitTestArrayOlder2Result : struct (BlockId * int) voption = ValueNone
-
-let private hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY cachedMeasureRange cachedPaddingLeft cachedLayouts cachedMouseX cachedMouseY =
-    obj.ReferenceEquals(measureRange, cachedMeasureRange)
-    && obj.ReferenceEquals(layouts, cachedLayouts)
-    && paddingLeft = cachedPaddingLeft
-    && mouseX = cachedMouseX
-    && mouseY = cachedMouseY
-
-let private rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result =
-    if hitTestArrayOlder1Set then
-        hitTestArrayOlder2Set <- true
-        hitTestArrayOlder2MeasureRange <- hitTestArrayOlder1MeasureRange
-        hitTestArrayOlder2Layouts <- hitTestArrayOlder1Layouts
-        hitTestArrayOlder2PaddingLeft <- hitTestArrayOlder1PaddingLeft
-        hitTestArrayOlder2MouseX <- hitTestArrayOlder1MouseX
-        hitTestArrayOlder2MouseY <- hitTestArrayOlder1MouseY
-        hitTestArrayOlder2Result <- hitTestArrayOlder1Result
-    if hitTestArrayPreviousSet then
-        hitTestArrayOlder1Set <- true
-        hitTestArrayOlder1MeasureRange <- hitTestArrayPreviousMeasureRange
-        hitTestArrayOlder1Layouts <- hitTestArrayPreviousLayouts
-        hitTestArrayOlder1PaddingLeft <- hitTestArrayPreviousPaddingLeft
-        hitTestArrayOlder1MouseX <- hitTestArrayPreviousMouseX
-        hitTestArrayOlder1MouseY <- hitTestArrayPreviousMouseY
-        hitTestArrayOlder1Result <- hitTestArrayPreviousResult
-    if hitTestArrayLastSet then
-        hitTestArrayPreviousSet <- true
-        hitTestArrayPreviousMeasureRange <- hitTestArrayLastMeasureRange
-        hitTestArrayPreviousLayouts <- hitTestArrayLastLayouts
-        hitTestArrayPreviousPaddingLeft <- hitTestArrayLastPaddingLeft
-        hitTestArrayPreviousMouseX <- hitTestArrayLastMouseX
-        hitTestArrayPreviousMouseY <- hitTestArrayLastMouseY
-        hitTestArrayPreviousResult <- hitTestArrayLastResult
-    hitTestArrayLastSet <- true
-    hitTestArrayLastMeasureRange <- measureRange
-    hitTestArrayLastLayouts <- layouts
-    hitTestArrayLastPaddingLeft <- paddingLeft
-    hitTestArrayLastMouseX <- mouseX
-    hitTestArrayLastMouseY <- mouseY
-    hitTestArrayLastResult <- result
-
-let private hitTestLayoutArrayWithRangeValueUncached (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
+let hitTestLayoutArrayWithRangeValue (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
     let mutable low = 0
     let mutable high = layouts.Length
     while low < high do
@@ -1923,30 +1418,6 @@ let private hitTestLayoutArrayWithRangeValueUncached (measureRange: TextRangeMea
             found <- true
         index <- index + 1
     result
-
-let hitTestLayoutArrayWithRangeValue (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
-    if hitTestArrayLastSet
-       && hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY hitTestArrayLastMeasureRange hitTestArrayLastPaddingLeft hitTestArrayLastLayouts hitTestArrayLastMouseX hitTestArrayLastMouseY then
-        hitTestArrayLastResult
-    elif hitTestArrayPreviousSet
-         && hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY hitTestArrayPreviousMeasureRange hitTestArrayPreviousPaddingLeft hitTestArrayPreviousLayouts hitTestArrayPreviousMouseX hitTestArrayPreviousMouseY then
-        let result = hitTestArrayPreviousResult
-        rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result
-        result
-    elif hitTestArrayOlder1Set
-         && hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY hitTestArrayOlder1MeasureRange hitTestArrayOlder1PaddingLeft hitTestArrayOlder1Layouts hitTestArrayOlder1MouseX hitTestArrayOlder1MouseY then
-        let result = hitTestArrayOlder1Result
-        rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result
-        result
-    elif hitTestArrayOlder2Set
-         && hitTestArrayCacheEntryMatches measureRange paddingLeft layouts mouseX mouseY hitTestArrayOlder2MeasureRange hitTestArrayOlder2PaddingLeft hitTestArrayOlder2Layouts hitTestArrayOlder2MouseX hitTestArrayOlder2MouseY then
-        let result = hitTestArrayOlder2Result
-        rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result
-        result
-    else
-        let result = hitTestLayoutArrayWithRangeValueUncached measureRange paddingLeft layouts mouseX mouseY
-        rememberHitTestArray measureRange paddingLeft layouts mouseX mouseY result
-        result
 
 let hitTestLayoutArrayWithRange (measureRange: TextRangeMeasurer) (paddingLeft: float) (layouts: BlockLayout array) (mouseX: float) (mouseY: float) =
     match hitTestLayoutArrayWithRangeValue measureRange paddingLeft layouts mouseX mouseY with

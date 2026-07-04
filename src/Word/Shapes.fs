@@ -147,103 +147,6 @@ let private bevelPath w h : PathSeg list =
     // outer rectangle (the inner highlight is a renderer detail we skip)
     rectPath w h
 
-type private PresetPathCacheEntry = {
-    Preset: string
-    Width: float
-    Height: float
-    Path: PathSeg list
-}
-
-[<Struct>]
-type private PresetPathCacheKey = {
-    Preset: string
-    Width: float
-    Height: float
-}
-
-let private presetPathCacheKeyHash (key: PresetPathCacheKey) =
-    let mutable hashCode =
-        if isNull key.Preset then 0 else key.Preset.GetHashCode()
-    hashCode <- (hashCode * 397) ^^^ key.Width.GetHashCode()
-    (hashCode * 397) ^^^ key.Height.GetHashCode()
-
-let private presetPathCacheKeyEquals (left: PresetPathCacheKey) (right: PresetPathCacheKey) =
-    left.Preset = right.Preset
-    && left.Width = right.Width
-    && left.Height = right.Height
-
-let private presetPathCacheKeyComparer =
-    { new IEqualityComparer<PresetPathCacheKey> with
-        member _.Equals(left, right) = presetPathCacheKeyEquals left right
-        member _.GetHashCode(value) = presetPathCacheKeyHash value }
-
-let mutable private presetPathCache: PresetPathCacheEntry list = []
-let private presetPathCacheByKey =
-    Dictionary<PresetPathCacheKey, PresetPathCacheEntry>(presetPathCacheKeyComparer)
-let private presetPathFastSlots = Array.zeroCreate<PresetPathCacheEntry> 256
-let private presetPathCacheMaxEntries = 256
-let private presetPathCacheMaxTotalPresetChars = 1000000
-
-let private presetPathCacheMatches preset w h (cached: PresetPathCacheEntry) =
-    cached.Preset = preset && cached.Width = w && cached.Height = h
-
-let private presetPathCacheKey preset w h : PresetPathCacheKey = {
-    Preset = preset
-    Width = w
-    Height = h
-}
-
-let private presetPathCacheKeyMatches (key: PresetPathCacheKey) (cached: PresetPathCacheEntry) =
-    cached.Preset = key.Preset && cached.Width = key.Width && cached.Height = key.Height
-
-let private presetPathCacheSlot (key: PresetPathCacheKey) slotCount =
-    presetPathCacheKeyHash key &&& (slotCount - 1)
-
-let private setPresetPathCache (entries: PresetPathCacheEntry list) =
-    presetPathCache <- entries
-    presetPathCacheByKey.Clear()
-    for i = 0 to presetPathFastSlots.Length - 1 do
-        presetPathFastSlots.[i] <- Unchecked.defaultof<PresetPathCacheEntry>
-    for entry in entries do
-        let key = presetPathCacheKey entry.Preset entry.Width entry.Height
-        presetPathCacheByKey.[key] <- entry
-        presetPathFastSlots.[presetPathCacheSlot key presetPathFastSlots.Length] <- entry
-
-let private tryGetPresetPathCache (key: PresetPathCacheKey) =
-    let slot = presetPathCacheSlot key presetPathFastSlots.Length
-    let fast = presetPathFastSlots.[slot]
-    if not (obj.ReferenceEquals(fast, null))
-       && presetPathCacheKeyMatches key fast then
-        ValueSome fast
-    else
-        let mutable cached = Unchecked.defaultof<PresetPathCacheEntry>
-        if presetPathCacheByKey.TryGetValue(key, &cached) then
-            presetPathFastSlots.[slot] <- cached
-            ValueSome cached
-        else
-            ValueNone
-
-let private rememberPresetPath (entry: PresetPathCacheEntry) =
-    if entry.Preset.Length <= presetPathCacheMaxTotalPresetChars then
-        let trim (entries: PresetPathCacheEntry list) =
-            let rec loop (remaining: PresetPathCacheEntry list) (kept: PresetPathCacheEntry list) count totalPresetChars =
-                match remaining with
-                | [] -> List.rev kept
-                | candidate :: rest ->
-                    let presetChars = max 1 candidate.Preset.Length
-                    let nextTotalPresetChars = totalPresetChars + presetChars
-                    if count < presetPathCacheMaxEntries
-                       && nextTotalPresetChars <= presetPathCacheMaxTotalPresetChars then
-                        loop rest (candidate :: kept) (count + 1) nextTotalPresetChars
-                    else
-                        loop rest kept count totalPresetChars
-            loop entries [] 0 0
-        entry
-        :: (presetPathCache
-            |> List.filter (presetPathCacheMatches entry.Preset entry.Width entry.Height >> not))
-        |> trim
-        |> setPresetPathCache
-
 /// Presets we render as their true geometry (everything else uses the rect
 /// fallback). Used only for diagnostics/coverage reporting.
 let knownPresets =
@@ -261,7 +164,7 @@ let knownPresets =
 let isKnownPreset (preset: string) : bool = knownPresets.Contains preset
 
 /// Path for a named OOXML preset in the box (w,h). Falls back to a rectangle.
-let private presetPathUncached (preset: string) (w: float) (h: float) : PathSeg list =
+let presetPath (preset: string) (w: float) (h: float) : PathSeg list =
     match preset with
     | "rect" | "rectangle" | "flowChartProcess" | "flowChartPredefinedProcess"
     | "flowChartInternalStorage" -> rectPath w h
@@ -307,15 +210,6 @@ let private presetPathUncached (preset: string) (w: float) (h: float) : PathSeg 
     | "flowChartDocument" -> rectPath w h
     | "round" | "pie" -> ellipsePath w h
     | _ -> rectPath w h
-
-let presetPath (preset: string) (w: float) (h: float) : PathSeg list =
-    let key = presetPathCacheKey preset w h
-    match tryGetPresetPathCache key with
-    | ValueSome cached -> cached.Path
-    | ValueNone ->
-        let path = presetPathUncached preset w h
-        rememberPresetPath { Preset = preset; Width = w; Height = h; Path = path }
-        path
 
 /// Scale a custom path from its own coordinate space into the box (w,h).
 let private scaleCustom (segs: PathSeg list) coordW coordH w h : PathSeg list =
