@@ -139,13 +139,6 @@ type Spreadsheet(container: Element) =
             | None -> result <- clearCell addr result
         result
 
-    let pasteCellOptions row col (clipData: ClipboardData) (source: SpreadsheetModel) =
-        let values = System.Collections.Generic.List<CellAddress * CellData option>()
-        for relRow, relCol, _ in clipData.Cells do
-            let addr = { Row = row + relRow; Col = col + relCol }
-            values.Add(addr, getCell addr source)
-        values
-
     let renderPortablePaintToCanvas (canvas: Element) =
         let viewport = currentViewport()
         let ctx = getCanvasContext canvas
@@ -2827,22 +2820,24 @@ type Spreadsheet(container: Element) =
 
     /// Import CSV data
     member _.ImportCSV(csvText: string, startRow: int, startCol: int) =
-        let newModel, oldCells, newCells = importCSVWithChanges csvText startRow startCol model
-        model <- newModel
+        let oldCells = model.Cells
+        model <- importCSV csvText startRow startCol model
         recalculateFormulas()
 
-        if oldCells.Count > 0 then
-            let command = {
-                Undo = restoreCellOptions oldCells
-                Redo = fun m ->
-                    let sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
-                    restoreCellOptions newCells m
-                    |> recalculateAllFormulas workbook sheet
-                    |> spillArrays workbook sheet
-                    |> recalculateAllFormulas workbook sheet
-                Description = "Import CSV"
-            }
-            model <- pushCommand command model
+        // Undo restores the full pre-import cell map (an O(1) reference to the
+        // persistent map) so dependent formulas recalculated by the import are
+        // rolled back too, not just the imported rectangle.
+        let command = {
+            Undo = fun m -> { m with Cells = oldCells }
+            Redo = fun m ->
+                let sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
+                importCSV csvText startRow startCol m
+                |> recalculateAllFormulas workbook sheet
+                |> spillArrays workbook sheet
+                |> recalculateAllFormulas workbook sheet
+            Description = "Import CSV"
+        }
+        model <- pushCommand command model
         render()
 
     /// Export spreadsheet to CSV
@@ -3024,27 +3019,27 @@ type Spreadsheet(container: Element) =
     member _.Paste() =
         match model.Selection, model.Clipboard with
         | SingleCell (row, col), Some clipData ->
-            let oldCells = pasteCellOptions row col clipData model
+            // Undo restores the full pre-paste cell map so dependent formulas
+            // recalculated by the paste roll back too (O(1) persistent-map ref).
+            let oldCells = model.Cells
             model <- pasteClipboard { Row = row; Col = col } clipData model
             recalculateFormulas()
-            let newCells = pasteCellOptions row col clipData model
 
             let command = {
-                Undo = restoreCellOptions oldCells
-                Redo = restoreCellOptions newCells
+                Undo = fun m -> { m with Cells = oldCells }
+                Redo = fun m -> pasteClipboard { Row = row; Col = col } clipData m
                 Description = "Paste"
             }
             model <- pushCommand command model
             render()
         | Range (startRow, startCol, _, _), Some clipData ->
-            let oldCells = pasteCellOptions startRow startCol clipData model
+            let oldCells = model.Cells
             model <- pasteClipboard { Row = startRow; Col = startCol } clipData model
             recalculateFormulas()
-            let newCells = pasteCellOptions startRow startCol clipData model
 
             let command = {
-                Undo = restoreCellOptions oldCells
-                Redo = restoreCellOptions newCells
+                Undo = fun m -> { m with Cells = oldCells }
+                Redo = fun m -> pasteClipboard { Row = startRow; Col = startCol } clipData m
                 Description = "Paste"
             }
             model <- pushCommand command model
