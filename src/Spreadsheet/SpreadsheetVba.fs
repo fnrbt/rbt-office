@@ -966,11 +966,17 @@ let private hostGlobalsRW cells sheetName =
 // only the bound host VALUES change per run.
 let private vbaHostNames = [ "Application"; "ActiveWorkbook"; "ActiveSheet"; "Range"; "Cells" ]
 let private vbaParseOpts = FsVb.ParseOptions.withHostGlobals vbaHostNames FsVb.ParseOptions.vba
-/// Compile a macro module to bytecode.
+
+let private bytecodeCache = System.Collections.Generic.Dictionary<string, Bytecode.BytecodeProgram>()
+
+/// Compile a macro module to bytecode, caching the result by source text.
 let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
-    match FsVb.compileSource vbaParseOpts source with
-    | Result.Ok (_, bc) -> Result.Ok bc
-    | Result.Error e -> Result.Error (sprintf "%A" e)
+    match bytecodeCache.TryGetValue source with
+    | true, bc -> Result.Ok bc
+    | _ ->
+        match FsVb.compileSource vbaParseOpts source with
+        | Result.Ok (_, bc) -> bytecodeCache.[source] <- bc; Result.Ok bc
+        | Result.Error e -> Result.Error (sprintf "%A" e)
 
 /// Execute an already-compiled program against a model with read+write host
 /// objects, fold the writes back in (a `=…` value becomes a formula), and

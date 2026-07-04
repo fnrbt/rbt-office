@@ -1,6 +1,5 @@
 module RedBat.Spreadsheet.Spreadsheet
 
-open System.Collections.Generic
 open Fable.Core
 open Fable.Core.JsInterop
 open RedBat.Grid.Dom
@@ -121,9 +120,6 @@ type Spreadsheet(container: Element) =
     let mutable gridContainer: Element option = None
     let mutable contentElement: Element option = None
 
-    let viewportTextMeasurer text fontSize fontName bold italic =
-        browserTextWidth text fontSize (fontName |> Option.defaultValue "Arial") bold italic
-
     let currentViewport (): SpreadsheetLayout.Viewport = {
         ScrollX = scrollLeft
         ScrollY = scrollTop
@@ -131,8 +127,24 @@ type Spreadsheet(container: Element) =
         Height = containerHeight
         HeaderHeight = headerHeight
         RowHeaderWidth = rowHeaderWidth
-        Measurer = Some viewportTextMeasurer
+        Measurer = Some (fun text fontSize fontName bold italic ->
+            browserTextWidth text fontSize (fontName |> Option.defaultValue "Arial") bold italic)
     }
+
+    let restoreCellOptions (changes: seq<CellAddress * CellData option>) (m: SpreadsheetModel) =
+        let mutable result = m
+        for addr, value in changes do
+            match value with
+            | Some cellData -> result <- setCell addr cellData result
+            | None -> result <- clearCell addr result
+        result
+
+    let pasteCellOptions row col (clipData: ClipboardData) (source: SpreadsheetModel) =
+        let values = System.Collections.Generic.List<CellAddress * CellData option>()
+        for relRow, relCol, _ in clipData.Cells do
+            let addr = { Row = row + relRow; Col = col + relCol }
+            values.Add(addr, getCell addr source)
+        values
 
     let renderPortablePaintToCanvas (canvas: Element) =
         let viewport = currentViewport()
@@ -161,13 +173,13 @@ type Spreadsheet(container: Element) =
             | SpreadsheetPaint.FillRect (r, col) -> canvasFillRect ctx r.X r.Y r.Width r.Height col
             | SpreadsheetPaint.StrokeRect (r, col, w) -> canvasStrokeRect ctx r.X r.Y r.Width r.Height col w
             | _ -> ()
-        SpreadsheetPaint.iterViewportPaintItems model viewport (fun zone item ->
+        for painted in SpreadsheetPaint.buildViewportPaintItems model viewport do
             // viewportClipFor narrows BodyZone to the area past the frozen
             // rows/cols so the body paint can't bleed into the pinned bands.
-            let clip = SpreadsheetLayout.viewportClipFor model viewport zone
+            let clip = SpreadsheetLayout.viewportClipFor model viewport painted.Zone
             canvasSave ctx
             canvasClipRect ctx clip.X clip.Y clip.Width clip.Height
-            match item with
+            match painted.Item with
             | SpreadsheetPaint.FillRect (rect, color) ->
                 canvasFillRect ctx rect.X rect.Y rect.Width rect.Height color
             | SpreadsheetPaint.StrokeRect (rect, color, width) ->
@@ -183,7 +195,7 @@ type Spreadsheet(container: Element) =
                 if abs (y1 - y2) < 0.01 then canvasLine ctx x1 (snap y1) x2 (snap y1) color w
                 elif abs (x1 - x2) < 0.01 then canvasLine ctx (snap x1) y1 (snap x1) y2 color w
                 else canvasLine ctx x1 y1 x2 y2 color w
-            | SpreadsheetPaint.VecPath _ | SpreadsheetPaint.VecGroup _ -> drawVec item
+            | SpreadsheetPaint.VecPath _ | SpreadsheetPaint.VecGroup _ -> drawVec painted.Item
             | SpreadsheetPaint.DrawText text ->
                 let align =
                     match text.Align with
@@ -227,13 +239,12 @@ type Spreadsheet(container: Element) =
                     let rotPt px py =
                         let dx, dy = px - ax0, py - ay0
                         ax0 + dx * cosS - dy * sinS, ay0 + dx * sinS + dy * cosS
-                    let x0, y0 = rotPt ax0 (ay0 - ascent)
-                    let x1, y1 = rotPt (ax0 + totalWidth) (ay0 - ascent)
-                    let x2, y2 = rotPt ax0 (ay0 + descent)
-                    let x3, y3 = rotPt (ax0 + totalWidth) (ay0 + descent)
-                    let minX = min (min x0 x1) (min x2 x3)
-                    let maxX = max (max x0 x1) (max x2 x3)
-                    let maxY = max (max y0 y1) (max y2 y3)
+                    let corners =
+                        [ rotPt ax0 (ay0 - ascent); rotPt (ax0 + totalWidth) (ay0 - ascent)
+                          rotPt ax0 (ay0 + descent); rotPt (ax0 + totalWidth) (ay0 + descent) ]
+                    let minX = corners |> List.map fst |> List.min
+                    let maxX = corners |> List.map fst |> List.max
+                    let maxY = corners |> List.map snd |> List.max
                     let rightAlign = text.Rotation >= 90 && text.Rotation < 180
                     let shiftX =
                         if rightAlign then (text.Rect.X + text.Rect.Width - 2.0) - maxX
@@ -258,7 +269,7 @@ type Spreadsheet(container: Element) =
                     if text.Strikethrough then
                         let y = baseline - text.FontSize * 0.30
                         canvasLine ctx startX y endX y text.Color 1.0
-            canvasRestore ctx)
+            canvasRestore ctx
 
     let recalculateFormulas () =
         let currentSheet = workbook |> Option.map (fun w -> w.ActiveSheet)
@@ -271,43 +282,6 @@ type Spreadsheet(container: Element) =
             |> spillArrays workbook currentSheet
             |> recalculateAllFormulas workbook currentSheet
 
-    let pasteCellOptions (targetAddr: CellAddress) (clipboardData: ClipboardData) (sourceModel: SpreadsheetModel) =
-        let cells = ResizeArray<CellAddress * CellData option>()
-        for (relRow, relCol, _) in clipboardData.Cells do
-            let pasteRow = targetAddr.Row + relRow
-            let pasteCol = targetAddr.Col + relCol
-            if pasteRow >= 0 && pasteRow < sourceModel.RowCount && pasteCol >= 0 && pasteCol < sourceModel.ColCount then
-                let addr: CellAddress = { Row = pasteRow; Col = pasteCol }
-                cells.Add(addr, getCell addr sourceModel)
-        cells
-
-    let restoreCellOptions (pairs: ResizeArray<CellAddress * CellData option>) sourceModel =
-        let mutable result = sourceModel
-        for (addr, value) in pairs do
-            match value with
-            | Some cellData -> result <- setCell addr cellData result
-            | None -> result <- clearCell addr result
-        result
-
-    let cellOptionPairsHaveFormula (pairs: ResizeArray<CellAddress * CellData option>) =
-        let mutable found = false
-        use mutable enumerator = pairs.GetEnumerator()
-        while not found && enumerator.MoveNext() do
-            let _, cell = enumerator.Current
-            match cell with
-            | Some cellData ->
-                match cellData.Value with
-                | Formula _ -> found <- true
-                | _ -> ()
-            | None -> ()
-        found
-
-    let retainedCellMapItemCountIf retained (cells: Map<CellAddress, CellData>) =
-        if retained then commandRetainedCellMapItemCount cells else 0
-
-    let retainedCellMapTextCharCountIf retained (cells: Map<CellAddress, CellData>) =
-        if retained then commandRetainedCellMapTextCharCount cells else 0
-
     let hitTestEvent (e: obj) =
         match gridContainer with
         | None -> SpreadsheetLayout.Empty
@@ -316,30 +290,13 @@ type Spreadsheet(container: Element) =
             let y = getClientY e - getBoundingTop grid
             SpreadsheetLayout.hitTest model (currentViewport()) x y
 
-    let commitSingleCellSelection row col =
-        match model.Selection with
-        | SingleCell (currentRow, currentCol) when currentRow = row && currentCol = col ->
-            false
-        | _ ->
-            model <- { model with Selection = SingleCell (row, col) }
-            true
-
-    let commitRangeSelection startRow startCol endRow endCol =
-        match model.Selection with
-        | Range (currentStartRow, currentStartCol, currentEndRow, currentEndCol)
-            when currentStartRow = startRow &&
-                 currentStartCol = startCol &&
-                 currentEndRow = endRow &&
-                 currentEndCol = endCol ->
-            false
-        | _ ->
-            model <- { model with Selection = Range (startRow, startCol, endRow, endCol) }
-            true
-
     let selectCellAddress (addr: CellAddress) =
-        match findMergedCell addr model with
-        | Some merge -> commitRangeSelection merge.StartRow merge.StartCol merge.EndRow merge.EndCol
-        | None -> commitSingleCellSelection addr.Row addr.Col
+        let selection =
+            match findMergedCell addr model with
+            | Some merge -> Range (merge.StartRow, merge.StartCol, merge.EndRow, merge.EndCol)
+            | None -> SingleCell (addr.Row, addr.Col)
+
+        model <- { model with Selection = selection }
 
     // Drag selection state
     let mutable isDragging = false
@@ -359,15 +316,16 @@ type Spreadsheet(container: Element) =
         match workbook with
         | None -> None
         | Some wb ->
-            let mutable result = None
-            for KeyValue(_, table) in wb.Tables do
-                if result.IsNone
-                   && row >= table.StartRow && row <= table.EndRow
-                   && col >= table.StartCol && col <= table.EndCol then
+            wb.Tables
+            |> Map.tryPick (fun _ table ->
+                if row >= table.StartRow && row <= table.EndRow &&
+                   col >= table.StartCol && col <= table.EndCol then
                     let isHeader = table.HasHeaders && row = table.StartRow
                     let isEvenRow = (row - table.StartRow - (if table.HasHeaders then 1 else 0)) % 2 = 0
-                    result <- Some (table, isHeader, isEvenRow)
-            result
+                    Some (table, isHeader, isEvenRow)
+                else
+                    None
+            )
 
     /// Get column X position (cumulative width of all columns before it)
     let getColumnX (col: int): float =
@@ -463,12 +421,9 @@ type Spreadsheet(container: Element) =
                         // Formula
                         let result = evaluateFormula model.EditBuffer model workbook
                         CellValue.Formula (model.EditBuffer, result)
-                    elif System.String.Equals(model.EditBuffer, "true", System.StringComparison.OrdinalIgnoreCase) then
+                    elif model.EditBuffer.ToLower() = "true" || model.EditBuffer.ToLower() = "false" then
                         // Boolean
-                        CellValue.Boolean true
-                    elif System.String.Equals(model.EditBuffer, "false", System.StringComparison.OrdinalIgnoreCase) then
-                        // Boolean
-                        CellValue.Boolean false
+                        CellValue.Boolean (model.EditBuffer.ToLower() = "true")
                     else
                         // Try to parse as number, otherwise string
                         match tryParseNumber model.EditBuffer with
@@ -489,23 +444,11 @@ type Spreadsheet(container: Element) =
                         | None -> clearCell addr m
                     Redo = fun m -> setCell addr cellData m
                     Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col)
-                    RetainedItemCount =
-                        commandRetainedSumItemCounts [
-                            commandRetainedCellOptionItemCount oldCellData
-                            commandRetainedCellOptionItemCount (Some cellData)
-                        ]
-                    RetainedTextCharCount =
-                        commandRetainedSumTextCharCounts [
-                            commandRetainedCellOptionTextCharCount oldCellData
-                            commandRetainedCellOptionTextCharCount (Some cellData)
-                        ]
                 }
 
-                let nextModel = setCell addr cellData model
-                if not (obj.ReferenceEquals(nextModel, model)) then
-                    model <- nextModel
-                    recalculateFormulas()
-                    model <- pushCommand command model
+                model <- setCell addr cellData model
+                recalculateFormulas()
+                model <- pushCommand command model
 
             elif save then
                 // Empty input = clear cell
@@ -517,14 +460,10 @@ type Spreadsheet(container: Element) =
                         Undo = fun m -> setCell addr old m
                         Redo = fun m -> clearCell addr m
                         Description = sprintf "Clear cell %s" (formatCellRef addr.Row addr.Col)
-                        RetainedItemCount = commandRetainedCellOptionItemCount (Some old)
-                        RetainedTextCharCount = commandRetainedCellOptionTextCharCount (Some old)
                     }
-                    let nextModel = clearCell addr model
-                    if not (obj.ReferenceEquals(nextModel, model)) then
-                        model <- nextModel
-                        recalculateFormulas()
-                        model <- pushCommand command model
+                    model <- clearCell addr model
+                    recalculateFormulas()
+                    model <- pushCommand command model
                 | None -> ()
 
             model <- { model with EditingCell = None; EditBuffer = "" }
@@ -536,18 +475,9 @@ type Spreadsheet(container: Element) =
         | SingleCell (row, col) ->
             let newRow = (row + deltaRow) |> max 0 |> min (model.RowCount - 1)
             let newCol = (col + deltaCol) |> max 0 |> min (model.ColCount - 1)
-            if commitSingleCellSelection newRow newCol then
-                render()
-        | _ -> ()
-
-    and commitModelUpdate recalc nextModel =
-        let changed = not (obj.ReferenceEquals(nextModel, model))
-        if changed then
-            model <- nextModel
-            if recalc then
-                recalculateFormulas()
+            model <- { model with Selection = SingleCell (newRow, newCol) }
             render()
-        changed
+        | _ -> ()
 
     /// Handle keyboard events
     and handleKeyDown (e: obj) =
@@ -595,13 +525,11 @@ type Spreadsheet(container: Element) =
                     preventDefault e
                     let clipboardData = serializeSelection model.Selection model true
                     model <- { model with Clipboard = Some clipboardData }
-                    let cellsBeforeCut = model.Cells
 
                     // Clear source cells
                     model <- clearSelectionCells model.Selection model
-                    if not (obj.ReferenceEquals(model.Cells, cellsBeforeCut)) then
-                        recalculateFormulas()
-                        render()
+                    recalculateFormulas()
+                    render()
 
                 | "v" ->
                     // Paste
@@ -610,60 +538,72 @@ type Spreadsheet(container: Element) =
                     | Some clipboardData ->
                         match model.Selection with
                         | SingleCell (row, col) ->
-                            let targetAddr: CellAddress = { Row = row; Col = col }
+                            let targetAddr = { Row = row; Col = col }
 
                             // Capture old values for undo
-                            let oldCells = pasteCellOptions targetAddr clipboardData model
-
-                            // Perform paste
-                            let pastedModel = pasteClipboard targetAddr clipboardData model
-                            if not (obj.ReferenceEquals(pastedModel, model)) then
-                                model <- pastedModel
-
-                                // Re-evaluate all formulas in pasted cells
-                                for (relRow, relCol, _) in clipboardData.Cells do
+                            let oldCells =
+                                clipboardData.Cells
+                                |> List.map (fun (relRow, relCol, _) ->
                                     let pasteRow = row + relRow
                                     let pasteCol = col + relCol
-                                    let addr: CellAddress = { Row = pasteRow; Col = pasteCol }
-                                    match getCell addr model with
-                                    | Some cellData ->
-                                        match cellData.Value with
-                                        | Formula (formula, _) ->
-                                            let result = evaluateFormula formula model workbook
-                                            let newCellData = { cellData with Value = Formula (formula, result) }
-                                            model <- setCell addr newCellData model
-                                        | _ -> ()
-                                    | None -> ()
-                                recalculateFormulas()
+                                    let addr = { Row = pasteRow; Col = pasteCol }
+                                    (addr, getCell addr model)
+                                )
 
-                                // Capture new values for redo
-                                let newCells = pasteCellOptions targetAddr clipboardData model
+                            // Perform paste
+                            model <- pasteClipboard targetAddr clipboardData model
 
-                                // Create undo command
-                                let retainedItemCount =
-                                    commandRetainedSumItemCounts [
-                                        commandRetainedCellOptionPairsItemCount oldCells
-                                        commandRetainedCellOptionPairsItemCount newCells
-                                    ]
-                                let command = {
-                                    Undo = restoreCellOptions oldCells
-                                    Redo = restoreCellOptions newCells
-                                    Description = "Paste"
-                                    RetainedItemCount = retainedItemCount
-                                    RetainedTextCharCount =
-                                        commandRetainedTextCharCountForItemCount retainedItemCount (fun () ->
-                                            commandRetainedSumTextCharCounts [
-                                                commandRetainedCellOptionPairsTextCharCount oldCells
-                                                commandRetainedCellOptionPairsTextCharCount newCells
-                                            ])
-                                }
-                                model <- pushCommand command model
+                            // Re-evaluate all formulas in pasted cells
+                            for (relRow, relCol, _) in clipboardData.Cells do
+                                let pasteRow = row + relRow
+                                let pasteCol = col + relCol
+                                let addr = { Row = pasteRow; Col = pasteCol }
+                                match getCell addr model with
+                                | Some cellData ->
+                                    match cellData.Value with
+                                    | Formula (formula, _) ->
+                                        let result = evaluateFormula formula model workbook
+                                        let newCellData = { cellData with Value = Formula (formula, result) }
+                                        model <- setCell addr newCellData model
+                                    | _ -> ()
+                                | None -> ()
+                            recalculateFormulas()
 
-                                // Clear cut flag after paste
-                                if clipboardData.IsCut then
-                                    model <- { model with Clipboard = None }
+                            // Capture new values for redo
+                            let newCells =
+                                clipboardData.Cells
+                                |> List.map (fun (relRow, relCol, _) ->
+                                    let pasteRow = row + relRow
+                                    let pasteCol = col + relCol
+                                    let addr = { Row = pasteRow; Col = pasteCol }
+                                    (addr, getCell addr model)
+                                )
 
-                                render()
+                            // Create undo command
+                            let command = {
+                                Undo = fun m ->
+                                    let mutable result = m
+                                    for (addr, oldValue) in oldCells do
+                                        match oldValue with
+                                        | Some cellData -> result <- setCell addr cellData result
+                                        | None -> result <- clearCell addr result
+                                    result
+                                Redo = fun m ->
+                                    let mutable result = m
+                                    for (addr, newValue) in newCells do
+                                        match newValue with
+                                        | Some cellData -> result <- setCell addr cellData result
+                                        | None -> result <- clearCell addr result
+                                    result
+                                Description = "Paste"
+                            }
+                            model <- pushCommand command model
+
+                            // Clear cut flag after paste
+                            if clipboardData.IsCut then
+                                model <- { model with Clipboard = None }
+
+                            render()
                         | _ -> ()
                     | None -> ()
 
@@ -731,8 +671,6 @@ type Spreadsheet(container: Element) =
                                 Undo = fun m -> setCell addr old m
                                 Redo = fun m -> clearCell addr m
                                 Description = sprintf "Delete cell %s" (formatCellRef row col)
-                                RetainedItemCount = commandRetainedCellOptionItemCount (Some old)
-                                RetainedTextCharCount = commandRetainedCellOptionTextCharCount (Some old)
                             }
                             model <- clearCell addr model
                             recalculateFormulas()
@@ -809,27 +747,17 @@ type Spreadsheet(container: Element) =
             let oldCells = model.Cells
             let oldSortState = model.SortState
 
-            let nextModel = sortByColumn col ascending model
-            if not (obj.ReferenceEquals(nextModel, model)) then
-                model <- nextModel
+            model <- sortByColumn col ascending model
 
-                // Create undo command
-                let cellsChanged = not (obj.ReferenceEquals(nextModel.Cells, oldCells))
-                let undo =
-                    if cellsChanged then
-                        fun m -> { m with Cells = oldCells; SortState = oldSortState }
-                    else
-                        fun m -> { m with SortState = oldSortState }
-                let command = {
-                    Undo = undo
-                    Redo = fun m -> sortByColumn col ascending m
-                    Description = sprintf "Sort by column %s" (columnToLetter col)
-                    RetainedItemCount = retainedCellMapItemCountIf cellsChanged oldCells
-                    RetainedTextCharCount = retainedCellMapTextCharCountIf cellsChanged oldCells
-                }
-                model <- pushCommand command model
+            // Create undo command
+            let command = {
+                Undo = fun m -> { m with Cells = oldCells; SortState = oldSortState }
+                Redo = fun m -> sortByColumn col ascending m
+                Description = sprintf "Sort by column %s" (columnToLetter col)
+            }
+            model <- pushCommand command model
 
-                render()
+            render()
         )
 
         appendChild header headerTextDiv
@@ -999,12 +927,9 @@ type Spreadsheet(container: Element) =
             let cellW, cellH =
                 match mergedCell with
                 | Some merge ->
-                    let mutable spanW = 0.0
-                    for c in merge.StartCol .. merge.EndCol do
-                        spanW <- spanW + getColumnWidth c model
-                    let mutable spanH = 0.0
-                    for r in merge.StartRow .. merge.EndRow do
-                        spanH <- spanH + getRowHeight r model
+                    // Calculate span size
+                    let spanW = [merge.StartCol .. merge.EndCol] |> List.sumBy (fun c -> getColumnWidth c model)
+                    let spanH = [merge.StartRow .. merge.EndRow] |> List.sumBy (fun r -> getRowHeight r model)
                     spanW, spanH
                 | None ->
                     getColumnWidth col model, getRowHeight row model
@@ -1214,8 +1139,8 @@ type Spreadsheet(container: Element) =
                     | SpreadsheetLayout.Cell hitAddr ->
                         isDragging <- true
                         dragStartCell <- Some hitAddr
-                        if selectCellAddress hitAddr then
-                            render()
+                        selectCellAddress hitAddr
+                        render()
                     | _ -> ()
                 )
 
@@ -1230,8 +1155,8 @@ type Spreadsheet(container: Element) =
                                 let endRow = max start.Row hitAddr.Row
                                 let startCol = min start.Col hitAddr.Col
                                 let endCol = max start.Col hitAddr.Col
-                                if commitRangeSelection startRow startCol endRow endCol then
-                                    render()
+                                model <- { model with Selection = Range (startRow, startCol, endRow, endCol) }
+                                render()
                             | _ -> ()
                         | None -> ()
                 )
@@ -1320,11 +1245,7 @@ type Spreadsheet(container: Element) =
         let visibleValues =
             match Map.tryFind col model.Filters with
             | Some filter -> filter.VisibleValues
-            | None ->
-                let mutable values = Set.empty
-                for value in uniqueValues do
-                    values <- Set.add value values
-                values
+            | None -> Set.ofList uniqueValues
 
         // Create dropdown container
         let dropdown = createElement "div"
@@ -1478,18 +1399,15 @@ type Spreadsheet(container: Element) =
                     checkedValues <- Set.add value checkedValues
 
             // Apply filter
-            let nextModel =
-                if checkedValues.Count = uniqueValues.Length then
-                    // All selected = no filter
-                    removeFilter col model
-                else
-                    applyFilter col checkedValues model
+            if checkedValues.Count = uniqueValues.Length then
+                // All selected = no filter
+                model <- removeFilter col model
+            else
+                model <- applyFilter col checkedValues model
 
             // Remove dropdown
             removeChild (getBody()) dropdown
-            if not (obj.ReferenceEquals(nextModel, model)) then
-                model <- nextModel
-                render()
+            render()
         )
 
         let cancelBtn = createElement "button"
@@ -1687,16 +1605,14 @@ type Spreadsheet(container: Element) =
                     model <- startSearch query caseSensitive model
 
                 // Find next
-                match nextSearchResultValue model with
-                | ValueSome newModel ->
-                    let changed = not (obj.ReferenceEquals(newModel, model))
+                match nextSearchResult model with
+                | Some newModel ->
                     model <- newModel
                     let current = model.SearchIndex + 1
                     let total = model.SearchResults.Length
                     setTextContent resultsDiv (sprintf "Found %d of %d" current total)
-                    if changed then
-                        render()
-                | ValueNone ->
+                    render()
+                | None ->
                     setTextContent resultsDiv "No results found"
         )
         appendChild buttonRow findNextBtn
@@ -1725,13 +1641,11 @@ type Spreadsheet(container: Element) =
                 setTextContent resultsDiv "Replaced current match"
 
                 // Find next automatically
-                match nextSearchResultValue model with
-                | ValueSome nextModel ->
-                    let changed = not (obj.ReferenceEquals(nextModel, model))
+                match nextSearchResult model with
+                | Some nextModel ->
                     model <- nextModel
-                    if changed then
-                        render()
-                | ValueNone ->
+                    render()
+                | None ->
                     setTextContent resultsDiv "No more matches"
             | None ->
                 setTextContent resultsDiv "No match at current selection"
@@ -1757,10 +1671,12 @@ type Spreadsheet(container: Element) =
             let caseSensitive = getChecked caseSensitiveCheckbox
 
             if not (System.String.IsNullOrWhiteSpace(findText)) then
-                let updatedModel, count = replaceAllWithCount findText replaceText caseSensitive model
+                // Count matches before replacing
+                let matches = searchCells findText caseSensitive model
+                let count = matches.Length
 
                 if count > 0 then
-                    model <- updatedModel
+                    model <- replaceAll findText replaceText caseSensitive model
                     setTextContent resultsDiv (sprintf "Replaced %d matches" count)
                     render()
                 else
@@ -2121,11 +2037,11 @@ type Spreadsheet(container: Element) =
                         }
 
                         // Apply to cell
-                        let changed = addConditionalFormat addr conditionalFormat model |> commitModelUpdate false
+                        model <- addConditionalFormat addr conditionalFormat model
 
                         // Close dialog
                         removeChild (getBody()) overlay
-                        if not changed then render()
+                        render()
                     | None ->
                         let _ : obj = emitJsExpr "Invalid value(s) for selected rule type" "alert($0)"
                         ()
@@ -2146,9 +2062,9 @@ type Spreadsheet(container: Element) =
                 "font-size", "13px"
             ]
             addEventListener clearBtn "click" (fun _ ->
-                let changed = removeConditionalFormats addr model |> commitModelUpdate false
+                model <- removeConditionalFormats addr model
                 removeChild (getBody()) overlay
-                if not changed then render()
+                render()
             )
             appendChild buttonRow clearBtn
 
@@ -2236,17 +2152,15 @@ type Spreadsheet(container: Element) =
                     let currentX = getProp e "clientX" |> unbox<float>
                     let delta = currentX - resizeStartPos
                     let newWidth = max 30.0 (resizeStartSize + delta)
-                    let nextModel = setColumnWidth col newWidth model
-                    if not (obj.ReferenceEquals(nextModel, model)) then
-                        model <- nextModel
+                    model <- setColumnWidth col newWidth model
 
-                        // Throttle render with requestAnimationFrame
-                        if not resizeRenderScheduled then
-                            resizeRenderScheduled <- true
-                            requestAnimationFrame (fun () ->
-                                render()
-                                resizeRenderScheduled <- false
-                            )
+                    // Throttle render with requestAnimationFrame
+                    if not resizeRenderScheduled then
+                        resizeRenderScheduled <- true
+                        requestAnimationFrame (fun () ->
+                            render()
+                            resizeRenderScheduled <- false
+                        )
                 | None -> ()
             elif isResizingRow then
                 match resizeRowIndex with
@@ -2254,17 +2168,15 @@ type Spreadsheet(container: Element) =
                     let currentY = getProp e "clientY" |> unbox<float>
                     let delta = currentY - resizeStartPos
                     let newHeight = max 20.0 (resizeStartSize + delta)
-                    let nextModel = setRowHeight row newHeight model
-                    if not (obj.ReferenceEquals(nextModel, model)) then
-                        model <- nextModel
+                    model <- setRowHeight row newHeight model
 
-                        // Throttle render with requestAnimationFrame
-                        if not resizeRenderScheduled then
-                            resizeRenderScheduled <- true
-                            requestAnimationFrame (fun () ->
-                                render()
-                                resizeRenderScheduled <- false
-                            )
+                    // Throttle render with requestAnimationFrame
+                    if not resizeRenderScheduled then
+                        resizeRenderScheduled <- true
+                        requestAnimationFrame (fun () ->
+                            render()
+                            resizeRenderScheduled <- false
+                        )
                 | None -> ()
         )
 
@@ -2370,9 +2282,7 @@ type Spreadsheet(container: Element) =
     member _.RenderPortableCanvas(canvas: Element) = renderPortablePaintToCanvas canvas
 
     member _.PortablePaintItemCount() =
-        let mutable count = 0
-        SpreadsheetPaint.iterViewportPaintItems model (currentViewport()) (fun _ _ -> count <- count + 1)
-        count
+        SpreadsheetPaint.buildViewportPaintItems model (currentViewport()) |> List.length
 
     /// VBA-style per-cell information snapshot for parity comparison
     /// against Excel COM. Mirrors what `extract-excel-layout.vbs` dumps
@@ -2385,9 +2295,6 @@ type Spreadsheet(container: Element) =
         // what the Paint pass would use at render time).
         let viewport = currentViewport()
         let cellRows = SpreadsheetLayout.visibleCells model viewport
-        let mergeByPrimary = Dictionary<CellAddress, MergedCell>()
-        for merge in model.MergedCells do
-            mergeByPrimary.[{ Row = merge.StartRow; Col = merge.StartCol }] <- merge
         // Cell rect's X/Y are in viewport-local CSS px; convert to
         // viewport coordinates and to PDF points (1 pt = 96/72 px) so
         // the comparison can target Excel's pt-based geometry.
@@ -2417,10 +2324,15 @@ type Spreadsheet(container: Element) =
                 | CellValue.Formula (expr, _) -> "=" + expr
                 | _ -> ""
             let addrA1 = columnToLetter addr.Col + string (addr.Row + 1)
+            let mergeFor =
+                model.MergedCells
+                |> List.tryFind (fun m ->
+                    addr.Row >= m.StartRow && addr.Row <= m.EndRow &&
+                    addr.Col >= m.StartCol && addr.Col <= m.EndCol)
             let mergedRows, mergedCols =
-                match mergeByPrimary.TryGetValue addr with
-                | true, m -> m.EndRow - m.StartRow + 1, m.EndCol - m.StartCol + 1
-                | false, _ -> 1, 1
+                match mergeFor with
+                | Some m -> m.EndRow - m.StartRow + 1, m.EndCol - m.StartCol + 1
+                | None -> 1, 1
             createObj [
                 "row" ==> (addr.Row + 1)
                 "column" ==> (addr.Col + 1)
@@ -2540,46 +2452,60 @@ type Spreadsheet(container: Element) =
             Format = defaultFormat
             Comment = None
         }
-        setCell addr cellData model |> commitModelUpdate true |> ignore
+        model <- setCell addr cellData model
+        recalculateFormulas()
+        render()
 
     /// Select a specific cell programmatically
     member _.SelectCell(row: int, col: int) =
-        if commitSingleCellSelection row col then
-            render()
+        model <- { model with Selection = SingleCell (row, col) }
+        render()
 
     /// Apply format to selected cell
     member _.ApplyFormat(formatType: string) =
         match model.Selection with
         | SingleCell (row, col) ->
             let addr = { Row = row; Col = col }
-            match formatType with
-            | "alignLeft" ->
-                setCellHorizontalAlign addr "left" model |> commitModelUpdate false |> ignore
-            | "alignCenter" ->
-                setCellHorizontalAlign addr "center" model |> commitModelUpdate false |> ignore
-            | "alignRight" ->
-                setCellHorizontalAlign addr "right" model |> commitModelUpdate false |> ignore
-            | _ ->
-                let updateFormat (format: CellFormat) =
+            match getCell addr model with
+            | Some cellData ->
+                let newFormat =
                     match formatType with
-                    | "bold" -> { format with Bold = not format.Bold }
-                    | "italic" -> { format with Italic = not format.Italic }
-                    | "underline" -> { format with Underline = not format.Underline }
+                    | "bold" -> { cellData.Format with Bold = not cellData.Format.Bold }
+                    | "italic" -> { cellData.Format with Italic = not cellData.Format.Italic }
+                    | "underline" -> { cellData.Format with Underline = not cellData.Format.Underline }
                     | "fontIncrease" ->
-                        let currentSize = defaultArg format.FontSize 11
-                        { format with FontSize = Some (currentSize + 2) }
+                        let currentSize = defaultArg cellData.Format.FontSize 11
+                        { cellData.Format with FontSize = Some (currentSize + 2) }
                     | "fontDecrease" ->
-                        let currentSize = defaultArg format.FontSize 11
-                        { format with FontSize = Some (max 8 (currentSize - 2)) }
-                    | _ -> format
-                let canCreateMissingCell =
+                        let currentSize = defaultArg cellData.Format.FontSize 11
+                        { cellData.Format with FontSize = Some (max 8 (currentSize - 2)) }
+                    | "alignLeft" -> { cellData.Format with HorizontalAlign = Some "left" }
+                    | "alignCenter" -> { cellData.Format with HorizontalAlign = Some "center" }
+                    | "alignRight" -> { cellData.Format with HorizontalAlign = Some "right" }
+                    | _ -> cellData.Format
+
+                let newCellData = { cellData with Format = newFormat }
+                model <- setCell addr newCellData model
+                render()
+            | None ->
+                // Create cell with format
+                let newFormat =
                     match formatType with
-                    | "bold"
-                    | "italic"
-                    | "underline" -> true
-                    | _ -> model.Cells.ContainsKey addr
-                if canCreateMissingCell then
-                    setCellFormat addr updateFormat model |> commitModelUpdate false |> ignore
+                    | "bold" -> { defaultFormat with Bold = true }
+                    | "italic" -> { defaultFormat with Italic = true }
+                    | "underline" -> { defaultFormat with Underline = true }
+                    | "alignLeft" -> { defaultFormat with HorizontalAlign = Some "left" }
+                    | "alignCenter" -> { defaultFormat with HorizontalAlign = Some "center" }
+                    | "alignRight" -> { defaultFormat with HorizontalAlign = Some "right" }
+                    | _ -> defaultFormat
+
+                let cellData = {
+                    Value = CellValue.Empty
+                    Format = newFormat
+                    Comment = None
+                }
+                model <- setCell addr cellData model
+                render()
         | _ -> ()
 
     /// Apply text color to selected cell
@@ -2587,7 +2513,15 @@ type Spreadsheet(container: Element) =
         match model.Selection with
         | SingleCell (row, col) ->
             let addr = { Row = row; Col = col }
-            setCellTextColor addr color model |> commitModelUpdate false |> ignore
+            let cellData = getCell addr model |> Option.defaultValue {
+                Value = CellValue.Empty
+                Format = defaultFormat
+                Comment = None
+            }
+            let newFormat = { cellData.Format with TextColor = Some color }
+            let newCellData = { cellData with Format = newFormat }
+            model <- setCell addr newCellData model
+            render()
         | _ -> ()
 
     /// Apply background color to selected cell
@@ -2595,7 +2529,15 @@ type Spreadsheet(container: Element) =
         match model.Selection with
         | SingleCell (row, col) ->
             let addr = { Row = row; Col = col }
-            setCellBgColor addr color model |> commitModelUpdate false |> ignore
+            let cellData = getCell addr model |> Option.defaultValue {
+                Value = CellValue.Empty
+                Format = defaultFormat
+                Comment = None
+            }
+            let newFormat = { cellData.Format with BgColor = Some color }
+            let newCellData = { cellData with Format = newFormat }
+            model <- setCell addr newCellData model
+            render()
         | _ -> ()
 
     /// Apply number format to selected cell
@@ -2603,7 +2545,15 @@ type Spreadsheet(container: Element) =
         match model.Selection with
         | SingleCell (row, col) ->
             let addr = { Row = row; Col = col }
-            setCellNumberFormat addr format model |> commitModelUpdate false |> ignore
+            let cellData = getCell addr model |> Option.defaultValue {
+                Value = CellValue.Empty
+                Format = defaultFormat
+                Comment = None
+            }
+            let newFormat = { cellData.Format with NumberFormat = Some format }
+            let newCellData = { cellData with Format = newFormat }
+            model <- setCell addr newCellData model
+            render()
         | _ -> ()
 
     /// Apply border to selected cell
@@ -2611,17 +2561,40 @@ type Spreadsheet(container: Element) =
         match model.Selection with
         | SingleCell (row, col) ->
             let addr = { Row = row; Col = col }
-            setCellBorder addr side style color model |> commitModelUpdate false |> ignore
+            let cellData = getCell addr model |> Option.defaultValue {
+                Value = CellValue.Empty
+                Format = defaultFormat
+                Comment = None
+            }
+            let border = { Style = style; Color = Some color }
+            let newFormat =
+                match side with
+                | "top" -> { cellData.Format with BorderTop = Some border }
+                | "bottom" -> { cellData.Format with BorderBottom = Some border }
+                | "left" -> { cellData.Format with BorderLeft = Some border }
+                | "right" -> { cellData.Format with BorderRight = Some border }
+                | "all" ->
+                    { cellData.Format with
+                        BorderTop = Some border
+                        BorderBottom = Some border
+                        BorderLeft = Some border
+                        BorderRight = Some border }
+                | _ -> cellData.Format
+            let newCellData = { cellData with Format = newFormat }
+            model <- setCell addr newCellData model
+            render()
         | _ -> ()
 
     /// Merge cells in a range
     member _.MergeCells(startRow: int, startCol: int, endRow: int, endCol: int) =
-        addMergedCell startRow startCol endRow endCol model |> commitModelUpdate false |> ignore
+        model <- addMergedCell startRow startCol endRow endCol model
+        render()
 
     /// Unmerge cells at address
     member _.UnmergeCells(row: int, col: int) =
         let addr = { Row = row; Col = col }
-        removeMergedCell addr model |> commitModelUpdate false |> ignore
+        model <- removeMergedCell addr model
+        render()
 
     /// Add or update comment on a cell
     member _.SetComment(row: int, col: int, text: string, author: string option) =
@@ -2633,7 +2606,8 @@ type Spreadsheet(container: Element) =
         }
         let comment = { Text = text; Author = author }
         let newCellData = { cellData with Comment = Some comment }
-        setCell addr newCellData model |> commitModelUpdate false |> ignore
+        model <- setCell addr newCellData model
+        render()
 
     /// Remove comment from a cell
     member _.RemoveComment(row: int, col: int) =
@@ -2641,7 +2615,8 @@ type Spreadsheet(container: Element) =
         match getCell addr model with
         | Some cellData ->
             let newCellData = { cellData with Comment = None }
-            setCell addr newCellData model |> commitModelUpdate false |> ignore
+            model <- setCell addr newCellData model
+            render()
         | None -> ()
 
     /// Set workbook context for table reference support.
@@ -2694,26 +2669,16 @@ type Spreadsheet(container: Element) =
         let oldSelection = model.Selection
         let oldRowCount = model.RowCount
 
-        let newModel = insertRow atRow model
-        if not (obj.ReferenceEquals(newModel, model)) then
-            model <- newModel
+        model <- insertRow atRow model
 
-            // Create undo command
-            let cellsChanged = not (obj.ReferenceEquals(newModel.Cells, oldCells))
-            let undo =
-                if cellsChanged then
-                    fun m -> { m with Cells = oldCells; Selection = oldSelection; RowCount = oldRowCount }
-                else
-                    fun m -> { m with Selection = oldSelection; RowCount = oldRowCount }
-            let command = {
-                Undo = undo
-                Redo = fun m -> insertRow atRow m
-                Description = sprintf "Insert row at %d" atRow
-                RetainedItemCount = retainedCellMapItemCountIf cellsChanged oldCells
-                RetainedTextCharCount = retainedCellMapTextCharCountIf cellsChanged oldCells
-            }
-            model <- pushCommand command model
-            render()
+        // Create undo command
+        let command = {
+            Undo = fun m -> { m with Cells = oldCells; Selection = oldSelection; RowCount = oldRowCount }
+            Redo = fun m -> insertRow atRow m
+            Description = sprintf "Insert row at %d" atRow
+        }
+        model <- pushCommand command model
+        render()
 
     /// Delete a row at the specified index
     member _.DeleteRow(atRow: int) =
@@ -2721,26 +2686,16 @@ type Spreadsheet(container: Element) =
         let oldSelection = model.Selection
         let oldRowCount = model.RowCount
 
-        let newModel = deleteRow atRow model
-        if not (obj.ReferenceEquals(newModel, model)) then
-            model <- newModel
+        model <- deleteRow atRow model
 
-            // Create undo command
-            let cellsChanged = not (obj.ReferenceEquals(newModel.Cells, oldCells))
-            let undo =
-                if cellsChanged then
-                    fun m -> { m with Cells = oldCells; Selection = oldSelection; RowCount = oldRowCount }
-                else
-                    fun m -> { m with Selection = oldSelection; RowCount = oldRowCount }
-            let command = {
-                Undo = undo
-                Redo = fun m -> deleteRow atRow m
-                Description = sprintf "Delete row %d" atRow
-                RetainedItemCount = retainedCellMapItemCountIf cellsChanged oldCells
-                RetainedTextCharCount = retainedCellMapTextCharCountIf cellsChanged oldCells
-            }
-            model <- pushCommand command model
-            render()
+        // Create undo command
+        let command = {
+            Undo = fun m -> { m with Cells = oldCells; Selection = oldSelection; RowCount = oldRowCount }
+            Redo = fun m -> deleteRow atRow m
+            Description = sprintf "Delete row %d" atRow
+        }
+        model <- pushCommand command model
+        render()
 
     /// Insert a column at the specified index
     member _.InsertColumn(atCol: int) =
@@ -2748,26 +2703,16 @@ type Spreadsheet(container: Element) =
         let oldSelection = model.Selection
         let oldColCount = model.ColCount
 
-        let newModel = insertColumn atCol model
-        if not (obj.ReferenceEquals(newModel, model)) then
-            model <- newModel
+        model <- insertColumn atCol model
 
-            // Create undo command
-            let cellsChanged = not (obj.ReferenceEquals(newModel.Cells, oldCells))
-            let undo =
-                if cellsChanged then
-                    fun m -> { m with Cells = oldCells; Selection = oldSelection; ColCount = oldColCount }
-                else
-                    fun m -> { m with Selection = oldSelection; ColCount = oldColCount }
-            let command = {
-                Undo = undo
-                Redo = fun m -> insertColumn atCol m
-                Description = sprintf "Insert column at %s" (columnToLetter atCol)
-                RetainedItemCount = retainedCellMapItemCountIf cellsChanged oldCells
-                RetainedTextCharCount = retainedCellMapTextCharCountIf cellsChanged oldCells
-            }
-            model <- pushCommand command model
-            render()
+        // Create undo command
+        let command = {
+            Undo = fun m -> { m with Cells = oldCells; Selection = oldSelection; ColCount = oldColCount }
+            Redo = fun m -> insertColumn atCol m
+            Description = sprintf "Insert column at %s" (columnToLetter atCol)
+        }
+        model <- pushCommand command model
+        render()
 
     /// Delete a column at the specified index
     member _.DeleteColumn(atCol: int) =
@@ -2775,116 +2720,70 @@ type Spreadsheet(container: Element) =
         let oldSelection = model.Selection
         let oldColCount = model.ColCount
 
-        let newModel = deleteColumn atCol model
-        if not (obj.ReferenceEquals(newModel, model)) then
-            model <- newModel
+        model <- deleteColumn atCol model
 
-            // Create undo command
-            let cellsChanged = not (obj.ReferenceEquals(newModel.Cells, oldCells))
-            let undo =
-                if cellsChanged then
-                    fun m -> { m with Cells = oldCells; Selection = oldSelection; ColCount = oldColCount }
-                else
-                    fun m -> { m with Selection = oldSelection; ColCount = oldColCount }
-            let command = {
-                Undo = undo
-                Redo = fun m -> deleteColumn atCol m
-                Description = sprintf "Delete column %s" (columnToLetter atCol)
-                RetainedItemCount = retainedCellMapItemCountIf cellsChanged oldCells
-                RetainedTextCharCount = retainedCellMapTextCharCountIf cellsChanged oldCells
-            }
-            model <- pushCommand command model
-            render()
+        // Create undo command
+        let command = {
+            Undo = fun m -> { m with Cells = oldCells; Selection = oldSelection; ColCount = oldColCount }
+            Redo = fun m -> deleteColumn atCol m
+            Description = sprintf "Delete column %s" (columnToLetter atCol)
+        }
+        model <- pushCommand command model
+        render()
 
     /// Start a search
     member _.StartSearch(query: string, caseSensitive: bool) =
-        let newModel = startSearch query caseSensitive model
-        if not (obj.ReferenceEquals(newModel, model)) then
-            model <- newModel
-            render()
+        model <- startSearch query caseSensitive model
+        render()
 
     /// Find next occurrence
     member _.FindNext() =
-        match nextSearchResultValue model with
-        | ValueSome newModel ->
-            let changed = not (obj.ReferenceEquals(newModel, model))
+        match nextSearchResult model with
+        | Some newModel ->
             model <- newModel
-            if changed then
-                render()
+            render()
             true
-        | ValueNone -> false
+        | None -> false
 
     /// Replace current selection
     member _.Replace(findText: string, replaceText: string, caseSensitive: bool) =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            let addr: CellAddress = { Row = row; Col = col }
-            let oldCells =
-                let cells = ResizeArray<CellAddress * CellData option>()
-                cells.Add(addr, getCell addr model)
-                cells
-            match replaceAtSelection findText replaceText caseSensitive model with
-            | Some newModel ->
-                let newCells =
-                    let cells = ResizeArray<CellAddress * CellData option>()
-                    cells.Add(addr, getCell addr newModel)
-                    cells
-                let commandTextCharCount =
-                    commandRetainedSumTextCharCounts [
-                        commandRetainedTextLength findText
-                        commandRetainedTextLength replaceText
-                    ]
-                let retainedItemCount =
-                    commandRetainedSumItemCounts [
-                        commandRetainedCellOptionPairsItemCount oldCells
-                        commandRetainedCellOptionPairsItemCount newCells
-                    ]
-                let command = {
-                    Undo = restoreCellOptions oldCells
-                    Redo = restoreCellOptions newCells
-                    Description = "Replace"
-                    RetainedItemCount = retainedItemCount
-                    RetainedTextCharCount =
-                        commandRetainedTextCharCountForItemCountWithInitial retainedItemCount commandTextCharCount (fun () ->
-                            commandRetainedSumTextCharCounts [
-                                commandRetainedCellOptionPairsTextCharCount oldCells
-                                commandRetainedCellOptionPairsTextCharCount newCells
-                            ])
-                }
-                model <- pushCommand command newModel
-                render()
-                true
-            | None -> false
-        | _ -> false
+        let changedAddr =
+            match model.Selection with
+            | SingleCell (row, col) -> Some { Row = row; Col = col }
+            | _ -> None
+        let oldCells =
+            match changedAddr with
+            | Some addr -> [ addr, getCell addr model ]
+            | None -> []
+        match replaceAtSelection findText replaceText caseSensitive model with
+        | Some newModel ->
+            let newCells =
+                match changedAddr with
+                | Some addr -> [ addr, getCell addr newModel ]
+                | None -> []
+            let command = {
+                Undo = restoreCellOptions oldCells
+                Redo = restoreCellOptions newCells
+                Description = "Replace"
+            }
+            model <- pushCommand command newModel
+            render()
+            true
+        | None -> false
 
     /// Replace all occurrences
     member _.ReplaceAll(findText: string, replaceText: string, caseSensitive: bool) =
         let newModel, count, oldCells, newCells = replaceAllWithChanges findText replaceText caseSensitive model
+        model <- newModel
+
         if count > 0 then
-            let retainedItemCount =
-                commandRetainedSumItemCounts [
-                    commandRetainedCellOptionPairsItemCount oldCells
-                    commandRetainedCellOptionPairsItemCount newCells
-                ]
-            let commandTextCharCount =
-                commandRetainedSumTextCharCounts [
-                    commandRetainedTextLength findText
-                    commandRetainedTextLength replaceText
-                ]
             let command = {
                 Undo = restoreCellOptions oldCells
                 Redo = restoreCellOptions newCells
                 Description = "Replace All"
-                RetainedItemCount = retainedItemCount
-                RetainedTextCharCount =
-                    commandRetainedTextCharCountForItemCountWithInitial retainedItemCount commandTextCharCount (fun () ->
-                        commandRetainedSumTextCharCounts [
-                            commandRetainedCellOptionPairsTextCharCount oldCells
-                            commandRetainedCellOptionPairsTextCharCount newCells
-                        ])
             }
-            model <- pushCommand command newModel
-            render()
+            model <- pushCommand command model
+        render()
 
     /// Get search results count
     member _.GetSearchResultsCount() =
@@ -2909,12 +2808,14 @@ type Spreadsheet(container: Element) =
             Style = { defaultFormat with BgColor = Some bgColor }
         }
 
-        addConditionalFormat addr format model |> commitModelUpdate false |> ignore
+        model <- addConditionalFormat addr format model
+        render()
 
     /// Remove conditional formatting from a cell
     member _.RemoveConditionalFormats(row: int, col: int) =
         let addr = { Row = row; Col = col }
-        removeConditionalFormats addr model |> commitModelUpdate false |> ignore
+        model <- removeConditionalFormats addr model
+        render()
 
     /// Show conditional formatting dialog for current selection
     member _.ShowConditionalFormattingDialog() =
@@ -2926,58 +2827,23 @@ type Spreadsheet(container: Element) =
 
     /// Import CSV data
     member _.ImportCSV(csvText: string, startRow: int, startCol: int) =
-        let oldCells = model.Cells
-        let oldHasFormulas = cellsHaveFormulaCells oldCells
-        let newModel, oldImportCells, newImportCells =
-            if oldHasFormulas then
-                importCSV csvText startRow startCol model,
-                ResizeArray<CellAddress * CellData option>(),
-                ResizeArray<CellAddress * CellData option>()
-            else
-                importCSVWithChanges csvText startRow startCol model
-        if not (obj.ReferenceEquals(newModel, model)) then
-            model <- newModel
-            recalculateFormulas()
+        let newModel, oldCells, newCells = importCSVWithChanges csvText startRow startCol model
+        model <- newModel
+        recalculateFormulas()
 
-            // Create undo command
-            let command =
-                if not oldHasFormulas && not (cellOptionPairsHaveFormula newImportCells) then
-                    let retainedItemCount =
-                        commandRetainedSumItemCounts [
-                            commandRetainedCellOptionPairsItemCount oldImportCells
-                            commandRetainedCellOptionPairsItemCount newImportCells
-                        ]
-                    {
-                        Undo = restoreCellOptions oldImportCells
-                        Redo = restoreCellOptions newImportCells
-                        Description = "Import CSV"
-                        RetainedItemCount = retainedItemCount
-                        RetainedTextCharCount =
-                            commandRetainedTextCharCountForItemCount retainedItemCount (fun () ->
-                                commandRetainedSumTextCharCounts [
-                                    commandRetainedCellOptionPairsTextCharCount oldImportCells
-                                    commandRetainedCellOptionPairsTextCharCount newImportCells
-                                ])
-                    }
-                else
-                    let retainedItemCount = commandRetainedCellMapItemCount oldCells
-                    let commandTextCharCount = commandRetainedTextLength csvText
-                    {
-                        Undo = fun m -> { m with Cells = oldCells }
-                        Redo = fun m ->
-                            let sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
-                            importCSV csvText startRow startCol m
-                            |> recalculateAllFormulas workbook sheet
-                            |> spillArrays workbook sheet
-                            |> recalculateAllFormulas workbook sheet
-                        Description = "Import CSV"
-                        RetainedItemCount = retainedItemCount
-                        RetainedTextCharCount =
-                            commandRetainedTextCharCountForItemCountWithInitial retainedItemCount commandTextCharCount (fun () ->
-                                commandRetainedCellMapTextCharCount oldCells)
-                    }
+        if oldCells.Count > 0 then
+            let command = {
+                Undo = restoreCellOptions oldCells
+                Redo = fun m ->
+                    let sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
+                    restoreCellOptions newCells m
+                    |> recalculateAllFormulas workbook sheet
+                    |> spillArrays workbook sheet
+                    |> recalculateAllFormulas workbook sheet
+                Description = "Import CSV"
+            }
             model <- pushCommand command model
-            render()
+        render()
 
     /// Export spreadsheet to CSV
     member _.ExportCSV(): string =
@@ -3060,29 +2926,20 @@ type Spreadsheet(container: Element) =
 
             let comment = match oldCell with | Some cell -> cell.Comment | None -> None
             let newCellData = { Value = cellValue; Format = format; Comment = comment }
-            let nextModel = setCell addr newCellData model
-            if not (obj.ReferenceEquals(nextModel, model)) then
-                // Create undo command
-                let command = {
-                    Undo = fun m ->
-                        match oldCell with
-                        | Some cell -> setCell addr cell m
-                        | None -> clearCell addr m
-                    Redo = fun m -> setCell addr newCellData m
-                    Description = sprintf "Edit %s%d" (columnToLetter col) (row + 1)
-                    RetainedItemCount =
-                        commandRetainedSumItemCounts [
-                            commandRetainedCellOptionItemCount oldCell
-                            commandRetainedCellOptionItemCount (Some newCellData)
-                        ]
-                    RetainedTextCharCount =
-                        commandRetainedSumTextCharCounts [
-                            commandRetainedCellOptionTextCharCount oldCell
-                            commandRetainedCellOptionTextCharCount (Some newCellData)
-                        ]
-                }
-                model <- pushCommand command nextModel
-                render()
+            model <- setCell addr newCellData model
+
+            // Create undo command
+            let command = {
+                Undo = fun m ->
+                    match oldCell with
+                    | Some cell -> setCell addr cell m
+                    | None -> { m with Cells = Map.remove addr m.Cells }
+                Redo = fun m -> setCell addr newCellData m
+                Description = sprintf "Edit %s%d" (columnToLetter col) (row + 1)
+            }
+            model <- pushCommand command model
+
+            render()
         | Range _ -> ()  // Can't edit range
 
     /// Undo last operation
@@ -3106,105 +2963,57 @@ type Spreadsheet(container: Element) =
         match model.Selection with
         | SingleCell (_, col) ->
             let oldCells = model.Cells
-            let oldSortState = model.SortState
-            let nextModel = sortByColumn col true model
-            if not (obj.ReferenceEquals(nextModel, model)) then
-                model <- nextModel
-                let cellsChanged = not (obj.ReferenceEquals(nextModel.Cells, oldCells))
-                let undo =
-                    if cellsChanged then
-                        fun m -> { m with Cells = oldCells; SortState = oldSortState }
-                    else
-                        fun m -> { m with SortState = oldSortState }
-                let command = {
-                    Undo = undo
-                    Redo = fun m -> sortByColumn col true m
-                    Description = sprintf "Sort %s ascending" (columnToLetter col)
-                    RetainedItemCount = retainedCellMapItemCountIf cellsChanged oldCells
-                    RetainedTextCharCount = retainedCellMapTextCharCountIf cellsChanged oldCells
-                }
-                model <- pushCommand command model
-                render()
+            model <- sortByColumn col true model
+            let command = {
+                Undo = fun m -> { m with Cells = oldCells }
+                Redo = fun m -> sortByColumn col true m
+                Description = sprintf "Sort %s ascending" (columnToLetter col)
+            }
+            model <- pushCommand command model
+            render()
         | Range (_, startCol, _, _) ->
             let oldCells = model.Cells
-            let oldSortState = model.SortState
-            let nextModel = sortByColumn startCol true model
-            if not (obj.ReferenceEquals(nextModel, model)) then
-                model <- nextModel
-                let cellsChanged = not (obj.ReferenceEquals(nextModel.Cells, oldCells))
-                let undo =
-                    if cellsChanged then
-                        fun m -> { m with Cells = oldCells; SortState = oldSortState }
-                    else
-                        fun m -> { m with SortState = oldSortState }
-                let command = {
-                    Undo = undo
-                    Redo = fun m -> sortByColumn startCol true m
-                    Description = sprintf "Sort %s ascending" (columnToLetter startCol)
-                    RetainedItemCount = retainedCellMapItemCountIf cellsChanged oldCells
-                    RetainedTextCharCount = retainedCellMapTextCharCountIf cellsChanged oldCells
-                }
-                model <- pushCommand command model
-                render()
+            model <- sortByColumn startCol true model
+            let command = {
+                Undo = fun m -> { m with Cells = oldCells }
+                Redo = fun m -> sortByColumn startCol true m
+                Description = sprintf "Sort %s ascending" (columnToLetter startCol)
+            }
+            model <- pushCommand command model
+            render()
 
     /// Sort current column descending
     member _.SortCurrentColumnDesc() =
         match model.Selection with
         | SingleCell (_, col) ->
             let oldCells = model.Cells
-            let oldSortState = model.SortState
-            let nextModel = sortByColumn col false model
-            if not (obj.ReferenceEquals(nextModel, model)) then
-                model <- nextModel
-                let cellsChanged = not (obj.ReferenceEquals(nextModel.Cells, oldCells))
-                let undo =
-                    if cellsChanged then
-                        fun m -> { m with Cells = oldCells; SortState = oldSortState }
-                    else
-                        fun m -> { m with SortState = oldSortState }
-                let command = {
-                    Undo = undo
-                    Redo = fun m -> sortByColumn col false m
-                    Description = sprintf "Sort %s descending" (columnToLetter col)
-                    RetainedItemCount = retainedCellMapItemCountIf cellsChanged oldCells
-                    RetainedTextCharCount = retainedCellMapTextCharCountIf cellsChanged oldCells
-                }
-                model <- pushCommand command model
-                render()
+            model <- sortByColumn col false model
+            let command = {
+                Undo = fun m -> { m with Cells = oldCells }
+                Redo = fun m -> sortByColumn col false m
+                Description = sprintf "Sort %s descending" (columnToLetter col)
+            }
+            model <- pushCommand command model
+            render()
         | Range (_, startCol, _, _) ->
             let oldCells = model.Cells
-            let oldSortState = model.SortState
-            let nextModel = sortByColumn startCol false model
-            if not (obj.ReferenceEquals(nextModel, model)) then
-                model <- nextModel
-                let cellsChanged = not (obj.ReferenceEquals(nextModel.Cells, oldCells))
-                let undo =
-                    if cellsChanged then
-                        fun m -> { m with Cells = oldCells; SortState = oldSortState }
-                    else
-                        fun m -> { m with SortState = oldSortState }
-                let command = {
-                    Undo = undo
-                    Redo = fun m -> sortByColumn startCol false m
-                    Description = sprintf "Sort %s descending" (columnToLetter startCol)
-                    RetainedItemCount = retainedCellMapItemCountIf cellsChanged oldCells
-                    RetainedTextCharCount = retainedCellMapTextCharCountIf cellsChanged oldCells
-                }
-                model <- pushCommand command model
-                render()
+            model <- sortByColumn startCol false model
+            let command = {
+                Undo = fun m -> { m with Cells = oldCells }
+                Redo = fun m -> sortByColumn startCol false m
+                Description = sprintf "Sort %s descending" (columnToLetter startCol)
+            }
+            model <- pushCommand command model
+            render()
 
     /// Cut selection to clipboard
     member _.Cut() =
         let clipboardData = serializeSelection model.Selection model true
         model <- { model with Clipboard = Some clipboardData }
-        let cellsBeforeCut = model.Cells
 
-        // Clear source cells
         model <- clearSelectionCells model.Selection model
-
-        if not (obj.ReferenceEquals(model.Cells, cellsBeforeCut)) then
-            recalculateFormulas()
-            render()
+        recalculateFormulas()
+        render()
 
     /// Copy selection to clipboard
     member _.Copy() =
@@ -3213,40 +3022,33 @@ type Spreadsheet(container: Element) =
 
     /// Paste from clipboard
     member _.Paste() =
-        let pasteAt (targetAddr: CellAddress) (clipData: ClipboardData) =
-            let oldCells = pasteCellOptions targetAddr clipData model
-            let newModel = pasteClipboard targetAddr clipData model
-            if not (obj.ReferenceEquals(newModel, model)) then
-                model <- newModel
-                recalculateFormulas()
-
-                let newCells = pasteCellOptions targetAddr clipData model
-                let retainedItemCount =
-                    commandRetainedSumItemCounts [
-                        commandRetainedCellOptionPairsItemCount oldCells
-                        commandRetainedCellOptionPairsItemCount newCells
-                    ]
-                let command = {
-                    Undo = restoreCellOptions oldCells
-                    Redo = restoreCellOptions newCells
-                    Description = "Paste"
-                    RetainedItemCount = retainedItemCount
-                    RetainedTextCharCount =
-                        commandRetainedTextCharCountForItemCount retainedItemCount (fun () ->
-                            commandRetainedSumTextCharCounts [
-                                commandRetainedCellOptionPairsTextCharCount oldCells
-                                commandRetainedCellOptionPairsTextCharCount newCells
-                            ])
-                }
-                model <- pushCommand command model
-                if clipData.IsCut then
-                    model <- { model with Clipboard = None }
-                render()
         match model.Selection, model.Clipboard with
         | SingleCell (row, col), Some clipData ->
-            pasteAt ({ Row = row; Col = col }: CellAddress) clipData
+            let oldCells = pasteCellOptions row col clipData model
+            model <- pasteClipboard { Row = row; Col = col } clipData model
+            recalculateFormulas()
+            let newCells = pasteCellOptions row col clipData model
+
+            let command = {
+                Undo = restoreCellOptions oldCells
+                Redo = restoreCellOptions newCells
+                Description = "Paste"
+            }
+            model <- pushCommand command model
+            render()
         | Range (startRow, startCol, _, _), Some clipData ->
-            pasteAt ({ Row = startRow; Col = startCol }: CellAddress) clipData
+            let oldCells = pasteCellOptions startRow startCol clipData model
+            model <- pasteClipboard { Row = startRow; Col = startCol } clipData model
+            recalculateFormulas()
+            let newCells = pasteCellOptions startRow startCol clipData model
+
+            let command = {
+                Undo = restoreCellOptions oldCells
+                Redo = restoreCellOptions newCells
+                Description = "Paste"
+            }
+            model <- pushCommand command model
+            render()
         | _ -> ()
 
 /// Export for JavaScript
