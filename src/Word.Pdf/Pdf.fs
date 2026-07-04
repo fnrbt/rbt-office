@@ -154,72 +154,6 @@ type private TextContext = {
 
 type private GlyphUsage = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<int>>
 
-[<Struct>]
-type private FontFaceCacheKey = {
-    FaceName: string
-    Family: string
-    Bold: bool
-    Italic: bool
-    Data: byte[]
-}
-
-type private FontContextCacheKey = {
-    DefaultFamily: string
-    Faces: FontFaceCacheKey[]
-}
-
-type private FontContextCacheValue = {
-    FontSet: RedBat.Word.ShaperText.FontSet
-    FontBytes: Map<string, byte[]>
-    PdfFonts: System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>
-}
-
-let private fontContextCacheKeyComparer =
-    { new System.Collections.Generic.IEqualityComparer<FontContextCacheKey> with
-        member _.Equals(left, right) =
-            left.DefaultFamily = right.DefaultFamily
-            && left.Faces.Length = right.Faces.Length
-            && (
-                let mutable same = true
-                let mutable i = 0
-                while same && i < left.Faces.Length do
-                    let a = left.Faces.[i]
-                    let b = right.Faces.[i]
-                    same <-
-                        a.FaceName = b.FaceName
-                        && a.Family = b.Family
-                        && a.Bold = b.Bold
-                        && a.Italic = b.Italic
-                        && Object.ReferenceEquals(a.Data, b.Data)
-                    i <- i + 1
-                same)
-
-        member _.GetHashCode(key) =
-            let mutable h = hash key.DefaultFamily
-            for face in key.Faces do
-                h <- h * 397 ^^^ hash face.FaceName
-                h <- h * 397 ^^^ hash face.Family
-                h <- h * 397 ^^^ hash face.Bold
-                h <- h * 397 ^^^ hash face.Italic
-                h <- h * 397 ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(face.Data)
-            h }
-
-let private fontContextCache = System.Collections.Generic.Dictionary<FontContextCacheKey, FontContextCacheValue>(fontContextCacheKeyComparer)
-let private fontContextCacheLimit = 8
-let private fontContextCacheMaxTotalFontBytes = 32L * 1024L * 1024L
-let mutable private fontContextCacheRetainedFontBytes = 0L
-
-let private fontContextCacheKeyByteCount (key: FontContextCacheKey) =
-    let mutable total = 0L
-    for face in key.Faces do
-        total <- total + int64 face.Data.Length
-    total
-
-let private clearFontContextCache () =
-    fontContextCache.Clear()
-    fontContextCacheRetainedFontBytes <- 0L
-    Text.Engine.clearCaches ()
-
 let private textStyleCacheKey (style: TextStyle) = {
     FontFamily = defaultArg style.FontFamily ""
     FontSize = style.FontSize
@@ -261,48 +195,17 @@ let private paintStyleToTextStyle (style: WordPaint.TextPaintStyle) : TextStyle 
         VertAlign = style.VertAlign }
 
 let private createTextContext (options: RenderOptions) =
-    let key = {
-        DefaultFamily = options.DefaultFontFamily
-        Faces =
-            options.Fonts
-            |> List.map (fun face ->
-                { FaceName = face.FaceName
-                  Family = face.Family
-                  Bold = face.Bold
-                  Italic = face.Italic
-                  Data = face.Data })
-            |> List.toArray
-    }
-    let fontContext =
-        lock fontContextCache (fun () ->
-            let mutable cached = Unchecked.defaultof<FontContextCacheValue>
-            if fontContextCache.TryGetValue(key, &cached) then
-                cached
-            else
-                let keyByteCount = fontContextCacheKeyByteCount key
-                if fontContextCache.Count >= fontContextCacheLimit
-                   || (fontContextCache.Count > 0
-                       && fontContextCacheRetainedFontBytes + keyByteCount > fontContextCacheMaxTotalFontBytes) then
-                    clearFontContextCache ()
-                let shaperFaces =
-                    options.Fonts
-                    |> List.map (fun face ->
-                        ({ Family = face.Family
-                           Bold = face.Bold
-                           Italic = face.Italic
-                           Data = face.Data }: RedBat.Word.ShaperText.FontFace))
-                let value = {
-                    FontSet = RedBat.Word.ShaperText.createFontSet options.DefaultFontFamily shaperFaces
-                    FontBytes = options.Fonts |> List.map (fun face -> face.FaceName, face.Data) |> Map.ofList
-                    PdfFonts = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
-                }
-                fontContextCache.[key] <- value
-                fontContextCacheRetainedFontBytes <- fontContextCacheRetainedFontBytes + keyByteCount
-                value)
+    let shaperFaces =
+        options.Fonts
+        |> List.map (fun face ->
+            ({ Family = face.Family
+               Bold = face.Bold
+               Italic = face.Italic
+               Data = face.Data }: RedBat.Word.ShaperText.FontFace))
     {
-        FontSet = fontContext.FontSet
-        FontBytes = fontContext.FontBytes
-        PdfFontCache = fontContext.PdfFonts
+        FontSet = RedBat.Word.ShaperText.createFontSet options.DefaultFontFamily shaperFaces
+        FontBytes = options.Fonts |> List.map (fun face -> face.FaceName, face.Data) |> Map.ofList
+        PdfFontCache = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
         DefaultFamily = options.DefaultFontFamily
         PdfFonts = Map.empty
         GlyphText = System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>()
