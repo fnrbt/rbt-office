@@ -962,210 +962,15 @@ let private hostGlobalsRW cells sheetName =
     ]
 
 // The model-backed host always binds the same global NAMES, so a module
-// compiles to the same bytecode regardless of which model it runs against —
-// only the bound host VALUES change per run. We therefore compile once and
-// cache the BytecodeProgram (keyed by source), our analogue of VBA's p-code
-// performance cache, so events firing on every edit don't re-lex/parse/compile.
+// compiles to the same bytecode regardless of which model it runs against;
+// only the bound host VALUES change per run.
 let private vbaHostNames = [ "Application"; "ActiveWorkbook"; "ActiveSheet"; "Range"; "Cells" ]
 let private vbaParseOpts = FsVb.ParseOptions.withHostGlobals vbaHostNames FsVb.ParseOptions.vba
-let private bytecodeCacheMaxEntries = 256
-let private bytecodeCacheMaxTotalRetainedUnits = 1000000
-let private bytecodeCache = System.Collections.Generic.Dictionary<string, Bytecode.BytecodeProgram>()
-let private bytecodeCacheOrder = System.Collections.Generic.Queue<string>()
-let private bytecodeCacheRetainedUnits = System.Collections.Generic.Dictionary<string, int>()
-let mutable private bytecodeCacheTotalRetainedUnits = 0
-type private BytecodeFastCacheEntry = {
-    Source: string
-    Bytecode: Bytecode.BytecodeProgram
-}
-let private bytecodeFastSlots = Array.zeroCreate<BytecodeFastCacheEntry> 256
-
-let private clearBytecodeFastSlots () =
-    for index = 0 to bytecodeFastSlots.Length - 1 do
-        bytecodeFastSlots.[index] <- Unchecked.defaultof<BytecodeFastCacheEntry>
-
-let private bytecodeFastSlot (source: string) =
-    let hashCode =
-        if isNull source then 0
-        else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(source)
-    hashCode &&& (bytecodeFastSlots.Length - 1)
-
-let private setBytecodeFastSlot source bytecode =
-    bytecodeFastSlots.[bytecodeFastSlot source] <- { Source = source; Bytecode = bytecode }
-
-let private tryGetBytecodeFastSlot source =
-    let fast = bytecodeFastSlots.[bytecodeFastSlot source]
-    if not (obj.ReferenceEquals(fast, null))
-       && obj.ReferenceEquals(fast.Source, source) then
-        ValueSome fast.Bytecode
-    else
-        ValueNone
-
-let private addRetainedUnits left right =
-    if left > bytecodeCacheMaxTotalRetainedUnits then
-        left
-    else
-        let right = max 0 right
-        if right > bytecodeCacheMaxTotalRetainedUnits - left then bytecodeCacheMaxTotalRetainedUnits + 1
-        else left + right
-
-let private retainedUnitsOverBudget total =
-    total > bytecodeCacheMaxTotalRetainedUnits
-
-let private stringRetainedUnits (value: string) =
-    if isNull value then 0 else value.Length
-
-let rec private valueRetainedUnits value =
-    match value with
-    | VString text -> addRetainedUnits 1 (stringRetainedUnits text)
-    | VArray values ->
-        let mutable total = addRetainedUnits 1 values.Length
-        let mutable index = 0
-        while not (retainedUnitsOverBudget total) && index < values.Length do
-            total <- addRetainedUnits total (valueRetainedUnits values.[index])
-            index <- index + 1
-        total
-    | VObject obj ->
-        addRetainedUnits 1 (stringRetainedUnits obj.ClassName)
-    | VHostObject host ->
-        addRetainedUnits 1 (stringRetainedUnits host.TypeName)
-    | _ -> 1
-
-let private opcodeRetainedUnits opcode =
-    match opcode with
-    | Bytecode.GetMember name
-    | Bytecode.SetMember name
-    | Bytecode.TypeCheck name
-    | Bytecode.CallBuiltin (name, _)
-    | Bytecode.CallMethod (name, _) ->
-        addRetainedUnits 1 (stringRetainedUnits name)
-    | _ -> 1
-
-let private instructionRetainedUnits (instruction: Bytecode.Instruction) =
-    addRetainedUnits 16 (opcodeRetainedUnits instruction.Opcode)
-
-let private instructionArrayRetainedUnits (instructions: Bytecode.Instruction array) =
-    let mutable total = instructions.Length
-    let mutable index = 0
-    while not (retainedUnitsOverBudget total) && index < instructions.Length do
-        total <- addRetainedUnits total (instructionRetainedUnits instructions.[index])
-        index <- index + 1
-    total
-
-let private stringArrayRetainedUnits (values: string array) =
-    let mutable total = values.Length
-    let mutable index = 0
-    while not (retainedUnitsOverBudget total) && index < values.Length do
-        total <- addRetainedUnits total (stringRetainedUnits values.[index])
-        index <- index + 1
-    total
-
-let private stringIntMapRetainedUnits (values: Map<string, int>) =
-    let mutable total = Map.count values
-    use entries = (values :> seq<_>).GetEnumerator()
-    while not (retainedUnitsOverBudget total) && entries.MoveNext() do
-        let (KeyValue(name, _)) = entries.Current
-        total <- addRetainedUnits total (stringRetainedUnits name)
-    total
-
-let private functionRetainedUnits (func: Bytecode.FunctionDef) =
-    let mutable total = addRetainedUnits 1 (stringRetainedUnits func.Name)
-    total <- addRetainedUnits total func.ByRefParams.Length
-    total <- addRetainedUnits total (instructionArrayRetainedUnits func.Code)
-    total
-
-let private classRetainedUnits (classDef: Bytecode.ClassDef) =
-    let mutable total = addRetainedUnits 1 (stringRetainedUnits classDef.Name)
-    total <- addRetainedUnits total (stringArrayRetainedUnits classDef.Fields)
-    total <- addRetainedUnits total (stringIntMapRetainedUnits classDef.Methods)
-    total <- addRetainedUnits total (stringIntMapRetainedUnits classDef.PropertyGetters)
-    total <- addRetainedUnits total (stringIntMapRetainedUnits classDef.PropertyLetters)
-    total <- addRetainedUnits total (stringIntMapRetainedUnits classDef.PropertySetters)
-    total
-
-let private bytecodeProgramRetainedUnits sourceLength (bytecode: Bytecode.BytecodeProgram) =
-    let mutable total = max 1 sourceLength
-    if not (retainedUnitsOverBudget total) then
-        total <- addRetainedUnits total (instructionArrayRetainedUnits bytecode.Code)
-    if not (retainedUnitsOverBudget total) then
-        total <- addRetainedUnits total bytecode.Constants.Length
-    let mutable constantIndex = 0
-    while not (retainedUnitsOverBudget total) && constantIndex < bytecode.Constants.Length do
-        total <- addRetainedUnits total (valueRetainedUnits bytecode.Constants.[constantIndex])
-        constantIndex <- constantIndex + 1
-    if not (retainedUnitsOverBudget total) then
-        total <- addRetainedUnits total bytecode.Globals
-    if not (retainedUnitsOverBudget total) then
-        total <- addRetainedUnits total (stringArrayRetainedUnits bytecode.GlobalNames)
-    if not (retainedUnitsOverBudget total) then
-        total <- addRetainedUnits total bytecode.Functions.Length
-    let mutable functionIndex = 0
-    while not (retainedUnitsOverBudget total) && functionIndex < bytecode.Functions.Length do
-        total <- addRetainedUnits total (functionRetainedUnits bytecode.Functions.[functionIndex])
-        functionIndex <- functionIndex + 1
-    if not (retainedUnitsOverBudget total) then
-        total <- addRetainedUnits total bytecode.Classes.Length
-    let mutable classIndex = 0
-    while not (retainedUnitsOverBudget total) && classIndex < bytecode.Classes.Length do
-        total <- addRetainedUnits total (classRetainedUnits bytecode.Classes.[classIndex])
-        classIndex <- classIndex + 1
-    total
-
-let private removeBytecodeCacheEntry source =
-    match bytecodeCacheRetainedUnits.TryGetValue source with
-    | true, units ->
-        bytecodeCacheTotalRetainedUnits <- max 0 (bytecodeCacheTotalRetainedUnits - units)
-        bytecodeCacheRetainedUnits.Remove source |> ignore
-    | _ -> ()
-    if bytecodeCache.Remove source then
-        clearBytecodeFastSlots ()
-
-let private addBytecodeCache (source: string) bytecode =
-    let retainedUnits = bytecodeProgramRetainedUnits source.Length bytecode
-    if retainedUnits > bytecodeCacheMaxTotalRetainedUnits then
-        removeBytecodeCacheEntry source
-    else
-        if bytecodeCache.ContainsKey source then
-            removeBytecodeCacheEntry source
-        else
-            bytecodeCacheOrder.Enqueue source
-        bytecodeCache.[source] <- bytecode
-        bytecodeCacheRetainedUnits.[source] <- retainedUnits
-        bytecodeCacheTotalRetainedUnits <- bytecodeCacheTotalRetainedUnits + retainedUnits
-        while (bytecodeCache.Count > bytecodeCacheMaxEntries || bytecodeCacheTotalRetainedUnits > bytecodeCacheMaxTotalRetainedUnits)
-              && bytecodeCacheOrder.Count > 0 do
-            let oldest = bytecodeCacheOrder.Dequeue()
-            if oldest <> source then
-                removeBytecodeCacheEntry oldest
-        if bytecodeCache.Count > bytecodeCacheMaxEntries || bytecodeCacheTotalRetainedUnits > bytecodeCacheMaxTotalRetainedUnits then
-            let current = bytecodeCache.[source]
-            bytecodeCache.Clear()
-            bytecodeCacheOrder.Clear()
-            bytecodeCacheRetainedUnits.Clear()
-            clearBytecodeFastSlots ()
-            bytecodeCacheOrder.Enqueue source
-            bytecodeCache.[source] <- current
-            bytecodeCacheRetainedUnits.[source] <- retainedUnits
-            bytecodeCacheTotalRetainedUnits <- retainedUnits
-        if bytecodeCache.ContainsKey source then
-            setBytecodeFastSlot source bytecode
-
-/// Compile a macro module to bytecode, caching the result by source text.
+/// Compile a macro module to bytecode.
 let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
-    match tryGetBytecodeFastSlot source with
-    | ValueSome bc ->
-        Result.Ok bc
-    | ValueNone ->
-        match bytecodeCache.TryGetValue source with
-        | true, bc ->
-            setBytecodeFastSlot source bc
-            Result.Ok bc
-        | _ ->
-            match FsVb.compileSource vbaParseOpts source with
-            | Result.Ok (_, bc) ->
-                addBytecodeCache source bc
-                Result.Ok bc
-            | Result.Error e -> Result.Error (sprintf "%A" e)
+    match FsVb.compileSource vbaParseOpts source with
+    | Result.Ok (_, bc) -> Result.Ok bc
+    | Result.Error e -> Result.Error (sprintf "%A" e)
 
 /// Execute an already-compiled program against a model with read+write host
 /// objects, fold the writes back in (a `=…` value becomes a formula), and
@@ -1194,7 +999,6 @@ let private runProgramOnModel (sheetName: string) (model: SpreadsheetModel) (byt
 
 /// Run a macro against a model with read+write host objects, fold the writes
 /// back in (a `=…` value becomes a formula), and recompute. Cross-platform.
-/// Reuses the cached compiled bytecode (recompiles only on first sight).
 let runOnModelWithSheetName (sheetName: string) (model: SpreadsheetModel) (source: string) : Result<SpreadsheetModel, string> =
     match compileCached source with
     | Result.Error e -> Result.Error e

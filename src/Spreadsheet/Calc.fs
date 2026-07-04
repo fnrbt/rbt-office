@@ -1,7 +1,6 @@
 module RedBat.Spreadsheet.Calc
 
 open System.Collections.Generic
-open System.Runtime.CompilerServices
 open RedBat.Spreadsheet.Model
 open RedBat.Spreadsheet.Workbook
 open RedBat.Spreadsheet.Formula
@@ -35,11 +34,6 @@ type CalcMetadata = {
 type CalcEngine = {
     /// Metadata for each formula cell, across every sheet.
     Metadata: Map<SheetCell, CalcMetadata>
-    /// Formula cells that have at least one large-range rectangle dependency.
-    RectDependentCells: Set<SheetCell>
-    /// Coarse bounds of all large-range rectangles by sheet. Bounds may be
-    /// conservative after formula removal; that only loses the fast skip.
-    RectDependencyBounds: Map<SheetId, struct (int * int * int * int)>
     /// Formula cells containing volatile functions, forced dirty every pass.
     VolatileCells: Set<SheetCell>
     /// Pre-computed calculation order (topological sort).
@@ -47,26 +41,6 @@ type CalcEngine = {
     /// Cells marked dirty (need recalculation).
     DirtySet: Set<SheetCell>
 }
-
-[<Struct>]
-type private RectDependencyIndexEntry = {
-    FormulaCell: SheetCell
-    Rect: DepRect
-}
-
-type private RectDependencySheetIndex = {
-    RowBuckets: Dictionary<int, ResizeArray<RectDependencyIndexEntry>>
-    ColBuckets: Dictionary<int, ResizeArray<RectDependencyIndexEntry>>
-    Overflow: ResizeArray<RectDependencyIndexEntry>
-}
-
-type private RectDependencyIndex = {
-    Sheets: Dictionary<SheetId, RectDependencySheetIndex>
-}
-
-let private rectDependencyIndexBucketSize = 4096
-let private rectDependencyIndexMaxBucketsPerRect = 512
-let private rectDependencyIndexCache = ConditionalWeakTable<Map<SheetCell, CalcMetadata>, RectDependencyIndex>()
 
 let emptyMetadata = {
     Dependencies = Set.empty
@@ -78,197 +52,10 @@ let emptyMetadata = {
 
 let emptyEngine = {
     Metadata = Map.empty
-    RectDependentCells = Set.empty
-    RectDependencyBounds = Map.empty
     VolatileCells = Set.empty
     CalcChain = []
     DirtySet = Set.empty
 }
-
-let private dependencyParseCache = Dictionary<string, Result<Expr, string>>()
-let private dependencyParseCacheOrder = Queue<string>()
-let private dependencyParseCacheMaxEntries = 8192
-let private dependencyParseCacheMaxTotalFormulaChars = 5000000
-let mutable private dependencyParseCacheTotalFormulaChars = 0
-
-let private dependencyParseCacheAddCapped (amount: int) (total: int) =
-    if amount <= 0 then total
-    elif total > dependencyParseCacheMaxTotalFormulaChars
-         || amount > dependencyParseCacheMaxTotalFormulaChars - total then
-        dependencyParseCacheMaxTotalFormulaChars + 1
-    else
-        total + amount
-
-let private dependencyParseCacheEntryChars (formula: string) (parsed: Result<Expr, string>) =
-    0
-    |> dependencyParseCacheAddCapped formula.Length
-    |> dependencyParseCacheAddCapped (parsedFormulaResultRetainedTextCharCount dependencyParseCacheMaxTotalFormulaChars parsed)
-
-let private addDependencyParseCacheEntry (formula: string) (parsed: Result<Expr, string>) =
-    let entryChars = dependencyParseCacheEntryChars formula parsed
-    if entryChars > dependencyParseCacheMaxTotalFormulaChars then
-        let mutable previous = Unchecked.defaultof<Result<Expr, string>>
-        if dependencyParseCache.TryGetValue(formula, &previous) then
-            dependencyParseCache.Remove formula |> ignore
-            dependencyParseCacheTotalFormulaChars <- max 0 (dependencyParseCacheTotalFormulaChars - dependencyParseCacheEntryChars formula previous)
-        parsed
-    else
-        let mutable previous = Unchecked.defaultof<Result<Expr, string>>
-        if dependencyParseCache.TryGetValue(formula, &previous) then
-            dependencyParseCacheTotalFormulaChars <- max 0 (dependencyParseCacheTotalFormulaChars - dependencyParseCacheEntryChars formula previous)
-        else
-            dependencyParseCacheOrder.Enqueue formula
-        dependencyParseCache.[formula] <- parsed
-        dependencyParseCacheTotalFormulaChars <- dependencyParseCacheTotalFormulaChars + entryChars
-        while (dependencyParseCache.Count > dependencyParseCacheMaxEntries || dependencyParseCacheTotalFormulaChars > dependencyParseCacheMaxTotalFormulaChars)
-              && dependencyParseCacheOrder.Count > 0 do
-            let oldest = dependencyParseCacheOrder.Dequeue()
-            if oldest <> formula then
-                let mutable oldestParsed = Unchecked.defaultof<Result<Expr, string>>
-                if dependencyParseCache.TryGetValue(oldest, &oldestParsed) then
-                    dependencyParseCache.Remove oldest |> ignore
-                    dependencyParseCacheTotalFormulaChars <- max 0 (dependencyParseCacheTotalFormulaChars - dependencyParseCacheEntryChars oldest oldestParsed)
-        if dependencyParseCache.Count > dependencyParseCacheMaxEntries || dependencyParseCacheTotalFormulaChars > dependencyParseCacheMaxTotalFormulaChars then
-            let current = dependencyParseCache.[formula]
-            dependencyParseCache.Clear()
-            dependencyParseCacheOrder.Clear()
-            dependencyParseCacheOrder.Enqueue formula
-            dependencyParseCache.[formula] <- current
-            dependencyParseCacheTotalFormulaChars <- entryChars
-        parsed
-
-let private parseFormulaForDependencies formula =
-    let mutable parsed = Unchecked.defaultof<Result<Expr, string>>
-    if dependencyParseCache.TryGetValue(formula, &parsed) then
-        parsed
-    else
-        parsed <- parseFormula formula
-        addDependencyParseCacheEntry formula parsed
-
-type private DependencyReferenceCacheEntry = {
-    Dependencies: Set<SheetCell>
-    DepRects: DepRect list
-    DependencyCount: int
-    RectCount: int
-    FormulaChars: int
-}
-
-let private dependencyReferenceCache = Dictionary<struct (SheetId * string), DependencyReferenceCacheEntry>()
-let private dependencyReferenceCacheOrder = Queue<struct (SheetId * string)>()
-let private dependencyReferenceCacheMaxEntries = 8192
-let private dependencyReferenceCacheMaxTotalFormulaChars = 5000000
-let private dependencyReferenceCacheMaxTotalDependencies = 20000
-let private dependencyReferenceCacheMaxTotalRects = 8192
-let mutable private dependencyReferenceCacheTotalFormulaChars = 0
-let mutable private dependencyReferenceCacheTotalDependencies = 0
-let mutable private dependencyReferenceCacheTotalRects = 0
-
-let private dependencyReferenceCacheKeyFormulaLength (struct (sheet, formula): struct (SheetId * string)) =
-    sheet.Length + formula.Length
-
-let private dependencyReferenceRectCount (rects: DepRect list) =
-    let mutable count = 0
-    let mutable remaining = rects
-    while count <= dependencyReferenceCacheMaxTotalRects && not remaining.IsEmpty do
-        count <- count + 1
-        remaining <- remaining.Tail
-    count
-
-let private dependencyReferenceCacheEntry key deps rects = {
-    Dependencies = deps
-    DepRects = rects
-    DependencyCount = max 1 (Set.count deps)
-    RectCount = max 1 (dependencyReferenceRectCount rects)
-    FormulaChars = max 1 (dependencyReferenceCacheKeyFormulaLength key)
-}
-
-let private addDependencyReferenceCacheEntry key value =
-    let subtractEntry (entry: DependencyReferenceCacheEntry) =
-        dependencyReferenceCacheTotalFormulaChars <- dependencyReferenceCacheTotalFormulaChars - entry.FormulaChars
-        dependencyReferenceCacheTotalDependencies <- dependencyReferenceCacheTotalDependencies - entry.DependencyCount
-        dependencyReferenceCacheTotalRects <- dependencyReferenceCacheTotalRects - entry.RectCount
-    if value.FormulaChars > dependencyReferenceCacheMaxTotalFormulaChars
-       || value.DependencyCount > dependencyReferenceCacheMaxTotalDependencies
-       || value.RectCount > dependencyReferenceCacheMaxTotalRects then
-        let mutable oldEntry = Unchecked.defaultof<DependencyReferenceCacheEntry>
-        if dependencyReferenceCache.TryGetValue(key, &oldEntry) then
-            dependencyReferenceCache.Remove key |> ignore
-            subtractEntry oldEntry
-        value
-    else
-    if dependencyReferenceCache.ContainsKey key then
-        subtractEntry dependencyReferenceCache.[key]
-    else
-        dependencyReferenceCacheOrder.Enqueue key
-    dependencyReferenceCache.[key] <- value
-    dependencyReferenceCacheTotalFormulaChars <- dependencyReferenceCacheTotalFormulaChars + value.FormulaChars
-    dependencyReferenceCacheTotalDependencies <- dependencyReferenceCacheTotalDependencies + value.DependencyCount
-    dependencyReferenceCacheTotalRects <- dependencyReferenceCacheTotalRects + value.RectCount
-    while (dependencyReferenceCache.Count > dependencyReferenceCacheMaxEntries
-           || dependencyReferenceCacheTotalFormulaChars > dependencyReferenceCacheMaxTotalFormulaChars
-           || dependencyReferenceCacheTotalDependencies > dependencyReferenceCacheMaxTotalDependencies
-           || dependencyReferenceCacheTotalRects > dependencyReferenceCacheMaxTotalRects)
-          && dependencyReferenceCacheOrder.Count > 0 do
-        let oldest = dependencyReferenceCacheOrder.Dequeue()
-        let mutable oldEntry = Unchecked.defaultof<DependencyReferenceCacheEntry>
-        if oldest <> key && dependencyReferenceCache.TryGetValue(oldest, &oldEntry) then
-            dependencyReferenceCache.Remove oldest |> ignore
-            subtractEntry oldEntry
-    if dependencyReferenceCache.Count > dependencyReferenceCacheMaxEntries
-       || dependencyReferenceCacheTotalFormulaChars > dependencyReferenceCacheMaxTotalFormulaChars
-       || dependencyReferenceCacheTotalDependencies > dependencyReferenceCacheMaxTotalDependencies
-       || dependencyReferenceCacheTotalRects > dependencyReferenceCacheMaxTotalRects then
-        let current = dependencyReferenceCache.[key]
-        dependencyReferenceCache.Clear()
-        dependencyReferenceCacheOrder.Clear()
-        dependencyReferenceCacheOrder.Enqueue key
-        dependencyReferenceCache.[key] <- current
-        dependencyReferenceCacheTotalFormulaChars <- current.FormulaChars
-        dependencyReferenceCacheTotalDependencies <- current.DependencyCount
-        dependencyReferenceCacheTotalRects <- current.RectCount
-    value
-
-let private exprUsesWorkbookResolution expr =
-    let refUsesWorkbook (ref: RefAst) = ref.Sheet.IsSome
-    let stack = ResizeArray<Expr>()
-    stack.Add expr
-    let mutable found = false
-    while not found && stack.Count > 0 do
-        let last = stack.Count - 1
-        let expr = stack.[last]
-        stack.RemoveAt last
-        match expr with
-        | Number _ | Str _ | Bool _ | ErrorLit _ | ArrayLit _ -> ()
-        | NameRef _
-        | TableRef _ -> found <- true
-        | CellRef ref
-        | SpillRef ref ->
-            if refUsesWorkbook ref then
-                found <- true
-        | RangeRef (left, right) ->
-            if refUsesWorkbook left || refUsesWorkbook right then
-                found <- true
-        | UnaryOp (_, inner) -> stack.Add inner
-        | BinOp (left, _, right) ->
-            stack.Add left
-            stack.Add right
-        | Function (_, args) ->
-            for arg in args do
-                stack.Add arg
-    found
-
-let private referencesRangedFor (formula: string) (cell: SheetCell) (workbook: Workbook) (expr: Expr) =
-    if exprUsesWorkbookResolution expr then
-        referencesRanged (Some workbook) cell.Sheet expr
-    else
-        let key = struct (cell.Sheet, formula)
-        let mutable cached = Unchecked.defaultof<DependencyReferenceCacheEntry>
-        if dependencyReferenceCache.TryGetValue(key, &cached) then
-            cached.Dependencies, cached.DepRects
-        else
-            let deps, rects = referencesRanged (Some workbook) cell.Sheet expr
-            let cached = addDependencyReferenceCacheEntry key (dependencyReferenceCacheEntry key deps rects)
-            cached.Dependencies, cached.DepRects
 
 let private metadataIsEmpty (metadata: CalcMetadata) =
     Set.isEmpty metadata.Dependencies
@@ -289,110 +76,22 @@ let private resizeArrayToList (items: ResizeArray<'T>) =
         result <- items.[i] :: result
     result
 
-let private depRectsContainCell (rects: DepRect list) (cell: SheetCell) =
-    let mutable found = false
-    let mutable remaining = rects
-    while not found && not remaining.IsEmpty do
-        match remaining with
-        | rect :: tail ->
-            if rectContainsCell rect cell then
-                found <- true
-            remaining <- tail
-        | [] -> ()
-    found
-
-let private rectDependencyBucket value =
-    if value >= 0 then
-        value / rectDependencyIndexBucketSize
-    else
-        (value - rectDependencyIndexBucketSize + 1) / rectDependencyIndexBucketSize
-
-let private rectDependencySheetIndex sheetId (sheets: Dictionary<SheetId, RectDependencySheetIndex>) =
-    let mutable sheetIndex = Unchecked.defaultof<RectDependencySheetIndex>
-    if sheets.TryGetValue(sheetId, &sheetIndex) then
-        sheetIndex
-    else
-        let created = {
-            RowBuckets = Dictionary<int, ResizeArray<RectDependencyIndexEntry>>()
-            ColBuckets = Dictionary<int, ResizeArray<RectDependencyIndexEntry>>()
-            Overflow = ResizeArray<RectDependencyIndexEntry>()
-        }
-        sheets.[sheetId] <- created
-        created
-
-let private addRectDependencyBucketEntry bucket entry (buckets: Dictionary<int, ResizeArray<RectDependencyIndexEntry>>) =
-    let mutable entries = Unchecked.defaultof<ResizeArray<RectDependencyIndexEntry>>
-    if not (buckets.TryGetValue(bucket, &entries)) then
-        entries <- ResizeArray<RectDependencyIndexEntry>()
-        buckets.[bucket] <- entries
-    entries.Add entry
-
-let private addRectDependencyBuckets startBucket endBucket entry buckets =
-    for bucket in startBucket .. endBucket do
-        addRectDependencyBucketEntry bucket entry buckets
-
-let private buildRectDependencyIndex (engine: CalcEngine) =
-    let sheets = Dictionary<SheetId, RectDependencySheetIndex>()
-    for formulaCell in engine.RectDependentCells do
-        match Map.tryFind formulaCell engine.Metadata with
-        | Some metadata ->
-            for rect in metadata.DepRects do
-                let sheetIndex = rectDependencySheetIndex rect.Sheet sheets
-                let entry = { FormulaCell = formulaCell; Rect = rect }
-                let rowStartBucket = rectDependencyBucket rect.R0
-                let rowEndBucket = rectDependencyBucket rect.R1
-                let colStartBucket = rectDependencyBucket rect.C0
-                let colEndBucket = rectDependencyBucket rect.C1
-                let rowBucketCount = rowEndBucket - rowStartBucket + 1
-                let colBucketCount = colEndBucket - colStartBucket + 1
-                let rowSpan = rect.R1 - rect.R0
-                let colSpan = rect.C1 - rect.C0
-                if rowBucketCount <= rectDependencyIndexMaxBucketsPerRect
-                   && (rowBucketCount < colBucketCount
-                       || (rowBucketCount = colBucketCount && rowSpan >= colSpan)) then
-                    addRectDependencyBuckets rowStartBucket rowEndBucket entry sheetIndex.RowBuckets
-                elif colBucketCount <= rectDependencyIndexMaxBucketsPerRect then
-                    addRectDependencyBuckets colStartBucket colEndBucket entry sheetIndex.ColBuckets
-                elif rowBucketCount <= rectDependencyIndexMaxBucketsPerRect then
-                    addRectDependencyBuckets rowStartBucket rowEndBucket entry sheetIndex.RowBuckets
-                else
-                    sheetIndex.Overflow.Add entry
-        | None -> ()
-    { Sheets = sheets }
-
-let private rememberRectDependencyIndex (engine: CalcEngine) =
-    rectDependencyIndexCache.Remove engine.Metadata |> ignore
-    if not (Set.isEmpty engine.RectDependentCells) then
-        rectDependencyIndexCache.Add(engine.Metadata, buildRectDependencyIndex engine)
-    engine
-
-let private rectDependencyIndexFor (engine: CalcEngine) =
-    let mutable index = Unchecked.defaultof<RectDependencyIndex>
-    if rectDependencyIndexCache.TryGetValue(engine.Metadata, &index) then
-        index
-    else
-        let index = buildRectDependencyIndex engine
-        rectDependencyIndexCache.Remove engine.Metadata |> ignore
-        rectDependencyIndexCache.Add(engine.Metadata, index)
-        index
-
-let private expandRectDependencyBounds (rects: DepRect list) (bounds: Map<SheetId, struct (int * int * int * int)>) =
-    let mutable updated = bounds
-    for rect in rects do
-        let nextBounds =
-            match Map.tryFind rect.Sheet updated with
-            | Some (struct (minRow, maxRow, minCol, maxCol)) ->
-                struct (min minRow rect.R0, max maxRow rect.R1, min minCol rect.C0, max maxCol rect.C1)
-            | None ->
-                struct (rect.R0, rect.R1, rect.C0, rect.C1)
-        updated <- Map.add rect.Sheet nextBounds updated
-    updated
-
-let private rectDependencyBoundsMayContain (cell: SheetCell) (engine: CalcEngine) =
-    match Map.tryFind cell.Sheet engine.RectDependencyBounds with
-    | Some (struct (minRow, maxRow, minCol, maxCol)) ->
-        cell.Cell.Row >= minRow && cell.Cell.Row <= maxRow && cell.Cell.Col >= minCol && cell.Cell.Col <= maxCol
-    | None -> false
+let private formulaCellsWithRectContaining (cell: SheetCell) (engine: CalcEngine) =
+    let matches = ResizeArray<SheetCell>()
+    for KeyValue(formulaCell, metadata) in engine.Metadata do
+        if not (List.isEmpty metadata.DepRects) then
+            let mutable found = false
+            let mutable remaining = metadata.DepRects
+            while not found && not remaining.IsEmpty do
+                match remaining with
+                | rect :: tail ->
+                    if rectContainsCell rect cell then
+                        found <- true
+                    remaining <- tail
+                | [] -> ()
+            if found then
+                matches.Add formulaCell
+    matches
 
 /// Look up a sheet's model within the workbook.
 let private sheetModel (sheetId: SheetId) (workbook: Workbook) : SpreadsheetModel option =
@@ -426,7 +125,6 @@ let private clearFormulaDependencies (cell: SheetCell) (engine: CalcEngine): Cal
         }
         { engine with
             Metadata = putMetadata cell clearedMetadata updatedMetadata
-            RectDependentCells = Set.remove cell engine.RectDependentCells
             VolatileCells = Set.remove cell engine.VolatileCells
             DirtySet = Set.remove cell engine.DirtySet }
     | None -> engine
@@ -434,11 +132,11 @@ let private clearFormulaDependencies (cell: SheetCell) (engine: CalcEngine): Cal
 /// Build (or rebuild) the dependency edges for one formula cell.
 let buildDependencies (cell: SheetCell) (formula: string)
                       (workbook: Workbook) (engine: CalcEngine): CalcEngine =
-    match parseFormulaForDependencies formula with
+    match parseFormula formula with
     | Ok expr ->
         // Large ranges become rectangle deps (rects); small ranges + single
         // cells stay explicit edges (deps).
-        let deps, rects = referencesRangedFor formula cell workbook expr
+        let deps, rects = referencesRanged (Some workbook) cell.Sheet expr
         let engine = clearFormulaDependencies cell engine
         let metadata =
             engine.Metadata
@@ -463,16 +161,11 @@ let buildDependencies (cell: SheetCell) (formula: string)
             updatedMetadata <-
                 Map.add dep { depMeta with Dependents = Set.add cell depMeta.Dependents } updatedMetadata
 
-        let rectDependentCells =
-            if List.isEmpty rects then Set.remove cell engine.RectDependentCells
-            else Set.add cell engine.RectDependentCells
         let volatileCells =
             if containsVolatile expr then Set.add cell engine.VolatileCells
             else Set.remove cell engine.VolatileCells
         { engine with
             Metadata = updatedMetadata
-            RectDependentCells = rectDependentCells
-            RectDependencyBounds = expandRectDependencyBounds rects engine.RectDependencyBounds
             VolatileCells = volatileCells }
     | Result.Error _ ->
         clearFormulaDependencies cell engine
@@ -631,10 +324,10 @@ let rebuildCalcChain (workbook: Workbook) (engine: CalcEngine): CalcEngine =
                         | false, _ -> ()
         | None -> ()
     match topologicalSort formulaCells iterDeps with
-    | Some chain -> { engine with CalcChain = chain } |> rememberRectDependencyIndex
+    | Some chain -> { engine with CalcChain = chain }
     | None ->
         // Circular reference — clear the chain to signal the error state.
-        { engine with CalcChain = [] } |> rememberRectDependencyIndex
+        { engine with CalcChain = [] }
 
 let private markDirtyQueued (stack: Stack<SheetCell>) (queued: HashSet<SheetCell>) (engine: CalcEngine): CalcEngine =
     let dirtyCells = ResizeArray<SheetCell>()
@@ -689,29 +382,13 @@ let clearDirty (cell: SheetCell) (engine: CalcEngine): CalcEngine =
 let markDirtyForCell (cell: SheetCell) (engine: CalcEngine): CalcEngine =
     let dirtySeeds = ResizeArray<SheetCell>()
     dirtySeeds.Add cell
-    if not (Set.isEmpty engine.RectDependentCells) && rectDependencyBoundsMayContain cell engine then
-        let index = rectDependencyIndexFor engine
-        let mutable sheetIndex = Unchecked.defaultof<RectDependencySheetIndex>
-        if index.Sheets.TryGetValue(cell.Sheet, &sheetIndex) then
-            let addMatches (entries: ResizeArray<RectDependencyIndexEntry>) =
-                for entry in entries do
-                    if rectContainsCell entry.Rect cell then
-                        dirtySeeds.Add entry.FormulaCell
-            let rowBucket = rectDependencyBucket cell.Cell.Row
-            let colBucket = rectDependencyBucket cell.Cell.Col
-            let mutable rowEntries = Unchecked.defaultof<ResizeArray<RectDependencyIndexEntry>>
-            if sheetIndex.RowBuckets.TryGetValue(rowBucket, &rowEntries) then
-                addMatches rowEntries
-            let mutable colEntries = Unchecked.defaultof<ResizeArray<RectDependencyIndexEntry>>
-            if sheetIndex.ColBuckets.TryGetValue(colBucket, &colEntries) then
-                addMatches colEntries
-            if sheetIndex.Overflow.Count > 0 then
-                addMatches sheetIndex.Overflow
+    for formulaCell in formulaCellsWithRectContaining cell engine do
+        dirtySeeds.Add formulaCell
     markDirtyFrom dirtySeeds engine
 
 /// Recalculate a single cell from its cached formula AST, evaluating
 /// against its own sheet's model with the full workbook in context.
-let private recalculateCellWithCriteriaCache criteriaCache (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine): CellValue option =
+let recalculateCell (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine): CellValue option =
     match Map.tryFind cell engine.Metadata with
     | Some metadata ->
         match metadata.ParsedFormula, sheetModel cell.Sheet workbook with
@@ -720,14 +397,10 @@ let private recalculateCellWithCriteriaCache criteriaCache (cell: SheetCell) (wo
                 { Model = model
                   Workbook = Some workbook
                   Sheet = Some cell.Sheet
-                  CriteriaCache = criteriaCache
                   CurrentCell = Some cell.Cell }
             Some (eval expr ctx)
         | _ -> None
     | None -> None
-
-let recalculateCell (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine): CellValue option =
-    recalculateCellWithCriteriaCache (Some (CriteriaPredicateCache())) cell workbook engine
 
 let private canSkipUnchangedCellUpdate (cell: SheetCell) (targetCellData: CellData)
                                        (workbook: Workbook) (engine: CalcEngine) =
@@ -740,7 +413,7 @@ let private canSkipUnchangedCellUpdate (cell: SheetCell) (targetCellData: CellDa
                 match Map.tryFind cell engine.Metadata with
                 | Some metadata ->
                     match metadata.ParsedFormula with
-                    | Some expr -> not (exprUsesWorkbookResolution expr)
+                    | Some _ -> true
                     | None -> false
                 | None -> false
             | _ -> true
@@ -757,13 +430,12 @@ let smartRecalculate (workbook: Workbook) (engine: CalcEngine): Workbook * CalcE
     if Set.isEmpty engine.DirtySet then
         (workbook, engine)
     else
-        let criteriaCache = Some (CriteriaPredicateCache())
         let mutable wb = workbook
         let mutable eng = engine
         for cell in recalculateVisitOrder engine do
             match Map.tryFind cell eng.Metadata with
             | Some metadata when Set.contains cell eng.DirtySet ->
-                match recalculateCellWithCriteriaCache criteriaCache cell wb eng with
+                match recalculateCell cell wb eng with
                 | Some newValue ->
                     match sheetModel cell.Sheet wb with
                     | Some model ->

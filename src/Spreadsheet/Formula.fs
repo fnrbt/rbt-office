@@ -19,16 +19,6 @@ let private hashSetToArray (items: HashSet<'T>) =
         index <- index + 1
     result
 
-let private addBoundedCacheEntry maxEntries (cache: Dictionary<'K, 'V>) (order: Queue<'K>) key value =
-    while cache.Count >= maxEntries && order.Count > 0 do
-        cache.Remove(order.Dequeue()) |> ignore
-    if cache.Count >= maxEntries then
-        cache.Clear()
-        order.Clear()
-    cache.[key] <- value
-    order.Enqueue key
-    value
-
 #if FABLE_COMPILER
 open Fable.Core
 
@@ -681,172 +671,8 @@ let parseFormula (input: string) : Result<Expr, string> =
         | t -> Result.Error (sprintf "Unexpected trailing token %A" t)
     with ex -> Result.Error ex.Message
 
-let internal parsedFormulaResultRetainedTextCharCount maxChars (parsed: Result<Expr, string>) =
-    let addCapped (amount: int) (total: int) =
-        if amount <= 0 then total
-        elif total > maxChars || amount > maxChars - total then maxChars + 1
-        else total + amount
-
-    let addOptionString (value: string option) total =
-        match value with
-        | Some value -> addCapped value.Length total
-        | None -> total
-
-    let addRefText (ref: RefAst) total =
-        addOptionString ref.Sheet total
-
-    let addTableText (table: TableSel) total =
-        total
-        |> addCapped table.Table.Length
-        |> addOptionString table.ColStart
-        |> addOptionString table.ColEnd
-
-    match parsed with
-    | Result.Error error -> min (maxChars + 1) error.Length
-    | Ok expr ->
-        let stack = ResizeArray<Expr>()
-        stack.Add expr
-        let mutable total = 0
-        while total <= maxChars && stack.Count > 0 do
-            let last = stack.Count - 1
-            let expr = stack.[last]
-            stack.RemoveAt last
-            match expr with
-            | Number _
-            | Bool _
-            | ArrayLit _ -> ()
-            | Str value
-            | ErrorLit value
-            | NameRef value ->
-                total <- addCapped value.Length total
-            | CellRef ref
-            | SpillRef ref ->
-                total <- addRefText ref total
-            | RangeRef (left, right) ->
-                total <- addRefText left total
-                total <- addRefText right total
-            | TableRef table ->
-                total <- addTableText table total
-            | UnaryOp (op, operand) ->
-                total <- addCapped op.Length total
-                stack.Add operand
-            | BinOp (left, op, right) ->
-                total <- addCapped op.Length total
-                stack.Add left
-                stack.Add right
-            | Function (name, args) ->
-                total <- addCapped name.Length total
-                let mutable remaining = args
-                while total <= maxChars && not remaining.IsEmpty do
-                    stack.Add remaining.Head
-                    remaining <- remaining.Tail
-        total
-
-let private parsedFormulaCacheMaxEntries = 32768
-let private parsedFormulaCacheMaxTotalChars = 5000000
-let private parsedFormulaCache = Dictionary<string, Result<Expr, string>>()
-let private parsedFormulaCacheOrder = Queue<string>()
-let mutable private parsedFormulaCacheTotalChars = 0
-type private ParsedFormulaFastCacheEntry = {
-    Formula: string
-    Parsed: Result<Expr, string>
-}
-let private parsedFormulaFastSlots = Array.zeroCreate<ParsedFormulaFastCacheEntry> 256
-
-let private clearParsedFormulaFastSlotsIn (slots: ParsedFormulaFastCacheEntry array) =
-    for index = 0 to slots.Length - 1 do
-        slots.[index] <- Unchecked.defaultof<ParsedFormulaFastCacheEntry>
-
-let private clearParsedFormulaFastSlots () =
-    clearParsedFormulaFastSlotsIn parsedFormulaFastSlots
-
-let private parsedFormulaFastSlotIn (slots: ParsedFormulaFastCacheEntry array) (input: string) =
-    let hashCode =
-        if isNull input then 0
-        else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(input)
-    hashCode &&& (slots.Length - 1)
-
-let private setParsedFormulaFastSlotIn (slots: ParsedFormulaFastCacheEntry array) input parsed =
-    slots.[parsedFormulaFastSlotIn slots input] <- {
-        Formula = input
-        Parsed = parsed
-    }
-
-let private setParsedFormulaFastSlot input parsed =
-    setParsedFormulaFastSlotIn parsedFormulaFastSlots input parsed
-
-let private tryGetParsedFormulaFastSlotIn (slots: ParsedFormulaFastCacheEntry array) input =
-    let fast = slots.[parsedFormulaFastSlotIn slots input]
-    if not (obj.ReferenceEquals(fast, null))
-       && obj.ReferenceEquals(fast.Formula, input) then
-        ValueSome fast.Parsed
-    else
-        ValueNone
-
-let private tryGetParsedFormulaFastSlot input =
-    tryGetParsedFormulaFastSlotIn parsedFormulaFastSlots input
-
-let private parsedFormulaAddCapped (amount: int) (total: int) =
-    if amount <= 0 then total
-    elif total > parsedFormulaCacheMaxTotalChars || amount > parsedFormulaCacheMaxTotalChars - total then
-        parsedFormulaCacheMaxTotalChars + 1
-    else
-        total + amount
-
-let private parsedFormulaCacheEntryChars (input: string) (parsed: Result<Expr, string>) =
-    0
-    |> parsedFormulaAddCapped input.Length
-    |> parsedFormulaAddCapped (parsedFormulaResultRetainedTextCharCount parsedFormulaCacheMaxTotalChars parsed)
-
-let private removeParsedFormulaCacheEntry input =
-    let mutable previous = Unchecked.defaultof<Result<Expr, string>>
-    if parsedFormulaCache.TryGetValue(input, &previous) then
-        parsedFormulaCache.Remove input |> ignore
-        parsedFormulaCacheTotalChars <- max 0 (parsedFormulaCacheTotalChars - parsedFormulaCacheEntryChars input previous)
-        clearParsedFormulaFastSlots ()
-
-let private addParsedFormulaCacheEntry (input: string) (parsed: Result<Expr, string>) =
-    let entryChars = parsedFormulaCacheEntryChars input parsed
-    if entryChars > parsedFormulaCacheMaxTotalChars then
-        removeParsedFormulaCacheEntry input
-        parsed
-    else
-        let mutable previous = Unchecked.defaultof<Result<Expr, string>>
-        if parsedFormulaCache.TryGetValue(input, &previous) then
-            parsedFormulaCacheTotalChars <- max 0 (parsedFormulaCacheTotalChars - parsedFormulaCacheEntryChars input previous)
-            clearParsedFormulaFastSlots ()
-        else
-            parsedFormulaCacheOrder.Enqueue input
-        parsedFormulaCache.[input] <- parsed
-        parsedFormulaCacheTotalChars <- parsedFormulaCacheTotalChars + entryChars
-        while (parsedFormulaCache.Count > parsedFormulaCacheMaxEntries || parsedFormulaCacheTotalChars > parsedFormulaCacheMaxTotalChars)
-              && parsedFormulaCacheOrder.Count > 0 do
-            let oldest = parsedFormulaCacheOrder.Dequeue()
-            if oldest <> input then
-                removeParsedFormulaCacheEntry oldest
-        if parsedFormulaCache.Count > parsedFormulaCacheMaxEntries || parsedFormulaCacheTotalChars > parsedFormulaCacheMaxTotalChars then
-            let current = parsedFormulaCache.[input]
-            parsedFormulaCache.Clear()
-            parsedFormulaCacheOrder.Clear()
-            clearParsedFormulaFastSlots ()
-            parsedFormulaCacheOrder.Enqueue input
-            parsedFormulaCache.[input] <- current
-            parsedFormulaCacheTotalChars <- entryChars
-        if parsedFormulaCache.ContainsKey input then
-            setParsedFormulaFastSlot input parsed
-        parsed
-
 let private parseFormulaShared (input: string) : Result<Expr, string> =
-    match tryGetParsedFormulaFastSlot input with
-    | ValueSome cached -> cached
-    | ValueNone ->
-        let mutable cached = Unchecked.defaultof<Result<Expr, string>>
-        if parsedFormulaCache.TryGetValue(input, &cached) then
-            setParsedFormulaFastSlot input cached
-            cached
-        else
-            cached <- parseFormula input
-            addParsedFormulaCacheEntry input cached
+    parseFormula input
 
 /// Resolve a defined name to its final parsed expression, scoped to the
 /// current sheet (a sheet-local name shadows a workbook-global one). A
@@ -1285,17 +1111,8 @@ let valueToExpr (v: CellValue) : Expr =
     | CellValue.Empty -> Number 0.0
     | CellValue.Formula _ -> Number 0.0
 
-let private isVolatileFunctionName name =
-    equalsOrdinalIgnoreCase name "RAND"
-    || equalsOrdinalIgnoreCase name "RANDARRAY"
-    || equalsOrdinalIgnoreCase name "RANDBETWEEN"
-    || equalsOrdinalIgnoreCase name "NOW"
-    || equalsOrdinalIgnoreCase name "TODAY"
-    || equalsOrdinalIgnoreCase name "OFFSET"
-    || equalsOrdinalIgnoreCase name "INDIRECT"
-
-/// True if the expression contains a volatile function (RAND/RANDARRAY/
-/// RANDBETWEEN/NOW/TODAY/OFFSET/INDIRECT) anywhere in its tree. Such cells must be
+/// True if the expression contains a volatile function (RAND/RANDBETWEEN/
+/// NOW/TODAY/OFFSET/INDIRECT) anywhere in its tree. Such cells must be
 /// recalculated on every pass regardless of dependency state.
 let containsVolatile (expr: Expr) : bool =
     let stack = ResizeArray<Expr>()
@@ -1307,7 +1124,12 @@ let containsVolatile (expr: Expr) : bool =
         stack.RemoveAt last
         match expr with
         | Function (name, args) ->
-            if isVolatileFunctionName name then
+            if equalsOrdinalIgnoreCase name "RAND"
+               || equalsOrdinalIgnoreCase name "RANDBETWEEN"
+               || equalsOrdinalIgnoreCase name "NOW"
+               || equalsOrdinalIgnoreCase name "TODAY"
+               || equalsOrdinalIgnoreCase name "OFFSET"
+               || equalsOrdinalIgnoreCase name "INDIRECT" then
                 found <- true
             else
                 for arg in args do
@@ -1318,31 +1140,6 @@ let containsVolatile (expr: Expr) : bool =
             stack.Add right
         | _ -> ()
     found
-
-let private canReuseIndependentFormulaResult (expr: Expr) =
-    let stack = ResizeArray<Expr>()
-    stack.Add expr
-    let mutable reusable = true
-    while reusable && stack.Count > 0 do
-        let last = stack.Count - 1
-        let expr = stack.[last]
-        stack.RemoveAt last
-        match expr with
-        | Function (name, args) ->
-            if isVolatileFunctionName name then
-                reusable <- false
-            else
-                for arg in args do
-                    stack.Add arg
-        | TableRef _
-        | NameRef _ ->
-            reusable <- false
-        | UnaryOp (_, inner) -> stack.Add inner
-        | BinOp (left, _, right) ->
-            stack.Add left
-            stack.Add right
-        | _ -> ()
-    reusable
 
 let private containsFunctionNamed (targetName: string) (expr: Expr) =
     let stack = ResizeArray<Expr>()
@@ -1585,108 +1382,27 @@ let private appendRegexLiteralChar (sb: Text.StringBuilder) (ch: char) =
         sb.Append(ch) |> ignore
 
 /// Translate Excel's `*` / `?` wildcards into a case-insensitive regex.
-type private WildcardRegexCacheEntry = {
-    Regex: System.Text.RegularExpressions.Regex
-    PatternChars: int
-}
-
-let private wildcardRegexCache = Dictionary<string, WildcardRegexCacheEntry>()
-let private wildcardRegexCacheOrder = Queue<string>()
-let private wildcardRegexCacheMaxEntries = 1024
-let private wildcardRegexCacheMaxTotalPatternChars = 1000000
-let mutable private wildcardRegexCacheTotalPatternChars = 0
-
-let private wildcardRegexEntryPatternChars (pattern: string) regexPatternLength =
-    let total = pattern.Length + regexPatternLength
-    if total <= 0 then 1 else total
-
-let private wildcardRegexPatternCharCount (pattern: string) =
-    let mutable total = 2 // ^ and $
+let private wildcardRegex (pattern: string) =
+    let sb = System.Text.StringBuilder()
+    sb.Append('^') |> ignore
     let mutable i = 0
     while i < pattern.Length do
         match pattern.[i] with
         | '~' when i + 1 < pattern.Length ->
-            let ch = pattern.[i + 1]
-            total <-
-                total
-                + match ch with
-                  | '\\' | '^' | '$' | '.' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}' -> 2
-                  | _ -> 1
+            appendRegexLiteralChar sb pattern.[i + 1]
             i <- i + 2
         | '*' ->
-            total <- total + 2
+            sb.Append(".*") |> ignore
             i <- i + 1
         | '?' ->
-            total <- total + 1
+            sb.Append('.') |> ignore
             i <- i + 1
-        | ch ->
-            total <-
-                total
-                + match ch with
-                  | '\\' | '^' | '$' | '.' | '|' | '?' | '*' | '+' | '(' | ')' | '[' | ']' | '{' | '}' -> 2
-                  | _ -> 1
+        | c ->
+            appendRegexLiteralChar sb c
             i <- i + 1
-    total
-
-let private addWildcardRegexCacheEntry (pattern: string) regexPatternLength regex =
-    let entry = {
-        Regex = regex
-        PatternChars = wildcardRegexEntryPatternChars pattern regexPatternLength
-    }
-    if entry.PatternChars > wildcardRegexCacheMaxTotalPatternChars then
-        let mutable previous = Unchecked.defaultof<WildcardRegexCacheEntry>
-        if wildcardRegexCache.TryGetValue(pattern, &previous) then
-            wildcardRegexCache.Remove pattern |> ignore
-            wildcardRegexCacheTotalPatternChars <- max 0 (wildcardRegexCacheTotalPatternChars - previous.PatternChars)
-        regex
-    else
-        let mutable previous = Unchecked.defaultof<WildcardRegexCacheEntry>
-        if wildcardRegexCache.TryGetValue(pattern, &previous) then
-            wildcardRegexCacheTotalPatternChars <- max 0 (wildcardRegexCacheTotalPatternChars - previous.PatternChars)
-        else
-            wildcardRegexCacheOrder.Enqueue pattern
-        wildcardRegexCache.[pattern] <- entry
-        wildcardRegexCacheTotalPatternChars <- wildcardRegexCacheTotalPatternChars + entry.PatternChars
-        while (wildcardRegexCache.Count > wildcardRegexCacheMaxEntries || wildcardRegexCacheTotalPatternChars > wildcardRegexCacheMaxTotalPatternChars)
-              && wildcardRegexCacheOrder.Count > 0 do
-            let oldest = wildcardRegexCacheOrder.Dequeue()
-            if oldest <> pattern then
-                let mutable oldestEntry = Unchecked.defaultof<WildcardRegexCacheEntry>
-                if wildcardRegexCache.TryGetValue(oldest, &oldestEntry) then
-                    wildcardRegexCache.Remove oldest |> ignore
-                    wildcardRegexCacheTotalPatternChars <- max 0 (wildcardRegexCacheTotalPatternChars - oldestEntry.PatternChars)
-        if wildcardRegexCache.Count > wildcardRegexCacheMaxEntries || wildcardRegexCacheTotalPatternChars > wildcardRegexCacheMaxTotalPatternChars then
-            let current = wildcardRegexCache.[pattern]
-            wildcardRegexCache.Clear()
-            wildcardRegexCacheOrder.Clear()
-            wildcardRegexCacheOrder.Enqueue pattern
-            wildcardRegexCache.[pattern] <- current
-            wildcardRegexCacheTotalPatternChars <- current.PatternChars
-        regex
-
-let private wildcardRegex (pattern: string) =
-    let mutable cached = Unchecked.defaultof<WildcardRegexCacheEntry>
-    if wildcardRegexCache.TryGetValue(pattern, &cached) then
-        cached.Regex
-    else
-        let sb = System.Text.StringBuilder()
-        sb.Append('^') |> ignore
-        let mutable i = 0
-        while i < pattern.Length do
-            match pattern.[i] with
-            | '~' when i + 1 < pattern.Length ->
-                // ~* / ~? escape the wildcard.
-                appendRegexLiteralChar sb pattern.[i + 1]
-                i <- i + 2
-            | '*' -> sb.Append(".*") |> ignore; i <- i + 1
-            | '?' -> sb.Append('.') |> ignore; i <- i + 1
-            | c -> appendRegexLiteralChar sb c; i <- i + 1
-        sb.Append('$') |> ignore
-        let regexPattern = sb.ToString()
-        let regex =
-            System.Text.RegularExpressions.Regex(
-                regexPattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase)
-        addWildcardRegexCacheEntry pattern regexPattern.Length regex
+    sb.Append('$') |> ignore
+    System.Text.RegularExpressions.Regex(
+        sb.ToString(), System.Text.RegularExpressions.RegexOptions.IgnoreCase)
 
 type private CriteriaOp =
     | CriteriaEq
@@ -1813,123 +1529,8 @@ let private compileCriteria (criteria: CellValue) : CellValue -> bool =
         fun v -> match unwrapValue v with CellValue.Empty -> true | _ -> false
     | _ -> fun _ -> false
 
-let private criteriaPredicateCacheMaxEntries = 2048
-let private criteriaPredicateCacheMaxTotalTextChars = 1000000
-
-type CriteriaPredicateCache() =
-    let values = Dictionary<CellValue, CellValue -> bool>()
-    let textChars = Dictionary<CellValue, int>()
-    let order = Queue<CellValue>()
-    let mutable totalTextChars = 0
-
-    member internal _.Values = values
-    member internal _.TextChars = textChars
-    member internal _.Order = order
-    member internal _.TotalTextChars
-        with get () = totalTextChars
-        and set value = totalTextChars <- value
-
-let private criteriaPredicateCacheAddCapped amount total =
-    if amount <= 0 then total
-    elif total > criteriaPredicateCacheMaxTotalTextChars
-         || amount > criteriaPredicateCacheMaxTotalTextChars - total then
-        criteriaPredicateCacheMaxTotalTextChars + 1
-    else
-        total + amount
-
-let private criteriaValueTextCharCount value =
-    let mutable total = 0
-    let mutable current = value
-    let mutable doneCounting = false
-    while total <= criteriaPredicateCacheMaxTotalTextChars && not doneCounting do
-        match current with
-        | CellValue.String value
-        | CellValue.Error value ->
-            total <- criteriaPredicateCacheAddCapped value.Length total
-            doneCounting <- true
-        | CellValue.Formula (formula, cachedValue) ->
-            total <- criteriaPredicateCacheAddCapped formula.Length total
-            current <- cachedValue
-        | CellValue.Empty
-        | CellValue.Number _
-        | CellValue.Boolean _ ->
-            doneCounting <- true
-    total
-
-let private criteriaPredicateRetainedTextCharCount criteria =
-    let baseTextChars = max 1 (criteriaValueTextCharCount criteria)
-    match unwrapValue criteria with
-    | CellValue.String raw ->
-        let op, restStart = parseCriteriaOperator raw
-        let rest = if restStart = 0 then raw else raw.Substring(restStart)
-        match Double.TryParse(rest, NumberStyles.Float, CultureInfo.InvariantCulture) with
-        | true, _ -> baseTextChars
-        | _ ->
-            match op with
-            | CriteriaEq | CriteriaNe when hasCriteriaWildcard rest ->
-                baseTextChars
-                |> criteriaPredicateCacheAddCapped (wildcardRegexEntryPatternChars rest (wildcardRegexPatternCharCount rest))
-            | _ -> baseTextChars
-    | _ -> baseTextChars
-
-let private removeCriteriaPredicateCacheEntry criteria (cache: CriteriaPredicateCache) =
-    let mutable entryTextChars = 0
-    if cache.TextChars.TryGetValue(criteria, &entryTextChars) then
-        cache.TotalTextChars <- max 0 (cache.TotalTextChars - entryTextChars)
-        cache.TextChars.Remove criteria |> ignore
-    cache.Values.Remove criteria |> ignore
-
-let private clearCriteriaPredicateCache (cache: CriteriaPredicateCache) =
-    cache.Values.Clear()
-    cache.TextChars.Clear()
-    cache.Order.Clear()
-    cache.TotalTextChars <- 0
-
-let private addCriteriaPredicateCacheEntry (cache: CriteriaPredicateCache) criteria pred entryTextChars =
-    if entryTextChars > criteriaPredicateCacheMaxTotalTextChars then
-        removeCriteriaPredicateCacheEntry criteria cache
-    else
-        let existed = cache.Values.ContainsKey criteria
-        if existed then
-            removeCriteriaPredicateCacheEntry criteria cache
-        else
-            cache.Order.Enqueue criteria
-        cache.Values.[criteria] <- pred
-        cache.TextChars.[criteria] <- entryTextChars
-        cache.TotalTextChars <- cache.TotalTextChars + entryTextChars
-
-        let mutable skippedCurrent = false
-        while (cache.Values.Count > criteriaPredicateCacheMaxEntries
-               || cache.TotalTextChars > criteriaPredicateCacheMaxTotalTextChars)
-              && cache.Order.Count > 0 do
-            let oldest = cache.Order.Dequeue()
-            if oldest = criteria then
-                skippedCurrent <- true
-            else
-                removeCriteriaPredicateCacheEntry oldest cache
-        if skippedCurrent && cache.Values.ContainsKey criteria then
-            cache.Order.Enqueue criteria
-
-        if cache.Values.Count > criteriaPredicateCacheMaxEntries
-           || cache.TotalTextChars > criteriaPredicateCacheMaxTotalTextChars then
-            clearCriteriaPredicateCache cache
-            cache.Order.Enqueue criteria
-            cache.Values.[criteria] <- pred
-            cache.TextChars.[criteria] <- entryTextChars
-            cache.TotalTextChars <- entryTextChars
-
-let private cachedCriteriaPredicate (cache: CriteriaPredicateCache option) criteria =
-    match cache with
-    | None -> compileCriteria criteria
-    | Some cache ->
-        let mutable pred = Unchecked.defaultof<CellValue -> bool>
-        if cache.Values.TryGetValue(criteria, &pred) then
-            pred
-        else
-            pred <- compileCriteria criteria
-            let entryTextChars = criteriaPredicateRetainedTextCharCount criteria
-            addCriteriaPredicateCacheEntry cache criteria pred entryTextChars
-            pred
+let private criteriaPredicate criteria =
+    compileCriteria criteria
 
 /// Static 0-indexed bounds of a range-shaped expression (RangeRef or a
 /// single CellRef). None for anything else.
@@ -3101,7 +2702,6 @@ type EvalContext = {
     Model: SpreadsheetModel
     Workbook: RedBat.Spreadsheet.Workbook.Workbook option
     Sheet: RedBat.Spreadsheet.Workbook.SheetId option
-    CriteriaCache: CriteriaPredicateCache option
     /// Address of the cell being evaluated, when known. Needed to resolve
     /// this-row structured refs (`Table[@Col]` / `[@Col]`) and to find the
     /// containing table for unqualified refs. None for ad-hoc evaluation.
@@ -3111,7 +2711,7 @@ type EvalContext = {
 /// Build a context with no workbook — same-sheet formulas only, no defined
 /// names. Convenient for callers that just have a bare model.
 let contextOf (model: SpreadsheetModel) : EvalContext =
-    { Model = model; Workbook = None; Sheet = None; CriteriaCache = None; CurrentCell = None }
+    { Model = model; Workbook = None; Sheet = None; CurrentCell = None }
 
 /// Evaluate an expression to a scalar CellValue.
 let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
@@ -9598,7 +9198,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         match rangeAccessOf model workbook (argExpr 0) with
         | None -> err Err.value
         | Some a ->
-            let pred = cachedCriteriaPredicate ctx.CriteriaCache (argRaw 1)
+            let pred = criteriaPredicate (argRaw 1)
             CellValue.Number (float (countIfRangeAccess a pred))
     | "SUMIF" ->
         // SUMIF(range, criteria, [sum_range])
@@ -9609,7 +9209,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let sum =
                 if nargs >= 3 then (match rangeAccessOf model workbook (argExpr 2) with Some s -> s | None -> crit)
                 else crit
-            let pred = cachedCriteriaPredicate ctx.CriteriaCache (argRaw 1)
+            let pred = criteriaPredicate (argRaw 1)
             CellValue.Number (sumIfRangeAccess crit sum pred)
     | "AVERAGEIF" ->
         if nargs < 2 then err Err.value else
@@ -9619,7 +9219,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let avg =
                 if nargs >= 3 then (match rangeAccessOf model workbook (argExpr 2) with Some s -> s | None -> crit)
                 else crit
-            let pred = cachedCriteriaPredicate ctx.CriteriaCache (argRaw 1)
+            let pred = criteriaPredicate (argRaw 1)
             averageIfRangeAccess crit avg pred
     | "SUMIFS" | "COUNTIFS" ->
         // SUMIFS(sum_range, crit_range1, crit1, crit_range2, crit2, …)
@@ -9636,7 +9236,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         while argIndex < nargs do
             match rangeAccessOf model workbook (argExpr argIndex) with
             | Some access ->
-                crits.Add(access, cachedCriteriaPredicate ctx.CriteriaCache (eval (argExpr (argIndex + 1)) ctx))
+                crits.Add(access, criteriaPredicate (eval (argExpr (argIndex + 1)) ctx))
                 if access.Count < count then count <- access.Count
             | None -> invalidCriteria <- true
             argIndex <- argIndex + 2
@@ -9691,7 +9291,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             while argIndex < nargs do
                 match rangeAccessOf model workbook (argExpr argIndex) with
                 | Some access ->
-                    crits.Add(access, cachedCriteriaPredicate ctx.CriteriaCache (eval (argExpr (argIndex + 1)) ctx))
+                    crits.Add(access, criteriaPredicate (eval (argExpr (argIndex + 1)) ctx))
                     if access.Count < count then count <- access.Count
                 | None -> invalidCriteria <- true
                 argIndex <- argIndex + 2
@@ -10747,7 +10347,6 @@ let evaluateFormula (formula: string) (model: SpreadsheetModel)
             { Model = model
               Workbook = workbook
               Sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
-              CriteriaCache = Some (CriteriaPredicateCache())
               CurrentCell = None }
         eval expr ctx
     | Result.Error msg -> CellValue.Error msg
@@ -10757,662 +10356,48 @@ let evaluateFormula (formula: string) (model: SpreadsheetModel)
 // incremental engine; this is the simple full pass the shared model uses.
 // ---------------------------------------------------------------------------
 
-[<Struct>]
-type private FastCellBinaryFormula = {
-    Left: CellAddress
-    Op: char
-    Right: CellAddress
-}
-
 type private FormulaCell = {
     Address: CellAddress
     Cell: CellData
     Formula: string
-    FastFormula: FastCellBinaryFormula voption
     Expr: Expr
     ParseError: string option
 }
 
-let private recalcLocalParseCacheMaxEntries = 8192
-let private recalcLocalParseCacheMaxTotalChars = 5000000
-
-let private recalcReferenceCacheMaxEntries = 8192
-let private recalcReferenceCacheMaxTotalFormulaChars = 5000000
-let private recalcReferenceCacheMaxTotalRefs = 200000
-
-let private recalcArrayFormulaCacheMaxEntries = 8192
-let private recalcArrayFormulaCacheMaxTotalChars = 5000000
-
-let private recalcIndependentResultCacheMaxEntries = 1024
-let private recalcLocalFastSlotCount = 64
-
-let private recalcCacheAddCapped (maxTotal: int) (amount: int) (total: int) =
-    if amount <= 0 then total
-    elif total > maxTotal || amount > maxTotal - total then maxTotal + 1
-    else total + amount
-
-[<Struct>]
-type private RecalcResultCacheKey = {
-    SourceCells: Map<CellAddress, CellData>
-    SourceSpill: Map<CellAddress, CellAddress>
-    Workbook: RedBat.Spreadsheet.Workbook.Workbook option
-    CurrentSheet: RedBat.Spreadsheet.Workbook.SheetId option
-}
-
-type private RecalcResultCacheEntry = {
-    SourceCells: Map<CellAddress, CellData>
-    SourceSpill: Map<CellAddress, CellAddress>
-    Workbook: RedBat.Spreadsheet.Workbook.Workbook option
-    CurrentSheet: RedBat.Spreadsheet.Workbook.SheetId option
-    ResultCells: Map<CellAddress, CellData>
-    FormulaCount: int
-    SourceCellCount: int
-    SourceSpillCount: int
-    ResultCellCount: int
-    SourceTextCharCount: int
-    ResultTextCharCount: int
-}
-
-let mutable private recalcResultCache: RecalcResultCacheEntry list = []
-let private recalcResultFastSlots = Array.zeroCreate<RecalcResultCacheEntry> 256
-let private recalcResultCacheMaxEntries = 128
-let private recalcResultCacheMaxTotalCells = 500000
-let private recalcResultCacheMaxTotalTextChars = 5000000
-
-let private recalcReferenceHash (value: obj) =
-    if isNull value then 0
-    else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value)
-
-let private recalcWorkbookHash = function
-    | Some workbook -> recalcReferenceHash workbook
-    | None -> 0
-
-let private recalcSheetHash = function
-    | Some sheet -> sheet.GetHashCode()
-    | None -> 0
-
-let private recalcWorkbookMatches left right =
-    match left, right with
-    | None, None -> true
-    | Some left, Some right -> obj.ReferenceEquals(left, right)
-    | _ -> false
-
-let private recalcSheetMatches left right =
-    match left, right with
-    | None, None -> true
-    | Some left, Some right -> String.Equals(left, right, StringComparison.Ordinal)
-    | _ -> false
-
-let private recalcResultCacheHash sourceCells sourceSpill workbook currentSheet =
-    let mutable hashCode = recalcReferenceHash sourceCells
-    hashCode <- (hashCode * 397) ^^^ recalcReferenceHash sourceSpill
-    hashCode <- (hashCode * 397) ^^^ recalcWorkbookHash workbook
-    hashCode <- (hashCode * 397) ^^^ recalcSheetHash currentSheet
-    hashCode
-
-let private recalcResultCacheSlot sourceCells sourceSpill workbook currentSheet slotCount =
-    recalcResultCacheHash sourceCells sourceSpill workbook currentSheet &&& (slotCount - 1)
-
-let private recalcResultCacheEntryMatches sourceCells sourceSpill workbook currentSheet (entry: RecalcResultCacheEntry) =
-    obj.ReferenceEquals(entry.SourceCells, sourceCells)
-    && obj.ReferenceEquals(entry.SourceSpill, sourceSpill)
-    && recalcWorkbookMatches entry.Workbook workbook
-    && recalcSheetMatches entry.CurrentSheet currentSheet
-
-let private recalcResultCacheKeyMatchesEntry (key: RecalcResultCacheKey) (entry: RecalcResultCacheEntry) =
-    recalcResultCacheEntryMatches key.SourceCells key.SourceSpill key.Workbook key.CurrentSheet entry
-
-let private recalcResultCacheKeyComparer =
-    { new IEqualityComparer<RecalcResultCacheKey> with
-        member _.Equals(left, right) =
-            obj.ReferenceEquals(left.SourceCells, right.SourceCells)
-            && obj.ReferenceEquals(left.SourceSpill, right.SourceSpill)
-            && recalcWorkbookMatches left.Workbook right.Workbook
-            && recalcSheetMatches left.CurrentSheet right.CurrentSheet
-
-        member _.GetHashCode(key) =
-            recalcResultCacheHash key.SourceCells key.SourceSpill key.Workbook key.CurrentSheet }
-
-let private recalcResultCacheByKey =
-    Dictionary<RecalcResultCacheKey, RecalcResultCacheEntry>(recalcResultCacheKeyComparer)
-
-let private clearRecalcResultFastSlots () =
-    for index = 0 to recalcResultFastSlots.Length - 1 do
-        recalcResultFastSlots.[index] <- Unchecked.defaultof<RecalcResultCacheEntry>
-
-let private setRecalcResultCache entries =
-    recalcResultCache <- entries
-    recalcResultCacheByKey.Clear()
-    clearRecalcResultFastSlots ()
-    for entry in entries do
-        let key = {
-            SourceCells = entry.SourceCells
-            SourceSpill = entry.SourceSpill
-            Workbook = entry.Workbook
-            CurrentSheet = entry.CurrentSheet
-        }
-        let mutable existing = Unchecked.defaultof<RecalcResultCacheEntry>
-        if not (recalcResultCacheByKey.TryGetValue(key, &existing)) then
-            recalcResultCacheByKey.[key] <- entry
-            let slot =
-                recalcResultCacheSlot
-                    entry.SourceCells
-                    entry.SourceSpill
-                    entry.Workbook
-                    entry.CurrentSheet
-                    recalcResultFastSlots.Length
-            recalcResultFastSlots.[slot] <- entry
-
-let private tryGetRecalcResultCache workbook currentSheet (model: SpreadsheetModel) =
-    let slot =
-        recalcResultCacheSlot
-            model.Cells
-            model.Spill
-            workbook
-            currentSheet
-            recalcResultFastSlots.Length
-    let fast = recalcResultFastSlots.[slot]
-    if not (obj.ReferenceEquals(fast, null))
-       && recalcResultCacheEntryMatches model.Cells model.Spill workbook currentSheet fast then
-        ValueSome fast
-    else
-        let key = {
-            SourceCells = model.Cells
-            SourceSpill = model.Spill
-            Workbook = workbook
-            CurrentSheet = currentSheet
-        }
-        let mutable cached = Unchecked.defaultof<RecalcResultCacheEntry>
-        if recalcResultCacheByKey.TryGetValue(key, &cached) then
-            recalcResultFastSlots.[slot] <- cached
-            ValueSome cached
-        else
-            ValueNone
-
-let private recalcResultCacheWithoutEntry entry =
-    let mutable cached = Unchecked.defaultof<RecalcResultCacheEntry>
-    let key = {
-        SourceCells = entry.SourceCells
-        SourceSpill = entry.SourceSpill
-        Workbook = entry.Workbook
-        CurrentSheet = entry.CurrentSheet
-    }
-    if recalcResultCacheByKey.TryGetValue(key, &cached)
-       && recalcResultCacheKeyMatchesEntry key cached then
-        recalcResultCache
-        |> List.filter (recalcResultCacheKeyMatchesEntry key >> not)
-    else
-        recalcResultCache
-
-let private recalcResultCellsTextCharCount cells =
-    if Map.count cells > recalcResultCacheMaxTotalCells then
-        recalcResultCacheMaxTotalTextChars + 1
-    else
-        let mutable total = 0
-        cells
-        |> Map.exists (fun _ cell ->
-            total <-
-                recalcCacheAddCapped
-                    recalcResultCacheMaxTotalTextChars
-                    (cellDataTextCharCountFor recalcResultCacheMaxTotalTextChars cell)
-                    total
-            total > recalcResultCacheMaxTotalTextChars)
-        |> ignore
-        min total (recalcResultCacheMaxTotalTextChars + 1)
-
-let private recalcResultRetainedCellCount entry =
-    let resultCellCount =
-        if obj.ReferenceEquals(entry.SourceCells, entry.ResultCells) then 0
-        else entry.ResultCellCount
-    max 1 (entry.SourceCellCount + entry.SourceSpillCount + resultCellCount)
-
-let private recalcResultRetainedTextCharCount entry =
-    let resultTextCharCount =
-        if obj.ReferenceEquals(entry.SourceCells, entry.ResultCells) then 0
-        else entry.ResultTextCharCount
-    max 1 (entry.SourceTextCharCount + resultTextCharCount)
-
-let private recalcResultCacheEntryRetainable entry =
-    recalcResultRetainedCellCount entry <= recalcResultCacheMaxTotalCells
-    && recalcResultRetainedTextCharCount entry <= recalcResultCacheMaxTotalTextChars
-
-let private rememberRecalcResultCache workbook currentSheet sourceCells sourceSpill resultCells formulaCount =
-    let entry = {
-        SourceCells = sourceCells
-        SourceSpill = sourceSpill
-        Workbook = workbook
-        CurrentSheet = currentSheet
-        ResultCells = resultCells
-        FormulaCount = formulaCount
-        SourceCellCount = max 1 (Map.count sourceCells)
-        SourceSpillCount = Map.count sourceSpill
-        ResultCellCount = max 1 (Map.count resultCells)
-        SourceTextCharCount = recalcResultCellsTextCharCount sourceCells
-        ResultTextCharCount =
-            if obj.ReferenceEquals(sourceCells, resultCells) then 0
-            else recalcResultCellsTextCharCount resultCells
-    }
-    if not (recalcResultCacheEntryRetainable entry) then
-        let entries = recalcResultCacheWithoutEntry entry
-        if not (obj.ReferenceEquals(entries, recalcResultCache)) then
-            setRecalcResultCache entries
-    else
-        let mutable keptCount = 1
-        let mutable keptCells = recalcResultRetainedCellCount entry
-        let mutable keptTextChars = recalcResultRetainedTextCharCount entry
-        let retained =
-            recalcResultCacheWithoutEntry entry
-            |> List.choose (fun candidate ->
-                let candidateCells = recalcResultRetainedCellCount candidate
-                let candidateTextChars = recalcResultRetainedTextCharCount candidate
-                if recalcResultCacheEntryRetainable candidate
-                   && keptCount < recalcResultCacheMaxEntries
-                   && keptCells + candidateCells <= recalcResultCacheMaxTotalCells
-                   && keptTextChars + candidateTextChars <= recalcResultCacheMaxTotalTextChars then
-                    keptCount <- keptCount + 1
-                    keptCells <- keptCells + candidateCells
-                    keptTextChars <- keptTextChars + candidateTextChars
-                    Some candidate
-                else
-                    None)
-        entry :: retained
-        |> setRecalcResultCache
-
-let private modelWithCachedRecalcCells (model: SpreadsheetModel) (cached: RecalcResultCacheEntry) =
-    match cellsFormulaCountIfKnown cached.ResultCells with
-    | Some count when count = cached.FormulaCount -> ()
-    | _ -> rememberCellsFormulaCount cached.ResultCells cached.FormulaCount
-    if obj.ReferenceEquals(cached.ResultCells, model.Cells) then
-        model
-    else
-        { model with Cells = cached.ResultCells }
-
-let private recalcLocalParseCacheEntryChars (formula: string) (parsed: Result<Expr, string>) =
-    0
-    |> recalcCacheAddCapped recalcLocalParseCacheMaxTotalChars formula.Length
-    |> recalcCacheAddCapped
-        recalcLocalParseCacheMaxTotalChars
-        (parsedFormulaResultRetainedTextCharCount recalcLocalParseCacheMaxTotalChars parsed)
-
-let private rememberRecalcLocalParseCacheEntry
-    (cache: Dictionary<string, Result<Expr, string>>)
-    (order: Queue<string>)
-    (totalChars: byref<int>)
-    (formula: string)
-    (parsed: Result<Expr, string>) =
-    let entryChars = recalcLocalParseCacheEntryChars formula parsed
-    if entryChars <= recalcLocalParseCacheMaxTotalChars then
-        let mutable previous = Unchecked.defaultof<Result<Expr, string>>
-        if cache.TryGetValue(formula, &previous) then
-            totalChars <- max 0 (totalChars - recalcLocalParseCacheEntryChars formula previous)
-        else
-            order.Enqueue formula
-        cache.[formula] <- parsed
-        totalChars <- totalChars + entryChars
-        while (cache.Count > recalcLocalParseCacheMaxEntries
-               || totalChars > recalcLocalParseCacheMaxTotalChars)
-              && order.Count > 0 do
-            let oldest = order.Dequeue()
-            if oldest <> formula then
-                let mutable oldestParsed = Unchecked.defaultof<Result<Expr, string>>
-                if cache.TryGetValue(oldest, &oldestParsed) then
-                    cache.Remove oldest |> ignore
-                    totalChars <- max 0 (totalChars - recalcLocalParseCacheEntryChars oldest oldestParsed)
-
-let private recalcReferenceCacheFormulaChars (formula: string) =
-    max 1 formula.Length
-
-let private recalcReferenceCacheRefsCount (refs: CellAddress array) =
-    max 1 refs.Length
-
-type private RecalcReferenceFastCacheEntry = {
-    Formula: string
-    Refs: CellAddress array
-}
-
-let private clearRecalcReferenceFastSlots (slots: RecalcReferenceFastCacheEntry array) =
-    for index = 0 to slots.Length - 1 do
-        slots.[index] <- Unchecked.defaultof<RecalcReferenceFastCacheEntry>
-
-let private recalcReferenceFastSlot (slots: RecalcReferenceFastCacheEntry array) (formula: string) =
-    let hashCode =
-        if isNull formula then 0
-        else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(formula)
-    hashCode &&& (slots.Length - 1)
-
-let private setRecalcReferenceFastSlot (slots: RecalcReferenceFastCacheEntry array) formula refs =
-    slots.[recalcReferenceFastSlot slots formula] <- {
-        Formula = formula
-        Refs = refs
-    }
-
-let private tryGetRecalcReferenceFastSlot (slots: RecalcReferenceFastCacheEntry array) formula =
-    let fast = slots.[recalcReferenceFastSlot slots formula]
-    if not (obj.ReferenceEquals(fast, null))
-       && obj.ReferenceEquals(fast.Formula, formula) then
-        ValueSome fast.Refs
-    else
-        ValueNone
-
-let private rememberRecalcReferenceCacheEntry
-    (cache: Dictionary<string, CellAddress array>)
-    (order: Queue<string>)
-    (totalFormulaChars: byref<int>)
-    (totalRefs: byref<int>)
-    formula
-    refs =
-    let formulaChars = recalcReferenceCacheFormulaChars formula
-    let refCount = recalcReferenceCacheRefsCount refs
-    if formulaChars <= recalcReferenceCacheMaxTotalFormulaChars
-       && refCount <= recalcReferenceCacheMaxTotalRefs then
-        let mutable previous = Unchecked.defaultof<CellAddress array>
-        if cache.TryGetValue(formula, &previous) then
-            totalFormulaChars <- max 0 (totalFormulaChars - recalcReferenceCacheFormulaChars formula)
-            totalRefs <- max 0 (totalRefs - recalcReferenceCacheRefsCount previous)
-        else
-            order.Enqueue formula
-        cache.[formula] <- refs
-        totalFormulaChars <- totalFormulaChars + formulaChars
-        totalRefs <- totalRefs + refCount
-        while (cache.Count > recalcReferenceCacheMaxEntries
-               || totalFormulaChars > recalcReferenceCacheMaxTotalFormulaChars
-               || totalRefs > recalcReferenceCacheMaxTotalRefs)
-              && order.Count > 0 do
-            let oldest = order.Dequeue()
-            if oldest <> formula then
-                let mutable oldestRefs = Unchecked.defaultof<CellAddress array>
-                if cache.TryGetValue(oldest, &oldestRefs) then
-                    cache.Remove oldest |> ignore
-                    totalFormulaChars <- max 0 (totalFormulaChars - recalcReferenceCacheFormulaChars oldest)
-                    totalRefs <- max 0 (totalRefs - recalcReferenceCacheRefsCount oldestRefs)
-
-let private recalcArrayFormulaCacheEntryChars (formula: string) (expr: Expr option) =
-    let exprTextChars =
-        match expr with
-        | Some expr -> parsedFormulaResultRetainedTextCharCount recalcArrayFormulaCacheMaxTotalChars (Ok expr)
-        | None -> 0
-    0
-    |> recalcCacheAddCapped recalcArrayFormulaCacheMaxTotalChars formula.Length
-    |> recalcCacheAddCapped recalcArrayFormulaCacheMaxTotalChars exprTextChars
-
-let private rememberRecalcArrayFormulaCacheEntry
-    (cache: Dictionary<string, Expr option>)
-    (order: Queue<string>)
-    (totalChars: byref<int>)
-    (formula: string)
-    (expr: Expr option) =
-    let entryChars = recalcArrayFormulaCacheEntryChars formula expr
-    if entryChars <= recalcArrayFormulaCacheMaxTotalChars then
-        let mutable previous = Unchecked.defaultof<Expr option>
-        if cache.TryGetValue(formula, &previous) then
-            totalChars <- max 0 (totalChars - recalcArrayFormulaCacheEntryChars formula previous)
-        else
-            order.Enqueue formula
-        cache.[formula] <- expr
-        totalChars <- totalChars + entryChars
-        while (cache.Count > recalcArrayFormulaCacheMaxEntries
-               || totalChars > recalcArrayFormulaCacheMaxTotalChars)
-              && order.Count > 0 do
-            let oldest = order.Dequeue()
-            if oldest <> formula then
-                let mutable oldestExpr = Unchecked.defaultof<Expr option>
-                if cache.TryGetValue(oldest, &oldestExpr) then
-                    cache.Remove oldest |> ignore
-                    totalChars <- max 0 (totalChars - recalcArrayFormulaCacheEntryChars oldest oldestExpr)
-
-type private RecalcArrayFormulaFastCacheEntry = {
-    Formula: string
-    Expr: Expr option
-}
-
-let private clearRecalcArrayFormulaFastSlots (slots: RecalcArrayFormulaFastCacheEntry array) =
-    for index = 0 to slots.Length - 1 do
-        slots.[index] <- Unchecked.defaultof<RecalcArrayFormulaFastCacheEntry>
-
-let private recalcArrayFormulaFastSlot (slots: RecalcArrayFormulaFastCacheEntry array) (formula: string) =
-    let hashCode =
-        if isNull formula then 0
-        else System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(formula)
-    hashCode &&& (slots.Length - 1)
-
-let private setRecalcArrayFormulaFastSlot (slots: RecalcArrayFormulaFastCacheEntry array) formula expr =
-    slots.[recalcArrayFormulaFastSlot slots formula] <- {
-        Formula = formula
-        Expr = expr
-    }
-
-let private tryGetRecalcArrayFormulaFastSlot (slots: RecalcArrayFormulaFastCacheEntry array) formula =
-    let fast = slots.[recalcArrayFormulaFastSlot slots formula]
-    if not (obj.ReferenceEquals(fast, null))
-       && obj.ReferenceEquals(fast.Formula, formula) then
-        ValueSome fast.Expr
-    else
-        ValueNone
-
-let inline private isFastFormulaRefLetter (c: char) =
-    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
-
-let inline private isFastFormulaRefDigit (c: char) =
-    c >= '0' && c <= '9'
-
-let private skipFastFormulaWhitespace (formula: string) start =
-    let mutable index = start
-    while index < formula.Length && Char.IsWhiteSpace formula.[index] do
-        index <- index + 1
-    index
-
-let private tryParseFastFormulaCellRef (formula: string) start =
-    let len = formula.Length
-    let mutable index = start
-    if index < len && formula.[index] = '$' then
-        index <- index + 1
-
-    let mutable col = 0
-    let mutable hasCol = false
-    let mutable valid = true
-    let mutable readingCols = true
-    while valid && readingCols && index < len do
-        let c = formula.[index]
-        if isFastFormulaRefLetter c then
-            let digit =
-                if c <= 'Z' then int c - int 'A' + 1
-                else int c - int 'a' + 1
-            if col > (Int32.MaxValue - digit) / 26 then
-                valid <- false
-            else
-                hasCol <- true
-                col <- col * 26 + digit
-                index <- index + 1
-        else
-            readingCols <- false
-
-    if index < len && formula.[index] = '$' then
-        index <- index + 1
-
-    let mutable row = 0
-    let mutable hasRow = false
-    let mutable readingRows = true
-    while valid && readingRows && index < len do
-        let c = formula.[index]
-        if isFastFormulaRefDigit c then
-            let digit = int c - int '0'
-            if row > (Int32.MaxValue - digit) / 10 then
-                valid <- false
-            else
-                hasRow <- true
-                row <- row * 10 + digit
-                index <- index + 1
-        else
-            readingRows <- false
-
-    if valid && hasCol && hasRow && row >= 1 && col >= 1 then
-        ValueSome (struct ({ Row = row - 1; Col = col - 1 }, index))
-    else
-        ValueNone
-
-let private isFastFormulaPlainInput (model: SpreadsheetModel) addr =
-    match Map.tryFind addr model.Cells with
-    | Some cell ->
-        match cell.Value with
-        | CellValue.Formula _ -> false
-        | _ -> true
-    | None -> true
-
-let private tryParseFastCellBinaryFormula (model: SpreadsheetModel) (formula: string) =
-    if isNull formula
-       || formula.Length < 4
-       || formula.[0] <> '='
-       || not (Map.isEmpty model.Spill) then
-        ValueNone
-    else
-        let mutable index = skipFastFormulaWhitespace formula 1
-        match tryParseFastFormulaCellRef formula index with
-        | ValueNone -> ValueNone
-        | ValueSome (struct (left, nextIndex)) ->
-            index <- skipFastFormulaWhitespace formula nextIndex
-            if index >= formula.Length then
-                ValueNone
-            else
-                let op = formula.[index]
-                match op with
-                | '+' | '-' | '*' | '/' ->
-                    index <- skipFastFormulaWhitespace formula (index + 1)
-                    match tryParseFastFormulaCellRef formula index with
-                    | ValueNone -> ValueNone
-                    | ValueSome (struct (right, nextIndex)) ->
-                        index <- skipFastFormulaWhitespace formula nextIndex
-                        if index = formula.Length
-                           && isFastFormulaPlainInput model left
-                           && isFastFormulaPlainInput model right then
-                            ValueSome { Left = left; Op = op; Right = right }
-                        else
-                            ValueNone
-                | _ -> ValueNone
-
-let private evaluateFastCellBinaryFormula (model: SpreadsheetModel) (fast: FastCellBinaryFormula) =
-    let op =
-        match fast.Op with
-        | '+' -> "+"
-        | '-' -> "-"
-        | '*' -> "*"
-        | '/' -> "/"
-        | _ -> ""
-    applyBin op (getCellValue fast.Left model) (getCellValue fast.Right model)
-
 let private collectFormulaCells (model: SpreadsheetModel) =
     let formulaCells = ResizeArray<FormulaCell>()
-    let mutable parseCache = Unchecked.defaultof<Dictionary<string, Result<Expr, string>>>
-    let mutable parseCacheOrder = Unchecked.defaultof<Queue<string>>
-    let mutable parseCacheFastSlots = Unchecked.defaultof<ParsedFormulaFastCacheEntry array>
-    let mutable parseCacheTotalChars = 0
-    let mutable hasFirstFormula = false
-    let mutable firstFormula = Unchecked.defaultof<string>
-    let mutable firstParsed = Unchecked.defaultof<Result<Expr, string>>
-    let mutable repeatedFormulas: HashSet<string> = null
-    let mutable mayUseCriteriaCache = false
-    let markRepeatedFormula formula =
-        if isNull repeatedFormulas then
-            repeatedFormulas <- HashSet<string>()
-        repeatedFormulas.Add formula |> ignore
-    let ensureParseScratch () =
-        if isNull parseCache then
-            parseCache <- Dictionary<string, Result<Expr, string>>()
-            parseCacheOrder <- Queue<string>()
-            parseCacheFastSlots <- Array.zeroCreate<ParsedFormulaFastCacheEntry> recalcLocalFastSlotCount
-            if hasFirstFormula then
-                rememberRecalcLocalParseCacheEntry parseCache parseCacheOrder &parseCacheTotalChars firstFormula firstParsed
-                if parseCache.ContainsKey firstFormula then
-                    setParsedFormulaFastSlotIn parseCacheFastSlots firstFormula firstParsed
-    let mutable canCacheResult = true
-    let rec parseFormulaCached formula =
-        if isNull parseCache then
-            if not hasFirstFormula then
-                let parsed = parseFormulaShared formula
-                hasFirstFormula <- true
-                firstFormula <- formula
-                firstParsed <- parsed
-                parsed
-            elif firstFormula = formula then
-                markRepeatedFormula formula
-                firstParsed
-            else
-                ensureParseScratch ()
-                parseFormulaCached formula
-        else
-            match tryGetParsedFormulaFastSlotIn parseCacheFastSlots formula with
-            | ValueSome parsed ->
-                markRepeatedFormula formula
-                parsed
-            | ValueNone ->
-                let mutable parsed = Unchecked.defaultof<Result<Expr, string>>
-                if parseCache.TryGetValue(formula, &parsed) then
-                    markRepeatedFormula formula
-                    setParsedFormulaFastSlotIn parseCacheFastSlots formula parsed
-                    parsed
-                else
-                    parsed <- parseFormulaShared formula
-                    rememberRecalcLocalParseCacheEntry parseCache parseCacheOrder &parseCacheTotalChars formula parsed
-                    clearParsedFormulaFastSlotsIn parseCacheFastSlots
-                    if parseCache.ContainsKey formula then
-                        setParsedFormulaFastSlotIn parseCacheFastSlots formula parsed
-                    parsed
     model.Cells
     |> Map.iter (fun addr cell ->
         match cell.Value with
         | CellValue.Formula (formula, _) ->
-            if not mayUseCriteriaCache
-               && formula.IndexOf("IF", StringComparison.OrdinalIgnoreCase) >= 0 then
-                mayUseCriteriaCache <- true
-            match tryParseFastCellBinaryFormula model formula with
-            | ValueSome fast ->
+            match parseFormulaShared formula with
+            | Ok expr ->
                 formulaCells.Add {
                     Address = addr
                     Cell = cell
                     Formula = formula
-                    FastFormula = ValueSome fast
-                    Expr = Number 0.0
+                    Expr = expr
                     ParseError = None
                 }
-            | ValueNone ->
-                match parseFormulaCached formula with
-                | Ok expr ->
-                    if containsVolatile expr || exprUsesSubtotal expr then
-                        canCacheResult <- false
-                    formulaCells.Add {
-                        Address = addr
-                        Cell = cell
-                        Formula = formula
-                        FastFormula = ValueNone
-                        Expr = expr
-                        ParseError = None
-                    }
-                | Result.Error error ->
-                    formulaCells.Add {
-                        Address = addr
-                        Cell = cell
-                        Formula = formula
-                        FastFormula = ValueNone
-                        Expr = Number 0.0
-                        ParseError = Some error
-                    }
+            | Result.Error error ->
+                formulaCells.Add {
+                    Address = addr
+                    Cell = cell
+                    Formula = formula
+                    Expr = Number 0.0
+                    ParseError = Some error
+                }
         | _ -> ())
-    formulaCells, repeatedFormulas, canCacheResult, mayUseCriteriaCache
+    formulaCells
 
 /// Recalculate every formula cell in a model, in dependency order.
 /// `currentSheet` scopes defined-name resolution to the sheet being
 /// recalculated (the caller knows which sheet `model` belongs to).
-let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                                          (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
-                                          (model: SpreadsheetModel) : SpreadsheetModel =
-    match cellsFormulaCountIfKnown model.Cells with
-    | Some 0 -> model
-    | _ ->
-        let formulaCells, repeatedFormulas, canCacheResult, mayUseCriteriaCache = collectFormulaCells model
-        rememberCellsFormulaCount model.Cells formulaCells.Count
-        if formulaCells.Count = 0 then model else
-        let criteriaCache =
-            if mayUseCriteriaCache then Some (CriteriaPredicateCache()) else None
-
+let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                           (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                           (model: SpreadsheetModel) : SpreadsheetModel =
+    let formulaCells = collectFormulaCells model
+    if formulaCells.Count = 0 then model else
         let formulaByAddress = Dictionary<CellAddress, FormulaCell>(formulaCells.Count)
         let addIndexed (index: Dictionary<int, ResizeArray<CellAddress>>) key addr =
             match index.TryGetValue key with
@@ -11500,56 +10485,54 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
                         stack.Add(struct (seen, arg))
             refs.ToArray()
 
-        let mutable dependencies = Unchecked.defaultof<Dictionary<CellAddress, CellAddress array>>
-        let mutable hasDependencies = false
-        let referencedFormulaCellsFor : FormulaCell -> CellAddress array =
-            if formulaCells.Count <= 1 then
-                fun fc ->
-                    match fc.FastFormula with
-                    | ValueSome _ -> Array.empty
-                    | ValueNone -> referencedFormulaCells fc.Expr
-            else
-                let referencedFormulaCellsCache = Dictionary<string, CellAddress array>()
-                let referencedFormulaCellsCacheOrder = Queue<string>()
-                let referencedFormulaCellsFastSlots =
-                    Array.zeroCreate<RecalcReferenceFastCacheEntry> recalcLocalFastSlotCount
-                let mutable referencedFormulaCellsCacheTotalFormulaChars = 0
-                let mutable referencedFormulaCellsCacheTotalRefs = 0
-                fun fc ->
-                    match fc.FastFormula with
-                    | ValueSome _ -> Array.empty
-                    | ValueNone ->
-                        match tryGetRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula with
-                        | ValueSome refs -> refs
-                        | ValueNone ->
-                            let mutable refs = Unchecked.defaultof<CellAddress array>
-                            if referencedFormulaCellsCache.TryGetValue(fc.Formula, &refs) then
-                                setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
-                                refs
-                            else
-                                refs <- referencedFormulaCells fc.Expr
-                                rememberRecalcReferenceCacheEntry
-                                    referencedFormulaCellsCache
-                                    referencedFormulaCellsCacheOrder
-                                    &referencedFormulaCellsCacheTotalFormulaChars
-                                    &referencedFormulaCellsCacheTotalRefs
-                                    fc.Formula
-                                    refs
-                                clearRecalcReferenceFastSlots referencedFormulaCellsFastSlots
-                                if referencedFormulaCellsCache.ContainsKey fc.Formula then
-                                    setRecalcReferenceFastSlot referencedFormulaCellsFastSlots fc.Formula refs
-                                refs
+        let referencedFormulaCellsFor (fc: FormulaCell) =
+            referencedFormulaCells fc.Expr
 
+        let dependencies = Dictionary<CellAddress, CellAddress array>(formulaCells.Count)
         for fc in formulaCells do
             match fc.ParseError with
             | Some _ -> ()
             | None ->
                 let refs = referencedFormulaCellsFor fc
                 if refs.Length > 0 then
-                    hasDependencies <- true
-                    if isNull dependencies then
-                        dependencies <- Dictionary<CellAddress, CellAddress array>(formulaCells.Count)
                     dependencies.[fc.Address] <- refs
+
+        let visited = HashSet<CellAddress>()
+        let activeStack = ResizeArray<CellAddress>()
+        let activeIndex = Dictionary<CellAddress, int>()
+        let order = ResizeArray<CellAddress>(formulaCells.Count)
+        let cyclic = HashSet<CellAddress>()
+
+        let markCycleFrom cycleStart =
+            for i = cycleStart to activeStack.Count - 1 do
+                cyclic.Add activeStack.[i] |> ignore
+
+        let depsFor addr =
+            match dependencies.TryGetValue addr with
+            | true, deps -> deps
+            | false, _ -> Array.empty
+
+        let enter (stack: Stack<struct (CellAddress * CellAddress array * int)>) addr =
+            let mutable cycleStart = 0
+            if activeIndex.TryGetValue(addr, &cycleStart) then
+                markCycleFrom cycleStart
+            elif visited.Add addr then
+                activeIndex.[addr] <- activeStack.Count
+                activeStack.Add addr
+                stack.Push(struct (addr, depsFor addr, 0))
+
+        for fc in formulaCells do
+            let stack = Stack<struct (CellAddress * CellAddress array * int)>()
+            enter stack fc.Address
+            while stack.Count > 0 do
+                let struct (addr, deps, index) = stack.Pop()
+                if index >= deps.Length then
+                    activeIndex.Remove addr |> ignore
+                    activeStack.RemoveAt(activeStack.Count - 1)
+                    order.Add addr
+                else
+                    stack.Push(struct (addr, deps, index + 1))
+                    enter stack deps.[index]
 
         let mutable updatedCells = model.Cells
         let mutable changed = false
@@ -11558,113 +10541,21 @@ let private recalculateAllFormulasUncached (workbook: RedBat.Spreadsheet.Workboo
             if fc.Cell.Value <> nextValue then
                 updatedCells <- Map.add addr { fc.Cell with Value = nextValue } updatedCells
                 changed <- true
-        let evaluateFormulaCell addr (fc: FormulaCell) =
-            match fc.FastFormula with
-            | ValueSome fast ->
-                evaluateFastCellBinaryFormula { model with Cells = updatedCells } fast
-            | ValueNone ->
-                let updated = { model with Cells = updatedCells }
-                let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = criteriaCache; CurrentCell = Some addr }
-                eval fc.Expr ctx
-        let evaluateIndependentFormulaCell addr (fc: FormulaCell) =
-            match fc.FastFormula with
-            | ValueSome fast ->
-                evaluateFastCellBinaryFormula model fast
-            | ValueNone ->
-                let ctx = { Model = model; Workbook = workbook; Sheet = currentSheet; CriteriaCache = criteriaCache; CurrentCell = Some addr }
-                eval fc.Expr ctx
-        let evaluateCachedIndependentFormulaCell (independentResultCache: Dictionary<string, CellValue>) addr (fc: FormulaCell) =
-            let mutable cached = Unchecked.defaultof<CellValue>
-            if not (repeatedFormulas.Contains fc.Formula) then
-                evaluateIndependentFormulaCell addr fc
-            elif independentResultCache.TryGetValue(fc.Formula, &cached) then
-                cached
-            else
-                let result = evaluateIndependentFormulaCell addr fc
-                if independentResultCache.Count < recalcIndependentResultCacheMaxEntries
-                   && canReuseIndependentFormulaResult fc.Expr then
-                    independentResultCache.[fc.Formula] <- result
-                result
-
-        if hasDependencies then
-            let visited = HashSet<CellAddress>()
-            let activeStack = ResizeArray<CellAddress>()
-            let activeIndex = Dictionary<CellAddress, int>()
-            let order = ResizeArray<CellAddress>(formulaCells.Count)
-            let cyclic = HashSet<CellAddress>()
-
-            let markCycleFrom cycleStart =
-                for i = cycleStart to activeStack.Count - 1 do
-                    cyclic.Add activeStack.[i] |> ignore
-
-            let depsFor addr =
-                match dependencies.TryGetValue addr with
-                | true, deps -> deps
-                | false, _ -> Array.empty
-
-            let enter (stack: Stack<struct (CellAddress * CellAddress array * int)>) addr =
-                let mutable cycleStart = 0
-                if activeIndex.TryGetValue(addr, &cycleStart) then
-                    markCycleFrom cycleStart
-                elif visited.Add addr then
-                    activeIndex.[addr] <- activeStack.Count
-                    activeStack.Add addr
-                    stack.Push(struct (addr, depsFor addr, 0))
-
-            for fc in formulaCells do
-                let stack = Stack<struct (CellAddress * CellAddress array * int)>()
-                enter stack fc.Address
-                while stack.Count > 0 do
-                    let struct (addr, deps, index) = stack.Pop()
-                    if index >= deps.Length then
-                        activeIndex.Remove addr |> ignore
-                        activeStack.RemoveAt(activeStack.Count - 1)
-                        order.Add addr
-                    else
-                        stack.Push(struct (addr, deps, index + 1))
-                        enter stack deps.[index]
-
-            for addr in order do
-                match formulaByAddress.TryGetValue addr with
-                | true, fc ->
-                    match fc.ParseError with
-                    | Some parseError ->
-                        applyFormulaResult addr fc (CellValue.Error parseError)
-                    | None when cyclic.Contains addr ->
-                        applyFormulaResult addr fc (CellValue.Error Err.cycle)
-                    | None ->
-                        applyFormulaResult addr fc (evaluateFormulaCell addr fc)
-                | false, _ -> ()
-        else
-            if isNull repeatedFormulas then
-                for fc in formulaCells do
-                    match fc.ParseError with
-                    | Some parseError ->
-                        applyFormulaResult fc.Address fc (CellValue.Error parseError)
-                    | None ->
-                        applyFormulaResult fc.Address fc (evaluateIndependentFormulaCell fc.Address fc)
-            else
-                let independentResultCache = Dictionary<string, CellValue>()
-                for fc in formulaCells do
-                    match fc.ParseError with
-                    | Some parseError ->
-                        applyFormulaResult fc.Address fc (CellValue.Error parseError)
-                    | None ->
-                        applyFormulaResult fc.Address fc (evaluateCachedIndependentFormulaCell independentResultCache fc.Address fc)
-        rememberCellsFormulaCount updatedCells formulaCells.Count
-        if canCacheResult then
-            rememberRecalcResultCache workbook currentSheet model.Cells model.Spill updatedCells formulaCells.Count
+        for addr in order do
+            match formulaByAddress.TryGetValue addr with
+            | true, fc ->
+                match fc.ParseError with
+                | Some parseError ->
+                    applyFormulaResult addr fc (CellValue.Error parseError)
+                | None when cyclic.Contains addr ->
+                    applyFormulaResult addr fc (CellValue.Error Err.cycle)
+                | None ->
+                    let updated = { model with Cells = updatedCells }
+                    let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
+                    let result = eval fc.Expr ctx
+                    applyFormulaResult addr fc result
+            | false, _ -> ()
         if changed then { model with Cells = updatedCells } else model
-
-let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                           (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
-                           (model: SpreadsheetModel) : SpreadsheetModel =
-    match cellsFormulaCountIfKnown model.Cells with
-    | Some 0 -> model
-    | _ ->
-        match tryGetRecalcResultCache workbook currentSheet model with
-        | ValueSome cached -> modelWithCachedRecalcCells model cached
-        | ValueNone -> recalculateAllFormulasUncached workbook currentSheet model
 
 /// True if the expression tree uses a dynamic-array (spilling) function.
 let containsArrayFunction (e: Expr) : bool =
@@ -11700,81 +10591,23 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
                             (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
                             (model: SpreadsheetModel) : SpreadsheetModel * bool =
     let previousSpill = model.Spill
-    let mutable anchors = Unchecked.defaultof<ResizeArray<CellAddress * CellData * string * Expr>>
-    let mutable arrayFormulaCache = Unchecked.defaultof<Dictionary<string, Expr option>>
-    let mutable arrayFormulaCacheOrder = Unchecked.defaultof<Queue<string>>
-    let mutable arrayFormulaFastSlots = Unchecked.defaultof<RecalcArrayFormulaFastCacheEntry array>
-    let mutable arrayFormulaCacheTotalChars = 0
-    let mutable hasFirstFormula = false
-    let mutable firstFormula = Unchecked.defaultof<string>
-    let mutable firstCached = Unchecked.defaultof<Expr option>
-    let parseArrayFormula formula =
+    let anchors = ResizeArray<CellAddress * CellData * string * Expr>()
+    let arrayFormulaExpr formula =
         if not (formulaTextMayContainArrayFunctionName formula) then
             None
         else
             match parseFormulaShared formula with
             | Ok expr when containsArrayFunction expr -> Some expr
             | _ -> None
-    let ensureArrayFormulaScratch () =
-        if isNull arrayFormulaCache then
-            arrayFormulaCache <- Dictionary<string, Expr option>()
-            arrayFormulaCacheOrder <- Queue<string>()
-            arrayFormulaFastSlots <- Array.zeroCreate<RecalcArrayFormulaFastCacheEntry> recalcLocalFastSlotCount
-            if hasFirstFormula then
-                rememberRecalcArrayFormulaCacheEntry
-                    arrayFormulaCache
-                    arrayFormulaCacheOrder
-                    &arrayFormulaCacheTotalChars
-                    firstFormula
-                    firstCached
-                if arrayFormulaCache.ContainsKey firstFormula then
-                    setRecalcArrayFormulaFastSlot arrayFormulaFastSlots firstFormula firstCached
-    let rec arrayFormulaExpr formula =
-        if isNull arrayFormulaCache then
-            if not hasFirstFormula then
-                let cached = parseArrayFormula formula
-                hasFirstFormula <- true
-                firstFormula <- formula
-                firstCached <- cached
-                cached
-            elif firstFormula = formula then
-                firstCached
-            else
-                ensureArrayFormulaScratch ()
-                arrayFormulaExpr formula
-        else
-            match tryGetRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula with
-            | ValueSome cached -> cached
-            | ValueNone ->
-                let mutable cached = Unchecked.defaultof<Expr option>
-                if arrayFormulaCache.TryGetValue(formula, &cached) then
-                    setRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula cached
-                    cached
-                else
-                    cached <- parseArrayFormula formula
-                    rememberRecalcArrayFormulaCacheEntry
-                        arrayFormulaCache
-                        arrayFormulaCacheOrder
-                        &arrayFormulaCacheTotalChars
-                        formula
-                        cached
-                    clearRecalcArrayFormulaFastSlots arrayFormulaFastSlots
-                    if arrayFormulaCache.ContainsKey formula then
-                        setRecalcArrayFormulaFastSlot arrayFormulaFastSlots formula cached
-                    cached
-    let addAnchor anchor =
-        if isNull anchors then
-            anchors <- ResizeArray<CellAddress * CellData * string * Expr>()
-        anchors.Add anchor
     model.Cells
     |> Map.iter (fun addr cell ->
         match cell.Value with
         | CellValue.Formula (formula, _) ->
             match arrayFormulaExpr formula with
-            | Some expr -> addAnchor (addr, cell, formula, expr)
+            | Some expr -> anchors.Add(addr, cell, formula, expr)
             | _ -> ()
         | _ -> ())
-    if isNull anchors || anchors.Count = 0 then
+    if anchors.Count = 0 then
         if Map.isEmpty previousSpill then
             model, false
         else
@@ -11791,13 +10624,6 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
                         changed <- true
                 | None -> ())
             if changed then
-                let mutable formulaCount = 0
-                updatedCells
-                |> Map.iter (fun _ cell ->
-                    match cell.Value with
-                    | CellValue.Formula _ -> formulaCount <- formulaCount + 1
-                    | _ -> ())
-                rememberCellsFormulaCount updatedCells formulaCount
                 { model with Cells = updatedCells; Spill = Map.empty }, true
             else
                 { model with Spill = Map.empty }, true
@@ -11815,10 +10641,9 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
         if Map.containsKey addr updatedCells then
             updatedCells <- Map.remove addr updatedCells
             changed <- true
-    let criteriaCache = CriteriaPredicateCache()
     for (addr, cell, formula, expr) in anchors do
         let updated = { model with Cells = updatedCells; Spill = spillMap }
-        let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet; CriteriaCache = Some criteriaCache; CurrentCell = Some addr }
+        let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
         let nr = arr.Length
         let nc = if nr > 0 then arr.[0].Length else 0
         if nr * nc <= 1 then
@@ -11871,61 +10696,12 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
     if not changed && not spillChanged then
         model, false
     else
-        if changed then
-            let mutable formulaCount = 0
-            updatedCells
-            |> Map.iter (fun _ cell ->
-                match cell.Value with
-                | CellValue.Formula _ -> formulaCount <- formulaCount + 1
-                | _ -> ())
-            rememberCellsFormulaCount updatedCells formulaCount
         { model with Cells = updatedCells; Spill = spillMap }, true
 
 let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                 (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
                 (model: SpreadsheetModel) : SpreadsheetModel =
     spillArraysCore workbook currentSheet model |> fst
-
-type private RecalcAndSpillModelCacheEntry = {
-    SourceModel: SpreadsheetModel
-    Workbook: RedBat.Spreadsheet.Workbook.Workbook option
-    CurrentSheet: RedBat.Spreadsheet.Workbook.SheetId option
-    ResultModel: SpreadsheetModel
-}
-
-let private recalcAndSpillModelRecent = Array.zeroCreate<RecalcAndSpillModelCacheEntry> 64
-let mutable private recalcAndSpillModelRecentNext = 0
-let mutable private recalcAndSpillModelRecentCount = 0
-
-let private tryGetRecalcAndSpillModelRecent workbook currentSheet (model: SpreadsheetModel) =
-    let mutable i = 0
-    let mutable found = Unchecked.defaultof<SpreadsheetModel>
-    while obj.ReferenceEquals(found, null) && i < recalcAndSpillModelRecentCount do
-        let entry = recalcAndSpillModelRecent.[i]
-        if not (obj.ReferenceEquals(entry, null))
-           && obj.ReferenceEquals(entry.SourceModel, model)
-           && recalcWorkbookMatches entry.Workbook workbook
-           && recalcSheetMatches entry.CurrentSheet currentSheet then
-            found <- entry.ResultModel
-        i <- i + 1
-    if obj.ReferenceEquals(found, null) then ValueNone else ValueSome found
-
-let private canRememberRecalcAndSpillModelRecent workbook currentSheet (model: SpreadsheetModel) =
-    match tryGetRecalcResultCache workbook currentSheet model with
-    | ValueSome cached -> recalcResultCacheEntryRetainable cached
-    | ValueNone -> false
-
-let private rememberRecalcAndSpillModelRecent workbook currentSheet model result =
-    if canRememberRecalcAndSpillModelRecent workbook currentSheet model then
-        recalcAndSpillModelRecent.[recalcAndSpillModelRecentNext] <- {
-            SourceModel = model
-            Workbook = workbook
-            CurrentSheet = currentSheet
-            ResultModel = result
-        }
-        recalcAndSpillModelRecentNext <- (recalcAndSpillModelRecentNext + 1) % recalcAndSpillModelRecent.Length
-        if recalcAndSpillModelRecentCount < recalcAndSpillModelRecent.Length then
-            recalcAndSpillModelRecentCount <- recalcAndSpillModelRecentCount + 1
 
 /// Recalculate every formula and (re)materialize dynamic-array spills,
 /// clearing the previous spill's ghost cells. This is the interactive
@@ -11935,19 +10711,10 @@ let private rememberRecalcAndSpillModelRecent workbook currentSheet model result
 let recalcAndSpill (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                    (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
                    (model: SpreadsheetModel) : SpreadsheetModel =
-    match tryGetRecalcAndSpillModelRecent workbook currentSheet model with
-    | ValueSome cached ->
-        cached
-    | ValueNone ->
-        if Map.isEmpty model.Spill && not (cellsHaveFormulaCells model.Cells) then
-            model
-        else
-            let recalculated = recalculateAllFormulas workbook currentSheet model
-            let spilled, spillChanged = spillArraysCore workbook currentSheet recalculated
-            let result =
-                if spillChanged then
-                    recalculateAllFormulas workbook currentSheet spilled
-                else
-                    spilled
-            rememberRecalcAndSpillModelRecent workbook currentSheet model result
-            result
+    if Map.isEmpty model.Spill && not (cellsHaveFormulaCells model.Cells) then model else
+    let recalculated = recalculateAllFormulas workbook currentSheet model
+    let spilled, spillChanged = spillArraysCore workbook currentSheet recalculated
+    if spillChanged then
+        recalculateAllFormulas workbook currentSheet spilled
+    else
+        spilled
