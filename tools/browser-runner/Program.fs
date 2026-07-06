@@ -328,6 +328,7 @@ let private boot () =
         "computeRangeStatistics" ==> fun blockId startOffset endOffset -> ensureEditor state |> fun editor -> WordApi.computeRangeStatistics editor blockId startOffset endOffset
         "getText" ==> fun () -> ensureEditor state |> WordApi.getText
         "setContent" ==> fun (text: string) -> ensureEditor state |> fun editor -> WordApi.setContent editor text
+        "setParagraphs" ==> fun (texts: string array) -> ensureEditor state |> fun editor -> WordApi.setParagraphs editor texts
         "findText" ==> fun (query: string) (matchCase: bool) -> ensureEditor state |> fun editor -> WordApi.findText editor query matchCase
         "selectFindMatch" ==> fun (matchObj: obj) -> ensureEditor state |> fun editor -> WordApi.selectFindMatch editor matchObj
         "replaceAllText" ==> fun (query: string) (replacement: string) (matchCase: bool) -> ensureEditor state |> fun editor -> WordApi.replaceAllText editor query replacement matchCase

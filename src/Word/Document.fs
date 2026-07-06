@@ -588,6 +588,23 @@ let setPlainTextContent (text: string) doc =
             HeaderParts = []
             FooterParts = [] }
 
+/// Replace the document content with one default paragraph per input string
+/// (setPlainTextContent puts the whole text into a single paragraph with
+/// hard breaks; this creates real separate blocks).
+let setParagraphContents (texts: string list) doc =
+    let blocks =
+        match texts with
+        | [] -> [ Paragraph { Id = nextBlockId(); Buffer = TextBuffer.empty; Metadata = defaultMetadata } ]
+        | _ ->
+            texts
+            |> List.map (fun t ->
+                Paragraph {
+                    Id = nextBlockId()
+                    Buffer = TextBuffer.ofString t
+                    Metadata = defaultMetadata
+                })
+    { doc with Blocks = blocks; Selection = None }
+
 /// Find block by ID
 let findBlock doc blockId =
     doc.Blocks

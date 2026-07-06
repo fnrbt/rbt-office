@@ -1134,6 +1134,13 @@ module API =
     let setContent (editor: Editor) (text: string) =
         let doc = Doc.setPlainTextContent text editor.Doc
         commitDocumentUpdate editor doc
+
+    /// Set document content as one paragraph per input string (unlike
+    /// setContent, which puts the whole text in a single paragraph with
+    /// hard breaks)
+    let setParagraphs (editor: Editor) (texts: string array) =
+        let doc = Doc.setParagraphContents (Array.toList texts) editor.Doc
+        commitDocumentUpdate editor doc
     
     /// Toggle bold on selection
     let toggleBold (editor: Editor) =

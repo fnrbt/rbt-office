@@ -213,7 +213,50 @@ async function runWordWorkflows(page, cdp) {
       };
       }, { iterations: 240 }));
 
-  return [rangeQueries, findReplace, editCycle];
+    // Realistic typing shape: 300 separate paragraphs (setContent puts the
+    // whole fixture in ONE paragraph, which per-block layout reuse cannot
+    // help; real documents are many blocks).
+    const multiParagraphEditCycle = await measure(page, cdp, 'word.multi-paragraph-edit-cycle', () =>
+      page.evaluate(({ iterations }) => {
+        const paragraph = 'browser perf paragraph alpha beta gamma delta epsilon ';
+        const paragraphs = Array.from({ length: 300 }, (_, i) => `${i}: ${paragraph}${i % 7}`);
+        const replacements = ['theta', 'lambda', 'sigma', 'omega', 'kappa', 'zeta'];
+        window.rbWordRunner.setParagraphs(paragraphs);
+        let checksum = 0;
+        let findTextMs = 0;
+        let selectMatchMs = 0;
+        let insertTextMs = 0;
+        let getTextMs = 0;
+        const started = performance.now();
+        for (let i = 0; i < iterations; i++) {
+          let t = performance.now();
+          const matches = window.rbWordRunner.findText('gamma', false);
+          findTextMs += performance.now() - t;
+          if (!matches.length) throw new Error('Word multi-paragraph edit workflow could not find insertion target');
+          const match = matches[i % matches.length];
+          t = performance.now();
+          window.rbWordRunner.selectFindMatch(match);
+          selectMatchMs += performance.now() - t;
+          t = performance.now();
+          window.rbWordRunner.insertTextAt(replacements[i % replacements.length]);
+          insertTextMs += performance.now() - t;
+          t = performance.now();
+          checksum += window.rbWordRunner.getText().length;
+          getTextMs += performance.now() - t;
+        }
+        return {
+          iterations,
+          durationMs: performance.now() - started,
+          findTextMs,
+          selectMatchMs,
+          insertTextMs,
+          getTextMs,
+          checksum,
+          finalTextLength: window.rbWordRunner.getText().length
+        };
+      }, { iterations: 240 }));
+
+  return [rangeQueries, findReplace, editCycle, multiParagraphEditCycle];
 }
 
 async function runSpreadsheetWorkflows(page, cdp) {
