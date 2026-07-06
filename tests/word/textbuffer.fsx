@@ -1155,6 +1155,32 @@ let replaceDoc =
 let replacedDoc, replacedCount = Doc.replaceAllText "target" "x" false replaceDoc
 check "replace all count" replacedCount 3
 check "replace all text" (Doc.getText replacedDoc) "one x two x\nabcd x"
+let replaceSharingBefore = para "replace-share-before" (ofString "before")
+let replaceSharingTarget = para "replace-share-target" (ofString "needle")
+let replaceSharingAfter = para "replace-share-after" (ofString "after")
+let replaceSharingDoc =
+    { Doc.empty with
+        Blocks =
+            [ Doc.Paragraph replaceSharingBefore
+              Doc.Paragraph replaceSharingTarget
+              Doc.Paragraph replaceSharingAfter ] }
+let replaceSharingResult, replaceSharingCount = Doc.replaceAllText "needle" "x" true replaceSharingDoc
+check "replace sharing count" replaceSharingCount 1
+match replaceSharingDoc.Blocks, replaceSharingResult.Blocks with
+| Doc.Paragraph originalBefore :: Doc.Paragraph originalChanged :: originalTail,
+  Doc.Paragraph newBefore :: Doc.Paragraph newChanged :: newTail ->
+    check "replace shares before para" (obj.ReferenceEquals(originalBefore, newBefore)) true
+    check "replace changes target para" (obj.ReferenceEquals(originalChanged, newChanged)) false
+    check "replace shares block tail" (obj.ReferenceEquals(originalTail, newTail)) true
+    match originalTail, newTail with
+    | [ Doc.Paragraph originalAfter ], [ Doc.Paragraph newAfter ] ->
+        check "replace shares after para" (obj.ReferenceEquals(originalAfter, newAfter)) true
+    | _ ->
+        fail <- fail + 1
+        printfn "FAIL %-28s expected one shared tail paragraph" "replace sharing tail shape"
+| _ ->
+    fail <- fail + 1
+    printfn "FAIL %-28s expected three paragraphs" "replace sharing shape"
 let noReplaceDoc, noReplaceCount = Doc.replaceAllText "missing" "x" false replaceDoc
 check "replace no match count" noReplaceCount 0
 let sameReplaceDoc, sameReplaceCount = Doc.replaceAllText "target" "target" true replaceDoc

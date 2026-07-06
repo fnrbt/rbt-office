@@ -694,9 +694,15 @@ let replaceRangesWithText (originalText: string) (ranges: ResizeArray<struct (in
                             let shiftedStart = outStart + (overlapStart - rangeStart)
                             match run with
                             | Text tr ->
-                                newRuns.Add(Text { tr with Start = shiftedStart; Length = overlapEnd - overlapStart })
+                                if overlapStart = runStart && overlapEnd = runEnd && shiftedStart = tr.Start then
+                                    newRuns.Add run
+                                else
+                                    newRuns.Add(Text { tr with Start = shiftedStart; Length = overlapEnd - overlapStart })
                             | Image ir ->
-                                newRuns.Add(Image { ir with Start = shiftedStart })
+                                if overlapStart = runStart && shiftedStart = ir.Start then
+                                    newRuns.Add run
+                                else
+                                    newRuns.Add(Image { ir with Start = shiftedStart })
                         if runEnd <= rangeEnd then
                             index <- index + 1
                         else

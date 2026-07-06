@@ -647,6 +647,87 @@ let replaceBlock (doc: Document) blockId newBlock =
         Blocks = doc.Blocks |> List.map (fun b ->
             if getBlockId b = blockId then newBlock else b) }
 
+let private sameReference left right =
+    obj.ReferenceEquals(left, right)
+
+let private mapListSharing (mapper: 'T -> 'T) (items: 'T list) =
+    let mappedItems = ResizeArray<'T>()
+    let mutable remaining = items
+    let mutable index = 0
+    let mutable firstChanged = false
+    let mutable lastChangedCount = 0
+    let mutable suffixAfterLastChange = items
+
+    while not remaining.IsEmpty do
+        match remaining with
+        | item :: tail ->
+            let mapped = mapper item
+            let same = sameReference mapped item
+
+            if firstChanged then
+                mappedItems.Add mapped
+            elif not same then
+                let mutable prefix = items
+                let mutable copied = 0
+                while copied < index do
+                    match prefix with
+                    | prefixItem :: prefixTail ->
+                        mappedItems.Add prefixItem
+                        prefix <- prefixTail
+                        copied <- copied + 1
+                    | [] ->
+                        copied <- index
+                mappedItems.Add mapped
+                firstChanged <- true
+
+            if not same then
+                lastChangedCount <- mappedItems.Count
+                suffixAfterLastChange <- tail
+
+            remaining <- tail
+            index <- index + 1
+        | [] -> ()
+
+    if not firstChanged then
+        items
+    else
+        let mutable result = suffixAfterLastChange
+        for i = lastChangedCount - 1 downto 0 do
+            result <- mappedItems.[i] :: result
+        result
+
+let private mapEditableParagraphs (mapper: ParagraphBlock -> ParagraphBlock) (doc: Document) =
+    let mapCell (cell: TableCell) =
+        let content = mapListSharing mapper cell.Content
+        if sameReference content cell.Content then cell
+        else { cell with Content = content }
+
+    let mapRow (row: TableRow) =
+        let cells = mapListSharing mapCell row.Cells
+        if sameReference cells row.Cells then row
+        else { row with Cells = cells }
+
+    let mapBlock block =
+        match block with
+        | Paragraph para ->
+            let mapped = mapper para
+            if sameReference mapped para then block else Paragraph mapped
+        | Heading (level, para) ->
+            let mapped = mapper para
+            if sameReference mapped para then block else Heading (level, mapped)
+        | Table table ->
+            let rows = mapListSharing mapRow table.Rows
+            if sameReference rows table.Rows then block
+            else Table { table with Rows = rows }
+        | TextBox textBox ->
+            let content = mapListSharing mapper textBox.Content
+            if sameReference content textBox.Content then block
+            else TextBox { textBox with Content = content }
+
+    let blocks = mapListSharing mapBlock doc.Blocks
+    if sameReference blocks doc.Blocks then doc
+    else { doc with Blocks = blocks }
+
 /// Find an editable paragraph anywhere in the document, including table cells.
 let findParagraph doc paragraphId =
     doc.Blocks
@@ -665,29 +746,7 @@ let findParagraph doc paragraphId =
 
 /// Replace an editable paragraph anywhere in the document, preserving its container.
 let replaceParagraph (doc: Document) paragraphId newPara =
-    let replaceInCell (cell: TableCell) =
-        { cell with
-            Content =
-                cell.Content
-                |> List.map (fun p -> if p.Id = paragraphId then newPara else p) }
-
-    { doc with
-        Blocks =
-            doc.Blocks
-            |> List.map (function
-                | Paragraph p when p.Id = paragraphId -> Paragraph newPara
-                | Heading (level, p) when p.Id = paragraphId -> Heading (level, newPara)
-                | Table t ->
-                    Table {
-                        t with
-                            Rows =
-                                t.Rows
-                                |> List.map (fun row ->
-                                    { row with Cells = row.Cells |> List.map replaceInCell })
-                    }
-                | TextBox t ->
-                    TextBox { t with Content = t.Content |> List.map (fun p -> if p.Id = paragraphId then newPara else p) }
-                | block -> block) }
+    mapEditableParagraphs (fun para -> if para.Id = paragraphId then newPara else para) doc
 
 let private editableParagraphsInOrder doc =
     doc.Blocks
@@ -2294,22 +2353,23 @@ let replaceAllText query replacement matchCase doc =
     if query = "" then
         (doc, 0)
     else
-        let mutable updatedDoc = doc
         let mutable count = 0
 
-        for para in editableParagraphsInOrder doc do
-            let text = TextBuffer.toString para.Buffer
-            let matches = findMatchesInText matchCase query text
+        let replaceParagraphText (para: ParagraphBlock) =
+            let ranges = ResizeArray<struct (int * int)>()
+            TextBuffer.iterMatchRanges matchCase query para.Buffer (fun start finish ->
+                ranges.Add(struct (start, finish)))
 
-            if not matches.IsEmpty then
-                let mutable buffer = para.Buffer
-                for matchInfo in matches |> List.rev do
-                    buffer <- buffer |> TextBuffer.delete matchInfo.Start (matchInfo.End - matchInfo.Start)
-                    buffer <- buffer |> TextBuffer.insert matchInfo.Start replacement
-                    count <- count + 1
+            if ranges.Count = 0 then
+                para
+            else
+                count <- count + ranges.Count
+                let originalText = TextBuffer.toString para.Buffer
+                let buffer = TextBuffer.replaceRangesWithText originalText ranges replacement para.Buffer
+                if sameReference buffer para.Buffer then para
+                else { para with Buffer = buffer }
 
-                updatedDoc <- replaceParagraph updatedDoc para.Id { para with Buffer = buffer }
-
+        let updatedDoc = mapEditableParagraphs replaceParagraphText doc
         (updatedDoc, count)
 
 /// Set selection range
@@ -2350,37 +2410,44 @@ let applyFormattingToSelection formatFn doc =
     | Some sel when sel.IsCollapsed -> doc  // No selection
     | Some sel ->
         let (startPos, endPos, blockIds) = getNormalizedRange sel doc
+        let blockCount = List.length blockIds
 
-        // Apply formatting to each block in selection
-        let mutable updatedDoc = doc
-        for (i, blockId) in (blockIds |> List.mapi (fun i id -> (i, id))) do
-            match findParagraph updatedDoc blockId with
-            | None -> ()
-            | Some para ->
-                let bufferLen = TextBuffer.length para.Buffer
+        if blockCount = 0 then
+            doc
+        else
+            let selectedBlockIndexes = Dictionary<BlockId, int>(blockCount)
+            blockIds |> List.iteri (fun index blockId -> selectedBlockIndexes.[blockId] <- index)
 
-                // Determine range to format within this block
-                let (formatStart, formatLen) =
-                    if blockIds.Length = 1 then
-                        // Single block selection
-                        (startPos.Offset, endPos.Offset - startPos.Offset)
-                    elif i = 0 then
-                        // First block: from startOffset to end
-                        (startPos.Offset, bufferLen - startPos.Offset)
-                    elif i = blockIds.Length - 1 then
-                        // Last block: from 0 to endOffset
-                        (0, endPos.Offset)
+            let formatParagraph (para: ParagraphBlock) =
+                match selectedBlockIndexes.TryGetValue para.Id with
+                | false, _ -> para
+                | true, i ->
+                    let bufferLen = TextBuffer.length para.Buffer
+
+                    // Determine range to format within this block
+                    let (formatStart, formatLen) =
+                        if blockCount = 1 then
+                            // Single block selection
+                            (startPos.Offset, endPos.Offset - startPos.Offset)
+                        elif i = 0 then
+                            // First block: from startOffset to end
+                            (startPos.Offset, bufferLen - startPos.Offset)
+                        elif i = blockCount - 1 then
+                            // Last block: from 0 to endOffset
+                            (0, endPos.Offset)
+                        else
+                            // Middle block: format entire block
+                            (0, bufferLen)
+
+                    // Apply formatting
+                    if formatLen > 0 then
+                        let newBuffer = formatFn formatStart formatLen para.Buffer
+                        if sameReference newBuffer para.Buffer then para
+                        else { para with Buffer = newBuffer }
                     else
-                        // Middle block: format entire block
-                        (0, bufferLen)
+                        para
 
-                // Apply formatting
-                if formatLen > 0 then
-                    let newBuffer = formatFn formatStart formatLen para.Buffer
-                    let newPara = { para with Buffer = newBuffer }
-                    updatedDoc <- replaceParagraph updatedDoc para.Id newPara
-
-        updatedDoc
+            mapEditableParagraphs formatParagraph doc
 
 /// Toggle bold on selection
 let toggleBold doc =
