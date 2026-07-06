@@ -26,7 +26,9 @@ function rel(file) {
 }
 
 function fsUrl(file) {
-  return `/@fs/${file}`;
+  // Use Vite's normalized /@fs/home/... form so page-level dynamic imports
+  // match dist modules' rewritten relative import URLs and stay single-instance.
+  return `/@fs${file}`;
 }
 
 async function fileExists(file) {
@@ -531,6 +533,146 @@ async function runSpreadsheetWorkflows(page, cdp) {
   return [synthetic, realXlsx];
 }
 
+async function runSpreadsheetScrollWorkflow(page, cdp) {
+  const moduleBase = fsUrl(path.join(officeRoot, 'dist/spreadsheet'));
+  return await measure(page, cdp, 'spreadsheet.scroll-dom', () =>
+    page.evaluate(async ({ moduleBase }) => {
+      const Model = await import(`${moduleBase}/Model.js`);
+      const Spreadsheet = await import(`${moduleBase}/Spreadsheet.js`);
+
+      const workflowStarted = performance.now();
+      const originalCreateElement = Document.prototype.createElement;
+      let createdElementCount = 0;
+      Document.prototype.createElement = function (...args) {
+        createdElementCount++;
+        return originalCreateElement.apply(this, args);
+      };
+
+      const resetCreateElementCount = () => {
+        createdElementCount = 0;
+      };
+      const doubleRaf = () =>
+        new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const expectedText = (row, col) => `r${row}c${col}-${row * 31 + col}`;
+
+      const host = document.createElement('div');
+      host.style.width = '1000px';
+      host.style.height = '700px';
+      host.style.position = 'relative';
+      document.body.appendChild(host);
+
+      try {
+        const spreadsheet = Spreadsheet.default(host);
+        spreadsheet.Mount();
+
+        const dataRows = 3000;
+        const dataCols = 26;
+        const rows = Array.from({ length: dataRows }, (_, row) =>
+          Array.from({ length: dataCols }, (_, col) => expectedText(row, col)).join(','));
+        const model = Model.importCSV(rows.join('\n'), 0, 0, Model.createEmpty(3200, 30));
+        spreadsheet.SetWorkbook([model], ['Sheet1'], 0);
+        await doubleRaf();
+
+        const grid = host.querySelector('.spreadsheet-container');
+        if (!grid) throw new Error('spreadsheet scroll workflow could not find grid');
+
+        const headerHeight = 30;
+        const rowHeaderWidth = 50;
+        const rowHeight = 25;
+        const colWidth = 100;
+        const cellSelector = '.spreadsheet-content .spreadsheet-cell[data-row][data-col]';
+        let checksum = 0;
+
+        const mountedCells = () => Array.from(host.querySelectorAll(cellSelector));
+        const visibleRowFromScroll = () => Math.max(0, Math.floor((grid.scrollTop - headerHeight) / rowHeight));
+        const visibleColFromScroll = () => Math.max(0, Math.floor((grid.scrollLeft - rowHeaderWidth) / colWidth));
+        const validateVisibleCells = label => {
+          const cells = mountedCells();
+          if (!cells.length) throw new Error(`${label}: no mounted spreadsheet cells`);
+
+          const rows = cells.map(cell => Number(cell.getAttribute('data-row'))).filter(Number.isFinite);
+          if (!rows.length) throw new Error(`${label}: no mounted cell row attributes`);
+
+          const expectedFirstVisibleRow = visibleRowFromScroll();
+          if (!rows.some(row => Math.abs(row - expectedFirstVisibleRow) <= 2)) {
+            throw new Error(`${label}: expected row ${expectedFirstVisibleRow} near viewport, saw ${rows.slice(0, 8).join(',')}`);
+          }
+
+          const viewportRows = Math.max(1, Math.floor((grid.clientHeight - headerHeight) / rowHeight));
+          const viewportCols = Math.max(1, Math.floor((grid.clientWidth - rowHeaderWidth) / colWidth));
+          const targetRow = Math.min(dataRows - 1, expectedFirstVisibleRow + Math.floor(viewportRows / 2));
+          const targetCol = Math.min(dataCols - 1, visibleColFromScroll() + Math.floor(viewportCols / 2));
+          const target = host.querySelector(
+            `.spreadsheet-content .spreadsheet-cell[data-row="${targetRow}"][data-col="${targetCol}"]`
+          );
+          if (!target) {
+            throw new Error(`${label}: missing middle viewport cell ${targetRow},${targetCol}`);
+          }
+
+          const text = target.textContent ?? '';
+          const expected = expectedText(targetRow, targetCol);
+          if (text !== expected) {
+            throw new Error(`${label}: cell ${targetRow},${targetCol} text "${text}" did not match "${expected}"`);
+          }
+
+          const minRow = Math.min(...rows);
+          const maxRow = Math.max(...rows);
+          if (minRow < expectedFirstVisibleRow - 10 || maxRow > expectedFirstVisibleRow + 60) {
+            throw new Error(`${label}: stale offscreen rows mounted; expected around ${expectedFirstVisibleRow}, saw ${minRow}-${maxRow}`);
+          }
+          if (cells.length >= 5000) {
+            throw new Error(`${label}: mounted cell leak guard failed with ${cells.length} cells`);
+          }
+
+          checksum += cells.length + minRow + maxRow + targetRow + targetCol + text.length + grid.scrollTop + grid.scrollLeft;
+          return cells.length;
+        };
+
+        resetCreateElementCount();
+        const scrollSteps = 150;
+        const scrollStarted = performance.now();
+        for (let step = 0; step < scrollSteps; step++) {
+          grid.scrollTop += 75;
+          if ((step + 1) % 5 === 0) grid.scrollLeft += 60;
+          grid.dispatchEvent(new Event('scroll'));
+          await doubleRaf();
+          checksum += grid.scrollTop + grid.scrollLeft;
+        }
+        const scrollPassMs = performance.now() - scrollStarted;
+        const nodesCreatedDuringScroll = createdElementCount;
+        let mountedCellCount = validateVisibleCells('pass A');
+
+        grid.scrollTop = headerHeight + (rowHeight * 600);
+        grid.scrollLeft = rowHeaderWidth + (colWidth * 8);
+        grid.dispatchEvent(new Event('scroll'));
+        await doubleRaf();
+
+        const burstStarted = performance.now();
+        for (let i = 0; i < 50; i++) {
+          grid.scrollTop += 25;
+          grid.dispatchEvent(new Event('scroll'));
+          checksum += grid.scrollTop;
+        }
+        const burstDispatchMs = performance.now() - burstStarted;
+        await doubleRaf();
+        mountedCellCount = validateVisibleCells('pass B');
+
+        return {
+          durationMs: performance.now() - workflowStarted,
+          scrollPassMs,
+          avgStepMs: scrollPassMs / scrollSteps,
+          nodesCreatedDuringScroll,
+          burstDispatchMs,
+          mountedCellCount,
+          checksum
+        };
+      } finally {
+        host.remove();
+        Document.prototype.createElement = originalCreateElement;
+      }
+    }, { moduleBase }));
+}
+
 if (!(await fileExists(wordFixture))) {
   throw new Error(`Word fixture not found: ${wordFixture}`);
 }
@@ -576,6 +718,7 @@ try {
   report.word.push(loadMetric);
   report.word.push(...await runWordWorkflows(page, cdp));
   report.spreadsheet.push(...await runSpreadsheetWorkflows(page, cdp));
+  report.spreadsheet.push(await runSpreadsheetScrollWorkflow(page, cdp));
 
   const outFile = path.join(outDir, 'latest.json');
   await fs.writeFile(outFile, JSON.stringify(report, null, 2));
