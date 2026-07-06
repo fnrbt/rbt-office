@@ -7,6 +7,7 @@ open RedBat.Spreadsheet.Model
 open RedBat.Spreadsheet.Formula
 open RedBat.Spreadsheet.Workbook
 open RedBat.Spreadsheet.XlsxImporter
+module SpreadsheetCalc = RedBat.Spreadsheet.Calc
 module SpreadsheetLayout = RedBat.Spreadsheet.Layout
 module SpreadsheetPaint = RedBat.Spreadsheet.Paint
 module SpreadsheetCellText = RedBat.Spreadsheet.CellText
@@ -105,6 +106,7 @@ type Spreadsheet(container: Element) =
     let mutable model = sheets.[0]
     let sheetChangedListeners = System.Collections.Generic.List<int -> unit>()
     let mutable workbook: Workbook option = None  // Optional workbook for table references
+    let mutable calcEngine: SpreadsheetCalc.CalcEngine option = None
     let mutable readOnly = false
     let mutable scrollTop = 0.0
     let mutable scrollLeft = 0.0
@@ -138,6 +140,57 @@ type Spreadsheet(container: Element) =
             | Some cellData -> result <- setCell addr cellData result
             | None -> result <- clearCell addr result
         result
+
+    let invalidateCalcEngine () =
+        calcEngine <- None
+
+    let sheetIdForIndex (index: int) =
+        match workbook with
+        | Some wb when index >= 0 && index < List.length wb.SheetOrder ->
+            List.item index wb.SheetOrder
+        | _ -> sprintf "sheet%d" (index + 1)
+
+    let currentWorkbookSnapshot () =
+        let sheetEntries =
+            [ for i in 0 .. sheets.Length - 1 do
+                let sheetId = sheetIdForIndex i
+                let sheetModel = if i = activeSheetIndex then model else sheets.[i]
+                let name =
+                    if i < sheetNames.Length then sheetNames.[i]
+                    else sprintf "Sheet%d" (i + 1)
+                let visible =
+                    match workbook |> Option.bind (fun wb -> Map.tryFind sheetId wb.Sheets) with
+                    | Some sheet -> sheet.Visible
+                    | None -> true
+                sheetId, { Id = sheetId; Name = name; Model = sheetModel; Visible = visible } ]
+        let activeSheet = sheetIdForIndex activeSheetIndex
+        match workbook with
+        | Some wb ->
+            { wb with
+                Sheets = Map.ofList sheetEntries
+                SheetOrder = sheetEntries |> List.map fst
+                ActiveSheet = activeSheet }
+        | None ->
+            { Sheets = Map.ofList sheetEntries
+              SheetOrder = sheetEntries |> List.map fst
+              ActiveSheet = activeSheet
+              Tables = Map.empty
+              Names = Map.empty }
+
+    let installWorkbookSnapshot (wb: Workbook) =
+        for i in 0 .. sheets.Length - 1 do
+            let sheetId = sheetIdForIndex i
+            match Map.tryFind sheetId wb.Sheets with
+            | Some sheet -> sheets.[i] <- sheet.Model
+            | None -> ()
+        model <- sheets.[activeSheetIndex]
+        workbook <- workbook |> Option.map (fun existing ->
+            { existing with
+                Sheets = wb.Sheets
+                SheetOrder = wb.SheetOrder
+                ActiveSheet = wb.ActiveSheet
+                Tables = wb.Tables
+                Names = wb.Names })
 
     let renderPortablePaintToCanvas (canvas: Element) =
         let viewport = currentViewport()
@@ -265,6 +318,7 @@ type Spreadsheet(container: Element) =
             canvasRestore ctx
 
     let recalculateFormulas () =
+        invalidateCalcEngine()
         let currentSheet = workbook |> Option.map (fun w -> w.ActiveSheet)
         // Recalc, then materialize dynamic-array spills (writes spilled values +
         // #SPILL! on collision into model.Cells), then recalc again so formulas
@@ -274,6 +328,17 @@ type Spreadsheet(container: Element) =
             recalculateAllFormulas workbook currentSheet model
             |> spillArrays workbook currentSheet
             |> recalculateAllFormulas workbook currentSheet
+
+    let recalculateSingleCellEdit (addr: CellAddress) (cellData: CellData) =
+        let wb = currentWorkbookSnapshot()
+        let sheetCell = { Sheet = wb.ActiveSheet; Cell = addr }
+        match SpreadsheetCalc.trySingleCellEdit sheetCell cellData wb calcEngine with
+        | SpreadsheetCalc.IncrementalApplied (updatedWorkbook, updatedEngine) ->
+            installWorkbookSnapshot updatedWorkbook
+            calcEngine <- Some updatedEngine
+        | SpreadsheetCalc.IncrementalFallback _ ->
+            model <- setCell addr cellData model
+            recalculateFormulas()
 
     let hitTestEvent (e: obj) =
         match gridContainer with
@@ -439,8 +504,7 @@ type Spreadsheet(container: Element) =
                     Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col)
                 }
 
-                model <- setCell addr cellData model
-                recalculateFormulas()
+                recalculateSingleCellEdit addr cellData
                 model <- pushCommand command model
 
             elif save then
@@ -730,6 +794,7 @@ type Spreadsheet(container: Element) =
 
         // Add click handler for sorting on header text
         addEventListener headerTextDiv "click" (fun _ ->
+            invalidateCalcEngine()
             // Toggle sort direction if clicking same column, otherwise ascending
             let ascending =
                 match model.SortState with
@@ -2232,6 +2297,7 @@ type Spreadsheet(container: Element) =
     /// exactly where they left it, the way Excel does.
     member _.SwitchSheet(index: int) =
         if index >= 0 && index < sheets.Length && index <> activeSheetIndex then
+            invalidateCalcEngine()
             // Persist current sheet's mutable state into the array.
             sheets.[activeSheetIndex] <- model
             activeSheetIndex <- index
@@ -2258,6 +2324,7 @@ type Spreadsheet(container: Element) =
     /// clamp to 0.
     member this.SetWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int) =
         if newSheets.Length = 0 then () else
+        invalidateCalcEngine()
         sheets <- newSheets
         sheetNames <-
             if names.Length = newSheets.Length then Array.copy names
@@ -2445,8 +2512,7 @@ type Spreadsheet(container: Element) =
             Format = defaultFormat
             Comment = None
         }
-        model <- setCell addr cellData model
-        recalculateFormulas()
+        recalculateSingleCellEdit addr cellData
         render()
 
     /// Select a specific cell programmatically
@@ -2614,6 +2680,7 @@ type Spreadsheet(container: Element) =
 
     /// Set workbook context for table reference support.
     member _.SetWorkbookContext(wb: Workbook) =
+        invalidateCalcEngine()
         workbook <- Some wb
         render()  // Re-render to apply table styles
 
@@ -2658,6 +2725,7 @@ type Spreadsheet(container: Element) =
 
     /// Insert a row at the specified index
     member _.InsertRow(atRow: int) =
+        invalidateCalcEngine()
         let oldCells = model.Cells
         let oldSelection = model.Selection
         let oldRowCount = model.RowCount
@@ -2675,6 +2743,7 @@ type Spreadsheet(container: Element) =
 
     /// Delete a row at the specified index
     member _.DeleteRow(atRow: int) =
+        invalidateCalcEngine()
         let oldCells = model.Cells
         let oldSelection = model.Selection
         let oldRowCount = model.RowCount
@@ -2692,6 +2761,7 @@ type Spreadsheet(container: Element) =
 
     /// Insert a column at the specified index
     member _.InsertColumn(atCol: int) =
+        invalidateCalcEngine()
         let oldCells = model.Cells
         let oldSelection = model.Selection
         let oldColCount = model.ColCount
@@ -2709,6 +2779,7 @@ type Spreadsheet(container: Element) =
 
     /// Delete a column at the specified index
     member _.DeleteColumn(atCol: int) =
+        invalidateCalcEngine()
         let oldCells = model.Cells
         let oldSelection = model.Selection
         let oldColCount = model.ColCount
@@ -2921,7 +2992,7 @@ type Spreadsheet(container: Element) =
 
             let comment = match oldCell with | Some cell -> cell.Comment | None -> None
             let newCellData = { Value = cellValue; Format = format; Comment = comment }
-            model <- setCell addr newCellData model
+            recalculateSingleCellEdit addr newCellData
 
             // Create undo command
             let command = {
@@ -2941,6 +3012,7 @@ type Spreadsheet(container: Element) =
     member _.Undo() =
         match undo model with
         | Some newModel ->
+            invalidateCalcEngine()
             model <- newModel
             render()
         | None -> ()
@@ -2949,12 +3021,14 @@ type Spreadsheet(container: Element) =
     member _.Redo() =
         match redo model with
         | Some newModel ->
+            invalidateCalcEngine()
             model <- newModel
             render()
         | None -> ()
 
     /// Sort current column ascending
     member _.SortCurrentColumnAsc() =
+        invalidateCalcEngine()
         match model.Selection with
         | SingleCell (_, col) ->
             let oldCells = model.Cells
@@ -2979,6 +3053,7 @@ type Spreadsheet(container: Element) =
 
     /// Sort current column descending
     member _.SortCurrentColumnDesc() =
+        invalidateCalcEngine()
         match model.Selection with
         | SingleCell (_, col) ->
             let oldCells = model.Cells

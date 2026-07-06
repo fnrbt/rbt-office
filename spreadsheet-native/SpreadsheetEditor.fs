@@ -42,6 +42,7 @@ type SpreadsheetEditorState = {
     DragAnchor: Signal<(int * int) option>
     UndoStack: RefSignal<(SpreadsheetModel array * int) list>
     RedoStack: RefSignal<(SpreadsheetModel array * int) list>
+    CalcEngine: RefSignal<RedBat.Spreadsheet.Calc.CalcEngine option>
     FocusId: int
 }
 
@@ -60,6 +61,7 @@ let createState (sheets: SpreadsheetModel array) (names: string array) (activeIn
         DragAnchor = signal None
         UndoStack = refSignal []
         RedoStack = refSignal []
+        CalcEngine = refSignal None
         FocusId = Focus.allocId()
     }
 
@@ -88,6 +90,7 @@ let private putActiveModel (state: SpreadsheetEditorState) (model: SpreadsheetMo
 /// the transform to the active sheet. Returns true when the change
 /// actually altered the model.
 let applyChange (state: SpreadsheetEditorState) (transform: SpreadsheetModel -> SpreadsheetModel) =
+    state.CalcEngine.Value <- None
     let before = activeModel state
     let after = transform before
     if System.Object.ReferenceEquals(before, after) then false
@@ -112,6 +115,7 @@ let applyChangeNoHistory (state: SpreadsheetEditorState) (transform: Spreadsheet
 let undo (state: SpreadsheetEditorState) =
     match state.UndoStack.Value with
     | (sheets, idx) :: rest ->
+        state.CalcEngine.Value <- None
         state.RedoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.RedoStack.Value
         state.UndoStack.Value <- rest
         state.Sheets.Value <- sheets
@@ -123,6 +127,7 @@ let undo (state: SpreadsheetEditorState) =
 let redo (state: SpreadsheetEditorState) =
     match state.RedoStack.Value with
     | (sheets, idx) :: rest ->
+        state.CalcEngine.Value <- None
         state.UndoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.UndoStack.Value
         state.RedoStack.Value <- rest
         state.Sheets.Value <- sheets
@@ -134,6 +139,7 @@ let redo (state: SpreadsheetEditorState) =
 let switchSheet (state: SpreadsheetEditorState) (index: int) =
     let sheets = state.Sheets.Value
     if index >= 0 && index < sheets.Length && index <> state.ActiveSheet.Value then
+        state.CalcEngine.Value <- None
         state.ActiveSheet.Value <- index
         state.ScrollX.Value <- 0.0
         state.ScrollY.Value <- 0.0
@@ -286,7 +292,34 @@ let private parseCellInput (text: string) : CellValue =
         | true, n -> Number n
         | _ -> String trimmed
 
-let private writeCell (row: int) (col: int) (text: string) (model: SpreadsheetModel) =
+let private singleSheetWorkbook (name: string) (model: SpreadsheetModel) : RedBat.Spreadsheet.Workbook.Workbook =
+    let sheet : RedBat.Spreadsheet.Workbook.Sheet =
+        { Id = "sheet1"; Name = name; Model = model; Visible = true }
+    { Sheets = Map.ofList [ "sheet1", sheet ]
+      SheetOrder = [ "sheet1" ]
+      ActiveSheet = "sheet1"
+      Tables = Map.empty
+      Names = Map.empty }
+
+let private recalcEditedCell (state: SpreadsheetEditorState) (addr: CellAddress) (cellData: CellData) (edited: SpreadsheetModel) (before: SpreadsheetModel) =
+    if state.Sheets.Value.Length <> 1 || cellData.Value = CellValue.Empty then
+        state.CalcEngine.Value <- None
+        RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
+    else
+        let wb = singleSheetWorkbook (activeSheetName state) before
+        let sheetCell : RedBat.Spreadsheet.Workbook.SheetCell =
+            { Sheet = wb.ActiveSheet; Cell = addr }
+        match RedBat.Spreadsheet.Calc.trySingleCellEdit sheetCell cellData wb state.CalcEngine.Value with
+        | RedBat.Spreadsheet.Calc.IncrementalApplied (updatedWorkbook, updatedEngine) ->
+            state.CalcEngine.Value <- Some updatedEngine
+            match Map.tryFind updatedWorkbook.ActiveSheet updatedWorkbook.Sheets with
+            | Some sheet -> sheet.Model
+            | None -> edited
+        | RedBat.Spreadsheet.Calc.IncrementalFallback _ ->
+            state.CalcEngine.Value <- None
+            RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
+
+let private writeCell (state: SpreadsheetEditorState) (row: int) (col: int) (text: string) (model: SpreadsheetModel) =
     let value = parseCellInput text
     let addr = { Row = row; Col = col }
     // Reject edits that violate the cell's data-validation rule (keep old value).
@@ -303,12 +336,31 @@ let private writeCell (row: int) (col: int) (text: string) (model: SpreadsheetMo
             // Recompute formulas and (re)materialize dynamic-array spills so the edit
             // is live — a spilling formula (FILTER/SORT/GROUPBY/PIVOTBY) refreshes when
             // its source changes. (Same-sheet scope; cross-sheet recalc is separate.)
-            let recomputed = RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
+            let cellData =
+                match value, getCell addr model with
+                | Empty, _ -> { Value = Empty; Format = defaultFormat; Comment = None }
+                | v, Some existing -> { existing with Value = v }
+                | v, None -> { Value = v; Format = defaultFormat; Comment = None }
+            let recomputed = recalcEditedCell state addr cellData edited model
             // Fire the workbook's Worksheet_Change handler (if any), passing the edited
             // cell as Target. A no-op unless the macro module defines the sub; its
             // writes apply directly, so this can't recurse back through writeCell.
             let target = sprintf "Range(\"%s%d\")" (columnToLetter col) (row + 1)
-            RedBat.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
+            let afterEvent = RedBat.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
+            if not (System.Object.ReferenceEquals(recomputed, afterEvent)) then
+                state.CalcEngine.Value <- None
+            afterEvent
+
+let private applyCellEdit (state: SpreadsheetEditorState) (row: int) (col: int) (text: string) =
+    let before = activeModel state
+    let after = writeCell state row col text before
+    if System.Object.ReferenceEquals(before, after) then false
+    else
+        state.UndoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.UndoStack.Value
+        state.RedoStack.Value <- []
+        putActiveModel state after
+        Platform.requestRedraw()
+        true
 
 /// Active cell reference like "B7" for the status bar / cell-ref box.
 let activeCellRef (state: SpreadsheetEditorState) =
@@ -348,7 +400,7 @@ let commitEdit (state: SpreadsheetEditorState) =
     match state.EditingCell.Value with
     | Some (r, c) ->
         let text = state.EditBuffer.Value
-        applyChange state (writeCell r c text) |> ignore
+        applyCellEdit state r c text |> ignore
         state.EditingCell.Value <- None
         state.EditBuffer.Value <- ""
     | None -> ()
@@ -396,7 +448,7 @@ let pasteFromClipboard (state: SpreadsheetEditorState) =
     match Platform.clipboard.GetText() with
     | Some text when text <> "" ->
         let r, c = focusCell (activeModel state)
-        applyChange state (writeCell r c text) |> ignore
+        applyCellEdit state r c text |> ignore
         true
     | _ -> false
 

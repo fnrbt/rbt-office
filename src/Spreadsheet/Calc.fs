@@ -42,6 +42,11 @@ type CalcEngine = {
     DirtySet: Set<SheetCell>
 }
 
+/// Result of a guarded incremental single-cell recalculation attempt.
+type IncrementalRecalcResult =
+    | IncrementalApplied of Workbook * CalcEngine
+    | IncrementalFallback of string
+
 let emptyMetadata = {
     Dependencies = Set.empty
     DepRects = []
@@ -56,6 +61,26 @@ let emptyEngine = {
     CalcChain = []
     DirtySet = Set.empty
 }
+
+let private exprUsesSpillRef (expr: Expr) =
+    let stack = ResizeArray<Expr>()
+    stack.Add expr
+    let mutable found = false
+    while not found && stack.Count > 0 do
+        let last = stack.Count - 1
+        let expr = stack.[last]
+        stack.RemoveAt last
+        match expr with
+        | SpillRef _ -> found <- true
+        | UnaryOp (_, inner) -> stack.Add inner
+        | BinOp (left, _, right) ->
+            stack.Add left
+            stack.Add right
+        | Function (_, args) ->
+            for arg in args do
+                stack.Add arg
+        | _ -> ()
+    found
 
 let private metadataIsEmpty (metadata: CalcMetadata) =
     Set.isEmpty metadata.Dependencies
@@ -329,6 +354,48 @@ let rebuildCalcChain (workbook: Workbook) (engine: CalcEngine): CalcEngine =
         // Circular reference — clear the chain to signal the error state.
         { engine with CalcChain = [] }
 
+/// Build dependency metadata and a calculation chain for every formula in a
+/// workbook. Cached formula results are left untouched; only the engine graph
+/// is constructed.
+let buildEngine (workbook: Workbook): CalcEngine =
+    let mutable engine = emptyEngine
+    workbook.Sheets
+    |> Map.iter (fun sheetId sheet ->
+        sheet.Model.Cells
+        |> Map.iter (fun addr cell ->
+            match cell.Value with
+            | CellValue.Formula (formula, _) ->
+                engine <- buildDependencies { Sheet = sheetId; Cell = addr } formula workbook engine
+            | _ -> ()))
+    rebuildCalcChain workbook engine
+
+let private workbookHasSpillOrArrayFormula (workbook: Workbook) =
+    let mutable found = false
+    let formulaNeedsFullPipeline formula =
+        match parseFormula formula with
+        | Ok expr -> containsArrayFunction expr || exprUsesSpillRef expr
+        | Result.Error _ -> false
+    for KeyValue(_, sheet) in workbook.Sheets do
+        if not found then
+            if not (Map.isEmpty sheet.Model.Spill) then
+                found <- true
+            else
+                for KeyValue(_, cell) in sheet.Model.Cells do
+                    if not found then
+                        match cell.Value with
+                        | CellValue.Formula (formula, _) when formulaNeedsFullPipeline formula ->
+                            found <- true
+                        | _ -> ()
+    found
+
+let private cellDataNeedsFullPipeline (cellData: CellData) =
+    match cellData.Value with
+    | CellValue.Formula (formula, _) ->
+        match parseFormula formula with
+        | Ok expr -> containsArrayFunction expr || exprUsesSpillRef expr
+        | Result.Error _ -> false
+    | _ -> false
+
 let private markDirtyQueued (stack: Stack<SheetCell>) (queued: HashSet<SheetCell>) (engine: CalcEngine): CalcEngine =
     let dirtyCells = ResizeArray<SheetCell>()
 
@@ -497,6 +564,41 @@ let updateCell (cell: SheetCell) (value: CellValue) (cellData: CellData)
             if graphChanged then rebuildCalcChain newWorkbook dirtyEngine
             else dirtyEngine
         (newWorkbook, finalEngine)
+
+/// Safely apply a plain single-cell edit through the incremental engine.
+/// Workbooks that require the dynamic-array/spill pipeline, produce a circular
+/// calculation chain, or hit any engine exception are rejected so callers can
+/// use the existing full recalculation path.
+let trySingleCellEdit (cell: SheetCell) (cellData: CellData)
+                      (workbook: Workbook) (engine: CalcEngine option): IncrementalRecalcResult =
+    try
+        if workbookHasSpillOrArrayFormula workbook || cellDataNeedsFullPipeline cellData then
+            IncrementalFallback "spill or array formula present"
+        else
+            let engine =
+                match engine with
+                | Some existing -> existing
+                | None -> buildEngine workbook
+            let updatedWorkbook, updatedEngine =
+                updateCell cell cellData.Value cellData workbook engine
+            let hasCircularRef =
+                let mutable formulaCells = 0
+                updatedWorkbook.Sheets
+                |> Map.iter (fun _ sheet ->
+                    sheet.Model.Cells
+                    |> Map.iter (fun _ cell ->
+                        match cell.Value with
+                        | CellValue.Formula _ -> formulaCells <- formulaCells + 1
+                        | _ -> ()))
+                formulaCells > 0 && List.isEmpty updatedEngine.CalcChain
+            if hasCircularRef then
+                IncrementalFallback "circular reference"
+            else
+                let recalculatedWorkbook, recalculatedEngine =
+                    smartRecalculate updatedWorkbook updatedEngine
+                IncrementalApplied (recalculatedWorkbook, recalculatedEngine)
+    with ex ->
+        IncrementalFallback ex.Message
 
 /// Statistics about the calculation engine.
 type CalcStats = {

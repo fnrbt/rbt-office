@@ -472,6 +472,7 @@ let private shellActions
             let names = state.SheetNames.Value
             let newSheets = Array.append sheets [| createEmpty 100 26 |]
             let newNames = Array.append names [| name |]
+            state.CalcEngine.Value <- None
             state.Sheets.Value <- newSheets
             state.SheetNames.Value <- newNames
             Editor.switchSheet state (newSheets.Length - 1)
@@ -486,6 +487,7 @@ let private shellActions
         XlUi.renameSheetDialog initial (fun name ->
             let next = Array.copy state.SheetNames.Value
             if idx >= 0 && idx < next.Length then
+                state.CalcEngine.Value <- None
                 next.[idx] <- name
                 state.SheetNames.Value <- next
                 editsSinceSave.Value <- editsSinceSave.Value + 1
@@ -594,6 +596,7 @@ let private shellActions
                 let idx = state.ActiveSheet.Value
                 let nextSheets = Array.append sheets.[..idx-1] sheets.[idx+1..]
                 let nextNames = Array.append state.SheetNames.Value.[..idx-1] state.SheetNames.Value.[idx+1..]
+                state.CalcEngine.Value <- None
                 state.Sheets.Value <- nextSheets
                 state.SheetNames.Value <- nextNames
                 state.ActiveSheet.Value <- max 0 (min (nextSheets.Length - 1) idx)
@@ -803,6 +806,7 @@ let main argv =
             editor.Sheets.Value <- s
             editor.SheetNames.Value <- n
             editor.ActiveSheet.Value <- 0
+            editor.CalcEngine.Value <- None
             editor.UndoStack.Value <- []
             editor.RedoStack.Value <- []
             currentPath.Value <- Some path

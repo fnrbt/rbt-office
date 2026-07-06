@@ -4,6 +4,7 @@
 open RedBat.Spreadsheet.Model
 open RedBat.Spreadsheet.Workbook
 open RedBat.Spreadsheet.Calc
+open RedBat.Spreadsheet.Formula
 
 // Exercises the incremental calc engine's cross-sheet dependency graph:
 // an edit on Sheet1 must dirty — and recalculate — a formula on Sheet2
@@ -171,6 +172,101 @@ let (bigWb3, bigEng3) = updateCell ai (CellValue.Number 11.0) (cell (CellValue.N
 ok "bigrange-edit-dirties-via-rect" (Set.contains bb1 bigEng3.DirtySet) (sprintf "dirty=%A" (Set.count bigEng3.DirtySet))
 let (bigWb4, _) = smartRecalculate bigWb3 bigEng3
 ok "bigrange-recalc" (readWb bb1 bigWb4 = CellValue.Number 5010.0) (sprintf "B1=%A" (readWb bb1 bigWb4)) // 4999×1 + 11
+
+// --- Incremental-vs-full equivalence through the guarded edit API --------
+let oneSheetWb (model: SpreadsheetModel) =
+    { Sheets = Map.ofList [ "s1", { Id = "s1"; Name = "Sheet1"; Model = model; Visible = true } ]
+      SheetOrder = [ "s1" ]; ActiveSheet = "s1"; Tables = Map.empty; Names = Map.empty }
+
+let activeModelOf (wb: Workbook) = (Map.find wb.ActiveSheet wb.Sheets).Model
+
+let fullEdit (addr: CellAddress) (cellData: CellData) (wb: Workbook) =
+    let model = activeModelOf wb |> setCell addr cellData
+    let recalculated = recalcAndSpill (Some wb) (Some wb.ActiveSheet) model
+    updateSheetModel wb.ActiveSheet recalculated wb
+
+let incrementalEdit (addr: CellAddress) (cellData: CellData) (wb: Workbook) (engine: CalcEngine option) =
+    let sc = { Sheet = wb.ActiveSheet; Cell = addr }
+    match trySingleCellEdit sc cellData wb engine with
+    | IncrementalApplied (wb', engine') -> wb', Some engine', false
+    | IncrementalFallback _ ->
+        fullEdit addr cellData wb, None, true
+
+let recalcRelevantEqual (left: SpreadsheetModel) (right: SpreadsheetModel) =
+    left.Cells = right.Cells
+    && left.Spill = right.Spill
+    && left.RowCount = right.RowCount
+    && left.ColCount = right.ColCount
+
+let assertEquivalent label edits initialWb =
+    let mutable incWb = initialWb
+    let mutable fullWb = initialWb
+    let mutable engine = None
+    let mutable fellBack = false
+    for addr, cd in edits do
+        let wb', eng', fallback = incrementalEdit addr cd incWb engine
+        incWb <- wb'
+        engine <- eng'
+        fellBack <- fellBack || fallback
+        fullWb <- fullEdit addr cd fullWb
+    ok label (recalcRelevantEqual (activeModelOf incWb) (activeModelOf fullWb))
+       (sprintf "incremental=%A full=%A fallback=%b" (activeModelOf incWb).Cells (activeModelOf fullWb).Cells fellBack)
+    fellBack
+
+let cnum n = cell (CellValue.Number n)
+let cform f = cell (CellValue.Formula (f, CellValue.Empty))
+
+let chainInitial =
+    { createEmpty 20 5 with
+        Cells =
+            Map.ofList
+                [ { Row = 0; Col = 0 }, cnum 1.0
+                  { Row = 0; Col = 1 }, cform "=A1+1"
+                  { Row = 0; Col = 2 }, cform "=B1+1" ] }
+let chainFallback =
+    assertEquivalent "incremental-equiv-chain"
+        [ { Row = 0; Col = 0 }, cnum 10.0
+          { Row = 0; Col = 0 }, cnum 20.0 ]
+        (oneSheetWb chainInitial)
+ok "incremental-chain-no-fallback" (not chainFallback) "chain edit should use incremental path"
+
+let volatileInitial =
+    { createEmpty 20 5 with
+        Cells =
+            Map.ofList
+                [ { Row = 0; Col = 0 }, cnum 5.0
+                  { Row = 0; Col = 1 }, cform "=IF(TODAY()>0,A1+1,0)" ] }
+let volatileFallback =
+    assertEquivalent "incremental-equiv-volatile"
+        [ { Row = 1; Col = 0 }, cnum 1.0
+          { Row = 1; Col = 0 }, cnum 2.0 ]
+        (oneSheetWb volatileInitial)
+ok "incremental-volatile-no-fallback" (not volatileFallback) "volatile edit should use incremental path"
+
+let spillInitial =
+    { createEmpty 20 5 with
+        Cells =
+            Map.ofList
+                [ { Row = 0; Col = 0 }, cform "=SEQUENCE(2,1)"
+                  { Row = 0; Col = 2 }, cnum 1.0 ] }
+let spillFallback =
+    assertEquivalent "incremental-equiv-spill-fallback"
+        [ { Row = 0; Col = 2 }, cnum 9.0 ]
+        (oneSheetWb spillInitial)
+ok "incremental-spill-fallback" spillFallback "array formula should force full recalc"
+
+let circularInitial =
+    { createEmpty 20 5 with
+        Cells =
+            Map.ofList
+                [ { Row = 0; Col = 0 }, cform "=B1"
+                  { Row = 0; Col = 1 }, cform "=A1"
+                  { Row = 0; Col = 2 }, cnum 1.0 ] }
+let circularFallback =
+    assertEquivalent "incremental-equiv-cycle-fallback"
+        [ { Row = 0; Col = 2 }, cnum 2.0 ]
+        (oneSheetWb circularInitial)
+ok "incremental-cycle-fallback" circularFallback "circular chain should force full recalc"
 
 printfn ""
 printfn "Stage 5 calc-engine tests: %d passed, %d failed" pass fail
