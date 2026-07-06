@@ -5,6 +5,7 @@ open System.IO
 open RedBat.Word
 
 module Doc = RedBat.Word.Document
+module WordImport = RedBat.Word.Import
 module WordLayout = RedBat.Word.Layout
 module WordModelLayout = RedBat.Word.WordLayout
 module WordPdf = RedBat.Word.Pdf
@@ -242,7 +243,7 @@ let private writeProjectPdf (inputPath: string) (outputPath: string) =
         | Some parsed -> parsed
         | None -> failwithf "Could not parse DOCX: %s" inputPath
     let options = { pdfOptions() with Images = decodeImageResources wordDoc }
-    let doc = NativeRunner.importDoc wordDoc |> refreshFieldsForPdf options
+    let doc = WordImport.importDoc wordDoc |> refreshFieldsForPdf options
     let bytes = RedBat.Word.Pdf.toBytes options doc
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, bytes)

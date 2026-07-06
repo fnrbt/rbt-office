@@ -304,57 +304,6 @@ module Processors =
             ])
         |> List.toArray
 
-    /// Transform Word file data to editor-friendly format with embedded resources (images) resolved
-    /// Takes raw file data and returns paragraphs with fully resolved styles and embedded images
-    let forEditor (fileData: obj) : Fable.Core.JS.Promise<obj array> =
-        promise {
-            let! archive = loadArchive fileData
-            let! docOpt = DocxReader.parseDocument archive
-
-            match docOpt with
-            | Some doc ->
-                let paragraphs = DocumentProcessors.EditorProcessor.extractForEditor doc
-
-                // Resolve images for each run
-                let! resolvedParagraphs =
-                    paragraphs
-                    |> List.map (fun para ->
-                        promise {
-                            let! resolvedRuns =
-                                para.Runs
-                                |> List.map (fun run ->
-                                    promise {
-                                        if run.IsImage then
-                                            // RelationshipId is temporarily stored in Text field
-                                            let relationshipId = run.Text
-                                            let! imageSrcOpt = DocxReader.extractImageDataUrl archive relationshipId doc.Relationships
-
-                                            return {
-                                                run with
-                                                    Text = run.ImageAlt |> Option.defaultValue ""
-                                                    ImageSrc = imageSrcOpt
-                                            }
-                                        else
-                                            return run
-                                    })
-                                |> Array.ofList
-                                |> ZipInterop.Promise.all
-
-                            return
-                                editorParagraphToObj {
-                                    para with Runs = resolvedRuns |> Array.toList
-                                }
-                        })
-                    |> Array.ofList
-                    |> ZipInterop.Promise.all
-
-                let shapeObjects = shapeObjectsFor doc
-
-                return Array.append resolvedParagraphs shapeObjects
-            | None ->
-                return [||]
-        }
-
     let forEditorPackage (fileData: obj) : Fable.Core.JS.Promise<obj> =
         promise {
             let! archive = loadArchive fileData
@@ -1075,7 +1024,6 @@ let api () = {|
         generateTableXml = WordWriter.generateTableXml
     |}
     processors = {|
-        forEditor = Processors.forEditor
         forEditorPackage = Processors.forEditorPackage
     |}
     excel = {|

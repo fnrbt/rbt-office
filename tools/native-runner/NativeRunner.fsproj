@@ -13,6 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Office.Formats/OfficeFormat.fsproj" />
     <ProjectReference Include="../../src/Word/RedBat.Word.fsproj" />
+    <ProjectReference Include="../../src/Word.Import/WordImport.fsproj" />
     <ProjectReference Include="../../word-native/WordWidgets.fsproj" />
     <ProjectReference Include="../../../widgets/Widgets.fsproj" />
     <ProjectReference Include="../../../renderer/Renderer.fsproj" />

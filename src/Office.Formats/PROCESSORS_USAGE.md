@@ -14,18 +14,22 @@ This compiles the F# code to JavaScript in the `dist/` directory.
 
 ## API
 
-### `processors.forEditor(doc)`
+### `processors.forEditorPackage(doc)`
 
-Transforms a WordDocument into an array of EditorParagraph objects with fully resolved styles.
+Transforms a WordDocument into an editor package with paragraphs, styles, page setup, headers/footers, numbering, and resolved resources.
 
 **Input:** `WordDocument` (from `word.load()`)
 
-**Output:** Array of `EditorParagraph` objects:
+**Output:** Editor package object:
 
 ```typescript
-type EditorParagraph = {
+type EditorPackage = {
     Runs: EditorRun[],
     Alignment: "left" | "center" | "right" | "justify"
+    Styles: unknown[],
+    HeaderParts: unknown[],
+    FooterParts: unknown[],
+    PageSetup: unknown
 }
 
 type EditorRun = {
@@ -66,7 +70,8 @@ type EditorRun = {
 
             if (doc) {
                 // Process for editor
-                const paragraphs = api.processors.forEditor(doc);
+                const package = await api.processors.forEditorPackage(doc);
+                const paragraphs = package.Paragraphs;
 
                 // Render in the editor
                 const editor = document.getElementById('editor');
@@ -193,7 +198,6 @@ Transforms to editor format:
 - `extractRunText`: Extracts text from various run content types
 - `toEditorRun`: Converts Run → EditorRun
 - `toEditorParagraph`: Converts Paragraph → EditorParagraph
-- `extractForEditor`: Main entry point
 
 ## Testing in Browser
 

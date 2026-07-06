@@ -11,6 +11,7 @@ open Composit.Ui.Layout
 
 module WordUi = RedBat.Word.Ui
 module Doc = RedBat.Word.Document
+module WordImport = RedBat.Word.Import
 module Editor = Composit.Ui.WordEditor
 module Chrome = Composit.Ui.WordUiNative
 
@@ -181,7 +182,7 @@ module DocxWrite =
 let private loadDocx (path: string) : Doc.Document option =
     let bytes = File.ReadAllBytes path
     match DocxReader.loadBytesNative bytes with
-    | Some parsed -> Some (NativeRunner.importDoc parsed)
+    | Some parsed -> Some (WordImport.importDoc parsed)
     | None -> None
 
 let private emptyDoc () : Doc.Document =

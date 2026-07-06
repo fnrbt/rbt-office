@@ -9,7 +9,6 @@
     <Compile Include="../../../widgets/x11-viewer/PngEncode.fs" />
     <Compile Include="../../../widgets/x11-viewer/ControlServer.fs" />
     <Compile Include="../../../widgets/x11-viewer/KeyMap.fs" />
-    <Compile Include="../native-runner/Program.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
@@ -19,6 +18,7 @@
     <ProjectReference Include="../../../widgets/platform/Platform.fsproj" />
     <ProjectReference Include="../../src/Office.Formats/OfficeFormat.fsproj" />
     <ProjectReference Include="../../src/Word/RedBat.Word.fsproj" />
+    <ProjectReference Include="../../src/Word.Import/WordImport.fsproj" />
     <ProjectReference Include="../../word-native/WordWidgets.fsproj" />
   </ItemGroup>
 </Project>

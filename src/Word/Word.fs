@@ -1494,7 +1494,7 @@ module API =
         commitDocumentUpdate editor newDoc
 
     /// Import document from EditorParagraphs (Office.Formats format)
-    /// Use with: Office.Formats processors.forEditor() output
+    /// Use with: Office.Formats processors.forEditorPackage() Paragraphs output
     let importFromDocx (editor: Editor) (editorParagraphs: obj array) =
         let newDoc = Docx.importFromEditor editorParagraphs
         commitDocumentUpdate editor newDoc
