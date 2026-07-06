@@ -9,6 +9,21 @@ open RedBat.Word.TextBuffer
 open RedBat.Word.Layout
 open RedBat.Word.Paint
 
+type PaintFrame = {
+    Document: Document
+    Layouts: BlockLayout list
+    BodyCommands: PaintCommand list
+    OverlayCommands: PaintCommand list
+    CanvasWidth: float
+    CanvasHeight: float
+    FontFamily: string
+    FontSize: float
+    LineHeight: float
+    PaddingLeft: float
+    PaddingTop: float
+    TextPathPainter: obj option
+}
+
 /// Rendering context
 type RenderContext = {
     Canvas: HTMLCanvasElement
@@ -23,6 +38,7 @@ type RenderContext = {
     mutable TextRangeMeasurer: TextRangeMeasurer option
     mutable TextPathPainter: (string -> TextPaintStyle -> float -> float -> float -> bool) option
     LayoutState: IncrementalLayoutState
+    mutable LastPaint: PaintFrame option
 }
 
 type CommentAnchor = {
@@ -71,6 +87,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextRangeMeasurer = None
     TextPathPainter = None
     LayoutState = RedBat.Word.Layout.createIncrementalLayoutState ()
+    LastPaint = None
 }
 
 let private cssFontFamily (family: string) =
@@ -139,6 +156,7 @@ let cachedLayouts (ctx: RenderContext) (doc: Document) =
 
 let clearLayoutCache (ctx: RenderContext) =
     RedBat.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
+    ctx.LastPaint <- None
 
 let layoutLookupFor (ctx: RenderContext) (doc: Document) =
     let layouts =
@@ -491,38 +509,255 @@ let private renderPaintCommand (ctx: RenderContext) = function
             ctx.Ctx.stroke()
         | None -> ()
 
-let private renderCommentAnchors (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
+let private commentAnchorCommands (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
     commentAnchorsForLayouts ctx doc layouts
-    |> List.iter (fun anchor ->
-        renderPaintCommand ctx (FillRect ("rgba(255, 230, 128, 0.42)", anchor.X, anchor.Y, anchor.Width, anchor.Height))
-        renderPaintCommand ctx (StrokeRect ("#C79B00", 1.0, anchor.X + 0.5, anchor.Y + 0.5, max 1.0 (anchor.Width - 1.0), max 1.0 (anchor.Height - 1.0))))
+    |> List.collect (fun anchor ->
+        [
+            FillRect ("rgba(255, 230, 128, 0.42)", anchor.X, anchor.Y, anchor.Width, anchor.Height)
+            StrokeRect ("#C79B00", 1.0, anchor.X + 0.5, anchor.Y + 0.5, max 1.0 (anchor.Width - 1.0), max 1.0 (anchor.Height - 1.0))
+        ])
 
-/// Render document to canvas
-let render (ctx: RenderContext) (doc: Document) =
-    // Clear canvas
-    ctx.Ctx.clearRect(0.0, 0.0, ctx.Canvas.width, ctx.Canvas.height)
+type private DirtyRange = {
+    Top: float
+    Bottom: float
+}
 
-    // Set font
+type private DirtyDecision =
+    | FullRepaint
+    | NoRepaint
+    | PartialRepaint of DirtyRange
+
+let private canvasWidth (ctx: RenderContext) = float ctx.Canvas.width
+
+let private canvasHeight (ctx: RenderContext) = float ctx.Canvas.height
+
+let private currentTextPathPainter (ctx: RenderContext) =
+    ctx.TextPathPainter |> Option.map box
+
+let private frameInvalidated (ctx: RenderContext) (previous: PaintFrame) =
+    previous.CanvasWidth <> canvasWidth ctx
+    || previous.CanvasHeight <> canvasHeight ctx
+    || previous.FontFamily <> ctx.FontFamily
+    || previous.FontSize <> ctx.FontSize
+    || previous.LineHeight <> ctx.LineHeight
+    || previous.PaddingLeft <> ctx.PaddingLeft
+    || previous.PaddingTop <> ctx.PaddingTop
+    || (match previous.TextPathPainter, currentTextPathPainter ctx with
+        | None, None -> false
+        | Some left, Some right -> not (obj.ReferenceEquals(left, right))
+        | _ -> true)
+
+let private unionRange next current =
+    match current, next with
+    | None, None -> None
+    | Some range, None -> Some range
+    | None, Some range -> Some range
+    | Some left, Some right ->
+        Some { Top = min left.Top right.Top; Bottom = max left.Bottom right.Bottom }
+
+let private rangeForLayout (layout: BlockLayout) =
+    { Top = layout.Y; Bottom = layout.Y + layout.Height }
+
+let private rangeForCommand command =
+    commandYExtent command
+    |> Option.map (fun (top, bottom) -> { Top = top; Bottom = bottom })
+
+let private layoutSame (oldLayout: BlockLayout) (newLayout: BlockLayout) =
+    oldLayout.BlockId = newLayout.BlockId
+    && obj.ReferenceEquals(oldLayout, newLayout)
+    && abs (oldLayout.Y - newLayout.Y) < 0.001
+    && abs (oldLayout.Height - newLayout.Height) < 0.001
+
+let private allRemainingLayoutsSame (oldTail: BlockLayout list) (newTail: BlockLayout list) =
+    let rec loop (left: BlockLayout list) (right: BlockLayout list) =
+        match left, right with
+        | [], [] -> true
+        | oldLayout :: oldRest, newLayout :: newRest when layoutSame oldLayout newLayout -> loop oldRest newRest
+        | _ -> false
+    loop oldTail newTail
+
+let private firstLayoutRange (oldLayouts: BlockLayout list) (newLayouts: BlockLayout list) canvasBottom =
+    let rec loop (oldRemaining: BlockLayout list) (newRemaining: BlockLayout list) =
+        match oldRemaining, newRemaining with
+        | [], [] -> None
+        | oldLayout :: _, [] ->
+            Some { Top = oldLayout.Y; Bottom = canvasBottom }
+        | [], newLayout :: _ ->
+            Some { Top = newLayout.Y; Bottom = canvasBottom }
+        | oldLayout :: oldTail, newLayout :: newTail ->
+            if layoutSame oldLayout newLayout then
+                loop oldTail newTail
+            elif oldLayout.BlockId <> newLayout.BlockId then
+                Some { Top = min oldLayout.Y newLayout.Y; Bottom = canvasBottom }
+            else
+                let changedBand =
+                    unionRange (Some (rangeForLayout newLayout)) (Some (rangeForLayout oldLayout))
+                    |> Option.defaultValue { Top = min oldLayout.Y newLayout.Y; Bottom = max (oldLayout.Y + oldLayout.Height) (newLayout.Y + newLayout.Height) }
+                if allRemainingLayoutsSame oldTail newTail then Some changedBand
+                else Some { Top = changedBand.Top; Bottom = canvasBottom }
+    loop oldLayouts newLayouts
+
+let private commandDiffRange oldCommands newCommands =
+    let rec loop oldRemaining newRemaining current =
+        match oldRemaining, newRemaining with
+        | [], [] -> Choice1Of2 current
+        | oldCommand :: oldTail, newCommand :: newTail when oldCommand = newCommand ->
+            loop oldTail newTail current
+        | oldCommand :: oldTail, newCommand :: newTail ->
+            match rangeForCommand oldCommand, rangeForCommand newCommand with
+            | Some oldRange, Some newRange ->
+                loop oldTail newTail (current |> unionRange (Some oldRange) |> unionRange (Some newRange))
+            | _ -> Choice2Of2 ()
+        | oldCommand :: oldTail, [] ->
+            match rangeForCommand oldCommand with
+            | Some oldRange -> loop oldTail [] (unionRange (Some oldRange) current)
+            | None -> Choice2Of2 ()
+        | [], newCommand :: newTail ->
+            match rangeForCommand newCommand with
+            | Some newRange -> loop [] newTail (unionRange (Some newRange) current)
+            | None -> Choice2Of2 ()
+    loop oldCommands newCommands None
+
+let private commandListRange commands =
+    let rec loop remaining current =
+        match remaining with
+        | [] -> Choice1Of2 current
+        | command :: rest ->
+            match rangeForCommand command with
+            | Some range -> loop rest (unionRange (Some range) current)
+            | None -> Choice2Of2 ()
+    loop commands None
+
+let private imageCommandRange commands =
+    let rec loop remaining current =
+        match remaining with
+        | [] -> Choice1Of2 current
+        | (DrawImage _ as command) :: rest ->
+            match rangeForCommand command with
+            | Some range -> loop rest (unionRange (Some range) current)
+            | None -> Choice2Of2 ()
+        | _ :: rest -> loop rest current
+    loop commands None
+
+let private computeDirtyRange (previous: PaintFrame) (nextFrame: PaintFrame) =
+    match commandDiffRange previous.BodyCommands nextFrame.BodyCommands with
+    | Choice2Of2 () -> FullRepaint
+    | Choice1Of2 bodyRange ->
+        match commandListRange previous.OverlayCommands, commandListRange nextFrame.OverlayCommands with
+        | Choice2Of2 (), _
+        | _, Choice2Of2 () -> FullRepaint
+        | Choice1Of2 oldOverlayRange, Choice1Of2 newOverlayRange ->
+            match imageCommandRange previous.BodyCommands, imageCommandRange nextFrame.BodyCommands with
+            | Choice2Of2 (), _
+            | _, Choice2Of2 () -> FullRepaint
+            | Choice1Of2 oldImageRange, Choice1Of2 newImageRange ->
+                let canvasBottom = nextFrame.CanvasHeight
+                let previousLayouts: BlockLayout list = previous.Layouts
+                let nextLayouts: BlockLayout list = nextFrame.Layouts
+                let range =
+                    firstLayoutRange previousLayouts nextLayouts canvasBottom
+                    |> unionRange bodyRange
+                    |> unionRange oldOverlayRange
+                    |> unionRange newOverlayRange
+                    |> unionRange oldImageRange
+                    |> unionRange newImageRange
+                match range with
+                | None -> NoRepaint
+                | Some dirty when dirty.Bottom <= dirty.Top -> NoRepaint
+                | Some dirty ->
+                    let pad = 6.0
+                    let top = max 0.0 (floor (dirty.Top - pad))
+                    let bottom = min canvasBottom (ceil (dirty.Bottom + pad))
+                    if bottom <= top then NoRepaint
+                    elif top <= 0.0 && bottom >= canvasBottom then FullRepaint
+                    else PartialRepaint { Top = top; Bottom = bottom }
+
+let private commandIntersectsBand band command =
+    match commandYExtent command with
+    | None -> true
+    | Some (top, bottom) -> bottom >= band.Top && top <= band.Bottom
+
+let private renderCommandList ctx commands =
+    commands |> List.iter (renderPaintCommand ctx)
+
+let private renderCommandListInBand ctx band commands =
+    commands
+    |> List.iter (fun command ->
+        if commandIntersectsBand band command then renderPaintCommand ctx command)
+
+let private renderFullFrame ctx doc frame =
+    ctx.Ctx.clearRect(0.0, 0.0, frame.CanvasWidth, frame.CanvasHeight)
+
     ctx.Ctx.font <- sprintf "%fpx %s" ctx.FontSize ctx.FontFamily
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
-    let settings = layoutSettings ctx doc
-    let layouts = layoutDocument ctx doc
-    let layouts, commands, _ = collectDocumentCommandsWithLayouts settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc (Some layouts)
-    renderPages ctx doc layouts
-    commands |> List.iter (renderPaintCommand ctx)
-    // Footnotes and endnotes are laid out and painted via the shared Layout/Paint
-    // pass (so the browser canvas and the PDF/native paths match).
-    renderCommentAnchors ctx doc layouts
+    renderPages ctx doc frame.Layouts
+    renderCommandList ctx frame.BodyCommands
+    renderCommandList ctx frame.OverlayCommands
 
-    // Reset style
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
-    selectionCommandsWithRange settings (measureRangeWithContext ctx) doc layouts
-    |> List.iter (renderPaintCommand ctx)
+let private renderPartialFrame ctx doc frame band =
+    let height = band.Bottom - band.Top
+    ctx.Ctx.save()
+    ctx.Ctx.beginPath()
+    ctx.Ctx.rect(0.0, band.Top, frame.CanvasWidth, height)
+    ctx.Ctx.clip()
+    ctx.Ctx.clearRect(0.0, band.Top, frame.CanvasWidth, height)
 
-    markupMarkerCommands settings layouts
-    |> List.iter (renderPaintCommand ctx)
+    ctx.Ctx.font <- sprintf "%fpx %s" ctx.FontSize ctx.FontFamily
+    ctx.Ctx.fillStyle <- U3.Case1 "#000000"
+
+    renderPages ctx doc frame.Layouts
+    renderCommandListInBand ctx band frame.BodyCommands
+    renderCommandListInBand ctx band frame.OverlayCommands
+
+    ctx.Ctx.restore()
+    ctx.Ctx.fillStyle <- U3.Case1 "#000000"
+
+let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
+    let settings = layoutSettings ctx doc
+    let layouts = layoutDocument ctx doc
+    let layouts, bodyCommands, _ = collectDocumentCommandsWithLayouts settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc (Some layouts)
+    let overlayCommands =
+        List.concat [
+            commentAnchorCommands ctx doc layouts
+            selectionCommandsWithRange settings (measureRangeWithContext ctx) doc layouts
+            markupMarkerCommands settings layouts
+            hoverCommands settings layouts hoveredImage
+        ]
+    {
+        Document = doc
+        Layouts = layouts
+        BodyCommands = bodyCommands
+        OverlayCommands = overlayCommands
+        CanvasWidth = canvasWidth ctx
+        CanvasHeight = canvasHeight ctx
+        FontFamily = ctx.FontFamily
+        FontSize = ctx.FontSize
+        LineHeight = ctx.LineHeight
+        PaddingLeft = ctx.PaddingLeft
+        PaddingTop = ctx.PaddingTop
+        TextPathPainter = currentTextPathPainter ctx
+    }
+
+let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
+    let frame = buildFrame ctx doc hoveredImage
+    match ctx.LastPaint with
+    | None ->
+        renderFullFrame ctx doc frame
+    | Some previous when frameInvalidated ctx previous ->
+        renderFullFrame ctx doc frame
+    | Some previous ->
+        match computeDirtyRange previous frame with
+        | FullRepaint -> renderFullFrame ctx doc frame
+        | NoRepaint -> ()
+        | PartialRepaint band -> renderPartialFrame ctx doc frame band
+    ctx.LastPaint <- Some frame
+
+/// Render document to canvas
+let render (ctx: RenderContext) (doc: Document) =
+    renderCore ctx doc None
 
 /// Convert mouse position to document position
 let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) =
@@ -534,12 +769,7 @@ let hitTestForImage (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY
 
 /// Render document with hover indicators for images
 let renderWithHover (ctx: RenderContext) (doc: Document) (hoveredImage: (string * int) option) =
-    // Render the document normally
-    render ctx doc
-
-    let layouts = layoutDocument ctx doc
-    hoverCommands (layoutSettings ctx doc) layouts hoveredImage
-    |> List.iter (renderPaintCommand ctx)
+    renderCore ctx doc hoveredImage
 
 #else
 // Server-side stub

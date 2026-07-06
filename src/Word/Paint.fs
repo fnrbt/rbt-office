@@ -153,6 +153,42 @@ type PaintCommand =
     /// segments, an optional stroke, and a gradient bounding box (for gradient fills).
     | DrawShape of fill: ShapeFill * stroke: string option * strokeWidth: float * bbox: (float * float * float * float) * segs: PathSeg list
 
+let commandYExtent = function
+    | DrawText (_, style, _, baseline, _) ->
+        let pad = max 4.0 style.FontSize
+        Some (baseline - style.FontSize - pad, baseline + pad)
+    | DrawUnderline (_, lineStyle, _, y, _) ->
+        let extra = if lineStyle.ToLowerInvariant().Contains("double") then 4.0 else 2.0
+        Some (y - extra, y + extra)
+    | DrawImage (_, _, y, _, height, _, _, _, _) ->
+        Some (y, y + height)
+    | FillRect (_, _, y, _, height) ->
+        Some (y, y + height)
+    | StrokeRect (_, lineWidth, _, y, _, height) ->
+        let pad = (max 1.0 lineWidth) + 1.0
+        Some (y - pad, y + height + pad)
+    | StrokeLine (_, lineWidth, _, _, _, y1, _, y2) ->
+        let pad = (max 1.0 lineWidth) + 2.0
+        Some (min y1 y2 - pad, max y1 y2 + pad)
+    | DrawShape (_, _, strokeWidth, (_, y, _, height), segs) ->
+        let pad = (max 1.0 strokeWidth) + 1.0
+        let mutable top = y
+        let mutable bottom = y + height
+        for seg in segs do
+            match seg with
+            | PMove (_, sy)
+            | PLine (_, sy) ->
+                top <- min top sy
+                bottom <- max bottom sy
+            | PQuad (_, cy, _, sy) ->
+                top <- min top (min cy sy)
+                bottom <- max bottom (max cy sy)
+            | PCubic (_, c1y, _, c2y, _, sy) ->
+                top <- min top (min c1y (min c2y sy))
+                bottom <- max bottom (max c1y (max c2y sy))
+            | PClose -> ()
+        Some (top - pad, bottom + pad)
+
 type private LayoutIndex = {
     ById: Dictionary<BlockId, BlockLayout>
     ByBlock: Dictionary<BlockId, ResizeArray<BlockLayout>>

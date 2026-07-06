@@ -339,6 +339,10 @@ let private boot () =
         "getLayoutJson" ==> fun () -> stringify (box (getLayoutSegments state))
         "getLayoutLinesJson" ==> fun () -> stringify (box (getLayoutLines state))
         "clearSelection" ==> fun () -> ensureEditor state |> WordApi.clearSelection
+        "forceFullRender" ==> fun () ->
+            let editor = ensureEditor state
+            RedBat.Word.Renderer.clearLayoutCache editor.Handler.RenderContext
+            RedBat.Word.Renderer.render editor.Handler.RenderContext editor.Doc
         "setCanvasSize" ==> fun (width: int) (height: int) -> setCanvasSize state width height
         "canvasToPngDataUrl" ==> fun () -> canvasToPngDataUrl state.Canvas
         "editor" ==> fun () -> state.Editor
