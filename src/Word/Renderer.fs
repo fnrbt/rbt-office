@@ -22,8 +22,7 @@ type RenderContext = {
     mutable TextMeasurer: TextMeasurer option
     mutable TextRangeMeasurer: TextRangeMeasurer option
     mutable TextPathPainter: (string -> TextPaintStyle -> float -> float -> float -> bool) option
-    mutable LastDocument: Document option
-    mutable LastLayouts: BlockLayout list option
+    LayoutState: IncrementalLayoutState
 }
 
 type CommentAnchor = {
@@ -71,8 +70,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextMeasurer = None
     TextRangeMeasurer = None
     TextPathPainter = None
-    LastDocument = None
-    LastLayouts = None
+    LayoutState = RedBat.Word.Layout.createIncrementalLayoutState ()
 }
 
 let private cssFontFamily (family: string) =
@@ -132,19 +130,15 @@ let measureRangeWithContext ctx text style start length =
     | None -> rangeMeasurerFromTextMeasurer (measureWithContext ctx) text style start length
 
 let layoutDocument (ctx: RenderContext) (doc: Document) =
-    let layouts = RedBat.Word.Layout.layoutDocumentWithRange (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
-    ctx.LastDocument <- Some doc
-    ctx.LastLayouts <- Some layouts
-    layouts
+    RedBat.Word.Layout.layoutDocumentIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
 
 let cachedLayouts (ctx: RenderContext) (doc: Document) =
-    match ctx.LastDocument, ctx.LastLayouts with
+    match ctx.LayoutState.LastDocument, ctx.LayoutState.LastLayouts with
     | Some cachedDoc, Some layouts when obj.ReferenceEquals(cachedDoc, doc) -> Some layouts
     | _ -> None
 
 let clearLayoutCache (ctx: RenderContext) =
-    ctx.LastDocument <- None
-    ctx.LastLayouts <- None
+    RedBat.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
 
 let layoutLookupFor (ctx: RenderContext) (doc: Document) =
     let layouts =
@@ -513,7 +507,8 @@ let render (ctx: RenderContext) (doc: Document) =
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
     let settings = layoutSettings ctx doc
-    let layouts, commands, _ = collectDocumentCommands settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc
+    let layouts = layoutDocument ctx doc
+    let layouts, commands, _ = collectDocumentCommandsWithLayouts settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc (Some layouts)
     renderPages ctx doc layouts
     commands |> List.iter (renderPaintCommand ctx)
     // Footnotes and endnotes are laid out and painted via the shared Layout/Paint

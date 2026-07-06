@@ -1,5 +1,6 @@
 module RedBat.Word.Layout
 
+open System.Collections.Generic
 open RedBat.Word.Document
 open RedBat.Word.TextBuffer
 open RedBat.Word.WordStyles
@@ -4003,6 +4004,251 @@ let uniformPageInfosWithLayoutCount (settings: LayoutSettings) (layouts: BlockLa
 let uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
     uniformPageInfosWithLayoutCount settings layouts |> fst
 
+type IncrementalBlockLayoutGroup = {
+    BlockId: BlockId
+    Layouts: BlockLayout list
+    MeasureY: float
+    Advance: float
+    Height: float
+}
+
+type IncrementalBlockCacheEntry = {
+    BlockId: BlockId
+    Block: Block
+    PageSetup: PageSetup
+    Styles: NamedStyle list
+    ContentWidth: float
+    Group: IncrementalBlockLayoutGroup
+}
+
+type IncrementalLayoutState = {
+    mutable LastDocument: Document option
+    mutable LastLayouts: BlockLayout list option
+    mutable Entries: IncrementalBlockCacheEntry list
+    mutable MeasuredBlockCount: int
+}
+
+let createIncrementalLayoutState () = {
+    LastDocument = None
+    LastLayouts = None
+    Entries = []
+    MeasuredBlockCount = 0
+}
+
+let resetIncrementalLayoutMeasurements (state: IncrementalLayoutState) =
+    state.MeasuredBlockCount <- 0
+
+let incrementalLayoutMeasuredBlockCount (state: IncrementalLayoutState) =
+    state.MeasuredBlockCount
+
+let clearIncrementalLayoutState (state: IncrementalLayoutState) =
+    state.LastDocument <- None
+    state.LastLayouts <- None
+    state.Entries <- []
+    state.MeasuredBlockCount <- 0
+
+let private topLevelBlockId = function
+    | Paragraph para
+    | Heading (_, para) -> para.Id
+    | Table table -> table.Id
+    | TextBox textBox -> textBox.Id
+
+let private blockParagraphsForLayoutCache = function
+    | Paragraph para
+    | Heading (_, para) -> [para]
+    | Table table ->
+        table.Rows
+        |> List.collect (fun row -> row.Cells)
+        |> List.collect (fun cell -> cell.Content)
+    | TextBox textBox -> textBox.Content
+
+let private blockHasFloatingLayoutDependency block =
+    let paragraphHasFloatingImage (para: ParagraphBlock) =
+        para.Buffer.Runs
+        |> List.exists (function
+            | Image image -> image.Floating
+            | Text _ -> false)
+
+    match block with
+    | TextBox _ -> true
+    | Table table when table.Floating -> true
+    | _ -> blockParagraphsForLayoutCache block |> List.exists paragraphHasFloatingImage
+
+let private documentHasFloatingLayoutDependency doc =
+    doc.Blocks |> List.exists blockHasFloatingLayoutDependency
+
+let private sameBlockStableParts left right =
+    let paragraphSignature (para: ParagraphBlock) =
+        para.Id,
+        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(box para.Buffer),
+        para.Metadata
+
+    obj.ReferenceEquals(left, right)
+    || (topLevelBlockId left = topLevelBlockId right
+        && blockParagraphsForLayoutCache left
+           |> List.map paragraphSignature
+           = (blockParagraphsForLayoutCache right |> List.map paragraphSignature)
+        && left = right)
+
+let private layoutGroupBottom (layouts: BlockLayout list) measureY =
+    let mutable bottom = measureY
+    for layout in layouts do
+        bottom <- max bottom (layout.Y + layout.Height)
+    bottom
+
+let private moveLayoutBy delta (layout: BlockLayout) =
+    if delta = 0.0 then layout
+    else
+        { layout with
+            Y = layout.Y + delta
+            Lines = shiftLinesY delta layout.Lines }
+
+let private measureIncrementalBlockGroup settings measureText measureRange doc contentWidth block =
+    let groupSettings =
+        { settings with
+            Width = settings.PaddingLeft + contentWidth + settings.MarginRight
+            PageHeight = max settings.PageHeight 1000000.0 }
+    let blockDoc =
+        { doc with
+            Blocks = [ block ]
+            Selection = None
+            PageSetup = { doc.PageSetup with Columns = None; SectionStart = None } }
+    let measuredLayouts, _ = layoutDocumentWithRangeAndInitial groupSettings measureText measureRange blockDoc [] []
+    let layouts =
+        measuredLayouts
+        |> List.filter (fun layout ->
+            not (layout.BlockId.StartsWith footnoteBlockIdPrefix)
+            && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
+    let bottom = layoutGroupBottom layouts groupSettings.PaddingTop
+    let advance = max 0.0 (bottom - groupSettings.PaddingTop)
+    {
+        BlockId = topLevelBlockId block
+        Layouts = layouts
+        MeasureY = groupSettings.PaddingTop
+        Advance = advance
+        Height = advance
+    }
+
+let private tryFindIncrementalEntry (state: IncrementalLayoutState) (doc: Document) contentWidth block =
+    state.Entries
+    |> List.tryFind (fun entry ->
+        entry.BlockId = topLevelBlockId block
+        && entry.ContentWidth = contentWidth
+        && entry.PageSetup = doc.PageSetup
+        && entry.Styles = doc.Styles
+        && sameBlockStableParts entry.Block block)
+
+let private hasSectionedDocument doc =
+    doc.Blocks
+    |> List.exists (fun block ->
+        match tryGetParagraph block with
+        | Some para -> para.Metadata.SectionBreak.IsSome
+        | None -> false)
+
+let private appendSyntheticNotes settings measureText measureRange layouts =
+    let result = ResizeArray<BlockLayout>()
+    result.AddRange layouts
+
+    let footnotesByPage =
+        layouts
+        |> List.fold (fun acc layout -> addLayoutFootnotes settings acc layout) Map.empty
+
+    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+    let footnoteParagraphMetadata = { defaultMetadata with SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 }
+    let footnoteStride = pageHeight settings + pageGap
+    for KeyValue (pageIndex, notes) in footnotesByPage do
+        if not notes.IsEmpty then
+            let pageTop = float pageIndex * footnoteStride
+            let pageContentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+            let mutable tempY = 0.0
+            let laidOut =
+                notes |> List.mapi (fun noteIndex (id, text) ->
+                    let noteString = sprintf "%s %s" id (text.Trim())
+                    let buffer =
+                        TextBuffer.ofString noteString
+                        |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
+                        |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
+                        |> TextBuffer.setVertAlign 0 id.Length (Some "superscript")
+                    let para = { Id = sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
+                    let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth tempY 0.0 para Map.empty
+                    tempY <- tempY + layout.Height
+                    layout)
+            let blockTop = pageContentBottom - footnoteBottomPad - tempY
+            for layout in laidOut do
+                result.Add(moveLayoutToY (blockTop + layout.Y) layout)
+
+    resizeArrayToList result
+
+let private incrementalHasExplicitLineSpacing (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
+    metadata.LineSpacing.IsSome
+    || paragraphStyle.LineSpacing.IsSome
+    || metadata.LineSpacingRule.IsSome
+    || paragraphStyle.LineSpacingRule.IsSome
+
+let private stackIncrementalGroups settings measureText measureRange doc (groups: IncrementalBlockLayoutGroup list) =
+    let layouts = ResizeArray<BlockLayout>()
+    let mutable y = settings.PaddingTop
+    let mutable groupIndex = 0
+    let styleContext = WordStyles.styleContext doc
+    let mutable previousParagraphContext: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
+    let mutable previousParagraphLayout: BlockLayout option = None
+
+    let resetPreviousParagraph () =
+        previousParagraphContext <- None
+        previousParagraphLayout <- None
+
+    let tableFollowDefaultLineHeightAdjustment () =
+        match previousParagraphContext, previousParagraphLayout with
+        | Some (_, paragraphStyle, metadata, _), Some layout when not (incrementalHasExplicitLineSpacing paragraphStyle metadata) && not (usesDefaultParagraphSpacing metadata) ->
+            let mutable adjustment = 0.0
+            for line in layout.Lines do
+                let fontSize = lineMaxTextFontSize paragraphStyle.Text.FontSize line
+                adjustment <- adjustment + max 0.0 (fontSize * (wordTableFollowSingleLineBoxFactor - wordSingleLineBoxFactor))
+            adjustment
+        | _ -> 0.0
+
+    for block in doc.Blocks do
+        let group = groups.[groupIndex]
+        match block with
+        | TextBox _ -> resetPreviousParagraph ()
+        | _ ->
+            match tryGetParagraph block with
+            | Some para ->
+                y <- applyRenderedPageBreakHint settings y para
+                let paragraphStyle = forBlockInContext styleContext block
+                if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && layouts.Count > 0 then
+                    y <- advanceToNextPage settings y
+                    resetPreviousParagraph ()
+                y <- paginateBlock settings y group.Height
+            | None ->
+                y <- y + tableFollowDefaultLineHeightAdjustment ()
+                resetPreviousParagraph ()
+                y <- paginateBlock settings y group.Height
+
+            let delta = y - group.MeasureY
+            let mutable firstPlacedLayout: BlockLayout option = None
+            for layout in group.Layouts do
+                let placed = moveLayoutBy delta layout
+                if firstPlacedLayout.IsNone then firstPlacedLayout <- Some placed
+                layouts.Add placed
+            y <- y + group.Advance
+
+            match tryGetParagraph block with
+            | Some para ->
+                let paragraphStyle = forBlockInContext styleContext block
+                match firstPlacedLayout with
+                | Some layout ->
+                    previousParagraphContext <- Some (para, paragraphStyle, layout.Metadata, WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata)
+                    previousParagraphLayout <- Some layout
+                | None -> resetPreviousParagraph ()
+                if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
+                    y <- advanceToNextPage settings y
+                    resetPreviousParagraph ()
+            | _ -> ()
+        groupIndex <- groupIndex + 1
+
+    appendSyntheticNotes settings measureText measureRange (resizeArrayToList layouts)
+
 /// Lay out a multi-section document section by section. A continuous break
 /// continues on the same page below the previous section; otherwise the next
 /// section starts on a new page (using that section's page size — supporting a
@@ -4089,6 +4335,63 @@ let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasure
 
 let layoutDocument (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) =
     layoutDocumentWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) doc
+
+/// Incremental document layout: reuses per-top-level-block measured line layouts
+/// where the block identity/stable content signature and document-level layout
+/// inputs are unchanged, then recomputes the cheap vertical stacking pass.
+let layoutDocumentIncrementalWithRange (state: IncrementalLayoutState) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
+    match state.LastDocument, state.LastLayouts with
+    | Some cachedDoc, Some layouts when obj.ReferenceEquals(cachedDoc, doc) -> layouts
+    | _ ->
+        let contentWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+        let useColdLayout =
+            documentHasFloatingLayoutDependency doc
+            || hasSectionedDocument doc
+            || (match doc.PageSetup.Columns with Some columns when columns.Count >= 2 -> true | _ -> false)
+        if useColdLayout then
+            let layouts = layoutDocumentWithRange settings measureText measureRange doc
+            state.LastDocument <- Some doc
+            state.LastLayouts <- Some layouts
+            state.Entries <-
+                doc.Blocks
+                |> List.map (fun block ->
+                    let group = measureIncrementalBlockGroup settings measureText measureRange doc contentWidth block
+                    { BlockId = topLevelBlockId block
+                      Block = block
+                      PageSetup = doc.PageSetup
+                      Styles = doc.Styles
+                      ContentWidth = contentWidth
+                      Group = group })
+            layouts
+        else
+            let newEntries = ResizeArray<IncrementalBlockCacheEntry>()
+            let groups =
+                doc.Blocks
+                |> List.map (fun block ->
+                    match tryFindIncrementalEntry state doc contentWidth block with
+                    | Some entry ->
+                        newEntries.Add entry
+                        entry.Group
+                    | None ->
+                        state.MeasuredBlockCount <- state.MeasuredBlockCount + 1
+                        let group = measureIncrementalBlockGroup settings measureText measureRange doc contentWidth block
+                        let entry =
+                            { BlockId = topLevelBlockId block
+                              Block = block
+                              PageSetup = doc.PageSetup
+                              Styles = doc.Styles
+                              ContentWidth = contentWidth
+                              Group = group }
+                        newEntries.Add entry
+                        group)
+            let layouts = stackIncrementalGroups settings measureText measureRange doc groups
+            state.LastDocument <- Some doc
+            state.LastLayouts <- Some layouts
+            state.Entries <- resizeArrayToList newEntries
+            layouts
+
+let layoutDocumentIncremental state settings measureText doc =
+    layoutDocumentIncrementalWithRange state settings measureText (rangeMeasurerFromTextMeasurer measureText) doc
 
 let hitTest (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) (mouseX: float) (mouseY: float) =
     let layouts = layoutDocument settings measureText doc
