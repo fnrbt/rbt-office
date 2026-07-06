@@ -1,0 +1,227 @@
+#r "/home/dave/Dev/browser/pdf/bin/Debug/net10.0/FsPdf.dll"
+#r "/home/dave/Dev/browser/text/unicode/src/Unicode/bin/Debug/net10.0/Unicode.Core.dll"
+#r "/home/dave/Dev/browser/text/bidi/bin/Debug/net10.0/Bidi.Core.dll"
+#r "/home/dave/Dev/browser/text/opentype/bin/Debug/net10.0/OpenType.Core.dll"
+#r "/home/dave/Dev/browser/text/shaper/bin/Debug/net10.0/Shaper.Core.dll"
+#r "/home/dave/Dev/browser/text/engine/bin/Debug/net10.0/Text.Engine.dll"
+#r "/home/dave/Dev/browser/office/src/Word/bin/Debug/netstandard2.0/RedBat.Word.dll"
+#r "/home/dave/Dev/browser/office/src/ShaperText/bin/Debug/net10.0/RedBat.Word.ShaperText.dll"
+#r "/home/dave/Dev/browser/office/src/Word.Pdf/bin/Debug/net10.0/RedBat.Word.Pdf.dll"
+
+open System
+module Doc = RedBat.Word.Document
+module Layout = RedBat.Word.Layout
+module Paint = RedBat.Word.Paint
+module Pdf = RedBat.Word.Pdf
+
+let mutable pass = 0
+let mutable fail = 0
+
+let check label condition detail =
+    if condition then
+        pass <- pass + 1
+    else
+        fail <- fail + 1
+        printfn "FAIL %-32s %s" label detail
+
+let allocatedBytesFor (f: unit -> 'a) =
+    GC.Collect()
+    GC.WaitForPendingFinalizers()
+    GC.Collect()
+    let before = GC.GetAllocatedBytesForCurrentThread()
+    let result = f()
+    GC.KeepAlive result
+    GC.GetAllocatedBytesForCurrentThread() - before
+
+let retainedBytesFor (f: unit -> 'a) =
+    GC.Collect()
+    GC.WaitForPendingFinalizers()
+    GC.Collect()
+    let before = GC.GetTotalMemory(true)
+    let result = f()
+    GC.KeepAlive result
+    GC.Collect()
+    GC.WaitForPendingFinalizers()
+    GC.Collect()
+    GC.GetTotalMemory(true) - before
+
+let paragraph index =
+    Doc.Paragraph {
+        Id = sprintf "pdf-p-%04d" index
+        Buffer = RedBat.Word.TextBuffer.ofString "The quick brown fox jumps over the lazy dog."
+        Metadata = Doc.defaultMetadata
+    }
+
+let repeatedTextDoc =
+    { Doc.empty with
+        Blocks = [ for i in 1 .. 4000 -> paragraph i ]
+        Selection = None
+        PageSetup = { Doc.defaultPageSetup with PageHeight = 300000.0 } }
+
+let fontBytes = IO.File.ReadAllBytes("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+let options: Pdf.RenderOptions =
+    { DefaultFontFamily = "DejaVu Sans"
+      Fonts = [
+        { FaceName = "DejaVu Sans"
+          Family = "DejaVu Sans"
+          Bold = false
+          Italic = false
+          Data = fontBytes }
+      ]
+      MeasureText = None
+      ShapeText = None
+      Images = [] }
+
+let warmBytes = Pdf.toBytes options repeatedTextDoc
+check "word pdf emits bytes" (warmBytes.Length > 1000) (sprintf "bytes=%d" warmBytes.Length)
+
+// Word.Pdf no longer owns the deleted font-context cache. Retained bytes here include
+// process-level caches in sibling text/engine and text/shaper, so keep this as a
+// coarse same-document growth sanity check rather than a cache eviction budget.
+let repeatedExportCount = 8
+let repeatedExportRetainedBound = int64 repeatedExportCount * 2L * 1024L * 1024L
+let repeatedExportRetained =
+    retainedBytesFor (fun () ->
+        let mutable total = 0
+        for _ in 1 .. repeatedExportCount do
+            total <- total + (Pdf.toBytes options repeatedTextDoc).Length
+        total)
+check "word pdf repeated export retained sanity"
+    (repeatedExportRetained < repeatedExportRetainedBound)
+    (sprintf
+        "retained %.1f MB bound %.1f MB"
+        (float repeatedExportRetained / 1024.0 / 1024.0)
+        (float repeatedExportRetainedBound / 1024.0 / 1024.0))
+
+let blankPlan: Pdf.PaintPlan =
+    { Settings =
+        { Width = 240.0
+          PageHeight = 320.0
+          FontSize = 14.0
+          LineHeight = 21.0
+          PaddingLeft = 0.0
+          PaddingTop = 0.0
+          MarginRight = 0.0
+          MarginBottom = 0.0
+          InTableCell = false
+          TableContinuationHeaderHeight = 0.0
+          LongTrailingSpaceFitSafety = 0.25 }
+      Commands = []
+      Pages =
+        [ { Top = 0.0
+            Width = 240.0
+            Height = 320.0
+            MarginTop = 0.0
+            MarginBottom = 0.0
+            MarginLeft = 0.0
+            MarginRight = 0.0 } ]
+      ImageSources = []
+      ImageUses = [] }
+
+let imageResource source dataSize : Pdf.ImageResource =
+    { Source = source
+      Width = 64
+      Height = max 1 (dataSize / (64 * 3))
+      ColorSpace = "DeviceRGB"
+      BitsPerComponent = 8
+      Data = Array.create dataSize 127uy
+      Filter = None }
+
+let unusedImageOptions =
+    { options with
+        Images = [ for index in 1 .. 8 -> imageResource (sprintf "unused-%02d" index) (512 * 1024) ] }
+
+let unusedImageAllocated =
+    allocatedBytesFor (fun () -> Pdf.toBytesWithPaintPlan unusedImageOptions blankPlan)
+let unusedImageBytes = Pdf.toBytesWithPaintPlan unusedImageOptions blankPlan
+check "word pdf skips unused image bytes"
+    (unusedImageBytes.Length < 20000)
+    (sprintf "bytes=%d" unusedImageBytes.Length)
+check "word pdf skips unused image alloc"
+    (unusedImageAllocated < 2L * 1024L * 1024L)
+    (sprintf "allocated %.1f MB" (float unusedImageAllocated / 1024.0 / 1024.0))
+
+let usedImage = imageResource "used-image" (64 * 64 * 3)
+let usedImagePlan =
+    { blankPlan with
+        Commands = [ Paint.DrawImage ("used-image", 12.0, 12.0, 64.0, 64.0, None, None, None, None) ]
+        ImageSources = [ "used-image" ]
+        ImageUses = [ ({ Source = "used-image"; Width = 64.0; Height = 64.0 }: Pdf.ImageUse) ] }
+let usedImageBytes = Pdf.toBytesWithPaintPlan { options with Images = [ usedImage ] } usedImagePlan
+check "word pdf keeps used image"
+    (usedImageBytes.Length > unusedImageBytes.Length + usedImage.Data.Length)
+    (sprintf "used=%d blank=%d data=%d" usedImageBytes.Length unusedImageBytes.Length usedImage.Data.Length)
+
+let duplicateImagePlan =
+    { usedImagePlan with
+        Commands = [ Paint.DrawImage ("duplicate-image", 12.0, 12.0, 64.0, 64.0, None, None, None, None) ]
+        ImageSources = [ "duplicate-image" ]
+        ImageUses = [ ({ Source = "duplicate-image"; Width = 64.0; Height = 64.0 }: Pdf.ImageUse) ] }
+let duplicateImageBytes =
+    Pdf.toBytesWithPaintPlan
+        { options with
+            Images = [
+                imageResource "duplicate-image" (512 * 1024)
+                imageResource "duplicate-image" (64 * 64 * 3)
+            ] }
+        duplicateImagePlan
+check "word pdf dedupes image resources"
+    (duplicateImageBytes.Length < unusedImageBytes.Length + 64 * 64 * 3 + 20000)
+    (sprintf "bytes=%d blank=%d" duplicateImageBytes.Length unusedImageBytes.Length)
+
+let measuredPlanDoc =
+    { Doc.empty with
+        Blocks = [ paragraph 90000 ]
+        Selection = None }
+
+let probeOptions measureText index =
+    let padding = Array.create (8 * 1024 * 1024) (byte (index % 251))
+    let data = Array.append fontBytes padding
+    let family = sprintf "ProbeFont%d" index
+    { options with
+        DefaultFontFamily = family
+        Fonts = [
+            { FaceName = family
+              Family = family
+              Bold = false
+              Italic = false
+              Data = data }
+        ]
+        MeasureText = measureText }
+
+let measuredPlanRetained =
+    retainedBytesFor (fun () ->
+        let mutable total = 0
+        for index in 0 .. 11 do
+            let plan =
+                Pdf.collectPaintPlan
+                    (probeOptions (Some (fun text _ -> float text.Length * 7.0)) index)
+                    measuredPlanDoc
+            total <- total + plan.Commands.Length + plan.Pages.Length
+        total)
+check "word pdf measured plan font retention"
+    (measuredPlanRetained < 32L * 1024L * 1024L)
+    (sprintf "retained %.1f MB" (float measuredPlanRetained / 1024.0 / 1024.0))
+
+let manyPageDoc =
+    { Doc.empty with
+        Blocks = [ for i in 1 .. 1600 -> paragraph (10000 + i) ]
+        Selection = None }
+
+let manyPagePlan = Pdf.collectPaintPlan options manyPageDoc
+check "word pdf many page plan" (manyPagePlan.Pages.Length > 20)
+    (sprintf "pages=%d" manyPagePlan.Pages.Length)
+
+Pdf.toBytesWithPaintPlan options manyPagePlan |> ignore
+let manyPageSw = Diagnostics.Stopwatch.StartNew()
+let manyPageBytes = Pdf.toBytesWithPaintPlan options manyPagePlan
+manyPageSw.Stop()
+check "word pdf many page emits" (manyPageBytes.Length > 1000)
+    (sprintf "bytes=%d" manyPageBytes.Length)
+check "word pdf many page perf"
+    (manyPageSw.Elapsed.TotalMilliseconds < 1500.0)
+    (sprintf "many-page export took %.1f ms" manyPageSw.Elapsed.TotalMilliseconds)
+
+printfn ""
+printfn "Word PDF tests: %d passed, %d failed" pass fail
+if fail > 0 then exit 1
