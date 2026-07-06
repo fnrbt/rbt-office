@@ -530,8 +530,10 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                         importCell row col excelRef (getProp cellObj "value") cellObj (Some (getProp cellObj "richRuns")) (Some hasComment)
                     | None -> ()
             else
-                // Older office-format bundles do not expose cellsWithStyle;
-                // keep the coordinate scan but pay for toArray only here.
+                // Older office-format bundles do not expose streaming cell
+                // APIs. Import raw values from toArray without calling
+                // cellWithStyleAt per coordinate; that lookup scans worksheet
+                // rows and makes this legacy path quadratic.
                 let dataArray: obj[][] = excel?toArray(workbook, sheet)
                 rowCount <- dataArray.Length
                 colCount <-
@@ -546,8 +548,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                         let rawValue =
                             if row < dataArray.Length && col < dataArray.[row].Length then dataArray.[row].[col]
                             else null
-                        let cellObj = excel?cellWithStyleAt(excelRef, sheet)
-                        importCell row col excelRef rawValue cellObj None None
+                        importCell row col excelRef rawValue null None None
 
             let addColumnWidth col width =
                 if width > 0.0 then
@@ -615,6 +616,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 History = { Past = []; Future = []; MaxSize = 50 }
                 SortState = None
                 Filters = Map.empty
+                FilterVisibleRows = None
                 FilterHiddenRows = [||]
                 RowHeights = rowHeights
                 ColumnWidths = columnWidths
@@ -654,6 +656,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 History = { Past = []; Future = []; MaxSize = 50 }
                 SortState = None
                 Filters = Map.empty
+                FilterVisibleRows = None
                 FilterHiddenRows = [||]
                 RowHeights = Map.empty
                 ColumnWidths = Map.empty
@@ -712,6 +715,7 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
                     History = { Past = []; Future = []; MaxSize = 50 }
                     SortState = None
                     Filters = Map.empty
+                    FilterVisibleRows = None
                     FilterHiddenRows = [||]
                     RowHeights = Map.empty
                     ColumnWidths = Map.empty
