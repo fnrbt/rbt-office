@@ -533,6 +533,156 @@ async function runSpreadsheetWorkflows(page, cdp) {
   return [synthetic, realXlsx];
 }
 
+async function runSpreadsheetIncrementalEditWorkflow(page, cdp) {
+  const moduleBase = fsUrl(path.join(officeRoot, 'dist/spreadsheet'));
+  return await measure(page, cdp, 'spreadsheet.incremental-edit', () =>
+    page.evaluate(async ({ moduleBase }) => {
+      const Model = await import(`${moduleBase}/Model.js`);
+      const Formula = await import(`${moduleBase}/Formula.js`);
+      const Spreadsheet = await import(`${moduleBase}/Spreadsheet.js`);
+
+      const workflowStarted = performance.now();
+      const dataRows = 2000;
+      const editIterations = 200;
+      const rows = [['Item', 'Group', 'Amount', 'Tax', 'Total', 'Note', 'Aggregate']];
+      let initialAggregate = 0;
+      for (let row = 1; row <= dataRows; row++) {
+        const amount = row * 3;
+        const tax = row % 17;
+        initialAggregate += amount + tax;
+        rows.push([
+          `Item ${row}`,
+          `Group ${row % 11}`,
+          String(amount),
+          String(tax),
+          `=C${row + 1}+D${row + 1}`,
+          row % 13 === 0 ? 'flagged' : 'plain',
+          row === 1 ? `=SUM(E2:E${dataRows + 1})` : ''
+        ]);
+      }
+
+      const csv = rows.map(row => row.join(',')).join('\n');
+      const createFormulaModel = () =>
+        Formula.recalcAndSpill(
+          undefined,
+          undefined,
+          Model.importCSV(csv, 0, 0, Model.createEmpty(dataRows + 20, 12))
+        );
+
+      const edits = Array.from({ length: editIterations }, (_, i) => {
+        const row = (i % dataRows) + 1;
+        const value = 10000 + i;
+        const oldAmount = row * 3;
+        const tax = row % 17;
+        return { row, col: 2, value, oldAmount, tax };
+      });
+      const expectedAggregate = edits.reduce(
+        (sum, edit) => sum - edit.oldAmount + edit.value,
+        initialAggregate
+      );
+      const lastEdit = edits[edits.length - 1];
+      const expectedDependent = lastEdit.value + lastEdit.tax;
+      const dependentAddr = new Model.CellAddress(lastEdit.row, 4);
+      const aggregateAddr = new Model.CellAddress(1, 6);
+
+      const cellNumber = (model, addr, label) => {
+        const value = Model.getCellValue(addr, model);
+        const text = Model.displayValue(value);
+        const number = Number(text);
+        if (!Number.isFinite(number)) {
+          throw new Error(`${label}: expected numeric value, saw "${text}"`);
+        }
+        return number;
+      };
+      const assertClose = (label, actual, expected) => {
+        if (Math.abs(actual - expected) > 0.000001) {
+          throw new Error(`${label}: expected ${expected}, saw ${actual}`);
+        }
+      };
+
+      let directModel = createFormulaModel();
+      let directSetCellMs = 0;
+      let directRecalcAndSpillMs = 0;
+      let directChecksum = 0;
+      const directStarted = performance.now();
+      for (const edit of edits) {
+        const addr = new Model.CellAddress(edit.row, edit.col);
+        const cellData = new Model.CellData(
+          new Model.CellValue(1, [edit.value]),
+          Model.defaultFormat,
+          undefined
+        );
+        let step = performance.now();
+        directModel = Model.setCell(addr, cellData, directModel);
+        directSetCellMs += performance.now() - step;
+        step = performance.now();
+        directModel = Formula.recalcAndSpill(undefined, undefined, directModel);
+        directRecalcAndSpillMs += performance.now() - step;
+        directChecksum += edit.value;
+      }
+      const directEditMs = performance.now() - directStarted;
+      const directDependent = cellNumber(directModel, dependentAddr, 'direct dependent formula');
+      const directAggregate = cellNumber(directModel, aggregateAddr, 'direct aggregate formula');
+      assertClose('direct dependent formula', directDependent, expectedDependent);
+      assertClose('direct aggregate formula', directAggregate, expectedAggregate);
+
+      const host = document.createElement('div');
+      host.style.width = '1000px';
+      host.style.height = '700px';
+      host.style.position = 'relative';
+      document.body.appendChild(host);
+      const doubleRaf = () =>
+        new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+      let realSetCellMs = 0;
+      let realChecksum = 0;
+      let realDependent = 0;
+      let realAggregate = 0;
+      try {
+        const spreadsheet = Spreadsheet.default(host);
+        spreadsheet.Mount();
+        spreadsheet.SetWorkbook([createFormulaModel()], ['Sheet1'], 0);
+        await doubleRaf();
+
+        const realStarted = performance.now();
+        for (const edit of edits) {
+          const step = performance.now();
+          spreadsheet.SetCell(edit.row, edit.col, String(edit.value));
+          realSetCellMs += performance.now() - step;
+          realChecksum += edit.value;
+        }
+        const realEditMs = performance.now() - realStarted;
+        await doubleRaf();
+
+        const realModel = spreadsheet.GetModel();
+        realDependent = cellNumber(realModel, dependentAddr, 'real dependent formula');
+        realAggregate = cellNumber(realModel, aggregateAddr, 'real aggregate formula');
+        assertClose('real dependent formula', realDependent, expectedDependent);
+        assertClose('real aggregate formula', realAggregate, expectedAggregate);
+
+        return {
+          durationMs: performance.now() - workflowStarted,
+          rows: dataRows,
+          editIterations,
+          realEditMs,
+          realSetCellMs,
+          directEditMs,
+          directSetCellMs,
+          directRecalcAndSpillMs,
+          expectedDependent,
+          realDependent,
+          directDependent,
+          expectedAggregate,
+          realAggregate,
+          directAggregate,
+          checksum: realChecksum + directChecksum + realDependent + directDependent + realAggregate + directAggregate
+        };
+      } finally {
+        host.remove();
+      }
+    }, { moduleBase }));
+}
+
 async function runSpreadsheetScrollWorkflow(page, cdp) {
   const moduleBase = fsUrl(path.join(officeRoot, 'dist/spreadsheet'));
   return await measure(page, cdp, 'spreadsheet.scroll-dom', () =>
@@ -718,6 +868,7 @@ try {
   report.word.push(loadMetric);
   report.word.push(...await runWordWorkflows(page, cdp));
   report.spreadsheet.push(...await runSpreadsheetWorkflows(page, cdp));
+  report.spreadsheet.push(await runSpreadsheetIncrementalEditWorkflow(page, cdp));
   report.spreadsheet.push(await runSpreadsheetScrollWorkflow(page, cdp));
 
   const outFile = path.join(outDir, 'latest.json');
