@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!-- The Wisp backend for the Office UI abstraction (renders RedBat.Office.Ui specs onto Wisp),
-       the wisp counterpart to office-native. A library consumed by the word-wisp / spreadsheet-wisp apps. -->
+       the office UI shell for the Wisp apps (word-wisp / spreadsheet-wisp). Replaced the Composit office-native shell in Jul 2026. -->
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <TargetFramework>net10.0</TargetFramework>

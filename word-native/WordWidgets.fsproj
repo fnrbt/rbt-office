@@ -3,12 +3,10 @@
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="WordUiNative.fs" />
     <Compile Include="WordEditor.fs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../widgets/Widgets.fsproj" />
-    <ProjectReference Include="../office-native/OfficeShell.fsproj" />
     <ProjectReference Include="../src/Word/RedBat.Word.fsproj" />
   </ItemGroup>
 </Project>

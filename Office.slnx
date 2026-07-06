@@ -27,8 +27,8 @@
   <Folder Name="/src/Word/">
     <Project Path="src/Word/RedBat.Word.fsproj" />
   </Folder>
-  <Folder Name="/office-native/">
-    <Project Path="office-native/OfficeShell.fsproj" />
+  <Folder Name="/office-wisp/">
+    <Project Path="office-wisp/OfficeWisp.fsproj" />
   </Folder>
   <Folder Name="/spreadsheet-native/">
     <Project Path="spreadsheet-native/SpreadsheetWidgets.fsproj" />
@@ -36,8 +36,17 @@
   <Folder Name="/word-native/">
     <Project Path="word-native/WordWidgets.fsproj" />
   </Folder>
-  <Folder Name="/tools/spreadsheet-editor/">
-    <Project Path="tools/spreadsheet-editor/SpreadsheetEditor.fsproj" />
+  <Folder Name="/spreadsheet-wisp/">
+    <Project Path="spreadsheet-wisp/SpreadsheetWisp.fsproj" />
+  </Folder>
+  <Folder Name="/word-wisp/">
+    <Project Path="word-wisp/WordWisp.fsproj" />
+  </Folder>
+  <Folder Name="/src/Word.Import/">
+    <Project Path="src/Word.Import/WordImport.fsproj" />
+  </Folder>
+  <Folder Name="/src/Spreadsheet.Pdf/">
+    <Project Path="src/Spreadsheet.Pdf/RedBat.Spreadsheet.Pdf.fsproj" />
   </Folder>
   <Project Path="../pdf/FsPdf.fsproj" />
   <Project Path="../renderer/Renderer.fsproj" />

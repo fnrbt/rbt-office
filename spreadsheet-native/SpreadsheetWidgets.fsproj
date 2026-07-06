@@ -5,11 +5,9 @@
   <ItemGroup>
     <Compile Include="SpreadsheetGrid.fs" />
     <Compile Include="SpreadsheetEditor.fs" />
-    <Compile Include="SpreadsheetUiNative.fs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../widgets/Widgets.fsproj" />
-    <ProjectReference Include="../office-native/OfficeShell.fsproj" />
     <ProjectReference Include="../src/Spreadsheet/RedBat.Spreadsheet.fsproj" />
   </ItemGroup>
 </Project>
