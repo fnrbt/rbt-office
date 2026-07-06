@@ -1578,9 +1578,17 @@ let main argv =
         let jsonEnv = Environment.GetEnvironmentVariable("EXCEL_NATIVE_JSON")
         let jsonOpt = if String.IsNullOrWhiteSpace jsonEnv then None else Some (fullPath jsonEnv)
         let renderDialogPng (path: string) (spec: RedBat.Office.Ui.DialogSpec) (w: int) (h: int) : int =
-            let widget = Composit.Ui.OfficeShell.dialogPreview RedBat.Spreadsheet.Ui.chrome spec
+            Wisp.Layout.Scheduler.requestFrame <- ignore
+            let mutable root = Unchecked.defaultof<Wisp.Layout.Element>
+            let dispose = Wisp.Reactive.createRoot (fun dispose ->
+                root <- Wisp.OfficeShell.dialogPreview RedBat.Spreadsheet.Ui.chrome spec
+                dispose)
+            root.Layout(Wisp.Layout.BoxConstraints.tightWH (float w) (float h))
+            Wisp.Layout.flushLayout ()
+            let cmds = Clear Color.white :: root.Paint(0.0, 0.0)
             let backend = Raster.create()
-            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            let framebuffer = Renderer.Scene.render backend w h cmds
+            dispose ()
             File.WriteAllBytes(path, PngEncode.encode framebuffer)
             0
         match argv with
