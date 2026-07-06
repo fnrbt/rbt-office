@@ -144,6 +144,9 @@ type Spreadsheet(container: Element) =
             | None -> result <- clearCell addr result
         result
 
+    let restoreCellMap (cells: Map<CellAddress, CellData>) (m: SpreadsheetModel) =
+        { m with Cells = cells } |> invalidateFilterProjection
+
     let invalidateCalcEngine () =
         calcEngine <- None
 
@@ -825,7 +828,7 @@ type Spreadsheet(container: Element) =
 
             // Create undo command
             let command = {
-                Undo = fun m -> { m with Cells = oldCells; SortState = oldSortState }
+                Undo = fun m -> { restoreCellMap oldCells m with SortState = oldSortState }
                 Redo = fun m -> sortByColumn col ascending m
                 Description = sprintf "Sort by column %s" (columnToLetter col)
             }
@@ -2850,7 +2853,7 @@ type Spreadsheet(container: Element) =
 
         // Create undo command
         let command = {
-            Undo = fun m -> { m with Cells = oldCells; Selection = oldSelection; RowCount = oldRowCount }
+            Undo = fun m -> { restoreCellMap oldCells m with Selection = oldSelection; RowCount = oldRowCount }
             Redo = fun m -> insertRow atRow m
             Description = sprintf "Insert row at %d" atRow
         }
@@ -2868,7 +2871,7 @@ type Spreadsheet(container: Element) =
 
         // Create undo command
         let command = {
-            Undo = fun m -> { m with Cells = oldCells; Selection = oldSelection; RowCount = oldRowCount }
+            Undo = fun m -> { restoreCellMap oldCells m with Selection = oldSelection; RowCount = oldRowCount }
             Redo = fun m -> deleteRow atRow m
             Description = sprintf "Delete row %d" atRow
         }
@@ -2886,7 +2889,7 @@ type Spreadsheet(container: Element) =
 
         // Create undo command
         let command = {
-            Undo = fun m -> { m with Cells = oldCells; Selection = oldSelection; ColCount = oldColCount }
+            Undo = fun m -> { restoreCellMap oldCells m with Selection = oldSelection; ColCount = oldColCount }
             Redo = fun m -> insertColumn atCol m
             Description = sprintf "Insert column at %s" (columnToLetter atCol)
         }
@@ -2904,7 +2907,7 @@ type Spreadsheet(container: Element) =
 
         // Create undo command
         let command = {
-            Undo = fun m -> { m with Cells = oldCells; Selection = oldSelection; ColCount = oldColCount }
+            Undo = fun m -> { restoreCellMap oldCells m with Selection = oldSelection; ColCount = oldColCount }
             Redo = fun m -> deleteColumn atCol m
             Description = sprintf "Delete column %s" (columnToLetter atCol)
         }
@@ -3015,7 +3018,7 @@ type Spreadsheet(container: Element) =
         // persistent map) so dependent formulas recalculated by the import are
         // rolled back too, not just the imported rectangle.
         let command = {
-            Undo = fun m -> { m with Cells = oldCells }
+            Undo = fun m -> restoreCellMap oldCells m
             Redo = fun m ->
                 let sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
                 importCSV csvText startRow startCol m
@@ -3115,7 +3118,7 @@ type Spreadsheet(container: Element) =
                 Undo = fun m ->
                     match oldCell with
                     | Some cell -> setCell addr cell m
-                    | None -> { m with Cells = Map.remove addr m.Cells }
+                    | None -> clearCell addr m
                 Redo = fun m -> setCell addr newCellData m
                 Description = sprintf "Edit %s%d" (columnToLetter col) (row + 1)
             }
@@ -3150,7 +3153,7 @@ type Spreadsheet(container: Element) =
             let oldCells = model.Cells
             model <- sortByColumn col true model
             let command = {
-                Undo = fun m -> { m with Cells = oldCells }
+                Undo = fun m -> restoreCellMap oldCells m
                 Redo = fun m -> sortByColumn col true m
                 Description = sprintf "Sort %s ascending" (columnToLetter col)
             }
@@ -3160,7 +3163,7 @@ type Spreadsheet(container: Element) =
             let oldCells = model.Cells
             model <- sortByColumn startCol true model
             let command = {
-                Undo = fun m -> { m with Cells = oldCells }
+                Undo = fun m -> restoreCellMap oldCells m
                 Redo = fun m -> sortByColumn startCol true m
                 Description = sprintf "Sort %s ascending" (columnToLetter startCol)
             }
@@ -3175,7 +3178,7 @@ type Spreadsheet(container: Element) =
             let oldCells = model.Cells
             model <- sortByColumn col false model
             let command = {
-                Undo = fun m -> { m with Cells = oldCells }
+                Undo = fun m -> restoreCellMap oldCells m
                 Redo = fun m -> sortByColumn col false m
                 Description = sprintf "Sort %s descending" (columnToLetter col)
             }
@@ -3185,7 +3188,7 @@ type Spreadsheet(container: Element) =
             let oldCells = model.Cells
             model <- sortByColumn startCol false model
             let command = {
-                Undo = fun m -> { m with Cells = oldCells }
+                Undo = fun m -> restoreCellMap oldCells m
                 Redo = fun m -> sortByColumn startCol false m
                 Description = sprintf "Sort %s descending" (columnToLetter startCol)
             }
@@ -3217,7 +3220,7 @@ type Spreadsheet(container: Element) =
             recalculateFormulas()
 
             let command = {
-                Undo = fun m -> { m with Cells = oldCells }
+                Undo = fun m -> restoreCellMap oldCells m
                 Redo = fun m -> pasteClipboard { Row = row; Col = col } clipData m
                 Description = "Paste"
             }
@@ -3229,7 +3232,7 @@ type Spreadsheet(container: Element) =
             recalculateFormulas()
 
             let command = {
-                Undo = fun m -> { m with Cells = oldCells }
+                Undo = fun m -> restoreCellMap oldCells m
                 Redo = fun m -> pasteClipboard { Row = startRow; Col = startCol } clipData m
                 Description = "Paste"
             }

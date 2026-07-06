@@ -493,6 +493,11 @@ type SpreadsheetModel = {
     /// Active filters by column
     Filters: Map<int, ColumnFilter>
 
+    /// Rows visible under the active AutoFilter projection. None means the
+    /// projection was invalidated by a data mutation and reads should fall
+    /// back to recomputing from the current cells.
+    FilterVisibleRows: Set<int> option
+
     /// Rows hidden by the active AutoFilter projection.
     FilterHiddenRows: int array
 
@@ -609,6 +614,7 @@ let createEmpty rowCount colCount = {
     History = emptyHistory
     SortState = None
     Filters = Map.empty
+    FilterVisibleRows = None
     FilterHiddenRows = [||]
     RowHeights = Map.empty
     ColumnWidths = Map.empty
@@ -686,11 +692,18 @@ let formatCellRef (row: int) (col: int): string =
 let getCell (addr: CellAddress) (model: SpreadsheetModel): CellData option =
     Map.tryFind addr model.Cells
 
+let invalidateFilterProjection (model: SpreadsheetModel): SpreadsheetModel =
+    if Map.isEmpty model.Filters then
+        if model.FilterVisibleRows.IsNone && model.FilterHiddenRows.Length = 0 then model
+        else { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
+    else
+        { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
+
 /// Set cell data at address
 let setCell (addr: CellAddress) (data: CellData) (model: SpreadsheetModel): SpreadsheetModel =
     match Map.tryFind addr model.Cells with
     | Some existing when existing = data -> model
-    | _ -> { model with Cells = Map.add addr data model.Cells }
+    | _ -> { model with Cells = Map.add addr data model.Cells } |> invalidateFilterProjection
 
 let setCellFormat (addr: CellAddress) (update: CellFormat -> CellFormat) (model: SpreadsheetModel): SpreadsheetModel =
     let existing = getCell addr model |> Option.defaultValue { Value = Empty; Format = defaultFormat; Comment = None }
@@ -755,7 +768,7 @@ let setCellBorder (addr: CellAddress) (side: string) (style: string) (color: str
 /// Clear cell at address
 let clearCell (addr: CellAddress) (model: SpreadsheetModel): SpreadsheetModel =
     if Map.containsKey addr model.Cells then
-        { model with Cells = Map.remove addr model.Cells }
+        { model with Cells = Map.remove addr model.Cells } |> invalidateFilterProjection
     else
         model
 
@@ -774,7 +787,7 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
                     addr.Col >= startCol && addr.Col <= endCol
                 if remove then changed <- true
                 not remove)
-        if changed then { model with Cells = cells } else model
+        if changed then { model with Cells = cells } |> invalidateFilterProjection else model
 
 /// Format a number according to format code
 let formatNumber (format: string option) (value: float): string =
@@ -824,6 +837,45 @@ let getCellValue (addr: CellAddress) (model: SpreadsheetModel): CellValue =
     match getCell addr model with
     | Some cell -> cell.Value
     | None -> Empty
+
+let private dataRows (model: SpreadsheetModel): Set<int> =
+    model.Cells
+    |> Map.toSeq
+    |> Seq.map (fun (addr, _) -> addr.Row)
+    |> Set.ofSeq
+
+let private computeVisibleRows (model: SpreadsheetModel): Set<int> =
+    let rows = dataRows model
+    if Map.isEmpty model.Filters then
+        rows
+    else
+        rows
+        |> Set.filter (fun row ->
+            model.Filters
+            |> Map.forall (fun col filter ->
+                let addr = { Row = row; Col = col }
+                let value = getCellValue addr model
+                let displayStr = displayValue value
+                Set.contains displayStr filter.VisibleValues))
+
+let private hiddenRowsFromVisible (visible: Set<int>) (model: SpreadsheetModel): int array =
+    let rows = dataRows model
+    if Set.isEmpty rows then
+        [||]
+    else
+        let headerRow = Set.minElement rows
+        Set.difference rows visible
+        |> Set.remove headerRow
+        |> Set.toArray
+
+let private refreshFilterProjection (model: SpreadsheetModel): SpreadsheetModel =
+    if Map.isEmpty model.Filters then
+        if model.FilterVisibleRows.IsNone && model.FilterHiddenRows.Length = 0 then model
+        else { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
+    else
+        let visible = computeVisibleRows model
+        let hidden = hiddenRowsFromVisible visible model
+        { model with FilterVisibleRows = Some visible; FilterHiddenRows = hidden }
 
 /// Adjust formula references when pasting (relative reference adjustment)
 let rec adjustFormulaReferences (formula: string) (deltaRow: int) (deltaCol: int): string =
@@ -940,7 +992,7 @@ let pasteClipboard (targetAddr: CellAddress) (clipboardData: ClipboardData) (mod
             let adjustedCellData = { cellData with Value = adjustedValue }
             updatedModel <- setCell pasteAddr adjustedCellData updatedModel
 
-    updatedModel
+    refreshFilterProjection updatedModel
 
 /// Push command to history (clears future stack)
 let pushCommand (command: Command) (model: SpreadsheetModel): SpreadsheetModel =
@@ -1027,6 +1079,7 @@ let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): Spreads
     if List.isEmpty allRows then
         // No data to sort
         { model with SortState = Some { Column = col; Ascending = ascending } }
+        |> refreshFilterProjection
     else
         // Get the value for the sort column for each row
         let rowsWithValues =
@@ -1070,6 +1123,7 @@ let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): Spreads
             Cells = newCells
             SortState = Some { Column = col; Ascending = ascending }
         }
+        |> refreshFilterProjection
 
 /// Get unique values in a column (as strings for display)
 let getColumnUniqueValues (col: int) (model: SpreadsheetModel): string list =
@@ -1083,41 +1137,19 @@ let getColumnUniqueValues (col: int) (model: SpreadsheetModel): string list =
 /// Apply filter to a column
 let applyFilter (col: int) (visibleValues: Set<string>) (model: SpreadsheetModel): SpreadsheetModel =
     let filter = { Column = col; VisibleValues = visibleValues }
-    { model with Filters = Map.add col filter model.Filters; FilterHiddenRows = [||] }
+    { model with Filters = Map.add col filter model.Filters }
+    |> refreshFilterProjection
 
 /// Remove filter from a column
 let removeFilter (col: int) (model: SpreadsheetModel): SpreadsheetModel =
-    { model with Filters = Map.remove col model.Filters; FilterHiddenRows = [||] }
+    { model with Filters = Map.remove col model.Filters }
+    |> refreshFilterProjection
 
 /// Get visible rows based on all active filters
 let getVisibleRows (model: SpreadsheetModel): Set<int> =
-    if Map.isEmpty model.Filters then
-        // No filters, all rows visible
-        model.Cells
-        |> Map.toList
-        |> List.map (fun (addr, _) -> addr.Row)
-        |> Set.ofList
-    else
-        // Get all rows
-        let allRows =
-            model.Cells
-            |> Map.toList
-            |> List.map (fun (addr, _) -> addr.Row)
-            |> Set.ofList
-
-        // Filter rows based on each column filter (AND logic)
-        allRows
-        |> Set.filter (fun row ->
-            // Row is visible if it passes ALL filters
-            model.Filters
-            |> Map.forall (fun col filter ->
-                let addr = { Row = row; Col = col }
-                let value = getCellValue addr model
-                let displayStr = displayValue value
-                // Row passes this filter if value is in visible set
-                Set.contains displayStr filter.VisibleValues
-            )
-        )
+    match model.FilterVisibleRows with
+    | Some visible when not (Map.isEmpty model.Filters) -> visible
+    | _ -> computeVisibleRows model
 
 let private binarySearchInt (values: int array) target =
     let mutable lo = 0
@@ -1146,19 +1178,12 @@ let getVisibleRowsHashSet (model: SpreadsheetModel): System.Collections.Generic.
 /// sheets (the whole parity corpus) are untouched.
 let applyFilterRowHeights (model: SpreadsheetModel): SpreadsheetModel =
     if Map.isEmpty model.Filters then
-        if model.FilterHiddenRows.Length = 0 then model else { model with FilterHiddenRows = [||] }
+        if model.FilterVisibleRows.IsNone && model.FilterHiddenRows.Length = 0 then model
+        else { model with FilterVisibleRows = None; FilterHiddenRows = [||] }
     else
-        let dataRows =
-            model.Cells |> Map.toList |> List.map (fun (addr, _) -> addr.Row) |> Set.ofList
-        if Set.isEmpty dataRows then model
-        else
-            let headerRow = Set.minElement dataRows
-            let visible = getVisibleRows model
-            let hidden = Set.difference dataRows visible |> Set.remove headerRow
-            let hiddenRows = hidden |> Set.toArray
-            if model.FilterHiddenRows = hiddenRows then model
-            else
-                { model with FilterHiddenRows = hiddenRows }
+        match model.FilterVisibleRows with
+        | Some _ -> model
+        | None -> refreshFilterProjection model
 
 /// Distinct, sorted display strings in a column — the AutoFilter checklist's
 /// values. Blanks excluded; uses the same `displayValue` as the filter test.
@@ -1284,21 +1309,80 @@ let applyTableStyles (model: SpreadsheetModel): SpreadsheetModel =
         | _ -> m
     model.Tables |> List.fold styleTable model
 
+let private insertRowInAddressMap atRow (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> =
+    let before, shifted = items |> Map.partition (fun addr _ -> addr.Row < atRow)
+    shifted
+    |> Map.fold (fun acc addr value -> Map.add { addr with Row = addr.Row + 1 } value acc) before
+
+let private deleteRowInAddressMap atRow (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> =
+    let before, tail = items |> Map.partition (fun addr _ -> addr.Row < atRow)
+    tail
+    |> Map.fold (fun acc addr value ->
+        if addr.Row = atRow then acc
+        else Map.add { addr with Row = addr.Row - 1 } value acc) before
+
+let private insertRowInRowMap atRow (items: Map<int, 'T>) : Map<int, 'T> =
+    let before, shifted = items |> Map.partition (fun row _ -> row < atRow)
+    shifted
+    |> Map.fold (fun acc row value -> Map.add (row + 1) value acc) before
+
+let private deleteRowInRowMap atRow (items: Map<int, 'T>) : Map<int, 'T> =
+    let before, tail = items |> Map.partition (fun row _ -> row < atRow)
+    tail
+    |> Map.fold (fun acc row value ->
+        if row = atRow then acc
+        else Map.add (row - 1) value acc) before
+
+let private insertRowInAddressSet atRow (items: Set<CellAddress>) : Set<CellAddress> =
+    items
+    |> Set.map (fun addr -> if addr.Row >= atRow then { addr with Row = addr.Row + 1 } else addr)
+
+let private deleteRowInAddressSet atRow (items: Set<CellAddress>) : Set<CellAddress> =
+    items
+    |> Seq.choose (fun addr ->
+        if addr.Row = atRow then None
+        elif addr.Row > atRow then Some { addr with Row = addr.Row - 1 }
+        else Some addr)
+    |> Set.ofSeq
+
+let private insertRowInMerge atRow (merge: MergedCell) : MergedCell =
+    let shift row = if row >= atRow then row + 1 else row
+    { merge with StartRow = shift merge.StartRow; EndRow = shift merge.EndRow }
+
+let private deleteRowInMerge atRow (merge: MergedCell) : MergedCell option =
+    if merge.StartRow = atRow && merge.EndRow = atRow then
+        None
+    else
+        let shift row = if row > atRow then row - 1 else row
+        let shrinkEnd row = if row = atRow then row - 1 else shift row
+        let updated =
+            { merge with
+                StartRow = shift merge.StartRow
+                EndRow = shrinkEnd merge.EndRow }
+        if updated.StartRow > updated.EndRow then None else Some updated
+
+let private insertRowInTable atRow (table: Table) : Table =
+    let startRow0 = table.StartRow - 1
+    let endRow0 = table.EndRow - 1
+    let startRow1 = if startRow0 >= atRow then table.StartRow + 1 else table.StartRow
+    let endRow1 = if endRow0 >= atRow then table.EndRow + 1 else table.EndRow
+    { table with StartRow = startRow1; EndRow = endRow1 }
+
+let private deleteRowInTable atRow (table: Table) : Table option =
+    let startRow0 = table.StartRow - 1
+    let endRow0 = table.EndRow - 1
+    if startRow0 = atRow && endRow0 = atRow then
+        None
+    else
+        let startRow1 = if startRow0 > atRow then table.StartRow - 1 else table.StartRow
+        let endRow1 =
+            if endRow0 = atRow then table.EndRow - 1
+            elif endRow0 > atRow then table.EndRow - 1
+            else table.EndRow
+        if startRow1 > endRow1 then None else Some { table with StartRow = startRow1; EndRow = endRow1 }
+
 /// Insert a row at the specified index (shifts rows down)
 let insertRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
-    // Shift all rows >= atRow down by 1
-    let newCells =
-        model.Cells
-        |> Map.toList
-        |> List.map (fun (addr, cellData) ->
-            if addr.Row >= atRow then
-                let newAddr = { addr with Row = addr.Row + 1 }
-                (newAddr, cellData)
-            else
-                (addr, cellData)
-        )
-        |> Map.ofList
-
     // Update selection if affected
     let newSelection =
         match model.Selection with
@@ -1311,28 +1395,22 @@ let insertRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
             Range (newSr, sc, newEr, ec)
 
     { model with
-        Cells = newCells
+        Cells = insertRowInAddressMap atRow model.Cells
         Selection = newSelection
         RowCount = model.RowCount + 1
+        RowHeights = insertRowInRowMap atRow model.RowHeights
+        ConditionalFormats = insertRowInAddressMap atRow model.ConditionalFormats
+        RichRuns = insertRowInAddressMap atRow model.RichRuns
+        MergedCells = model.MergedCells |> List.map (insertRowInMerge atRow)
+        Tables = model.Tables |> List.map (insertRowInTable atRow)
+        CfBoldCells = insertRowInAddressSet atRow model.CfBoldCells
+        Spill = insertRowInAddressMap atRow model.Spill |> Map.map (fun _ anchor -> if anchor.Row >= atRow then { anchor with Row = anchor.Row + 1 } else anchor)
+        Validations = insertRowInAddressMap atRow model.Validations
     }
+    |> refreshFilterProjection
 
 /// Delete a row at the specified index (shifts rows up)
 let deleteRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
-    // Remove cells in the deleted row and shift rows down
-    let newCells =
-        model.Cells
-        |> Map.toList
-        |> List.choose (fun (addr, cellData) ->
-            if addr.Row = atRow then
-                None  // Remove this row
-            elif addr.Row > atRow then
-                let newAddr = { addr with Row = addr.Row - 1 }
-                Some (newAddr, cellData)
-            else
-                Some (addr, cellData)
-        )
-        |> Map.ofList
-
     // Update selection if affected
     let newSelection =
         match model.Selection with
@@ -1346,10 +1424,24 @@ let deleteRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
             Range (newSr, sc, newEr, ec)
 
     { model with
-        Cells = newCells
+        Cells = deleteRowInAddressMap atRow model.Cells
         Selection = newSelection
         RowCount = max 1 (model.RowCount - 1)
+        RowHeights = deleteRowInRowMap atRow model.RowHeights
+        ConditionalFormats = deleteRowInAddressMap atRow model.ConditionalFormats
+        RichRuns = deleteRowInAddressMap atRow model.RichRuns
+        MergedCells = model.MergedCells |> List.choose (deleteRowInMerge atRow)
+        Tables = model.Tables |> List.choose (deleteRowInTable atRow)
+        CfBoldCells = deleteRowInAddressSet atRow model.CfBoldCells
+        Spill =
+            deleteRowInAddressMap atRow model.Spill
+            |> Map.fold (fun acc ghost anchor ->
+                if anchor.Row = atRow then acc
+                elif anchor.Row > atRow then Map.add ghost { anchor with Row = anchor.Row - 1 } acc
+                else Map.add ghost anchor acc) Map.empty
+        Validations = deleteRowInAddressMap atRow model.Validations
     }
+    |> refreshFilterProjection
 
 /// Insert a column at the specified index (shifts columns right)
 let insertColumn (atCol: int) (model: SpreadsheetModel): SpreadsheetModel =
@@ -1382,6 +1474,7 @@ let insertColumn (atCol: int) (model: SpreadsheetModel): SpreadsheetModel =
         Selection = newSelection
         ColCount = model.ColCount + 1
     }
+    |> refreshFilterProjection
 
 /// Delete a column at the specified index (shifts columns left)
 let deleteColumn (atCol: int) (model: SpreadsheetModel): SpreadsheetModel =
@@ -1417,6 +1510,7 @@ let deleteColumn (atCol: int) (model: SpreadsheetModel): SpreadsheetModel =
         Selection = newSelection
         ColCount = max 1 (model.ColCount - 1)
     }
+    |> refreshFilterProjection
 
 /// Get row height (with default)
 let getRowHeight (row: int) (model: SpreadsheetModel): float =
@@ -1592,7 +1686,7 @@ and replaceAllWithChanges (findText: string) (replaceText: string) (caseSensitiv
                     cells <- Map.add addr nextCell cells
                     count <- count + 1
         if count = 0 then model, 0, oldCells, newCells
-        else { model with Cells = cells }, count, oldCells, newCells
+        else ({ model with Cells = cells } |> invalidateFilterProjection), count, oldCells, newCells
 
 /// Evaluate if a cell value matches a conditional format rule
 let evaluateRule (rule: ConditionalFormatRule) (value: CellValue): bool =
@@ -1867,7 +1961,7 @@ and importCSVWithChanges (csvText: string) (startRow: int) (startCol: int) (mode
         )
     )
 
-    updatedModel, oldCells, newCells
+    refreshFilterProjection updatedModel, oldCells, newCells
 
 /// Export spreadsheet to CSV string
 let exportCSV (model: SpreadsheetModel): string =

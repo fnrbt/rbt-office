@@ -10555,7 +10555,7 @@ let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook optio
                     let result = eval fc.Expr ctx
                     applyFormulaResult addr fc result
             | false, _ -> ()
-        if changed then { model with Cells = updatedCells } else model
+        if changed then { model with Cells = updatedCells } |> invalidateFilterProjection else model
 
 /// True if the expression tree uses a dynamic-array (spilling) function.
 let containsArrayFunction (e: Expr) : bool =
@@ -10624,7 +10624,7 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
                         changed <- true
                 | None -> ())
             if changed then
-                { model with Cells = updatedCells; Spill = Map.empty }, true
+                ({ model with Cells = updatedCells; Spill = Map.empty } |> invalidateFilterProjection), true
             else
                 { model with Spill = Map.empty }, true
     else
@@ -10696,7 +10696,7 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
     if not changed && not spillChanged then
         model, false
     else
-        { model with Cells = updatedCells; Spill = spillMap }, true
+        ({ model with Cells = updatedCells; Spill = spillMap } |> invalidateFilterProjection), true
 
 let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
                 (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
