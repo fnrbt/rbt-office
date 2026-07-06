@@ -59,155 +59,212 @@ let private fontDir () =
         else Path.Combine(dir, "calibri.ttf") |> existingFile)
     |> List.tryHead
 
-// ── Minimal native .xlsx writer ───────────────────────────────────
+// ── Native .xlsx writer adapter ───────────────────────────────────
 //
-// Walks the workbook's sheets and emits the four parts a usable .xlsx
-// needs: workbook.xml + per-sheet xl/worksheets/sheetN.xml + the
-// content-types manifest + the relationships. Cell *values* round-trip
-// (numbers, strings via shared strings, booleans, formula sources);
-// styles, fonts, fills, merges, frozen panes, charts, and tables are
-// dropped. Mirrors DocxWrite in tools/word-editor/Program.fs.
+// The real package writer lives in Office.Formats/XlsxWriter so browser
+// export and native save share the same XLSX emission rules. This adapter
+// only translates the editor's SpreadsheetModel records into writer DTOs.
 
 module XlsxWrite =
-    let private escapeXml (s: string) =
-        let sb = System.Text.StringBuilder()
-        for c in s do
-            match c with
-            | '<' -> sb.Append "&lt;" |> ignore
-            | '>' -> sb.Append "&gt;" |> ignore
-            | '&' -> sb.Append "&amp;" |> ignore
-            | '"' -> sb.Append "&quot;" |> ignore
-            | _ -> sb.Append c |> ignore
-        sb.ToString()
+    let private border (b: BorderStyle option) =
+        b |> Option.map (fun side -> ({ Style = side.Style; Color = side.Color } : XlsxWriter.XlsxBorderSide))
 
-    let private cellRefOf (row: int) (col: int) =
+    let private format (f: CellFormat) : XlsxWriter.XlsxCellFormat =
+        { XlsxWriter.defaultXlsxCellFormat with
+            Bold = f.Bold
+            Italic = f.Italic
+            Underline = f.Underline
+            UnderlineDouble = f.UnderlineDouble
+            Strikethrough = f.Strikethrough
+            FontName = f.FontName
+            TextColor = f.TextColor
+            FillColor = f.BgColor
+            FontSize = f.FontSize |> Option.map float
+            NumberFormat = f.NumberFormat
+            HorizontalAlign = f.HorizontalAlign
+            VerticalAlign = f.VerticalAlign
+            WrapText = f.WrapText
+            Indent = f.Indent
+            ShrinkToFit = f.ShrinkToFit
+            TextRotation = f.TextRotation
+            BorderTop = border f.BorderTop
+            BorderBottom = border f.BorderBottom
+            BorderLeft = border f.BorderLeft
+            BorderRight = border f.BorderRight
+            BorderDiagonal = border f.BorderDiagonal
+            DiagonalUp = f.DiagonalUp
+            DiagonalDown = f.DiagonalDown }
+
+    let private richRun (text: string, r: RunOverride) : XlsxWriter.XlsxRichRun =
+        { Text = text
+          Bold = r.Bold
+          Italic = r.Italic
+          Underline = r.Underline
+          UnderlineDouble = r.UnderlineDouble
+          Strikethrough = r.Strikethrough
+          Color = r.Color
+          FontName = r.FontName
+          FontSize = r.FontSize
+          VertAlign =
+            match r.VertAlign with
+            | Some VertAlignSuperscript -> Some XlsxWriter.XlsxSuperscript
+            | Some VertAlignSubscript -> Some XlsxWriter.XlsxSubscript
+            | Some VertAlignBaseline -> Some XlsxWriter.XlsxBaseline
+            | None -> None }
+
+    let rec private value (richRuns: XlsxWriter.XlsxRichRun list) (v: CellValue) : XlsxWriter.XlsxCellValue =
+        match v with
+        | CellValue.Empty -> XlsxWriter.XlsxBlank
+        | CellValue.Number n -> XlsxWriter.XlsxNumber n
+        | CellValue.String s -> XlsxWriter.XlsxText (s, richRuns)
+        | CellValue.Boolean b -> XlsxWriter.XlsxBoolean b
+        | CellValue.Error e -> XlsxWriter.XlsxError (if e.StartsWith "#" then e else "#" + e)
+        | CellValue.Formula (expr, cached) -> XlsxWriter.XlsxFormula (expr, Some (value [] cached))
+
+    let private validationRef row col =
         sprintf "%s%d" (columnToLetter col) (row + 1)
 
-    /// Collect a deduped shared-string table from every string cell in
-    /// the workbook. We index by zero-based position; the workbook XML
-    /// references entries with `t="s"` + `<v>idx</v>`.
-    let private buildSharedStrings (sheets: SpreadsheetModel array) : string array * Map<string, int> =
-        let table = System.Collections.Generic.List<string>()
-        let index = System.Collections.Generic.Dictionary<string, int>()
-        for sheet in sheets do
-            for KeyValue(_, data) in sheet.Cells do
-                match data.Value with
-                | CellValue.String s when not (index.ContainsKey s) ->
-                    index.[s] <- table.Count
-                    table.Add s
-                | _ -> ()
-        let asMap =
-            let mutable m = Map.empty
-            for kv in index do m <- Map.add kv.Key kv.Value m
-            m
-        table.ToArray(), asMap
+    let private validation (addr: CellAddress) (dv: DataValidation) =
+        let typ, op, f1, f2 =
+            match dv.Rule with
+            | ListValues values ->
+                "list", None, Some ("\"" + String.concat "," values + "\""), None
+            | WholeNumber (lo, hi) ->
+                "whole", Some "between", lo |> Option.map string, hi |> Option.map string
+            | DecimalRange (lo, hi) ->
+                "decimal", Some "between", lo |> Option.map string, hi |> Option.map string
+            | TextLength (lo, hi) ->
+                "textLength", Some "between", lo |> Option.map string, hi |> Option.map string
+            | DateRange (lo, hi) ->
+                "date", Some "between", lo |> Option.map string, hi |> Option.map string
+        ({ Sqref = validationRef addr.Row addr.Col
+           ValidationType = typ
+           Operator = op
+           Formula1 = f1
+           Formula2 = f2
+           AllowBlank = true
+           ShowDropDown = true
+           ErrorMessage = dv.ErrorMessage
+           InputMessage = dv.InputMessage } : XlsxWriter.XlsxDataValidation)
 
-    let private sharedStringsXml (table: string array) =
-        let entries =
-            table
-            |> Array.map (fun s -> sprintf "<si><t xml:space=\"preserve\">%s</t></si>" (escapeXml s))
-            |> String.concat ""
-        sprintf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
-<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" count=\"%d\" uniqueCount=\"%d\">%s</sst>"
-            table.Length table.Length entries
+    let private textAt row col (model: SpreadsheetModel) =
+        match Map.tryFind { Row = row; Col = col } model.Cells with
+        | Some data -> displayValue data.Value
+        | None -> sprintf "Column%d" (col + 1)
 
-    let private cellXml (row: int) (col: int) (data: CellData) (sharedIndex: Map<string, int>) =
-        let ref = cellRefOf row col
-        match data.Value with
-        | CellValue.Empty -> ""
-        | CellValue.Number n -> sprintf "<c r=\"%s\"><v>%g</v></c>" ref n
-        | CellValue.String s ->
-            let idx = Map.find s sharedIndex
-            sprintf "<c r=\"%s\" t=\"s\"><v>%d</v></c>" ref idx
-        | CellValue.Boolean b ->
-            sprintf "<c r=\"%s\" t=\"b\"><v>%d</v></c>" ref (if b then 1 else 0)
-        | CellValue.Formula (expr, _) ->
-            sprintf "<c r=\"%s\"><f>%s</f></c>" ref (escapeXml expr)
-        | CellValue.Error e ->
-            sprintf "<c r=\"%s\" t=\"e\"><v>%s</v></c>" ref (escapeXml e)
+    let private table (model: SpreadsheetModel) (t: Table) : XlsxWriter.XlsxTableOut =
+        { Name = t.Name
+          StartRow = t.StartRow
+          StartCol = t.StartCol
+          EndRow = t.EndRow
+          EndCol = t.EndCol
+          Columns = [ for c in t.StartCol - 1 .. t.EndCol - 1 -> textAt (t.StartRow - 1) c model ]
+          HeaderRowCount = t.HeaderRowCount
+          TotalsRowCount = if t.HasTotals then 1 else 0
+          AutoFilter = t.AutoFilter
+          Style =
+            t.Style |> Option.map (fun s ->
+                ({ Name = s.Name
+                   ShowFirstColumn = s.ShowFirstColumn
+                   ShowLastColumn = s.ShowLastColumn
+                   ShowRowStripes = s.ShowRowStripes
+                   ShowColumnStripes = s.ShowColumnStripes } : XlsxWriter.XlsxTableStyle)) }
 
-    let private sheetXml (model: SpreadsheetModel) (sharedIndex: Map<string, int>) =
-        let cellsByRow =
+    let private margins (m: PageMargins) : XlsxWriter.XlsxPageMargins =
+        { Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right; Header = m.Header; Footer = m.Footer }
+
+    let private pageSetup (p: PageSetup) : XlsxWriter.XlsxPageSetup =
+        { Orientation = Some (match p.Orientation with LandscapeOrientation -> "landscape" | PortraitOrientation -> "portrait")
+          FitToPage = p.FitToPage
+          FitToWidth = p.FitToWidth
+          FitToHeight = p.FitToHeight
+          Scale = p.Scale
+          PaperSize = None
+          FirstPageNumber = p.FirstPageNumber
+          UseFirstPageNumber = p.UseFirstPageNumber
+          PageOrder = Some (match p.PageOrder with OverThenDown -> "overThenDown" | DownThenOver -> "downThenOver")
+          BlackAndWhite = p.BlackAndWhite
+          CellComments =
+            match p.CellComments with
+            | CellCommentsAsDisplayed -> Some "asDisplayed"
+            | CellCommentsAtEnd -> Some "atEnd"
+            | CellCommentsNone -> None }
+
+    let private printOptions (p: PrintOptions) : XlsxWriter.XlsxPrintOptions =
+        { GridLines = p.GridLines
+          Headings = p.Headings
+          HorizontalCentered = p.HorizontalCentered
+          VerticalCentered = p.VerticalCentered }
+
+    let private headerFooter (h: HeaderFooter) : XlsxWriter.XlsxHeaderFooter =
+        { OddHeader = h.OddHeader
+          OddFooter = h.OddFooter
+          EvenHeader = h.EvenHeader
+          EvenFooter = h.EvenFooter
+          FirstHeader = h.FirstHeader
+          FirstFooter = h.FirstFooter
+          DifferentOddEven = h.DifferentOddEven
+          DifferentFirst = h.DifferentFirst
+          ScaleWithDoc = h.ScaleWithDoc }
+
+    let private rangeRef (r: CellRange) =
+        sprintf "$%s$%d:$%s$%d"
+            (columnToLetter r.From.Col) (r.From.Row + 1)
+            (columnToLetter r.To.Col) (r.To.Row + 1)
+
+    let private modelSheet name (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
+        { Name = name
+          Visible = true
+          Cells =
             model.Cells
             |> Map.toList
-            |> List.groupBy (fun (addr, _) -> addr.Row)
-            |> List.sortBy fst
-        let rows =
-            cellsByRow
-            |> List.map (fun (rowIdx, cells) ->
-                let sorted = cells |> List.sortBy (fun (addr, _) -> addr.Col)
-                let cellsXml =
-                    sorted
-                    |> List.map (fun (addr, data) -> cellXml addr.Row addr.Col data sharedIndex)
-                    |> String.concat ""
-                sprintf "<row r=\"%d\">%s</row>" (rowIdx + 1) cellsXml)
-            |> String.concat ""
-        sprintf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
-<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\
-<sheetData>%s</sheetData></worksheet>" rows
-
-    let private workbookXml (names: string array) =
-        let sheets =
-            names
-            |> Array.mapi (fun i name ->
-                sprintf "<sheet name=\"%s\" sheetId=\"%d\" r:id=\"rId%d\"/>"
-                    (escapeXml name) (i + 1) (i + 1))
-            |> String.concat ""
-        sprintf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
-<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" \
-xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\
-<sheets>%s</sheets></workbook>" sheets
-
-    let private workbookRelsXml (sheetCount: int) =
-        let sheetRels =
-            [ 1 .. sheetCount ]
-            |> List.map (fun i ->
-                sprintf "<Relationship Id=\"rId%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet%d.xml\"/>" i i)
-            |> String.concat ""
-        let sharedRelId = sheetCount + 1
-        let sharedRel =
-            sprintf "<Relationship Id=\"rId%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings\" Target=\"sharedStrings.xml\"/>" sharedRelId
-        sprintf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
-<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">%s%s</Relationships>"
-            sheetRels sharedRel
-
-    let private contentTypesXml (sheetCount: int) =
-        let overrides =
-            [ 1 .. sheetCount ]
-            |> List.map (fun i ->
-                sprintf "<Override PartName=\"/xl/worksheets/sheet%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" i)
-            |> String.concat ""
-        sprintf "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
-<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
-<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
-<Default Extension=\"xml\" ContentType=\"application/xml\"/>\
-<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>\
-<Override PartName=\"/xl/sharedStrings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml\"/>\
-%s</Types>" overrides
-
-    let private rootRelsXml = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
-<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
-<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>\
-</Relationships>"
+            |> List.map (fun (addr, data) ->
+                let runs =
+                    model.RichRuns
+                    |> Map.tryFind addr
+                    |> Option.map (List.map richRun)
+                    |> Option.defaultValue []
+                { XlsxWriter.Row = addr.Row
+                  Col = addr.Col
+                  Value = value runs data.Value
+                  Format = format data.Format
+                  Comment = data.Comment |> Option.map (fun c -> c.Text, c.Author) })
+          MergedCells = model.MergedCells |> List.map (fun m -> ({ StartRow = m.StartRow; StartCol = m.StartCol; EndRow = m.EndRow; EndCol = m.EndCol } : XlsxWriter.MergedCellRange))
+          ColumnWidths = model.ColumnWidths |> Map.toList |> List.map (fun (c, px) -> c, px / 7.0)
+          RowHeights = model.RowHeights |> Map.toList |> List.map (fun (r, px) -> r, px / 1.333)
+          FrozenRows = model.FrozenRows
+          FrozenCols = model.FrozenCols
+          ShowGridLines = model.ShowGridLines
+          Tables = model.Tables |> List.map (table model)
+          DataValidations = model.Validations |> Map.toList |> List.map (fun (addr, dv) -> validation addr dv)
+          Hyperlinks = []
+          PageMargins = Some (margins model.PageSetup.Margins)
+          PageSetup = Some (pageSetup model.PageSetup)
+          PrintOptions = Some (printOptions model.PageSetup.Options)
+          HeaderFooter = Some (headerFooter model.PageSetup.HeaderFooter)
+          RowBreaks = model.PageSetup.ManualRowBreaks
+          ColBreaks = model.PageSetup.ManualColBreaks
+          PrintArea = model.PageSetup.PrintArea |> Option.map rangeRef
+          PrintTitleRows = model.PageSetup.RepeatRows |> Option.map (fun (a, b) -> sprintf "$%d:$%d" (a + 1) (b + 1))
+          PrintTitleCols = model.PageSetup.RepeatCols |> Option.map (fun (a, b) -> sprintf "$%s:$%s" (columnToLetter a) (columnToLetter b)) }
 
     /// Pack the workbook as a .xlsx and write it to `path`.
     let save (sheets: SpreadsheetModel array) (names: string array) (path: string) =
-        let table, sharedIndex = buildSharedStrings sheets
-        let perSheet =
+        let sheetDtos =
             sheets
             |> Array.mapi (fun i model ->
-                { ZipWriter.Path = sprintf "xl/worksheets/sheet%d.xml" (i + 1)
-                  ZipWriter.Content = sheetXml model sharedIndex })
+                let name = if i < names.Length then names.[i] else sprintf "Sheet%d" (i + 1)
+                modelSheet name model)
             |> Array.toList
-        let files = [
-            { ZipWriter.Path = "[Content_Types].xml"; ZipWriter.Content = contentTypesXml sheets.Length }
-            { ZipWriter.Path = "_rels/.rels"; ZipWriter.Content = rootRelsXml }
-            { ZipWriter.Path = "xl/workbook.xml"; ZipWriter.Content = workbookXml names }
-            { ZipWriter.Path = "xl/_rels/workbook.xml.rels"; ZipWriter.Content = workbookRelsXml sheets.Length }
-            { ZipWriter.Path = "xl/sharedStrings.xml"; ZipWriter.Content = sharedStringsXml table }
-            yield! perSheet
-        ]
-        let bytes = ZipWriter.createPackageBytes files
+        let macroSource =
+            sheets
+            |> Array.tryPick (fun m -> if String.IsNullOrWhiteSpace m.Macros then None else Some m.Macros)
+        let workbook =
+            ({ Sheets = sheetDtos
+               ActiveSheetIndex = 0
+               DefinedNames = []
+               VbaProjectSource = macroSource } : XlsxWriter.XlsxWorkbookOut)
+        let bytes = XlsxWriter.writeWorkbookPackageBytes workbook
         File.WriteAllBytes(path, bytes)
 
 let private loadXlsx (path: string) : (SpreadsheetModel array * string array) option =

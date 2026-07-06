@@ -79,6 +79,21 @@ let createPackageBytes (files: PackageFile list) : byte[] =
             entryStream.Write(bytes, 0, bytes.Length)
     stream.ToArray()
 
+let createPackageBytesWithBinary (textFiles: PackageFile list) (binaryFiles: (string * byte[]) list) : byte[] =
+    use stream = new MemoryStream()
+    do
+        use archive = new ZipArchive(stream, ZipArchiveMode.Create, leaveOpen = true)
+        for file in textFiles do
+            let entry = archive.CreateEntry(file.Path, CompressionLevel.Optimal)
+            use entryStream = entry.Open()
+            let bytes = System.Text.Encoding.UTF8.GetBytes(file.Content)
+            entryStream.Write(bytes, 0, bytes.Length)
+        for path, content in binaryFiles do
+            let entry = archive.CreateEntry(path, CompressionLevel.Optimal)
+            use entryStream = entry.Open()
+            entryStream.Write(content, 0, content.Length)
+    stream.ToArray()
+
 let createPackageFileFromDirectory (sourceDirectory: string) (outputPath: string) =
     let root = DirectoryInfo(sourceDirectory)
     if not root.Exists then

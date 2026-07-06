@@ -189,6 +189,1249 @@ type FormattedSheet = {
     MergedCells: MergedCellRange list
 }
 
+type XlsxBorderSide = {
+    Style: string
+    Color: string option
+}
+
+type XlsxCellFormat = {
+    Bold: bool
+    Italic: bool
+    Underline: bool
+    UnderlineDouble: bool
+    Strikethrough: bool
+    FontName: string option
+    TextColor: string option
+    FillColor: string option
+    FontSize: float option
+    NumberFormat: string option
+    HorizontalAlign: string option
+    VerticalAlign: string option
+    WrapText: bool
+    Indent: int
+    ShrinkToFit: bool
+    TextRotation: int
+    BorderTop: XlsxBorderSide option
+    BorderBottom: XlsxBorderSide option
+    BorderLeft: XlsxBorderSide option
+    BorderRight: XlsxBorderSide option
+    BorderDiagonal: XlsxBorderSide option
+    DiagonalUp: bool
+    DiagonalDown: bool
+}
+
+type XlsxVertAlign =
+    | XlsxBaseline
+    | XlsxSuperscript
+    | XlsxSubscript
+
+type XlsxRichRun = {
+    Text: string
+    Bold: bool option
+    Italic: bool option
+    Underline: bool option
+    UnderlineDouble: bool option
+    Strikethrough: bool option
+    Color: string option
+    FontName: string option
+    FontSize: float option
+    VertAlign: XlsxVertAlign option
+}
+
+type XlsxCellValue =
+    | XlsxBlank
+    | XlsxNumber of float
+    | XlsxText of string * XlsxRichRun list
+    | XlsxBoolean of bool
+    | XlsxError of string
+    | XlsxFormula of string * XlsxCellValue option
+
+type XlsxCellOut = {
+    Row: int
+    Col: int
+    Value: XlsxCellValue
+    Format: XlsxCellFormat
+    Comment: (string * string option) option
+}
+
+type XlsxDataValidation = {
+    Sqref: string
+    ValidationType: string
+    Operator: string option
+    Formula1: string option
+    Formula2: string option
+    AllowBlank: bool
+    ShowDropDown: bool
+    ErrorMessage: string option
+    InputMessage: string option
+}
+
+type XlsxTableStyle = {
+    Name: string
+    ShowFirstColumn: bool
+    ShowLastColumn: bool
+    ShowRowStripes: bool
+    ShowColumnStripes: bool
+}
+
+type XlsxTableOut = {
+    Name: string
+    StartRow: int
+    StartCol: int
+    EndRow: int
+    EndCol: int
+    Columns: string list
+    HeaderRowCount: int
+    TotalsRowCount: int
+    AutoFilter: (int * int) option
+    Style: XlsxTableStyle option
+}
+
+type XlsxPageMargins = {
+    Top: float
+    Bottom: float
+    Left: float
+    Right: float
+    Header: float
+    Footer: float
+}
+
+type XlsxPageSetup = {
+    Orientation: string option
+    FitToPage: bool
+    FitToWidth: int
+    FitToHeight: int
+    Scale: int
+    PaperSize: int option
+    FirstPageNumber: int
+    UseFirstPageNumber: bool
+    PageOrder: string option
+    BlackAndWhite: bool
+    CellComments: string option
+}
+
+type XlsxPrintOptions = {
+    GridLines: bool
+    Headings: bool
+    HorizontalCentered: bool
+    VerticalCentered: bool
+}
+
+type XlsxHeaderFooter = {
+    OddHeader: string option
+    OddFooter: string option
+    EvenHeader: string option
+    EvenFooter: string option
+    FirstHeader: string option
+    FirstFooter: string option
+    DifferentOddEven: bool
+    DifferentFirst: bool
+    ScaleWithDoc: bool
+}
+
+type XlsxHyperlink = {
+    Range: string
+    Target: string
+    IsInternal: bool
+}
+
+type XlsxSheetOut = {
+    Name: string
+    Visible: bool
+    Cells: XlsxCellOut list
+    MergedCells: MergedCellRange list
+    ColumnWidths: (int * float) list
+    RowHeights: (int * float) list
+    FrozenRows: int
+    FrozenCols: int
+    ShowGridLines: bool
+    Tables: XlsxTableOut list
+    DataValidations: XlsxDataValidation list
+    Hyperlinks: XlsxHyperlink list
+    PageMargins: XlsxPageMargins option
+    PageSetup: XlsxPageSetup option
+    PrintOptions: XlsxPrintOptions option
+    HeaderFooter: XlsxHeaderFooter option
+    RowBreaks: int list
+    ColBreaks: int list
+    PrintArea: string option
+    PrintTitleRows: string option
+    PrintTitleCols: string option
+}
+
+type XlsxDefinedName = {
+    Name: string
+    RefersTo: string
+    LocalSheetIndex: int option
+}
+
+type XlsxWorkbookOut = {
+    Sheets: XlsxSheetOut list
+    ActiveSheetIndex: int
+    DefinedNames: XlsxDefinedName list
+    VbaProjectSource: string option
+}
+
+let defaultXlsxCellFormat = {
+    Bold = false
+    Italic = false
+    Underline = false
+    UnderlineDouble = false
+    Strikethrough = false
+    FontName = None
+    TextColor = None
+    FillColor = None
+    FontSize = None
+    NumberFormat = None
+    HorizontalAlign = None
+    VerticalAlign = None
+    WrapText = false
+    Indent = 0
+    ShrinkToFit = false
+    TextRotation = 0
+    BorderTop = None
+    BorderBottom = None
+    BorderLeft = None
+    BorderRight = None
+    BorderDiagonal = None
+    DiagonalUp = false
+    DiagonalDown = false
+}
+
+type private FontKey = {
+    FontName: string option
+    FontSize: float option
+    Bold: bool
+    Italic: bool
+    Underline: bool
+    UnderlineDouble: bool
+    Strikethrough: bool
+    TextColor: string option
+}
+
+type private FillKey = string option
+
+type private BorderKey = {
+    Top: XlsxBorderSide option
+    Bottom: XlsxBorderSide option
+    Left: XlsxBorderSide option
+    Right: XlsxBorderSide option
+    Diagonal: XlsxBorderSide option
+    DiagonalUp: bool
+    DiagonalDown: bool
+}
+
+type private XfKey = {
+    NumFmt: string option
+    Font: FontKey
+    Fill: FillKey
+    Border: BorderKey
+    HorizontalAlign: string option
+    VerticalAlign: string option
+    WrapText: bool
+    Indent: int
+    ShrinkToFit: bool
+    TextRotation: int
+}
+
+type private SharedStringKey = {
+    Text: string
+    Runs: XlsxRichRun list
+}
+
+type private StyleBook = {
+    Fonts: FontKey list
+    Fills: FillKey list
+    Borders: BorderKey list
+    Xfs: XfKey list
+    NumFmtIds: Map<string, int>
+    StyleIndex: Map<XfKey, int>
+}
+
+let private invariant (value: float) =
+    value.ToString("G17", System.Globalization.CultureInfo.InvariantCulture)
+
+let private invariantFixed (value: float) =
+    invariant value
+
+let private attr (name: string) (value: string) =
+    let sb = StringBuilder()
+    sb.Append(name).Append("=\"") |> ignore
+    appendEscaped sb value
+    sb.Append('"') |> ignore
+    sb.ToString()
+
+let private escaped (value: string) =
+    let sb = StringBuilder()
+    appendEscaped sb value
+    sb.ToString()
+
+let private elemText name text =
+    let sb = StringBuilder()
+    appendTextElement sb name text
+    sb.ToString()
+
+let private hasText value =
+    not (System.String.IsNullOrEmpty value)
+
+let private cleanRgb (color: string) =
+    let c = color.TrimStart('#').ToUpperInvariant()
+    if c.Length = 8 then c
+    elif c.Length = 6 then "FF" + c
+    else c
+
+let private xmlColor color =
+    color |> Option.map cleanRgb
+
+let private fontKey (fmt: XlsxCellFormat) =
+    { FontName = fmt.FontName
+      FontSize = fmt.FontSize
+      Bold = fmt.Bold
+      Italic = fmt.Italic
+      Underline = fmt.Underline
+      UnderlineDouble = fmt.UnderlineDouble
+      Strikethrough = fmt.Strikethrough
+      TextColor = fmt.TextColor |> xmlColor }
+
+let private borderKey (fmt: XlsxCellFormat) =
+    let cleanSide (side: XlsxBorderSide option) =
+        side |> Option.map (fun (s: XlsxBorderSide) -> { s with Color = s.Color |> xmlColor })
+    { Top = cleanSide fmt.BorderTop
+      Bottom = cleanSide fmt.BorderBottom
+      Left = cleanSide fmt.BorderLeft
+      Right = cleanSide fmt.BorderRight
+      Diagonal = cleanSide fmt.BorderDiagonal
+      DiagonalUp = fmt.DiagonalUp
+      DiagonalDown = fmt.DiagonalDown }
+
+let private xfKey (fmt: XlsxCellFormat) =
+    { NumFmt = fmt.NumberFormat
+      Font = fontKey fmt
+      Fill = fmt.FillColor |> xmlColor
+      Border = borderKey fmt
+      HorizontalAlign = fmt.HorizontalAlign
+      VerticalAlign = fmt.VerticalAlign
+      WrapText = fmt.WrapText
+      Indent = fmt.Indent
+      ShrinkToFit = fmt.ShrinkToFit
+      TextRotation = fmt.TextRotation }
+
+let private defaultFontKey = fontKey defaultXlsxCellFormat
+let private defaultBorderKey = borderKey defaultXlsxCellFormat
+let private defaultXfKey = xfKey defaultXlsxCellFormat
+
+let private builtInNumFmtId (code: string) =
+    match code with
+    | "General" -> Some 0
+    | "0" -> Some 1
+    | "0.00" -> Some 2
+    | "#,##0" -> Some 3
+    | "#,##0.00" -> Some 4
+    | "0%" -> Some 9
+    | "0.00%" -> Some 10
+    | "0.00E+00" -> Some 11
+    | "# ?/?" -> Some 12
+    | "# ??/??" -> Some 13
+    | "m/d/yyyy" -> Some 14
+    | "d-mmm-yy" -> Some 15
+    | "d-mmm" -> Some 16
+    | "mmm-yy" -> Some 17
+    | "h:mm AM/PM" -> Some 18
+    | "h:mm:ss AM/PM" -> Some 19
+    | "h:mm" -> Some 20
+    | "h:mm:ss" -> Some 21
+    | "m/d/yyyy h:mm" -> Some 22
+    | "#,##0;(#,##0)" -> Some 37
+    | "#,##0;[Red](#,##0)" -> Some 38
+    | "#,##0.00;(#,##0.00)" -> Some 39
+    | "#,##0.00;[Red](#,##0.00)" -> Some 40
+    | "mm:ss" -> Some 45
+    | "[h]:mm:ss" -> Some 46
+    | "mmss.0" -> Some 47
+    | "##0.0E+0" -> Some 48
+    | "@" -> Some 49
+    | _ -> None
+
+let private appendUnique item items =
+    if List.contains item items then items else items @ [ item ]
+
+let private collectStyles (workbook: XlsxWorkbookOut) =
+    let xfs =
+        workbook.Sheets
+        |> List.collect (fun s -> s.Cells |> List.map (fun c -> xfKey c.Format))
+        |> List.fold (fun acc key -> appendUnique key acc) [ defaultXfKey ]
+    let fonts =
+        xfs |> List.map (fun x -> x.Font) |> List.fold (fun acc key -> appendUnique key acc) [ defaultFontKey ]
+    let fills =
+        xfs |> List.map (fun x -> x.Fill) |> List.fold (fun acc key -> appendUnique key acc) [ None ]
+    let borders =
+        xfs |> List.map (fun x -> x.Border) |> List.fold (fun acc key -> appendUnique key acc) [ defaultBorderKey ]
+    let customNumFmts =
+        xfs
+        |> List.choose (fun x -> x.NumFmt)
+        |> List.distinct
+        |> List.filter (fun code -> builtInNumFmtId code |> Option.isNone)
+        |> List.mapi (fun i code -> code, 164 + i)
+        |> Map.ofList
+    let styleIndex = xfs |> List.mapi (fun i x -> x, i) |> Map.ofList
+    { Fonts = fonts
+      Fills = fills
+      Borders = borders
+      Xfs = xfs
+      NumFmtIds = customNumFmts
+      StyleIndex = styleIndex }
+
+let private sharedTextOf value =
+    match value with
+    | XlsxText (text, runs) -> Some { Text = text; Runs = runs }
+    | XlsxFormula (_, Some (XlsxText (text, runs))) -> Some { Text = text; Runs = runs }
+    | _ -> None
+
+let private collectSharedStrings (workbook: XlsxWorkbookOut) =
+    let items =
+        workbook.Sheets
+        |> List.collect (fun s -> s.Cells |> List.choose (fun c -> sharedTextOf c.Value))
+        |> List.distinct
+    let index = items |> List.mapi (fun i key -> key, i) |> Map.ofList
+    items, index
+
+let private fontXml (font: FontKey) =
+    let children = [
+        if font.Bold then yield "<b/>"
+        if font.Italic then yield "<i/>"
+        if font.Strikethrough then yield "<strike/>"
+        if font.Underline then
+            if font.UnderlineDouble then yield "<u val=\"double\"/>" else yield "<u/>"
+        match font.FontSize with
+        | Some size -> yield sprintf "<sz val=\"%s\"/>" (invariant size)
+        | None -> yield "<sz val=\"11\"/>"
+        match font.TextColor with
+        | Some c -> yield sprintf "<color rgb=\"%s\"/>" c
+        | None -> ()
+        yield sprintf "<name val=\"%s\"/>" (font.FontName |> Option.defaultValue "Calibri")
+    ]
+    "<font>" + (String.concat "" children) + "</font>"
+
+let private fillXml (fill: FillKey) =
+    match fill with
+    | None -> "<fill><patternFill patternType=\"none\"/></fill>"
+    | Some color -> sprintf "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"%s\"/><bgColor indexed=\"64\"/></patternFill></fill>" color
+
+let private borderSideXml name (side: XlsxBorderSide option) =
+    match side with
+    | None -> sprintf "<%s/>" name
+    | Some s ->
+        let color = s.Color |> Option.map (fun c -> sprintf "<color rgb=\"%s\"/>" c) |> Option.defaultValue ""
+        sprintf "<%s style=\"%s\">%s</%s>" name s.Style color name
+
+let private borderXml (border: BorderKey) =
+    let attrs = [
+        if border.DiagonalUp then yield "diagonalUp=\"1\""
+        if border.DiagonalDown then yield "diagonalDown=\"1\""
+    ]
+    let openTag =
+        if List.isEmpty attrs then "<border>" else "<border " + String.concat " " attrs + ">"
+    openTag
+    + borderSideXml "left" border.Left
+    + borderSideXml "right" border.Right
+    + borderSideXml "top" border.Top
+    + borderSideXml "bottom" border.Bottom
+    + borderSideXml "diagonal" border.Diagonal
+    + "</border>"
+
+let private indexOf item items =
+    items |> List.findIndex ((=) item)
+
+let private stylesXml (book: StyleBook) =
+    let numFmts =
+        if Map.isEmpty book.NumFmtIds then ""
+        else
+            let items =
+                book.NumFmtIds
+                |> Map.toList
+                |> List.sortBy snd
+                |> List.map (fun (code, id) -> sprintf "<numFmt numFmtId=\"%d\" formatCode=\"%s\"/>" id (escaped code))
+                |> String.concat ""
+            sprintf "<numFmts count=\"%d\">%s</numFmts>" (Map.count book.NumFmtIds) items
+    let fonts = book.Fonts |> List.map fontXml |> String.concat ""
+    let fills =
+        let allFills =
+            if book.Fills |> List.exists ((=) None) then
+                book.Fills @ [ Some "__gray125__" ]
+            else
+                None :: book.Fills @ [ Some "__gray125__" ]
+        allFills
+        |> List.map (function Some "__gray125__" -> "<fill><patternFill patternType=\"gray125\"/></fill>" | other -> fillXml other)
+        |> fun body -> sprintf "<fills count=\"%d\">%s</fills>" allFills.Length (String.concat "" body)
+    let borders = book.Borders |> List.map borderXml |> String.concat ""
+    let xfXml (xf: XfKey) =
+        let numFmtId =
+            match xf.NumFmt with
+            | Some code ->
+                builtInNumFmtId code
+                |> Option.orElseWith (fun () -> Map.tryFind code book.NumFmtIds)
+                |> Option.defaultValue 0
+            | None -> 0
+        let fontId = indexOf xf.Font book.Fonts
+        let fillId = indexOf xf.Fill book.Fills
+        let borderId = indexOf xf.Border book.Borders
+        let alignmentAttrs = [
+            match xf.HorizontalAlign with Some v -> yield attr "horizontal" v | None -> ()
+            match xf.VerticalAlign with Some v -> yield attr "vertical" v | None -> ()
+            if xf.WrapText then yield "wrapText=\"1\""
+            if xf.Indent > 0 then yield sprintf "indent=\"%d\"" xf.Indent
+            if xf.ShrinkToFit then yield "shrinkToFit=\"1\""
+            if xf.TextRotation <> 0 then yield sprintf "textRotation=\"%d\"" xf.TextRotation
+        ]
+        let applyAlignment = not (List.isEmpty alignmentAttrs)
+        let attrs = [
+            yield sprintf "numFmtId=\"%d\"" numFmtId
+            yield sprintf "fontId=\"%d\"" fontId
+            yield sprintf "fillId=\"%d\"" fillId
+            yield sprintf "borderId=\"%d\"" borderId
+            yield "xfId=\"0\""
+            if xf.NumFmt.IsSome then yield "applyNumberFormat=\"1\""
+            if fontId <> 0 then yield "applyFont=\"1\""
+            if fillId <> 0 then yield "applyFill=\"1\""
+            if borderId <> 0 then yield "applyBorder=\"1\""
+            if applyAlignment then yield "applyAlignment=\"1\""
+        ]
+        if applyAlignment then
+            sprintf "<xf %s><alignment %s/></xf>" (String.concat " " attrs) (String.concat " " alignmentAttrs)
+        else
+            sprintf "<xf %s/>" (String.concat " " attrs)
+    let xfs = book.Xfs |> List.map xfXml |> String.concat ""
+    declaration + "\n"
+    + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+    + numFmts
+    + sprintf "<fonts count=\"%d\">%s</fonts>" book.Fonts.Length fonts
+    + fills
+    + sprintf "<borders count=\"%d\">%s</borders>" book.Borders.Length borders
+    + "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
+    + sprintf "<cellXfs count=\"%d\">%s</cellXfs>" book.Xfs.Length xfs
+    + "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
+    + "<dxfs count=\"0\"/><tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleLight16\"/>"
+    + "</styleSheet>"
+
+let private richRunXml (run: XlsxRichRun) =
+    let props = [
+        match run.Bold with Some true -> yield "<b/>" | Some false -> yield "<b val=\"0\"/>" | None -> ()
+        match run.Italic with Some true -> yield "<i/>" | Some false -> yield "<i val=\"0\"/>" | None -> ()
+        match run.Strikethrough with Some true -> yield "<strike/>" | Some false -> yield "<strike val=\"0\"/>" | None -> ()
+        match run.Underline with
+        | Some true ->
+            match run.UnderlineDouble with
+            | Some true -> yield "<u val=\"double\"/>"
+            | _ -> yield "<u/>"
+        | Some false -> yield "<u val=\"none\"/>"
+        | None -> ()
+        match run.Color |> xmlColor with Some c -> yield sprintf "<color rgb=\"%s\"/>" c | None -> ()
+        match run.FontName with Some n -> yield sprintf "<rFont val=\"%s\"/>" n | None -> ()
+        match run.FontSize with Some s -> yield sprintf "<sz val=\"%s\"/>" (invariant s) | None -> ()
+        match run.VertAlign with
+        | Some XlsxSuperscript -> yield "<vertAlign val=\"superscript\"/>"
+        | Some XlsxSubscript -> yield "<vertAlign val=\"subscript\"/>"
+        | _ -> ()
+    ]
+    let pr = if List.isEmpty props then "" else "<rPr>" + String.concat "" props + "</rPr>"
+    sprintf "<r>%s<t xml:space=\"preserve\">%s</t></r>" pr (escaped run.Text)
+
+let private sharedStringsXmlPreserved (items: SharedStringKey list) =
+    let body =
+        items
+        |> List.map (fun item ->
+            if List.isEmpty item.Runs then
+                sprintf "<si><t xml:space=\"preserve\">%s</t></si>" (escaped item.Text)
+            else
+                "<si>" + (item.Runs |> List.map richRunXml |> String.concat "") + "</si>")
+        |> String.concat ""
+    sprintf "%s\n<sst xmlns=\"%s\" count=\"%d\" uniqueCount=\"%d\">%s</sst>"
+        declaration Namespaces.spreadsheet items.Length items.Length body
+
+let private cachedValueXml sharedIndex value =
+    let rec loop v =
+        match v with
+        | XlsxBlank -> "", ""
+        | XlsxNumber n -> "", sprintf "<v>%s</v>" (invariant n)
+        | XlsxBoolean b -> " t=\"b\"", sprintf "<v>%d</v>" (if b then 1 else 0)
+        | XlsxError e -> " t=\"e\"", sprintf "<v>%s</v>" (escaped e)
+        | XlsxText (text, runs) ->
+            let key = { Text = text; Runs = runs }
+            let idx = Map.find key sharedIndex
+            " t=\"s\"", sprintf "<v>%d</v>" idx
+        | XlsxFormula (_, cached) ->
+            cached |> Option.map loop |> Option.defaultValue ("", "")
+    loop value
+
+let private cellXmlFull (styles: StyleBook) sharedIndex (cell: XlsxCellOut) =
+    let reference = cellRef cell.Row cell.Col
+    let xf = xfKey cell.Format
+    let styleId = Map.find xf styles.StyleIndex
+    let styleAttr = if styleId = 0 then "" else sprintf " s=\"%d\"" styleId
+    match cell.Value with
+    | XlsxBlank ->
+        if styleId = 0 then ""
+        else sprintf "<c r=\"%s\"%s/>" reference styleAttr
+    | XlsxFormula (formula, cached) ->
+        let tAttr, cachedXml = cached |> Option.map (cachedValueXml sharedIndex) |> Option.defaultValue ("", "")
+        sprintf "<c r=\"%s\"%s%s><f>%s</f>%s</c>" reference styleAttr tAttr (escaped formula) cachedXml
+    | other ->
+        let tAttr, valueXml = cachedValueXml sharedIndex other
+        sprintf "<c r=\"%s\"%s%s>%s</c>" reference styleAttr tAttr valueXml
+
+let private sheetDimension (sheet: XlsxSheetOut) =
+    let refs =
+        [ for c in sheet.Cells -> c.Row, c.Col
+          for m in sheet.MergedCells do
+              yield m.StartRow, m.StartCol
+              yield m.EndRow, m.EndCol
+          for t in sheet.Tables do
+              yield t.StartRow - 1, t.StartCol - 1
+              yield t.EndRow - 1, t.EndCol - 1 ]
+    match refs with
+    | [] -> "A1"
+    | _ ->
+        let minR = refs |> List.map fst |> List.min
+        let minC = refs |> List.map snd |> List.min
+        let maxR = refs |> List.map fst |> List.max
+        let maxC = refs |> List.map snd |> List.max
+        sprintf "%s:%s" (cellRef minR minC) (cellRef maxR maxC)
+
+let private colsXml (sheet: XlsxSheetOut) =
+    if List.isEmpty sheet.ColumnWidths then ""
+    else
+        let body =
+            sheet.ColumnWidths
+            |> List.sortBy fst
+            |> List.map (fun (col, width) ->
+                let width = max 0.0 width
+                sprintf "<col min=\"%d\" max=\"%d\" width=\"%s\" customWidth=\"1\"%s/>"
+                    (col + 1) (col + 1) (invariantFixed width) (if width = 0.0 then " hidden=\"1\"" else ""))
+            |> String.concat ""
+        "<cols>" + body + "</cols>"
+
+let private sheetViewsXml (sheet: XlsxSheetOut) active =
+    let attrs = [
+        if not sheet.ShowGridLines then yield "showGridLines=\"0\""
+        if active then yield "tabSelected=\"1\""
+        yield "workbookViewId=\"0\""
+    ]
+    let pane =
+        if sheet.FrozenRows > 0 || sheet.FrozenCols > 0 then
+            let topLeft = cellRef sheet.FrozenRows sheet.FrozenCols
+            let paneName =
+                match sheet.FrozenRows > 0, sheet.FrozenCols > 0 with
+                | true, true -> "bottomRight"
+                | true, false -> "bottomLeft"
+                | false, true -> "topRight"
+                | _ -> "topLeft"
+            sprintf "<pane xSplit=\"%d\" ySplit=\"%d\" topLeftCell=\"%s\" activePane=\"%s\" state=\"frozen\"/>"
+                sheet.FrozenCols sheet.FrozenRows topLeft paneName
+        else ""
+    sprintf "<sheetViews><sheetView %s>%s</sheetView></sheetViews>" (String.concat " " attrs) pane
+
+let private rowsXml styles sharedIndex (sheet: XlsxSheetOut) =
+    let cellsByRow = sheet.Cells |> List.groupBy (fun c -> c.Row) |> Map.ofList
+    let rowHeights = sheet.RowHeights |> Map.ofList
+    let rowSet =
+        Set.union
+            (cellsByRow |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+            (rowHeights |> Map.toSeq |> Seq.map fst |> Set.ofSeq)
+    rowSet
+    |> Set.toList
+    |> List.sort
+    |> List.map (fun row ->
+        let rowAttrs = [
+            yield sprintf "r=\"%d\"" (row + 1)
+            match Map.tryFind row rowHeights with
+            | Some h ->
+                yield sprintf "ht=\"%s\"" (invariantFixed h)
+                yield "customHeight=\"1\""
+            | None -> ()
+        ]
+        let cells =
+            Map.tryFind row cellsByRow
+            |> Option.defaultValue []
+            |> List.sortBy (fun c -> c.Col)
+            |> List.map (cellXmlFull styles sharedIndex)
+            |> String.concat ""
+        sprintf "<row %s>%s</row>" (String.concat " " rowAttrs) cells)
+    |> String.concat ""
+
+let private mergeCellsXmlFull (mergedCells: MergedCellRange list) =
+    if List.isEmpty mergedCells then ""
+    else
+        let body =
+            mergedCells
+            |> List.map (fun r -> sprintf "<mergeCell ref=\"%s:%s\"/>" (cellRef r.StartRow r.StartCol) (cellRef r.EndRow r.EndCol))
+            |> String.concat ""
+        sprintf "<mergeCells count=\"%d\">%s</mergeCells>" mergedCells.Length body
+
+let private dataValidationsXml validations =
+    if List.isEmpty validations then ""
+    else
+        let body =
+            validations
+            |> List.map (fun dv ->
+                let attrs = [
+                    yield attr "type" dv.ValidationType
+                    yield attr "sqref" dv.Sqref
+                    match dv.Operator with Some op -> yield attr "operator" op | None -> ()
+                    if dv.AllowBlank then yield "allowBlank=\"1\""
+                    if not dv.ShowDropDown then yield "showDropDown=\"1\""
+                    match dv.ErrorMessage with Some e -> yield attr "error" e | None -> ()
+                    match dv.InputMessage with Some p -> yield attr "prompt" p | None -> ()
+                ]
+                let f1 = dv.Formula1 |> Option.map (elemText "formula1") |> Option.defaultValue ""
+                let f2 = dv.Formula2 |> Option.map (elemText "formula2") |> Option.defaultValue ""
+                sprintf "<dataValidation %s>%s%s</dataValidation>" (String.concat " " attrs) f1 f2)
+            |> String.concat ""
+        sprintf "<dataValidations count=\"%d\">%s</dataValidations>" validations.Length body
+
+let private hyperlinksXml hyperlinks =
+    if List.isEmpty hyperlinks then ""
+    else
+        let body =
+            hyperlinks
+            |> List.mapi (fun i h ->
+                if h.IsInternal then
+                    sprintf "<hyperlink ref=\"%s\" location=\"%s\"/>" h.Range (escaped h.Target)
+                else
+                    sprintf "<hyperlink ref=\"%s\" r:id=\"rIdHyperlink%d\"/>" h.Range (i + 1))
+            |> String.concat ""
+        "<hyperlinks>" + body + "</hyperlinks>"
+
+let private pagePartsXml (sheet: XlsxSheetOut) =
+    let printOptions =
+        sheet.PrintOptions
+        |> Option.map (fun p ->
+            let attrs = [
+                if p.GridLines then yield "gridLines=\"1\""
+                if p.Headings then yield "headings=\"1\""
+                if p.HorizontalCentered then yield "horizontalCentered=\"1\""
+                if p.VerticalCentered then yield "verticalCentered=\"1\""
+            ]
+            if List.isEmpty attrs then "" else sprintf "<printOptions %s/>" (String.concat " " attrs))
+        |> Option.defaultValue ""
+    let margins =
+        sheet.PageMargins
+        |> Option.map (fun m ->
+            sprintf "<pageMargins left=\"%s\" right=\"%s\" top=\"%s\" bottom=\"%s\" header=\"%s\" footer=\"%s\"/>"
+                (invariant m.Left) (invariant m.Right) (invariant m.Top) (invariant m.Bottom) (invariant m.Header) (invariant m.Footer))
+        |> Option.defaultValue ""
+    let pageSetup =
+        sheet.PageSetup
+        |> Option.map (fun p ->
+            let attrs = [
+                match p.PaperSize with Some n -> yield sprintf "paperSize=\"%d\"" n | None -> ()
+                match p.Orientation with Some o -> yield attr "orientation" o | None -> ()
+                yield sprintf "scale=\"%d\"" p.Scale
+                yield sprintf "fitToWidth=\"%d\"" p.FitToWidth
+                yield sprintf "fitToHeight=\"%d\"" p.FitToHeight
+                if p.UseFirstPageNumber then
+                    yield sprintf "firstPageNumber=\"%d\"" p.FirstPageNumber
+                    yield "useFirstPageNumber=\"1\""
+                match p.PageOrder with Some po -> yield attr "pageOrder" po | None -> ()
+                if p.BlackAndWhite then yield "blackAndWhite=\"1\""
+                match p.CellComments with Some cc -> yield attr "cellComments" cc | None -> ()
+            ]
+            sprintf "<pageSetup %s/>" (String.concat " " attrs))
+        |> Option.defaultValue ""
+    let headerFooter =
+        sheet.HeaderFooter
+        |> Option.map (fun h ->
+            let attrs = [
+                if h.DifferentOddEven then yield "differentOddEven=\"1\""
+                if h.DifferentFirst then yield "differentFirst=\"1\""
+                if not h.ScaleWithDoc then yield "scaleWithDoc=\"0\""
+            ]
+            let children = [
+                match h.OddHeader with Some v -> yield elemText "oddHeader" v | None -> ()
+                match h.OddFooter with Some v -> yield elemText "oddFooter" v | None -> ()
+                match h.EvenHeader with Some v -> yield elemText "evenHeader" v | None -> ()
+                match h.EvenFooter with Some v -> yield elemText "evenFooter" v | None -> ()
+                match h.FirstHeader with Some v -> yield elemText "firstHeader" v | None -> ()
+                match h.FirstFooter with Some v -> yield elemText "firstFooter" v | None -> ()
+            ]
+            sprintf "<headerFooter%s>%s</headerFooter>" (if List.isEmpty attrs then "" else " " + String.concat " " attrs) (String.concat "" children))
+        |> Option.defaultValue ""
+    printOptions + margins + pageSetup + headerFooter
+
+let private breaksXml name breaks =
+    if List.isEmpty breaks then ""
+    else
+        let body = breaks |> List.map (fun id -> sprintf "<brk id=\"%d\" max=\"16383\" man=\"1\"/>" id) |> String.concat ""
+        sprintf "<%s count=\"%d\" manualBreakCount=\"%d\">%s</%s>" name breaks.Length breaks.Length body name
+
+let private tablePartsXml count =
+    if count = 0 then ""
+    else
+        let body = [ 1 .. count ] |> List.map (fun i -> sprintf "<tablePart r:id=\"rIdTable%d\"/>" i) |> String.concat ""
+        sprintf "<tableParts count=\"%d\">%s</tableParts>" count body
+
+let private worksheetXml styles sharedIndex sheetIndex active (sheet: XlsxSheetOut) =
+    let hasFitToPage = sheet.PageSetup |> Option.exists (fun p -> p.FitToPage)
+    let sheetPr = if hasFitToPage then "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>" else ""
+    declaration + "\n"
+    + sprintf "<worksheet xmlns=\"%s\" xmlns:r=\"%s\">" Namespaces.spreadsheet Namespaces.relationships
+    + sheetPr
+    + sprintf "<dimension ref=\"%s\"/>" (sheetDimension sheet)
+    + sheetViewsXml sheet active
+    + "<sheetFormatPr defaultRowHeight=\"15\"/>"
+    + colsXml sheet
+    + ("<sheetData>" + rowsXml styles sharedIndex sheet + "</sheetData>")
+    + mergeCellsXmlFull sheet.MergedCells
+    + dataValidationsXml sheet.DataValidations
+    + hyperlinksXml sheet.Hyperlinks
+    + pagePartsXml sheet
+    + breaksXml "rowBreaks" sheet.RowBreaks
+    + breaksXml "colBreaks" sheet.ColBreaks
+    + tablePartsXml sheet.Tables.Length
+    + (if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then sprintf "<legacyDrawing r:id=\"rIdCommentsVml%d\"/>" sheetIndex else "")
+    + "</worksheet>"
+
+let private commentsXml (cells: XlsxCellOut list) =
+    let comments = cells |> List.choose (fun c -> c.Comment |> Option.map (fun comment -> c, comment))
+    if List.isEmpty comments then None
+    else
+        let authors =
+            comments
+            |> List.choose (fun (_, (_, author)) -> author)
+            |> fun xs -> if List.isEmpty xs then [ "" ] else xs
+            |> List.distinct
+        let authorIndex author =
+            match author with
+            | Some a -> authors |> List.tryFindIndex ((=) a) |> Option.defaultValue 0
+            | None -> 0
+        let authorXml = authors |> List.map (elemText "author") |> String.concat ""
+        let commentXml =
+            comments
+            |> List.map (fun (cell, (text, author)) ->
+                sprintf "<comment ref=\"%s\" authorId=\"%d\"><text><t xml:space=\"preserve\">%s</t></text></comment>"
+                    (cellRef cell.Row cell.Col)
+                    (authorIndex author)
+                    (escaped text))
+            |> String.concat ""
+        Some (sprintf "%s\n<comments xmlns=\"%s\"><authors>%s</authors><commentList>%s</commentList></comments>"
+                  declaration Namespaces.spreadsheet authorXml commentXml)
+
+let private vmlCommentsXml (sheetIndex: int) (cells: XlsxCellOut list) =
+    let comments = cells |> List.filter (fun c -> c.Comment.IsSome)
+    if List.isEmpty comments then None
+    else
+        let shapes =
+            comments
+            |> List.mapi (fun i c ->
+                sprintf "<v:shape id=\"_x0000_s%d\" type=\"#_x0000_t202\" style=\"position:absolute;margin-left:80pt;margin-top:5pt;width:108pt;height:59.25pt;z-index:%d;visibility:hidden\" fillcolor=\"#ffffe1\" o:insetmode=\"auto\"><v:fill color2=\"#ffffe1\"/><v:shadow on=\"t\" color=\"black\" obscured=\"t\"/><v:path o:connecttype=\"none\"/><v:textbox style=\"mso-direction-alt:auto\"><div style=\"text-align:left\"></div></v:textbox><x:ClientData ObjectType=\"Note\"><x:MoveWithCells/><x:SizeWithCells/><x:Anchor>1, 15, 0, 2, 3, 15, 4, 16</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>%d</x:Row><x:Column>%d</x:Column></x:ClientData></v:shape>"
+                    (1024 + i) (i + 1) c.Row c.Col)
+            |> String.concat ""
+        Some (sprintf "<xml xmlns:v=\"urn:schemas-microsoft-com:vml\" xmlns:o=\"urn:schemas-microsoft-com:office:office\" xmlns:x=\"urn:schemas-microsoft-com:office:excel\"><o:shapelayout v:ext=\"edit\"><o:idmap v:ext=\"edit\" data=\"%d\"/></o:shapelayout><v:shapetype id=\"_x0000_t202\" coordsize=\"21600,21600\" o:spt=\"202\" path=\"m,l,21600r21600,l21600,xe\"><v:stroke joinstyle=\"miter\"/><v:path gradientshapeok=\"t\" o:connecttype=\"rect\"/></v:shapetype>%s</xml>" sheetIndex shapes)
+
+let private tableXml id (table: XlsxTableOut) =
+    let refText = sprintf "%s:%s" (cellRef (table.StartRow - 1) (table.StartCol - 1)) (cellRef (table.EndRow - 1) (table.EndCol - 1))
+    let cols =
+        let count = table.EndCol - table.StartCol + 1
+        [ 0 .. count - 1 ]
+        |> List.map (fun i ->
+            let name =
+                table.Columns
+                |> List.tryItem i
+                |> Option.defaultValue (sprintf "Column%d" (i + 1))
+            let totals = if table.TotalsRowCount > 0 then " totalsRowFunction=\"none\"" else ""
+            sprintf "<tableColumn id=\"%d\" name=\"%s\"%s/>" (i + 1) (escaped name) totals)
+        |> String.concat ""
+    let autoFilter =
+        table.AutoFilter
+        |> Option.map (fun _ -> sprintf "<autoFilter ref=\"%s\"/>" refText)
+        |> Option.defaultValue ""
+    let style =
+        table.Style
+        |> Option.map (fun s ->
+            sprintf "<tableStyleInfo name=\"%s\" showFirstColumn=\"%d\" showLastColumn=\"%d\" showRowStripes=\"%d\" showColumnStripes=\"%d\"/>"
+                s.Name (if s.ShowFirstColumn then 1 else 0) (if s.ShowLastColumn then 1 else 0) (if s.ShowRowStripes then 1 else 0) (if s.ShowColumnStripes then 1 else 0))
+        |> Option.defaultValue ""
+    sprintf "%s\n<table xmlns=\"%s\" id=\"%d\" name=\"%s\" displayName=\"%s\" ref=\"%s\" headerRowCount=\"%d\" totalsRowCount=\"%d\">%s<tableColumns count=\"%d\">%s</tableColumns>%s</table>"
+        declaration Namespaces.spreadsheet id table.Name table.Name refText table.HeaderRowCount table.TotalsRowCount autoFilter (table.EndCol - table.StartCol + 1) cols style
+
+let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) firstTableId =
+    let rels = [
+        for i, h in sheet.Hyperlinks |> List.mapi (fun i h -> i + 1, h) do
+            if not h.IsInternal then
+                yield sprintf "<Relationship Id=\"rIdHyperlink%d\" Type=\"%s\" Target=\"%s\" TargetMode=\"External\"/>" i RelationshipTypes.hyperlink (escaped h.Target)
+        for i in 1 .. sheet.Tables.Length do
+            yield sprintf "<Relationship Id=\"rIdTable%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" Target=\"../tables/table%d.xml\"/>" i (firstTableId + i - 1)
+        if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then
+            yield sprintf "<Relationship Id=\"rIdComments%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments%d.xml\"/>" sheetIndex sheetIndex
+            yield sprintf "<Relationship Id=\"rIdCommentsVml%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"../drawings/vmlDrawing%d.vml\"/>" sheetIndex sheetIndex
+    ]
+    if List.isEmpty rels then None
+    else Some (sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" rels))
+
+let private workbookXmlFull (workbook: XlsxWorkbookOut) =
+    let sheets =
+        workbook.Sheets
+        |> List.mapi (fun i s ->
+            let visible = if s.Visible then "" else " state=\"hidden\""
+            sprintf "<sheet name=\"%s\" sheetId=\"%d\" r:id=\"rId%d\"%s/>"
+                (escaped s.Name) (i + 1) (i + 1) visible)
+        |> String.concat ""
+    let printNames =
+        workbook.Sheets
+        |> List.mapi (fun i s ->
+            [ match s.PrintArea with
+              | Some v -> yield { Name = "_xlnm.Print_Area"; RefersTo = sprintf "'%s'!%s" s.Name v; LocalSheetIndex = Some i }
+              | None -> ()
+              match s.PrintTitleRows, s.PrintTitleCols with
+              | None, None -> ()
+              | rows, cols ->
+                  let parts = [ rows; cols ] |> List.choose id |> List.map (fun part -> sprintf "'%s'!%s" s.Name part)
+                  yield { Name = "_xlnm.Print_Titles"; RefersTo = String.concat "," parts; LocalSheetIndex = Some i } ])
+        |> List.concat
+    let names = workbook.DefinedNames @ printNames
+    let definedNames =
+        if List.isEmpty names then ""
+        else
+            let body =
+                names
+                |> List.map (fun n ->
+                    let local = n.LocalSheetIndex |> Option.map (fun i -> sprintf " localSheetId=\"%d\"" i) |> Option.defaultValue ""
+                    sprintf "<definedName name=\"%s\"%s>%s</definedName>"
+                        (escaped n.Name) local
+                        (escaped n.RefersTo))
+                |> String.concat ""
+            "<definedNames>" + body + "</definedNames>"
+    sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\"><bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s</workbook>"
+        declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets definedNames
+
+let private workbookRelsXmlFull (sheetCount: int) hasVba =
+    let sheetRels =
+        [ 1 .. sheetCount ]
+        |> List.map (fun i -> sprintf "<Relationship Id=\"rId%d\" Type=\"%s\" Target=\"worksheets/sheet%d.xml\"/>" i RelationshipTypes.worksheet i)
+    let baseRels = [
+        yield! sheetRels
+        yield sprintf "<Relationship Id=\"rIdStyles\" Type=\"%s\" Target=\"styles.xml\"/>" RelationshipTypes.styles
+        yield sprintf "<Relationship Id=\"rIdSharedStrings\" Type=\"%s\" Target=\"sharedStrings.xml\"/>" RelationshipTypes.sharedStrings
+        if hasVba then yield "<Relationship Id=\"rIdVBA\" Type=\"http://schemas.microsoft.com/office/2006/relationships/vbaProject\" Target=\"vbaProject.bin\"/>"
+    ]
+    sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" baseRels)
+
+let private contentTypesXmlFull (workbook: XlsxWorkbookOut) =
+    let hasVba = workbook.VbaProjectSource |> Option.exists hasText
+    let workbookType =
+        if hasVba then "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+    let sheetOverrides =
+        workbook.Sheets
+        |> List.mapi (fun i _ -> sprintf "<Override PartName=\"/xl/worksheets/sheet%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" (i + 1))
+        |> String.concat ""
+    let mutable tableId = 1
+    let tableOverrides =
+        workbook.Sheets
+        |> List.collect (fun s ->
+            s.Tables |> List.map (fun _ ->
+                let id = tableId
+                tableId <- tableId + 1
+                sprintf "<Override PartName=\"/xl/tables/table%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml\"/>" id))
+        |> String.concat ""
+    let comments =
+        workbook.Sheets
+        |> List.mapi (fun i s ->
+            if s.Cells |> List.exists (fun c -> c.Comment.IsSome) then
+                sprintf "<Override PartName=\"/xl/comments%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>" (i + 1)
+            else "")
+        |> String.concat ""
+    declaration + "\n"
+    + sprintf "<Types xmlns=\"%s\">" Namespaces.contentTypes
+    + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+    + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+    + "<Default Extension=\"vml\" ContentType=\"application/vnd.openxmlformats-officedocument.vmlDrawing\"/>"
+    + (if hasVba then "<Default Extension=\"bin\" ContentType=\"application/vnd.ms-office.vbaProject\"/>" else "")
+    + sprintf "<Override PartName=\"/xl/workbook.xml\" ContentType=\"%s\"/>" workbookType
+    + "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
+    + "<Override PartName=\"/xl/sharedStrings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml\"/>"
+    + sheetOverrides + tableOverrides + comments
+    + "</Types>"
+
+let private rootRelsXmlFull =
+    sprintf "%s\n<Relationships xmlns=\"%s\"><Relationship Id=\"rId1\" Type=\"%s\" Target=\"xl/workbook.xml\"/></Relationships>"
+        declaration Namespaces.relationshipsPackage RelationshipTypes.officeDocument
+
+let private workbookFiles (workbook: XlsxWorkbookOut) =
+    let styles = collectStyles workbook
+    let sharedItems, sharedIndex = collectSharedStrings workbook
+    let hasVba = workbook.VbaProjectSource |> Option.exists hasText
+    let mutable tableId = 1
+    let textFiles = ResizeArray<PackageFile>()
+    textFiles.Add { Path = "[Content_Types].xml"; Content = contentTypesXmlFull workbook }
+    textFiles.Add { Path = "_rels/.rels"; Content = rootRelsXmlFull }
+    textFiles.Add { Path = "xl/workbook.xml"; Content = workbookXmlFull workbook }
+    textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook.Sheets.Length hasVba }
+    textFiles.Add { Path = "xl/styles.xml"; Content = stylesXml styles }
+    textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedStringsXmlPreserved sharedItems }
+    workbook.Sheets
+    |> List.iteri (fun i sheet ->
+        let sheetIndex = i + 1
+        let firstTableId = tableId
+        textFiles.Add { Path = sprintf "xl/worksheets/sheet%d.xml" sheetIndex; Content = worksheetXml styles sharedIndex sheetIndex (i = workbook.ActiveSheetIndex) sheet }
+        match sheetRelsXml sheetIndex sheet firstTableId with
+        | Some rels -> textFiles.Add { Path = sprintf "xl/worksheets/_rels/sheet%d.xml.rels" sheetIndex; Content = rels }
+        | None -> ()
+        match commentsXml sheet.Cells with
+        | Some xml -> textFiles.Add { Path = sprintf "xl/comments%d.xml" sheetIndex; Content = xml }
+        | None -> ()
+        match vmlCommentsXml sheetIndex sheet.Cells with
+        | Some xml -> textFiles.Add { Path = sprintf "xl/drawings/vmlDrawing%d.vml" sheetIndex; Content = xml }
+        | None -> ()
+        for table in sheet.Tables do
+            textFiles.Add { Path = sprintf "xl/tables/table%d.xml" tableId; Content = tableXml tableId table }
+            tableId <- tableId + 1)
+    let binaryFiles =
+        match workbook.VbaProjectSource with
+        | Some source when source <> "" -> [ "xl/vbaProject.bin", VbaProject.writeProject "Module1" source ]
+        | _ -> []
+    textFiles |> Seq.toList, binaryFiles
+
+let writeWorkbookPackage (workbook: XlsxWorkbookOut) : Fable.Core.JS.Promise<obj> =
+    let textFiles, binaryFiles = workbookFiles workbook
+    createPackageWithBinary textFiles binaryFiles
+
+#if !FABLE_COMPILER
+let writeWorkbookPackageBytes (workbook: XlsxWorkbookOut) : byte[] =
+    let textFiles, binaryFiles = workbookFiles workbook
+    createPackageBytesWithBinary textFiles binaryFiles
+#endif
+
+let private formattedToWorkbook (sheets: FormattedSheet list) =
+    let convertCell (row: int) (col: int) (cell: FormattedCell) =
+        let fmt =
+            { defaultXlsxCellFormat with
+                Bold = cell.Bold |> Option.defaultValue false
+                Italic = cell.Italic |> Option.defaultValue false
+                Underline = cell.Underline |> Option.defaultValue false
+                FontName = cell.FontFamily
+                TextColor = cell.FontColor
+                FillColor = cell.FillColor
+                FontSize = cell.FontSize
+                NumberFormat = cell.NumberFormat }
+        let value =
+            match cell.Formula with
+            | Some formula ->
+                let cached =
+                    match tryParseNumber cell.Value with
+                    | Some n -> XlsxNumber n
+                    | None -> XlsxText (cell.Value, [])
+                XlsxFormula (formula, Some cached)
+            | None ->
+                match tryParseNumber cell.Value with
+                | Some n -> XlsxNumber n
+                | None -> XlsxText (cell.Value, [])
+        { Row = row; Col = col; Value = value; Format = fmt; Comment = None }
+    { Sheets =
+        sheets
+        |> List.map (fun s ->
+            { Name = s.Name
+              Visible = true
+              Cells = s.Rows |> List.mapi (fun r row -> row.Cells |> List.mapi (fun c cell -> convertCell r c cell)) |> List.concat
+              MergedCells = s.MergedCells
+              ColumnWidths = []
+              RowHeights = []
+              FrozenRows = 0
+              FrozenCols = 0
+              ShowGridLines = true
+              Tables = []
+              DataValidations = []
+              Hyperlinks = []
+              PageMargins = None
+              PageSetup = None
+              PrintOptions = None
+              HeaderFooter = None
+              RowBreaks = []
+              ColBreaks = []
+              PrintArea = None
+              PrintTitleRows = None
+              PrintTitleCols = None })
+      ActiveSheetIndex = 0
+      DefinedNames = []
+      VbaProjectSource = None }
+
+let private cellRefFromReader (r: XlsxReader.CellReference) =
+    let col =
+        let mutable acc = 0
+        for ch in r.Column.ToUpperInvariant() do
+            acc <- acc * 26 + int ch - int 'A' + 1
+        acc - 1
+    r.Row - 1, col
+
+let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut =
+    let styleOf (style: XlsxReader.CellStyle option) =
+        match style with
+        | None -> defaultXlsxCellFormat
+        | Some s ->
+            let side (b: XlsxReader.CellBorderSide option) =
+                b |> Option.map (fun x -> { Style = x.Style; Color = x.Color })
+            { defaultXlsxCellFormat with
+                Bold = s.Bold
+                Italic = s.Italic
+                Underline = s.Underline
+                UnderlineDouble = s.UnderlineDouble
+                Strikethrough = s.Strikethrough
+                FontName = s.FontName
+                TextColor = s.FontColor |> Option.map (fun c -> "#" + c.TrimStart('#'))
+                FillColor = s.FillColor |> Option.map (fun c -> "#" + c.TrimStart('#'))
+                FontSize = s.FontSize
+                NumberFormat = s.NumberFormat
+                HorizontalAlign = s.HorizontalAlign
+                VerticalAlign = s.VerticalAlign
+                WrapText = s.WrapText
+                Indent = s.Indent
+                ShrinkToFit = s.ShrinkToFit
+                TextRotation = s.TextRotation
+                BorderTop = side s.BorderTop
+                BorderBottom = side s.BorderBottom
+                BorderLeft = side s.BorderLeft
+                BorderRight = side s.BorderRight
+                BorderDiagonal = side s.BorderDiagonal
+                DiagonalUp = s.DiagonalUp
+                DiagonalDown = s.DiagonalDown }
+    let runOf (props: XlsxReader.RunProps) text =
+        { Text = text
+          Bold = Some props.Bold
+          Italic = Some props.Italic
+          Underline = Some props.Underline
+          UnderlineDouble = Some props.UnderlineDouble
+          Strikethrough = Some props.Strikethrough
+          Color = props.Color |> Option.map (fun c -> "#" + c.TrimStart('#'))
+          FontName = props.FontName
+          FontSize = props.FontSize
+          VertAlign =
+            match props.VertAlign with
+            | XlsxReader.VertAlignSuperscript -> Some XlsxSuperscript
+            | XlsxReader.VertAlignSubscript -> Some XlsxSubscript
+            | _ -> None }
+    let rec valueOf (cell: XlsxReader.Cell) =
+        match cell.Value with
+        | XlsxReader.Number n -> XlsxNumber n
+        | XlsxReader.String s -> XlsxText (s, cell.InlineRuns |> List.map (fun (t, p) -> runOf p t))
+        | XlsxReader.SharedString idx when idx >= 0 && idx < workbook.SharedStrings.Length ->
+            let runs =
+                if idx < workbook.SharedStringRuns.Length then
+                    workbook.SharedStringRuns.[idx] |> List.map (fun (t, p) -> runOf p t)
+                else []
+            XlsxText (workbook.SharedStrings.[idx], runs)
+        | XlsxReader.Boolean b -> XlsxBoolean b
+        | XlsxReader.Error e -> XlsxError (if e.StartsWith "#" then e else "#" + e)
+        | XlsxReader.Formula f -> XlsxFormula (f, None)
+        | _ -> XlsxBlank
+    let refText r c = cellRef (r - 1) (c - 1)
+    { Sheets =
+        workbook.Sheets
+        |> List.map (fun sheet ->
+            let comments =
+                sheet.Comments
+                |> List.map (fun c ->
+                    let r, col = cellRefFromReader c.CellRef
+                    (r, col), (c.Text, c.Author))
+                |> Map.ofList
+            { Name = sheet.Name
+              Visible = true
+              Cells =
+                sheet.Rows
+                |> List.collect (fun row ->
+                    row.Cells
+                    |> List.map (fun cell ->
+                        let r, c = cellRefFromReader cell.Reference
+                        { Row = r
+                          Col = c
+                          Value = valueOf cell
+                          Format = styleOf cell.Style
+                          Comment = Map.tryFind (r, c) comments }))
+              MergedCells =
+                sheet.MergedCells
+                |> List.map (fun m ->
+                    let sr, sc = cellRefFromReader m.StartRef
+                    let er, ec = cellRefFromReader m.EndRef
+                    { StartRow = sr; StartCol = sc; EndRow = er; EndCol = ec })
+              ColumnWidths =
+                sheet.Columns
+                |> List.collect (fun c ->
+                    if c.Hidden then [ for i in c.Index - 1 .. c.MaxIndex - 1 -> i, 0.0 ]
+                    else
+                        match c.Width with
+                        | Some width -> [ for i in c.Index - 1 .. c.MaxIndex - 1 -> i, width ]
+                        | None -> [])
+              RowHeights =
+                sheet.Rows
+                |> List.choose (fun r -> r.Height |> Option.map (fun h -> r.Index - 1, h))
+              FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
+              FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
+              ShowGridLines = sheet.ShowGridLines
+              Tables =
+                sheet.Tables
+                |> List.map (fun t ->
+                    { Name = t.Name
+                      StartRow = t.StartRow
+                      StartCol = t.StartCol
+                      EndRow = t.EndRow
+                      EndCol = t.EndCol
+                      Columns = t.Columns
+                      HeaderRowCount = t.HeaderRowCount
+                      TotalsRowCount = t.TotalsRowCount
+                      AutoFilter = t.AutoFilter
+                      Style =
+                        t.Style |> Option.map (fun s ->
+                            { Name = s.Name
+                              ShowFirstColumn = s.ShowFirstColumn
+                              ShowLastColumn = s.ShowLastColumn
+                              ShowRowStripes = s.ShowRowStripes
+                              ShowColumnStripes = s.ShowColumnStripes }) })
+              DataValidations =
+                sheet.DataValidations
+                |> List.map (fun dv ->
+                    { Sqref = dv.Range
+                      ValidationType = dv.ValidationType
+                      Operator = dv.Operator
+                      Formula1 = dv.Formula1
+                      Formula2 = dv.Formula2
+                      AllowBlank = dv.AllowBlank
+                      ShowDropDown = dv.ShowDropDown
+                      ErrorMessage = dv.ErrorMessage
+                      InputMessage = None })
+              Hyperlinks = sheet.Hyperlinks |> List.map (fun h -> { Range = h.Range; Target = h.Target; IsInternal = h.IsInternal })
+              PageMargins =
+                sheet.PageMargins |> Option.map (fun m -> { Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right; Header = m.Header; Footer = m.Footer })
+              PageSetup =
+                sheet.PageSetup |> Option.map (fun p ->
+                    { Orientation =
+                        match p.Orientation with
+                        | XlsxReader.OrientationLandscape -> Some "landscape"
+                        | XlsxReader.OrientationPortrait -> Some "portrait"
+                        | _ -> None
+                      FitToPage = p.FitToPage
+                      FitToWidth = p.FitToWidth
+                      FitToHeight = p.FitToHeight
+                      Scale = p.Scale
+                      PaperSize = p.PaperSize
+                      FirstPageNumber = p.FirstPageNumber
+                      UseFirstPageNumber = p.UseFirstPageNumber
+                      PageOrder = match p.PageOrder with XlsxReader.OverThenDown -> Some "overThenDown" | _ -> None
+                      BlackAndWhite = p.BlackAndWhite
+                      CellComments =
+                        match p.CellComments with
+                        | XlsxReader.CellCommentsAsDisplayed -> Some "asDisplayed"
+                        | XlsxReader.CellCommentsAtEnd -> Some "atEnd"
+                        | _ -> None })
+              PrintOptions = Some { GridLines = sheet.PrintOptions.GridLines; Headings = sheet.PrintOptions.Headings; HorizontalCentered = sheet.PrintOptions.HorizontalCentered; VerticalCentered = sheet.PrintOptions.VerticalCentered }
+              HeaderFooter =
+                Some { OddHeader = sheet.HeaderFooter.OddHeader; OddFooter = sheet.HeaderFooter.OddFooter; EvenHeader = sheet.HeaderFooter.EvenHeader; EvenFooter = sheet.HeaderFooter.EvenFooter; FirstHeader = sheet.HeaderFooter.FirstHeader; FirstFooter = sheet.HeaderFooter.FirstFooter; DifferentOddEven = sheet.HeaderFooter.DifferentOddEven; DifferentFirst = sheet.HeaderFooter.DifferentFirst; ScaleWithDoc = sheet.HeaderFooter.ScaleWithDoc }
+              RowBreaks = sheet.RowBreaks
+              ColBreaks = sheet.ColBreaks
+              PrintArea = sheet.PrintArea
+              PrintTitleRows = sheet.PrintTitleRows
+              PrintTitleCols = sheet.PrintTitleCols })
+      ActiveSheetIndex = 0
+      DefinedNames = workbook.NamedRanges |> List.map (fun n -> { Name = n.Name; RefersTo = n.RefersTo; LocalSheetIndex = n.Scope |> Option.bind (fun s -> match System.Int32.TryParse s with true, v -> Some v | _ -> None) })
+      VbaProjectSource = None }
+
 /// Helper to create a simple cell from string
 let simpleCell (value: string) : FormattedCell = {
     Value = value
@@ -358,25 +1601,7 @@ let parseMergedRange (range: string) : MergedCellRange option =
 
 /// Create XLSX from formatted sheets
 let writeFormattedXlsx (sheets: FormattedSheet list) : Fable.Core.JS.Promise<obj> =
-    let sheetNames = sheets |> List.map (fun s -> s.Name)
-
-    let baseFiles = [
-        { Path = "[Content_Types].xml"; Content = generateContentTypesXlsx (List.length sheets) }
-        { Path = "_rels/.rels"; Content = generateRootRelsXlsx () }
-        { Path = "xl/workbook.xml"; Content = generateWorkbookXml sheetNames }
-        { Path = "xl/_rels/workbook.xml.rels"; Content = generateWorkbookRels (List.length sheets) }
-    ]
-
-    // Add each sheet
-    let sheetFiles =
-        sheets
-        |> List.mapi (fun i sheet ->
-            { Path = sprintf "xl/worksheets/sheet%d.xml" (i + 1); Content = generateFormattedSheetXml sheet }
-        )
-
-    let files = baseFiles @ sheetFiles
-
-    createPackage files
+    writeWorkbookPackage (formattedToWorkbook sheets)
 
 /// Create minimal XLSX from 2D arrays
 let writeMinimalXlsx (sheets: SheetData list) : Fable.Core.JS.Promise<obj> =
