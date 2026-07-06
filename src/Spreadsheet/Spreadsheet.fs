@@ -121,6 +121,9 @@ type Spreadsheet(container: Element) =
 
     let mutable gridContainer: Element option = None
     let mutable contentElement: Element option = None
+    let cellPool = System.Collections.Generic.Dictionary<string, Element>()
+    let chromeNodes = ResizeArray<Element>()
+    let mutable lastRenderedModel: SpreadsheetModel option = None
 
     let currentViewport (): SpreadsheetLayout.Viewport = {
         ScrollX = scrollLeft
@@ -368,6 +371,7 @@ type Spreadsheet(container: Element) =
     let mutable resizeStartPos = 0.0
     let mutable resizeStartSize = 0.0
     let mutable resizeRenderScheduled = false
+    let mutable scrollRenderScheduled = false
 
     /// Check if cell is in a table and get table info
     let getCellTable (row: int) (col: int): (RedBat.Spreadsheet.Workbook.Table * bool * bool) option =
@@ -441,6 +445,18 @@ type Spreadsheet(container: Element) =
                 endRow <- endRow + 1
 
             (startRow, endRow, startCol, endCol)
+
+    let cellKey (row: int) (col: int) = sprintf "%d:%d" row col
+
+    let isFrozenBodyCell (row: int) (col: int) =
+        (model.FrozenRows > 0 && row < model.FrozenRows) ||
+        (model.FrozenCols > 0 && col < model.FrozenCols)
+
+    let isRenderableCell (row: int) (col: int) =
+        let addr = { Row = row; Col = col }
+        match findMergedCell addr model with
+        | Some merge when addr.Row <> merge.StartRow || addr.Col <> merge.StartCol -> false
+        | _ -> true
 
     /// Check if row is visible (not filtered out)
     let isRowVisible (row: int): bool =
@@ -1227,6 +1243,23 @@ type Spreadsheet(container: Element) =
 
                 Some cell
 
+    and renderCornerHeader (): Element =
+        // Render corner cell (top-left where headers meet)
+        let corner = createElement "div"
+        setClassName corner "spreadsheet-corner"
+        setStyles corner [
+            "position", "absolute"
+            "top", sprintf "%.0fpx" (if useSharedLayoutGeometry then scrollTop else 0.0)
+            "left", sprintf "%.0fpx" (if useSharedLayoutGeometry then scrollLeft else 0.0)
+            "width", sprintf "%.0fpx" rowHeaderWidth
+            "height", sprintf "%.0fpx" headerHeight
+            "border-right", "1px solid #a6a6a6"
+            "border-bottom", "1px solid #a6a6a6"
+            "background", "linear-gradient(135deg, #f8f8f8 0%, #e0e0e0 100%)"
+            "z-index", "10"
+        ]
+        corner
+
     /// Render the grid
     and render () =
         match contentElement with
@@ -1234,45 +1267,39 @@ type Spreadsheet(container: Element) =
         | Some content ->
             // Clear content
             setInnerHTML content ""
+            cellPool.Clear()
+            chromeNodes.Clear()
 
             // Get visible range
             let startRow, endRow, startCol, endCol = calculateVisibleRange()
 
-            let appendCorner () =
-                // Render corner cell (top-left where headers meet)
-                let corner = createElement "div"
-                setClassName corner "spreadsheet-corner"
-                setStyles corner [
-                    "position", "absolute"
-                    "top", sprintf "%.0fpx" (if useSharedLayoutGeometry then scrollTop else 0.0)
-                    "left", sprintf "%.0fpx" (if useSharedLayoutGeometry then scrollLeft else 0.0)
-                    "width", sprintf "%.0fpx" rowHeaderWidth
-                    "height", sprintf "%.0fpx" headerHeight
-                    "border-right", "1px solid #a6a6a6"
-                    "border-bottom", "1px solid #a6a6a6"
-                    "background", "linear-gradient(135deg, #f8f8f8 0%, #e0e0e0 100%)"
-                    "z-index", "10"
-                ]
-                appendChild content corner
+            let appendChrome (node: Element) =
+                appendChild content node
+                chromeNodes.Add node
+
+            let appendBodyCell (row: int) (col: int) (cell: Element) =
+                appendChild content cell
+                if isFrozenBodyCell row col then
+                    chromeNodes.Add cell
+                else
+                    cellPool.[cellKey row col] <- cell
 
             if useSharedLayoutGeometry then
                 for headerGeometry in SpreadsheetLayout.headers model (currentViewport()) do
                     match headerGeometry with
-                    | SpreadsheetLayout.CornerHeader _ -> appendCorner()
-                    | SpreadsheetLayout.ColumnHeader (col, _) -> appendChild content (renderColumnHeader col)
-                    | SpreadsheetLayout.RowHeader (row, _) -> appendChild content (renderRowHeader row)
+                    | SpreadsheetLayout.CornerHeader _ -> appendChrome (renderCornerHeader())
+                    | SpreadsheetLayout.ColumnHeader (col, _) -> appendChrome (renderColumnHeader col)
+                    | SpreadsheetLayout.RowHeader (row, _) -> appendChrome (renderRowHeader row)
             else
-                appendCorner()
+                appendChrome (renderCornerHeader())
 
                 // Render column headers
                 for col = startCol to endCol - 1 do
-                    let header = renderColumnHeader col
-                    appendChild content header
+                    appendChrome (renderColumnHeader col)
 
                 // Render row headers
                 for row = startRow to endRow - 1 do
-                    let header = renderRowHeader row
-                    appendChild content header
+                    appendChrome (renderRowHeader row)
 
             // Render cells from the shared visibility model so partially visible
             // merged cells are emitted even when their primary cell starts offscreen.
@@ -1280,14 +1307,98 @@ type Spreadsheet(container: Element) =
                 for cellGeometry in SpreadsheetLayout.visibleCells model (currentViewport()) do
                     let addr = cellGeometry.Address
                     match renderCell addr.Row addr.Col with
-                    | Some cell -> appendChild content cell
+                    | Some cell -> appendBodyCell addr.Row addr.Col cell
                     | None -> ()
             else
                 for row = startRow to endRow - 1 do
                     for col = startCol to endCol - 1 do
                         match renderCell row col with
-                        | Some cell -> appendChild content cell
+                        | Some cell -> appendBodyCell row col cell
                         | None -> ()  // Skip non-primary merged cells
+
+            lastRenderedModel <- Some model
+
+    and renderScroll () =
+        match contentElement with
+        | None -> ()
+        | Some content ->
+            match lastRenderedModel with
+            | Some renderedModel when obj.ReferenceEquals(renderedModel, model) ->
+                let desiredKeys = System.Collections.Generic.HashSet<string>()
+                let desiredCells = ResizeArray<int * int>()
+
+                let addDesiredCell row col =
+                    if isRenderableCell row col then
+                        let key = cellKey row col
+                        if desiredKeys.Add key then
+                            desiredCells.Add(row, col)
+
+                let appendChrome (node: Element) =
+                    appendChild content node
+                    chromeNodes.Add node
+
+                if useSharedLayoutGeometry then
+                    for cellGeometry in SpreadsheetLayout.visibleCells model (currentViewport()) do
+                        let addr = cellGeometry.Address
+                        addDesiredCell addr.Row addr.Col
+                else
+                    let startRow, endRow, startCol, endCol = calculateVisibleRange()
+                    for row = startRow to endRow - 1 do
+                        for col = startCol to endCol - 1 do
+                            addDesiredCell row col
+
+                // Non-frozen body cells are scroll-independent absolute nodes.
+                let staleKeys = ResizeArray<string>()
+                for kvp in cellPool do
+                    if not (desiredKeys.Contains kvp.Key) then
+                        staleKeys.Add kvp.Key
+                for key in staleKeys do
+                    removeChild content cellPool.[key]
+                    cellPool.Remove key |> ignore
+
+                // Chrome is pinned by scroll offsets, so rebuild it every frame.
+                for node in chromeNodes do
+                    removeChild content node
+                chromeNodes.Clear()
+
+                if useSharedLayoutGeometry then
+                    for headerGeometry in SpreadsheetLayout.headers model (currentViewport()) do
+                        match headerGeometry with
+                        | SpreadsheetLayout.CornerHeader _ -> appendChrome (renderCornerHeader())
+                        | SpreadsheetLayout.ColumnHeader (col, _) -> appendChrome (renderColumnHeader col)
+                        | SpreadsheetLayout.RowHeader (row, _) -> appendChrome (renderRowHeader row)
+                else
+                    let startRow, endRow, startCol, endCol = calculateVisibleRange()
+                    appendChrome (renderCornerHeader())
+                    for col = startCol to endCol - 1 do
+                        appendChrome (renderColumnHeader col)
+                    for row = startRow to endRow - 1 do
+                        appendChrome (renderRowHeader row)
+
+                for row, col in desiredCells do
+                    let key = cellKey row col
+                    if isFrozenBodyCell row col then
+                        match cellPool.TryGetValue key with
+                        | true, pooled ->
+                            removeChild content pooled
+                            cellPool.Remove key |> ignore
+                        | false, _ -> ()
+                        match renderCell row col with
+                        | Some cell ->
+                            appendChild content cell
+                            chromeNodes.Add cell
+                        | None -> ()
+                    else
+                        if not (cellPool.ContainsKey key) then
+                            match renderCell row col with
+                            | Some cell ->
+                                appendChild content cell
+                                cellPool.[key] <- cell
+                            | None -> ()
+
+                lastRenderedModel <- Some model
+            | _ ->
+                render()
 
     /// Show filter dropdown for column
     and showFilterDropdown (col: int) (x: float) (y: float) =
@@ -2164,7 +2275,12 @@ type Spreadsheet(container: Element) =
         let target = getCurrentTarget e
         scrollTop <- getScrollTop target
         scrollLeft <- getScrollLeft target
-        render()
+        if not scrollRenderScheduled then
+            scrollRenderScheduled <- true
+            requestAnimationFrame (fun () ->
+                scrollRenderScheduled <- false
+                renderScroll()
+            )
 
     /// Mount the spreadsheet
     member _.Mount() =
