@@ -340,10 +340,10 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         let format =
             if tableStyles.IsEmpty then baseFormat
             else tableStyleFormat addr.Row addr.Col tableStyles baseFormat
-        let selected = isSelected model.Selection addr.Row addr.Col
-        let background =
-            if selected then "#E8F5E9"
-            else format.BgColor |> Option.defaultValue "#ffffff"
+        // Selection is rendered as a separate overlay (see `selectionPaintItems`)
+        // so cursor moves don't invalidate the cached grid paint items.
+        let selected = false
+        let background = format.BgColor |> Option.defaultValue "#ffffff"
         let zone = zoneForCell model addr.Row addr.Col
         cell, format, value, selected, background, zone
 
@@ -967,6 +967,36 @@ let private buildFreezeDividerItems (model: SpreadsheetModel) (viewport: Viewpor
                 viewport.HeaderHeight
                 + rowTop model model.RowCount
             yield GridLine (x, viewport.HeaderHeight, x, totalHeight, color, w)
+    ]
+
+/// Selection-only paint items, drawn on top of the cached grid. Separated so
+/// that cursor moves (which only change `model.Selection`) don't invalidate
+/// the cell paint items.
+let selectionPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
+    let model = model |> applyFilterRowHeights
+    let r1, c1, r2, c2 =
+        match model.Selection with
+        | SingleCell (r, c) -> r, c, r, c
+        | Range (sr, sc, er, ec) ->
+            let r1 = min sr er
+            let r2 = max sr er
+            let c1 = min sc ec
+            let c2 = max sc ec
+            r1, c1, r2, c2
+    let bounds = {
+        X = columnX model viewport c1
+        Y = rowY model viewport r1
+        Width =
+            ([ c1 .. c2 ] |> List.sumBy (fun c -> getColumnWidth c model))
+        Height =
+            ([ r1 .. r2 ] |> List.sumBy (fun r -> getRowHeight r model))
+    }
+    [
+        // Light mint range fill ONLY for multi-cell selections (Excel doesn't
+        // tint the active cell). The outer green outline is drawn for both.
+        if r1 <> r2 || c1 <> c2 then
+            yield FillRect (bounds, "#E8F5E9")
+        yield StrokeRect (bounds, "#217346", 2.0)
     ]
 
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =

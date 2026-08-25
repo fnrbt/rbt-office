@@ -322,6 +322,31 @@ type Spreadsheet(container: Element) =
                         let y = baseline - text.FontSize * 0.30
                         canvasLine ctx startX y endX y text.Color 1.0
             canvasRestore ctx
+        // Selection overlay: drawn after all cell content so the mint range
+        // fill and green outline sit on top of borders + text. Selection is
+        // intentionally NOT emitted by `buildCellPaintItems` so the native
+        // grid widget can cache the cell items across cursor moves.
+        // `selectionPaintItems` emits rects in absolute (scroll-free) coords
+        // so they need the body-zone translation manually here — the native
+        // path uses an outer ScrollView that translates the whole canvas,
+        // but on web we paint into a fixed canvas and shift each item.
+        let selectionItems = SpreadsheetPaint.selectionPaintItems model viewport
+        if not (List.isEmpty selectionItems) then
+            let clip = SpreadsheetLayout.viewportClipFor model viewport SpreadsheetLayout.BodyZone
+            canvasSave ctx
+            canvasClipRect ctx clip.X clip.Y clip.Width clip.Height
+            let shift (r: SpreadsheetLayout.Rect) : SpreadsheetLayout.Rect =
+                { r with X = r.X - viewport.ScrollX; Y = r.Y - viewport.ScrollY }
+            for item in selectionItems do
+                match item with
+                | SpreadsheetPaint.FillRect (rect, color) ->
+                    let r = shift rect
+                    canvasFillRect ctx r.X r.Y r.Width r.Height color
+                | SpreadsheetPaint.StrokeRect (rect, color, width) ->
+                    let r = shift rect
+                    canvasStrokeRect ctx r.X r.Y r.Width r.Height color width
+                | _ -> ()
+            canvasRestore ctx
 
     let recalculateFormulas () =
         invalidateCalcEngine()

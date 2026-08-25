@@ -663,11 +663,7 @@ let private handlePointer (state: SpreadsheetEditorState) width height = functio
 
 let private gridCommands (state: SpreadsheetEditorState) width height =
     let model = activeModel state
-    let scrolled = { model with Cells = model.Cells }
-    // SpreadsheetGrid.widget reads the model's selection directly, so we
-    // hand the active model in as-is; scrolling is applied by the
-    // parent ScrollView wrapper.
-    SpreadsheetGrid.widget width height scrolled
+    SpreadsheetGrid.widget width height model
 
 /// Build the interactive grid widget. The widget intentionally does NOT
 /// scroll itself — wrap it with `scrollWidget` to get the standard

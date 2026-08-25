@@ -636,6 +636,85 @@ let private cellCommands (model: SpreadsheetModel) width height =
     buildPaintItems model viewport
     |> paintItemsToCommands
 
+// Single-slot memoization for the interactive grid. `buildPaintItems`
+// reads only the static content fields below — never `Selection`,
+// `EditingCell`, `EditBuffer`, `Clipboard`, `History`, search state,
+// scroll, or sort/filter UI bits. Record updates like
+// `{ m with Selection = sel }` share every other field by reference, so
+// a per-field `ReferenceEquals` check rejects real content edits but
+// passes through cursor moves — turning every arrow key into a cache hit.
+let mutable private cacheW : float = nan
+let mutable private cacheH : float = nan
+let mutable private cacheCellsRef : obj = null
+let mutable private cacheColumnWidthsRef : obj = null
+let mutable private cacheRowHeightsRef : obj = null
+let mutable private cacheMergedRef : obj = null
+let mutable private cacheConditionalRef : obj = null
+let mutable private cacheRichRunsRef : obj = null
+let mutable private cacheTablesRef : obj = null
+let mutable private cacheCfBoldRef : obj = null
+let mutable private cacheFiltersRef : obj = null
+let mutable private cacheValidationsRef : obj = null
+let mutable private cacheSpillRef : obj = null
+let mutable private cacheRowCount : int = -1
+let mutable private cacheColCount : int = -1
+let mutable private cacheFrozenRows : int = -1
+let mutable private cacheFrozenCols : int = -1
+let mutable private cacheShowGridLines : bool = false
+let mutable private cacheCmds : Cmd list = []
+let mutable private cacheValid : bool = false
+
+let private sameContent (m: SpreadsheetModel) (w: float) (h: float) =
+    cacheValid
+    && w = cacheW && h = cacheH
+    && cacheRowCount = m.RowCount
+    && cacheColCount = m.ColCount
+    && cacheFrozenRows = m.FrozenRows
+    && cacheFrozenCols = m.FrozenCols
+    && cacheShowGridLines = m.ShowGridLines
+    && System.Object.ReferenceEquals(cacheCellsRef, m.Cells)
+    && System.Object.ReferenceEquals(cacheColumnWidthsRef, m.ColumnWidths)
+    && System.Object.ReferenceEquals(cacheRowHeightsRef, m.RowHeights)
+    && System.Object.ReferenceEquals(cacheMergedRef, m.MergedCells)
+    && System.Object.ReferenceEquals(cacheConditionalRef, m.ConditionalFormats)
+    && System.Object.ReferenceEquals(cacheRichRunsRef, m.RichRuns)
+    && System.Object.ReferenceEquals(cacheTablesRef, m.Tables)
+    && System.Object.ReferenceEquals(cacheCfBoldRef, m.CfBoldCells)
+    && System.Object.ReferenceEquals(cacheFiltersRef, m.Filters)
+    && System.Object.ReferenceEquals(cacheValidationsRef, m.Validations)
+    && System.Object.ReferenceEquals(cacheSpillRef, m.Spill)
+
+let private cachedCellCommands (model: SpreadsheetModel) width height =
+    if sameContent model width height then cacheCmds
+    else
+        let cmds = cellCommands model width height
+        cacheW <- width
+        cacheH <- height
+        cacheRowCount <- model.RowCount
+        cacheColCount <- model.ColCount
+        cacheFrozenRows <- model.FrozenRows
+        cacheFrozenCols <- model.FrozenCols
+        cacheShowGridLines <- model.ShowGridLines
+        cacheCellsRef <- model.Cells
+        cacheColumnWidthsRef <- model.ColumnWidths
+        cacheRowHeightsRef <- model.RowHeights
+        cacheMergedRef <- model.MergedCells
+        cacheConditionalRef <- model.ConditionalFormats
+        cacheRichRunsRef <- model.RichRuns
+        cacheTablesRef <- model.Tables
+        cacheCfBoldRef <- model.CfBoldCells
+        cacheFiltersRef <- model.Filters
+        cacheValidationsRef <- model.Validations
+        cacheSpillRef <- model.Spill
+        cacheCmds <- cmds
+        cacheValid <- true
+        cmds
+
+let private selectionCommands (model: SpreadsheetModel) width height =
+    let viewport = viewportOf model width height
+    selectionPaintItems model viewport
+    |> paintItemsToCommands
+
 let private cellCommandsInViewport (model: SpreadsheetModel) scrollX scrollY viewportWidth viewportHeight =
     let viewport = viewportOfCore scrollX scrollY viewportWidth viewportHeight
     buildPaintItems model viewport
@@ -643,7 +722,17 @@ let private cellCommandsInViewport (model: SpreadsheetModel) scrollX scrollY vie
     |> commandsWithViewportFrame scrollX scrollY viewportWidth viewportHeight
 
 let widget width height (model: SpreadsheetModel) =
-    canvas width height (fun w h -> cellCommands model w h)
+    canvas width height (fun w h ->
+        let cellCmds = cachedCellCommands model w h
+        let selCmds = selectionCommands model w h
+        match selCmds with
+        | [] -> cellCmds
+        | _ ->
+            // Wrap the cached cell cmds in an identity Group so we don't
+            // List.append (O(|cellCmds|)) every frame just to put selection
+            // on top. The outer list stays tiny — one Group + a couple of
+            // selection rects.
+            [ Cmd.Group(Matrix3x2.identity, 1.0, cellCmds); yield! selCmds ])
 
 let viewportWidget contentWidth contentHeight viewportWidth viewportHeight scrollX scrollY (model: SpreadsheetModel) =
     canvas contentWidth contentHeight (fun _ _ ->
