@@ -1,12 +1,12 @@
-namespace RedBat.Word
+namespace Rbt.Word
 
 #if FABLE_COMPILER
 
 module Dialogs =
     open Browser.Types
-    open RedBat.FableUI.Reactive
-    open RedBat.FableUI.Dom
-    open RedBat.FableUI.UI
+    open Rbt.FableUI.Reactive
+    open Rbt.FableUI.Dom
+    open Rbt.FableUI.UI
 
     type ParagraphStyleState = {
         IsOpen: Signal<bool>

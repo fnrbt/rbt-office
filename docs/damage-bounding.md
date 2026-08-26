@@ -106,7 +106,7 @@ rects, and those rects only contain things that actually changed.
 ### Scroll
 
 Scroll is handled at the renderer / platform layer via the
-`WindowBackend.Scroll(dx, dy)` API (see `../renderer/GL-DIRECT-
+`WindowBackend.Scroll(dx, dy)` API (see `../rbt-renderer/GL-DIRECT-
 PRESENTATION.md` for the GL path; software path mirrors it with
 `memmove`). The `ScrollView` widget wires its `ScrollX`/`ScrollY`
 signal subscribers to call `Scroll`. The spreadsheet doesn't need to do

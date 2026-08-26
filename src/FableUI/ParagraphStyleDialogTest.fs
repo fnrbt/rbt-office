@@ -1,10 +1,10 @@
-module RedBat.FableUI.ParagraphStyleDialogTest
+module Rbt.FableUI.ParagraphStyleDialogTest
 
 open Browser.Dom
 open Browser.Types
-open RedBat.FableUI.Reactive
-open RedBat.FableUI.Dom
-open RedBat.FableUI.UI
+open Rbt.FableUI.Reactive
+open Rbt.FableUI.Dom
+open Rbt.FableUI.UI
 
 let private selectValue (event: Event) =
     (event.target :?> HTMLSelectElement).value

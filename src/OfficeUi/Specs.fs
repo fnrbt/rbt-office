@@ -1,4 +1,4 @@
-namespace RedBat.Office
+namespace Rbt.Office
 
 /// Backend-agnostic UI spec types shared by Word, Spreadsheet, and any other
 /// Office-style apps. Concrete apps define their own chrome palette, menu

@@ -1,12 +1,12 @@
-module Composit.Ui.SpreadsheetGrid
+module Rbt.Widgets.Composit.Ui.SpreadsheetGrid
 
-open Renderer
-open Composit.Ui.Theme
-open Composit.Ui.Widget
+open Rbt.Renderer
+open Rbt.Widgets.Composit.Ui.Theme
+open Rbt.Widgets.Composit.Ui.Widget
 
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Layout
-open RedBat.Spreadsheet.Paint
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Layout
+open Rbt.Spreadsheet.Paint
 
 open System.Collections.Generic
 
@@ -18,12 +18,12 @@ let private resizeArrayToList (items: System.Collections.Generic.List<'T>) =
         result <- items.[i] :: result
     result
 
-let private defaultFont () = Composit.Ui.Layout.font()
+let private defaultFont () = Rbt.Widgets.Composit.Ui.Layout.font()
 
 /// Cache of font variants keyed by (familyKey, bold, italic). familyKey is the
 /// normalized lower-case font name we use to pick a TTF set ("calibri",
 /// "arial", "cambria", "times"); unknown families fall back to "calibri".
-let private fontCache = System.Collections.Generic.Dictionary<string * bool * bool, Renderer.Text.FontData option>()
+let private fontCache = System.Collections.Generic.Dictionary<string * bool * bool, Rbt.Renderer.Text.FontData option>()
 
 let private trimBounds (value: string) =
     let mutable start = 0
@@ -141,7 +141,7 @@ let private loadVariant family bold italic =
                 |> List.tryPick (fun dir ->
                     let path = System.IO.Path.Combine(dir, name)
                     if System.IO.File.Exists path then
-                        try Some (Renderer.Text.loadFontFile path) with _ -> None
+                        try Some (Rbt.Renderer.Text.loadFontFile path) with _ -> None
                     else None))
         fontCache.[key] <- loaded
         loaded
@@ -176,8 +176,8 @@ let rendererFontFor (fontName: string option) (bold: bool) (italic: bool) =
 /// Load a CJK fallback by file name. Mirrors loadVariant's caching and
 /// fontDirs lookup. Returns None when the file is absent (older Windows
 /// images don't ship every face).
-let private cjkFontCache = System.Collections.Generic.Dictionary<string, Renderer.Text.FontData option>()
-let private loadCjkFile (fileName: string) : Renderer.Text.FontData option =
+let private cjkFontCache = System.Collections.Generic.Dictionary<string, Rbt.Renderer.Text.FontData option>()
+let private loadCjkFile (fileName: string) : Rbt.Renderer.Text.FontData option =
     match cjkFontCache.TryGetValue fileName with
     | true, cached -> cached
     | _ ->
@@ -186,7 +186,7 @@ let private loadCjkFile (fileName: string) : Renderer.Text.FontData option =
             |> List.tryPick (fun dir ->
                 let path = System.IO.Path.Combine(dir, fileName)
                 if System.IO.File.Exists path then
-                    try Some (Renderer.Text.loadFontFile path) with _ -> None
+                    try Some (Rbt.Renderer.Text.loadFontFile path) with _ -> None
                 else None)
         cjkFontCache.[fileName] <- loaded
         loaded
@@ -205,11 +205,11 @@ let private cjkFallbackChain (bold: bool) : string list =
 /// For a codepoint not covered by the primary font, find the first font in
 /// the fallback chain whose cmap maps it. Returns None when no chain font
 /// is installed or none covers the codepoint (will render .notdef = box).
-let private fallbackFontFor (codepoint: int) (bold: bool) : Renderer.Text.FontData option =
+let private fallbackFontFor (codepoint: int) (bold: bool) : Rbt.Renderer.Text.FontData option =
     cjkFallbackChain bold
     |> List.tryPick (fun name ->
         loadCjkFile name
-        |> Option.bind (fun f -> if Renderer.Text.hasGlyph f codepoint then Some f else None))
+        |> Option.bind (fun f -> if Rbt.Renderer.Text.hasGlyph f codepoint then Some f else None))
 
 let private parseHexColor (value: string) =
     let hexValue (c: char) =
@@ -247,18 +247,18 @@ let private parseHexColor (value: string) =
 /// typographic ascender/descender for line stacking. When that bit is
 /// set we honor it; otherwise we use the GDI win metrics Excel anchors
 /// its cell-text box layout to.
-let private useTypoMetrics (font: Renderer.Text.FontData) =
+let private useTypoMetrics (font: Rbt.Renderer.Text.FontData) =
     match font.OtFont.OS2 with
     | Some os2 -> (os2.FsSelection &&& 128us) <> 0us
     | None -> false
 
 /// OS/2 winAscent scaled to pixels — the "WIN ascent" GDI/Excel uses as
 /// the line top. Derived here from the (public) FontData.OtFont rather
-/// than in Renderer.Text so the general-purpose renderer doesn't carry a
+/// than in Rbt.Renderer.Text so the general-purpose renderer doesn't carry a
 /// GDI-specific opinion. USE_TYPO_METRICS fonts get the typo ascender +
 /// half the typo line gap instead; with no OS/2 table at all we fall
 /// back to the hhea ascender.
-let private winAscent (font: Renderer.Text.FontData) (fontSize: float) : float =
+let private winAscent (font: Rbt.Renderer.Text.FontData) (fontSize: float) : float =
     let unitsPerEm = float font.OtFont.Head.UnitsPerEm
     let units =
         match font.OtFont.OS2 with
@@ -269,7 +269,7 @@ let private winAscent (font: Renderer.Text.FontData) (fontSize: float) : float =
 
 /// OS/2 winDescent as a positive pixel distance (baseline → em bottom).
 /// Mirrors winAscent's USE_TYPO_METRICS / no-OS/2 fallbacks.
-let private winDescent (font: Renderer.Text.FontData) (fontSize: float) : float =
+let private winDescent (font: Rbt.Renderer.Text.FontData) (fontSize: float) : float =
     let unitsPerEm = float font.OtFont.Head.UnitsPerEm
     let units =
         match font.OtFont.OS2 with
@@ -279,7 +279,7 @@ let private winDescent (font: Renderer.Text.FontData) (fontSize: float) : float 
     units * fontSize / unitsPerEm
 
 /// winAscent + winDescent — the GDI line-box height.
-let private winLineHeight (font: Renderer.Text.FontData) (fontSize: float) : float =
+let private winLineHeight (font: Rbt.Renderer.Text.FontData) (fontSize: float) : float =
     winAscent font fontSize + winDescent font fontSize
 
 let private toRendererCommands (text: PaintText) =
@@ -296,17 +296,17 @@ let private toRendererCommands (text: PaintText) =
     // (Latin primary → CJK fallback) so 切手/横浜/東京 etc. render rather
     // than printing .notdef boxes. Surrogate pairs are folded into one
     // segment with their lead surrogate's font choice.
-    let fontFor (cp: int) : Renderer.Text.FontData =
-        if Renderer.Text.hasGlyph primary cp then primary
+    let fontFor (cp: int) : Rbt.Renderer.Text.FontData =
+        if Rbt.Renderer.Text.hasGlyph primary cp then primary
         else
             match fallbackFontFor cp text.Bold with
             | Some fb -> fb
             | None -> primary  // no fallback installed — keep using primary, render as .notdef
     let segments =
         let txt = text.Text
-        let result = System.Collections.Generic.List<Renderer.Text.FontData * string>()
+        let result = System.Collections.Generic.List<Rbt.Renderer.Text.FontData * string>()
         let buf = System.Text.StringBuilder()
-        let mutable currentFont : Renderer.Text.FontData voption = ValueNone
+        let mutable currentFont : Rbt.Renderer.Text.FontData voption = ValueNone
         let mutable i = 0
         while i < txt.Length do
             let ch = txt.[i]
@@ -332,8 +332,8 @@ let private toRendererCommands (text: PaintText) =
     let segmentLayouts = System.Collections.Generic.List<_>(segments.Count)
     let mutable totalWidth = 0.0
     for f, s in segments do
-        let layout = Renderer.Text.layout f pxSize s
-        let width = Renderer.Text.measureWidth f pxSize s
+        let layout = Rbt.Renderer.Text.layout f pxSize s
+        let width = Rbt.Renderer.Text.measureWidth f pxSize s
         segmentLayouts.Add(f, layout, width)
         totalWidth <- totalWidth + width
     // Cell-text rotation (Excel `<alignment textRotation>`): 1..90 = degrees
@@ -468,9 +468,9 @@ let private toRendererCommands (text: PaintText) =
 let rec private appendPaintItem (commands: System.Collections.Generic.List<Cmd>) item =
     match item with
     | FillRect (rect, color) ->
-        commands.Add(Cmd.FillRect(Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color))
+        commands.Add(Cmd.FillRect(Rbt.Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color))
     | StrokeRect (rect, color, width) ->
-        commands.Add(Cmd.StrokeRect(Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color, px width))
+        commands.Add(Cmd.StrokeRect(Rbt.Renderer.Types.rect rect.X rect.Y rect.Width rect.Height, parseHexColor color, px width))
     | DrawText text -> commands.AddRange(toRendererCommands text)
     | GridLine (x1, y1, x2, y2, color, width) ->
         // Pixel-snap axis-aligned strokes so they cover WHOLE pixels — like
@@ -539,7 +539,7 @@ let private paintItemsToCommands (paintItems: PaintItem list) =
 
 let private commandsWithViewportFrame scrollX scrollY viewportWidth viewportHeight (commands: Cmd list) =
     Cmd.FillRect(
-        Renderer.Types.rect scrollX scrollY viewportWidth viewportHeight,
+        Rbt.Renderer.Types.rect scrollX scrollY viewportWidth viewportHeight,
         parseHexColor "#FFFFFF")
     :: commands
 
@@ -555,17 +555,17 @@ let private commandsWithViewportFrame scrollX scrollY viewportWidth viewportHeig
 /// come back too narrow, and Paint.fs's rich-text cursor would step the
 /// next run on top of the trailing characters.
 let private segmentByFontCoverage
-    (primary: Renderer.Text.FontData) (bold: bool) (text: string)
-    : System.Collections.Generic.List<Renderer.Text.FontData * string> =
-    let fontFor (cp: int) : Renderer.Text.FontData =
-        if Renderer.Text.hasGlyph primary cp then primary
+    (primary: Rbt.Renderer.Text.FontData) (bold: bool) (text: string)
+    : System.Collections.Generic.List<Rbt.Renderer.Text.FontData * string> =
+    let fontFor (cp: int) : Rbt.Renderer.Text.FontData =
+        if Rbt.Renderer.Text.hasGlyph primary cp then primary
         else
             match fallbackFontFor cp bold with
             | Some fb -> fb
             | None -> primary
-    let result = System.Collections.Generic.List<Renderer.Text.FontData * string>()
+    let result = System.Collections.Generic.List<Rbt.Renderer.Text.FontData * string>()
     let buf = System.Text.StringBuilder()
-    let mutable currentFont : Renderer.Text.FontData voption = ValueNone
+    let mutable currentFont : Rbt.Renderer.Text.FontData voption = ValueNone
     let mutable i = 0
     while i < text.Length do
         let ch = text.[i]
@@ -601,7 +601,7 @@ let private measureTextUncached
     // instead of "(切手) &".
     let mutable width = 0.0
     for f, s in segmentByFontCoverage font bold text do
-        width <- width + Renderer.Text.measureWidth f pxSize s
+        width <- width + Rbt.Renderer.Text.measureWidth f pxSize s
     width
 
 let private measureText
@@ -753,7 +753,7 @@ let widgetWith width height (model: SpreadsheetModel) (extra: PaintItem list) =
 let renderScene width height (items: PaintItem list) =
     canvas width height (fun w h ->
         let commands = System.Collections.Generic.List<Cmd>()
-        commands.Add(Cmd.FillRect(Renderer.Types.rect 0.0 0.0 w h, parseHexColor "#FFFFFF"))
+        commands.Add(Cmd.FillRect(Rbt.Renderer.Types.rect 0.0 0.0 w h, parseHexColor "#FFFFFF"))
         for item in items do
             appendPaintItem commands item
         resizeArrayToList commands)

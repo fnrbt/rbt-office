@@ -2,9 +2,9 @@ module NativeRunner
 
 open System
 open System.IO
-open Renderer
+open Rbt.Renderer
 
-let importDoc = RedBat.Word.Import.importDoc
+let importDoc = Rbt.Word.Import.importDoc
 
 let private usage () =
     eprintfn "Usage: dotnet run --project tools/native-runner -- <input.docx> <output.png> [width] [height]"
@@ -30,7 +30,7 @@ let private findWordFont () =
 
 let private initWordFont () =
     findWordFont ()
-    |> Option.iter Composit.Ui.Layout.initFont
+    |> Option.iter Rbt.Widgets.Composit.Ui.Layout.initFont
 
 let private renderDocx (inputPath: string) (outputPath: string) (width: int) (height: int) =
     initWordFont ()
@@ -40,10 +40,10 @@ let private renderDocx (inputPath: string) (outputPath: string) (width: int) (he
         | Some parsed -> parsed
         | None -> failwithf "Could not parse DOCX: %s" inputPath
 
-    let wordDoc = { RedBat.Word.Import.importDoc doc with Selection = None }
-    let widget = Composit.Ui.WordEditor.scrollEditor (float width) (float height) wordDoc
+    let wordDoc = { Rbt.Word.Import.importDoc doc with Selection = None }
+    let widget = Rbt.Widgets.Composit.Ui.WordEditor.scrollEditor (float width) (float height) wordDoc
     let backend = Raster.create()
-    let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend width height widget
+    let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend width height widget
     let png = PngEncode.encode framebuffer
 
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore

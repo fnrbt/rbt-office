@@ -1,28 +1,28 @@
 module WordWispApp
 
-// wisp-word: the native Word app on Wisp. Reuses RedBat.Word (model/layout/paint + editing ops) and
+// wisp-word: the native Word app on Wisp. Reuses Rbt.Word (model/layout/paint + editing ops) and
 // the Wisp OfficeShell chrome; the ../widgets-facing layer is gone. EditorHost maps Wisp input to the
 // shared Document ops, so this is now actually editable (type, click, select, undo, …).
 
 open System
-open Renderer
+open Rbt.Renderer
 open Wisp.Reactive
 open Wisp.Layout
-open RedBat.Office.Ui
-open RedBat.Word.Document
+open Rbt.Office.Ui
+open Rbt.Word.Document
 
 module Ui = Wisp.Atrium
 module Shell = Wisp.OfficeShell
-module Doc = RedBat.Word.Document
-module WordImport = RedBat.Word.Import
-module WordUi = RedBat.Word.Ui
-module WordTextBuffer = RedBat.Word.TextBuffer
-module WR = WordWisp.WordRender
-module EH = WordWisp.EditorHost
+module Doc = Rbt.Word.Document
+module WordImport = Rbt.Word.Import
+module WordUi = Rbt.Word.Ui
+module WordTextBuffer = Rbt.Word.TextBuffer
+module WR = Rbt.WordWisp.WordRender
+module EH = Rbt.WordWisp.EditorHost
 
 let private pageW = 760.0
 
-let private rpath x y w h : Renderer.Types.PathSeg list =
+let private rpath x y w h : Rbt.Renderer.Types.PathSeg list =
     [ MoveTo(vec2 x y); LineTo(vec2 (x + w) y); LineTo(vec2 (x + w) (y + h)); LineTo(vec2 x (y + h)); Close ]
 
 let private mkPara (text: string) : Doc.ParagraphBlock =

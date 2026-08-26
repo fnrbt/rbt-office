@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
-    <PackageId>RedBat.Office.Web</PackageId>
+    <PackageId>Rbt.Office.Web</PackageId>
     <Description>Immutable Fable output consumed by RedBat web releases.</Description>
     <IsPackable>true</IsPackable>
     <IncludeBuildOutput>false</IncludeBuildOutput>

@@ -1,15 +1,15 @@
-module SpreadsheetWisp.EditorHost
+module Rbt.SpreadsheetWisp.EditorHost
 
 open System
 open Wisp.Reactive
 open Wisp.Layout
 
-module M = RedBat.Spreadsheet.Model
-module L = RedBat.Spreadsheet.Layout
-module Calc = RedBat.Spreadsheet.Calc
-module Formula = RedBat.Spreadsheet.Formula
-module Workbook = RedBat.Spreadsheet.Workbook
-module GR = SpreadsheetWisp.GridRender
+module M = Rbt.Spreadsheet.Model
+module L = Rbt.Spreadsheet.Layout
+module Calc = Rbt.Spreadsheet.Calc
+module Formula = Rbt.Spreadsheet.Formula
+module Workbook = Rbt.Spreadsheet.Workbook
+module GR = Rbt.SpreadsheetWisp.GridRender
 
 type KeyEvent = { Key: string; Shift: bool; Ctrl: bool; Alt: bool }
 
@@ -264,7 +264,7 @@ let private writeCell (st: EditorState) row col text model =
                 | v, None -> { Value = v; Format = M.defaultFormat; Comment = None }
             let recomputed = recalcEditedCell st addr cellData edited model
             let target = sprintf "Range(\"%s%d\")" (M.columnToLetter col) (row + 1)
-            let afterEvent = RedBat.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
+            let afterEvent = Rbt.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
             if not (Object.ReferenceEquals(recomputed, afterEvent)) then invalidateCalc st
             afterEvent
 

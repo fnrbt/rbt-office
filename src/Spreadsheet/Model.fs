@@ -1,4 +1,4 @@
-module RedBat.Spreadsheet.Model
+module Rbt.Spreadsheet.Model
 
 open System
 

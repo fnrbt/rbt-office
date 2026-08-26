@@ -1,4 +1,4 @@
-namespace RedBat.Word
+namespace Rbt.Word
 
 #if FABLE_COMPILER
 

@@ -1,32 +1,32 @@
-module WordWisp.WordRender
+module Rbt.WordWisp.WordRender
 
 // The document render pipeline for wisp-word, lifted from the native WordEditor — but it was always
 // Renderer-based (only the default font + the canvas/input were Composit). Here it feeds a Wisp canvas
-// instead. Loads nothing toolkit-specific: RedBat.Word does layout + paint (PaintCommand list); this
-// converts those to Renderer.Cmd. (DrawShape is skipped for now — text/fills/images cover docx bodies.)
+// instead. Loads nothing toolkit-specific: Rbt.Word does layout + paint (PaintCommand list); this
+// converts those to Rbt.Renderer.Cmd. (DrawShape is skipped for now — text/fills/images cover docx bodies.)
 
 open System
 open System.Collections.Generic
 open System.IO
-open Renderer
-open RedBat.Word.Document
+open Rbt.Renderer
+open Rbt.Word.Document
 
-module WordLayout = RedBat.Word.Layout
-module WordPaint = RedBat.Word.Paint
-module WordTextBuffer = RedBat.Word.TextBuffer
+module WordLayout = Rbt.Word.Layout
+module WordPaint = Rbt.Word.Paint
+module WordTextBuffer = Rbt.Word.TextBuffer
 
 let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasure v
 let private pointsToPixels points = points * 96.0 / 72.0
 
-let mutable private defaultFont : Renderer.Text.FontData option = None
+let mutable private defaultFont : Rbt.Renderer.Text.FontData option = None
 let private rendererFont () =
     match defaultFont with
     | Some f -> f
     | None ->
-        let f = Renderer.Text.loadFontFile "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+        let f = Rbt.Renderer.Text.loadFontFile "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
         defaultFont <- Some f; f
 
-let private wordFontCache = Dictionary<string, Renderer.Text.FontData option>()
+let private wordFontCache = Dictionary<string, Rbt.Renderer.Text.FontData option>()
 let private existingDir path = if Directory.Exists path then Some path else None
 let private wordFontDirs () =
     [ Environment.GetEnvironmentVariable "RB_WORD_FONT_DIR"
@@ -51,7 +51,7 @@ let private tryLoadWordFont (family: string option) (bold: bool) (italic: bool) 
             |> List.tryPick (fun fileName ->
                 wordFontDirs () |> List.tryPick (fun dir ->
                     let path = Path.Combine(dir, fileName)
-                    if File.Exists path then (try Some(Renderer.Text.loadFontFile path) with _ -> None) else None))
+                    if File.Exists path then (try Some(Rbt.Renderer.Text.loadFontFile path) with _ -> None) else None))
         wordFontCache.[key] <- loaded
         loaded
 
@@ -62,7 +62,7 @@ let private fontForPaintStyle (style: WordPaint.TextPaintStyle) =
 
 let measureText (text: string) (style: WordTextBuffer.TextStyle) =
     let font = fontForTextStyle style
-    Renderer.Text.measureWidth font (pointsToPixels style.FontSize) text + WordTextBuffer.characterSpacingAdvance text style
+    Rbt.Renderer.Text.measureWidth font (pointsToPixels style.FontSize) text + WordTextBuffer.characterSpacingAdvance text style
 
 let private parseHexColor (value: string) =
     let value =
@@ -93,7 +93,7 @@ let layoutSettings (width: float) (doc: Document) : WordLayout.LayoutSettings =
       FontSize = 16.0
       LineHeight = lineHeight
       PaddingLeft = doc.PageSetup.MarginLeft * scale
-      PaddingTop = RedBat.Word.WordLayout.Page.bodyTopWithRunningHeader doc * scale
+      PaddingTop = Rbt.Word.WordLayout.Page.bodyTopWithRunningHeader doc * scale
       MarginRight = doc.PageSetup.MarginRight * scale
       MarginBottom = max (doc.PageSetup.MarginBottom * scale) footerReserve
       InTableCell = false
@@ -102,7 +102,7 @@ let layoutSettings (width: float) (doc: Document) : WordLayout.LayoutSettings =
 
 let toRendererCommand = function
     | WordPaint.DrawText(text, style, x, baseline, _) ->
-        [ Cmd.DrawGlyphs(vec2 x baseline, Renderer.Text.layout (textFont style) (pointsToPixels style.FontSize) text, Solid(parseHexColor style.Color)) ]
+        [ Cmd.DrawGlyphs(vec2 x baseline, Rbt.Renderer.Text.layout (textFont style) (pointsToPixels style.FontSize) text, Solid(parseHexColor style.Color)) ]
     | WordPaint.DrawUnderline(color, _, x, y, width) ->
         [ Cmd.Line(vec2 x y, vec2 (x + width) y, parseHexColor color, px 1.0) ]
     | WordPaint.DrawImage(_, x, y, width, height, _, _, _, _) ->

@@ -30,7 +30,7 @@ let private tryFontFile fileName =
         let path = Path.Combine(dir, fileName)
         if File.Exists path then Some path else None)
 
-let private tryFace faceName family bold italic fileName : RedBat.Spreadsheet.Pdf.Render.FontFace option =
+let private tryFace faceName family bold italic fileName : Rbt.Spreadsheet.Pdf.Render.FontFace option =
     tryFontFile fileName
     |> Option.map (fun path ->
         {
@@ -41,7 +41,7 @@ let private tryFace faceName family bold italic fileName : RedBat.Spreadsheet.Pd
             Data = File.ReadAllBytes path
         })
 
-let private pdfOptions (sheetName: string) (fileName: string) : RedBat.Spreadsheet.Pdf.Render.RenderOptions =
+let private pdfOptions (sheetName: string) (fileName: string) : Rbt.Spreadsheet.Pdf.Render.RenderOptions =
     let faces =
         [
             tryFace "Calibri" "Calibri" false false "calibri.ttf"
@@ -127,7 +127,7 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
             for r in pl.FromRow .. pl.ToRow - 1 do h <- h + rowH r
             let items = ChartRender.buildChart pl.Spec w h
             (pl.FromRow, pl.FromCol, pl.FromColOffPx, pl.FromRowOffPx, items))
-    let pdfBytes = RedBat.Spreadsheet.Pdf.Render.toBytesWith opts model overlays
+    let pdfBytes = Rbt.Spreadsheet.Pdf.Render.toBytesWith opts model overlays
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, pdfBytes)
     printfn "spreadsheet pdf runner ok: %s [sheet=%s cells=%d] -> %s (%d bytes)"
@@ -138,7 +138,7 @@ let main argv =
     try
         match argv with
         | [| "--vectortest"; output |] ->
-            let bytes = RedBat.Spreadsheet.Pdf.Render.sceneToBytes 400.0 280.0 RedBat.Spreadsheet.Paint.vectorTestScene
+            let bytes = Rbt.Spreadsheet.Pdf.Render.sceneToBytes 400.0 280.0 Rbt.Spreadsheet.Paint.vectorTestScene
             System.IO.File.WriteAllBytes(fullPath output, bytes)
             0
         | [| input; output |] ->

@@ -6,16 +6,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../../../widgets/x11-viewer/PngEncode.fs" />
+    <Compile Include="../../../rbt-widgets/x11-viewer/PngEncode.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/Office.Formats/OfficeFormat.fsproj" />
-    <ProjectReference Include="../../src/Word/RedBat.Word.fsproj" />
-    <ProjectReference Include="../../src/Word.Import/WordImport.fsproj" />
-    <ProjectReference Include="../../word-native/WordWidgets.fsproj" />
-    <ProjectReference Include="../../../widgets/Widgets.fsproj" />
-    <ProjectReference Include="../../../renderer/Renderer.fsproj" />
+    <ProjectReference Include="../../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
+    <ProjectReference Include="../../src/Word/Rbt.Word.fsproj" />
+    <ProjectReference Include="../../src/Word.Import/Rbt.WordImport.fsproj" />
+    <ProjectReference Include="../../word-native/Rbt.WordWidgets.fsproj" />
+    <ProjectReference Include="../../../rbt-widgets/Rbt.Widgets.fsproj" />
+    <ProjectReference Include="../../../rbt-renderer/Rbt.Renderer.fsproj" />
   </ItemGroup>
 </Project>

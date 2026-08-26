@@ -1,9 +1,9 @@
-module RedBat.Spreadsheet.Tabs
+module Rbt.Spreadsheet.Tabs
 
 open Fable.Core
 open Fable.Core.JsInterop
-open RedBat.Grid.Dom
-open RedBat.Spreadsheet.Workbook
+open Rbt.Grid.Dom
+open Rbt.Spreadsheet.Workbook
 
 /// JavaScript helper for prompts
 [<Emit("prompt($0, $1)")>]

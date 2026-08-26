@@ -1,4 +1,4 @@
-module RedBat.FableUI.Reactive
+module Rbt.FableUI.Reactive
 
 open Fable.Core
 open System.Collections.Generic

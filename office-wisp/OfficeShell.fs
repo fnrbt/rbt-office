@@ -1,16 +1,16 @@
 module Wisp.OfficeShell
 
-// The Wisp backend for the Office UI abstraction. Renders RedBat.Office.Ui specs (menus, toolbars,
+// The Wisp backend for the Office UI abstraction. Renders Rbt.Office.Ui specs (menus, toolbars,
 // dialogs) to Wisp `Element`s, atrium-themed — the `wisp + fableui` replacement for the Composit
 // `OfficeShell`. The specs and the apps are untouched; this is just a new renderer behind the seam.
 // FableUI is the same SolidJS-style model as Wisp, so this is written in the natural signal/effect
 // style rather than the old rebuild-the-tree way.
 
 open System.Collections.Generic
-open Renderer
+open Rbt.Renderer
 open Wisp.Reactive
 open Wisp.Layout
-open RedBat.Office.Ui
+open Rbt.Office.Ui
 
 module Ui = Wisp.Atrium
 

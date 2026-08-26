@@ -7,7 +7,7 @@
     <Compile Include="SpreadsheetEditor.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../widgets/Widgets.fsproj" />
-    <ProjectReference Include="../src/Spreadsheet/RedBat.Spreadsheet.fsproj" />
+    <ProjectReference Include="../../rbt-widgets/Rbt.Widgets.fsproj" />
+    <ProjectReference Include="../src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
   </ItemGroup>
 </Project>

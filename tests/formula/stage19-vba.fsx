@@ -1,4 +1,4 @@
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/VBScriptParser.dll"
+#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/FsVb.dll"
 #r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
 
 // VBA runs natively (cross-platform) AND writes cells back via runOnModel.

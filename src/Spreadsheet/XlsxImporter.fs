@@ -1,13 +1,13 @@
-module RedBat.Spreadsheet.XlsxImporter
+module Rbt.Spreadsheet.XlsxImporter
 
 open Fable.Core
 open Fable.Core.JsInterop
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Formula
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Formula
 
 /// <summary>
 /// XLSX import adapter for office-format library integration.
-/// Converts office-format workbook data into RedBat.Grid SpreadsheetModel.
+/// Converts office-format workbook data into Rbt.Grid SpreadsheetModel.
 /// </summary>
 
     // Type definitions matching office-format API structure
@@ -115,13 +115,13 @@ let private hexColor (value: string) =
     if cleaned.Length = 6 then Some ("#" + cleaned) else None
 
     /// <summary>
-    /// Convert office-format cell value to RedBat.Grid CellValue.
+    /// Convert office-format cell value to Rbt.Grid CellValue.
     /// </summary>
 let private convertCellValue (excelCell: ExcelCell): CellValue =
         match excelCell.formula with
         | Some formula when not (System.String.IsNullOrWhiteSpace(formula)) ->
             // Formula cell: store formula text and empty cached value
-            // (RedBat.Grid will re-evaluate the formula)
+            // (Rbt.Grid will re-evaluate the formula)
             CellValue.Formula (formula, CellValue.Empty)
         | _ ->
             match excelCell.value with
@@ -146,7 +146,7 @@ let private convertBorder (border: ExcelBorder option): BorderStyle option =
         )
 
     /// <summary>
-    /// Convert office-format cell style to RedBat.Spreadsheet CellFormat.
+    /// Convert office-format cell style to Rbt.Spreadsheet CellFormat.
     /// </summary>
 let private convertCellFormat (excelCell: ExcelCell): CellFormat =
         {

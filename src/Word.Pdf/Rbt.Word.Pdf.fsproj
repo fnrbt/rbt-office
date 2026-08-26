@@ -5,13 +5,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="HeaderFooter.fs" />
-    <Compile Include="Pagination.fs" />
     <Compile Include="Pdf.fs" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../Spreadsheet/RedBat.Spreadsheet.fsproj" />
-    <ProjectReference Include="../../../pdf/FsPdf.fsproj" />
+    <ProjectReference Include="../Word/Rbt.Word.fsproj" />
+    <ProjectReference Include="../ShaperText/Rbt.Word.ShaperText.fsproj" />
+    <ProjectReference Include="../../../rbt-pdf/Rbt.Pdf.fsproj" />
   </ItemGroup>
 </Project>

@@ -1,16 +1,16 @@
-module RedBat.Spreadsheet.Spreadsheet
+module Rbt.Spreadsheet.Spreadsheet
 
 open Fable.Core
 open Fable.Core.JsInterop
-open RedBat.Grid.Dom
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Formula
-open RedBat.Spreadsheet.Workbook
-open RedBat.Spreadsheet.XlsxImporter
-module SpreadsheetCalc = RedBat.Spreadsheet.Calc
-module SpreadsheetLayout = RedBat.Spreadsheet.Layout
-module SpreadsheetPaint = RedBat.Spreadsheet.Paint
-module SpreadsheetCellText = RedBat.Spreadsheet.CellText
+open Rbt.Grid.Dom
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Formula
+open Rbt.Spreadsheet.Workbook
+open Rbt.Spreadsheet.XlsxImporter
+module SpreadsheetCalc = Rbt.Spreadsheet.Calc
+module SpreadsheetLayout = Rbt.Spreadsheet.Layout
+module SpreadsheetPaint = Rbt.Spreadsheet.Paint
+module SpreadsheetCellText = Rbt.Spreadsheet.CellText
 
 // Additional helpers
 [<Emit("$0.scrollLeft")>]
@@ -402,7 +402,7 @@ type Spreadsheet(container: Element) =
     let mutable scrollRenderScheduled = false
 
     /// Check if cell is in a table and get table info
-    let getCellTable (row: int) (col: int): (RedBat.Spreadsheet.Workbook.Table * bool * bool) option =
+    let getCellTable (row: int) (col: int): (Rbt.Spreadsheet.Workbook.Table * bool * bool) option =
         match workbook with
         | None -> None
         | Some wb ->
@@ -2836,7 +2836,7 @@ type Spreadsheet(container: Element) =
     member _.DefineTable(name: string, startRow: int, startCol: int, endRow: int, endCol: int, columns: string list, hasHeaders: bool) =
         match workbook with
         | Some wb ->
-            let table: RedBat.Spreadsheet.Workbook.Table = {
+            let table: Rbt.Spreadsheet.Workbook.Table = {
                 Name = name
                 SheetId = "sheet1"  // Default sheet ID
                 StartRow = startRow
@@ -2847,7 +2847,7 @@ type Spreadsheet(container: Element) =
                 HasHeaders = hasHeaders
                 HasTotals = false
             }
-            let newWb = RedBat.Spreadsheet.Workbook.defineTable table wb
+            let newWb = Rbt.Spreadsheet.Workbook.defineTable table wb
             workbook <- Some newWb
             render()  // Re-render to apply table styles
         | None -> ()
@@ -2856,7 +2856,7 @@ type Spreadsheet(container: Element) =
     member _.DeleteTable(name: string) =
         match workbook with
         | Some wb ->
-            let newWb = RedBat.Spreadsheet.Workbook.deleteTable name wb
+            let newWb = Rbt.Spreadsheet.Workbook.deleteTable name wb
             workbook <- Some newWb
             render()
         | None -> ()
@@ -2864,7 +2864,7 @@ type Spreadsheet(container: Element) =
     /// Get table names
     member _.GetTableNames() =
         match workbook with
-        | Some wb -> RedBat.Spreadsheet.Workbook.getTableNames wb
+        | Some wb -> Rbt.Spreadsheet.Workbook.getTableNames wb
         | None -> []
 
     /// Insert a row at the specified index

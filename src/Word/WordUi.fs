@@ -1,12 +1,12 @@
-namespace RedBat.Word
+namespace Rbt.Word
 
-/// Word-specific UI specs. Generic types live in RedBat.Office.Ui; this module
+/// Word-specific UI specs. Generic types live in Rbt.Office.Ui; this module
 /// supplies Word's chrome palette, menus, toolbar rows, and the
 /// ShellState/ShellActions records that the shell renderers consume.
 module Ui =
-    open RedBat.Office.Ui
+    open Rbt.Office.Ui
 
-    let choice = RedBat.Office.Ui.choice
+    let choice = Rbt.Office.Ui.choice
 
     let chrome : ChromeSpec = {
         WindowWidth = 1100.0
@@ -835,9 +835,9 @@ module Ui =
         let creditsLong =
             "RedBat Word native shell\n" +
             "  • Composit UI widgets\n" +
-            "  • RedBat.Office.Ui spec layer\n" +
-            "  • RedBat.Word document model\n\n" +
-            "Built on Text.Engine, OpenType.Core, Bidi, Shaper.Core."
+            "  • Rbt.Office.Ui spec layer\n" +
+            "  • Rbt.Word document model\n\n" +
+            "Built on Rbt.Text.Engine, Rbt.OpenType.Core, Bidi, Shaper.Core."
         {
             TestId = "word-dlg-about"
             Title = "About RedBat Word"

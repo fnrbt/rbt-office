@@ -10,7 +10,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../wisp/Wisp.fsproj" />
-    <ProjectReference Include="../src/OfficeUi/RedBat.OfficeUi.fsproj" />
-    <ProjectReference Include="../../renderer/Renderer.fsproj" />
+    <ProjectReference Include="../src/OfficeUi/Rbt.OfficeUi.fsproj" />
+    <ProjectReference Include="../../rbt-renderer/Rbt.Renderer.fsproj" />
   </ItemGroup>
 </Project>

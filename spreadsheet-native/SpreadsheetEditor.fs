@@ -1,20 +1,20 @@
-module Composit.Ui.SpreadsheetEditor
+module Rbt.Widgets.Composit.Ui.SpreadsheetEditor
 
-open Renderer
-open Composit.Ui.Reactive
-open Composit.Ui.Widget
+open Rbt.Renderer
+open Rbt.Widgets.Composit.Ui.Reactive
+open Rbt.Widgets.Composit.Ui.Widget
 
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
-module Layout = RedBat.Spreadsheet.Layout
-module SpreadsheetGrid = Composit.Ui.SpreadsheetGrid
+module Layout = Rbt.Spreadsheet.Layout
+module SpreadsheetGrid = Rbt.Widgets.Composit.Ui.SpreadsheetGrid
 
 let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasure v
 
 /// Interactive editor state. Holds the full workbook (sheets array +
 /// names + active index) plus per-app UI state: selection drag anchor,
 /// in-cell edit buffer, scroll position, formula bar text, undo/redo
-/// snapshots. Mirrors the structure of Composit.Ui.WordEditor.
+/// snapshots. Mirrors the structure of Rbt.Widgets.Composit.Ui.WordEditor.
 /// SpreadsheetModel can't satisfy the `equality` constraint because its
 /// History.Past/Future hold Command records with function-valued Undo/Redo
 /// fields. RefSignal sidesteps the constraint — we re-render on every
@@ -42,7 +42,7 @@ type SpreadsheetEditorState = {
     DragAnchor: Signal<(int * int) option>
     UndoStack: RefSignal<(SpreadsheetModel array * int) list>
     RedoStack: RefSignal<(SpreadsheetModel array * int) list>
-    CalcEngine: RefSignal<RedBat.Spreadsheet.Calc.CalcEngine option>
+    CalcEngine: RefSignal<Rbt.Spreadsheet.Calc.CalcEngine option>
     FocusId: int
 }
 
@@ -292,8 +292,8 @@ let private parseCellInput (text: string) : CellValue =
         | true, n -> Number n
         | _ -> String trimmed
 
-let private singleSheetWorkbook (name: string) (model: SpreadsheetModel) : RedBat.Spreadsheet.Workbook.Workbook =
-    let sheet : RedBat.Spreadsheet.Workbook.Sheet =
+let private singleSheetWorkbook (name: string) (model: SpreadsheetModel) : Rbt.Spreadsheet.Workbook.Workbook =
+    let sheet : Rbt.Spreadsheet.Workbook.Sheet =
         { Id = "sheet1"; Name = name; Model = model; Visible = true }
     { Sheets = Map.ofList [ "sheet1", sheet ]
       SheetOrder = [ "sheet1" ]
@@ -304,20 +304,20 @@ let private singleSheetWorkbook (name: string) (model: SpreadsheetModel) : RedBa
 let private recalcEditedCell (state: SpreadsheetEditorState) (addr: CellAddress) (cellData: CellData) (edited: SpreadsheetModel) (before: SpreadsheetModel) =
     if state.Sheets.Value.Length <> 1 || cellData.Value = CellValue.Empty then
         state.CalcEngine.Value <- None
-        RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
+        Rbt.Spreadsheet.Formula.recalcAndSpill None None edited
     else
         let wb = singleSheetWorkbook (activeSheetName state) before
-        let sheetCell : RedBat.Spreadsheet.Workbook.SheetCell =
+        let sheetCell : Rbt.Spreadsheet.Workbook.SheetCell =
             { Sheet = wb.ActiveSheet; Cell = addr }
-        match RedBat.Spreadsheet.Calc.trySingleCellEdit sheetCell cellData wb state.CalcEngine.Value with
-        | RedBat.Spreadsheet.Calc.IncrementalApplied (updatedWorkbook, updatedEngine) ->
+        match Rbt.Spreadsheet.Calc.trySingleCellEdit sheetCell cellData wb state.CalcEngine.Value with
+        | Rbt.Spreadsheet.Calc.IncrementalApplied (updatedWorkbook, updatedEngine) ->
             state.CalcEngine.Value <- Some updatedEngine
             match Map.tryFind updatedWorkbook.ActiveSheet updatedWorkbook.Sheets with
             | Some sheet -> sheet.Model
             | None -> edited
-        | RedBat.Spreadsheet.Calc.IncrementalFallback _ ->
+        | Rbt.Spreadsheet.Calc.IncrementalFallback _ ->
             state.CalcEngine.Value <- None
-            RedBat.Spreadsheet.Formula.recalcAndSpill None None edited
+            Rbt.Spreadsheet.Formula.recalcAndSpill None None edited
 
 let private writeCell (state: SpreadsheetEditorState) (row: int) (col: int) (text: string) (model: SpreadsheetModel) =
     let value = parseCellInput text
@@ -346,7 +346,7 @@ let private writeCell (state: SpreadsheetEditorState) (row: int) (col: int) (tex
             // cell as Target. A no-op unless the macro module defines the sub; its
             // writes apply directly, so this can't recurse back through writeCell.
             let target = sprintf "Range(\"%s%d\")" (columnToLetter col) (row + 1)
-            let afterEvent = RedBat.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
+            let afterEvent = Rbt.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
             if not (System.Object.ReferenceEquals(recomputed, afterEvent)) then
                 state.CalcEngine.Value <- None
             afterEvent

@@ -1,11 +1,11 @@
-module RedBat.Grid.Rendering
+module Rbt.Grid.Rendering
 
 open Fable.Core
 open Fable.Core.JsInterop
 open Browser.Types
 open Browser.Dom
-open RedBat.Grid.Types
-open RedBat.Grid.VirtualScroll
+open Rbt.Grid.Types
+open Rbt.Grid.VirtualScroll
 
 /// Create the main container element
 let createContainer (containerHeight: float): HTMLElement =

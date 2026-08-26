@@ -1,14 +1,14 @@
-module RedBat.Spreadsheet.Pdf.Render
+module Rbt.Spreadsheet.Pdf.Render
 
 open System
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Layout
-open RedBat.Spreadsheet.Paint
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Layout
+open Rbt.Spreadsheet.Paint
 
-module PdfDoc = FsPdf.Doc
-module PdfDraw = FsPdf.Draw
-module PdfColor = FsPdf.Color
-module PdfFont = FsPdf.Font
+module PdfDoc = Rbt.Pdf.Doc
+module PdfDraw = Rbt.Pdf.Draw
+module PdfColor = Rbt.Pdf.Color
+module PdfFont = Rbt.Pdf.Font
 
 /// One loadable TTF face the runner passes to us. Family is the abstract
 /// family name from the cell ("Calibri", "Arial", ...); Bold/Italic mark the

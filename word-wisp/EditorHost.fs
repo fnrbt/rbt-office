@@ -1,20 +1,20 @@
-module WordWisp.EditorHost
+module Rbt.WordWisp.EditorHost
 
 // The Wisp editor host for wisp-word — the per-backend glue the Office UI abstraction never covered.
-// All the actual editing is shared, toolkit-free RedBat.Word.Document ops (setCursor, insertText,
+// All the actual editing is shared, toolkit-free Rbt.Word.Document ops (setCursor, insertText,
 // deleteBackward, toggleBold, moveCursorLeft, …); this just maps Wisp key/pointer events to them,
 // ports the two layout-based helpers (visual-line nav, caret rect), and renders selection + caret.
 
-open Renderer
+open Rbt.Renderer
 open System.Collections.Generic
 open Wisp.Reactive
 open Wisp.Layout
-open RedBat.Word.Document
+open Rbt.Word.Document
 
-module WordLayout = RedBat.Word.Layout
-module WordPaint = RedBat.Word.Paint
-module WordTextBuffer = RedBat.Word.TextBuffer
-module WR = WordWisp.WordRender
+module WordLayout = Rbt.Word.Layout
+module WordPaint = Rbt.Word.Paint
+module WordTextBuffer = Rbt.Word.TextBuffer
+module WR = Rbt.WordWisp.WordRender
 
 type KeyEvent = { Key: string; Shift: bool; Ctrl: bool; Alt: bool }
 

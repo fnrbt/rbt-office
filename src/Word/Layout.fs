@@ -1,9 +1,9 @@
-module RedBat.Word.Layout
+module Rbt.Word.Layout
 
 open System.Collections.Generic
-open RedBat.Word.Document
-open RedBat.Word.TextBuffer
-open RedBat.Word.WordStyles
+open Rbt.Word.Document
+open Rbt.Word.TextBuffer
+open Rbt.Word.WordStyles
 
 #if FABLE_COMPILER
 open Fable.Core
@@ -149,7 +149,7 @@ let private sliceText (text: string) start length =
     else
         text.Substring(start, length)
 
-module Eq = RedBat.Word.Math
+module Eq = Rbt.Word.Math
 
 /// Segment can be text, image, or a laid-out math equation (OMML).
 type Segment =

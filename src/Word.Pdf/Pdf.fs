@@ -1,22 +1,22 @@
-module RedBat.Word.Pdf
+module Rbt.Word.Pdf
 
 open System
 open System.Text
 #if FABLE_COMPILER
 open Fable.Core
 #endif
-open RedBat.Word.Document
-open RedBat.Word.TextBuffer
+open Rbt.Word.Document
+open Rbt.Word.TextBuffer
 
-module WordCanvasLayout = RedBat.Word.Layout
-module WordModelLayout = RedBat.Word.WordLayout
-module WordStyles = RedBat.Word.WordStyles
-module WordPaint = RedBat.Word.Paint
-module PdfDoc = FsPdf.Doc
-module PdfDraw = FsPdf.Draw
-module PdfColor = FsPdf.Color
-module PdfFont = FsPdf.Font
-module PdfImage = FsPdf.Image
+module WordCanvasLayout = Rbt.Word.Layout
+module WordModelLayout = Rbt.Word.WordLayout
+module WordStyles = Rbt.Word.WordStyles
+module WordPaint = Rbt.Word.Paint
+module PdfDoc = Rbt.Pdf.Doc
+module PdfDraw = Rbt.Pdf.Draw
+module PdfColor = Rbt.Pdf.Color
+module PdfFont = Rbt.Pdf.Font
+module PdfImage = Rbt.Pdf.Image
 
 let private textCacheLimit = 100000
 let private pdfPointScale = 72.0 / 96.0
@@ -81,7 +81,7 @@ type RenderOptions = {
     DefaultFontFamily: string
     Fonts: FontFace list
     MeasureText: WordCanvasLayout.TextMeasurer option
-    ShapeText: (string -> TextStyle -> (Text.Engine.TextFont * Text.Engine.ShapedText) option) option
+    ShapeText: (string -> TextStyle -> (Rbt.Text.Engine.TextFont * Rbt.Text.Engine.ShapedText) option) option
     Images: ImageResource list
 }
 
@@ -135,17 +135,17 @@ let private remappedPairCacheKeyComparer =
             ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Pairs) }
 
 type private TextContext = {
-    FontSet: RedBat.Word.ShaperText.FontSet
+    FontSet: Rbt.Word.ShaperText.FontSet
     FontBytes: Map<string, byte[]>
     PdfFontCache: System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>
     DefaultFamily: string
     mutable PdfFonts: Map<string, PdfFont.TrueTypeFont>
     GlyphText: System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>
-    ShapeCache: System.Collections.Generic.Dictionary<TextCacheKey, (Text.Engine.TextFont * Text.Engine.ShapedText) option>
+    ShapeCache: System.Collections.Generic.Dictionary<TextCacheKey, (Rbt.Text.Engine.TextFont * Rbt.Text.Engine.ShapedText) option>
     PdfRunCache: System.Collections.Generic.Dictionary<PdfRunCacheKey, (float * float * (int * int)[] * (int * string)[]) list>
     GlyphUsagePairCache: System.Collections.Generic.Dictionary<RemappedPairCacheKey, unit>
     ColorCache: System.Collections.Generic.Dictionary<string, PdfColor.Color>
-    ExternalShapeText: (string -> TextStyle -> (Text.Engine.TextFont * Text.Engine.ShapedText) option) option
+    ExternalShapeText: (string -> TextStyle -> (Rbt.Text.Engine.TextFont * Rbt.Text.Engine.ShapedText) option) option
     mutable TextOpCount: int
     mutable TextShapeMs: float
     mutable TextRunMs: float
@@ -201,15 +201,15 @@ let private createTextContext (options: RenderOptions) =
             ({ Family = face.Family
                Bold = face.Bold
                Italic = face.Italic
-               Data = face.Data }: RedBat.Word.ShaperText.FontFace))
+               Data = face.Data }: Rbt.Word.ShaperText.FontFace))
     {
-        FontSet = RedBat.Word.ShaperText.createFontSet options.DefaultFontFamily shaperFaces
+        FontSet = Rbt.Word.ShaperText.createFontSet options.DefaultFontFamily shaperFaces
         FontBytes = options.Fonts |> List.map (fun face -> face.FaceName, face.Data) |> Map.ofList
         PdfFontCache = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
         DefaultFamily = options.DefaultFontFamily
         PdfFonts = Map.empty
         GlyphText = System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>()
-        ShapeCache = System.Collections.Generic.Dictionary<TextCacheKey, (Text.Engine.TextFont * Text.Engine.ShapedText) option>()
+        ShapeCache = System.Collections.Generic.Dictionary<TextCacheKey, (Rbt.Text.Engine.TextFont * Rbt.Text.Engine.ShapedText) option>()
         PdfRunCache = System.Collections.Generic.Dictionary<PdfRunCacheKey, (float * float * (int * int)[] * (int * string)[]) list>()
         GlyphUsagePairCache = System.Collections.Generic.Dictionary<RemappedPairCacheKey, unit>(remappedPairCacheKeyComparer)
         ColorCache = System.Collections.Generic.Dictionary<string, PdfColor.Color>()
@@ -275,7 +275,7 @@ let private shapeTextCached (textContext: TextContext) text style =
         let value =
             match textContext.ExternalShapeText with
             | Some shapeText -> shapeText text style
-            | None -> RedBat.Word.ShaperText.shapeText textContext.FontSet text style
+            | None -> Rbt.Word.ShaperText.shapeText textContext.FontSet text style
         textContext.ShapeCache.[key] <- value
         value
 
@@ -308,7 +308,7 @@ let createMeasurer (options: RenderOptions) : WordCanvasLayout.TextMeasurer =
     | None -> createTextContext options |> createContextMeasurer
 
 let private createContextRangeMeasurer (textContext: TextContext) : WordCanvasLayout.TextRangeMeasurer =
-    // Match the browser renderer (Renderer.fs uses rangeMeasurerFromTextMeasurer)
+    // Match the browser renderer (Rbt.Renderer.fs uses rangeMeasurerFromTextMeasurer)
     // and our own PDF text painter: measure substrings by shaping them in
     // isolation, not by indexing into the full text's shape.
     //
@@ -338,7 +338,7 @@ let private controlWhitespaceAt (text: string) index =
         | '\t' | '\n' | '\r' -> true
         | _ -> false
 
-let private clusterTextMappings (text: string) (glyphs: Text.Engine.PositionedGlyph[]) =
+let private clusterTextMappings (text: string) (glyphs: Rbt.Text.Engine.PositionedGlyph[]) =
     let clusterSet = System.Collections.Generic.HashSet<int>()
     let clusters = System.Collections.Generic.List<int>()
     for glyph in glyphs do
@@ -553,7 +553,7 @@ let private pdfFontName (style: WordPaint.TextPaintStyle) =
     | false, true -> "Helvetica-Oblique"
     | false, false -> "Helvetica"
 
-let private glyphKernPairs (text: string) (font: PdfFont.TrueTypeFont) (fontSize: float) characterSpacing (glyphs: Text.Engine.PositionedGlyph[]) =
+let private glyphKernPairs (text: string) (font: PdfFont.TrueTypeFont) (fontSize: float) characterSpacing (glyphs: Rbt.Text.Engine.PositionedGlyph[]) =
     let mutable count = 0
     let mutable firstX = 0.0
     let mutable firstY = 0.0

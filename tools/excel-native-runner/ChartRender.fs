@@ -8,10 +8,10 @@ open System
 open System.IO
 open System.IO.Compression
 open System.Xml.Linq
-open RedBat.Spreadsheet
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Layout
-open RedBat.Spreadsheet.Paint
+open Rbt.Spreadsheet
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Layout
+open Rbt.Spreadsheet.Paint
 
 // ---- parsing -------------------------------------------------------------
 
@@ -403,10 +403,10 @@ let parsePivots (xlsxPath: string) : PivotPlacement list =
                 |> Option.defaultValue []
             let dataF = firstDesc "dataFields" root |> Option.bind (firstDesc "dataField")
             let dataIdx = dataF |> Option.bind (attr "fld") |> Option.map int |> Option.defaultValue 0
-            let agg = dataF |> Option.bind (attr "subtotal") |> Option.bind RedBat.Spreadsheet.Pivot.parseAgg |> Option.defaultValue RedBat.Spreadsheet.Pivot.Sum
+            let agg = dataF |> Option.bind (attr "subtotal") |> Option.bind Rbt.Spreadsheet.Pivot.parseAgg |> Option.defaultValue Rbt.Spreadsheet.Pivot.Sum
             let rowIdxs = fieldsOf "rowFields"
             if not (List.isEmpty rowIdxs) && records.Length > 0 then
-                yield { Row = r0; Col = c0; Grid = RedBat.Spreadsheet.Pivot.fromCache headers records rowIdxs (fieldsOf "colFields") dataIdx agg } ]
+                yield { Row = r0; Col = c0; Grid = Rbt.Spreadsheet.Pivot.fromCache headers records rowIdxs (fieldsOf "colFields") dataIdx agg } ]
 
 // ---- slicers --------------------------------------------------------------
 

@@ -1,4 +1,4 @@
-module RedBat.Spreadsheet.Pdf.HeaderFooter
+module Rbt.Spreadsheet.Pdf.HeaderFooter
 
 /// Parse and substitute Excel's header / footer field codes. The PDF
 /// emitter calls `resolve` per page to turn the model's raw header/footer

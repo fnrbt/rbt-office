@@ -1,10 +1,10 @@
-module RedBat.Grid.Editing
+module Rbt.Grid.Editing
 
 open Fable.Core
 open Fable.Core.JsInterop
 open Browser.Types
 open Browser.Dom
-open RedBat.Grid.Types
+open Rbt.Grid.Types
 
 /// Active editor state
 type Editor = {

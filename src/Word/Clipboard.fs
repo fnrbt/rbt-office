@@ -1,4 +1,4 @@
-module RedBat.Word.Clipboard
+module Rbt.Word.Clipboard
 
 #if FABLE_COMPILER
 open Fable.Core

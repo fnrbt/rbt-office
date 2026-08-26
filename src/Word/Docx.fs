@@ -1,12 +1,12 @@
-module RedBat.Word.Docx
+module Rbt.Word.Docx
 
 open System.Text
 open System.Collections.Generic
 open Fable.Core
 open Fable.Core.JsInterop
-open RedBat.Word.Document
-open RedBat.Word.TextBuffer
-open RedBat.Word.Rope
+open Rbt.Word.Document
+open Rbt.Word.TextBuffer
+open Rbt.Word.Rope
 
 /// Block ID counter for imported documents
 let mutable private importedBlockCounter = 1000

@@ -1,9 +1,9 @@
-module RedBat.Word.WordLayout
+module Rbt.Word.WordLayout
 
 open System
 open System.Collections.Generic
-open RedBat.Word.Document
-open RedBat.Word.TextBuffer
+open Rbt.Word.Document
+open Rbt.Word.TextBuffer
 
 type Scale = {
     DxaPerUnit: float
@@ -437,7 +437,7 @@ module Floating =
     let topLevelTextBoxes (blocks: Block list) =
         blocks
         |> List.choose (function
-            | RedBat.Word.Document.TextBox textBox -> Some textBox
+            | Rbt.Word.Document.TextBox textBox -> Some textBox
             | _ -> None)
 
     let topLevelTextBoxCanvasBoxes marginLeft marginTop blocks =
@@ -889,12 +889,12 @@ module Table =
     let preferredWidthFromLegacyValue value =
         if value > 100.0 then DxaWidth value else PointWidth value
 
-    let preferredWidthFromDocument (width: RedBat.Word.Document.TableWidth) =
+    let preferredWidthFromDocument (width: Rbt.Word.Document.TableWidth) =
         match width.Kind with
-        | RedBat.Word.Document.AutoWidth -> AutoWidth
-        | RedBat.Word.Document.DxaWidth -> DxaWidth (width.Value |> Option.defaultValue 0.0)
-        | RedBat.Word.Document.PercentWidth -> PercentWidth (width.Value |> Option.defaultValue 0.0)
-        | RedBat.Word.Document.PointWidth -> PointWidth (width.Value |> Option.defaultValue 0.0)
+        | Rbt.Word.Document.AutoWidth -> AutoWidth
+        | Rbt.Word.Document.DxaWidth -> DxaWidth (width.Value |> Option.defaultValue 0.0)
+        | Rbt.Word.Document.PercentWidth -> PercentWidth (width.Value |> Option.defaultValue 0.0)
+        | Rbt.Word.Document.PointWidth -> PointWidth (width.Value |> Option.defaultValue 0.0)
 
     let resolvePreferredWidth scale availableWidth width =
         match width with

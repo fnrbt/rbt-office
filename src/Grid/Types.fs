@@ -1,4 +1,4 @@
-module RedBat.Grid.Types
+module Rbt.Grid.Types
 
 open System
 open Fable.Core

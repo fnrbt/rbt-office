@@ -1,10 +1,10 @@
-module RedBat.Word.Import
+module Rbt.Word.Import
 
 open System
-open RedBat.Word
-open RedBat.Word.Document
-open RedBat.Word.TextBuffer
-open RedBat.Word.Rope
+open Rbt.Word
+open Rbt.Word.Document
+open Rbt.Word.TextBuffer
+open Rbt.Word.Rope
 
 module EP = DocumentProcessors.EditorProcessor
 module SR = DocumentProcessors.StyleResolution
@@ -258,7 +258,7 @@ let private resolveTableParagraphProperties selector (styleMap: Map<string, Docx
 
     styleId |> Option.bind (resolve Set.empty)
 
-let private paraBorder (value: DocxReader.ParagraphBorder option) : RedBat.Word.Document.ParagraphBorder option =
+let private paraBorder (value: DocxReader.ParagraphBorder option) : Rbt.Word.Document.ParagraphBorder option =
     value |> Option.map (fun b -> {
         Style = b.Style
         Color = borderColor b.Color
@@ -266,7 +266,7 @@ let private paraBorder (value: DocxReader.ParagraphBorder option) : RedBat.Word.
         Space = parseFloat b.Space
     })
 
-let private paraBorders (value: DocxReader.ParagraphBorders option) : RedBat.Word.Document.ParagraphBorders option =
+let private paraBorders (value: DocxReader.ParagraphBorders option) : Rbt.Word.Document.ParagraphBorders option =
     value |> Option.map (fun b -> {
         Top = paraBorder b.Top
         Right = paraBorder b.Right
@@ -335,7 +335,7 @@ let private wordAutoSpacingPoints = 14.0
 let private spacingValue value auto =
     if auto = Some true then Some wordAutoSpacingPoints else twipsToPoints value
 
-let private textStyle (run: EP.EditorRun) : RedBat.Word.TextBuffer.TextStyle =
+let private textStyle (run: EP.EditorRun) : Rbt.Word.TextBuffer.TextStyle =
     {
         defaultStyle with
             Bold = run.Bold
@@ -368,7 +368,7 @@ let private textStyle (run: EP.EditorRun) : RedBat.Word.TextBuffer.TextStyle =
 let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun list) =
     let mutable offset = 0
     let parts = ResizeArray<string>()
-    let bufferRuns = ResizeArray<RedBat.Word.TextBuffer.Run>()
+    let bufferRuns = ResizeArray<Rbt.Word.TextBuffer.Run>()
 
     for run in runs do
         if run.IsImage then
@@ -503,8 +503,8 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             PageBreakBefore = props.PageBreakBefore |> Option.defaultValue false
             PageBreakAfter = para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false)
             SectionBreak = props.SectionBreak
-            SectionColumns = props.SectionColumns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: RedBat.Word.Document.SectionColumns))
-            SectionPageSetup = props.SectionGeometry |> Option.map (fun g -> ({ PageWidth = g.PageWidth; PageHeight = g.PageHeight; MarginLeft = g.MarginLeft; MarginRight = g.MarginRight; MarginTop = g.MarginTop; MarginBottom = g.MarginBottom; HeaderDistance = 36.0; FooterDistance = 36.0; DifferentFirstPage = false; EvenAndOddHeaders = false }: RedBat.Word.Document.SectionPageSetup))
+            SectionColumns = props.SectionColumns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: Rbt.Word.Document.SectionColumns))
+            SectionPageSetup = props.SectionGeometry |> Option.map (fun g -> ({ PageWidth = g.PageWidth; PageHeight = g.PageHeight; MarginLeft = g.MarginLeft; MarginRight = g.MarginRight; MarginTop = g.MarginTop; MarginBottom = g.MarginBottom; HeaderDistance = 36.0; FooterDistance = 36.0; DifferentFirstPage = false; EvenAndOddHeaders = false }: Rbt.Word.Document.SectionPageSetup))
             SectionPageNumberStart = props.SectionPageNumberStart
             RenderedPageBreakBefore = props.RenderedPageBreakBefore
             HeaderReferences = props.HeaderReferences |> List.map (fun ref -> ref.Kind, ref.RelationshipId)
@@ -750,7 +750,7 @@ let private pageSetup (doc: DocxReader.WordDocument) =
             FooterDistance = setup.FooterDistance |> Option.defaultValue defaultPageSetup.FooterDistance
             DifferentFirstPage = setup.DifferentFirstPage |> Option.defaultValue defaultPageSetup.DifferentFirstPage
             EvenAndOddHeaders = setup.EvenAndOddHeaders |> Option.defaultValue defaultPageSetup.EvenAndOddHeaders
-            Columns = setup.Columns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: RedBat.Word.Document.SectionColumns))
+            Columns = setup.Columns |> Option.map (fun c -> ({ Count = c.Count; Gap = c.Gap; Separator = c.Separator; Widths = c.Widths }: Rbt.Word.Document.SectionColumns))
             SectionStart = setup.SectionStart
         }
 

@@ -1,12 +1,12 @@
-module RedBat.Word.Paint
+module Rbt.Word.Paint
 
 open System.Collections.Generic
-open RedBat.Word.Layout
-open RedBat.Word.Document
-open RedBat.Word.TextBuffer
-open RedBat.Word.WordStyles
+open Rbt.Word.Layout
+open Rbt.Word.Document
+open Rbt.Word.TextBuffer
+open Rbt.Word.WordStyles
 
-module Eq = RedBat.Word.Math
+module Eq = Rbt.Word.Math
 
 let private equalsIgnoreCase (left: string) (right: string) =
     System.String.Equals(left, right, System.StringComparison.OrdinalIgnoreCase)
@@ -1667,7 +1667,7 @@ let private documentHasMultiColumnLayout (doc: Document) =
     let mutable found = sectionColumnsAreMulti doc.PageSetup.Columns
     for block in doc.Blocks do
         if not found then
-            match RedBat.Word.Document.tryGetParagraph block with
+            match Rbt.Word.Document.tryGetParagraph block with
             | Some para -> found <- sectionColumnsAreMulti para.Metadata.SectionColumns
             | None -> ()
     found
@@ -1817,7 +1817,7 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
             addNestedTableBorders (Some styleContext) settings measureText measureRange index commands tableBlock
         | TextBox textBox -> commands.AddRange(textBoxCommands settings fontFamily measureText measureRange textBox)
         | _ ->
-            match RedBat.Word.Document.tryGetParagraph block with
+            match Rbt.Word.Document.tryGetParagraph block with
             | None -> ()
             | Some para ->
                 match tryFirstBlockLayout para.Id index with

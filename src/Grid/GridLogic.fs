@@ -1,6 +1,6 @@
 /// Grid Logic Module - Pure computational functions for virtual scrolling
 /// No DOM manipulation - meant to be called from SolidJS
-module RedBat.Grid.Logic
+module Rbt.Grid.Logic
 
 open Fable.Core
 open Fable.Core.JsInterop

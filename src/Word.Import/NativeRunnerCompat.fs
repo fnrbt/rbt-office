@@ -1,3 +1,3 @@
 module NativeRunner
 
-let importDoc = RedBat.Word.Import.importDoc
+let importDoc = Rbt.Word.Import.importDoc

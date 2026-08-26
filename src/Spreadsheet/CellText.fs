@@ -1,7 +1,7 @@
-module RedBat.Spreadsheet.CellText
+module Rbt.Spreadsheet.CellText
 
 open System.Collections.Generic
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
 let private resizeArrayToList (items: List<'T>) =
     let mutable result = []

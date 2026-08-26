@@ -1,9 +1,9 @@
-module RedBat.Spreadsheet.Paint
+module Rbt.Spreadsheet.Paint
 
 open System.Collections.Generic
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Layout
-open RedBat.Spreadsheet.CellText
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Layout
+open Rbt.Spreadsheet.CellText
 
 type Color = string
 

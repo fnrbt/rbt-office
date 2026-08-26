@@ -2,11 +2,11 @@ module ExcelNativeRunner
 
 open System
 open System.IO
-open Renderer
+open Rbt.Renderer
 
 module Xlsx = XlsxReader
 
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
 let private usage () =
     eprintfn "Usage: dotnet run --project tools/excel-native-runner -- <input.xlsx> <output.png> [width] [height] [sheetIndex|all] [jsonOut]"
@@ -39,7 +39,7 @@ let private findFont () =
 
 let private initFont () =
     match findFont () with
-    | Some path -> Composit.Ui.Layout.initFont path
+    | Some path -> Rbt.Widgets.Composit.Ui.Layout.initFont path
     | None ->
         eprintfn "warning: calibri.ttf not found in RB_WORD_FONT_DIR or known font dirs; row/column headers will fall back to NotoSans"
 
@@ -706,7 +706,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                 |> Option.bind parseCellRange
                                 |> Option.map (fun (r1, c1, _, _) -> r1, c1)
                                 |> Option.defaultValue (0, 0)
-                            match RedBat.Spreadsheet.Formula.parseFormula ("=" + formulaText) with
+                            match Rbt.Spreadsheet.Formula.parseFormula ("=" + formulaText) with
                             | Ok baseExpr ->
                                 let evalModel = { createEmpty 1048576 16384 with Cells = acc }
                                 let truthy (v: CellValue) =
@@ -721,8 +721,8 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                                     match Map.tryFind addr acc with
                                     | Some cd ->
                                         let shifted =
-                                            RedBat.Spreadsheet.Formula.shiftExpr (r - anchorR) (c - anchorC) baseExpr
-                                        if truthy (RedBat.Spreadsheet.Formula.eval shifted (RedBat.Spreadsheet.Formula.contextOf evalModel)) then
+                                            Rbt.Spreadsheet.Formula.shiftExpr (r - anchorR) (c - anchorC) baseExpr
+                                        if truthy (Rbt.Spreadsheet.Formula.eval shifted (Rbt.Spreadsheet.Formula.contextOf evalModel)) then
                                             let fmt =
                                                 { cd.Format with
                                                     BgColor = d.FillColor |> Option.orElse cd.Format.BgColor
@@ -782,7 +782,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         else None
     let mdw =
         try
-            let font = Composit.Ui.SpreadsheetGrid.rendererFontFor defaultFontName false false
+            let font = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.rendererFontFor defaultFontName false false
             let pxSize = defaultFontSize * 96.0 / 72.0
             // Excel's MDW table is the integer pixel advance Excel uses for
             // chars-to-pixels column-width math at 96 DPI. Empirically:
@@ -799,7 +799,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             // Calibri sizes ≥ 11; `max(floor(measured), pt-4)` therefore
             // covers both the small-size (floor wins, e.g. Verdana 10 = 8)
             // and large-size (pt-4 wins, e.g. Calibri 14 = 10) regimes.
-            let zero = Renderer.Text.measureWidth font pxSize "0"
+            let zero = Rbt.Renderer.Text.measureWidth font pxSize "0"
             let measured = System.Math.Floor zero
             let ptBased = defaultFontSize - 4.0
             max 7.0 (max measured ptBased)
@@ -891,7 +891,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             System.Math.Round(raw * 4.0 / 3.0) * 3.0 / 4.0
         | None ->
         try
-            let font = Composit.Ui.SpreadsheetGrid.rendererFontFor familyName false false
+            let font = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.rendererFontFor familyName false false
             let em = float font.OtFont.Head.UnitsPerEm
             let ptToPx = 96.0 / 72.0
             let unit2px (units: float) = units / em * fontPt * ptToPx
@@ -1133,7 +1133,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
     // Auto-grow rows for wrapText cells. Excel auto-sizes the row to
     // accommodate wrapped text whenever a row has no explicit `ht`. We
     // measure the cell's text against its column width (real font metrics
-    // via Renderer.Text.measureWidth, with `mdw × len` as the fallback),
+    // via Rbt.Renderer.Text.measureWidth, with `mdw × len` as the fallback),
     // count wrap lines through Paint.wrapLines (which respects literal
     // `\n` and breaks on word boundaries), and bump rowHeights[r] when
     // the wrapped block exceeds the current height. Skipped when the
@@ -1150,12 +1150,12 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
             match fontCache.TryGetValue key with
             | true, f -> f
             | _ ->
-                let f = Composit.Ui.SpreadsheetGrid.rendererFontFor familyName bold italic
+                let f = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.rendererFontFor familyName bold italic
                 fontCache.[key] <- f
                 f
         let measureCell (familyName: string option) (bold: bool) (italic: bool) (fontPx: float) (text: string) : float =
             try
-                Renderer.Text.measureWidth (getFont familyName bold italic) fontPx text
+                Rbt.Renderer.Text.measureWidth (getFont familyName bold italic) fontPx text
             with _ -> float text.Length * mdw
         let mutable result = rowHeights
         for KeyValue(addr, cd) in cells do
@@ -1182,7 +1182,7 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
                 let lineCount =
                     if cd.Format.WrapText then
                         let measure = fun (s: string) -> measureCell cd.Format.FontName cd.Format.Bold cd.Format.Italic fontPx s
-                        let lines = RedBat.Spreadsheet.CellText.wrapLines (Some measure) colWidth fontPt text
+                        let lines = Rbt.Spreadsheet.CellText.wrapLines (Some measure) colWidth fontPt text
                         lines.Length
                     else
                         // Hard-break only: split on \n without word-wrap.
@@ -1344,17 +1344,17 @@ let toModel (sheet: Xlsx.Worksheet) (workbook: Xlsx.Workbook) : SpreadsheetModel
         CfBoldCells = cfBoldCells
         ShowGridLines = sheet.ShowGridLines }
 
-/// Build a RedBat.Spreadsheet workbook context from the parsed XLSX: every
+/// Build a Rbt.Spreadsheet workbook context from the parsed XLSX: every
 /// sheet's model plus the workbook's defined names. This is what the
 /// formula engine needs to resolve cross-sheet references and named ranges
 /// during recalculation. Sheet ids are positional (`sheet1`, `sheet2`, …)
 /// so a caller can map an Xlsx sheet index straight to its context entry.
-let private buildWorkbookContext (xlsxWb: Xlsx.Workbook) : RedBat.Spreadsheet.Workbook.Workbook =
+let private buildWorkbookContext (xlsxWb: Xlsx.Workbook) : Rbt.Spreadsheet.Workbook.Workbook =
     let sheets =
         xlsxWb.Sheets
         |> List.mapi (fun i ws ->
             let id = sprintf "sheet%d" (i + 1)
-            let s : RedBat.Spreadsheet.Workbook.Sheet =
+            let s : Rbt.Spreadsheet.Workbook.Sheet =
                 { Id = id; Name = ws.Name; Model = toModel ws xlsxWb; Visible = true }
             id, s)
     // Bridge each sheet's XLSX table definitions into structured-reference
@@ -1368,7 +1368,7 @@ let private buildWorkbookContext (xlsxWb: Xlsx.Workbook) : RedBat.Spreadsheet.Wo
             |> List.filter (fun t -> t.Name <> "")
             |> List.map (fun t ->
                 let tbl =
-                    RedBat.Spreadsheet.Workbook.makeTableFromRegion
+                    Rbt.Spreadsheet.Workbook.makeTableFromRegion
                         id t.Name t.StartRow t.StartCol t.EndRow t.EndCol
                         t.HeaderRowCount t.TotalsRowCount t.Columns s.Model
                 t.Name, tbl))
@@ -1384,7 +1384,7 @@ let private buildWorkbookContext (xlsxWb: Xlsx.Workbook) : RedBat.Spreadsheet.Wo
                 |> Option.bind (fun s -> match Int32.TryParse s with | true, i -> Some i | _ -> None)
                 |> Option.map (fun i -> sprintf "sheet%d" (i + 1))
             scope, nr.Name, nr.RefersTo)
-        |> RedBat.Spreadsheet.Workbook.namesOfTriples
+        |> Rbt.Spreadsheet.Workbook.namesOfTriples
     { Sheets = Map.ofList sheets
       SheetOrder = sheets |> List.map fst
       ActiveSheet = (match sheets with (id, _) :: _ -> id | [] -> "sheet1")
@@ -1407,13 +1407,13 @@ let private escapeJson (value: string) =
     sb.ToString()
 
 let private cellInfoJson (sheetName: string) (model: SpreadsheetModel) =
-    let columnLetter col = RedBat.Spreadsheet.Model.columnToLetter col
-    let viewport = RedBat.Spreadsheet.Layout.defaultViewport 0.0 0.0
+    let columnLetter col = Rbt.Spreadsheet.Model.columnToLetter col
+    let viewport = Rbt.Spreadsheet.Layout.defaultViewport 0.0 0.0
     let records =
         model.Cells
         |> Map.toList
         |> List.map (fun (addr, data) ->
-            let rect = RedBat.Spreadsheet.Layout.cellRect model viewport addr.Row addr.Col
+            let rect = Rbt.Spreadsheet.Layout.cellRect model viewport addr.Row addr.Col
             let display =
                 match data.Value with
                 | Number n -> string n
@@ -1442,7 +1442,7 @@ let private cellInfoJson (sheetName: string) (model: SpreadsheetModel) =
 let private renderSheetToPath
     (inputPath: string) (outputPath: string) (jsonPath: string option)
     (width: int) (height: int)
-    (sheetIndex: int) (sheet: Xlsx.Worksheet) (wbContext: RedBat.Spreadsheet.Workbook.Workbook) =
+    (sheetIndex: int) (sheet: Xlsx.Worksheet) (wbContext: Rbt.Spreadsheet.Workbook.Workbook) =
     // Pull this sheet's pre-built model out of the workbook context, then
     // run a formula pass: cells with a cached <v> already arrived as plain
     // values, so this only touches genuinely uncalculated formulas — and
@@ -1454,8 +1454,8 @@ let private renderSheetToPath
         | None -> createEmpty 1048576 16384
     let model =
         let m =
-            RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) (Some sheetId) baseModel
-            |> RedBat.Spreadsheet.Formula.spillArrays (Some wbContext) (Some sheetId)
+            Rbt.Spreadsheet.Formula.recalculateAllFormulas (Some wbContext) (Some sheetId) baseModel
+            |> Rbt.Spreadsheet.Formula.spillArrays (Some wbContext) (Some sheetId)
         // Opt-in: recompute pivot tables from their cache and place the live
         // result (cached pivot cells already render, so this is off by default
         // to leave the parity corpus untouched).
@@ -1470,35 +1470,35 @@ let private renderSheetToPath
         else m
 
     // Overlay charts and sparklines at their anchor / cell rects.
-    let viewport = Composit.Ui.SpreadsheetGrid.viewportOf model (float width) (float height)
+    let viewport = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.viewportOf model (float width) (float height)
     let chartItems =
         ChartRender.parseAllCharts inputPath
         |> List.collect (fun pl ->
-            let f = RedBat.Spreadsheet.Layout.cellRect model viewport pl.FromRow pl.FromCol
-            let t = RedBat.Spreadsheet.Layout.cellRect model viewport pl.ToRow pl.ToCol
+            let f = Rbt.Spreadsheet.Layout.cellRect model viewport pl.FromRow pl.FromCol
+            let t = Rbt.Spreadsheet.Layout.cellRect model viewport pl.ToRow pl.ToCol
             let left = f.X + pl.FromColOffPx
             let top = f.Y + pl.FromRowOffPx
             let w = (t.X + pl.ToColOffPx) - left
             let h = (t.Y + pl.ToRowOffPx) - top
-            [ RedBat.Spreadsheet.Paint.VecGroup((1.0, 0.0, 0.0, 1.0, left, top), ChartRender.buildChart pl.Spec w h) ])
+            [ Rbt.Spreadsheet.Paint.VecGroup((1.0, 0.0, 0.0, 1.0, left, top), ChartRender.buildChart pl.Spec w h) ])
     let sparkItems =
         ChartRender.parseSparklines inputPath sheetIndex
         |> List.collect (fun sp ->
-            let r = RedBat.Spreadsheet.Layout.cellRect model viewport sp.Row sp.Col
+            let r = Rbt.Spreadsheet.Layout.cellRect model viewport sp.Row sp.Col
             ChartRender.buildSparkline sp r)
     let slicerItems =
         ChartRender.parseSlicers inputPath
         |> List.collect (fun sl ->
-            let f = RedBat.Spreadsheet.Layout.cellRect model viewport sl.FromRow sl.FromCol
-            let t = RedBat.Spreadsheet.Layout.cellRect model viewport sl.ToRow sl.ToCol
-            let rect : RedBat.Spreadsheet.Layout.Rect =
+            let f = Rbt.Spreadsheet.Layout.cellRect model viewport sl.FromRow sl.FromCol
+            let t = Rbt.Spreadsheet.Layout.cellRect model viewport sl.ToRow sl.ToCol
+            let rect : Rbt.Spreadsheet.Layout.Rect =
                 { X = f.X + sl.FromColOffPx; Y = f.Y + sl.FromRowOffPx
                   Width = (t.X + sl.ToColOffPx) - (f.X + sl.FromColOffPx)
                   Height = (t.Y + sl.ToRowOffPx) - (f.Y + sl.FromRowOffPx) }
             ChartRender.buildSlicer sl rect)
-    let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float width) (float height) model (chartItems @ sparkItems @ slicerItems)
+    let widget = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.widgetWith (float width) (float height) model (chartItems @ sparkItems @ slicerItems)
     let backend = Raster.create()
-    let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend width height widget
+    let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend width height widget
     let png = PngEncode.encode framebuffer
 
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
@@ -1577,17 +1577,17 @@ let main argv =
             | false, _ -> fallback
         let jsonEnv = Environment.GetEnvironmentVariable("EXCEL_NATIVE_JSON")
         let jsonOpt = if String.IsNullOrWhiteSpace jsonEnv then None else Some (fullPath jsonEnv)
-        let renderDialogPng (path: string) (spec: RedBat.Office.Ui.DialogSpec) (w: int) (h: int) : int =
+        let renderDialogPng (path: string) (spec: Rbt.Office.Ui.DialogSpec) (w: int) (h: int) : int =
             Wisp.Layout.Scheduler.requestFrame <- ignore
             let mutable root = Unchecked.defaultof<Wisp.Layout.Element>
             let dispose = Wisp.Reactive.createRoot (fun dispose ->
-                root <- Wisp.OfficeShell.dialogPreview RedBat.Spreadsheet.Ui.chrome spec
+                root <- Wisp.OfficeShell.dialogPreview Rbt.Spreadsheet.Ui.chrome spec
                 dispose)
             root.Layout(Wisp.Layout.BoxConstraints.tightWH (float w) (float h))
             Wisp.Layout.flushLayout ()
             let cmds = Clear Color.white :: root.Paint(0.0, 0.0)
             let backend = Raster.create()
-            let framebuffer = Renderer.Scene.render backend w h cmds
+            let framebuffer = Rbt.Renderer.Scene.render backend w h cmds
             dispose ()
             File.WriteAllBytes(path, PngEncode.encode framebuffer)
             0
@@ -1601,9 +1601,9 @@ let main argv =
             | Some spec ->
                 let w, h = ChartRender.parseAnchorSize (fullPath input) chartIdx
                 let items = ChartRender.buildChart spec w h
-                let widget = Composit.Ui.SpreadsheetGrid.renderScene w h items
+                let widget = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.renderScene w h items
                 let backend = Raster.create()
-                let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend (int (ceil w)) (int (ceil h)) widget
+                let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend (int (ceil w)) (int (ceil h)) widget
                 File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
                 0
         | [| "--pivottest"; output |] ->
@@ -1621,7 +1621,7 @@ let main argv =
                    [| S "West"; S "Cherries"; N 300.0 |]
                    [| S "East"; S "Cherries"; N 120.0 |] |]
             // Nested rows (Region → Product) with subtotals + two measures.
-            let pivot = RedBat.Spreadsheet.Pivot.computePivotN source [ 0; 1 ] [ (2, RedBat.Spreadsheet.Pivot.Sum); (2, RedBat.Spreadsheet.Pivot.Count) ]
+            let pivot = Rbt.Spreadsheet.Pivot.computePivotN source [ 0; 1 ] [ (2, Rbt.Spreadsheet.Pivot.Sum); (2, Rbt.Spreadsheet.Pivot.Count) ]
             let bold = { defaultFormat with Bold = true }
             let endsTotal (v: CellValue) = match v with CellValue.String s -> s.EndsWith "Total" | _ -> false
             let place (grid: CellValue[][]) r0 c0 boldTotals (model: SpreadsheetModel) =
@@ -1633,31 +1633,31 @@ let main argv =
                 m
             let model = createEmpty 40 16 |> place source 0 0 false |> place pivot 0 5 true
             let w, h = 1000, 360
-            let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) model []
+            let widget = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) model []
             let backend = Raster.create()
-            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend w h widget
             File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
             0
         | [| "--dialogtest"; output |] ->
             // Render the Insert-Pivot dialog standalone (headless) — proves the
             // pivot UI's DialogSpec paints through the native shell.
-            let samplePreview (_: RedBat.Spreadsheet.Ui.PivotUiRequest) =
+            let samplePreview (_: Rbt.Spreadsheet.Ui.PivotUiRequest) =
                 "=GROUPBY(A2:A8,C2:C8,\"sum\")\nEast    470\nWest    700\nGrand Total    1170"
-            let spec = RedBat.Spreadsheet.Ui.pivotTableDialog samplePreview (fun _ -> true)
+            let spec = Rbt.Spreadsheet.Ui.pivotTableDialog samplePreview (fun _ -> true)
             renderDialogPng (fullPath output) spec 560 780
         | [| "--filterdialogtest"; output |] ->
-            let spec = RedBat.Spreadsheet.Ui.filterDialog "Region" [ "East"; "North"; "South"; "West" ] (fun _ -> ())
+            let spec = Rbt.Spreadsheet.Ui.filterDialog "Region" [ "East"; "North"; "South"; "West" ] (fun _ -> ())
             renderDialogPng (fullPath output) spec 480 460
         | [| "--macrodialogtest"; output |] ->
             let spec =
-                RedBat.Spreadsheet.Ui.macroDialog
+                Rbt.Spreadsheet.Ui.macroDialog
                     "Sub Main()\n  Range(\"A1\").Value = 42\nEnd Sub\nMain()"
                     (fun _ -> ())
             renderDialogPng (fullPath output) spec 560 520
         | [| "--formatdialogtest"; output |] ->
             // Format-cells dialog with a live "Sample" preview that re-renders the
             // chosen number format through the real cell renderer.
-            let spec = RedBat.Spreadsheet.Ui.formatCellsDialog "currency" "#000000" "#FFFFFF" (fun _ -> ())
+            let spec = Rbt.Spreadsheet.Ui.formatCellsDialog "currency" "#000000" "#FFFFFF" (fun _ -> ())
             renderDialogPng (fullPath output) spec 560 520
         | [| "--autofiltertest"; outputBefore; outputAfter |] ->
             // AutoFilter end-to-end: render the same sheet unfiltered, then with
@@ -1687,9 +1687,9 @@ let main argv =
             let filtered = applyFilter 0 (Set.ofList [ "East"; "West" ]) baseModel
             let w, h = 360, 280
             let renderTo path model =
-                let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) model []
+                let widget = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) model []
                 let backend = Raster.create()
-                let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+                let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend w h widget
                 File.WriteAllBytes(fullPath path, PngEncode.encode framebuffer)
             renderTo outputBefore baseModel
             renderTo outputAfter filtered
@@ -1705,17 +1705,17 @@ let main argv =
                 let ctx = buildWorkbookContext wb
                 printfn "Bridged tables: %d" (Map.count ctx.Tables)
                 ctx.Tables
-                |> Map.iter (fun name (t: RedBat.Spreadsheet.Workbook.Table) ->
+                |> Map.iter (fun name (t: Rbt.Spreadsheet.Workbook.Table) ->
                     printfn "  %s  rows %d..%d cols %d..%d  headers=%b totals=%b  cols=[%s]"
                         name t.StartRow t.EndRow t.StartCol t.EndCol t.HasHeaders t.HasTotals (String.concat "," t.Columns))
                 let sheetId = "sheet1"
                 let model0 = (Map.find sheetId ctx.Sheets).Model
-                let model = RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some ctx) (Some sheetId) model0
-                let ev (s: string) = RedBat.Spreadsheet.Formula.evaluateFormula s model (Some ctx)
+                let model = Rbt.Spreadsheet.Formula.recalculateAllFormulas (Some ctx) (Some sheetId) model0
+                let ev (s: string) = Rbt.Spreadsheet.Formula.evaluateFormula s model (Some ctx)
                 match ctx.Tables |> Map.toList with
                 | (name, t) :: _ when not (List.isEmpty t.Columns) ->
                     let col0 = List.head t.Columns
-                    let colLetter = RedBat.Spreadsheet.Model.columnToLetter t.StartCol
+                    let colLetter = Rbt.Spreadsheet.Model.columnToLetter t.StartCol
                     let r0 = t.StartRow + (if t.HasHeaders then 1 else 0) + 1
                     let r1 = t.EndRow + 1
                     // COUNTA over the data column (non-zero, regardless of text
@@ -1752,7 +1752,7 @@ let main argv =
                         setCell { Row = r; Col = c } { Value = v; Format = (if r = 0 then bold else defaultFormat); Comment = None } acc) m)
                     (createEmpty 20 8)
             // Register the table (header row 0, data rows 1..3) + totals row.
-            let withTable = RedBat.Spreadsheet.Model.createTable "Sales" 0 0 3 2 true m0
+            let withTable = Rbt.Spreadsheet.Model.createTable "Sales" 0 0 3 2 true m0
             // A structured-ref demo cell below the table.
             let withDemo =
                 setCell { Row = 6; Col = 0 } { Value = S "SUM(Sales[Q1]) ="; Format = defaultFormat; Comment = None } withTable
@@ -1760,21 +1760,21 @@ let main argv =
             // Bridge the model table into a workbook so structured refs resolve.
             let mt = List.last withDemo.Tables
             let wtable =
-                RedBat.Spreadsheet.Workbook.makeTableFromRegion
+                Rbt.Spreadsheet.Workbook.makeTableFromRegion
                     "sheet1" mt.Name mt.StartRow mt.StartCol mt.EndRow mt.EndCol
                     mt.HeaderRowCount (if mt.HasTotals then 1 else 0) [] withDemo
-            let wb : RedBat.Spreadsheet.Workbook.Workbook =
-                { Sheets = Map.ofList [ "sheet1", ({ Id="sheet1"; Name="Sheet1"; Model=withDemo; Visible=true }: RedBat.Spreadsheet.Workbook.Sheet) ]
+            let wb : Rbt.Spreadsheet.Workbook.Workbook =
+                { Sheets = Map.ofList [ "sheet1", ({ Id="sheet1"; Name="Sheet1"; Model=withDemo; Visible=true }: Rbt.Spreadsheet.Workbook.Sheet) ]
                   SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"
                   Tables = Map.ofList [ mt.Name, wtable ]; Names = Map.empty }
-            let recomputed = RedBat.Spreadsheet.Formula.recalculateAllFormulas (Some wb) (Some "sheet1") withDemo
+            let recomputed = Rbt.Spreadsheet.Formula.recalculateAllFormulas (Some wb) (Some "sheet1") withDemo
             let w, h = 360, 260
-            let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) recomputed []
+            let widget = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) recomputed []
             let backend = Raster.create()
-            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend w h widget
             File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
             // Also echo the computed values for a textual check.
-            let v (r:int) (c:int) = RedBat.Spreadsheet.Model.displayValue (getCellValue { Row=r; Col=c } recomputed)
+            let v (r:int) (c:int) = Rbt.Spreadsheet.Model.displayValue (getCellValue { Row=r; Col=c } recomputed)
             printfn "totals row: %s | %s | %s" (v 4 0) (v 4 1) (v 4 2)
             printfn "SUM(Sales[Q1]) = %s" (v 6 1)
             0
@@ -1793,9 +1793,9 @@ let main argv =
                 let filtered = applyFilter 0 (Set.ofList [ "1"; "3" ]) model
                 let w, h = 700, 280
                 let renderTo path m =
-                    let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) m []
+                    let widget = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) m []
                     let backend = Raster.create()
-                    let fb = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+                    let fb = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend w h widget
                     File.WriteAllBytes(fullPath path, PngEncode.encode fb)
                 renderTo outBefore model
                 renderTo outAfter filtered
@@ -1818,18 +1818,18 @@ let main argv =
                 |> header 2 "Color scale" |> putCol 2 vals |> applyColorScale 1 2 lastRow 2 "#F8696B" (Some "#FFEB84") "#63BE7B"
                 |> header 4 "Icon set" |> putCol 4 vals |> applyIconSet 1 4 lastRow 4 3
             let w, h = 560, 320
-            let widget = Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) model []
+            let widget = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.widgetWith (float w) (float h) model []
             let backend = Raster.create()
-            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend w h widget
             File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
             0
         | [| "--vectortest"; output |] ->
             // Render the hand-built vector scene (VecPath/VecGroup) through the
             // native rasterizer — proves the new paint primitives end-to-end.
             let w, h = 400, 280
-            let widget = Composit.Ui.SpreadsheetGrid.renderScene (float w) (float h) RedBat.Spreadsheet.Paint.vectorTestScene
+            let widget = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.renderScene (float w) (float h) Rbt.Spreadsheet.Paint.vectorTestScene
             let backend = Raster.create()
-            let framebuffer = Composit.Ui.Render.renderWithBg Color.white backend w h widget
+            let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend w h widget
             File.WriteAllBytes(fullPath output, PngEncode.encode framebuffer)
             0
         | [| input; output |] ->

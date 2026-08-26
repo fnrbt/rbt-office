@@ -1,6 +1,6 @@
-module RedBat.Spreadsheet.Pdf.Pagination
+module Rbt.Spreadsheet.Pdf.Pagination
 
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
 /// 2D page-break computation for spreadsheet printing.
 ///

@@ -1,8 +1,8 @@
-module RedBat.FableUI.OfficeUiDialog
+module Rbt.FableUI.OfficeUiDialog
 
 #if FABLE_COMPILER
 
-// Backend-specific renderer for `RedBat.Office.Ui.DialogSpec` values.
+// Backend-specific renderer for `Rbt.Office.Ui.DialogSpec` values.
 // Native rendering lives in OfficeShell.fs; this module is the Fable/DOM
 // twin so apps can hand the same DialogSpec to both shells.
 //
@@ -10,7 +10,7 @@ module RedBat.FableUI.OfficeUiDialog
 //
 //     let dialogState = OfficeUiDialog.createState ()
 //
-//     // Wire menu/toolbar actions to open dialogs from RedBat.Word.Ui:
+//     // Wire menu/toolbar actions to open dialogs from Rbt.Word.Ui:
 //     let openFind () =
 //         WordUi.findReplaceDialog onFindNext onReplaceAll
 //         |> OfficeUiDialog.openDialog dialogState
@@ -26,9 +26,9 @@ module RedBat.FableUI.OfficeUiDialog
 // the rules into your existing CSS) for the out-of-the-box look.
 
 open System.Collections.Generic
-open RedBat.Office.Ui
-open RedBat.FableUI.Reactive
-open RedBat.FableUI.Dom
+open Rbt.Office.Ui
+open Rbt.FableUI.Reactive
+open Rbt.FableUI.Dom
 
 /// Captures the open dialog plus per-field value signals so the renderer
 /// can read and write field values reactively.

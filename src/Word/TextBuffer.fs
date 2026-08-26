@@ -1,6 +1,6 @@
-module RedBat.Word.TextBuffer
+module Rbt.Word.TextBuffer
 
-open RedBat.Word.Rope
+open Rbt.Word.Rope
 
 let private resizeArrayToList (items: ResizeArray<'T>) =
     let mutable result = []

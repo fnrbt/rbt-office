@@ -9,9 +9,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/OfficeUi/RedBat.OfficeUi.fsproj" />
-    <ProjectReference Include="../../src/FableUI/RedBat.FableUI.fsproj" />
-    <ProjectReference Include="../../src/Word/RedBat.Word.fsproj" />
+    <ProjectReference Include="../../src/OfficeUi/Rbt.OfficeUi.fsproj" />
+    <ProjectReference Include="../../src/FableUI/Rbt.FableUI.fsproj" />
+    <ProjectReference Include="../../src/Word/Rbt.Word.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

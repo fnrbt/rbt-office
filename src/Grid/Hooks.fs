@@ -1,8 +1,8 @@
-module RedBat.Grid.Hooks
+module Rbt.Grid.Hooks
 
 open Fable.Core
 open Fable.Core.JsInterop
-open RedBat.Grid.Dom
+open Rbt.Grid.Dom
 
 /// Cell context for rendering/editing
 type CellContext = {

@@ -2,13 +2,13 @@ module PdfRunner
 
 open System
 open System.IO
-open RedBat.Word
+open Rbt.Word
 
-module Doc = RedBat.Word.Document
-module WordImport = RedBat.Word.Import
-module WordLayout = RedBat.Word.Layout
-module WordModelLayout = RedBat.Word.WordLayout
-module WordPdf = RedBat.Word.Pdf
+module Doc = Rbt.Word.Document
+module WordImport = Rbt.Word.Import
+module WordLayout = Rbt.Word.Layout
+module WordModelLayout = Rbt.Word.WordLayout
+module WordPdf = Rbt.Word.Pdf
 
 let private usage () =
     eprintfn "Usage: dotnet run --project tools/pdf-runner -- <input.docx> <output.pdf>"
@@ -52,9 +52,9 @@ let private tryFace faceName family bold italic fileName =
             Bold = bold
             Italic = italic
             Data = File.ReadAllBytes path
-        }: RedBat.Word.Pdf.FontFace)
+        }: Rbt.Word.Pdf.FontFace)
 
-let private pdfOptions () : RedBat.Word.Pdf.RenderOptions =
+let private pdfOptions () : Rbt.Word.Pdf.RenderOptions =
     let windowsFaces =
         [
             tryFace "Calibri" "Calibri" false false "calibri.ttf"
@@ -93,7 +93,7 @@ let private pdfOptions () : RedBat.Word.Pdf.RenderOptions =
             Bold = false
             Italic = false
             Data = fallbackBytes
-        }: RedBat.Word.Pdf.FontFace
+        }: Rbt.Word.Pdf.FontFace
 
     let defaultFamily =
         if windowsFaces |> List.exists (fun face -> face.Family = "Calibri" && not face.Bold && not face.Italic) then "Calibri"
@@ -109,11 +109,11 @@ let private pdfOptions () : RedBat.Word.Pdf.RenderOptions =
         Images = []
     }
 
-let private decodeImageResources (wordDoc: DocxReader.WordDocument) : RedBat.Word.Pdf.ImageResource list =
+let private decodeImageResources (wordDoc: DocxReader.WordDocument) : Rbt.Word.Pdf.ImageResource list =
     wordDoc.Images
     |> Map.toList
     |> List.choose (fun (_, dataUrl) ->
-        match FsPdf.Image.fromDataUrl dataUrl with
+        match Rbt.Pdf.Image.fromDataUrl dataUrl with
         | Ok info ->
             Some ({
                 Source = dataUrl
@@ -123,7 +123,7 @@ let private decodeImageResources (wordDoc: DocxReader.WordDocument) : RedBat.Wor
                 BitsPerComponent = info.BitsPerComponent
                 Data = info.Data
                 Filter = info.Filter
-            }: RedBat.Word.Pdf.ImageResource)
+            }: Rbt.Word.Pdf.ImageResource)
         | Error _ -> None)
 
 // 1-based index of the page whose band contains y, using the actual per-page
@@ -243,8 +243,8 @@ let private writeProjectPdf (inputPath: string) (outputPath: string) =
         | Some parsed -> parsed
         | None -> failwithf "Could not parse DOCX: %s" inputPath
     let options = { pdfOptions() with Images = decodeImageResources wordDoc }
-    let doc = WordImport.importDoc wordDoc |> refreshFieldsForPdf options
-    let bytes = RedBat.Word.Pdf.toBytes options doc
+    let doc = Rbt.WordImport.importDoc wordDoc |> refreshFieldsForPdf options
+    let bytes = Rbt.Word.Pdf.toBytes options doc
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, bytes)
     printfn "pdf runner ok: %s -> %s (%d bytes)" inputPath outputPath bytes.Length

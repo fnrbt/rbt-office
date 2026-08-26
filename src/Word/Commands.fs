@@ -1,7 +1,7 @@
-module RedBat.Word.Commands
+module Rbt.Word.Commands
 
-open RedBat.Word.Document
-open RedBat.Word.TextBuffer
+open Rbt.Word.Document
+open Rbt.Word.TextBuffer
 
 /// Command interface for undo/redo
 type ICommand =

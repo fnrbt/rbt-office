@@ -9,10 +9,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/Office.Formats/OfficeFormat.fsproj" />
-    <ProjectReference Include="../../src/Word/RedBat.Word.fsproj" />
+    <ProjectReference Include="../../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
+    <ProjectReference Include="../../src/Word/Rbt.Word.fsproj" />
     <!-- ../text shaping engine (Fable-compiled) for the optional ?measure=text path -->
-    <ProjectReference Include="../../src/ShaperText/RedBat.Word.ShaperText.fsproj" />
+    <ProjectReference Include="../../src/ShaperText/Rbt.Word.ShaperText.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

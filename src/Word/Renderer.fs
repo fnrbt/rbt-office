@@ -1,13 +1,13 @@
-module RedBat.Word.Renderer
+module Rbt.Word.Renderer
 
 #if FABLE_COMPILER
 open System
 open Fable.Core
 open Browser.Types
-open RedBat.Word.Document
-open RedBat.Word.TextBuffer
-open RedBat.Word.Layout
-open RedBat.Word.Paint
+open Rbt.Word.Document
+open Rbt.Word.TextBuffer
+open Rbt.Word.Layout
+open Rbt.Word.Paint
 
 type PaintFrame = {
     Document: Document
@@ -86,7 +86,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextMeasurer = None
     TextRangeMeasurer = None
     TextPathPainter = None
-    LayoutState = RedBat.Word.Layout.createIncrementalLayoutState ()
+    LayoutState = Rbt.Word.Layout.createIncrementalLayoutState ()
     LastPaint = None
 }
 
@@ -128,7 +128,7 @@ let layoutSettings (ctx: RenderContext) (doc: Document) =
     FontSize = ctx.FontSize
     LineHeight = ctx.LineHeight
     PaddingLeft = doc.PageSetup.MarginLeft
-    PaddingTop = RedBat.Word.WordLayout.Page.bodyTopWithRunningHeader doc
+    PaddingTop = Rbt.Word.WordLayout.Page.bodyTopWithRunningHeader doc
     MarginRight = doc.PageSetup.MarginRight
     MarginBottom = max doc.PageSetup.MarginBottom footerReserve
     InTableCell = false
@@ -147,7 +147,7 @@ let measureRangeWithContext ctx text style start length =
     | None -> rangeMeasurerFromTextMeasurer (measureWithContext ctx) text style start length
 
 let layoutDocument (ctx: RenderContext) (doc: Document) =
-    RedBat.Word.Layout.layoutDocumentIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
+    Rbt.Word.Layout.layoutDocumentIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
 
 let cachedLayouts (ctx: RenderContext) (doc: Document) =
     match ctx.LayoutState.LastDocument, ctx.LayoutState.LastLayouts with
@@ -155,7 +155,7 @@ let cachedLayouts (ctx: RenderContext) (doc: Document) =
     | _ -> None
 
 let clearLayoutCache (ctx: RenderContext) =
-    RedBat.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
+    Rbt.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
     ctx.LastPaint <- None
 
 let layoutLookupFor (ctx: RenderContext) (doc: Document) =
@@ -291,8 +291,8 @@ let private documentHeightWithNotes (settings: LayoutSettings) (layouts: BlockLa
 let private renderPages (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
     let settings = layoutSettings ctx doc
     let docHeight = documentHeightWithNotes settings layouts
-    let pageHeight = RedBat.Word.Layout.pageHeight settings
-    let stride = pageHeight + RedBat.Word.Layout.pageGap
+    let pageHeight = Rbt.Word.Layout.pageHeight settings
+    let stride = pageHeight + Rbt.Word.Layout.pageGap
     let pageCount = max 1 (int (ceil (docHeight / stride)))
 
     ctx.Ctx.fillStyle <- U3.Case1 "#eef0f3"
@@ -761,11 +761,11 @@ let render (ctx: RenderContext) (doc: Document) =
 
 /// Convert mouse position to document position
 let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) =
-    RedBat.Word.Layout.hitTestWithRange (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
+    Rbt.Word.Layout.hitTestWithRange (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
 
 /// Hit test for images - returns blockId, offset, and image dimensions if clicking on an image
 let hitTestForImage (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) : (string * int * float * float * float * float) option =
-    RedBat.Word.Layout.hitTestForImage (layoutSettings ctx doc) (measureWithContext ctx) doc mouseX mouseY
+    Rbt.Word.Layout.hitTestForImage (layoutSettings ctx doc) (measureWithContext ctx) doc mouseX mouseY
 
 /// Render document with hover indicators for images
 let renderWithHover (ctx: RenderContext) (doc: Document) (hoveredImage: (string * int) option) =

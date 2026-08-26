@@ -1,8 +1,8 @@
-module RedBat.Spreadsheet.Toolbar
+module Rbt.Spreadsheet.Toolbar
 
 open Fable.Core
 open Fable.Core.JsInterop
-open RedBat.Grid.Dom
+open Rbt.Grid.Dom
 
 // ── Spec types ──────────────────────────────────────────────
 

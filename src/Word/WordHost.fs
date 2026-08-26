@@ -1,4 +1,4 @@
-namespace RedBat.Word
+namespace Rbt.Word
 
 #if FABLE_COMPILER
 
@@ -6,11 +6,11 @@ module Host =
     open Browser.Types
     open Fable.Core
     open Fable.Core.JsInterop
-    open RedBat.FableUI.Reactive
-    open RedBat.FableUI.Dom
+    open Rbt.FableUI.Reactive
+    open Rbt.FableUI.Dom
 
-    module WordApi = RedBat.Word.API
-    module WordDialogs = RedBat.Word.Dialogs
+    module WordApi = Rbt.Word.API
+    module WordDialogs = Rbt.Word.Dialogs
 
     [<Emit("$0 === null || $0 === undefined")>]
     let private isNullOrUndefined (_value: obj) : bool = jsNative

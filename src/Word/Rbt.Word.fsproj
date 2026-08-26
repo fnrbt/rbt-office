@@ -29,9 +29,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../FableUI/RedBat.FableUI.fsproj" />
-    <ProjectReference Include="../OfficeUi/RedBat.OfficeUi.fsproj" />
-    <ProjectReference Include="../../../fsvb/VBScriptParser.fsproj" />
+    <ProjectReference Include="../FableUI/Rbt.FableUI.fsproj" />
+    <ProjectReference Include="../OfficeUi/Rbt.OfficeUi.fsproj" />
+    <ProjectReference Include="../../../rbt-vb/Rbt.Vb.fsproj" />
   </ItemGroup>
 
   <ItemGroup>

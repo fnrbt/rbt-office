@@ -12,7 +12,7 @@ Active tracker: `docs/excel-parity-tracker.md`. Visual fix history:
   - Paint commands: `src/Spreadsheet/Paint.fs`
   - Calculation/formula engine: `src/Spreadsheet/Formula.fs`, `src/Spreadsheet/Calc.fs`
   - Workbook/sheet model: `src/Spreadsheet/Workbook.fs`
-  - Shared UI specs: `src/Spreadsheet/SpreadsheetUi.fs` (consumes `RedBat.Office.Ui` types)
+  - Shared UI specs: `src/Spreadsheet/SpreadsheetUi.fs` (consumes `Rbt.Office.Ui` types)
   - Browser shell entry points: `src/Spreadsheet/Spreadsheet.fs`, `src/Spreadsheet/Toolbar.fs`, `src/Spreadsheet/Tabs.fs`
 - Native path: `spreadsheet-native/`
   - Native grid widget: `spreadsheet-native/SpreadsheetGrid.fs`

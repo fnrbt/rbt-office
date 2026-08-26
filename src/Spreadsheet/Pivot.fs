@@ -3,11 +3,11 @@
 /// renderer-agnostic — it turns a 2-D source (row 0 = headers) into a 2-D
 /// pivot grid (headers + Grand Total row/column) that a caller can place into
 /// a model for rendering.
-module RedBat.Spreadsheet.Pivot
+module Rbt.Spreadsheet.Pivot
 
 open System
 open System.Collections.Generic
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
 type Agg =
     | Sum

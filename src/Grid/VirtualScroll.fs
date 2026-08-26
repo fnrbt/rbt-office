@@ -1,6 +1,6 @@
-module RedBat.Grid.VirtualScroll
+module Rbt.Grid.VirtualScroll
 
-open RedBat.Grid.Types
+open Rbt.Grid.Types
 
 /// Calculate which rows should be visible based on scroll position
 type VisibleRange = {

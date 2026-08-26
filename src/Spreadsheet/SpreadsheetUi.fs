@@ -1,14 +1,14 @@
-namespace RedBat.Spreadsheet
+namespace Rbt.Spreadsheet
 
-/// Spreadsheet-specific UI specs. Generic types live in RedBat.Office.Ui; this
+/// Spreadsheet-specific UI specs. Generic types live in Rbt.Office.Ui; this
 /// module supplies the Excel-style chrome palette, menus, toolbar rows, and
 /// ShellState/ShellActions records that both the Fable and native shell
 /// renderers consume.
 module Ui =
     open System.Collections.Generic
-    open RedBat.Office.Ui
+    open Rbt.Office.Ui
 
-    let choice = RedBat.Office.Ui.choice
+    let choice = Rbt.Office.Ui.choice
 
     let private resizeArrayToList (items: ResizeArray<'T>) =
         let mutable result = []
@@ -1009,9 +1009,9 @@ module Ui =
         let creditsLong =
             "RedBat Calc native shell\n" +
             "  • Composit UI widgets\n" +
-            "  • RedBat.Office.Ui spec layer\n" +
-            "  • RedBat.Spreadsheet model + layout\n\n" +
-            "Built on Text.Engine, OpenType.Core, Bidi, Shaper.Core."
+            "  • Rbt.Office.Ui spec layer\n" +
+            "  • Rbt.Spreadsheet model + layout\n\n" +
+            "Built on Rbt.Text.Engine, Rbt.OpenType.Core, Bidi, Shaper.Core."
         {
             TestId = "xl-dlg-about"
             Title = "About RedBat Calc"

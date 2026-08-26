@@ -1,9 +1,9 @@
-module RedBat.Word.Input
+module Rbt.Word.Input
 
 let private sameListOrEqual left right =
     obj.ReferenceEquals(left, right) || left = right
 
-let private documentsEqualForChange (left: RedBat.Word.Document.Document) (right: RedBat.Word.Document.Document) =
+let private documentsEqualForChange (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
     obj.ReferenceEquals(left, right)
     || (left.Selection = right.Selection
         && left.PageSetup = right.PageSetup
@@ -19,13 +19,13 @@ open Fable.Core
 open Fable.Core.JsInterop
 open Browser.Types
 open Browser.Dom
-open RedBat.Word.Renderer
-open RedBat.Word.Commands
-open RedBat.Word.Document
+open Rbt.Word.Renderer
+open Rbt.Word.Commands
+open Rbt.Word.Document
 
-module Doc = RedBat.Word.Document
-module Cmd = RedBat.Word.Commands
-module Clipboard = RedBat.Word.Clipboard
+module Doc = Rbt.Word.Document
+module Cmd = Rbt.Word.Commands
+module Clipboard = Rbt.Word.Clipboard
 
 [<Emit("$0.style.cursor = $1")>]
 let setCursor (elem: HTMLCanvasElement) (cursor: string) : unit = jsNative

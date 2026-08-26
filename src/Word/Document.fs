@@ -1,8 +1,8 @@
-module RedBat.Word.Document
+module Rbt.Word.Document
 
 open System.Collections.Generic
 open System.Text
-open RedBat.Word.TextBuffer
+open Rbt.Word.TextBuffer
 
 /// Block ID for tracking blocks
 type BlockId = string

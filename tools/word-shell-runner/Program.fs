@@ -3,7 +3,7 @@ module WordShellRunner
 #if FABLE_COMPILER
 
 // Minimal Fable page that exercises the OfficeUi dialog framework
-// (`RedBat.FableUI.OfficeUiDialog`) end-to-end in a real browser. Used
+// (`Rbt.FableUI.OfficeUiDialog`) end-to-end in a real browser. Used
 // by `scripts/check-shell-runner.mjs` under Playwright to verify the
 // dialogs that the native `tools/word-editor` already drives.
 //
@@ -16,11 +16,11 @@ open System
 open Fable.Core
 open Fable.Core.JsInterop
 open Browser.Dom
-open RedBat.FableUI.Reactive
-open RedBat.FableUI.Dom
-open RedBat.FableUI.OfficeUiDialog
+open Rbt.FableUI.Reactive
+open Rbt.FableUI.Dom
+open Rbt.FableUI.OfficeUiDialog
 
-module WordUi = RedBat.Word.Ui
+module WordUi = Rbt.Word.Ui
 
 [<Emit("window[$0] = $1")>]
 let private setWindowValue (_name: string) (_value: obj) : unit = jsNative

@@ -1,59 +1,59 @@
 <Solution>
   <Folder Name="/src/" />
   <Folder Name="/src/FableUI/">
-    <Project Path="src/FableUI/RedBat.FableUI.fsproj" />
+    <Project Path="src/FableUI/Rbt.FableUI.fsproj" />
   </Folder>
   <Folder Name="/src/Grid/">
-    <Project Path="src/Grid/RedBat.Grid.fsproj" />
+    <Project Path="src/Grid/Rbt.Grid.fsproj" />
   </Folder>
   <Folder Name="/src/OfficeUi/">
-    <Project Path="src/OfficeUi/RedBat.OfficeUi.fsproj" />
+    <Project Path="src/OfficeUi/Rbt.OfficeUi.fsproj" />
   </Folder>
   <Folder Name="/src/Office.Formats/">
-    <Project Path="src/Office.Formats/OfficeFormat.fsproj" />
+    <Project Path="src/Office.Formats/Rbt.OfficeFormat.fsproj" />
   </Folder>
   <Folder Name="/src/ShaperText/">
-    <Project Path="src/ShaperText/RedBat.Word.ShaperText.fsproj" />
+    <Project Path="src/ShaperText/Rbt.Word.ShaperText.fsproj" />
   </Folder>
   <Folder Name="/src/Spreadsheet.Core/">
-    <Project Path="src/Spreadsheet.Core/RedBat.Spreadsheet.Core.fsproj" />
+    <Project Path="src/Spreadsheet.Core/Rbt.Spreadsheet.Core.fsproj" />
   </Folder>
   <Folder Name="/src/Spreadsheet/">
-    <Project Path="src/Spreadsheet/RedBat.Spreadsheet.fsproj" />
+    <Project Path="src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
   </Folder>
   <Folder Name="/src/Word.Pdf/">
-    <Project Path="src/Word.Pdf/RedBat.Word.Pdf.fsproj" />
+    <Project Path="src/Word.Pdf/Rbt.Word.Pdf.fsproj" />
   </Folder>
   <Folder Name="/src/Word/">
-    <Project Path="src/Word/RedBat.Word.fsproj" />
+    <Project Path="src/Word/Rbt.Word.fsproj" />
   </Folder>
   <Folder Name="/office-wisp/">
-    <Project Path="office-wisp/OfficeWisp.fsproj" />
+    <Project Path="office-wisp/Rbt.OfficeWisp.fsproj" />
   </Folder>
   <Folder Name="/spreadsheet-native/">
-    <Project Path="spreadsheet-native/SpreadsheetWidgets.fsproj" />
+    <Project Path="spreadsheet-native/Rbt.SpreadsheetWidgets.fsproj" />
   </Folder>
   <Folder Name="/word-native/">
-    <Project Path="word-native/WordWidgets.fsproj" />
+    <Project Path="word-native/Rbt.WordWidgets.fsproj" />
   </Folder>
   <Folder Name="/spreadsheet-wisp/">
-    <Project Path="spreadsheet-wisp/SpreadsheetWisp.fsproj" />
+    <Project Path="spreadsheet-wisp/Rbt.SpreadsheetWisp.fsproj" />
   </Folder>
   <Folder Name="/word-wisp/">
-    <Project Path="word-wisp/WordWisp.fsproj" />
+    <Project Path="word-wisp/Rbt.WordWisp.fsproj" />
   </Folder>
   <Folder Name="/src/Word.Import/">
-    <Project Path="src/Word.Import/WordImport.fsproj" />
+    <Project Path="src/Word.Import/Rbt.WordImport.fsproj" />
   </Folder>
   <Folder Name="/src/Spreadsheet.Pdf/">
-    <Project Path="src/Spreadsheet.Pdf/RedBat.Spreadsheet.Pdf.fsproj" />
+    <Project Path="src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj" />
   </Folder>
-  <Project Path="../pdf/FsPdf.fsproj" />
-  <Project Path="../renderer/Renderer.fsproj" />
-  <Project Path="../text/bidi/Bidi.Core.fsproj" />
-  <Project Path="../text/engine/Text.Engine.fsproj" />
-  <Project Path="../text/opentype/OpenType.Core.fsproj" />
-  <Project Path="../text/shaper/Shaper.Core.fsproj" />
-  <Project Path="../text/unicode/src/Unicode/Unicode.Core.fsproj" />
-  <Project Path="../widgets/Widgets.fsproj" />
+  <Project Path="../rbt-pdf/Rbt.Pdf.fsproj" />
+  <Project Path="../rbt-renderer/Rbt.Renderer.fsproj" />
+  <Project Path="../rbt-text/bidi/Rbt.Bidi.Core.fsproj" />
+  <Project Path="../rbt-text/engine/Rbt.Text.Engine.fsproj" />
+  <Project Path="../rbt-text/opentype/Rbt.OpenType.Core.fsproj" />
+  <Project Path="../rbt-text/shaper/Rbt.Shaper.Core.fsproj" />
+  <Project Path="../rbt-text/unicode/src/Rbt.Unicode/Rbt.Unicode.Core.fsproj" />
+  <Project Path="../rbt-widgets/Rbt.Widgets.fsproj" />
 </Solution>

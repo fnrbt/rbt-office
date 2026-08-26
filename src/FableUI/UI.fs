@@ -1,11 +1,11 @@
-module RedBat.FableUI.UI
+module Rbt.FableUI.UI
 
 open Fable.Core
 open Fable.Core.JsInterop
 open Browser.Dom
 open Browser.Types
-open RedBat.FableUI.Reactive
-open RedBat.FableUI.Dom
+open Rbt.FableUI.Reactive
+open Rbt.FableUI.Dom
 
 [<Emit("$0.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex=\"-1\"])')")>]
 let private queryFocusable (element: Element) : NodeList = jsNative

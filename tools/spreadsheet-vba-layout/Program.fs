@@ -3,10 +3,10 @@ module SpreadsheetVbaLayout
 open System
 open System.IO
 open System.Globalization
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Layout
-open RedBat.Spreadsheet.Paint
-open RedBat.Spreadsheet.CellText
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Layout
+open Rbt.Spreadsheet.Paint
+open Rbt.Spreadsheet.CellText
 module Xlsx = XlsxReader
 
 /// Tool that loads an XLSX and dumps a Spreadsheet-side per-cell layout
@@ -88,7 +88,7 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
         match fontCache.TryGetValue key with
         | true, f -> f
         | _ ->
-            let f = Composit.Ui.SpreadsheetGrid.rendererFontFor familyName bold italic
+            let f = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.rendererFontFor familyName bold italic
             fontCache.[key] <- f
             f
     let measureFor (format: CellFormat) =
@@ -96,7 +96,7 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
             let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
             let fontPx = fontPt * 96.0 / 72.0
             let font = getFont format.FontName format.Bold format.Italic
-            Some (fun (s: string) -> Renderer.Text.measureWidth font fontPx s)
+            Some (fun (s: string) -> Rbt.Renderer.Text.measureWidth font fontPx s)
         with ex ->
             eprintfn "measureFor failed: %s" ex.Message
             None

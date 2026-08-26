@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- The docx→RedBat.Word.Document importer. Lets wisp-word open real .docx files
+  <!-- The docx→Rbt.Word.Document importer. Lets wisp-word open real .docx files
        without the native screenshot harness or widget stack. -->
   <PropertyGroup>
     <OutputType>Library</OutputType>
@@ -10,7 +10,7 @@
     <Compile Include="NativeRunnerCompat.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../Office.Formats/OfficeFormat.fsproj" />
-    <ProjectReference Include="../Word/RedBat.Word.fsproj" />
+    <ProjectReference Include="../Office.Formats/Rbt.OfficeFormat.fsproj" />
+    <ProjectReference Include="../Word/Rbt.Word.fsproj" />
   </ItemGroup>
 </Project>

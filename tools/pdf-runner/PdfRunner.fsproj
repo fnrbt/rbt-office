@@ -9,12 +9,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/Office.Formats/OfficeFormat.fsproj" />
-    <ProjectReference Include="../../src/Word/RedBat.Word.fsproj" />
-    <ProjectReference Include="../../src/Word.Import/WordImport.fsproj" />
-    <ProjectReference Include="../../src/Word.Pdf/RedBat.Word.Pdf.fsproj" />
-    <ProjectReference Include="../../word-native/WordWidgets.fsproj" />
-    <ProjectReference Include="../../../widgets/Widgets.fsproj" />
-    <ProjectReference Include="../../../renderer/Renderer.fsproj" />
+    <ProjectReference Include="../../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
+    <ProjectReference Include="../../src/Word/Rbt.Word.fsproj" />
+    <ProjectReference Include="../../src/Word.Import/Rbt.WordImport.fsproj" />
+    <ProjectReference Include="../../src/Word.Pdf/Rbt.Word.Pdf.fsproj" />
+    <ProjectReference Include="../../word-native/Rbt.WordWidgets.fsproj" />
+    <ProjectReference Include="../../../rbt-widgets/Rbt.Widgets.fsproj" />
+    <ProjectReference Include="../../../rbt-renderer/Rbt.Renderer.fsproj" />
   </ItemGroup>
 </Project>

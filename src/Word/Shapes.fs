@@ -1,8 +1,8 @@
-module RedBat.Word.Shapes
+module Rbt.Word.Shapes
 
 open System
 open System.Collections.Generic
-open RedBat.Word.Document
+open Rbt.Word.Document
 
 // Vector geometry for OOXML preset/custom shapes. `presetPath` maps a preset
 // name (a:prstGeom@prst) to a path in the shape's own pixel box (0,0)-(w,h).

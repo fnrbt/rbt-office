@@ -1,4 +1,4 @@
-module RedBat.Grid.DataSource
+module Rbt.Grid.DataSource
 
 open Fable.Core
 open Fable.Core.JsInterop

@@ -1,10 +1,11 @@
-module RedBat.Spreadsheet.Vba
+module Rbt.Spreadsheet.Vba
 
+open Rbt.Vb
 open Fable.Core
 open Fable.Core.JsInterop
 open Values
 open Ast
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
 [<Emit("$0[$1]")>]
 let private getProp (_source: obj) (_name: string): obj = jsNative
@@ -206,17 +207,17 @@ let private findMergeAt row col (model: SpreadsheetModel) =
         remaining <- remaining.Tail
     result
 
-let private emitModelSnapshotCell (model: SpreadsheetModel) (viewport: RedBat.Spreadsheet.Layout.Viewport) row col merge =
+let private emitModelSnapshotCell (model: SpreadsheetModel) (viewport: Rbt.Spreadsheet.Layout.Viewport) row col merge =
     let addr = { Row = row; Col = col }
     let rect =
         match merge with
-        | ValueSome m -> RedBat.Spreadsheet.Layout.mergedRect model viewport m
-        | ValueNone -> RedBat.Spreadsheet.Layout.cellRect model viewport row col
+        | ValueSome m -> Rbt.Spreadsheet.Layout.mergedRect model viewport m
+        | ValueNone -> Rbt.Spreadsheet.Layout.cellRect model viewport row col
     let cellData = getCell addr model
     let value = getCellValue addr model
     let format = cellData |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
     let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
-    let displayText = RedBat.Spreadsheet.CellText.cellDisplayText None rect.Width format value
+    let displayText = Rbt.Spreadsheet.CellText.cellDisplayText None rect.Width format value
     let mergedRows, mergedCols =
         match merge with
         | ValueSome m -> m.EndRow - m.StartRow + 1, m.EndCol - m.StartCol + 1
@@ -246,7 +247,7 @@ let private emitModelSnapshotCell (model: SpreadsheetModel) (viewport: RedBat.Sp
         Text = displayText
     }
 
-let private snapshotFromModelWithViewport (model: SpreadsheetModel) (viewport: RedBat.Spreadsheet.Layout.Viewport) =
+let private snapshotFromModelWithViewport (model: SpreadsheetModel) (viewport: Rbt.Spreadsheet.Layout.Viewport) =
     let maxRow, maxCol = modelSnapshotBounds model
 
     if List.isEmpty model.MergedCells then
@@ -279,10 +280,10 @@ let private snapshotFromModelWithViewport (model: SpreadsheetModel) (viewport: R
     |]
 
 let snapshotFromModel (model: SpreadsheetModel) =
-    snapshotFromModelWithViewport model (RedBat.Spreadsheet.Layout.defaultViewport 100000.0 100000.0)
+    snapshotFromModelWithViewport model (Rbt.Spreadsheet.Layout.defaultViewport 100000.0 100000.0)
 
 let private snapshotCellsFromModel (model: SpreadsheetModel) =
-    let viewport = RedBat.Spreadsheet.Layout.defaultViewport 100000.0 100000.0
+    let viewport = Rbt.Spreadsheet.Layout.defaultViewport 100000.0 100000.0
     let all = lazy (snapshotFromModelWithViewport model viewport)
     let maxRow, maxCol = modelSnapshotBounds model
     {
@@ -533,15 +534,15 @@ let hostGlobalsVbs (spreadsheet: Spreadsheet.Spreadsheet) =
 
 let run (spreadsheet: Spreadsheet.Spreadsheet) (source: string) =
     let options =
-        FsVb.RunOptions.vba
-        |> FsVb.RunOptions.withHostGlobals (hostGlobals spreadsheet)
-    FsVb.runSource options source
+        Api.RunOptions.vba
+        |> Api.RunOptions.withHostGlobals (hostGlobals spreadsheet)
+    Api.runSource options source
 
 let runVbs (spreadsheet: Spreadsheet.Spreadsheet) (source: string) =
     let options =
-        FsVb.RunOptions.vbScript
-        |> FsVb.RunOptions.withHostGlobals (hostGlobalsVbs spreadsheet)
-    FsVb.runSource options source
+        Api.RunOptions.vbScript
+        |> Api.RunOptions.withHostGlobals (hostGlobalsVbs spreadsheet)
+    Api.runSource options source
 
 let private snapshotCells (snapshot: unit -> CellSnapshot array) =
     let mutable allCache: CellSnapshot array voption = ValueNone
@@ -965,7 +966,7 @@ let private hostGlobalsRW cells sheetName =
 // compiles to the same bytecode regardless of which model it runs against;
 // only the bound host VALUES change per run.
 let private vbaHostNames = [ "Application"; "ActiveWorkbook"; "ActiveSheet"; "Range"; "Cells" ]
-let private vbaParseOpts = FsVb.ParseOptions.withHostGlobals vbaHostNames FsVb.ParseOptions.vba
+let private vbaParseOpts = Api.ParseOptions.withHostGlobals vbaHostNames Api.ParseOptions.vba
 
 let private bytecodeCache = System.Collections.Generic.Dictionary<string, Bytecode.BytecodeProgram>()
 
@@ -974,7 +975,7 @@ let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
     match bytecodeCache.TryGetValue source with
     | true, bc -> Result.Ok bc
     | _ ->
-        match FsVb.compileSource vbaParseOpts source with
+        match Api.compileSource vbaParseOpts source with
         | Result.Ok (_, bc) -> bytecodeCache.[source] <- bc; Result.Ok bc
         | Result.Error e -> Result.Error (sprintf "%A" e)
 
@@ -984,7 +985,7 @@ let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
 let private runProgramOnModel (sheetName: string) (model: SpreadsheetModel) (bytecode: Bytecode.BytecodeProgram) : Result<SpreadsheetModel, string> =
     let cells = ModelCells(model)
     let runErr =
-        try FsVb.executeWithHostGlobals (hostGlobalsRW cells sheetName |> Map.toSeq) bytecode |> ignore; None
+        try Api.executeWithHostGlobals (hostGlobalsRW cells sheetName |> Map.toSeq) bytecode |> ignore; None
         with ex -> Some ex.Message
     match runErr with
     | Some e -> Result.Error e
@@ -1001,7 +1002,7 @@ let private runProgramOnModel (sheetName: string) (model: SpreadsheetModel) (byt
                     | _ -> CellValue.String text
             let fmt = match getCell { Row = r; Col = c } m with Some cd -> cd.Format | None -> defaultFormat
             m <- setCell { Row = r; Col = c } { Value = cv; Format = fmt; Comment = None } m
-        Result.Ok (RedBat.Spreadsheet.Formula.recalcAndSpill None (Some sheetName) m)
+        Result.Ok (Rbt.Spreadsheet.Formula.recalcAndSpill None (Some sheetName) m)
 
 /// Run a macro against a model with read+write host objects, fold the writes
 /// back in (a `=…` value becomes a formula), and recompute. Cross-platform.
@@ -1053,27 +1054,27 @@ let fireEvent (eventName: string) (callArgs: string) (model: SpreadsheetModel) :
 
 let runSnapshot sheetName snapshot source =
     let options =
-        FsVb.RunOptions.vba
-        |> FsVb.RunOptions.withHostGlobals (hostGlobalsForSnapshot sheetName snapshot)
-    FsVb.runSource options source
+        Api.RunOptions.vba
+        |> Api.RunOptions.withHostGlobals (hostGlobalsForSnapshot sheetName snapshot)
+    Api.runSource options source
 
 let runSnapshotVbs sheetName snapshot source =
     let options =
-        FsVb.RunOptions.vbScript
-        |> FsVb.RunOptions.withHostGlobals (hostGlobalsForSnapshotVbs sheetName snapshot)
-    FsVb.runSource options source
+        Api.RunOptions.vbScript
+        |> Api.RunOptions.withHostGlobals (hostGlobalsForSnapshotVbs sheetName snapshot)
+    Api.runSource options source
 
 let private runSnapshotCells sheetName snapshot source =
     let options =
-        FsVb.RunOptions.vba
-        |> FsVb.RunOptions.withHostGlobals (hostGlobalsForSnapshotCells sheetName snapshot)
-    FsVb.runSource options source
+        Api.RunOptions.vba
+        |> Api.RunOptions.withHostGlobals (hostGlobalsForSnapshotCells sheetName snapshot)
+    Api.runSource options source
 
 let private runSnapshotCellsVbs sheetName snapshot source =
     let options =
-        FsVb.RunOptions.vbScript
-        |> FsVb.RunOptions.withHostGlobals (hostGlobalsForSnapshotCellsVbs sheetName snapshot)
-    FsVb.runSource options source
+        Api.RunOptions.vbScript
+        |> Api.RunOptions.withHostGlobals (hostGlobalsForSnapshotCellsVbs sheetName snapshot)
+    Api.runSource options source
 
 let runModelWithSheetName sheetName (model: SpreadsheetModel) source =
     runSnapshotCells sheetName (snapshotCellsFromModel model) source
@@ -1108,7 +1109,7 @@ let runForJs (spreadsheet: Spreadsheet.Spreadsheet) (source: string) (resultName
     | Result.Ok result ->
         let value =
             if isNull (box resultName) || resultName = "" then null
-            else FsVb.tryGetGlobal resultName result.State |> Option.map valueToObj |> Option.defaultValue null
+            else Api.tryGetGlobal resultName result.State |> Option.map valueToObj |> Option.defaultValue null
         createObj [
             "ok" ==> true
             "result" ==> value
@@ -1124,7 +1125,7 @@ let runVbsForJs (spreadsheet: Spreadsheet.Spreadsheet) (source: string) (resultN
     | Result.Ok result ->
         let value =
             if isNull (box resultName) || resultName = "" then null
-            else FsVb.tryGetGlobal resultName result.State |> Option.map valueToObj |> Option.defaultValue null
+            else Api.tryGetGlobal resultName result.State |> Option.map valueToObj |> Option.defaultValue null
         createObj [
             "ok" ==> true
             "result" ==> value

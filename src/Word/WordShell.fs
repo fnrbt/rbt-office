@@ -1,4 +1,4 @@
-namespace RedBat.Word
+namespace Rbt.Word
 
 #if FABLE_COMPILER
 
@@ -7,13 +7,13 @@ module Shell =
     open Fable.Core.JsInterop
     open Browser.Types
     open Browser.Dom
-    open RedBat.FableUI.Reactive
-    open RedBat.FableUI.Dom
-    open RedBat.Office.Ui
+    open Rbt.FableUI.Reactive
+    open Rbt.FableUI.Dom
+    open Rbt.Office.Ui
 
-    module WordApi = RedBat.Word.API
-    module WordHost = RedBat.Word.Host
-    module WordUi = RedBat.Word.Ui
+    module WordApi = Rbt.Word.API
+    module WordHost = Rbt.Word.Host
+    module WordUi = Rbt.Word.Ui
 
     let private initialText = "FableUI Word shell proof. Select text or use toolbar commands, then open Format > Paragraph style."
 

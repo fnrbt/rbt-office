@@ -1,7 +1,7 @@
 #r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
 #r "../../src/Office.Formats/bin/Debug/netstandard2.0/OfficeFormat.dll"
 #r "../../src/Word/bin/Debug/netstandard2.0/RedBat.Word.dll"
-#r "../../src/Word.Import/bin/Debug/net10.0/WordImport.dll"
+#r "../../src/Word.Import/bin/Debug/net10.0/RedBat.WordImport.dll"
 
 open System
 open RedBat.Word.Document

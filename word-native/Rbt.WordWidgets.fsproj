@@ -6,7 +6,7 @@
     <Compile Include="WordEditor.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../widgets/Widgets.fsproj" />
-    <ProjectReference Include="../src/Word/RedBat.Word.fsproj" />
+    <ProjectReference Include="../../rbt-widgets/Rbt.Widgets.fsproj" />
+    <ProjectReference Include="../src/Word/Rbt.Word.fsproj" />
   </ItemGroup>
 </Project>

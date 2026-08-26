@@ -1,17 +1,17 @@
-module Composit.Ui.WordEditor
+module Rbt.Widgets.Composit.Ui.WordEditor
 
 open System
 open System.Collections.Generic
 open System.IO
-open Renderer
-open Composit.Ui.Reactive
-open Composit.Ui.Widget
+open Rbt.Renderer
+open Rbt.Widgets.Composit.Ui.Reactive
+open Rbt.Widgets.Composit.Ui.Widget
 
-open RedBat.Word.Document
+open Rbt.Word.Document
 
-module WordLayout = RedBat.Word.Layout
-module WordPaint = RedBat.Word.Paint
-module WordTextBuffer = RedBat.Word.TextBuffer
+module WordLayout = Rbt.Word.Layout
+module WordPaint = Rbt.Word.Paint
+module WordTextBuffer = Rbt.Word.TextBuffer
 
 let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasure v
 
@@ -27,11 +27,11 @@ let private prependResizeArray (items: ResizeArray<'T>) tail =
         result <- items.[i] :: result
     result
 
-let private rendererFont () = Composit.Ui.Layout.font()
+let private rendererFont () = Rbt.Widgets.Composit.Ui.Layout.font()
 
 let private pointsToPixels points = points * 96.0 / 72.0
 
-let private wordFontCache = Dictionary<string, Renderer.Text.FontData option>()
+let private wordFontCache = Dictionary<string, Rbt.Renderer.Text.FontData option>()
 
 let private existingDir path =
     if Directory.Exists path then Some path else None
@@ -80,13 +80,13 @@ let private tryLoadWordFont (family: string option) (bold: bool) (italic: bool) 
                 |> List.tryPick (fun dir ->
                     let path = Path.Combine(dir, fileName)
                     if File.Exists path then
-                        try Some (Renderer.Text.loadFontFile path)
+                        try Some (Rbt.Renderer.Text.loadFontFile path)
                         with _ -> None
                     else None))
         wordFontCache.[key] <- loaded
         loaded
 
-let private fontForTextStyle (style: RedBat.Word.TextBuffer.TextStyle) =
+let private fontForTextStyle (style: Rbt.Word.TextBuffer.TextStyle) =
     tryLoadWordFont style.FontFamily style.Bold style.Italic
     |> Option.defaultWith rendererFont
 
@@ -94,9 +94,9 @@ let private fontForPaintStyle (style: WordPaint.TextPaintStyle) =
     tryLoadWordFont style.FontFamily style.Bold style.Italic
     |> Option.defaultWith rendererFont
 
-let private measureText (text: string) (style: RedBat.Word.TextBuffer.TextStyle) =
+let private measureText (text: string) (style: Rbt.Word.TextBuffer.TextStyle) =
     let font = fontForTextStyle style
-    Renderer.Text.measureWidth font (pointsToPixels style.FontSize) text + RedBat.Word.TextBuffer.characterSpacingAdvance text style
+    Rbt.Renderer.Text.measureWidth font (pointsToPixels style.FontSize) text + Rbt.Word.TextBuffer.characterSpacingAdvance text style
 
 let private parseHexColor (value: string) =
     let value =
@@ -202,7 +202,7 @@ let private layoutSettings width (doc: Document) : WordLayout.LayoutSettings =
         FontSize = 16.0
         LineHeight = lineHeight
         PaddingLeft = doc.PageSetup.MarginLeft * scale
-        PaddingTop = RedBat.Word.WordLayout.Page.bodyTopWithRunningHeader doc * scale
+        PaddingTop = Rbt.Word.WordLayout.Page.bodyTopWithRunningHeader doc * scale
         MarginRight = doc.PageSetup.MarginRight * scale
         MarginBottom = max (doc.PageSetup.MarginBottom * scale) footerReserve
         InTableCell = false
@@ -901,7 +901,7 @@ let private handleKey width height state (ev: KeyEvent) =
 let private toRendererCommand (resolveImage: string -> Framebuffer option) = function
     | WordPaint.DrawText (text, style, x, baseline, _) ->
         let font = textFont style
-        [ Cmd.DrawGlyphs(vec2 x baseline, Renderer.Text.layout font (pointsToPixels style.FontSize) text, Solid (parseHexColor style.Color)) ]
+        [ Cmd.DrawGlyphs(vec2 x baseline, Rbt.Renderer.Text.layout font (pointsToPixels style.FontSize) text, Solid (parseHexColor style.Color)) ]
 
     | WordPaint.DrawUnderline (color, _lineStyle, x, y, width) ->
         [ Cmd.Line(vec2 x y, vec2 (x + width) y, parseHexColor color, px 1.0) ]

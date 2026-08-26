@@ -1,5 +1,5 @@
 #r "/home/dave/Dev/browser/office/src/Word/bin/Debug/netstandard2.0/RedBat.Word.dll"
-#r "/home/dave/Dev/browser/fsvb/bin/Debug/netstandard2.0/VBScriptParser.dll"
+#r "/home/dave/Dev/browser/fsvb/bin/Debug/netstandard2.0/FsVb.dll"
 
 open RedBat.Word.TextBuffer
 open System.Reflection

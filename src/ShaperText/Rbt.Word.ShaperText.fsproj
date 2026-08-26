@@ -7,8 +7,8 @@
     <Compile Include="ShaperText.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../Word/RedBat.Word.fsproj" />
-    <ProjectReference Include="../../../text/engine/Text.Engine.fsproj" />
-    <ProjectReference Include="../../../text/opentype/OpenType.Core.fsproj" />
+    <ProjectReference Include="../Word/Rbt.Word.fsproj" />
+    <ProjectReference Include="../../../rbt-text/engine/Rbt.Text.Engine.fsproj" />
+    <ProjectReference Include="../../../rbt-text/opentype/Rbt.OpenType.Core.fsproj" />
   </ItemGroup>
 </Project>

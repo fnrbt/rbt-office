@@ -5,18 +5,18 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../../../widgets/x11-viewer/PngEncode.fs" />
+    <Compile Include="../../../rbt-widgets/x11-viewer/PngEncode.fs" />
     <Compile Include="../excel-native-runner/ChartRender.fs" />
     <Compile Include="../excel-native-runner/Program.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/Office.Formats/OfficeFormat.fsproj" />
-    <ProjectReference Include="../../src/Spreadsheet/RedBat.Spreadsheet.fsproj" />
-    <ProjectReference Include="../../src/Spreadsheet.Pdf/RedBat.Spreadsheet.Pdf.fsproj" />
-    <ProjectReference Include="../../spreadsheet-native/SpreadsheetWidgets.fsproj" />
-    <ProjectReference Include="../../../widgets/Widgets.fsproj" />
-    <ProjectReference Include="../../../renderer/Renderer.fsproj" />
+    <ProjectReference Include="../../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
+    <ProjectReference Include="../../src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
+    <ProjectReference Include="../../src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj" />
+    <ProjectReference Include="../../spreadsheet-native/Rbt.SpreadsheetWidgets.fsproj" />
+    <ProjectReference Include="../../../rbt-widgets/Rbt.Widgets.fsproj" />
+    <ProjectReference Include="../../../rbt-renderer/Rbt.Renderer.fsproj" />
   </ItemGroup>
 </Project>

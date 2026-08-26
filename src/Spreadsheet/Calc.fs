@@ -1,9 +1,9 @@
-module RedBat.Spreadsheet.Calc
+module Rbt.Spreadsheet.Calc
 
 open System.Collections.Generic
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Workbook
-open RedBat.Spreadsheet.Formula
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Workbook
+open Rbt.Spreadsheet.Formula
 
 /// Incremental calculation engine with cross-sheet dependency tracking.
 ///

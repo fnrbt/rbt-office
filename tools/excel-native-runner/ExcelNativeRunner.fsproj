@@ -6,18 +6,18 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../../../widgets/x11-viewer/PngEncode.fs" />
+    <Compile Include="../../../rbt-widgets/x11-viewer/PngEncode.fs" />
     <Compile Include="ChartRender.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/Office.Formats/OfficeFormat.fsproj" />
-    <ProjectReference Include="../../src/Spreadsheet/RedBat.Spreadsheet.fsproj" />
-    <ProjectReference Include="../../spreadsheet-native/SpreadsheetWidgets.fsproj" />
-    <ProjectReference Include="../../office-wisp/OfficeWisp.fsproj" />
+    <ProjectReference Include="../../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
+    <ProjectReference Include="../../src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
+    <ProjectReference Include="../../spreadsheet-native/Rbt.SpreadsheetWidgets.fsproj" />
+    <ProjectReference Include="../../office-wisp/Rbt.OfficeWisp.fsproj" />
     <ProjectReference Include="../../../wisp/Wisp.fsproj" />
-    <ProjectReference Include="../../../widgets/Widgets.fsproj" />
-    <ProjectReference Include="../../../renderer/Renderer.fsproj" />
+    <ProjectReference Include="../../../rbt-widgets/Rbt.Widgets.fsproj" />
+    <ProjectReference Include="../../../rbt-renderer/Rbt.Renderer.fsproj" />
   </ItemGroup>
 </Project>

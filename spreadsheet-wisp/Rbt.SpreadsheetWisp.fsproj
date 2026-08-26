@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- wisp-spreadsheet: Wisp-native spreadsheet app. Reuses RedBat.Spreadsheet
+  <!-- wisp-spreadsheet: Wisp-native spreadsheet app. Reuses Rbt.Spreadsheet
        model/layout/paint plus OfficeShell chrome. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -13,10 +13,10 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../wisp/Wisp.fsproj" />
-    <ProjectReference Include="../office-wisp/OfficeWisp.fsproj" />
-    <ProjectReference Include="../src/Spreadsheet/RedBat.Spreadsheet.fsproj" />
-    <ProjectReference Include="../src/Office.Formats/OfficeFormat.fsproj" />
-    <ProjectReference Include="../src/OfficeUi/RedBat.OfficeUi.fsproj" />
-    <ProjectReference Include="../../renderer/Renderer.fsproj" />
+    <ProjectReference Include="../office-wisp/Rbt.OfficeWisp.fsproj" />
+    <ProjectReference Include="../src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
+    <ProjectReference Include="../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
+    <ProjectReference Include="../src/OfficeUi/Rbt.OfficeUi.fsproj" />
+    <ProjectReference Include="../../rbt-renderer/Rbt.Renderer.fsproj" />
   </ItemGroup>
 </Project>

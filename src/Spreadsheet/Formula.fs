@@ -1,9 +1,9 @@
-module RedBat.Spreadsheet.Formula
+module Rbt.Spreadsheet.Formula
 
 open System
 open System.Collections.Generic
 open System.Globalization
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
 let private resizeArrayToList (items: System.Collections.Generic.List<'T>) =
     let mutable result = []
@@ -679,13 +679,13 @@ let private parseFormulaShared (input: string) : Result<Expr, string> =
 /// name's refers-to text is itself a formula — usually a range, sometimes
 /// a constant or another name; name→name hops are followed with a cycle
 /// guard. Returns None when the name is unknown, won't parse, or cycles.
-let resolveNameExpr (name: string) (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
-                    (workbook: RedBat.Spreadsheet.Workbook.Workbook) : Expr option =
+let resolveNameExpr (name: string) (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                    (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Expr option =
     let rec resolve (n: string) (seen: Set<string>) (hops: int) =
         let key = n.ToUpperInvariant()
         if hops > 16 || Set.contains key seen then None
         else
-            match RedBat.Spreadsheet.Workbook.getName currentSheet n workbook with
+            match Rbt.Spreadsheet.Workbook.getName currentSheet n workbook with
             | None -> None
             | Some refersTo ->
                 let body = if refersTo.StartsWith "=" then refersTo else "=" + refersTo
@@ -804,7 +804,7 @@ let private normalizeRange (a: RefAst) (b: RefAst) =
 /// names resolve at workbook-global scope here: a missed sheet-local name
 /// only affects recalc *ordering*, never the computed values, since `eval`
 /// resolves names with the correct scope. Used by the dependency tracker.
-let referencesInExpr (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+let referencesInExpr (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                      (expr: Expr) : Set<CellAddress> =
     let refs = HashSet<CellAddress>()
     let stack = ResizeArray<struct (Set<string> * Expr)>()
@@ -849,14 +849,14 @@ let referencesInExpr (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
 /// can't be resolved is dropped. This is what the incremental calc engine
 /// keys its dependency graph on, so dependencies — and dirty propagation —
 /// span sheet boundaries.
-let referencesQualified (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                        (homeSheet: RedBat.Spreadsheet.Workbook.SheetId)
-                        (expr: Expr) : Set<RedBat.Spreadsheet.Workbook.SheetCell> =
+let referencesQualified (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                        (homeSheet: Rbt.Spreadsheet.Workbook.SheetId)
+                        (expr: Expr) : Set<Rbt.Spreadsheet.Workbook.SheetCell> =
     let sheetIdOf (name: string option) =
         match name with
         | None -> Some homeSheet
-        | Some n -> workbook |> Option.bind (RedBat.Spreadsheet.Workbook.resolveSheetName n)
-    let refs = HashSet<RedBat.Spreadsheet.Workbook.SheetCell>()
+        | Some n -> workbook |> Option.bind (Rbt.Spreadsheet.Workbook.resolveSheetName n)
+    let refs = HashSet<Rbt.Spreadsheet.Workbook.SheetCell>()
     let stack = ResizeArray<struct (Set<string> * Expr)>()
     stack.Add(struct (Set.empty, expr))
     while stack.Count > 0 do
@@ -900,9 +900,9 @@ let referencesQualified (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
 /// than one graph edge per cell (a single `SUM(A1:A100000)` would otherwise
 /// reify 100k edges + ~29 MB). Membership is tested by containment on edit.
 type DepRect =
-    { Sheet: RedBat.Spreadsheet.Workbook.SheetId; R0: int; C0: int; R1: int; C1: int }
+    { Sheet: Rbt.Spreadsheet.Workbook.SheetId; R0: int; C0: int; R1: int; C1: int }
 
-let rectContainsCell (rect: DepRect) (sc: RedBat.Spreadsheet.Workbook.SheetCell) =
+let rectContainsCell (rect: DepRect) (sc: Rbt.Spreadsheet.Workbook.SheetCell) =
     sc.Sheet = rect.Sheet
     && sc.Cell.Row >= rect.R0 && sc.Cell.Row <= rect.R1
     && sc.Cell.Col >= rect.C0 && sc.Cell.Col <= rect.C1
@@ -918,14 +918,14 @@ let rangeDepThreshold = 2048
 /// returned as a `DepRect` (second component) instead of being expanded into
 /// the cell set. Small ranges and single cells still land in the cell set, so
 /// existing dependency behavior is unchanged for them.
-let referencesRanged (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                     (homeSheet: RedBat.Spreadsheet.Workbook.SheetId)
-                     (expr: Expr) : Set<RedBat.Spreadsheet.Workbook.SheetCell> * DepRect list =
+let referencesRanged (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                     (homeSheet: Rbt.Spreadsheet.Workbook.SheetId)
+                     (expr: Expr) : Set<Rbt.Spreadsheet.Workbook.SheetCell> * DepRect list =
     let sheetIdOf (name: string option) =
         match name with
         | None -> Some homeSheet
-        | Some n -> workbook |> Option.bind (RedBat.Spreadsheet.Workbook.resolveSheetName n)
-    let cells = System.Collections.Generic.HashSet<RedBat.Spreadsheet.Workbook.SheetCell>()
+        | Some n -> workbook |> Option.bind (Rbt.Spreadsheet.Workbook.resolveSheetName n)
+    let cells = System.Collections.Generic.HashSet<Rbt.Spreadsheet.Workbook.SheetCell>()
     let rects = ResizeArray<DepRect>()
     let stack = ResizeArray<struct (Set<string> * Expr)>()
     let push seen expr = stack.Add(struct (seen, expr))
@@ -1167,7 +1167,7 @@ let private containsFunctionNamed (targetName: string) (expr: Expr) =
 /// model; sheet-qualified refs resolve through the workbook. Returns None
 /// when a sheet name can't be resolved (caller surfaces #REF!).
 let private resolveModel (sheet: string option) (model: SpreadsheetModel)
-                         (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                         (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                          : SpreadsheetModel option =
     match sheet with
     | None -> Some model
@@ -1175,13 +1175,13 @@ let private resolveModel (sheet: string option) (model: SpreadsheetModel)
         match workbook with
         | None -> None
         | Some wb ->
-            RedBat.Spreadsheet.Workbook.resolveSheetName name wb
+            Rbt.Spreadsheet.Workbook.resolveSheetName name wb
             |> Option.bind (fun sid -> Map.tryFind sid wb.Sheets)
             |> Option.map (fun s -> s.Model)
 
 /// Read a single cell's value, resolving cross-sheet references.
 let private readCell (r: RefAst) (model: SpreadsheetModel)
-                     (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue =
+                     (workbook: Rbt.Spreadsheet.Workbook.Workbook option) : CellValue =
     match resolveModel r.Sheet model workbook with
     | Some m -> getCellValue { Row = r.Row; Col = r.Col } m |> unwrapValue
     | None -> err Err.ref
@@ -1208,7 +1208,7 @@ let spillRangeOf (anchor: RefAst) (model: SpreadsheetModel) : RefAst * RefAst =
 /// Expand a RangeRef to the flat list of unwrapped cell values, row-major.
 /// The sheet qualifier on the start ref selects the target sheet.
 let iterRangeRef (a: RefAst) (b: RefAst) (model: SpreadsheetModel)
-                 (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
+                 (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                  (emit: CellValue -> unit) : unit =
     match resolveModel a.Sheet model workbook with
     | Some m ->
@@ -1219,13 +1219,13 @@ let iterRangeRef (a: RefAst) (b: RefAst) (model: SpreadsheetModel)
     | None -> emit (err Err.ref)
 
 let expandRangeRef (a: RefAst) (b: RefAst) (model: SpreadsheetModel)
-                   (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue list =
+                   (workbook: Rbt.Spreadsheet.Workbook.Workbook option) : CellValue list =
     let values = ResizeArray<CellValue>()
     iterRangeRef a b model workbook (fun value -> values.Add value)
     resizeArrayToList values
 
 let firstRangeRefValue (a: RefAst) (b: RefAst) (model: SpreadsheetModel)
-                       (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue =
+                       (workbook: Rbt.Spreadsheet.Workbook.Workbook option) : CellValue =
     match resolveModel a.Sheet model workbook with
     | Some m ->
         let sr, sc, _, _ = normalizeRange a b
@@ -1238,15 +1238,15 @@ let firstRangeRefValue (a: RefAst) (b: RefAst) (model: SpreadsheetModel)
 /// columns are always contiguous for the specifiers we support. `Ok` with
 /// `r0 > r1` denotes a valid-but-empty body (a table with no data rows).
 let tableSelArea (sel: TableSel)
-                 (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                 (sheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                 (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                 (sheet: Rbt.Spreadsheet.Workbook.SheetId option)
                  (currentCell: CellAddress option) : Result<int * int * int * int, string> =
     match workbook with
     | None -> Result.Error Err.ref
     | Some wb ->
         let tableOpt =
-            if sel.Table <> "" then RedBat.Spreadsheet.Workbook.getTable sel.Table wb
-            else currentCell |> Option.bind (fun c -> RedBat.Spreadsheet.Workbook.findTableContaining sheet c wb)
+            if sel.Table <> "" then Rbt.Spreadsheet.Workbook.getTable sel.Table wb
+            else currentCell |> Option.bind (fun c -> Rbt.Spreadsheet.Workbook.findTableContaining sheet c wb)
         match tableOpt with
         | None -> Result.Error Err.ref
         | Some t ->
@@ -1258,13 +1258,13 @@ let tableSelArea (sel: TableSel)
                 match sel.ColStart with
                 | None -> Some (t.StartCol, t.StartCol + t.Columns.Length - 1)
                 | Some cs ->
-                    match RedBat.Spreadsheet.Workbook.tableColumnIndex t cs with
+                    match Rbt.Spreadsheet.Workbook.tableColumnIndex t cs with
                     | None -> None
                     | Some ci ->
                         match sel.ColEnd with
                         | None -> Some (t.StartCol + ci, t.StartCol + ci)
                         | Some ce ->
-                            RedBat.Spreadsheet.Workbook.tableColumnIndex t ce
+                            Rbt.Spreadsheet.Workbook.tableColumnIndex t ce
                             |> Option.map (fun cj -> t.StartCol + min ci cj, t.StartCol + max ci cj)
             let rowRange =
                 match sel.Item with
@@ -1285,8 +1285,8 @@ let tableSelArea (sel: TableSel)
 /// flat list of cell values it covers (row-major over the selected rows ×
 /// columns). `sheet`/`currentCell` resolve this-row and unqualified refs.
 let iterTableSel (sel: TableSel)
-                 (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                 (sheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                 (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                 (sheet: Rbt.Spreadsheet.Workbook.SheetId option)
                  (currentCell: CellAddress option)
                  (model: SpreadsheetModel)
                  (emit: CellValue -> unit) : unit =
@@ -1298,8 +1298,8 @@ let iterTableSel (sel: TableSel)
                 emit (getCellValue { Row = row; Col = col } model |> unwrapValue)
 
 let expandTableSel (sel: TableSel)
-                   (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                   (sheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                   (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                   (sheet: Rbt.Spreadsheet.Workbook.SheetId option)
                    (currentCell: CellAddress option)
                    (model: SpreadsheetModel) : CellValue list =
     let values = ResizeArray<CellValue>()
@@ -1307,8 +1307,8 @@ let expandTableSel (sel: TableSel)
     resizeArrayToList values
 
 let firstTableSelValue (sel: TableSel)
-                       (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                       (sheet: RedBat.Spreadsheet.Workbook.SheetId option)
+                       (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                       (sheet: Rbt.Spreadsheet.Workbook.SheetId option)
                        (currentCell: CellAddress option)
                        (model: SpreadsheetModel) : CellValue =
     match tableSelArea sel workbook sheet currentCell with
@@ -1761,7 +1761,7 @@ type RangeAccess = { M: SpreadsheetModel; SR: int; SC: int; W: int; Count: int }
 
 /// Resolve a range-shaped expression (RangeRef or single CellRef) to a
 /// `RangeAccess`, honoring a sheet qualifier. None for non-range expressions.
-let rangeAccessOf (model: SpreadsheetModel) (workbook: RedBat.Spreadsheet.Workbook.Workbook option) (e: Expr) : RangeAccess option =
+let rangeAccessOf (model: SpreadsheetModel) (workbook: Rbt.Spreadsheet.Workbook.Workbook option) (e: Expr) : RangeAccess option =
     let mk sheet sr sc er ec =
         match resolveModel sheet model workbook with
         | Some m -> Some { M = m; SR = sr; SC = sc; W = ec - sc + 1; Count = (er - sr + 1) * (ec - sc + 1) }
@@ -2700,8 +2700,8 @@ let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
 /// names), and which sheet is "current" (for scoping sheet-local names).
 type EvalContext = {
     Model: SpreadsheetModel
-    Workbook: RedBat.Spreadsheet.Workbook.Workbook option
-    Sheet: RedBat.Spreadsheet.Workbook.SheetId option
+    Workbook: Rbt.Spreadsheet.Workbook.Workbook option
+    Sheet: Rbt.Spreadsheet.Workbook.SheetId option
     /// Address of the cell being evaluated, when known. Needed to resolve
     /// this-row structured refs (`Table[@Col]` / `[@Col]`) and to find the
     /// containing table for unqualified refs. None for ad-hoc evaluation.
@@ -4001,8 +4001,8 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
         // changes (it's a formula), and the result is a normal range you can
         // FILTER/SORT/chart. (Better than a static PivotTable: no Refresh.)
         if nargs < 2 then errArr Err.value else
-        let parseAggArg i = match coerceText (eval (argExpr i) ctx) with Ok s -> RedBat.Spreadsheet.Pivot.parseAgg s |> Option.defaultValue RedBat.Spreadsheet.Pivot.Sum | _ -> RedBat.Spreadsheet.Pivot.Sum
-        let agg = if nargs >= 3 then parseAggArg 2 else RedBat.Spreadsheet.Pivot.Sum
+        let parseAggArg i = match coerceText (eval (argExpr i) ctx) with Ok s -> Rbt.Spreadsheet.Pivot.parseAgg s |> Option.defaultValue Rbt.Spreadsheet.Pivot.Sum | _ -> Rbt.Spreadsheet.Pivot.Sum
+        let agg = if nargs >= 3 then parseAggArg 2 else Rbt.Spreadsheet.Pivot.Sum
         let sparseGroupBy1 () =
             match rangeAccessOf ctx.Model ctx.Workbook (argExpr 0), rangeAccessOf ctx.Model ctx.Workbook (argExpr 1) with
             | Some rowAccess, Some valueAccess when rowAccess.W = 1 && valueAccess.W = 1 && obj.ReferenceEquals(rowAccess.M, valueAccess.M) ->
@@ -4081,11 +4081,11 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
                     addBlankRows (int64 (count - nextRow))
                     let finishState (struct (count, numericCount, sum, maxValue, minValue)) =
                         match agg with
-                        | RedBat.Spreadsheet.Pivot.Count -> CellValue.Number(float count)
-                        | RedBat.Spreadsheet.Pivot.Sum -> CellValue.Number sum
-                        | RedBat.Spreadsheet.Pivot.Average -> if numericCount = 0 then CellValue.Empty else CellValue.Number(sum / float numericCount)
-                        | RedBat.Spreadsheet.Pivot.Max -> if numericCount = 0 then CellValue.Empty else CellValue.Number maxValue
-                        | RedBat.Spreadsheet.Pivot.Min -> if numericCount = 0 then CellValue.Empty else CellValue.Number minValue
+                        | Rbt.Spreadsheet.Pivot.Count -> CellValue.Number(float count)
+                        | Rbt.Spreadsheet.Pivot.Sum -> CellValue.Number sum
+                        | Rbt.Spreadsheet.Pivot.Average -> if numericCount = 0 then CellValue.Empty else CellValue.Number(sum / float numericCount)
+                        | Rbt.Spreadsheet.Pivot.Max -> if numericCount = 0 then CellValue.Empty else CellValue.Number maxValue
+                        | Rbt.Spreadsheet.Pivot.Min -> if numericCount = 0 then CellValue.Empty else CellValue.Number minValue
                     let sortedValues = ResizeArray<CellValue>(valuesByKey.Count)
                     for pair in valuesByKey do
                         sortedValues.Add pair.Value
@@ -4113,13 +4113,13 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
             | _ -> ValueNone
         match sparseGroupBy1 () with
         | ValueSome result -> result
-        | ValueNone -> RedBat.Spreadsheet.Pivot.groupBy (evalArray (argExpr 0) ctx) (evalArray (argExpr 1) ctx) agg
+        | ValueNone -> Rbt.Spreadsheet.Pivot.groupBy (evalArray (argExpr 0) ctx) (evalArray (argExpr 1) ctx) agg
     | "PIVOTBY" ->
         // PIVOTBY(row_range, col_range, value_range, [agg]) — live spilling
         // cross-tab.
         if nargs < 3 then errArr Err.value else
-        let parseAggArg i = match coerceText (eval (argExpr i) ctx) with Ok s -> RedBat.Spreadsheet.Pivot.parseAgg s |> Option.defaultValue RedBat.Spreadsheet.Pivot.Sum | _ -> RedBat.Spreadsheet.Pivot.Sum
-        let agg = if nargs >= 4 then parseAggArg 3 else RedBat.Spreadsheet.Pivot.Sum
+        let parseAggArg i = match coerceText (eval (argExpr i) ctx) with Ok s -> Rbt.Spreadsheet.Pivot.parseAgg s |> Option.defaultValue Rbt.Spreadsheet.Pivot.Sum | _ -> Rbt.Spreadsheet.Pivot.Sum
+        let agg = if nargs >= 4 then parseAggArg 3 else Rbt.Spreadsheet.Pivot.Sum
         let sparsePivotBy1 () =
             match rangeAccessOf ctx.Model ctx.Workbook (argExpr 0), rangeAccessOf ctx.Model ctx.Workbook (argExpr 1), rangeAccessOf ctx.Model ctx.Workbook (argExpr 2) with
             | Some rowAccess, Some colAccess, Some valueAccess
@@ -4155,11 +4155,11 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
                         | ValueNone -> struct (count + rowCount, numericCount, sum, maxValue, minValue)
                     let finishState (struct (count, numericCount, sum, maxValue, minValue)) =
                         match agg with
-                        | RedBat.Spreadsheet.Pivot.Count -> CellValue.Number(float count)
-                        | RedBat.Spreadsheet.Pivot.Sum -> CellValue.Number sum
-                        | RedBat.Spreadsheet.Pivot.Average -> if numericCount = 0 then CellValue.Empty else CellValue.Number(sum / float numericCount)
-                        | RedBat.Spreadsheet.Pivot.Max -> if numericCount = 0 then CellValue.Empty else CellValue.Number maxValue
-                        | RedBat.Spreadsheet.Pivot.Min -> if numericCount = 0 then CellValue.Empty else CellValue.Number minValue
+                        | Rbt.Spreadsheet.Pivot.Count -> CellValue.Number(float count)
+                        | Rbt.Spreadsheet.Pivot.Sum -> CellValue.Number sum
+                        | Rbt.Spreadsheet.Pivot.Average -> if numericCount = 0 then CellValue.Empty else CellValue.Number(sum / float numericCount)
+                        | Rbt.Spreadsheet.Pivot.Max -> if numericCount = 0 then CellValue.Empty else CellValue.Number maxValue
+                        | Rbt.Spreadsheet.Pivot.Min -> if numericCount = 0 then CellValue.Empty else CellValue.Number minValue
                     let rowValuesByKey =
 #if FABLE_COMPILER
                         Dictionary<string, CellValue>()
@@ -4289,7 +4289,7 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
             | _ -> ValueNone
         match sparsePivotBy1 () with
         | ValueSome result -> result
-        | ValueNone -> RedBat.Spreadsheet.Pivot.pivotBy (evalArray (argExpr 0) ctx) (evalArray (argExpr 1) ctx) (evalArray (argExpr 2) ctx) agg
+        | ValueNone -> Rbt.Spreadsheet.Pivot.pivotBy (evalArray (argExpr 0) ctx) (evalArray (argExpr 1) ctx) (evalArray (argExpr 2) ctx) agg
     | _ -> errArr Err.name
 
 /// Run a one-pass `Fold` across an aggregate's whole argument list WITHOUT
@@ -10340,7 +10340,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
 /// the workbook's active sheet — the right scope for an interactive
 /// edit-buffer preview, which is what this entry point serves.
 let evaluateFormula (formula: string) (model: SpreadsheetModel)
-                    (workbook: RedBat.Spreadsheet.Workbook.Workbook option) : CellValue =
+                    (workbook: Rbt.Spreadsheet.Workbook.Workbook option) : CellValue =
     match parseFormulaShared formula with
     | Ok expr ->
         let ctx =
@@ -10393,8 +10393,8 @@ let private collectFormulaCells (model: SpreadsheetModel) =
 /// Recalculate every formula cell in a model, in dependency order.
 /// `currentSheet` scopes defined-name resolution to the sheet being
 /// recalculated (the caller knows which sheet `model` belongs to).
-let recalculateAllFormulas (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                           (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+let recalculateAllFormulas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                           (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
                            (model: SpreadsheetModel) : SpreadsheetModel =
     let formulaCells = collectFormulaCells model
     if formulaCells.Count = 0 then model else
@@ -10587,8 +10587,8 @@ let containsArrayFunction (e: Expr) : bool =
 /// untouched, so this is safe to run after `recalculateAllFormulas` on any
 /// workbook. (Interactive clear-on-recalc + spill-cell dependencies are a
 /// later step; this is the render-side materialization.)
-let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                            (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                            (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
                             (model: SpreadsheetModel) : SpreadsheetModel * bool =
     let previousSpill = model.Spill
     let anchors = ResizeArray<CellAddress * CellData * string * Expr>()
@@ -10698,8 +10698,8 @@ let private spillArraysCore (workbook: RedBat.Spreadsheet.Workbook.Workbook opti
     else
         ({ model with Cells = updatedCells; Spill = spillMap } |> invalidateFilterProjection), true
 
-let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+let spillArrays (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
                 (model: SpreadsheetModel) : SpreadsheetModel =
     spillArraysCore workbook currentSheet model |> fst
 
@@ -10708,8 +10708,8 @@ let spillArrays (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
 /// edit→recompute step: a spilling formula (FILTER/SORT/GROUPBY/…) updates and
 /// re-spills automatically when its source changes. Two recalc passes bracket
 /// the spill so formulas that *read* spilled cells also settle.
-let recalcAndSpill (workbook: RedBat.Spreadsheet.Workbook.Workbook option)
-                   (currentSheet: RedBat.Spreadsheet.Workbook.SheetId option)
+let recalcAndSpill (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                   (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
                    (model: SpreadsheetModel) : SpreadsheetModel =
     if Map.isEmpty model.Spill && not (cellsHaveFormulaCells model.Cells) then model else
     let recalculated = recalculateAllFormulas workbook currentSheet model

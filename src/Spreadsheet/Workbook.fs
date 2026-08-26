@@ -1,7 +1,7 @@
-module RedBat.Spreadsheet.Workbook
+module Rbt.Spreadsheet.Workbook
 
 open System.Collections.Generic
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
 /// Sheet ID (unique identifier)
 type SheetId = string

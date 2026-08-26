@@ -1,4 +1,4 @@
-module RedBat.Word.Rope
+module Rbt.Word.Rope
 
 open System
 

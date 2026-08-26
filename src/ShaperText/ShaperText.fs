@@ -1,6 +1,6 @@
-module RedBat.Word.ShaperText
+module Rbt.Word.ShaperText
 
-open RedBat.Word.TextBuffer
+open Rbt.Word.TextBuffer
 
 type FontFace = {
     Family: string
@@ -38,8 +38,8 @@ type private FontEntry = {
     Family: string
     Bold: bool
     Italic: bool
-    Font: Text.Engine.TextFont
-    OutlineFont: OpenType.Font.Font
+    Font: Rbt.Text.Engine.TextFont
+    OutlineFont: Rbt.OpenType.Font.Font
 }
 
 type FontSet = private {
@@ -60,8 +60,8 @@ let createFontSet defaultFamily (faces: FontFace seq) =
                 Family = face.Family
                 Bold = face.Bold
                 Italic = face.Italic
-                Font = Text.Engine.loadFont face.Data
-                OutlineFont = OpenType.Font.load face.Data
+                Font = Rbt.Text.Engine.loadFont face.Data
+                OutlineFont = Rbt.OpenType.Font.load face.Data
             }
             fontKey face.Family face.Bold face.Italic, entry)
         |> Map.ofSeq
@@ -105,20 +105,20 @@ let measureText (fontSet: FontSet) (text: string) (style: TextStyle) =
     else
         match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
         | None -> 0.0
-        | Some entry -> Text.Engine.measureWidth entry.Font style.FontSize text + TextBuffer.characterSpacingAdvance text style
+        | Some entry -> Rbt.Text.Engine.measureWidth entry.Font style.FontSize text + TextBuffer.characterSpacingAdvance text style
 
 let tryMeasureText (fontSet: FontSet) (text: string) (style: TextStyle) =
     if System.String.IsNullOrEmpty text then Some 0.0
     else
         match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
         | None -> None
-        | Some entry -> Some (Text.Engine.measureWidth entry.Font style.FontSize text + TextBuffer.characterSpacingAdvance text style)
+        | Some entry -> Some (Rbt.Text.Engine.measureWidth entry.Font style.FontSize text + TextBuffer.characterSpacingAdvance text style)
 
 let tryLineMetrics (fontSet: FontSet) (style: TextStyle) =
     match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
     | None -> None
     | Some entry ->
-        let metrics = Text.Engine.metrics entry.Font
+        let metrics = Rbt.Text.Engine.metrics entry.Font
         let scale = style.FontSize / float metrics.UnitsPerEm
         let ascender = float metrics.Ascender * scale
         let descender = float metrics.Descender * scale
@@ -131,13 +131,13 @@ let tryLineMetrics (fontSet: FontSet) (style: TextStyle) =
             LineHeight = ascender - descender + lineGap
         }
 
-let createMeasurer fontSet : RedBat.Word.Layout.TextMeasurer =
+let createMeasurer fontSet : Rbt.Word.Layout.TextMeasurer =
     fun text style -> measureText fontSet text style
 
 let shapeText (fontSet: FontSet) (text: string) (style: TextStyle) =
     match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
     | None -> None
-    | Some entry -> Some (entry.Font, Text.Engine.shapeText entry.Font style.FontSize text)
+    | Some entry -> Some (entry.Font, Rbt.Text.Engine.shapeText entry.Font style.FontSize text)
 
 let unitsPerEm (fontSet: FontSet) (style: TextStyle) =
     match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
@@ -148,24 +148,24 @@ let glyphPath (fontSet: FontSet) (style: TextStyle) glyphId =
     match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
     | None -> [||]
     | Some entry ->
-        OpenType.Font.outline entry.OutlineFont glyphId
+        Rbt.OpenType.Font.outline entry.OutlineFont glyphId
         |> Array.map (function
-            | OpenType.Outline.MoveTo (x, y) -> PathMoveTo (x, y)
-            | OpenType.Outline.LineTo (x, y) -> PathLineTo (x, y)
-            | OpenType.Outline.QuadTo (cx, cy, x, y) -> PathQuadTo (cx, cy, x, y)
-            | OpenType.Outline.CubicTo (cx1, cy1, cx2, cy2, x, y) -> PathCubicTo (cx1, cy1, cx2, cy2, x, y)
-            | OpenType.Outline.Close -> PathClose)
+            | Rbt.OpenType.Outline.MoveTo (x, y) -> PathMoveTo (x, y)
+            | Rbt.OpenType.Outline.LineTo (x, y) -> PathLineTo (x, y)
+            | Rbt.OpenType.Outline.QuadTo (cx, cy, x, y) -> PathQuadTo (cx, cy, x, y)
+            | Rbt.OpenType.Outline.CubicTo (cx1, cy1, cx2, cy2, x, y) -> PathCubicTo (cx1, cy1, cx2, cy2, x, y)
+            | Rbt.OpenType.Outline.Close -> PathClose)
 
-let createRangeMeasurer fontSet : RedBat.Word.Layout.TextRangeMeasurer =
+let createRangeMeasurer fontSet : Rbt.Word.Layout.TextRangeMeasurer =
     fun text style start length ->
         match shapeText fontSet text style with
-        | Some (_, shaped) -> Text.Engine.measureRange shaped start length
+        | Some (_, shaped) -> Rbt.Text.Engine.measureRange shaped start length
         | None ->
             let startIndex = max 0 (min text.Length start)
             let endIndex = max startIndex (min text.Length (start + length))
             if endIndex = startIndex then 0.0
             else measureText fontSet (text.Substring(startIndex, endIndex - startIndex)) style
 
-let advanceAt shapedText offset = Text.Engine.advanceAt shapedText offset
+let advanceAt shapedText offset = Rbt.Text.Engine.advanceAt shapedText offset
 
-let measureRange shapedText start length = Text.Engine.measureRange shapedText start length
+let measureRange shapedText start length = Rbt.Text.Engine.measureRange shapedText start length

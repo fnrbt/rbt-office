@@ -1,5 +1,5 @@
 /// DOM manipulation helpers using Emit
-module RedBat.Grid.Dom
+module Rbt.Grid.Dom
 
 open Fable.Core
 open Fable.Core.JsInterop

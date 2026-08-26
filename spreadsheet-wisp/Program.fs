@@ -2,20 +2,20 @@ module SpreadsheetWispApp
 
 open System
 open System.IO
-open Renderer
+open Rbt.Renderer
 open Wisp.Reactive
 open Wisp.Layout
-open RedBat.Office.Ui
+open Rbt.Office.Ui
 
 module Ui = Wisp.Atrium
 module Shell = Wisp.OfficeShell
-module XlUi = RedBat.Spreadsheet.Ui
-module M = RedBat.Spreadsheet.Model
-module L = RedBat.Spreadsheet.Layout
-module EH = SpreadsheetWisp.EditorHost
-module GR = SpreadsheetWisp.GridRender
-module Pivot = RedBat.Spreadsheet.Pivot
-module Formula = RedBat.Spreadsheet.Formula
+module XlUi = Rbt.Spreadsheet.Ui
+module M = Rbt.Spreadsheet.Model
+module L = Rbt.Spreadsheet.Layout
+module EH = Rbt.SpreadsheetWisp.EditorHost
+module GR = Rbt.SpreadsheetWisp.GridRender
+module Pivot = Rbt.Spreadsheet.Pivot
+module Formula = Rbt.Spreadsheet.Formula
 
 let private appW = 1200
 let private appH = 820
@@ -679,7 +679,7 @@ let main argv =
             let sheetName = names |> Array.tryItem st.ActiveSheet.Value |> Option.defaultValue "Sheet1"
             let mutable msg = "Macro ran"
             EH.applyChange st (fun m ->
-                match RedBat.Spreadsheet.Vba.runOnModelWithSheetName sheetName { m with Macros = source } source with
+                match Rbt.Spreadsheet.Vba.runOnModelWithSheetName sheetName { m with Macros = source } source with
                 | Result.Ok m2 -> m2
                 | Result.Error e -> msg <- "Macro error: " + e; { m with Macros = source }) |> ignore
             status.Value <- msg)

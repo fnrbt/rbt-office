@@ -1,7 +1,7 @@
-module RedBat.Spreadsheet.Layout
+module Rbt.Spreadsheet.Layout
 
 open System.Collections.Generic
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
 [<Struct>]
 type Rect = {
@@ -13,7 +13,7 @@ type Rect = {
 
 /// Measure a piece of text in pixels at a given font size/face. Optional;
 /// when None, the cell painter approximates width as charCount × mdwPx.
-/// Set by the native runner (real Renderer.Text.measureWidth) and by the
+/// Set by the native runner (real Rbt.Renderer.Text.measureWidth) and by the
 /// PDF emitter; left None by the Fable web canvas which doesn't have a
 /// portable measurement API at this layer.
 type TextMeasurer = string -> float -> string option -> bool -> bool -> float

@@ -1,5 +1,5 @@
 #r "/home/dave/Dev/browser/office/src/Office.Formats/bin/Debug/netstandard2.0/OfficeFormat.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/VBScriptParser.dll"
+#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/FsVb.dll"
 #r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
 
 // vbaProject.bin: write a source-only macro project, read it back through the

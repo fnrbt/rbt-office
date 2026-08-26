@@ -1,9 +1,9 @@
-module RedBat.FableUI.Dom
+module Rbt.FableUI.Dom
 
 open Fable.Core.JsInterop
 open Browser.Dom
 open Browser.Types
-open RedBat.FableUI.Reactive
+open Rbt.FableUI.Reactive
 
 type Attr =
     | StaticAttr of string * string

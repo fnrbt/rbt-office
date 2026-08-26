@@ -48,7 +48,7 @@ Re-clone with `git clone --depth 1 https://github.com/eigenpal/docx-editor`.
 | Fields (PAGE/NUMPAGES/DATE/TIME/TOC/SEQ/REF/PAGEREF/STYLEREF) | 🟢 | **computed** in `resultForField` (body) + `runningFieldResult` (header/footer); STYLEREF = nearest-heading text, DATE/TIME with `\@` picture | their `fieldParser` handles | `fields-styleref-date-time.docx`. Remaining 🔴: AUTHOR/FILENAME (need core.xml→editor-Document plumbing; `Creator` is parsed in DocxReader but not threaded); header STYLEREF (needs per-page heading context). |
 | SDT control types + dataBinding | 🟢 | **checkbox renders as real ☒/☐ glyph** from `w14:checkbox`/`w14:checked` (not the symbol-font char); dropdown/combo/date/plain-text surface their content; id/tag/alias preserved | full types + interactive editing | `sdt-controls.docx` verified. Interactive editing (open dropdown, toggle) is still their lead. |
 | Preset-geometry shapes (`prstGeom` fill/gradient/stroke) | 🟢 | **FIXED** — `a:prstGeom` (60+ presets: ellipse/roundRect/triangle/diamond/polygons/stars/arrows/chevron/flowchart…) + `a:custGeom` freeform paths + `a:gradFill` linear/radial gradients, parsed (DocxReader) → `ShapeGeometry`/`GradientSpec` (Document) → `DrawShape` paint command → **all three render paths** (canvas full gradient, PDF gradient≈midpoint-solid, native `FillPath` full gradient). New `Shapes.fs` path library. | `shapeParser` | `autoshapes-gallery.docx`, verified canvas+PDF. Unmapped presets fall back to rect; arcTo in custGeom dropped (approx). |
-| RTL / bidi paragraphs | 🟡 | **canvas FIXED** — `w:bidi` → right-align + token reorder (browser handles in-token glyph order). PDF/native glyph path still needs `../text/bidi` wired. | right-aligns | engine `../text/bidi` exists; canvas done, PDF follow-up. |
+| RTL / bidi paragraphs | 🟡 | **canvas FIXED** — `w:bidi` → right-align + token reorder (browser handles in-token glyph order). PDF/native glyph path still needs `../rbt-text/bidi` wired. | right-aligns | engine `../rbt-text/bidi` exists; canvas done, PDF follow-up. |
 | Paragraph/table borders + shading | 🟡 | borders + pct-shading | active `openspec/changes/paragraph-border-rendering`, `table-rendering-fidelity` | Verify edge cases head-to-head. |
 | Watermarks (VML) | 🔴 | ✗ | `docx/vmlWatermarkParser.ts` + `serializer/vmlWatermarkSerializer.ts` + `watermarkApi.ts` | |
 | Equations (OMML) render | 🟢 | **laid out + rendered** (`Math.fs`), not just XML-preserved — see the Math (OMML) row above | `prosemirror/extensions/nodes/MathExtension.ts` (rendered) | |
@@ -177,10 +177,10 @@ Newest first. Each entry: what, evidence both sides, date.
      `w:u val=double|thick|dotted|dash|dotDash|wavy|wavyDouble` and `w:u color` all render as a plain single
      black underline (`underline-styles.docx`).
   3. **RTL/bidi** 🟡 — canvas left-aligns `w:bidi` paragraphs (docx-editor right-aligns, matching Word).
-     BUT **we own a full UBA bidi engine in `../text/bidi` (`Bidi.Algorithm`, conformance-tested) — it is
+     BUT **we own a full UBA bidi engine in `../rbt-text/bidi` (`Bidi.Algorithm`, conformance-tested) — it is
      wired into NOTHING.** The `../text` shaper (ligatures/kerning) IS wired into the **PDF path**
      (`Word.Pdf` → `ShaperText.shapeText`), not the canvas path. So RTL+shaping are *integration* gaps, not
-     capability gaps: utilize `../text/bidi` (reorder + paragraph direction/alignment) in Layout/Paint.
+     capability gaps: utilize `../rbt-text/bidi` (reorder + paragraph direction/alignment) in Layout/Paint.
   Note: tab-stops + underline are genuine model/parser gaps (no `../text` involved); fix is self-contained.
 
 - **2026-06-06** — **12-fixture font-fair, page-aligned sweep.** Net: ours closer to Word on more

@@ -1,7 +1,7 @@
-module RedBat.Word.WordStyles
+module Rbt.Word.WordStyles
 
-open RedBat.Word.Document
-open RedBat.Word.TextBuffer
+open Rbt.Word.Document
+open Rbt.Word.TextBuffer
 
 let private resizeArrayToList (items: ResizeArray<'T>) =
     let mutable result = []

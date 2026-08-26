@@ -1,4 +1,5 @@
-namespace RedBat.Word
+namespace Rbt.Word
+open Rbt.Vb
 
 module Vba =
     open Values
@@ -327,15 +328,15 @@ module Vba =
 
     let run (editor: WordApi.Editor) (source: string) =
         let options =
-            FsVb.RunOptions.vba
-            |> FsVb.RunOptions.withHostGlobals (hostGlobals editor)
-        FsVb.runSource options source
+            Api.RunOptions.vba
+            |> Api.RunOptions.withHostGlobals (hostGlobals editor)
+        Api.runSource options source
 
     let runVbs (editor: WordApi.Editor) (source: string) =
         let options =
-            FsVb.RunOptions.vbScript
-            |> FsVb.RunOptions.withHostGlobals (hostGlobalsVbs editor)
-        FsVb.runSource options source
+            Api.RunOptions.vbScript
+            |> Api.RunOptions.withHostGlobals (hostGlobalsVbs editor)
+        Api.runSource options source
 #else
     module Doc = Document
     module TextBuf = TextBuffer
@@ -663,19 +664,19 @@ module Vba =
 
     let runDocument (doc: Doc.Document) (source: string) =
         let options =
-            FsVb.RunOptions.vba
-            |> FsVb.RunOptions.withHostGlobals (hostGlobalsDocument doc)
-        FsVb.runSource options source
+            Api.RunOptions.vba
+            |> Api.RunOptions.withHostGlobals (hostGlobalsDocument doc)
+        Api.runSource options source
 
     let runDocumentVbs (doc: Doc.Document) (source: string) =
         let options =
-            FsVb.RunOptions.vbScript
-            |> FsVb.RunOptions.withHostGlobals (hostGlobalsDocumentVbs doc)
-        FsVb.runSource options source
+            Api.RunOptions.vbScript
+            |> Api.RunOptions.withHostGlobals (hostGlobalsDocumentVbs doc)
+        Api.runSource options source
 
     let hostGlobals (_: API.Editor) : Map<string, Value> = Map.empty
     let run (_: API.Editor) (_: string) =
-        Error (FsVb.RuntimeError "Use Word.Vba.runDocument for native Word VBA host execution")
+        Error (Api.RuntimeError "Use Word.Vba.runDocument for native Word VBA host execution")
     let runVbs (_: API.Editor) (_: string) =
-        Error (FsVb.RuntimeError "Use Word.Vba.runDocumentVbs for native Word VBS host execution")
+        Error (Api.RuntimeError "Use Word.Vba.runDocumentVbs for native Word VBS host execution")
 #endif

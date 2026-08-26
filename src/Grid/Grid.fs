@@ -1,10 +1,10 @@
-module RedBat.Grid.Grid
+module Rbt.Grid.Grid
 
 open Fable.Core
 open Fable.Core.JsInterop
-open RedBat.Grid.Dom
-open RedBat.Grid.DataSource
-open RedBat.Grid.Hooks
+open Rbt.Grid.Dom
+open Rbt.Grid.DataSource
+open Rbt.Grid.Hooks
 
 /// Grid configuration
 type GridConfig = {

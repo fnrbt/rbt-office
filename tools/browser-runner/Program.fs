@@ -1,15 +1,16 @@
 module BrowserRunner
 
+open Rbt.Vb
 open Fable.Core
 open Fable.Core.JsInterop
 open Browser.Dom
 open Browser.Types
 open ZipInterop
 
-module WordApi = RedBat.Word.API
-module WordVba = RedBat.Word.Vba
+module WordApi = Rbt.Word.API
+module WordVba = Rbt.Word.Vba
 module Formats = Main
-module Shaper = RedBat.Word.ShaperText
+module Shaper = Rbt.Word.ShaperText
 
 type RunnerState = {
     Canvas: HTMLCanvasElement
@@ -126,7 +127,7 @@ let private runVba (state: RunnerState) (source: string) (resultName: string) =
     | Ok result ->
         let value =
             if isNull (box resultName) || resultName = "" then null
-            else FsVb.tryGetGlobal resultName result.State |> Option.map vbValueToObj |> Option.defaultValue null
+            else Api.tryGetGlobal resultName result.State |> Option.map vbValueToObj |> Option.defaultValue null
         createObj [
             "ok" ==> true
             "result" ==> value
@@ -143,7 +144,7 @@ let private runVbs (state: RunnerState) (source: string) (resultName: string) =
     | Ok result ->
         let value =
             if isNull (box resultName) || resultName = "" then null
-            else FsVb.tryGetGlobal resultName result.State |> Option.map vbValueToObj |> Option.defaultValue null
+            else Api.tryGetGlobal resultName result.State |> Option.map vbValueToObj |> Option.defaultValue null
         createObj [
             "ok" ==> true
             "result" ==> value
@@ -341,8 +342,8 @@ let private boot () =
         "clearSelection" ==> fun () -> ensureEditor state |> WordApi.clearSelection
         "forceFullRender" ==> fun () ->
             let editor = ensureEditor state
-            RedBat.Word.Renderer.clearLayoutCache editor.Handler.RenderContext
-            RedBat.Word.Renderer.render editor.Handler.RenderContext editor.Doc
+            Rbt.Word.Renderer.clearLayoutCache editor.Handler.RenderContext
+            Rbt.Word.Renderer.render editor.Handler.RenderContext editor.Doc
         "setCanvasSize" ==> fun (width: int) (height: int) -> setCanvasSize state width height
         "canvasToPngDataUrl" ==> fun () -> canvasToPngDataUrl state.Canvas
         "editor" ==> fun () -> state.Editor

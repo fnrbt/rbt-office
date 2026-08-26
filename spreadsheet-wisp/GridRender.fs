@@ -1,13 +1,13 @@
-module SpreadsheetWisp.GridRender
+module Rbt.SpreadsheetWisp.GridRender
 
 open System
 open System.Collections.Generic
 open System.IO
-open Renderer
+open Rbt.Renderer
 
-module M = RedBat.Spreadsheet.Model
-module L = RedBat.Spreadsheet.Layout
-module P = RedBat.Spreadsheet.Paint
+module M = Rbt.Spreadsheet.Model
+module L = Rbt.Spreadsheet.Layout
+module P = Rbt.Spreadsheet.Paint
 
 let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasure v
 let private pointsToPixels points = points * 96.0 / 72.0
@@ -42,16 +42,16 @@ let private parseHexColor (value: string) =
     | 8 -> fromParts s.[0..1] s.[2..3] s.[4..5] (Some s.[6..7])
     | _ -> Color.black
 
-let mutable private defaultFont : Renderer.Text.FontData option = None
+let mutable private defaultFont : Rbt.Renderer.Text.FontData option = None
 let private rendererFont () =
     match defaultFont with
     | Some f -> f
     | None ->
-        let f = Renderer.Text.loadFontFile "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
+        let f = Rbt.Renderer.Text.loadFontFile "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
         defaultFont <- Some f
         f
 
-let private fontCache = Dictionary<string, Renderer.Text.FontData option>()
+let private fontCache = Dictionary<string, Rbt.Renderer.Text.FontData option>()
 let private existingDir path = if Directory.Exists path then Some path else None
 let private fontDirs () =
     [ Environment.GetEnvironmentVariable "RB_WORD_FONT_DIR"
@@ -90,7 +90,7 @@ let private tryLoadFont (family: string option) (bold: bool) (italic: bool) =
                 fontDirs () |> List.tryPick (fun dir ->
                     let path = Path.Combine(dir, fileName)
                     if File.Exists path then
-                        try Some(Renderer.Text.loadFontFile path) with _ -> None
+                        try Some(Rbt.Renderer.Text.loadFontFile path) with _ -> None
                     else None))
         fontCache.[key] <- loaded
         loaded
@@ -99,7 +99,7 @@ let fontFor (family: string option) bold italic =
     tryLoadFont family bold italic |> Option.defaultWith rendererFont
 
 let measureText (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool) =
-    Renderer.Text.measureWidth (fontFor fontName bold italic) (pointsToPixels fontPt) text
+    Rbt.Renderer.Text.measureWidth (fontFor fontName bold italic) (pointsToPixels fontPt) text
 
 let viewport (scrollX: float) (scrollY: float) (width: float) (height: float) : L.Viewport =
     { L.ScrollX = scrollX
@@ -119,7 +119,7 @@ let private strokeStyle color width =
       DashOffset = 0.0<px>
       MiterLimit = 4.0 }
 
-let private rpath x y w h : Renderer.Types.PathSeg list =
+let private rpath x y w h : Rbt.Renderer.Types.PathSeg list =
     [ MoveTo(vec2 x y)
       LineTo(vec2 (x + w) y)
       LineTo(vec2 (x + w) (y + h))
@@ -139,7 +139,7 @@ let private placeholder (r: L.Rect) =
       Cmd.Line(vec2 r.X r.Y, vec2 (r.X + max 6.0 r.Width) (r.Y + max 6.0 r.Height), Color.rgb 160uy 0uy 160uy, px 1.0)
       Cmd.Line(vec2 (r.X + max 6.0 r.Width) r.Y, vec2 r.X (r.Y + max 6.0 r.Height), Color.rgb 160uy 0uy 160uy, px 1.0) ]
 
-let private baseline (font: Renderer.Text.FontData) fontPx (text: P.PaintText) =
+let private baseline (font: Rbt.Renderer.Text.FontData) fontPx (text: P.PaintText) =
     let lineHeight = max (fontPx * 1.25) (fontPx + 2.0)
     let blockHeight = lineHeight * float text.LineCount
     let top =
@@ -147,10 +147,10 @@ let private baseline (font: Renderer.Text.FontData) fontPx (text: P.PaintText) =
         | P.VAlignTop -> text.Rect.Y + 2.0
         | P.VAlignMiddle -> text.Rect.Y + (text.Rect.Height - blockHeight) / 2.0
         | P.VAlignBottom -> text.Rect.Y + text.Rect.Height - blockHeight - 2.0
-    top + float text.LineIndex * lineHeight + Renderer.Text.ascender font fontPx + text.BaselineShift * 96.0 / 72.0
+    top + float text.LineIndex * lineHeight + Rbt.Renderer.Text.ascender font fontPx + text.BaselineShift * 96.0 / 72.0
 
 let private alignedX font fontPx (text: P.PaintText) =
-    let width = Renderer.Text.measureWidth font fontPx text.Text
+    let width = Rbt.Renderer.Text.measureWidth font fontPx text.Text
     match text.Align with
     | P.AlignLeft -> text.Rect.X
     | P.AlignCenter -> text.Rect.X + max 0.0 ((text.Rect.Width - width) / 2.0)
@@ -163,8 +163,8 @@ let private textCommands (text: P.PaintText) =
         let fontPx = pointsToPixels text.FontSize
         let x = alignedX font fontPx text
         let y = baseline font fontPx text
-        let glyphs = Cmd.DrawGlyphs(vec2 x y, Renderer.Text.layout font fontPx text.Text, Solid(parseHexColor text.Color))
-        let width = Renderer.Text.measureWidth font fontPx text.Text
+        let glyphs = Cmd.DrawGlyphs(vec2 x y, Rbt.Renderer.Text.layout font fontPx text.Text, Solid(parseHexColor text.Color))
+        let width = Rbt.Renderer.Text.measureWidth font fontPx text.Text
         let decoY = y + 1.5
         let strikeY = y - fontPx * 0.32
         let deco =
