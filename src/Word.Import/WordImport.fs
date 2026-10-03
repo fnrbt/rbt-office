@@ -326,8 +326,9 @@ let private tableWidth width widthType =
 
 let private lineSpacingValue value rule =
     match rule with
+    // Style-level exact / at-least is px (twips / 15), as in the browser style catalog.
     | Some "exact"
-    | Some "atLeast" -> twipsToPoints value
+    | Some "atLeast" -> twipsToCanvasPixels value
     | _ -> TC.lineSpacingToMultiple value
 
 let private wordAutoSpacingPoints = 14.0
@@ -365,12 +366,87 @@ let private textStyle (run: EP.EditorRun) : Rbt.Word.TextBuffer.TextStyle =
             VertAlign = run.VertAlign
     }
 
-let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun list) =
+/// The raw style definitions of the document being imported. The typed
+/// DocumentProcessors model (EditorRun / ResolvedParagraphProperties) has no
+/// slot for hidden text, caps, tab stops, RTL or the line rule, so those are
+/// resolved here from the raw DocxReader properties, the way the browser
+/// importer (DocxReader.toEditorParagraphs) does. Thread-static: importDoc can
+/// run on several threads at once.
+type private RawStyles() =
+    [<ThreadStatic; DefaultValue>]
+    static val mutable private slot : Map<string, DocxReader.StyleDefinition>
+    static member Current
+        with get () = if isNull (box RawStyles.slot) then Map.empty else RawStyles.slot
+        and set (value: Map<string, DocxReader.StyleDefinition>) = RawStyles.slot <- value
+
+let private rawStyles () = RawStyles.Current
+
+let private emptyRawRunProps : DocxReader.RunProperties = DocxReader.Docx.runProps XmlDsl.Empty
+let private emptyRawParagraphProps : DocxReader.ParagraphProperties = DocxReader.Docx.paragraphProps XmlDsl.Empty
+
+/// Run and paragraph properties of a style with its basedOn chain applied.
+let rec private rawStyleProps (visited: Set<string>) (styleId: string) : DocxReader.RunProperties * DocxReader.ParagraphProperties =
+    match Map.tryFind styleId (rawStyles ()) with
+    | Some style when not (visited.Contains styleId) ->
+        let baseRun, basePara =
+            match style.BasedOn with
+            | Some basedOn -> rawStyleProps (visited.Add styleId) basedOn
+            | None -> emptyRawRunProps, emptyRawParagraphProps
+        (style.RunProperties |> Option.map (mergeRunProperties baseRun) |> Option.defaultValue baseRun),
+        (style.ParagraphProperties |> Option.map (mergeParagraphProperties basePara) |> Option.defaultValue basePara)
+    | _ -> emptyRawRunProps, emptyRawParagraphProps
+
+let private rawParagraphStyleId (props: DocxReader.ParagraphProperties) =
+    props.Style
+    |> Option.orElseWith (fun () ->
+        rawStyles () |> Map.tryPick (fun id style -> if style.StyleType = "paragraph" && style.IsDefault then Some id else None))
+
+/// Document defaults -> paragraph style chain -> direct formatting.
+let private effectiveRawParagraphProps (props: DocxReader.ParagraphProperties) =
+    let _, defaults = rawStyleProps Set.empty DocxReader.Styles.defaultStyleId
+    let _, styled = rawParagraphStyleId props |> Option.map (rawStyleProps Set.empty) |> Option.defaultValue (emptyRawRunProps, emptyRawParagraphProps)
+    mergeParagraphProperties (mergeParagraphProperties defaults styled) props
+
+/// Document defaults -> paragraph style -> paragraph mark -> character style -> direct formatting.
+let private effectiveRawRunProps (paraProps: DocxReader.ParagraphProperties) (runProps: DocxReader.RunProperties) =
+    let defaults, _ = rawStyleProps Set.empty DocxReader.Styles.defaultStyleId
+    let styled, _ = rawParagraphStyleId paraProps |> Option.map (rawStyleProps Set.empty) |> Option.defaultValue (emptyRawRunProps, emptyRawParagraphProps)
+    let mark = paraProps.ParagraphRunProperties |> Option.defaultValue emptyRawRunProps
+    let character, _ = runProps.Style |> Option.map (rawStyleProps Set.empty) |> Option.defaultValue (emptyRawRunProps, emptyRawParagraphProps)
+    mergeRunProperties (mergeRunProperties (mergeRunProperties (mergeRunProperties defaults styled) mark) character) runProps
+
+/// What EditorRun cannot carry, taken from the source run: the browser
+/// importer delivers all of these, the native one used to drop them.
+let private withSourceRunProps (paraProps: DocxReader.ParagraphProperties) (run: DocxReader.Run) (style: Rbt.Word.TextBuffer.TextStyle) : Rbt.Word.TextBuffer.TextStyle =
+    let sourceProps =
+        match run.Content with
+        | DocxReader.Link link -> link.Properties
+        | _ -> run.Properties
+    let raw = effectiveRawRunProps paraProps sourceProps
+    { style with
+        Style = sourceProps.Style
+        AllCaps = raw.AllCaps |> Option.defaultValue false
+        SmallCaps = raw.SmallCaps |> Option.defaultValue false
+        DoubleStrike = raw.DoubleStrike |> Option.defaultValue false
+        Hidden = raw.Hidden |> Option.defaultValue false
+        UnderlineStyle = raw.UnderlineStyle
+        UnderlineColor = raw.UnderlineColor
+        // w:position is half-points; the model holds points.
+        Position = parseFloat raw.Position |> Option.map (fun halfPoints -> halfPoints / 2.0) |> Option.defaultValue 0.0
+        EmphasisMark = raw.EmphasisMark
+        RevisionId = run.RevisionId
+        RevisionType = run.RevisionType
+        RevisionAuthor = run.RevisionAuthor
+        RevisionDate = run.RevisionDate }
+
+let private editorRunsToBufferWith (decorate: int -> Rbt.Word.TextBuffer.TextStyle -> Rbt.Word.TextBuffer.TextStyle) (images: Map<string, string>) (runs: EP.EditorRun list) =
+    let mutable runIndex = -1
     let mutable offset = 0
     let parts = ResizeArray<string>()
     let bufferRuns = ResizeArray<Rbt.Word.TextBuffer.Run>()
 
     for run in runs do
+        runIndex <- runIndex + 1
         if run.IsImage then
             let src = run.ImageSrc |> Option.orElseWith (fun () -> Map.tryFind run.Text images) |> Option.defaultValue ""
             parts.Add("\uFFFC")
@@ -408,7 +484,7 @@ let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun
             })
             offset <- offset + 1
         elif not (String.IsNullOrEmpty run.Text) then
-            let style = textStyle run
+            let style = decorate runIndex (textStyle run)
             parts.Add(run.Text)
             if style.RenderedPageBreakBefore && run.Text.Length > 1 then
                 bufferRuns.Add(Text { Start = offset; Length = 1; Style = style })
@@ -418,6 +494,9 @@ let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun
             offset <- offset + run.Text.Length
 
     { Rope = Rope.ofString (String.Concat parts); Runs = bufferRuns |> Seq.toList }
+
+let private editorRunsToBuffer (images: Map<string, string>) (runs: EP.EditorRun list) =
+    editorRunsToBufferWith (fun _ style -> style) images runs
 
 let private hasDirectParagraphFormatting (props: DocxReader.ParagraphProperties) =
     props.Style.IsSome
@@ -465,15 +544,35 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
     let props = para.Properties
     let resolvedParaProps = DocumentProcessors.StyleResolution.resolveParagraphProps styleMap props
     let numberingDef = resolvedNumberingDefinition resolver props
-    let numberingIndentLeft = numberingDef |> Option.bind (fun def -> twipsToPoints def.IndentLeft)
+    // Indents are canvas px (twips / 15), as the browser importer delivers them and
+    // as layout reads them (its default list indent is 48 = 720 twips). They used
+    // to be twips / 20 here, so natively imported text was indented 25% too little.
+    // EditorParagraph carries them as twips / 20; pointsToPixels brings those over.
+    let pointsToPixels (value: float option) = value |> Option.map (fun points -> points * 20.0 / 15.0)
+    let rawProps = effectiveRawParagraphProps props
+    let numberingIndentLeft = numberingDef |> Option.bind (fun def -> twipsToCanvasPixels def.IndentLeft)
     let numberingRightTab = numberingDef |> Option.bind (fun def -> twipsToCanvasPixels def.RightTabPosition)
     let numberingFirstLineIndent =
         numberingDef
         |> Option.bind (fun def ->
-            match twipsToPoints def.FirstLineIndent, twipsToPoints def.HangingIndent with
+            match twipsToCanvasPixels def.FirstLineIndent, twipsToCanvasPixels def.HangingIndent with
             | Some firstLine, _ -> Some firstLine
             | None, Some hanging -> Some -hanging
             | None, None -> None)
+    // Exact / at-least line spacing, in the DocxReader -> Docx.fs convention that
+    // layout interprets: line height in px divided by the paragraph font size in
+    // px, with that font size in ParagraphMarkFontSize. (It used to arrive here as
+    // twips / 240, which made a 14pt-exact paragraph several times too tall.)
+    let fixedLineSpacing =
+        match rawProps.LineRule, parseFloat rawProps.LineSpacing with
+        | Some rule, Some twips when rule = "exact" || rule = "atLeast" ->
+            let markSize = TC.fontSizeToPoints (effectiveRawRunProps props emptyRawRunProps).FontSize
+            let fontSize =
+                editorPara.Runs
+                |> List.filter (fun run -> not run.IsImage && not (String.IsNullOrEmpty run.Text))
+                |> List.fold (fun size run -> max size run.FontSize) markSize
+            Some ((twips / 15.0) / max 1.0 fontSize, fontSize)
+        | _ -> None
     let missingSpacingFallback = if defaultMissingSpacingToZero then Some 0.0 else None
     {
         defaultMetadata with
@@ -482,19 +581,25 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             ContentControlTag = props.ContentControlTag
             ContentControlAlias = props.ContentControlAlias
             Alignment = alignment editorPara.Alignment
-            IndentLeft = editorPara.IndentLeft |> Option.orElse numberingIndentLeft
-            IndentRight = editorPara.IndentRight
+            IndentLeft = pointsToPixels editorPara.IndentLeft |> Option.orElse numberingIndentLeft
+            IndentRight = pointsToPixels editorPara.IndentRight
             FirstLineIndent =
-                match twipsToPoints props.HangingIndent with
+                match twipsToCanvasPixels props.HangingIndent with
                 | Some hanging -> Some -hanging
-                | None -> editorPara.FirstLineIndent |> Option.orElse numberingFirstLineIndent
+                | None -> pointsToPixels editorPara.FirstLineIndent |> Option.orElse numberingFirstLineIndent
+            TabStops =
+                rawProps.TabStops
+                |> List.choose (fun (position, tabAlignment, leader) ->
+                    twipsToCanvasPixels (Some position)
+                    |> Option.map (fun px -> ({ Position = px; Alignment = tabAlignment; Leader = leader }: TabStop)))
+            Rtl = rawProps.Rtl |> Option.defaultValue false
             RightTabPosition = editorPara.RightTabPosition |> Option.orElse numberingRightTab
             RightTabLeader = editorPara.RightTabLeader
             SpacingBefore = if props.SpacingBeforeAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingBefore |> Option.orElse missingSpacingFallback
             SpacingAfter = if props.SpacingAfterAuto = Some true then Some wordAutoSpacingPoints else editorPara.SpacingAfter |> Option.orElse missingSpacingFallback
             ContextualSpacing = props.ContextualSpacing
-            LineSpacing = editorPara.LineSpacing
-            LineSpacingRule = props.LineRule
+            LineSpacing = fixedLineSpacing |> Option.map fst |> Option.orElse editorPara.LineSpacing
+            LineSpacingRule = rawProps.LineRule
             WidowControl = props.WidowControl
             BackgroundColor = color props.BackgroundColor
             ParagraphBorders = paraBorders props.ParagraphBorders
@@ -523,8 +628,9 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             ListLevelText = numberingDef |> Option.bind _.LevelText |> Option.orElse (props.ListInfo |> Option.bind _.LevelText)
             ListStart = numberingDef |> Option.bind _.Start |> Option.orElse (props.ListInfo |> Option.bind _.Start)
             ParagraphMarkFontSize =
-                props.ParagraphRunProperties
-                |> Option.map (fun rPr -> TC.fontSizeToPoints rPr.FontSize)
+                fixedLineSpacing
+                |> Option.map snd
+                |> Option.orElseWith (fun () -> props.ParagraphRunProperties |> Option.map (fun rPr -> TC.fontSizeToPoints rPr.FontSize))
                 |> Option.orElseWith (fun () ->
                     if useDocumentMarkForPureEmpty && isPureEmptyParagraph para then documentDefaultRunFontSize styleMap else None)
     }
@@ -546,9 +652,19 @@ let private tableStyleParagraphResetsMissingSpacing (props: DocxReader.Paragraph
 
 let private mkPara resolver images styleMap comments notes useDocumentMarkForPureEmpty defaultMissingSpacingToZero para =
     let editorPara = EP.toEditorParagraph None styleMap comments notes para
+    // toEditorParagraph keeps a source run or drops it by its content alone, so the
+    // kept source runs line up with editorPara.Runs one to one.
+    let sourceRuns =
+        para.Runs
+        |> List.filter (fun run -> (EP.toEditorRun None styleMap SR.defaultRunProps comments notes run).IsSome)
+        |> List.toArray
+    let decorate index style =
+        if sourceRuns.Length = editorPara.Runs.Length && index < sourceRuns.Length then
+            withSourceRunProps para.Properties sourceRuns.[index] style
+        else style
     {
         Id = Guid.NewGuid().ToString("N")
-        Buffer = editorRunsToBuffer images editorPara.Runs
+        Buffer = editorRunsToBufferWith decorate images editorPara.Runs
         Metadata = paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMissingSpacingToZero para editorPara
     }
 
@@ -724,9 +840,9 @@ let private namedStyle (theme: DocxReader.Theme option) (style: DocxReader.Style
         LineSpacing = para |> Option.bind (fun p -> lineSpacingValue p.LineSpacing p.LineRule)
         LineSpacingRule = para |> Option.bind (fun p -> p.LineRule)
         Alignment = para |> Option.bind (fun p -> p.Alignment) |> Option.map alignment
-        IndentLeft = para |> Option.bind (fun p -> twipsToPoints p.IndentLeft)
-        IndentRight = para |> Option.bind (fun p -> twipsToPoints p.IndentRight)
-        FirstLineIndent = para |> Option.bind (fun p -> twipsToPoints p.FirstLineIndent)
+        IndentLeft = para |> Option.bind (fun p -> twipsToCanvasPixels p.IndentLeft)
+        IndentRight = para |> Option.bind (fun p -> twipsToCanvasPixels p.IndentRight)
+        FirstLineIndent = para |> Option.bind (fun p -> twipsToCanvasPixels p.FirstLineIndent)
         BackgroundColor = para |> Option.bind (fun p -> color p.BackgroundColor)
         OutlineLevel = para |> Option.bind (fun p -> intOpt p.OutlineLevel)
         KeepNext = para |> Option.bind (fun p -> p.KeepNext)
@@ -762,6 +878,7 @@ let private headerFooterPart resolver images styleMap comments notes (item: Docx
     }
 
 let importDoc (doc: DocxReader.WordDocument) =
+    RawStyles.Current <- doc.Styles |> List.map (fun style -> style.Id, style) |> Map.ofList
     let styleMap = DocumentProcessors.StyleResolution.buildStyleMapWithTheme doc.Theme doc.Styles
     let tableStyleMap = doc.Styles |> List.map (fun style -> style.Id, style) |> Map.ofList
     let resolver = numberingResolver doc.NumberingDefinitions

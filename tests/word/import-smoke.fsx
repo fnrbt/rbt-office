@@ -127,5 +127,52 @@ let libraryDoc = importFixture fixtures.[1].Path Rbt.Word.Import.importDoc
 let compatDoc = importFixture fixtures.[1].Path NativeRunner.importDoc
 check "compat alias summary" (summary compatDoc) (summary libraryDoc)
 
+// ---- units and coverage shared with the browser importer --------------------
+// The native importer must fill the model the way DocxReader -> Docx.fs does:
+// indents in px (twips / 15), exact line spacing as line px / font px with the
+// font size in ParagraphMarkFontSize, and the run / paragraph properties the
+// typed EditorRun cannot carry.
+let syntheticDocx (body: string) =
+    use stream = new IO.MemoryStream()
+    do
+        use archive = new IO.Compression.ZipArchive(stream, IO.Compression.ZipArchiveMode.Create, true)
+        let add (name: string) (text: string) =
+            use writer = new IO.StreamWriter(archive.CreateEntry(name).Open(), Text.UTF8Encoding(false))
+            writer.Write text
+        add "[Content_Types].xml" """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"""
+        add "word/document.xml" (sprintf """<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>%s</w:body></w:document>""" body)
+    stream.ToArray()
+
+let unitsDoc =
+    syntheticDocx
+        ("""<w:p><w:pPr><w:ind w:left="720" w:right="360" w:hanging="360"/></w:pPr><w:r><w:t>indented</w:t></w:r></w:p>"""
+         + """<w:p><w:pPr><w:spacing w:line="280" w:lineRule="exact"/></w:pPr><w:r><w:rPr><w:sz w:val="28"/></w:rPr><w:t>exact</w:t></w:r></w:p>"""
+         + """<w:p><w:pPr><w:tabs><w:tab w:val="right" w:leader="dot" w:pos="9000"/></w:tabs><w:bidi/></w:pPr><w:r><w:rPr><w:vanish/><w:caps/><w:dstrike/><w:u w:val="wave" w:color="FF0000"/><w:position w:val="6"/></w:rPr><w:t>props</w:t></w:r><w:ins w:id="3" w:author="Ann"><w:r><w:t>added</w:t></w:r></w:ins></w:p>""")
+    |> DocxReader.loadBytesNative
+    |> Option.get
+    |> Rbt.Word.Import.importDoc
+let unitParas = unitsDoc.Blocks |> List.choose (function Paragraph para -> Some para | _ -> None)
+let runStyles (para: ParagraphBlock) =
+    para.Buffer.Runs |> List.choose (function Rbt.Word.TextBuffer.Text run -> Some run.Style | _ -> None)
+match unitParas with
+| [ indented; exact; props ] ->
+    check "native indent px" (indented.Metadata.IndentLeft, indented.Metadata.IndentRight, indented.Metadata.FirstLineIndent) (Some 48.0, Some 24.0, Some -24.0)
+    // 280 twips = 18.667px over a 14pt (18.667px) font.
+    check "native exact rule" exact.Metadata.LineSpacingRule (Some "exact")
+    ok "native exact spacing"
+       (exact.Metadata.LineSpacing |> Option.exists (fun value -> abs (value - 1.0) < 1e-6)
+        && exact.Metadata.ParagraphMarkFontSize |> Option.exists (fun value -> abs (value - 14.0 * 96.0 / 72.0) < 1e-6))
+       (sprintf "%A %A" exact.Metadata.LineSpacing exact.Metadata.ParagraphMarkFontSize)
+    check "native tab stops" (props.Metadata.TabStops |> List.map (fun stop -> stop.Position, stop.Alignment, stop.Leader)) [ 600.0, "right", Some "dot" ]
+    check "native rtl" props.Metadata.Rtl true
+    match runStyles props with
+    | [ first; second ] ->
+        check "native run props"
+            (first.Hidden, first.AllCaps, first.DoubleStrike, first.UnderlineStyle, first.UnderlineColor, first.Position)
+            (true, true, true, Some "wave", Some "FF0000", 3.0)
+        check "native revision" (second.RevisionType, second.RevisionAuthor, second.Hidden) (Some "insert", Some "Ann", false)
+    | other -> ok "native run props" false (sprintf "%d runs" other.Length)
+| other -> ok "native units paragraphs" false (sprintf "%d paragraphs" other.Length)
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
