@@ -2316,25 +2316,71 @@ let private styleHeadingBuffer level buffer =
                 Bold = level >= 1 && level <= 3
                 FontSize = headingFontSize level }) buffer
 
-let setHeadingLevel level doc =
+/// Paragraphs a paragraph-level command (alignment, lists, indent, heading)
+/// applies to: every paragraph the selection touches, wherever it lives
+/// (body, table cell or text box). With a caret, just its paragraph.
+let private selectedParagraphIds doc =
     match doc.Selection with
-    | None -> doc
+    | None -> []
+    | Some sel when sel.IsCollapsed -> [ sel.Focus.BlockId ]
     | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | Some (Paragraph para)
-        | Some (Heading (_, para)) ->
-            let boundedLevel = max 1 (min 3 level)
-            let styledPara = { para with Buffer = styleHeadingBuffer boundedLevel para.Buffer }
-            replaceBlock doc para.Id (Heading (boundedLevel, styledPara))
-        | _ -> doc
+        let _, _, blockIds = getNormalizedRange sel doc
+        if blockIds.IsEmpty then [ sel.Focus.BlockId ] else blockIds
+
+let private mapSelectedParagraphs (mapper: ParagraphBlock -> ParagraphBlock) doc =
+    match selectedParagraphIds doc with
+    | [] -> doc
+    | ids ->
+        let selected = HashSet<BlockId>(ids)
+        mapEditableParagraphs (fun para -> if selected.Contains para.Id then mapper para else para) doc
+
+let private mapSelectedMetadata (update: BlockMetadata -> BlockMetadata) doc =
+    mapSelectedParagraphs (fun para ->
+        let metadata = update para.Metadata
+        if metadata = para.Metadata then para else { para with Metadata = metadata }) doc
+
+let private selectedParagraphs doc =
+    selectedParagraphIds doc |> List.choose (findParagraph doc)
+
+/// Make every selected paragraph a heading. Body paragraphs become Heading
+/// blocks; a paragraph inside a table cell or text box cannot be a Heading
+/// block in this model, so it only gets the heading's character formatting.
+let setHeadingLevel level doc =
+    match selectedParagraphIds doc with
+    | [] -> doc
+    | ids ->
+        let selected = HashSet<BlockId>(ids)
+        let boundedLevel = max 1 (min 3 level)
+        let styled (para: ParagraphBlock) =
+            let buffer = styleHeadingBuffer boundedLevel para.Buffer
+            if sameReference buffer para.Buffer then para else { para with Buffer = buffer }
+        let blocks =
+            doc.Blocks
+            |> mapListSharing (fun block ->
+                match block with
+                | Paragraph para when selected.Contains para.Id -> Heading (boundedLevel, styled para)
+                | Heading (current, para) when selected.Contains para.Id ->
+                    let styledPara = styled para
+                    if current = boundedLevel && sameReference styledPara para then block
+                    else Heading (boundedLevel, styledPara)
+                | _ -> block)
+        let withHeadings = if sameReference blocks doc.Blocks then doc else { doc with Blocks = blocks }
+        // Body paragraphs are already styled, so this only changes the
+        // selected paragraphs inside cells and text boxes.
+        mapEditableParagraphs (fun para -> if selected.Contains para.Id then styled para else para) withHeadings
 
 let clearHeading doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | Some (Heading (_, para)) -> replaceBlock doc para.Id (Paragraph para)
-        | _ -> doc
+    match selectedParagraphIds doc with
+    | [] -> doc
+    | ids ->
+        let selected = HashSet<BlockId>(ids)
+        let blocks =
+            doc.Blocks
+            |> mapListSharing (fun block ->
+                match block with
+                | Heading (_, para) when selected.Contains para.Id -> Paragraph para
+                | _ -> block)
+        if sameReference blocks doc.Blocks then doc else { doc with Blocks = blocks }
 
 /// Move cursor left
 let moveCursorLeft doc =
@@ -3042,229 +3088,91 @@ let getSelectionText doc =
             i <- i + 1
         builder.ToString()
 
-/// Toggle bullet list on current block
+let private toggleListStyle listStyle doc =
+    // Word's rule: if every selected paragraph is already in this kind of
+    // list, take them all out; otherwise put them all in.
+    let paragraphs = selectedParagraphs doc
+    let allInList = not paragraphs.IsEmpty && paragraphs |> List.forall (fun para -> para.Metadata.ListStyle = listStyle)
+    mapSelectedMetadata (fun metadata ->
+        if allInList then { metadata with ListStyle = NoList; ListLevel = 0 }
+        elif metadata.ListStyle = listStyle then metadata
+        else { metadata with ListStyle = listStyle; ListLevel = max 1 metadata.ListLevel }) doc
+
+/// Toggle bullet list on the selected paragraphs
 let toggleBulletList doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata =
-                if para.Metadata.ListStyle = Bullet then
-                    { para.Metadata with ListStyle = NoList; ListLevel = 0 }
-                else
-                    { para.Metadata with ListStyle = Bullet; ListLevel = max 1 para.Metadata.ListLevel }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    toggleListStyle Bullet doc
 
-/// Toggle numbered list on current block
+/// Toggle numbered list on the selected paragraphs
 let toggleNumberedList doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata =
-                if para.Metadata.ListStyle = Numbered then
-                    { para.Metadata with ListStyle = NoList; ListLevel = 0 }
-                else
-                    { para.Metadata with ListStyle = Numbered; ListLevel = max 1 para.Metadata.ListLevel }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    toggleListStyle Numbered doc
 
-/// Apply a numbering marker format to the current block and ensure it is a numbered list.
+/// Apply a numbering marker format to the selected paragraphs and ensure they are a numbered list.
 let setNumberFormat format doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let normalizedFormat =
-                match format with
-                | "lowerLetter" | "upperLetter" | "lowerRoman" | "upperRoman" -> format
-                | _ -> "decimal"
-            let newMetadata = {
-                para.Metadata with
-                    ListStyle = Numbered
-                    ListLevel = max 1 para.Metadata.ListLevel
-                    ListNumberFormat = Some normalizedFormat
-                    ListLevelText = None
-            }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    let normalizedFormat =
+        match format with
+        | "lowerLetter" | "upperLetter" | "lowerRoman" | "upperRoman" -> format
+        | _ -> "decimal"
+    mapSelectedMetadata (fun metadata ->
+        { metadata with
+            ListStyle = Numbered
+            ListLevel = max 1 metadata.ListLevel
+            ListNumberFormat = Some normalizedFormat
+            ListLevelText = None }) doc
 
-/// Increase list indentation (Tab)
+/// Increase list indentation (Tab) of the selected paragraphs
 let increaseIndent doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            // Only increase if in a list and not at max level
-            if para.Metadata.ListStyle <> NoList && para.Metadata.ListLevel < 9 then
-                let newMetadata = { para.Metadata with ListLevel = para.Metadata.ListLevel + 1 }
-                let newPara = { para with Metadata = newMetadata }
-                let newBlock = match block with
-                               | Paragraph _ -> Paragraph newPara
-                               | Heading (level, _) -> Heading (level, newPara)
-                               | Table t -> Table t
-                               | TextBox t -> TextBox t
-                replaceBlock doc para.Id newBlock
-            else
-                doc
+    mapSelectedMetadata (fun metadata ->
+        // Only increase if in a list and not at max level
+        if metadata.ListStyle <> NoList && metadata.ListLevel < 9 then
+            { metadata with ListLevel = metadata.ListLevel + 1 }
+        else
+            metadata) doc
 
-/// Decrease list indentation (Shift+Tab)
+/// Decrease list indentation (Shift+Tab) of the selected paragraphs
 let decreaseIndent doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            // Only decrease if in a list
-            if para.Metadata.ListStyle <> NoList && para.Metadata.ListLevel > 0 then
-                let newLevel = para.Metadata.ListLevel - 1
-                let newMetadata =
-                    if newLevel = 0 then
-                        // Exit list when reaching level 0
-                        { para.Metadata with ListStyle = NoList; ListLevel = 0 }
-                    else
-                        { para.Metadata with ListLevel = newLevel }
-                let newPara = { para with Metadata = newMetadata }
-                let newBlock = match block with
-                               | Paragraph _ -> Paragraph newPara
-                               | Heading (level, _) -> Heading (level, newPara)
-                               | Table t -> Table t
-                               | TextBox t -> TextBox t
-                replaceBlock doc para.Id newBlock
+    mapSelectedMetadata (fun metadata ->
+        // Only decrease if in a list
+        if metadata.ListStyle <> NoList && metadata.ListLevel > 0 then
+            let newLevel = metadata.ListLevel - 1
+            if newLevel = 0 then
+                // Exit list when reaching level 0
+                { metadata with ListStyle = NoList; ListLevel = 0 }
             else
-                doc
+                { metadata with ListLevel = newLevel }
+        else
+            metadata) doc
 
+let private setAlignment alignment doc =
+    mapSelectedMetadata (fun metadata -> { metadata with Alignment = alignment }) doc
 
 /// Set alignment to left
 let alignLeft doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with Alignment = Left }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    setAlignment Left doc
 
 /// Set alignment to center
 let alignCenter doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with Alignment = Center }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    setAlignment Center doc
 
 /// Set alignment to right
 let alignRight doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with Alignment = Right }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    setAlignment Right doc
 
 /// Set alignment to justify
 let alignJustify doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = { para.Metadata with Alignment = Justify }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock = match block with
-                           | Paragraph _ -> Paragraph newPara
-                           | Heading (level, _) -> Heading (level, newPara)
-                           | Table t -> Table t
-                           | TextBox t -> TextBox t
-            replaceBlock doc para.Id newBlock
+    setAlignment Justify doc
 
 let setCurrentParagraphStyle alignment indentLeft indentRight spacingBefore spacingAfter lineSpacing firstLineIndent backgroundColor doc =
-    match doc.Selection with
-    | None -> doc
-    | Some sel ->
-        match findBlock doc sel.Focus.BlockId with
-        | None -> doc
-        | Some block ->
-            let para = getParagraph block
-            let newMetadata = {
-                para.Metadata with
-                    Alignment = alignment
-                    IndentLeft = indentLeft
-                    IndentRight = indentRight
-                    SpacingBefore = spacingBefore
-                    SpacingAfter = spacingAfter
-                    LineSpacing = lineSpacing
-                    LineSpacingRule = Some "auto"
-                    FirstLineIndent = firstLineIndent
-                    BackgroundColor = backgroundColor
-            }
-            let newPara = { para with Metadata = newMetadata }
-            let newBlock =
-                match block with
-                | Paragraph _ -> Paragraph newPara
-                | Heading (level, _) -> Heading (level, newPara)
-                | Table table -> Table table
-                | TextBox textBox -> TextBox textBox
-            replaceBlock doc para.Id newBlock
+    mapSelectedMetadata (fun metadata ->
+        { metadata with
+            Alignment = alignment
+            IndentLeft = indentLeft
+            IndentRight = indentRight
+            SpacingBefore = spacingBefore
+            SpacingAfter = spacingAfter
+            LineSpacing = lineSpacing
+            LineSpacingRule = Some "auto"
+            FirstLineIndent = firstLineIndent
+            BackgroundColor = backgroundColor }) doc
 
 let setCurrentSectionBreak sectionBreak doc =
     match doc.Selection with

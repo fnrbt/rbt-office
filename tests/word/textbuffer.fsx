@@ -1845,6 +1845,61 @@ let boldThenPlainDoc =
         Selection = Some { Anchor = pos "bp1" 0; Focus = pos "bp2" 5 } }
 check "doc toggle bold decides across paragraphs" (paraBold "bp1" (Doc.toggleBold boldThenPlainDoc)) (Some [ 4, true ])
 
+// Paragraph-level commands reach every selected paragraph, including ones in table cells.
+let paragraphCommandDoc =
+    { Doc.empty with
+        Blocks =
+            [ Doc.Paragraph (para "pc1" (ofString "one"))
+              Doc.Paragraph (para "pc2" (ofString "two"))
+              Doc.Table (singleCellTable "pct" (tableCell "pc3" "three"))
+              Doc.Paragraph (para "pc4" (ofString "four")) ]
+        Selection = Some { Anchor = pos "pc1" 1; Focus = pos "pc3" 2 } }
+let metadataOf doc ids selector =
+    ids |> List.map (fun id -> Doc.findParagraph doc id |> Option.map (fun (p: Doc.ParagraphBlock) -> selector p.Metadata))
+let pcIds = [ "pc1"; "pc2"; "pc3"; "pc4" ]
+check "align center across selection"
+    (metadataOf (Doc.alignCenter paragraphCommandDoc) pcIds (fun m -> m.Alignment))
+    [ Some Doc.Center; Some Doc.Center; Some Doc.Center; Some Doc.Left ]
+check "align right in table cell"
+    (metadataOf (Doc.alignRight { paragraphCommandDoc with Selection = Some { Anchor = pos "pc3" 1; Focus = pos "pc3" 1 } }) pcIds (fun m -> m.Alignment))
+    [ Some Doc.Left; Some Doc.Left; Some Doc.Right; Some Doc.Left ]
+let bulletedDoc = Doc.toggleBulletList paragraphCommandDoc
+check "bullet list across selection"
+    (metadataOf bulletedDoc pcIds (fun m -> m.ListStyle, m.ListLevel))
+    [ Some (Doc.Bullet, 1); Some (Doc.Bullet, 1); Some (Doc.Bullet, 1); Some (Doc.NoList, 0) ]
+check "bullet list toggles off when all bulleted"
+    (metadataOf (Doc.toggleBulletList bulletedDoc) pcIds (fun m -> m.ListStyle))
+    [ Some Doc.NoList; Some Doc.NoList; Some Doc.NoList; Some Doc.NoList ]
+let partlyBulletedDoc = Doc.toggleBulletList { paragraphCommandDoc with Selection = Some { Anchor = pos "pc2" 0; Focus = pos "pc2" 0 } }
+check "bullet list on mixed selection sets all"
+    (metadataOf (Doc.toggleBulletList { partlyBulletedDoc with Selection = paragraphCommandDoc.Selection }) pcIds (fun m -> m.ListStyle))
+    [ Some Doc.Bullet; Some Doc.Bullet; Some Doc.Bullet; Some Doc.NoList ]
+check "numbered list across selection"
+    (metadataOf (Doc.toggleNumberedList paragraphCommandDoc) pcIds (fun m -> m.ListStyle))
+    [ Some Doc.Numbered; Some Doc.Numbered; Some Doc.Numbered; Some Doc.NoList ]
+check "increase indent across selection"
+    (metadataOf (Doc.increaseIndent bulletedDoc) pcIds (fun m -> m.ListLevel))
+    [ Some 2; Some 2; Some 2; Some 0 ]
+check "decrease indent across selection"
+    (metadataOf (Doc.decreaseIndent bulletedDoc) pcIds (fun m -> m.ListStyle))
+    [ Some Doc.NoList; Some Doc.NoList; Some Doc.NoList; Some Doc.NoList ]
+let headedDoc = Doc.setHeadingLevel 2 paragraphCommandDoc
+check "heading across selection"
+    (headedDoc.Blocks |> List.map (function Doc.Heading (level, _) -> level | Doc.Paragraph _ -> 0 | _ -> -1))
+    [ 2; 2; -1; 0 ]
+check "heading formats cell paragraph"
+    (Doc.findParagraph headedDoc "pc3" |> Option.map (fun p -> (getStyleAt 0 p.Buffer).Bold, (getStyleAt 0 p.Buffer).FontSize))
+    (Some (true, 18.0))
+check "heading leaves unselected paragraph"
+    (Doc.findParagraph headedDoc "pc4" |> Option.map (fun p -> (getStyleAt 0 p.Buffer).Bold))
+    (Some false)
+check "clear heading across selection"
+    ((Doc.clearHeading headedDoc).Blocks |> List.map (function Doc.Heading (level, _) -> level | Doc.Paragraph _ -> 0 | _ -> -1))
+    [ 0; 0; -1; 0 ]
+check "paragraph command without change keeps document"
+    (obj.ReferenceEquals(Doc.alignLeft paragraphCommandDoc, paragraphCommandDoc))
+    true
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail
