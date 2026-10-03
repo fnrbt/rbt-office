@@ -1976,6 +1976,46 @@ let private tocCaptionLines label doc =
         | _ -> None)
     |> String.concat "\n"
 
+/// Carry a caret offset through a set of text replacements in its paragraph.
+/// Edits are (original start, original end, new length), sorted and
+/// non-overlapping. A caret inside a replaced range lands after the
+/// replacement.
+let private offsetAfterEdits (edits: ResizeArray<struct (int * int * int)>) offset =
+    let mutable delta = 0
+    let mutable result = -1
+    let mutable index = 0
+    while result < 0 && index < edits.Count do
+        let struct (editStart, editEnd, newLength) = edits.[index]
+        if offset <= editStart then
+            result <- offset + delta
+        elif offset < editEnd then
+            result <- editStart + delta + newLength
+        else
+            delta <- delta + newLength - (editEnd - editStart)
+        index <- index + 1
+    if result < 0 then offset + delta else result
+
+/// Re-point the selection after paragraphs were rewritten in place, so it
+/// never ends up past the end of a buffer.
+let private selectionAfterEdits (edits: Dictionary<BlockId, ResizeArray<struct (int * int * int)>>) (doc: Document) =
+    match doc.Selection with
+    | None -> doc
+    | Some sel ->
+        let adjust (position: Position) =
+            let moved =
+                match edits.TryGetValue position.BlockId with
+                | true, paragraphEdits -> offsetAfterEdits paragraphEdits position.Offset
+                | false, _ -> position.Offset
+            let bounded =
+                match findParagraph doc position.BlockId with
+                | Some para -> max 0 (min (TextBuffer.length para.Buffer) moved)
+                | None -> moved
+            if bounded = position.Offset then position else { position with Offset = bounded }
+        let anchor = adjust sel.Anchor
+        let focus = adjust sel.Focus
+        if sameReference anchor sel.Anchor && sameReference focus sel.Focus then doc
+        else { doc with Selection = Some { Anchor = anchor; Focus = focus } }
+
 let private collectSequenceRefreshTargets doc =
     let mutable counters: Map<string, int> = Map.empty
     let mutable sequences: Map<string, string list> = Map.empty
@@ -2084,10 +2124,13 @@ let refreshFieldsWithPageMap pageMap doc =
         | Some (_, "NUMPAGES" :: _) -> string pageMap.PageCount
         | _ -> text
 
+    let edits = Dictionary<BlockId, ResizeArray<struct (int * int * int)>>()
     (doc, editableParagraphsInOrder doc)
     ||> List.fold (fun currentDoc para ->
         let mutable buffer = para.Buffer
         let mutable shift = 0
+        let paragraphEdits = ResizeArray<struct (int * int * int)>()
+        edits.[para.Id] <- paragraphEdits
         for run in para.Buffer.Runs do
             match run with
             | Image _ -> ()
@@ -2102,9 +2145,11 @@ let refreshFieldsWithPageMap pageMap doc =
                         let newStyle = { textRun.Style with FieldResult = Some newText }
                         buffer <- buffer |> TextBuffer.delete start textRun.Length |> TextBuffer.insert start newText |> TextBuffer.applyStyle start newText.Length (fun _ -> newStyle)
                         shift <- shift + newText.Length - textRun.Length
+                        paragraphEdits.Add(struct (textRun.Start, textRun.Start + textRun.Length, newText.Length))
                     else
                         buffer <- buffer |> TextBuffer.applyStyle start textRun.Length (fun style -> { style with FieldResult = Some oldText })
         replaceParagraph currentDoc para.Id { para with Buffer = buffer })
+    |> selectionAfterEdits edits
 
 let refreshFields doc =
     refreshFieldsWithPageMap (buildPageMap doc) doc
@@ -2349,11 +2394,12 @@ let selectFindMatch (matchInfo: FindMatch) doc =
             Focus = { BlockId = matchInfo.BlockId; Offset = matchInfo.End }
         } }
 
-let replaceAllText query replacement matchCase doc =
+let replaceAllText query (replacement: string) matchCase doc =
     if query = "" then
         (doc, 0)
     else
         let mutable count = 0
+        let edits = Dictionary<BlockId, ResizeArray<struct (int * int * int)>>()
 
         let replaceParagraphText (para: ParagraphBlock) =
             let ranges = ResizeArray<struct (int * int)>()
@@ -2364,12 +2410,21 @@ let replaceAllText query replacement matchCase doc =
                 para
             else
                 count <- count + ranges.Count
+                let holdsSelection =
+                    match doc.Selection with
+                    | Some sel -> sel.Anchor.BlockId = para.Id || sel.Focus.BlockId = para.Id
+                    | None -> false
+                if holdsSelection then
+                    let paragraphEdits = ResizeArray<struct (int * int * int)>(ranges.Count)
+                    for struct (start, finish) in ranges do
+                        paragraphEdits.Add(struct (start, finish, replacement.Length))
+                    edits.[para.Id] <- paragraphEdits
                 let originalText = TextBuffer.toString para.Buffer
                 let buffer = TextBuffer.replaceRangesWithText originalText ranges replacement para.Buffer
                 if sameReference buffer para.Buffer then para
                 else { para with Buffer = buffer }
 
-        let updatedDoc = mapEditableParagraphs replaceParagraphText doc
+        let updatedDoc = mapEditableParagraphs replaceParagraphText doc |> selectionAfterEdits edits
         (updatedDoc, count)
 
 /// Set selection range

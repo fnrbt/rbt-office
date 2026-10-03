@@ -1714,6 +1714,26 @@ let replacedAfterField =
     replaceRanges ranges "Z" replaceAfterField
 check "replace after field is not field" ((getStyleAt 1 replacedAfterField).FieldCode, (getStyleAt 1 replacedAfterField).Italic) (None, true)
 
+// Replace All and field refresh keep the caret inside the rewritten paragraph.
+let caretOf (doc: Doc.Document) = doc.Selection |> Option.map (fun sel -> sel.Anchor.Offset, sel.Focus.Offset)
+let replacedCaretDoc, replacedCaretCount = Doc.replaceAllText "abc" "" true (caretDoc "rc" (ofString "xxabcabc") 8)
+check "replace all count" replacedCaretCount 2
+check "replace all moves caret back" (caretOf replacedCaretDoc) (Some (2, 2))
+let typedAfterReplace = Doc.insertText "Z" replacedCaretDoc
+check "typing after replace all text" (paraText "rc" typedAfterReplace) "xxZ"
+check "typing after replace all runs"
+    (Doc.findParagraph typedAfterReplace "rc" |> Option.map (fun p -> p.Buffer.Runs |> List.map (function Text tr -> tr.Start, tr.Length | Image img -> img.Start, 1)))
+    (Some [ 0, 3 ])
+let grownCaretDoc, _ = Doc.replaceAllText "b" "BBB" true (caretDoc "rg" (ofString "abcbd") 3)
+check "replace all shifts caret forward" (caretOf grownCaretDoc) (Some (5, 5))
+let insideMatchDoc, _ = Doc.replaceAllText "bcd" "X" true (caretDoc "ri" (ofString "abcde") 2)
+check "replace all caret inside match" (caretOf insideMatchDoc) (Some (2, 2))
+let refreshCaretDoc =
+    let withField = caretDoc "rf" (ofString "") 0 |> Doc.insertField "SEQ Figure" "1000" |> Doc.insertText "tail"
+    Doc.refreshFields withField
+check "refresh fields text" (paraText "rf" refreshCaretDoc) "1tail"
+check "refresh fields moves caret back" (caretOf refreshCaretDoc) (Some (5, 5))
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail
