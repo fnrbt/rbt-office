@@ -530,9 +530,8 @@ let private excelSerialToDate (serial: float) : System.DateTime =
     // Excel's 1900 calendar: serial 1 is 1900-01-01 but Excel also treats
     // 1900 as a leap year (it isn't). For serials >= 60 we subtract one to
     // line up with the real Gregorian calendar.
-    let baseDate = System.DateTime(1899, 12, 30)
     let days = if serial >= 60.0 then serial else serial + 1.0
-    baseDate.AddDays(days)
+    excelEpoch.AddDays(days)
 
 /// Tokenize an Excel format code into .NET DateTime.ToString format. Tracks
 /// context (after `h`/`s` → minute; after month-only marker → month) for the
@@ -752,7 +751,7 @@ let private formatElapsedTime (code: string) (serial: float) : string =
     let prec = max 0 (fractionalSecondPrecision pattern)
     let scale = System.Math.Pow(10.0, float prec)
     let totalSec =
-        System.Math.Round(serial * 86400.0 * scale, System.MidpointRounding.AwayFromZero) / scale
+        roundHalfAway (serial * 86400.0 * scale) / scale
     let intSec = int64 (floor (abs totalSec))
     let frac = abs totalSec - float intSec
     let totalHours = intSec / 3600L
@@ -763,7 +762,7 @@ let private formatElapsedTime (code: string) (serial: float) : string =
     let fracDigits () =
         if prec <= 0 then ""
         else
-            let scaled = int64 (System.Math.Round(frac * scale, System.MidpointRounding.AwayFromZero))
+            let scaled = int64 (roundHalfAway (frac * scale))
             "." + scaled.ToString().PadLeft(prec, '0')
     let sb = System.Text.StringBuilder()
     sb.Append(sign) |> ignore

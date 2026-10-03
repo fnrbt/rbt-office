@@ -789,6 +789,16 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
                 not remove)
         if changed then { model with Cells = cells } |> invalidateFilterProjection else model
 
+/// Round to the nearest integer, halves away from zero (Excel's rule). Written
+/// out because Fable ignores MidpointRounding and reads it as a digit count.
+let roundHalfAway (x: float) : float =
+    let whole = Math.Truncate x
+    if abs (x - whole) >= 0.5 then whole + float (sign x) else whole
+
+/// Excel's day zero. UTC-kind so that day arithmetic and calendar fields do
+/// not shift across DST changes under Fable, where other DateTimes are local.
+let excelEpoch = DateTime(1899, 12, 30, 0, 0, 0, DateTimeKind.Utc)
+
 /// Format a number according to format code
 let formatNumber (format: string option) (value: float): string =
     match format with
@@ -799,10 +809,8 @@ let formatNumber (format: string option) (value: float): string =
         // Percentage format: 45.67%
         sprintf "%s%%" ((value * 100.0).ToString("N2"))
     | Some "date" ->
-        // Excel date format (days since 1900-01-01)
         try
-            let baseDate = System.DateTime(1900, 1, 1)
-            let date = baseDate.AddDays(value - 1.0)  // Excel dates are 1-indexed
+            let date = excelEpoch.AddDays(value)
             date.ToString("MM/dd/yyyy")
         with
         | _ -> value.ToString("F2")

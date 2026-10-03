@@ -1321,9 +1321,12 @@ let firstTableSelValue (sel: TableSel)
 // Excel serial dates: serial 1 = 1900-01-01. Excel's phantom 1900-02-29 (the
 // 1900-leap-year bug) makes the simple offset exact for every date from
 // 1900-03-01 (serial 61) onward, which covers every realistic spreadsheet.
-let private excelEpoch = DateTime(1899, 12, 30)
+let private utcDate year month day = DateTime(year, month, day, 0, 0, 0, DateTimeKind.Utc)
 let private serialToDate (s: float) : DateTime = excelEpoch.AddDays(s)
-let private dateToSerial (d: DateTime) : float = (d - excelEpoch).TotalDays
+/// Reads the date's own calendar fields, so a local-kind value (a parsed
+/// string, DateTime.Today) maps to the serial for the date it displays.
+let private dateToSerial (d: DateTime) : float =
+    (DateTime(d.Year, d.Month, d.Day, d.Hour, d.Minute, d.Second, d.Millisecond, DateTimeKind.Utc) - excelEpoch).TotalDays
 
 /// Shared RNG for the volatile RAND / RANDBETWEEN functions.
 let private rng = Random()
@@ -9383,7 +9386,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 match fnName with
                 | "ROUNDUP" -> (if scaled < 0.0 then floor scaled else ceil scaled)
                 | "ROUNDDOWN" -> Math.Truncate scaled
-                | _ -> Math.Round(scaled, MidpointRounding.AwayFromZero)
+                | _ -> roundHalfAway scaled
             CellValue.Number (rounded / factor)
     | "MOD" ->
         if nargs <> 2 then err Err.value else
@@ -9427,7 +9430,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
     | "MROUND" ->
         match argNum 0, argNum 1 with
         | Result.Error e, _ | _, Result.Error e -> err e
-        | Ok x, Ok m -> if m = 0.0 then CellValue.Number 0.0 else CellValue.Number (Math.Round(x / m, MidpointRounding.AwayFromZero) * m)
+        | Ok x, Ok m -> if m = 0.0 then CellValue.Number 0.0 else CellValue.Number (roundHalfAway (x / m) * m)
     | "EVEN" -> unaryNum (fun x -> let n = ceil (abs x / 2.0) * 2.0 in CellValue.Number (if x < 0.0 then -n else n))
     | "ODD" -> unaryNum (fun x -> let n = 2.0 * ceil ((abs x - 1.0) / 2.0) + 1.0 in CellValue.Number (if x < 0.0 then -n else n))
     | "SUMSQ" ->
@@ -9624,7 +9627,8 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let dec = if nargs >= 2 then (match argNum 1 with Ok d -> int d | _ -> 2) else 2
             let noCommas = if nargs >= 3 then (match argBool 2 with Ok b -> b | _ -> false) else false
             let d = max 0 dec
-            let rounded = Math.Round(x, d, MidpointRounding.AwayFromZero)
+            let factor = 10.0 ** float d
+            let rounded = roundHalfAway (x * factor) / factor
             CellValue.String (rounded.ToString((if noCommas then "F" else "N") + string d, CultureInfo.InvariantCulture))
     | "T" -> (match unwrapValue (argRaw 0) with CellValue.String s -> CellValue.String s | _ -> CellValue.String "")
     // ----- extended date/time -----------------------------------------------
@@ -9662,7 +9666,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | Result.Error e -> err e
         | Ok s ->
             let d = serialToDate s
-            let jan1 = DateTime(d.Year, 1, 1)
+            let jan1 = utcDate d.Year 1 1
             let returnType = if nargs >= 2 then (match argNum 1 with Ok t -> int t | _ -> 1) else 1
             let startDow = if returnType = 2 then int DayOfWeek.Monday else int DayOfWeek.Sunday
             let jan1Dow = (int jan1.DayOfWeek - startDow + 7) % 7
@@ -10269,7 +10273,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
         | Ok y, Ok m, Ok d ->
             try
-                let baseDate = DateTime(int y, 1, 1)
+                let baseDate = utcDate (int y) 1 1
                 let dt = baseDate.AddMonths(int m - 1).AddDays(d - 1.0)
                 CellValue.Number (dateToSerial dt)
             with _ -> err Err.num
@@ -10289,7 +10293,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | Result.Error e, _ | _, Result.Error e -> err e
         | Ok s, Ok months ->
             let d = (serialToDate s).AddMonths(int months)
-            let eom = DateTime(d.Year, d.Month, DateTime.DaysInMonth(d.Year, d.Month))
+            let eom = utcDate d.Year d.Month (DateTime.DaysInMonth(d.Year, d.Month))
             CellValue.Number (dateToSerial eom)
     // ----- volatile --------------------------------------------------------
     | "RAND" -> CellValue.Number (rng.NextDouble())

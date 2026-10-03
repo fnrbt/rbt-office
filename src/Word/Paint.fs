@@ -340,9 +340,9 @@ let private tabLeaderText (measureText: TextMeasurer) (style: TextStyle) (width:
                 else min (dotAdvance * 0.35) (width * 0.5)
             let count =
                 if wideMeasuredDot then
-                    int (System.Math.Round((max 0.0 (width - inset)) / leaderPitch, System.MidpointRounding.AwayFromZero))
+                    int (floor ((max 0.0 (width - inset)) / leaderPitch + 0.5))
                 else
-                    int (System.Math.Round(width / dotAdvance, System.MidpointRounding.AwayFromZero))
+                    int (floor (width / dotAdvance + 0.5))
             if count <= 0 then None
             else
                 let text = String.replicate count "."
