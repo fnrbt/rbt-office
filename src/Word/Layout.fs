@@ -968,17 +968,62 @@ let private wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacin
     fontSize * lineSpacing * factor
 
 let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox =
+    // For "exact"/"atLeast" lineSpacing is the height in px (see
+    // resolveLineSpacing) and the automatic box is single spacing.
+    let absolute = lineSpacingRule = "exact" || lineSpacingRule = "atLeast"
+    let multiple = if absolute then 1.0 else lineSpacing
     let automatic =
         if settings.InTableCell then
             let factor = tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing textStyle
-            tableCellLineBoxFontSize fontSize * lineSpacing * factor
+            tableCellLineBoxFontSize fontSize * multiple * factor
         else
-            wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
+            wordLineHeight textStyle fontSize multiple defaultParagraphSpacing tocEntry headingDefaultLineBox
 
     match lineSpacingRule with
     | "exact" -> max 1.0 lineSpacing
     | "atLeast" -> max automatic lineSpacing
     | _ -> automatic
+
+/// Line spacing resolved to what layout needs: the multiple used for the
+/// automatic line box, the rule, and (for "exact"/"atLeast") the line height
+/// in layout pixels.
+///
+/// The importer delivers the value in two different units and the unit follows
+/// where the value came from, so value and rule are resolved together:
+///   * paragraph-level (BlockMetadata.LineSpacing): "auto" is a multiple of
+///     single spacing (w:line / 240). For "exact"/"atLeast" it is ALSO a
+///     multiple — the line height in px divided by the paragraph font size
+///     (DocxReader.wordLineSpacingToMultiple), with that font size delivered
+///     as ParagraphMarkFontSize;
+///   * style-level (NamedStyle.LineSpacing): "auto" is the same multiple, but
+///     "exact"/"atLeast" is the absolute height in px (twips / 15).
+/// A paragraph that sets w:line without w:lineRule is "auto" even when its
+/// style says "exact".
+let private resolveLineSpacing (paragraphStyle: ParagraphStyle) (rawMetadata: BlockMetadata) contentFontSize =
+    let isAbsoluteRule rule = rule = Some "exact" || rule = Some "atLeast"
+    match rawMetadata.LineSpacing with
+    | Some value ->
+        if isAbsoluteRule rawMetadata.LineSpacingRule then
+            let fontSize = rawMetadata.ParagraphMarkFontSize |> Option.defaultValue contentFontSize |> max 1.0
+            struct (1.0, rawMetadata.LineSpacingRule.Value, value * fontSize)
+        else
+            struct (value, "auto", 0.0)
+    | None ->
+        match paragraphStyle.LineSpacing with
+        | Some value ->
+            let rule = rawMetadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule
+            let styleValueIsPixels = isAbsoluteRule paragraphStyle.LineSpacingRule
+            if isAbsoluteRule rule then
+                struct (1.0, rule.Value, (if styleValueIsPixels then value else value * max 1.0 contentFontSize))
+            elif styleValueIsPixels then
+                struct (1.0, "auto", 0.0)
+            else
+                struct (value, "auto", 0.0)
+        | None -> struct (1.0, "auto", 0.0)
+
+let private resolvedLineHeightForSettings (settings: LayoutSettings) (paragraphStyle: ParagraphStyle) (rawMetadata: BlockMetadata) textStyle fontSize hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox =
+    let struct (multiple, rule, pixels) = resolveLineSpacing paragraphStyle rawMetadata fontSize
+    lineHeightForSettings settings textStyle fontSize (if rule = "auto" then multiple else pixels) rule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
 
 let private lineMaxTextFontSize fallback (line: MeasuredLine) =
     let mutable maxSize = fallback
@@ -2145,8 +2190,6 @@ let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (
             let firstLineIndent = WordLayout.Paragraph.firstLineIndent metadata
             let spacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle metadata
             let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle metadata
-            let lineSpacing = WordLayout.Paragraph.lineSpacing paragraphStyle metadata
-            let lineSpacingRule = WordStyles.lineSpacingRule paragraphStyle metadata
             let hasExplicitLineSpacing =
                 metadata.LineSpacing.IsSome
                 || paragraphStyle.LineSpacing.IsSome
@@ -2178,7 +2221,7 @@ let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (
                     else
                         let contentFontSize = WordLayout.Text.displayFontSize textStyle
                         let contentTextStyle = textStyle
-                        let lineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
+                        let lineHeight = resolvedLineHeightForSettings settings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
                         let lineScale = lineHeight / contentFontSize
                         let textHeight = contentFontSize * lineScale
                         Some (spacingBefore + borderBefore + max lineHeight textHeight + borderAfter + spacingAfter)
@@ -2321,8 +2364,6 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     let rawSpacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle metadata
     let spacingBefore = rawSpacingBefore
     let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle metadata
-    let lineSpacing = WordLayout.Paragraph.lineSpacing paragraphStyle metadata
-    let lineSpacingRule = WordStyles.lineSpacingRule paragraphStyle metadata
     let hasExplicitLineSpacing =
         metadata.LineSpacing.IsSome
         || paragraphStyle.LineSpacing.IsSome
@@ -2357,7 +2398,9 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         match memoEntry with
         | Some entry -> entry.MemoContentFontSize, entry.MemoContentTextStyle
         | None -> paragraphContentMetrics paragraphStyle metadata buffer
-    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox }
+    let paragraphLineHeight = resolvedLineHeightForSettings settings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
+    let struct (lineSpacingMultiple, lineSpacingRule, _) = resolveLineSpacing paragraphStyle para.Metadata contentFontSize
+    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = paragraphLineHeight }
     let singleLineFastPath = prefix = "" && not metadata.Rtl
     let breakLines () =
         if singleLineFastPath then
@@ -2429,7 +2472,9 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
             let lineHeight =
                 match markerLineBoxFactor with
                 | Some markerFactor when line.StartOffset = 0 ->
-                    max line.Height (contentFontSize * lineSpacing * markerFactor)
+                    // An exact line height is not grown for the list marker.
+                    if lineSpacingRule = "exact" then line.Height
+                    else max line.Height (contentFontSize * lineSpacingMultiple * markerFactor)
                 | _ -> line.Height
             adjusted.Add
                 { line with
@@ -2468,11 +2513,11 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) adjustedLines
 
     let blockHeight =
-        if pagedLines.IsEmpty then lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
+        if pagedLines.IsEmpty then paragraphLineHeight
         else
             match tryLastLine pagedLines with
             | Some lastLine -> (lastLine.Y - contentY) + lastLine.Height
-            | None -> lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
+            | None -> paragraphLineHeight
 
     ({
         BlockId = para.Id

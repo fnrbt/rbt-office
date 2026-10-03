@@ -860,6 +860,52 @@ check "deep nested header field stack"
      && deepNestedFieldHeaderPages.Length = 2)
     true
 
+// ---------------------------------------------------------------------------
+// Line spacing rules. The importer hands paragraph-level "exact"/"atLeast"
+// spacing as (line height px / paragraph font size px) with the font size in
+// ParagraphMarkFontSize, and style-level spacing as absolute px.
+// ---------------------------------------------------------------------------
+let lineRuleSettings = { settings with Width = 240.0; PageHeight = 100000.0 }
+let lineRuleFontPx = 11.0 * 96.0 / 72.0
+let lineRulePara id metadata =
+    { paragraph id "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu" with Metadata = metadata }
+let lineRuleLayout (doc: Doc.Document) id =
+    layoutDocument lineRuleSettings measureText doc |> List.find (fun layout -> layout.BlockId = id)
+let lineRulePitch (layout: BlockLayout) =
+    match layout.Lines with
+    | first :: second :: _ -> System.Math.Round(second.Y - first.Y, 3)
+    | _ -> -1.0
+let lineRuleMetadata rule px =
+    { Doc.defaultMetadata with
+        SpacingBefore = Some 0.0
+        SpacingAfter = Some 0.0
+        LineSpacing = Some (px / lineRuleFontPx)
+        LineSpacingRule = Some rule
+        ParagraphMarkFontSize = Some lineRuleFontPx }
+let lineRuleDoc blocks styles = { Doc.empty with Blocks = blocks; Styles = styles; Selection = None }
+let exactLayout = lineRuleLayout (lineRuleDoc [ Doc.Paragraph (lineRulePara "exact" (lineRuleMetadata "exact" 20.0)) ] []) "exact"
+check "exact spacing wraps" (exactLayout.Lines.Length >= 3) true
+check "exact spacing line pitch" (lineRulePitch exactLayout) 20.0
+check "exact spacing line height" (System.Math.Round(exactLayout.Lines.Head.Height, 3)) 20.0
+let autoLayout =
+    lineRuleLayout (lineRuleDoc [ Doc.Paragraph (lineRulePara "auto" { Doc.defaultMetadata with SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 }) ] []) "auto"
+let atLeastSmall = lineRuleLayout (lineRuleDoc [ Doc.Paragraph (lineRulePara "atleast-small" (lineRuleMetadata "atLeast" 5.0)) ] []) "atleast-small"
+check "atLeast below natural keeps single spacing" (lineRulePitch atLeastSmall > 12.0 && lineRulePitch atLeastSmall < 24.0) true
+let atLeastLarge = lineRuleLayout (lineRuleDoc [ Doc.Paragraph (lineRulePara "atleast-large" (lineRuleMetadata "atLeast" 40.0)) ] []) "atleast-large"
+check "atLeast above natural uses the minimum" (lineRulePitch atLeastLarge) 40.0
+let exactParagraphStyle =
+    { namedStyle "ExactStyle" None None with StyleType = "paragraph"; LineSpacing = Some 20.0; LineSpacingRule = Some "exact" }
+let styledExactMetadata = { Doc.defaultMetadata with Style = Some "ExactStyle"; SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 }
+let styleExactLayout =
+    lineRuleLayout (lineRuleDoc [ Doc.Paragraph (lineRulePara "style-exact" styledExactMetadata) ] [ exactParagraphStyle ]) "style-exact"
+check "style exact spacing is absolute px" (lineRulePitch styleExactLayout) 20.0
+// w:line without w:lineRule on the paragraph is "auto" even under an exact style.
+let overrideLayout =
+    lineRuleLayout
+        (lineRuleDoc [ Doc.Paragraph (lineRulePara "style-override" { styledExactMetadata with LineSpacing = Some 2.0 }) ] [ exactParagraphStyle ])
+        "style-override"
+check "paragraph multiple overrides exact style" (lineRulePitch overrideLayout > lineRulePitch autoLayout * 1.5) true
+
 printfn ""
 printfn "Word layout tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
