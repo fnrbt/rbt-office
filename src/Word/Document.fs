@@ -2664,6 +2664,9 @@ let setRevision revisionType revisionId author date doc =
 let private setRevisionWithOptions revisionType revisionId author date doc =
     applyFormattingToSelection (fun start len buf -> TextBuffer.setRevision start len revisionType revisionId author date buf) doc
 
+let private trackDeleteRange revisionId author date doc =
+    applyFormattingToSelection (fun start len buf -> TextBuffer.trackDelete start len revisionId author date buf) doc
+
 let private adjacentInsertRevisionId doc (pos: Position) author date =
     findParagraph doc pos.BlockId
     |> Option.bind (fun para ->
@@ -2681,7 +2684,7 @@ let insertTrackedText author date text doc =
         match doc.Selection with
         | Some sel when not sel.IsCollapsed ->
             let startPos, _, _ = getNormalizedRange sel doc
-            let marked = setRevisionWithOptions "delete" deletionRevisionId author date doc
+            let marked = trackDeleteRange deletionRevisionId author date doc
             { marked with Selection = Some { Anchor = startPos; Focus = startPos } }
         | _ -> doc
 
@@ -2703,6 +2706,7 @@ let insertTrackedText author date text doc =
     | _ -> inserted
 
 /// Mark the selected text as deleted instead of physically removing it.
+/// The author's own pending insertions in the selection are removed outright.
 let trackDeleteSelection author date doc =
     match doc.Selection with
     | None -> doc
@@ -2711,7 +2715,7 @@ let trackDeleteSelection author date doc =
         let startPos, _, _ = getNormalizedRange sel doc
         let author = if System.String.IsNullOrWhiteSpace author then None else Some author
         let date = if System.String.IsNullOrWhiteSpace date then None else Some date
-        let marked = setRevisionWithOptions "delete" (nextRevisionId doc) author date doc
+        let marked = trackDeleteRange (nextRevisionId doc) author date doc
         { marked with Selection = Some { Anchor = startPos; Focus = startPos } }
 
 let private isDeletedRun (run: TextBuffer.TextRun) =

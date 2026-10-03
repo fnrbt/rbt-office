@@ -1420,6 +1420,35 @@ let setRevision start len revisionType revisionId author date buffer =
     else
         applyStyle start len (fun style -> { style with RevisionType = Some revisionType; RevisionId = Some revisionId; RevisionAuthor = author; RevisionDate = date }) buffer
 
+/// Record the deletion of a range as a tracked change. Ordinary text is kept
+/// and marked as deleted. Text that is itself a pending insertion by the same
+/// author is simply removed: it was never part of the original, so marking it
+/// "deleted" would make Reject All resurrect it. Text already marked deleted
+/// keeps its original deletion record.
+let trackDelete start len revisionId author date buffer =
+    if len <= 0 then buffer
+    else
+        let rangeEnd = start + len
+        let isOwnInsertion (style: TextStyle) =
+            style.RevisionType = Some "insert" && style.RevisionAuthor = author
+        let removals = ResizeArray<struct (int * int)>()
+        for run in buffer.Runs do
+            match run with
+            | Text tr when isOwnInsertion tr.Style ->
+                let overlapStart = max tr.Start start
+                let overlapEnd = min (tr.Start + tr.Length) rangeEnd
+                if overlapStart < overlapEnd then
+                    removals.Add(struct (overlapStart, overlapEnd - overlapStart))
+            | _ -> ()
+        let mutable result =
+            applyStyle start len (fun style ->
+                if isOwnInsertion style || style.RevisionType = Some "delete" then style
+                else { style with RevisionType = Some "delete"; RevisionId = Some revisionId; RevisionAuthor = author; RevisionDate = date }) buffer
+        for index = removals.Count - 1 downto 0 do
+            let struct (removeStart, removeLength) = removals.[index]
+            result <- delete removeStart removeLength result
+        result
+
 /// Clear revision metadata for range
 let clearRevision start len buffer =
     if textRunsInRangeSatisfy start len (fun style ->

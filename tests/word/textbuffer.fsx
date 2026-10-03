@@ -1779,6 +1779,24 @@ let sameCellDeleted = Doc.deleteSelection sameCellDoc
 check "delete within one cell joins paragraphs" (Doc.getText sameCellDeleted) "fiond"
 check "delete within one cell paragraph count" (cellParagraphCounts sameCellDeleted) [ 1 ]
 
+// Deleting your own tracked insertion removes it instead of re-labelling it as a deletion.
+let ownInsertDoc = caretDoc "tr" (ofString "base") 4 |> Doc.insertTrackedText "me" "d1" "NEW"
+let ownBackspaceDoc = Doc.trackDeleteBackward "me" "d1" ownInsertDoc
+check "tracked backspace over own insertion" (paraText "tr" ownBackspaceDoc) "baseNE"
+check "tracked backspace over own insertion caret" (caretOf ownBackspaceDoc) (Some (6, 6))
+check "reject all after own backspace" (paraText "tr" (Doc.rejectAllRevisions ownBackspaceDoc)) "base"
+check "accept all after own backspace" (paraText "tr" (Doc.acceptAllRevisions ownBackspaceDoc)) "baseNE"
+let ownSelectionDoc =
+    Doc.trackDeleteSelection "me" "d1" { ownInsertDoc with Selection = Some { Anchor = pos "tr" 2; Focus = pos "tr" 6 } }
+check "tracked delete spanning own insertion" (paraText "tr" ownSelectionDoc) "baseW"
+check "tracked delete spanning own insertion reject" (paraText "tr" (Doc.rejectAllRevisions ownSelectionDoc)) "base"
+check "tracked delete spanning own insertion accept" (paraText "tr" (Doc.acceptAllRevisions ownSelectionDoc)) "baW"
+let otherBackspaceDoc = Doc.trackDeleteBackward "someone else" "d2" ownInsertDoc
+check "tracked backspace over another author's insertion keeps text" (paraText "tr" otherBackspaceDoc) "baseNEW"
+let ownForwardDoc =
+    Doc.trackDeleteForward "me" "d1" { ownInsertDoc with Selection = Some { Anchor = pos "tr" 4; Focus = pos "tr" 4 } }
+check "tracked delete forward over own insertion" (paraText "tr" (Doc.rejectAllRevisions ownForwardDoc)) "base"
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail
