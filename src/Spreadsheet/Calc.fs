@@ -161,7 +161,7 @@ let buildDependencies (cell: SheetCell) (formula: string)
     | Ok expr ->
         // Large ranges become rectangle deps (rects); small ranges + single
         // cells stay explicit edges (deps).
-        let deps, rects = referencesRanged (Some workbook) cell.Sheet expr
+        let deps, rects = referencesRangedAt (Some workbook) cell.Sheet (Some cell.Cell) expr
         let engine = clearFormulaDependencies cell engine
         let metadata =
             engine.Metadata
@@ -487,6 +487,32 @@ let private canSkipUnchangedCellUpdate (cell: SheetCell) (targetCellData: CellDa
         | _ -> false
     | None -> false
 
+/// One pass over the dirty cells, in dependency order.
+let private recalculateDirty (workbook: Workbook) (engine: CalcEngine): Workbook =
+    let mutable wb = workbook
+    for cell in recalculateVisitOrder engine do
+        match Map.tryFind cell engine.Metadata with
+        | Some _ when Set.contains cell engine.DirtySet ->
+            match recalculateCell cell wb engine with
+            | Some newValue ->
+                match sheetModel cell.Sheet wb with
+                | Some model ->
+                    match getCell cell.Cell model with
+                    | Some cellData ->
+                        match cellData.Value with
+                        | CellValue.Formula (formula, _) ->
+                            let model' =
+                                setCell cell.Cell
+                                    { cellData with Value = CellValue.Formula (formula, newValue) }
+                                    model
+                            wb <- updateSheetModel cell.Sheet model' wb
+                        | _ -> ()
+                    | None -> ()
+                | None -> ()
+            | None -> ()
+        | _ -> ()
+    wb
+
 /// Smart recalculation: recompute only dirty cells, in dependency order,
 /// across every sheet. Volatile cells (RAND/NOW/OFFSET/…) are forced dirty
 /// every pass so their values — and anything downstream — stay live.
@@ -497,35 +523,29 @@ let smartRecalculate (workbook: Workbook) (engine: CalcEngine): Workbook * CalcE
     if Set.isEmpty engine.DirtySet then
         (workbook, engine)
     else
-        let mutable wb = workbook
-        let mutable eng = engine
-        for cell in recalculateVisitOrder engine do
-            match Map.tryFind cell eng.Metadata with
-            | Some metadata when Set.contains cell eng.DirtySet ->
-                match recalculateCell cell wb eng with
-                | Some newValue ->
-                    match sheetModel cell.Sheet wb with
-                    | Some model ->
-                        match getCell cell.Cell model with
-                        | Some cellData ->
-                            match cellData.Value with
-                            | CellValue.Formula (formula, _) ->
-                                let model' =
-                                    setCell cell.Cell
-                                        { cellData with Value = CellValue.Formula (formula, newValue) }
-                                        model
-                                wb <- updateSheetModel cell.Sheet model' wb
-                            | _ -> ()
-                        | None -> ()
-                    | None -> ()
-                | None -> ()
-            | _ -> ()
+        let mutable wb = recalculateDirty workbook engine
+        // OFFSET / INDIRECT choose their precedents while evaluating, so they
+        // have no edges to order them after the cells they read and may have
+        // run too early. Run them (and their dependents) once more now that
+        // every other dirty cell is up to date.
+        let dynamicCells =
+            engine.VolatileCells
+            |> Set.filter (fun cell ->
+                match Map.tryFind cell engine.Metadata with
+                | Some metadata ->
+                    (match metadata.ParsedFormula with
+                     | Some expr -> containsDynamicReference expr
+                     | None -> false)
+                | None -> false)
+        if not (Set.isEmpty dynamicCells) then
+            let second = markDirtyFrom dynamicCells { engine with DirtySet = Set.empty }
+            wb <- recalculateDirty wb second
         // Anything still dirty after the chain pass is a non-formula source
         // cell (the *edited* cell itself, which has nothing to recompute) or
         // — when the graph has a cycle — an unresolvable formula. Either way
         // clear it: leaving a stale dirty flag would make the next edit's
         // markDirty short-circuit and skip propagating to dependents.
-        (wb, { eng with DirtySet = Set.empty })
+        (wb, { engine with DirtySet = Set.empty })
 
 /// Update a cell's value, rewire its dependency edges, mark dependents
 /// dirty, and rebuild the calc chain. Returns the updated workbook + engine.

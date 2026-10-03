@@ -34,6 +34,7 @@ stages=(
     stage19-vba
     stage20-vbabin
     stage21-structure
+    stage22-semantics
     numbertext
 )
 
