@@ -1370,6 +1370,30 @@ let deleteSelection doc =
                 | _ -> doc
             | _ -> doc
 
+let private isHighSurrogate (ch: char) =
+    let code = int ch
+    code >= 0xD800 && code <= 0xDBFF
+
+let private isLowSurrogate (ch: char) =
+    let code = int ch
+    code >= 0xDC00 && code <= 0xDFFF
+
+/// How many UTF-16 code units the character after `offset` occupies: 2 for a
+/// surrogate pair (emoji and other astral characters), otherwise 1. Stepping
+/// by this keeps the caret and deletions from splitting a pair.
+let private forwardStep buffer offset =
+    if offset >= 0 && offset + 2 <= TextBuffer.length buffer then
+        let pair = TextBuffer.slice offset 2 buffer
+        if pair.Length = 2 && isHighSurrogate pair.[0] && isLowSurrogate pair.[1] then 2 else 1
+    else 1
+
+/// How many UTF-16 code units the character before `offset` occupies.
+let private backwardStep buffer offset =
+    if offset >= 2 && offset <= TextBuffer.length buffer then
+        let pair = TextBuffer.slice (offset - 2) 2 buffer
+        if pair.Length = 2 && isHighSurrogate pair.[0] && isLowSurrogate pair.[1] then 2 else 1
+    else 1
+
 /// Delete forward (Delete key)
 let deleteForward doc =
     match doc.Selection with
@@ -1386,7 +1410,7 @@ let deleteForward doc =
             if sel.Focus.Offset >= maxOffset then
                 mergeWithNext doc sel.Focus.BlockId
             else
-                let newBuffer = TextBuffer.delete sel.Focus.Offset 1 para.Buffer
+                let newBuffer = TextBuffer.delete sel.Focus.Offset (forwardStep para.Buffer sel.Focus.Offset) para.Buffer
                 let newPara = { para with Buffer = newBuffer }
                 replaceParagraph doc para.Id newPara
 
@@ -1623,15 +1647,16 @@ let deleteBackward doc =
         match findParagraph doc sel.Focus.BlockId with
         | None -> doc
         | Some para ->
-            let newBuffer = TextBuffer.delete (sel.Focus.Offset - 1) 1 para.Buffer
+            let step = backwardStep para.Buffer sel.Focus.Offset
+            let newBuffer = TextBuffer.delete (sel.Focus.Offset - step) step para.Buffer
             let newPara = { para with Buffer = newBuffer }
 
             let newDoc = replaceParagraph doc para.Id newPara
 
             // Move cursor back
             let newSel = {
-                Anchor = { sel.Focus with Offset = sel.Focus.Offset - 1 }
-                Focus = { sel.Focus with Offset = sel.Focus.Offset - 1 }
+                Anchor = { sel.Focus with Offset = sel.Focus.Offset - step }
+                Focus = { sel.Focus with Offset = sel.Focus.Offset - step }
             }
             { newDoc with Selection = Some newSel }
 
@@ -2317,9 +2342,13 @@ let moveCursorLeft doc =
     | None -> doc
     | Some sel when sel.Focus.Offset = 0 -> doc
     | Some sel ->
+        let step =
+            match findParagraph doc sel.Focus.BlockId with
+            | Some para -> backwardStep para.Buffer sel.Focus.Offset
+            | None -> 1
         let newSel = {
-            Anchor = { sel.Focus with Offset = sel.Focus.Offset - 1 }
-            Focus = { sel.Focus with Offset = sel.Focus.Offset - 1 }
+            Anchor = { sel.Focus with Offset = sel.Focus.Offset - step }
+            Focus = { sel.Focus with Offset = sel.Focus.Offset - step }
         }
         { doc with Selection = Some newSel }
 
@@ -2334,9 +2363,10 @@ let moveCursorRight doc =
             let maxOffset = TextBuffer.length para.Buffer
             if sel.Focus.Offset >= maxOffset then doc
             else
+                let step = forwardStep para.Buffer sel.Focus.Offset
                 let newSel = {
-                    Anchor = { sel.Focus with Offset = sel.Focus.Offset + 1 }
-                    Focus = { sel.Focus with Offset = sel.Focus.Offset + 1 }
+                    Anchor = { sel.Focus with Offset = sel.Focus.Offset + step }
+                    Focus = { sel.Focus with Offset = sel.Focus.Offset + step }
                 }
                 { doc with Selection = Some newSel }
 
@@ -2347,7 +2377,11 @@ let extendSelectionLeft doc =
     | Some sel when sel.Focus.Offset = 0 -> doc
     | Some sel ->
         // Keep anchor, move focus left
-        let newFocus = { sel.Focus with Offset = sel.Focus.Offset - 1 }
+        let step =
+            match findParagraph doc sel.Focus.BlockId with
+            | Some para -> backwardStep para.Buffer sel.Focus.Offset
+            | None -> 1
+        let newFocus = { sel.Focus with Offset = sel.Focus.Offset - step }
         { doc with Selection = Some { sel with Focus = newFocus } }
 
 /// Extend selection right (Shift+ArrowRight)
@@ -2362,7 +2396,7 @@ let extendSelectionRight doc =
             if sel.Focus.Offset >= maxOffset then doc
             else
                 // Keep anchor, move focus right
-                let newFocus = { sel.Focus with Offset = sel.Focus.Offset + 1 }
+                let newFocus = { sel.Focus with Offset = sel.Focus.Offset + forwardStep para.Buffer sel.Focus.Offset }
                 { doc with Selection = Some { sel with Focus = newFocus } }
 
 /// Get document text (for testing/debugging)
@@ -2750,7 +2784,7 @@ let trackDeleteForward author date doc =
             | None -> doc
             | Some offset ->
                 let startPos = { sel.Focus with Offset = offset }
-                let selection = { Anchor = startPos; Focus = { startPos with Offset = offset + 1 } }
+                let selection = { Anchor = startPos; Focus = { startPos with Offset = offset + forwardStep para.Buffer offset } }
                 trackDeleteSelection author date { doc with Selection = Some selection }
 
 let trackDeleteBackward author date doc =
@@ -2764,7 +2798,7 @@ let trackDeleteBackward author date doc =
             match previousTrackDeletableOffset para sel.Focus.Offset with
             | None -> doc
             | Some offset ->
-                let startPos = { sel.Focus with Offset = offset }
+                let startPos = { sel.Focus with Offset = offset + 1 - backwardStep para.Buffer (offset + 1) }
                 let selection = { Anchor = startPos; Focus = { startPos with Offset = offset + 1 } }
                 trackDeleteSelection author date { doc with Selection = Some selection }
 

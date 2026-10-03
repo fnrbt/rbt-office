@@ -1797,6 +1797,25 @@ let ownForwardDoc =
     Doc.trackDeleteForward "me" "d1" { ownInsertDoc with Selection = Some { Anchor = pos "tr" 4; Focus = pos "tr" 4 } }
 check "tracked delete forward over own insertion" (paraText "tr" (Doc.rejectAllRevisions ownForwardDoc)) "base"
 
+// A surrogate pair is one character to the caret and to Backspace/Delete.
+let emoji = "\U0001F600"
+let emojiDoc offset = caretDoc "em" (ofString ("a" + emoji + "b")) offset
+check "backspace removes whole surrogate pair" (paraText "em" (Doc.deleteBackward (emojiDoc 3))) "ab"
+check "backspace over pair caret" (caretOf (Doc.deleteBackward (emojiDoc 3))) (Some (1, 1))
+check "delete removes whole surrogate pair" (paraText "em" (Doc.deleteForward (emojiDoc 1))) "ab"
+check "backspace over plain char still one unit" (paraText "em" (Doc.deleteBackward (emojiDoc 4))) ("a" + emoji)
+check "arrow left steps over pair" (caretOf (Doc.moveCursorLeft (emojiDoc 3))) (Some (1, 1))
+check "arrow right steps over pair" (caretOf (Doc.moveCursorRight (emojiDoc 1))) (Some (3, 3))
+check "arrow right over plain char" (caretOf (Doc.moveCursorRight (emojiDoc 0))) (Some (1, 1))
+check "shift left extends over pair" (caretOf (Doc.extendSelectionLeft (emojiDoc 3))) (Some (3, 1))
+check "shift right extends over pair" (caretOf (Doc.extendSelectionRight (emojiDoc 1))) (Some (1, 3))
+check "tracked backspace marks whole pair"
+    (Doc.revisionInfos (Doc.trackDeleteBackward "me" "d1" (emojiDoc 3)) |> List.map (fun revision -> revision.Start, revision.End))
+    [ 1, 3 ]
+check "tracked delete marks whole pair"
+    (Doc.revisionInfos (Doc.trackDeleteForward "me" "d1" (emojiDoc 1)) |> List.map (fun revision -> revision.Start, revision.End))
+    [ 1, 3 ]
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail
