@@ -703,7 +703,18 @@ let invalidateFilterProjection (model: SpreadsheetModel): SpreadsheetModel =
 let setCell (addr: CellAddress) (data: CellData) (model: SpreadsheetModel): SpreadsheetModel =
     match Map.tryFind addr model.Cells with
     | Some existing when existing = data -> model
-    | _ -> { model with Cells = Map.add addr data model.Cells } |> invalidateFilterProjection
+    | existing ->
+        // Writing a different value into a cell a dynamic array spilled into
+        // makes it the user's cell: it stops being a spill ghost, so the next
+        // spill pass sees it as an obstruction (#SPILL!) instead of
+        // overwriting it. Restyling a ghost keeps it a ghost.
+        let spill =
+            if Map.isEmpty model.Spill || not (Map.containsKey addr model.Spill) then model.Spill
+            else
+                match existing with
+                | Some ghost when ghost.Value = data.Value -> model.Spill
+                | _ -> Map.remove addr model.Spill
+        { model with Cells = Map.add addr data model.Cells; Spill = spill } |> invalidateFilterProjection
 
 let setCellFormat (addr: CellAddress) (update: CellFormat -> CellFormat) (model: SpreadsheetModel): SpreadsheetModel =
     let existing = getCell addr model |> Option.defaultValue { Value = Empty; Format = defaultFormat; Comment = None }

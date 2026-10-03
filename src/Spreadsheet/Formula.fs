@@ -10705,9 +10705,17 @@ let private collectFormulaCells (model: SpreadsheetModel) =
 /// Recalculate every formula cell in a model, in dependency order.
 /// `currentSheet` scopes defined-name resolution to the sheet being
 /// recalculated (the caller knows which sheet `model` belongs to).
-let recalculateAllFormulas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
-                           (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
-                           (model: SpreadsheetModel) : SpreadsheetModel =
+let rec recalculateAllFormulas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                               (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                               (model: SpreadsheetModel) : SpreadsheetModel =
+    recalculateFormulasKeepingBlocked Set.empty workbook currentSheet model
+
+/// `blockedAnchors` are array formulas whose spill is obstructed: they keep
+/// showing #SPILL! instead of collapsing to their top-left element.
+and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
+                                              (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                                              (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                                              (model: SpreadsheetModel) : SpreadsheetModel =
     let formulaCells = collectFormulaCells model
     if formulaCells.Count = 0 then model else
         let formulaByAddress = Dictionary<CellAddress, FormulaCell>(formulaCells.Count)
@@ -10861,6 +10869,8 @@ let recalculateAllFormulas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                     applyFormulaResult addr fc (CellValue.Error parseError)
                 | None when cyclic.Contains addr ->
                     applyFormulaResult addr fc (CellValue.Error Err.cycle)
+                | None when Set.contains addr blockedAnchors ->
+                    applyFormulaResult addr fc (CellValue.Error Err.spill)
                 | None ->
                     let updated = { model with Cells = updatedCells }
                     let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
@@ -10901,8 +10911,9 @@ let containsArrayFunction (e: Expr) : bool =
 /// later step; this is the render-side materialization.)
 let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                             (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
-                            (model: SpreadsheetModel) : SpreadsheetModel * bool =
+                            (model: SpreadsheetModel) : SpreadsheetModel * bool * Set<CellAddress> =
     let previousSpill = model.Spill
+    let mutable blocked = Set.empty
     let anchors = ResizeArray<CellAddress * CellData * string * Expr>()
     let arrayFormulaExpr formula =
         if not (formulaTextMayContainArrayFunctionName formula) then
@@ -10921,7 +10932,7 @@ let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         | _ -> ())
     if anchors.Count = 0 then
         if Map.isEmpty previousSpill then
-            model, false
+            model, false, Set.empty
         else
             let mutable updatedCells = model.Cells
             let mutable changed = false
@@ -10936,9 +10947,9 @@ let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                         changed <- true
                 | None -> ())
             if changed then
-                ({ model with Cells = updatedCells; Spill = Map.empty } |> invalidateFilterProjection), true
+                ({ model with Cells = updatedCells; Spill = Map.empty } |> invalidateFilterProjection), true, Set.empty
             else
-                { model with Spill = Map.empty }, true
+                { model with Spill = Map.empty }, true, Set.empty
     else
     let mutable updatedCells = model.Cells
     let mutable spillMap = Map.empty
@@ -10986,6 +10997,7 @@ let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                     c <- c + 1
                 r <- r + 1
             if collides then
+                blocked <- Set.add addr blocked
                 setCellIfChanged addr { cell with Value = CellValue.Formula (formula, CellValue.Error Err.spill) }
             else
                 setCellIfChanged addr { cell with Value = CellValue.Formula (formula, arr.[0].[0]) }
@@ -11006,14 +11018,15 @@ let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
             | None -> ())
     let spillChanged = spillMap <> previousSpill
     if not changed && not spillChanged then
-        model, false
+        model, false, blocked
     else
-        ({ model with Cells = updatedCells; Spill = spillMap } |> invalidateFilterProjection), true
+        ({ model with Cells = updatedCells; Spill = spillMap } |> invalidateFilterProjection), true, blocked
 
 let spillArrays (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                 (currentSheet: Rbt.Spreadsheet.Workbook.SheetId option)
                 (model: SpreadsheetModel) : SpreadsheetModel =
-    spillArraysCore workbook currentSheet model |> fst
+    let spilled, _, _ = spillArraysCore workbook currentSheet model
+    spilled
 
 /// Recalculate every formula and (re)materialize dynamic-array spills,
 /// clearing the previous spill's ghost cells. This is the interactive
@@ -11025,9 +11038,9 @@ let recalcAndSpill (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                    (model: SpreadsheetModel) : SpreadsheetModel =
     if Map.isEmpty model.Spill && not (cellsHaveFormulaCells model.Cells) then model else
     let recalculated = recalculateAllFormulas workbook currentSheet model
-    let spilled, spillChanged = spillArraysCore workbook currentSheet recalculated
-    if spillChanged then
-        recalculateAllFormulas workbook currentSheet spilled
+    let spilled, spillChanged, blocked = spillArraysCore workbook currentSheet recalculated
+    if spillChanged || not (Set.isEmpty blocked) then
+        recalculateFormulasKeepingBlocked blocked workbook currentSheet spilled
     else
         spilled
 

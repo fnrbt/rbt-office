@@ -295,6 +295,19 @@ eq "filter-match-kept"     (getRowHeight 6 filtered) 25.0
 eq "filter-others-hidden"  ([ 5; 7; 8 ] |> List.map (fun r -> getRowHeight r filtered)) [ 0.0; 0.0; 0.0 ]
 eq "filter-outside-block"  (getRowHeight 0 filtered, getRowHeight 10 filtered) (25.0, 25.0)
 
+// --- A value typed into a spill range blocks the spill ----------------------
+let spillBase = modelOf [ at 0 0, fml "=SEQUENCE(3)" ] |> recalcAndSpill None None
+eq "spill-initial" [ for r in 0 .. 2 -> valueAt r 0 spillBase ] [ N 1.0; N 2.0; N 3.0 ]
+let spillBlocked = spillBase |> setCell (at 1 0) (num 99.0) |> recalcAndSpill None None
+eq "spill-user-value-kept" (valueAt 1 0 spillBlocked) (N 99.0)
+eq "spill-anchor-error"    (valueAt 0 0 spillBlocked) (CellValue.Error "SPILL!")
+eq "spill-ghost-cleared"   (Map.containsKey (at 2 0) spillBlocked.Cells) false
+let spillFreed = spillBlocked |> clearCell (at 1 0) |> recalcAndSpill None None
+eq "spill-returns" [ for r in 0 .. 2 -> valueAt r 0 spillFreed ] [ N 1.0; N 2.0; N 3.0 ]
+// Formatting a ghost cell does not turn it into an obstruction.
+let spillStyled = spillBase |> setCellBgColor (at 1 0) "#FF0000" |> recalcAndSpill None None
+eq "spill-styled-ghost" (valueAt 0 0 spillStyled, valueAt 1 0 spillStyled) (N 1.0, N 2.0)
+
 printfn ""
 printfn "Stage 21 structure tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
