@@ -759,6 +759,11 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
 let render (ctx: RenderContext) (doc: Document) =
     renderCore ctx doc None
 
+/// Number of pages the document lays out to, including footnote/endnote areas.
+/// Hosts use it to size the canvas (pages are stacked at pageHeight + pageGap).
+let pageCount (ctx: RenderContext) (doc: Document) =
+    pageCountForLayouts (layoutSettings ctx doc) (layoutDocument ctx doc)
+
 /// Convert mouse position to document position
 let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) =
     Rbt.Word.Layout.hitTestWithRange (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
@@ -777,6 +782,7 @@ type RenderContext = unit
 type BlockLayout = unit
 let createContext _ = ()
 let render _ _ = ()
+let pageCount _ _ = 1
 let renderWithHover _ _ _ = ()
 let hitTest _ _ _ _ = None
 let hitTestForImage _ _ _ _ = None
