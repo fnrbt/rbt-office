@@ -90,6 +90,12 @@ type PageSetupInfo = {
     FooterDistance: float
     DifferentFirstPage: bool
     EvenAndOddHeaders: bool
+    /// 0 or 1 = single column. Space and widths are px (reader: twips / 15).
+    ColumnCount: int
+    ColumnSpace: float
+    ColumnSeparator: bool
+    ColumnWidths: (float * float) list
+    SectionStart: string option
 }
 
 let private defaultPageSetupInfo = {
@@ -103,6 +109,11 @@ let private defaultPageSetupInfo = {
     FooterDistance = 48.0
     DifferentFirstPage = false
     EvenAndOddHeaders = false
+    ColumnCount = 1
+    ColumnSpace = 0.0
+    ColumnSeparator = false
+    ColumnWidths = []
+    SectionStart = None
 }
 
 let private optionalPageSetup (value: obj) =
@@ -119,20 +130,59 @@ let private optionalPageSetup (value: obj) =
             FooterDistance = floatOrDefault defaultPageSetupInfo.FooterDistance (value?FooterDistance)
             DifferentFirstPage = boolOrDefault defaultPageSetupInfo.DifferentFirstPage (value?DifferentFirstPage)
             EvenAndOddHeaders = boolOrDefault defaultPageSetupInfo.EvenAndOddHeaders (value?EvenAndOddHeaders)
+            ColumnCount = optionalFloat (value?ColumnCount) |> Option.map roundToInt |> Option.defaultValue 1
+            ColumnSpace = floatOrDefault 0.0 (value?ColumnSpace)
+            ColumnSeparator = boolOrDefault false (value?ColumnSeparator)
+            ColumnWidths =
+                optionalArray (value?ColumnWidths)
+                |> Array.toList
+                |> List.map (fun column -> floatOrDefault 0.0 (column?W), floatOrDefault 0.0 (column?S))
+            SectionStart = optionalString (value?SectionStart)
         }
 
-let private sectionPageSetupChildren (setup: PageSetupInfo) =
-    [ yield selfClosing "w:pgSz" [("w:w", pixelsToTwips setup.PageWidth); ("w:h", pixelsToTwips setup.PageHeight)]
-      yield selfClosing "w:pgMar" [
-          ("w:top", pixelsToTwips setup.MarginTop)
-          ("w:right", pixelsToTwips setup.MarginRight)
-          ("w:bottom", pixelsToTwips setup.MarginBottom)
-          ("w:left", pixelsToTwips setup.MarginLeft)
-          ("w:header", pixelsToTwips setup.HeaderDistance)
-          ("w:footer", pixelsToTwips setup.FooterDistance)
-          ("w:gutter", "0")
-      ]
-      if setup.DifferentFirstPage then yield selfClosing "w:titlePg" [] ]
+let private sectionColumnsElement (setup: PageSetupInfo) =
+    if setup.ColumnCount < 2 then None
+    else
+        let attrs =
+            [ yield ("w:num", string setup.ColumnCount)
+              if setup.ColumnSeparator then yield ("w:sep", "1")
+              yield ("w:space", pixelsToTwips setup.ColumnSpace)
+              if not setup.ColumnWidths.IsEmpty then yield ("w:equalWidth", "0") ]
+        let columns =
+            setup.ColumnWidths
+            |> List.map (fun (width, space) -> selfClosing "w:col" [("w:w", pixelsToTwips width); ("w:space", pixelsToTwips space)])
+        Some (element "w:cols" attrs columns)
+
+/// Children of w:sectPr in CT_SectPr sequence order: header/footer references,
+/// type, pgSz, pgMar, pgNumType, cols, titlePg.
+let private sectionPropertiesChildren (references: string list) (sectionType: string option) (setup: PageSetupInfo option) (pageNumberStart: int option) =
+    [ yield! references
+      match sectionType with
+      | Some value when value = "continuous" || value = "nextPage" || value = "evenPage" || value = "oddPage" || value = "nextColumn" ->
+          yield selfClosing "w:type" [("w:val", value)]
+      | _ -> ()
+      match setup with
+      | Some setup ->
+          yield selfClosing "w:pgSz" [("w:w", pixelsToTwips setup.PageWidth); ("w:h", pixelsToTwips setup.PageHeight)]
+          yield selfClosing "w:pgMar" [
+              ("w:top", pixelsToTwips setup.MarginTop)
+              ("w:right", pixelsToTwips setup.MarginRight)
+              ("w:bottom", pixelsToTwips setup.MarginBottom)
+              ("w:left", pixelsToTwips setup.MarginLeft)
+              ("w:header", pixelsToTwips setup.HeaderDistance)
+              ("w:footer", pixelsToTwips setup.FooterDistance)
+              ("w:gutter", "0")
+          ]
+      | None -> ()
+      match pageNumberStart with
+      | Some start -> yield selfClosing "w:pgNumType" [("w:start", string (max 0 start))]
+      | None -> ()
+      match setup |> Option.bind sectionColumnsElement with
+      | Some columns -> yield columns
+      | None -> ()
+      match setup with
+      | Some setup when setup.DifferentFirstPage -> yield selfClosing "w:titlePg" []
+      | _ -> () ]
 
 /// Type conversion helpers (inverse of TypeConversion in DocumentProcessors)
 ///
@@ -171,8 +221,10 @@ module InverseConversion =
     let alignmentToWord (alignment: string) : string =
         match alignment.ToLower() with
         | "center" -> "center"
-        | "right" -> "right"
-        | "justify" -> "both"
+        | "right" | "end" -> "right"
+        // Style alignments reach the writer in the reader's (OOXML) spelling.
+        | "justify" | "both" -> "both"
+        | "distribute" -> "distribute"
         | _ -> "left"
 
     /// Paragraph spacing before/after: points -> twips. Reader: wordSpacingTwipsToPoints = twips / 20.
@@ -195,9 +247,18 @@ type private RunExtras = {
     StyleId: string option
     AllCaps: bool
     SmallCaps: bool
+    DoubleStrike: bool
+    Hidden: bool
+    UnderlineStyle: string option
+    UnderlineColor: string option
+    /// Baseline shift in points (reader: w:position half-points / 2).
+    Position: float
+    EmphasisMark: string option
 }
 
-let private noRunExtras = { StyleId = None; AllCaps = false; SmallCaps = false }
+let private noRunExtras =
+    { StyleId = None; AllCaps = false; SmallCaps = false; DoubleStrike = false; Hidden = false
+      UnderlineStyle = None; UnderlineColor = None; Position = 0.0; EmphasisMark = None }
 
 /// The editor run carries *effective* formatting (style and document defaults
 /// already merged in by the reader), so "not bold" has to be written as an
@@ -221,20 +282,38 @@ let private orderedRunProps (extras: RunExtras) (run: EditorRun) : string list =
         yield toggle "w:caps" extras.AllCaps
         yield toggle "w:smallCaps" extras.SmallCaps
         yield toggle "w:strike" run.Strike
+        yield toggle "w:dstrike" extras.DoubleStrike
+        yield toggle "w:vanish" extras.Hidden
         match InverseConversion.cssColorToWord run.Color with
         | Some color -> yield selfClosing "w:color" [("w:val", color)]
         | None -> ()
         if abs run.CharacterSpacing >= 0.001 then
             yield selfClosing "w:spacing" [("w:val", InverseConversion.pixelsToTwips run.CharacterSpacing)]
+        if abs extras.Position >= 0.001 then
+            yield selfClosing "w:position" [("w:val", InverseConversion.pointsToHalfPoints extras.Position)]
         let sz = InverseConversion.pixelsToHalfPoints run.FontSize
         yield selfClosing "w:sz" [("w:val", sz)]
         yield selfClosing "w:szCs" [("w:val", sz)]
         match run.Highlight with
         | Some color -> yield selfClosing "w:highlight" [("w:val", color)]
         | None -> ()
-        yield selfClosing "w:u" [("w:val", (if run.Underline then "single" else "none"))]
+        if run.Underline then
+            let style =
+                match extras.UnderlineStyle with
+                | Some value when value <> "" && value <> "none" -> value
+                | _ -> "single"
+            let color =
+                match InverseConversion.cssColorToWord extras.UnderlineColor with
+                | Some value when value <> "AUTO" -> [("w:color", value)]
+                | _ -> []
+            yield selfClosing "w:u" (("w:val", style) :: color)
+        else
+            yield selfClosing "w:u" [("w:val", "none")]
         match run.VertAlign with
         | Some value when value = "superscript" || value = "subscript" -> yield selfClosing "w:vertAlign" [("w:val", value)]
+        | _ -> ()
+        match extras.EmphasisMark with
+        | Some value when value <> "" && value <> "none" -> yield selfClosing "w:em" [("w:val", value)]
         | _ -> ()
     ]
 
@@ -292,6 +371,12 @@ let private runExtrasFromObject (runObj: obj) = {
     StyleId = optionalString (runObj?Style) |> Option.orElse (optionalString (runObj?RunStyle)) |> Option.orElse (optionalString (runObj?CharacterStyle))
     AllCaps = boolOrDefault false (runObj?AllCaps)
     SmallCaps = boolOrDefault false (runObj?SmallCaps)
+    DoubleStrike = boolOrDefault false (runObj?DoubleStrike)
+    Hidden = boolOrDefault false (runObj?Hidden)
+    UnderlineStyle = optionalString (runObj?UnderlineStyle)
+    UnderlineColor = optionalString (runObj?UnderlineColor)
+    Position = floatOrDefault 0.0 (runObj?Position)
+    EmphasisMark = optionalString (runObj?EmphasisMark)
 }
 
 let private isDeletedRun (runObj: obj) =
@@ -361,39 +446,31 @@ let private revisionWrappedRun (runObj: obj) (runXml: string) =
         element elementName attrs [runXml]
     | _ -> runXml
 
-let private collectParagraphHyperlinks (para: obj) =
-    if isNullOrUndefined para?Runs then
-        []
-    else
-        para?Runs
-        |> unbox<obj array>
-        |> Array.toList
-        |> List.choose (fun run -> optionalString (run?Hyperlink))
-
-let rec private collectItemHyperlinks (item: obj) =
+/// Every paragraph object reachable from a block: text box content, table
+/// cells and the tables nested inside cells. The hyperlink, image, comment,
+/// note, numbering and style collectors all go through this, so content in a
+/// nested table gets its relationships and definitions like any other.
+let rec private collectItemParagraphs (item: obj) : obj list =
     match item?Type |> stringOrDefault "Paragraph" with
-    | "TextBox" when not (isNullOrUndefined item?Paragraphs) ->
-        item?Paragraphs |> unbox<obj array> |> Array.toList |> List.collect collectParagraphHyperlinks
-    | "Table" when not (isNullOrUndefined item?Rows) ->
-        item?Rows
-        |> unbox<obj array>
+    | "TextBox" -> optionalArray (item?Paragraphs) |> Array.toList
+    | "Table" ->
+        optionalArray (item?Rows)
         |> Array.toList
         |> List.collect (fun row ->
-            if isNullOrUndefined row?Cells then
-                []
-            else
-                row?Cells
-                |> unbox<obj array>
-                |> Array.toList
-                |> List.collect (fun cell ->
-                    if isNullOrUndefined cell?Paragraphs then
-                        []
-                    else
-                        cell?Paragraphs
-                        |> unbox<obj array>
-                        |> Array.toList
-                        |> List.collect collectParagraphHyperlinks))
-    | _ -> collectParagraphHyperlinks item
+            optionalArray (row?Cells)
+            |> Array.toList
+            |> List.collect (fun cell ->
+                (optionalArray (cell?Paragraphs) |> Array.toList |> List.collect collectItemParagraphs)
+                @ (optionalArray (cell?NestedTables) |> Array.toList |> List.collect collectItemParagraphs)))
+    | _ -> [item]
+
+let private collectParagraphHyperlinks (para: obj) =
+    optionalArray (para?Runs)
+    |> Array.toList
+    |> List.choose (fun run -> optionalString (run?Hyperlink))
+
+let private collectItemHyperlinks (item: obj) =
+    collectItemParagraphs item |> List.collect collectParagraphHyperlinks
 
 let private hyperlinkMap (items: obj array) =
     items
@@ -482,25 +559,6 @@ let private collectParagraphNotes (para: obj) =
                 let noteType = markerText "footnote" (run?NoteType)
                 { Id = id; NoteType = noteType; Text = markerText (sprintf "%s %s" noteType id) (run?NoteText) }))
 
-let rec private collectItemParagraphs (item: obj) =
-    match item?Type |> stringOrDefault "Paragraph" with
-    | "TextBox" when not (isNullOrUndefined item?Paragraphs) ->
-        item?Paragraphs |> unbox<obj array> |> Array.toList
-    | "Table" when not (isNullOrUndefined item?Rows) ->
-        item?Rows
-        |> unbox<obj array>
-        |> Array.toList
-        |> List.collect (fun row ->
-            if isNullOrUndefined row?Cells then []
-            else
-                row?Cells
-                |> unbox<obj array>
-                |> Array.toList
-                |> List.collect (fun cell ->
-                    if isNullOrUndefined cell?Paragraphs then []
-                    else cell?Paragraphs |> unbox<obj array> |> Array.toList))
-    | _ -> [item]
-
 let private collectComments (items: obj array) =
     items
     |> Array.toList
@@ -541,28 +599,8 @@ let private collectParagraphImageSources (para: obj) =
             if boolOrDefault false (run?IsImage) then optionalString (run?ImageSrc)
             else None)
 
-let rec private collectItemImageSources (item: obj) =
-    match item?Type |> stringOrDefault "Paragraph" with
-    | "TextBox" when not (isNullOrUndefined item?Paragraphs) ->
-        item?Paragraphs |> unbox<obj array> |> Array.toList |> List.collect collectParagraphImageSources
-    | "Table" when not (isNullOrUndefined item?Rows) ->
-        item?Rows
-        |> unbox<obj array>
-        |> Array.toList
-        |> List.collect (fun row ->
-            if isNullOrUndefined row?Cells then []
-            else
-                row?Cells
-                |> unbox<obj array>
-                |> Array.toList
-                |> List.collect (fun cell ->
-                    if isNullOrUndefined cell?Paragraphs then []
-                    else
-                        cell?Paragraphs
-                        |> unbox<obj array>
-                        |> Array.toList
-                        |> List.collect collectParagraphImageSources))
-    | _ -> collectParagraphImageSources item
+let private collectItemImageSources (item: obj) =
+    collectItemParagraphs item |> List.collect collectParagraphImageSources
 
 let private buildImageScope (mediaStartIndex: int) (items: obj array) =
     let mutable nextMediaIndex = mediaStartIndex
@@ -606,7 +644,7 @@ let private boolFlag defaultValue (value: obj) =
 let private generateImageRun (asset: ImageAsset) (runObj: obj) =
     let width = optionalImageSize 96.0 (runObj?ImageWidth)
     let height = optionalImageSize 48.0 (runObj?ImageHeight)
-    let alt = optionalString (runObj?ImageAlt) |> Option.defaultValue "Image"
+    let altAttrs = optionalString (runObj?ImageAlt) |> Option.map (fun alt -> [("descr", alt)]) |> Option.defaultValue []
     let imageName = optionalString (runObj?ImageName) |> Option.defaultValue asset.FileName
     let titleAttrs = optionalString (runObj?ImageTitle) |> Option.map (fun title -> [("title", title)]) |> Option.defaultValue []
     let positionX = optionalImagePosition (runObj?ImagePositionX)
@@ -660,12 +698,12 @@ let private generateImageRun (asset: ImageAsset) (runObj: obj) =
     element "w:r" [] [
         element "w:drawing" [] [
             drawingContainer [
-                selfClosing "wp:docPr" ([("id", asset.RelId.Replace("rIdImage", "")); ("name", imageName); ("descr", alt)] @ titleAttrs)
+                selfClosing "wp:docPr" ([("id", asset.RelId.Replace("rIdImage", "")); ("name", imageName)] @ altAttrs @ titleAttrs)
                 element "a:graphic" [("xmlns:a", "http://schemas.openxmlformats.org/drawingml/2006/main")] [
                     element "a:graphicData" [("uri", "http://schemas.openxmlformats.org/drawingml/2006/picture")] [
                         element "pic:pic" [("xmlns:pic", "http://schemas.openxmlformats.org/drawingml/2006/picture")] [
                             element "pic:nvPicPr" [] [
-                                selfClosing "pic:cNvPr" ([("id", asset.RelId.Replace("rIdImage", "")); ("name", imageName); ("descr", alt)] @ titleAttrs)
+                                selfClosing "pic:cNvPr" ([("id", asset.RelId.Replace("rIdImage", "")); ("name", imageName)] @ altAttrs @ titleAttrs)
                                 selfClosing "pic:cNvPicPr" []
                             ]
                             element "pic:blipFill" [] [
@@ -687,10 +725,13 @@ let private generateImageRun (asset: ImageAsset) (runObj: obj) =
         ]
     ]
 
-let private includeHeaderFooterKind differentFirstPage evenAndOddHeaders kind =
-    kind = "default"
-    || (kind = "first" && differentFirstPage)
-    || (kind = "even" && evenAndOddHeaders)
+/// A first-page or even-page header that is switched off (no w:titlePg / no
+/// evenAndOddHeaders) is still part of the section in the file; Word keeps the
+/// reference so the header comes back when the option is turned on again.
+/// Dropping the reference orphaned the part and it reopened as a second
+/// "default" header.
+let private includeHeaderFooterKind (_differentFirstPage: bool) (_evenAndOddHeaders: bool) (kind: string) =
+    kind = "default" || kind = "first" || kind = "even"
 
 let private sectionReferences elementName differentFirstPage evenAndOddHeaders (value: obj) =
     if isNullOrUndefined value then []
@@ -717,22 +758,15 @@ let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj)
         sectionReferences "w:headerReference" effectiveSetup.DifferentFirstPage effectiveSetup.EvenAndOddHeaders (para?HeaderReferences)
         @ sectionReferences "w:footerReference" effectiveSetup.DifferentFirstPage effectiveSetup.EvenAndOddHeaders (para?FooterReferences)
     let pageNumberStart = optionalInt (para?SectionPageNumberStart)
-    let children = [
-        yield! refs
-        match paraSetup with
-        | Some setup -> yield! sectionPageSetupChildren setup
-        | None -> ()
-        match pageNumberStart with
-        | Some start -> yield selfClosing "w:pgNumType" [("w:start", string (max 1 start))]
-        | None -> ()
-        match sectionBreak with
-        | Some breakType when breakType = "continuous" || breakType = "nextPage" ->
-            yield selfClosing "w:type" [("w:val", breakType)]
-        | _ -> ()
-    ]
+    let children = sectionPropertiesChildren refs sectionBreak paraSetup pageNumberStart
     if children.IsEmpty then None else Some (element "w:sectPr" [] children)
 
 let private defaultFontSizePixels = 11.0 * 96.0 / 72.0
+
+/// numIds used for list paragraphs that carry no ListId (lists made in the
+/// editor): (bullet, numbered). Chosen per document in numberingPlan so they
+/// never collide with a list id that came from the file.
+let mutable private defaultListNumIds = ("1", "2")
 
 /// The font size the reader divided exact/at-least line spacing by: the
 /// paragraph mark size it reported, else the largest text run.
@@ -745,9 +779,72 @@ let private paragraphFontSize (para: obj) : float =
             if boolOrDefault false (run?IsImage) then None else optionalFloat (run?FontSize))
         |> fun sizes -> if sizes.Length = 0 then defaultFontSizePixels else Array.max sizes
 
+let private paragraphBorderElement name (value: obj) =
+    if isNullOrUndefined value then None
+    else
+        let style = optionalString (value?Style) |> Option.defaultValue "single"
+        let hidden = style = "none" || style = "nil"
+        let width =
+            match optionalFloat (value?Width) with
+            | Some amount -> InverseConversion.pixelsToEighthPoints amount
+            | None -> if hidden then "0" else "4"
+        // w:space is in points on both sides (reader: paragraphBorderSpaceToPoints).
+        let space = optionalFloat (value?Space) |> Option.map (fun amount -> string (max 0 (roundToInt amount))) |> Option.defaultValue "0"
+        let color = optionalString (value?Color) |> InverseConversion.cssColorToWord |> Option.defaultValue "auto"
+        Some (selfClosing name [("w:val", style); ("w:sz", width); ("w:space", space); ("w:color", color)])
+
+let private paragraphBordersElement (value: obj) =
+    if isNullOrUndefined value then None
+    else
+        // CT_PBdr order: top, left, bottom, right.
+        let sides =
+            [ paragraphBorderElement "w:top" (value?Top)
+              paragraphBorderElement "w:left" (value?Left)
+              paragraphBorderElement "w:bottom" (value?Bottom)
+              paragraphBorderElement "w:right" (value?Right) ]
+            |> List.choose id
+        if sides.IsEmpty then None else Some (element "w:pBdr" [] sides)
+
+let private tabStopsElement (para: obj) =
+    let tab (alignment: string) (leader: string option) (position: float) =
+        selfClosing "w:tab" [
+            yield ("w:val", (if alignment = "" then "left" else alignment))
+            match leader with
+            | Some value when value <> "" && value <> "none" -> yield ("w:leader", value)
+            | _ -> ()
+            yield ("w:pos", InverseConversion.pixelsToTwips position)
+        ]
+    let stops =
+        optionalArray (para?TabStops)
+        |> Array.toList
+        |> List.choose (fun stop ->
+            optionalFloat (stop?Position)
+            |> Option.map (fun position -> tab (stop?Alignment |> stringOrDefault "left") (optionalString (stop?Leader)) position))
+    let stops =
+        // RightTabPosition is the reader's shorthand for the last right tab; only
+        // needed when the full list is not there (older exports, editor-made TOC lines).
+        if not stops.IsEmpty then stops
+        else
+            match optionalFloat (para?RightTabPosition) with
+            | Some position -> [ tab "right" (optionalString (para?RightTabLeader)) position ]
+            | None -> []
+    if stops.IsEmpty then None else Some (element "w:tabs" [] stops)
+
+let private paragraphMarkRunProps (para: obj) =
+    // Exact / at-least line spacing is stored relative to the paragraph font
+    // size, so pin that size on the paragraph mark: the reader then divides by
+    // the same number next time and the value is a fixed point.
+    match optionalString (para?LineSpacingRule), optionalFloat (para?LineSpacing) with
+    | Some rule, Some _ when rule = "exact" || rule = "atLeast" ->
+        let sz = InverseConversion.pixelsToHalfPoints (paragraphFontSize para)
+        Some (element "w:rPr" [] [selfClosing "w:sz" [("w:val", sz)]; selfClosing "w:szCs" [("w:val", sz)]])
+    | _ -> None
+
+/// Paragraph properties in CT_PPr sequence order: pStyle, keepNext, keepLines,
+/// pageBreakBefore, widowControl, numPr, pBdr, shd, tabs, bidi, spacing, ind,
+/// contextualSpacing, jc, rPr, sectPr. Like w:rPr this is an xsd:sequence.
 let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: obj) : string =
     let alignment = para?Alignment |> stringOrDefault "left" |> InverseConversion.alignmentToWord
-    let jcElement = selfClosing "w:jc" [("w:val", alignment)]
     let spacingAttributes = [
         match optionalFloat (para?SpacingBefore) with
         | Some value -> yield ("w:before", InverseConversion.pointsToTwips value)
@@ -766,9 +863,6 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
                 yield ("w:lineRule", "auto")
         | None -> ()
     ]
-    let spacingElement =
-        if spacingAttributes.IsEmpty then None
-        else Some (selfClosing "w:spacing" spacingAttributes)
     let indentAttributes = [
         match optionalFloat (para?IndentLeft) with
         | Some value -> yield ("w:left", InverseConversion.pixelsToTwips value)
@@ -782,58 +876,57 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         | Some value -> yield ("w:firstLine", InverseConversion.pixelsToTwips value)
         | None -> ()
     ]
-    let indentElement =
-        if indentAttributes.IsEmpty then None
-        else Some (selfClosing "w:ind" indentAttributes)
     let listStyle = para?ListStyle |> stringOrDefault "none"
     let listLevel = para?ListLevel |> intOrDefault 0
     let itemType = para?Type |> stringOrDefault "Paragraph"
     let headingLevel = para?HeadingLevel |> intOrDefault 0
-    let styleElement =
-        match optionalString (para?Style) with
-        | Some styleId when styleId <> "" -> Some (selfClosing "w:pStyle" [("w:val", styleId)])
-        | _ when itemType = "Heading" && headingLevel >= 1 && headingLevel <= 3 ->
-            Some (selfClosing "w:pStyle" [("w:val", sprintf "Heading%d" headingLevel)])
-        | _ -> None
-    let backgroundElement =
-        optionalString (para?BackgroundColor)
-        |> Option.map (fun color ->
-            let wordColor = InverseConversion.cssColorToWord (Some color) |> Option.defaultValue color
-            selfClosing "w:shd" [("w:val", "clear"); ("w:color", "auto"); ("w:fill", wordColor)])
+    let onOff name (value: obj) =
+        match optionalBool value with
+        | Some isOn -> [toggle name isOn]
+        | None -> []
 
-    let children =
+    let children = [
+        match optionalString (para?Style) with
+        | Some styleId when styleId <> "" -> yield selfClosing "w:pStyle" [("w:val", styleId)]
+        | _ when itemType = "Heading" && headingLevel >= 1 && headingLevel <= 3 ->
+            yield selfClosing "w:pStyle" [("w:val", sprintf "Heading%d" headingLevel)]
+        | _ -> ()
+        yield! onOff "w:keepNext" (para?StyleKeepNext)
+        yield! onOff "w:keepLines" (para?StyleKeepLines)
+        if boolOrDefault false (para?PageBreakBefore) then yield selfClosing "w:pageBreakBefore" []
+        yield! onOff "w:widowControl" (para?WidowControl)
         if listStyle = "bullet" || listStyle = "numbered" then
-            let numId = optionalIntString (para?ListId) |> Option.defaultValue (if listStyle = "bullet" then "1" else "2")
-            let ilvl = string (max 0 (listLevel - 1))
-            [
-                element "w:numPr" [] [
-                    selfClosing "w:ilvl" [("w:val", ilvl)]
-                    selfClosing "w:numId" [("w:val", numId)]
-                ]
-                jcElement
+            let numId = optionalIntString (para?ListId) |> Option.defaultValue (if listStyle = "bullet" then fst defaultListNumIds else snd defaultListNumIds)
+            yield element "w:numPr" [] [
+                selfClosing "w:ilvl" [("w:val", string (max 0 (listLevel - 1)))]
+                selfClosing "w:numId" [("w:val", numId)]
             ]
-        else
-            [jcElement]
-        |> fun children ->
-            match spacingElement with
-            | Some spacing -> spacing :: children
-            | None -> children
-        |> fun children ->
-            match indentElement with
-            | Some indent -> indent :: children
-            | None -> children
-        |> fun children ->
-            match styleElement with
-            | Some style -> style :: children
-            | None -> children
-        |> fun children ->
-            match backgroundElement with
-            | Some background -> background :: children
-            | None -> children
-        |> fun children ->
-            match paragraphSectionProperties packageSetup para with
-            | Some sectPr -> children @ [sectPr]
-            | None -> children
+        elif optionalString (para?ListId) = Some "0" then
+            // numId 0 switches off numbering inherited from the paragraph style.
+            yield element "w:numPr" [] [selfClosing "w:numId" [("w:val", "0")]]
+        match paragraphBordersElement (para?ParagraphBorders) with
+        | Some borders -> yield borders
+        | None -> ()
+        match optionalString (para?BackgroundColor) with
+        | Some color ->
+            let wordColor = InverseConversion.cssColorToWord (Some color) |> Option.defaultValue color
+            yield selfClosing "w:shd" [("w:val", "clear"); ("w:color", "auto"); ("w:fill", wordColor)]
+        | None -> ()
+        match tabStopsElement para with
+        | Some tabs -> yield tabs
+        | None -> ()
+        if boolOrDefault false (para?Rtl) then yield selfClosing "w:bidi" []
+        if not spacingAttributes.IsEmpty then yield selfClosing "w:spacing" spacingAttributes
+        if not indentAttributes.IsEmpty then yield selfClosing "w:ind" indentAttributes
+        yield! onOff "w:contextualSpacing" (para?StyleContextualSpacing)
+        yield selfClosing "w:jc" [("w:val", alignment)]
+        match paragraphMarkRunProps para with
+        | Some rPr -> yield rPr
+        | None -> ()
+        match paragraphSectionProperties packageSetup para with
+        | Some sectPr -> yield sectPr
+        | None -> ()
+    ]
 
     element "w:pPr" [] children
 
@@ -948,24 +1041,32 @@ let private borderElement name (value: obj) =
     if isNullOrUndefined value then None
     else
         let style = optionalString (value?Style) |> Option.defaultValue "single"
+        let hidden = style = "none" || style = "nil"
         let color =
             optionalString (value?Color)
             |> InverseConversion.cssColorToWord
             |> Option.defaultValue "auto"
-        let width =
-            match optionalFloat (value?Width) with
-            | Some amount -> InverseConversion.pixelsToEighthPoints amount
-            | None -> if style = "none" || style = "nil" then "0" else "4"
-        Some (selfClosing name [("w:val", if style = "none" then "nil" else style); ("w:sz", width); ("w:color", color)])
+        // A nil/none border is written bare: sz/color on it would come back as
+        // an explicit zero-width black border.
+        let attrs =
+            [ yield ("w:val", style)
+              match optionalFloat (value?Width) with
+              | Some amount -> yield ("w:sz", InverseConversion.pixelsToEighthPoints amount)
+              | None -> if not hidden then yield ("w:sz", "4")
+              if not hidden || (optionalString (value?Color)).IsSome then yield ("w:color", color) ]
+        Some (selfClosing name attrs)
 
+/// CT_TblBorders / CT_TcBorders order: top, left, bottom, right, insideH, insideV.
 let private bordersElement elementName (value: obj) =
     if isNullOrUndefined value then None
     else
         let sides =
             [ borderElement "w:top" (value?Top)
-              borderElement "w:right" (value?Right)
+              borderElement "w:left" (value?Left)
               borderElement "w:bottom" (value?Bottom)
-              borderElement "w:left" (value?Left) ]
+              borderElement "w:right" (value?Right)
+              borderElement "w:insideH" (value?InsideH)
+              borderElement "w:insideV" (value?InsideV) ]
             |> List.choose id
         if sides.IsEmpty then None else Some (element elementName [] sides)
 
@@ -1005,100 +1106,117 @@ let private backgroundShadingElement (value: obj) =
         let wordColor = InverseConversion.cssColorToWord (Some color) |> Option.defaultValue color
         selfClosing "w:shd" [("w:val", "clear"); ("w:color", "auto"); ("w:fill", wordColor)])
 
-let private generateTableCell (hyperlinks: Map<string, string>) (images: ImageScope) (cell: obj) : string =
-    let paragraphs =
-        if isNullOrUndefined cell?Paragraphs then
-            [element "w:p" [] []]
-        else
-            let paraArray = cell?Paragraphs |> unbox<obj array>
-            if paraArray.Length = 0 then
-                [element "w:p" [] []]
-            else
-                paraArray |> Array.toList |> List.map (generateParagraphWithHyperlinksAndImages hyperlinks images)
+/// Cell margins (tcMar / tblCellMar) from PaddingTop/Left/Bottom/Right, which
+/// the editor package carries in dxa. CT_TcMar order: top, left, bottom, right.
+let private cellMarginsElement elementName (owner: obj) =
+    let margin name (value: obj) =
+        match optionalFloat value with
+        | Some amount when amount >= 0.0 -> Some (selfClosing name [("w:w", string (roundToInt amount)); ("w:type", "dxa")])
+        | _ -> None
+    let children =
+        [ margin "w:top" owner?PaddingTop
+          margin "w:left" owner?PaddingLeft
+          margin "w:bottom" owner?PaddingBottom
+          margin "w:right" owner?PaddingRight ]
+        |> List.choose id
+    if children.IsEmpty then None else Some (element elementName [] children)
 
+let private cellSpacingElement (owner: obj) =
+    match optionalFloat (owner?CellSpacing) with
+    | Some amount when amount > 0.0 -> Some (selfClosing "w:tblCellSpacing" [("w:w", string (roundToInt amount)); ("w:type", "dxa")])
+    | _ -> None
+
+let private generateTableGrid (table: obj) =
+    let columns =
+        optionalArray (table?GridColumns)
+        |> Array.toList
+        |> List.choose (fun value -> optionalFloat value)
+        |> List.map (fun width -> selfClosing "w:gridCol" [("w:w", string (roundToInt width))])
+    if columns.IsEmpty then "" else element "w:tblGrid" [] columns
+
+let rec private generateTableCell (hyperlinks: Map<string, string>) (images: ImageScope) (cell: obj) : string =
+    let paragraphs =
+        optionalArray (cell?Paragraphs)
+        |> Array.map (generateParagraphWithHyperlinksAndImages hyperlinks images)
+    let nestedTables = optionalArray (cell?NestedTables)
+    // NestedTableAnchors.[i] = how many of the cell's paragraphs precede nested
+    // table i. The writer used to read only Paragraphs, so a nested table and
+    // everything in it was deleted on save.
+    let anchors = optionalArray (cell?NestedTableAnchors) |> Array.map (fun value -> jsNumber value |> roundToInt)
+    let content = ResizeArray<string>()
+    let mutable lastIsTable = false
+    let emitTablesAt index =
+        nestedTables
+        |> Array.iteri (fun tableIndex nested ->
+            let anchor = if tableIndex < anchors.Length then anchors.[tableIndex] else paragraphs.Length
+            if (min anchor paragraphs.Length) = index then
+                content.Add (generateTable hyperlinks images nested)
+                lastIsTable <- true)
+    for index in 0 .. paragraphs.Length - 1 do
+        emitTablesAt index
+        content.Add paragraphs.[index]
+        lastIsTable <- false
+    emitTablesAt paragraphs.Length
+    // A cell must contain, and end with, a paragraph.
+    if content.Count = 0 || lastIsTable then content.Add (element "w:p" [] [])
+
+    // CT_TcPr order: tcW, gridSpan, vMerge, tcBorders, shd, tcMar, vAlign.
     let tcPrChildren = [
         match optionalTableWidth "w:tcW" (cell?PreferredWidth) (cell?PreferredWidthType) with
         | Some width -> yield width
         | None ->
-            if not (isNullOrUndefined cell?Width) then
-                match optionalFloat (cell?Width) with
-                | Some width -> yield selfClosing "w:tcW" [("w:w", string (roundToInt width)); ("w:type", "dxa")]
-                | None -> ()
+            match optionalFloat (cell?Width) with
+            | Some width -> yield selfClosing "w:tcW" [("w:w", string (roundToInt width)); ("w:type", "dxa")]
+            | None -> ()
+
+        match optionalFloat (cell?ColSpan) with
+        | Some span when span > 1.0 -> yield selfClosing "w:gridSpan" [("w:val", string (roundToInt span))]
+        | _ -> ()
+
+        match optionalString (cell?VerticalMerge) with
+        | Some "restart" -> yield selfClosing "w:vMerge" [("w:val", "restart")]
+        | Some "continue" -> yield selfClosing "w:vMerge" []
+        | _ -> ()
+
+        match bordersElement "w:tcBorders" (cell?Borders) with
+        | Some borders -> yield borders
+        | None ->
+            // Legacy single-border fields from editor-made cells.
+            if isNullOrUndefined cell?Borders && ((optionalString (cell?BorderColor)).IsSome || (optionalFloat (cell?BorderWidth)).IsSome) then
+                let color = optionalString (cell?BorderColor) |> InverseConversion.cssColorToWord |> Option.defaultValue "auto"
+                let width = optionalFloat (cell?BorderWidth) |> Option.map InverseConversion.pixelsToEighthPoints |> Option.defaultValue "8"
+                let border name = selfClosing name [("w:val", "single"); ("w:sz", width); ("w:color", color)]
+                yield element "w:tcBorders" [] [ border "w:top"; border "w:left"; border "w:bottom"; border "w:right" ]
 
         match shadingElement (cell?Shading) |> Option.orElseWith (fun () -> backgroundShadingElement (cell?BackgroundColor)) with
         | Some shading -> yield shading
         | None -> ()
 
-        match bordersElement "w:tcBorders" (cell?Borders) with
-        | Some borders -> yield borders
+        match cellMarginsElement "w:tcMar" cell with
+        | Some margins -> yield margins
         | None -> ()
 
-        if isNullOrUndefined cell?Borders && (not (isNullOrUndefined cell?BorderColor) || not (isNullOrUndefined cell?BorderWidth)) then
-            let color =
-                if isNullOrUndefined cell?BorderColor then "auto"
-                else
-                    match unbox<string option> cell?BorderColor with
-                    | Some value when value <> "" -> InverseConversion.cssColorToWord (Some value) |> Option.defaultValue value
-                    | _ -> "auto"
-            let width =
-                if isNullOrUndefined cell?BorderWidth then "8"
-                else optionalFloat (cell?BorderWidth) |> Option.map InverseConversion.pixelsToEighthPoints |> Option.defaultValue "8"
-            let border name = selfClosing name [("w:val", "single"); ("w:sz", width); ("w:color", color)]
-            yield element "w:tcBorders" [] [
-                border "w:top"
-                border "w:left"
-                border "w:bottom"
-                border "w:right"
-            ]
-
-        if not (isNullOrUndefined cell?VerticalAlignment) then
-            match unbox<string option> cell?VerticalAlignment with
-            | Some value when value = "top" || value = "center" || value = "bottom" ->
-                yield selfClosing "w:vAlign" [("w:val", value)]
-            | _ -> ()
-
-        let padding name (value: obj) =
-            match optionalFloat value with
-            | Some amount when amount >= 0.0 -> Some (selfClosing name [("w:w", string (roundToInt amount)); ("w:type", "dxa")])
-            | _ -> None
-        let paddingChildren =
-            [ padding "w:top" cell?PaddingTop
-              padding "w:right" cell?PaddingRight
-              padding "w:bottom" cell?PaddingBottom
-              padding "w:left" cell?PaddingLeft ]
-            |> List.choose id
-        if not paddingChildren.IsEmpty then
-            yield element "w:tcMar" [] paddingChildren
-
-        if not (isNullOrUndefined cell?ColSpan) then
-            let span = cell?ColSpan |> unbox<int>
-            if span > 1 then
-                yield selfClosing "w:gridSpan" [("w:val", string span)]
-
-        match optionalString (cell?VerticalMerge) with
-        | Some value when value = "restart" || value = "continue" ->
-            yield selfClosing "w:vMerge" [("w:val", value)]
+        match optionalString (cell?VerticalAlignment) with
+        | Some value when value = "top" || value = "center" || value = "bottom" || value = "both" ->
+            yield selfClosing "w:vAlign" [("w:val", value)]
         | _ -> ()
     ]
 
-    element "w:tc" [] [
-        element "w:tcPr" [] tcPrChildren
-        paragraphs |> String.concat ""
-    ]
+    element "w:tc" [] ((if tcPrChildren.IsEmpty then [] else [element "w:tcPr" [] tcPrChildren]) @ List.ofSeq content)
 
-let private generateTableRow (hyperlinks: Map<string, string>) (images: ImageScope) (row: obj) : string =
+and private generateTableRow (hyperlinks: Map<string, string>) (images: ImageScope) (row: obj) : string =
     let cells =
-        if isNullOrUndefined row?Cells then
-            ""
-        else
-            row?Cells
-            |> unbox<obj array>
-            |> Array.map (generateTableCell hyperlinks images)
-            |> String.concat ""
+        optionalArray (row?Cells)
+        |> Array.map (generateTableCell hyperlinks images)
+        |> String.concat ""
 
+    // Row-level cell margins live in w:tblPrEx, which precedes w:trPr.
+    let rowExceptions =
+        match cellMarginsElement "w:tblCellMar" row with
+        | Some margins -> element "w:tblPrEx" [] [margins]
+        | None -> ""
     let rowPropChildren = [
-        if not (isNullOrUndefined row?IsHeader) && unbox<bool> row?IsHeader then
-            yield selfClosing "w:tblHeader" [("w:val", "1")]
+        if boolOrDefault true (row?CanSplit) = false then yield selfClosing "w:cantSplit" []
         match optionalFloat (row?Height) with
         | Some height ->
             let attrs =
@@ -1106,49 +1224,50 @@ let private generateTableRow (hyperlinks: Map<string, string>) (images: ImageSco
                 @ (optionalString (row?HeightRule) |> Option.map (fun rule -> [("w:hRule", rule)]) |> Option.defaultValue [])
             yield selfClosing "w:trHeight" attrs
         | None -> ()
-        if not (isNullOrUndefined row?CanSplit) && not (unbox<bool> row?CanSplit) then
-            yield selfClosing "w:cantSplit" []
+        if boolOrDefault false (row?IsHeader) then yield selfClosing "w:tblHeader" []
+        match cellSpacingElement row with
+        | Some spacing -> yield spacing
+        | None -> ()
     ]
     let rowProps = if rowPropChildren.IsEmpty then "" else element "w:trPr" [] rowPropChildren
 
-    element "w:tr" [] [rowProps; cells]
+    element "w:tr" [] [rowExceptions; rowProps; cells]
 
-let private generateTableGrid (table: obj) =
-    if isNullOrUndefined table?GridColumns then ""
-    else
-        let columns =
-            table?GridColumns
-            |> unbox<obj array>
-            |> Array.toList
-            |> List.choose (fun value -> optionalFloat value)
-            |> List.map (fun width -> selfClosing "w:gridCol" [("w:w", string (roundToInt width))])
-        if columns.IsEmpty then "" else element "w:tblGrid" [] columns
-
-let private generateTable (hyperlinks: Map<string, string>) (images: ImageScope) (table: obj) : string =
+and private generateTable (hyperlinks: Map<string, string>) (images: ImageScope) (table: obj) : string =
     let rows =
-        if isNullOrUndefined table?Rows then
-            ""
-        else
-            table?Rows
-            |> unbox<obj array>
-            |> Array.map (generateTableRow hyperlinks images)
-            |> String.concat ""
+        optionalArray (table?Rows)
+        |> Array.map (generateTableRow hyperlinks images)
+        |> String.concat ""
 
+    // CT_TblPr order: tblW, jc, tblCellSpacing, tblBorders, shd, tblLayout, tblCellMar.
     let tblPrChildren = [
         match optionalTableWidth "w:tblW" (table?PreferredWidth) (table?PreferredWidthType) with
         | Some width -> yield width
         | None -> ()
-        match optionalString (table?LayoutMode) with
-        | Some mode when mode = "fixed" || mode = "autofit" || mode = "autoFit" ->
-            let docxMode = if mode = "fixed" then "fixed" else "autofit"
-            yield selfClosing "w:tblLayout" [("w:type", docxMode)]
+        match optionalString (table?TableAlignment) with
+        | Some value when value <> "" -> yield selfClosing "w:jc" [("w:val", value)]
         | _ -> ()
-        match shadingElement (table?Shading) |> Option.orElseWith (fun () -> backgroundShadingElement (table?BackgroundColor)) with
-        | Some shading -> yield shading
+        match cellSpacingElement table with
+        | Some spacing -> yield spacing
         | None -> ()
         match bordersElement "w:tblBorders" (table?Borders) with
         | Some borders -> yield borders
-        | None -> yield defaultTableBorders ()
+        | None ->
+            // Only a table made in the editor (no grid, no width: it never came
+            // from a file) gets the default grid. An imported table without
+            // borders is borderless and must stay that way.
+            if (optionalArray (table?GridColumns)).Length = 0 && isNullOrUndefined table?PreferredWidthType then
+                yield defaultTableBorders ()
+        match shadingElement (table?Shading) |> Option.orElseWith (fun () -> backgroundShadingElement (table?BackgroundColor)) with
+        | Some shading -> yield shading
+        | None -> ()
+        match optionalString (table?LayoutMode) with
+        | Some mode when mode = "fixed" || mode = "autofit" || mode = "autoFit" ->
+            yield selfClosing "w:tblLayout" [("w:type", (if mode = "fixed" then "fixed" else "autofit"))]
+        | _ -> ()
+        match cellMarginsElement "w:tblCellMar" table with
+        | Some margins -> yield margins
+        | None -> ()
     ]
 
     element "w:tbl" [] [
@@ -1157,7 +1276,7 @@ let private generateTable (hyperlinks: Map<string, string>) (images: ImageScope)
         rows
     ]
 
-let private generateTextBox (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
+let private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
     let width = floatOrDefault 220.0 (item?Width) |> pixelsToPoints
     let height = floatOrDefault 72.0 (item?Height) |> pixelsToPoints
     let x = optionalFloat (item?X) |> Option.map pixelsToPoints |> Option.defaultValue 0.0
@@ -1172,25 +1291,41 @@ let private generateTextBox (packageSetup: PageSetupInfo) (hyperlinks: Map<strin
         if paragraphs.Length = 0 then generateParagraphWithHyperlinksAndImagesWithPageSetup packageSetup hyperlinks images (createObj [ "Runs" ==> [||]; "Alignment" ==> "left" ])
         else paragraphs |> Array.map (generateParagraphWithHyperlinksAndImagesWithPageSetup packageSetup hyperlinks images) |> String.concat ""
     let style = sprintf "position:absolute;margin-left:%.2fpt;margin-top:%.2fpt;width:%.2fpt;height:%.2fpt;z-index:1" x y width height
-    element "w:p" [] [
-        element "w:r" [] [
-            element "w:pict" [] [
-                element "v:shape" [
-                    ("xmlns:v", "urn:schemas-microsoft-com:vml")
-                    ("id", shapeId)
-                    ("type", "#_x0000_t202")
-                    ("style", style)
-                    ("fillcolor", fill)
-                    ("strokecolor", stroke)
-                    ("strokeweight", sprintf "%.2fpt" strokeWeight)
-                ] [
-                    element "v:textbox" [ ("style", "mso-fit-shape-to-text:t") ] [
-                        element "w:txbxContent" [] [content]
-                    ]
+    element "w:r" [] [
+        element "w:pict" [] [
+            element "v:shape" [
+                ("xmlns:v", "urn:schemas-microsoft-com:vml")
+                ("id", shapeId)
+                ("type", "#_x0000_t202")
+                ("style", style)
+                ("fillcolor", fill)
+                ("strokecolor", stroke)
+                ("strokeweight", sprintf "%.2fpt" strokeWeight)
+            ] [
+                element "v:textbox" [ ("style", "mso-fit-shape-to-text:t") ] [
+                    element "w:txbxContent" [] [content]
                 ]
             ]
         ]
     ]
+
+let private generateTextBox (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (item: obj) : string =
+    element "w:p" [] [generateTextBoxRun packageSetup hyperlinks images item]
+
+/// Blocks to XML. A text box is absolutely positioned and the reader lists
+/// shapes separately from the paragraph that anchors them, so giving each one
+/// a paragraph of its own added an empty paragraph per shape on every save.
+/// It is anchored in the preceding paragraph instead when there is one.
+let private generateBlocks (generateItem: obj -> string) (generateTextBoxRun: obj -> string) (items: obj array) : string =
+    let parts = ResizeArray<string>()
+    let paragraphEnd = "</w:p>"
+    for item in items do
+        if (item?Type |> stringOrDefault "Paragraph") = "TextBox" && parts.Count > 0 && parts.[parts.Count - 1].EndsWith paragraphEnd then
+            let previous = parts.[parts.Count - 1]
+            parts.[parts.Count - 1] <- previous.Substring(0, previous.Length - paragraphEnd.Length) + generateTextBoxRun item + paragraphEnd
+        else
+            parts.Add (generateItem item)
+    String.concat "" parts
 
 let private wrapContentControl (item: obj) (content: string) =
     match optionalString (item?ContentControlId), optionalString (item?ContentControlTag), optionalString (item?ContentControlAlias) with
@@ -1254,7 +1389,9 @@ let private headerFooterInfos scopedRelationshipIds prefix startIndex (parts: ob
           IsGlobal = not (Set.contains relId scopedRelationshipIds) })
 
 let private generateHeaderFooterXml rootName (hyperlinks: Map<string, string>) (images: ImageScope) (blocks: obj array) =
-    let content = blocks |> Array.map (generateDocumentItemWithImages hyperlinks images) |> String.concat ""
+    let content = blocks |> generateBlocks (generateDocumentItemWithImages hyperlinks images) (generateTextBoxRun defaultPageSetupInfo hyperlinks images)
+    // w:hdr / w:ftr must contain at least one block.
+    let content = if content = "" then element "w:p" [] [] else content
     document (element rootName [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships); ("xmlns:m", Namespaces.math)] [content])
 
 let private generateSectionProperties (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) =
@@ -1262,13 +1399,16 @@ let private generateSectionProperties (pageSetup: PageSetupInfo option) (headers
     let refs name (items: HeaderFooterPartInfo array) =
         items
         |> Array.filter (fun item -> includeHeaderFooterKind setup.DifferentFirstPage setup.EvenAndOddHeaders item.Kind)
+        // CT_SectPr allows one reference per type.
+        |> Array.distinctBy (fun item -> item.Kind)
         |> Array.map (fun item -> selfClosing name [("w:type", item.Kind); ("r:id", item.RelId)])
         |> Array.toList
-    let pageSetupChildren =
-        match pageSetup with
-        | None -> []
-        | Some setup -> sectionPageSetupChildren setup
-    let children = refs "w:headerReference" headers @ refs "w:footerReference" footers @ pageSetupChildren
+    let children =
+        sectionPropertiesChildren
+            (refs "w:headerReference" headers @ refs "w:footerReference" footers)
+            (pageSetup |> Option.bind (fun setup -> setup.SectionStart))
+            pageSetup
+            None
     if children.IsEmpty then "" else element "w:sectPr" [] children
 
 /// Generate document.xml with formatting (handles JS arrays)
@@ -1292,8 +1432,7 @@ let private generateDocumentXmlWithFormattingAndImages (paragraphs: obj array) (
     let hyperlinks = hyperlinkMap paragraphs
     let paraElements =
         paragraphs
-        |> Array.map (generateDocumentItemWithImages hyperlinks images)
-        |> String.concat ""
+        |> generateBlocks (generateDocumentItemWithImages hyperlinks images) (generateTextBoxRun defaultPageSetupInfo hyperlinks images)
 
     let body = element "w:body" [] [paraElements]
 
@@ -1309,8 +1448,7 @@ let generateDocumentXmlPackage (paragraphs: obj array) (images: ImageScope) (pag
     let setup = pageSetup |> Option.defaultValue defaultPageSetupInfo
     let paraElements =
         paragraphs
-        |> Array.map (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images)
-        |> String.concat ""
+        |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images)
     let globalHeaders = headers |> Array.filter (fun part -> part.IsGlobal)
     let globalFooters = footers |> Array.filter (fun part -> part.IsGlobal)
     let body = element "w:body" [] [paraElements; generateSectionProperties pageSetup globalHeaders globalFooters]
@@ -1460,8 +1598,12 @@ let generateNotes (rootName: string) (noteElementName: string) (notes: NoteRef l
 
     document (element rootName [("xmlns:w", Namespaces.word)] children)
 
-type NumberingInfo = { NumId: string; Level: int; Format: string; LevelText: string; Start: int; HasCustomDefinition: bool; HasOverride: bool }
+type NumberingInfo = { NumId: string; Level: int; Format: string; LevelText: string; Start: int option; HasOverride: bool }
 
+/// One entry per (list id, level) used in the document. The list id, number
+/// format, level text and start value all come from the paragraph: without
+/// them every numbered paragraph was written with numId 2, which merged
+/// separate lists into one decimal list and lost letters / roman numerals.
 let private collectNumberingInfo (items: obj array) =
     items
     |> Array.toList
@@ -1471,16 +1613,14 @@ let private collectNumberingInfo (items: obj array) =
         if listStyle = "none" then None
         else
             optionalIntString (para?ListId)
-            |> Option.bind (fun numId ->
-                let hasCustomDefinition = numId <> "1" && numId <> "2"
-                let hasOverride = boolOrDefault false (para?ListRestart) || boolOrDefault false (para?RestartNumbering) || not (isNullOrUndefined para?ListStart)
-                if not hasCustomDefinition && not hasOverride then None
-                else
-                    let level = max 0 ((para?ListLevel |> intOrDefault 1) - 1)
-                    let format = optionalString (para?ListNumberFormat) |> Option.defaultValue (if listStyle = "bullet" then "bullet" else "decimal")
-                    let levelText = optionalString (para?ListLevelText) |> Option.defaultValue (if format = "bullet" then "•" else "%" + string (level + 1) + ".")
-                    let start = if isNullOrUndefined para?ListStart then 1 else unbox<int> para?ListStart
-                    Some { NumId = numId; Level = level; Format = format; LevelText = levelText; Start = start; HasCustomDefinition = hasCustomDefinition; HasOverride = hasOverride }))
+            |> Option.filter (fun numId -> numId <> "0")
+            |> Option.map (fun numId ->
+                let level = max 0 ((para?ListLevel |> intOrDefault 1) - 1)
+                let format = optionalString (para?ListNumberFormat) |> Option.defaultValue (if listStyle = "bullet" then "bullet" else "decimal")
+                let levelText = optionalString (para?ListLevelText) |> Option.defaultValue (if format = "bullet" then "\u2022" else "%" + string (level + 1) + ".")
+                let start = optionalFloat (para?ListStart) |> Option.map roundToInt
+                let restart = boolOrDefault false (para?ListRestart) || boolOrDefault false (para?RestartNumbering)
+                { NumId = numId; Level = level; Format = format; LevelText = levelText; Start = start; HasOverride = restart }))
     |> List.distinctBy (fun info -> info.NumId, info.Level)
 
 /// Generate minimal styles.xml
@@ -1695,24 +1835,9 @@ let private runStylesFromParagraph (para: obj) =
     if isNullOrUndefined para?Runs then []
     else para?Runs |> unbox<obj array> |> Array.toList |> List.choose styleIdFromRun
 
-let rec private collectItemParagraphStyles (item: obj) =
-    match item?Type |> stringOrDefault "Paragraph" with
-    | "TextBox" when not (isNullOrUndefined item?Paragraphs) ->
-        item?Paragraphs |> unbox<obj array> |> Array.toList |> List.collect collectItemParagraphStyles
-    | "Table" when not (isNullOrUndefined item?Rows) ->
-        item?Rows
-        |> unbox<obj array>
-        |> Array.toList
-        |> List.collect (fun row ->
-            if isNullOrUndefined row?Cells then []
-            else
-                row?Cells
-                |> unbox<obj array>
-                |> Array.toList
-                |> List.collect (fun cell ->
-                    if isNullOrUndefined cell?Paragraphs then []
-                    else cell?Paragraphs |> unbox<obj array> |> Array.toList |> List.collect collectItemParagraphStyles))
-    | _ -> (styleIdFromParagraph item |> Option.toList) @ runStylesFromParagraph item
+let private collectItemParagraphStyles (item: obj) =
+    collectItemParagraphs item
+    |> List.collect (fun para -> (styleIdFromParagraph para |> Option.toList) @ runStylesFromParagraph para)
 
 let private collectStyles (items: obj array) =
     items
@@ -1762,8 +1887,21 @@ let private styleRunProps style =
         match style.VertAlign with | Some value when value = "superscript" || value = "subscript" -> yield selfClosing "w:vertAlign" [("w:val", value)] | _ -> ()
     ]
 
+/// Style paragraph properties in CT_PPr order: keepNext, keepLines,
+/// pageBreakBefore, widowControl, shd, spacing, ind, jc, outlineLvl.
 let private styleParagraphProps style =
+    let styleToggle name value =
+        match value with
+        | Some isOn -> [toggle name isOn]
+        | None -> []
     [
+        yield! styleToggle "w:keepNext" style.KeepNext
+        yield! styleToggle "w:keepLines" style.KeepLines
+        yield! styleToggle "w:pageBreakBefore" style.PageBreakBefore
+        yield! styleToggle "w:widowControl" style.WidowControl
+        match InverseConversion.cssColorToWord style.BackgroundColor with
+        | Some color -> yield selfClosing "w:shd" [("w:val", "clear"); ("w:color", "auto"); ("w:fill", color)]
+        | None -> ()
         let spacingAttrs =
             [
                 match style.SpacingBefore with | Some value -> yield ("w:before", InverseConversion.pointsToTwips value) | None -> ()
@@ -1777,9 +1915,6 @@ let private styleParagraphProps style =
                 | None, _ -> ()
             ]
         if not spacingAttrs.IsEmpty then yield selfClosing "w:spacing" spacingAttrs
-        match style.Alignment with
-        | Some value when value <> "" -> yield selfClosing "w:jc" [("w:val", InverseConversion.alignmentToWord value)]
-        | _ -> ()
         let indentAttrs =
             [
                 match style.IndentLeft with | Some value -> yield ("w:left", InverseConversion.pixelsToTwips value) | None -> ()
@@ -1790,14 +1925,10 @@ let private styleParagraphProps style =
                 | None -> ()
             ]
         if not indentAttrs.IsEmpty then yield selfClosing "w:ind" indentAttrs
-        match InverseConversion.cssColorToWord style.BackgroundColor with
-        | Some color -> yield selfClosing "w:shd" [("w:val", "clear"); ("w:fill", color)]
-        | None -> ()
+        match style.Alignment with
+        | Some value when value <> "" -> yield selfClosing "w:jc" [("w:val", InverseConversion.alignmentToWord value)]
+        | _ -> ()
         match style.OutlineLevel with | Some value -> yield selfClosing "w:outlineLvl" [("w:val", string value)] | None -> ()
-        match style.KeepNext with | Some true -> yield selfClosing "w:keepNext" [] | _ -> ()
-        match style.KeepLines with | Some true -> yield selfClosing "w:keepLines" [] | _ -> ()
-        match style.PageBreakBefore with | Some true -> yield selfClosing "w:pageBreakBefore" [] | _ -> ()
-        match style.WidowControl with | Some true -> yield selfClosing "w:widowControl" [] | _ -> ()
     ]
 
 let private defaultStyleId = "__docDefaults"
@@ -1852,71 +1983,73 @@ let generateDefaultStylesWithStyles (styles: StyleInfo list) : string =
 let generateDefaultStyles () : string =
     generateDefaultStylesWithStyles []
 
+/// Bullets from Word are usually private-use glyphs of a symbol font; the
+/// editor model has no slot for the level font, so name the font the glyph
+/// belongs to or Word shows an empty box.
+let private bulletFont (levelText: string) =
+    if levelText = "o" then Some "Courier New"
+    elif levelText.Length = 1 && int levelText.[0] >= 0xF000 && int levelText.[0] <= 0xF0FF then
+        if int levelText.[0] = 0xF0B7 then Some "Symbol" else Some "Wingdings"
+    else None
+
+/// `withIndent` is for the built-in lists only. Paragraphs of an imported
+/// list already carry the level indent as direct formatting (the reader folds
+/// it into IndentLeft), so repeating a guessed one here would add an indent to
+/// lists whose definition has none.
+let private numberingLevel (withIndent: bool) (level: int) (start: int option) (format: string) (levelText: string) =
+    element "w:lvl" [("w:ilvl", string level)] [
+        match start with
+        | Some value -> yield selfClosing "w:start" [("w:val", string value)]
+        | None -> ()
+        yield selfClosing "w:numFmt" [("w:val", format)]
+        yield selfClosing "w:lvlText" [("w:val", levelText)]
+        yield selfClosing "w:lvlJc" [("w:val", "left")]
+        if withIndent then
+            yield element "w:pPr" [] [
+                selfClosing "w:ind" [("w:left", string (720 * (level + 1))); ("w:hanging", "360")]
+            ]
+        match (if format = "bullet" then bulletFont levelText else None) with
+        | Some font -> yield element "w:rPr" [] [selfClosing "w:rFonts" [("w:ascii", font); ("w:hAnsi", font); ("w:hint", "default")]]
+        | None -> ()
+    ]
+
 let generateNumbering (customInfos: NumberingInfo list) : string =
-    let levels numFmt text =
-        [0..8]
-        |> List.map (fun level ->
-            element "w:lvl" [("w:ilvl", string level)] [
-                selfClosing "w:start" [("w:val", "1")]
-                selfClosing "w:numFmt" [("w:val", numFmt)]
-                selfClosing "w:lvlText" [("w:val", text)]
-                element "w:pPr" [] [
-                    selfClosing "w:ind" [("w:left", string (720 * (level + 1))); ("w:hanging", "360")]
-                ]
-            ])
-
-    let bulletAbstract =
-        element "w:abstractNum" [("w:abstractNumId", "1")] (levels "bullet" "•")
-    let numberedAbstract =
-        element "w:abstractNum" [("w:abstractNumId", "2")] (levels "decimal" "%1.")
-    let hasNumberingInfo numId = customInfos |> List.exists (fun info -> info.NumId = numId)
-    let defaultNums =
-        [ if not (hasNumberingInfo "1") then yield element "w:num" [("w:numId", "1")] [selfClosing "w:abstractNumId" [("w:val", "1")]]
-          if not (hasNumberingInfo "2") then yield element "w:num" [("w:numId", "2")] [selfClosing "w:abstractNumId" [("w:val", "2")]] ]
-
-    let customAbstracts =
+    let usedIds =
         customInfos
-        |> List.filter (fun info -> info.HasCustomDefinition)
-        |> List.groupBy (fun info -> info.NumId)
-        |> List.map (fun (numId, infos) ->
-            let levels =
-                infos
-                |> List.sortBy (fun info -> info.Level)
-                |> List.map (fun info ->
-                    element "w:lvl" [("w:ilvl", string info.Level)] [
-                        selfClosing "w:start" [("w:val", string info.Start)]
-                        selfClosing "w:numFmt" [("w:val", info.Format)]
-                        selfClosing "w:lvlText" [("w:val", info.LevelText)]
-                        element "w:pPr" [] [
-                            selfClosing "w:ind" [("w:left", string (720 * (info.Level + 1))); ("w:hanging", "360")]
-                        ]
-                    ])
-            element "w:abstractNum" [("w:abstractNumId", numId)] levels)
+        |> List.choose (fun info -> match System.Int32.TryParse info.NumId with | true, value -> Some value | _ -> None)
+    let nextFree = (if usedIds.IsEmpty then 0 else List.max usedIds) + 1
+    // Defaults for lists made in the editor, on ids no imported list uses.
+    let bulletId, numberedId =
+        if usedIds |> List.exists (fun id -> id = 1 || id = 2) then string nextFree, string (nextFree + 1) else "1", "2"
+    defaultListNumIds <- (bulletId, numberedId)
+    let defaultLevels format text =
+        [0..8] |> List.map (fun level -> numberingLevel true level (Some 1) format (if format = "bullet" then text else "%" + string (level + 1) + "."))
 
-    let customNums =
-        customInfos
-        |> List.groupBy (fun info -> info.NumId)
-        |> List.map (fun (numId, infos) ->
-            let abstractNumId =
-                if infos |> List.exists (fun info -> info.HasCustomDefinition) then numId
-                elif numId = "1" then "1"
-                else "2"
-            let overrides =
-                infos
-                |> List.filter (fun info -> info.HasOverride)
-                |> List.sortBy (fun info -> info.Level)
-                |> List.map (fun info ->
-                    element "w:lvlOverride" [("w:ilvl", string info.Level)] [
-                        selfClosing "w:startOverride" [("w:val", string info.Start)]
-                    ])
-            element "w:num" [("w:numId", numId)] (selfClosing "w:abstractNumId" [("w:val", abstractNumId)] :: overrides))
+    let groups = customInfos |> List.groupBy (fun info -> info.NumId)
+    let abstracts =
+        [ yield element "w:abstractNum" [("w:abstractNumId", bulletId)] (defaultLevels "bullet" "\u2022")
+          yield element "w:abstractNum" [("w:abstractNumId", numberedId)] (defaultLevels "decimal" "")
+          for numId, infos in groups do
+              let levels =
+                  infos
+                  |> List.sortBy (fun info -> info.Level)
+                  |> List.map (fun info -> numberingLevel false info.Level info.Start info.Format info.LevelText)
+              yield element "w:abstractNum" [("w:abstractNumId", numId)] levels ]
+    let nums =
+        [ yield element "w:num" [("w:numId", bulletId)] [selfClosing "w:abstractNumId" [("w:val", bulletId)]]
+          yield element "w:num" [("w:numId", numberedId)] [selfClosing "w:abstractNumId" [("w:val", numberedId)]]
+          for numId, infos in groups do
+              let overrides =
+                  infos
+                  |> List.filter (fun info -> info.HasOverride)
+                  |> List.sortBy (fun info -> info.Level)
+                  |> List.map (fun info ->
+                      element "w:lvlOverride" [("w:ilvl", string info.Level)] [
+                          selfClosing "w:startOverride" [("w:val", string (info.Start |> Option.defaultValue 1))]
+                      ])
+              yield element "w:num" [("w:numId", numId)] (selfClosing "w:abstractNumId" [("w:val", numId)] :: overrides) ]
 
-    let root =
-        element "w:numbering"
-            [("xmlns:w", Namespaces.word)]
-            ([bulletAbstract; numberedAbstract] @ defaultNums @ customAbstracts @ customNums)
-
-    document root
+    document (element "w:numbering" [("xmlns:w", Namespaces.word)] (abstracts @ nums))
 
 let private generateSettings (pageSetup: PageSetupInfo option) =
     let children = [
@@ -1933,7 +2066,8 @@ let writeFromEditor (paragraphs: obj array) : Fable.Core.JS.Promise<obj> =
     let comments = collectComments paragraphs
     let footnotes = collectNotes "footnote" paragraphs
     let endnotes = collectNotes "endnote" paragraphs
-    let numbering = collectNumberingInfo paragraphs
+    // Rendered first: it picks the default list ids the paragraph writer uses.
+    let numberingXml = generateNumbering (collectNumberingInfo paragraphs)
     let styles = collectStyles paragraphs
     let hasComments = not comments.IsEmpty
     let hasFootnotes = not footnotes.IsEmpty
@@ -1944,7 +2078,7 @@ let writeFromEditor (paragraphs: obj array) : Fable.Core.JS.Promise<obj> =
         yield { Path = "word/document.xml"; Content = generateDocumentXmlWithFormattingAndImages paragraphs bodyImages }
         yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsWithImages hyperlinks hasComments hasFootnotes hasEndnotes bodyImages }
         yield { Path = "word/styles.xml"; Content = generateDefaultStylesWithStyles styles }
-        yield { Path = "word/numbering.xml"; Content = generateNumbering numbering }
+        yield { Path = "word/numbering.xml"; Content = numberingXml }
         if hasComments then
             yield { Path = "word/comments.xml"; Content = generateComments comments }
         if hasFootnotes then
@@ -1993,7 +2127,8 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
     let comments = collectComments allBlocks
     let footnotes = collectNotes "footnote" allBlocks
     let endnotes = collectNotes "endnote" allBlocks
-    let numbering = collectNumberingInfo allBlocks
+    // Rendered first: it picks the default list ids the paragraph writer uses.
+    let numberingXml = generateNumbering (collectNumberingInfo allBlocks)
     let styles =
         (collectPackageStyles (optionalArray (package?Styles)) @ collectStyles allBlocks)
         |> List.distinctBy (fun style -> style.StyleType, style.StyleId)
@@ -2007,7 +2142,7 @@ let writeFromEditorPackage (package: obj) : Fable.Core.JS.Promise<obj> =
         yield { Path = "word/document.xml"; Content = generateDocumentXmlPackage paragraphs bodyImages pageSetup headerParts footerParts }
         yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsPackage hasSettings hyperlinks hasComments hasFootnotes hasEndnotes headerParts footerParts bodyImages }
         yield { Path = "word/styles.xml"; Content = generateDefaultStylesWithStyles styles }
-        yield { Path = "word/numbering.xml"; Content = generateNumbering numbering }
+        yield { Path = "word/numbering.xml"; Content = numberingXml }
         if hasSettings then
             yield { Path = "word/settings.xml"; Content = generateSettings pageSetup }
         for header in headerPackages do

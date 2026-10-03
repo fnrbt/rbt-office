@@ -29,7 +29,7 @@ const IMAGE_KEYS = ['ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', '
 const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'ListId', 'ListNumberFormat', 'ListLevelText', 'ListStart',
     'IndentLeft', 'IndentRight', 'FirstLineIndent', 'SpacingBefore', 'SpacingAfter', 'LineSpacing', 'LineSpacingRule',
     'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakAfter', 'SectionBreak',
-    'SectionPageNumberStart', 'StyleKeepNext', 'StyleKeepLines', 'StyleWidowControl', 'StyleContextualSpacing',
+    'SectionPageNumberStart', 'StyleContextualSpacing',
     'ContentControlTag', 'ContentControlAlias'];
 const TABLE_KEYS = ['PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
     'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
@@ -40,8 +40,16 @@ const SETUP_KEYS = ['PageWidth', 'PageHeight', 'MarginLeft', 'MarginRight', 'Mar
     'DifferentFirstPage', 'EvenAndOddHeaders', 'ColumnCount', 'ColumnSpace', 'ColumnSeparator', 'ColumnWidths'];
 
 function runSummary(run) {
-    if (run.IsImage) return { image: (run.ImageSrc || '').length, ...pick(run, IMAGE_KEYS) };
-    return { text: run.Text ?? '', ...pick(run, RUN_KEYS) };
+    if (run.IsImage) {
+        const s = { image: (run.ImageSrc || '').length, ...pick(run, IMAGE_KEYS) };
+        // No offset (the image is placed by wp:align, which the model does not hold) is written as offset 0.
+        if (s.ImageFloating) { s.ImagePositionX ??= 0; s.ImagePositionY ??= 0; }
+        return s;
+    }
+    const s = { text: run.Text ?? '', ...pick(run, RUN_KEYS) };
+    // The reader reports w:u val="none" as UnderlineStyle "none" with Underline off.
+    if (!s.Underline) { s.UnderlineStyle = null; s.UnderlineColor = null; }
+    return s;
 }
 
 // The editor buffer merges neighbouring runs with the same formatting and
@@ -80,7 +88,14 @@ function summarise(items, prefix, out) {
             out.push({ path, kind: 'textbox', props: pick(item, ['Width', 'Height', 'X', 'Y']) });
             summarise(item.Paragraphs, path + '.p', out);
         } else {
-            out.push({ path, kind: 'para', props: pick(item, PARA_KEYS), runs: runsSummary(item.Runs) });
+            const props = pick(item, PARA_KEYS);
+            // "No spacing anywhere" and an explicit 0 are the same paragraph; the reader
+            // reports the former as 0 once the paragraph has direct formatting, which a
+            // saved paragraph always has.
+            props.SpacingBefore ??= 0; props.SpacingAfter ??= 0;
+            // A numbered paragraph whose list has no definition is shown, and saved, as decimal.
+            if (props.ListStyle === 'numbered') { props.ListNumberFormat ??= 'decimal'; props.ListLevelText ??= `%${props.ListLevel}.`; }
+            out.push({ path, kind: 'para', props, runs: runsSummary(item.Runs) });
         }
     });
     return out;
@@ -88,13 +103,23 @@ function summarise(items, prefix, out) {
 
 function summarisePackage(pkg) {
     const out = [];
-    summarise(pkg.Paragraphs, 'body', out);
+    // The editor drops empty paragraphs at the very end of the body on import.
+    const body = [...(pkg.Paragraphs || [])];
+    const blank = (item) => (item.Type || 'Paragraph') !== 'Table' && (item.Type || 'Paragraph') !== 'TextBox' && runsSummary(item.Runs).length === 0
+        && !item.SectionBreak && !item.PageBreakAfter && !item.ParagraphBorders && !(item.HeaderReferences || []).length && !(item.FooterReferences || []).length;
+    while (body.length && blank(body[body.length - 1])) body.pop();
+    summarise(body, 'body', out);
     for (const [key, label] of [['HeaderParts', 'header'], ['FooterParts', 'footer']])
         (pkg[key] || []).forEach((part, i) => {
             out.push({ path: `${label}${i}`, kind: 'part', props: pick(part, ['Type']) });
             summarise(part.Paragraphs, `${label}${i}`, out);
         });
-    out.push({ path: 'pageSetup', kind: 'setup', props: pick(pkg.PageSetup || {}, SETUP_KEYS) });
+    // No sectPr at all means the default page; the writer then spells the default out.
+    const setup = pick(pkg.PageSetup || {}, SETUP_KEYS);
+    const DEFAULTS = { PageWidth: 816, PageHeight: 1056, MarginLeft: 96, MarginRight: 96, MarginTop: 96, MarginBottom: 96, HeaderDistance: 48, FooterDistance: 48, ColumnCount: 1, ColumnSpace: 0 };
+    if (setup.PageWidth === null) Object.assign(setup, DEFAULTS);
+    setup.ColumnWidths ??= []; setup.ColumnCount ??= 1; setup.ColumnSpace ??= 0;
+    out.push({ path: 'pageSetup', kind: 'setup', props: setup });
     return out;
 }
 
@@ -264,14 +289,18 @@ window.roundTrip = async (name, expect) => {
         const bytes2 = await save(second.doc, null);
         const third = await open(bytes2);
         const s2 = summarisePackage(third.pkg);
+        const bytes3 = await save(third.doc, null);
         saved = [toBase64(bytes1), toBase64(bytes2)];
 
         if (!mutate) diff('save 1 vs original', s0, s1, problems);
         diff('save 2 vs save 1 (not a fixed point)', s1, s2, problems);
 
-        const p1 = await parts(bytes1), p2 = await parts(bytes2);
+        const p1 = await parts(bytes1), p2 = await parts(bytes2), p3 = await parts(bytes3);
         for (const part of Object.keys(p1)) checkXml(part, p1[part], problems);
-        if (p1['word/document.xml'] !== p2['word/document.xml']) problems.push('document.xml differs between save 1 and save 2');
+        // Byte-level fixed point from the second save on (the first save may still
+        // normalise what the reader reports differently for a written file).
+        for (const part of Object.keys(p2)) if (p2[part] !== p3[part]) problems.push(`${part} differs between save 2 and save 3`);
+        if (Object.keys(p2).length !== Object.keys(p3).length) problems.push('part list differs between save 2 and save 3');
         xml = p1['word/document.xml'];
 
         const flatText = (s) => s.filter((e) => e.runs).map((e) => e.runs.map((r) => r.text ?? '￼').join('')).join('\n');

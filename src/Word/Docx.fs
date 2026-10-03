@@ -1177,6 +1177,12 @@ let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
                     "AllCaps" ==> tr.Style.AllCaps
                     "SmallCaps" ==> tr.Style.SmallCaps
                     "Strike" ==> tr.Style.Strike
+                    "DoubleStrike" ==> tr.Style.DoubleStrike
+                    "Hidden" ==> tr.Style.Hidden
+                    "UnderlineStyle" ==> tr.Style.UnderlineStyle
+                    "UnderlineColor" ==> tr.Style.UnderlineColor
+                    "Position" ==> tr.Style.Position
+                    "EmphasisMark" ==> tr.Style.EmphasisMark
                     "FontSize" ==> tr.Style.FontSize
                     "CharacterSpacing" ==> tr.Style.CharacterSpacing
                     "FontFamily" ==> (tr.Style.FontFamily |> Option.defaultValue "Calibri")
@@ -1252,6 +1258,17 @@ let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
         "Alignment" ==> alignmentToString para.Metadata.Alignment
         "ListStyle" ==> listStyleToString para.Metadata.ListStyle
         "ListLevel" ==> para.Metadata.ListLevel
+        // Without the list identity every numbered paragraph is saved into one shared decimal list.
+        "ListId" ==> para.Metadata.ListId
+        "ListNumberFormat" ==> para.Metadata.ListNumberFormat
+        "ListLevelText" ==> para.Metadata.ListLevelText
+        "ListStart" ==> para.Metadata.ListStart
+        "RightTabPosition" ==> para.Metadata.RightTabPosition
+        "RightTabLeader" ==> para.Metadata.RightTabLeader
+        "TabStops" ==> (para.Metadata.TabStops
+                        |> List.map (fun stop -> createObj [ "Position" ==> stop.Position; "Alignment" ==> stop.Alignment; "Leader" ==> stop.Leader ])
+                        |> List.toArray)
+        "Rtl" ==> para.Metadata.Rtl
         "IndentLeft" ==> para.Metadata.IndentLeft
         "IndentRight" ==> para.Metadata.IndentRight
         "FirstLineIndent" ==> para.Metadata.FirstLineIndent
@@ -1277,6 +1294,57 @@ let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
         "FooterReferences" ==> refsToEditor para.Metadata.FooterReferences
     ]
 
+/// Inverse of WordLayout.Table.distributeVerticalMergeContent, which on import
+/// spreads the paragraphs of a vertically merged cell over its continuation
+/// cells so each row can be laid out. In the file all of that content belongs
+/// to the w:vMerge="restart" cell: Word does not show what a continuation
+/// cell contains, so exporting the distributed form made every paragraph after
+/// the first disappear from a merged cell once the saved file was opened in Word.
+let private gatherVerticalMergeContent (rows: TableRow list) : TableRow list =
+    let cells = rows |> List.map (fun row -> List.toArray row.Cells) |> List.toArray
+    let startColumns =
+        rows
+        |> List.map (fun row ->
+            let mutable column = row.GridBefore
+            row.Cells
+            |> List.map (fun cell ->
+                let start = column
+                column <- column + max 1 cell.ColSpan
+                start)
+            |> List.toArray)
+        |> List.toArray
+    let hasMerge = cells |> Array.exists (Array.exists (fun cell -> cell.VerticalMerge = Some ContinueMerge))
+    if not hasMerge then rows
+    else
+        let isBlank (para: ParagraphBlock) = TextBuffer.isWhiteSpace para.Buffer
+        for rowIndex in 0 .. cells.Length - 1 do
+            for cellIndex in 0 .. cells.[rowIndex].Length - 1 do
+                let cell = cells.[rowIndex].[cellIndex]
+                if cell.VerticalMerge = Some RestartMerge then
+                    let column = startColumns.[rowIndex].[cellIndex]
+                    let gathered = ResizeArray<ParagraphBlock>()
+                    let mutable nextRow = rowIndex + 1
+                    let mutable keepGoing = true
+                    while keepGoing && nextRow < cells.Length do
+                        match startColumns.[nextRow] |> Array.tryFindIndex (fun start -> start = column) with
+                        | Some index when cells.[nextRow].[index].VerticalMerge = Some ContinueMerge ->
+                            let continuation = cells.[nextRow].[index]
+                            gathered.AddRange continuation.Content
+                            let placeholder =
+                                match continuation.Content with
+                                | first :: _ -> [ { first with Buffer = TextBuffer.empty } ]
+                                | [] -> []
+                            cells.[nextRow].[index] <- { continuation with Content = placeholder }
+                            nextRow <- nextRow + 1
+                        | _ -> keepGoing <- false
+                    // Blank paragraphs at the end are just the continuation cells' own
+                    // (mandatory) empty paragraph; blank ones in between are real spacing.
+                    while gathered.Count > 0 && isBlank gathered.[gathered.Count - 1] do
+                        gathered.RemoveAt (gathered.Count - 1)
+                    if gathered.Count > 0 then
+                        cells.[rowIndex].[cellIndex] <- { cell with Content = cell.Content @ List.ofSeq gathered }
+        rows |> List.mapi (fun rowIndex row -> { row with Cells = List.ofArray cells.[rowIndex] })
+
 let rec private blockToEditor block =
     match block with
     | Paragraph para -> paragraphToEditor "Paragraph" 0 para
@@ -1301,7 +1369,7 @@ let rec private blockToEditor block =
         ]
     | Table table ->
             let rows =
-                table.Rows
+                gatherVerticalMergeContent table.Rows
                 |> List.map (fun row ->
                     let cells =
                         row.Cells
@@ -1376,3 +1444,38 @@ let exportHeaderFooterPartsToEditor (parts: HeaderFooterPart list) : obj array =
             "Blocks" ==> (part.Blocks |> List.map blockToEditor |> List.toArray)
         ])
     |> List.toArray
+
+/// Page setup for the editor package, including the section columns and
+/// section start that the reader delivers (toEditorPageSetup) and
+/// pageSetupFromEditor imports. Same field names and units (px) as the reader.
+let exportPageSetupToEditor (setup: PageSetup) : obj =
+    createObj [
+        "PageWidth" ==> setup.PageWidth
+        "PageHeight" ==> setup.PageHeight
+        "MarginLeft" ==> setup.MarginLeft
+        "MarginRight" ==> setup.MarginRight
+        "MarginTop" ==> setup.MarginTop
+        "MarginBottom" ==> setup.MarginBottom
+        "HeaderDistance" ==> setup.HeaderDistance
+        "FooterDistance" ==> setup.FooterDistance
+        "DifferentFirstPage" ==> setup.DifferentFirstPage
+        "EvenAndOddHeaders" ==> setup.EvenAndOddHeaders
+        "ColumnCount" ==> (setup.Columns |> Option.map (fun columns -> columns.Count) |> Option.defaultValue 1)
+        "ColumnSpace" ==> (setup.Columns |> Option.map (fun columns -> columns.Gap) |> Option.defaultValue 0.0)
+        "ColumnSeparator" ==> (setup.Columns |> Option.map (fun columns -> columns.Separator) |> Option.defaultValue false)
+        "ColumnWidths" ==> (setup.Columns
+                            |> Option.map (fun columns -> columns.Widths |> List.map (fun (width, space) -> createObj [ "W" ==> width; "S" ==> space ]) |> List.toArray)
+                            |> Option.defaultValue [||])
+        "SectionStart" ==> setup.SectionStart
+    ]
+
+/// The whole document as the package DocumentWriter.writeFromEditorPackage
+/// takes: the inverse of importFromEditorPackage.
+let exportDocumentPackage (doc: Document) : obj =
+    createObj [
+        "Paragraphs" ==> exportToEditor doc
+        "PageSetup" ==> exportPageSetupToEditor doc.PageSetup
+        "Styles" ==> exportStylesToEditor doc.Styles
+        "HeaderParts" ==> exportHeaderFooterPartsToEditor doc.HeaderParts
+        "FooterParts" ==> exportHeaderFooterPartsToEditor doc.FooterParts
+    ]
