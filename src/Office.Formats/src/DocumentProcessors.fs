@@ -179,7 +179,9 @@ module StyleResolution =
         Italic = false
         Underline = false
         Strike = false
-        FontSize = 11.0
+        // CSS px like every parsed size (fontSizeToPoints): 11pt. A bare 11.0 here
+        // was 11px = 8.25pt for any document that never states w:sz.
+        FontSize = TypeConversion.fontSizeToPoints None
         CharacterSpacing = 0.0
         FontFamily = "Calibri"
         Color = None
