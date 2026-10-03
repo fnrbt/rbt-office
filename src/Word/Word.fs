@@ -1838,7 +1838,7 @@ module API =
     let exportDocumentPackage (editor: Editor) =
         createObj [
             "Paragraphs" ==> Docx.exportToEditor editor.Doc
-            "PageSetup" ==> getPageSetup editor
+            "PageSetup" ==> Docx.exportPageSetupToEditor editor.Doc.PageSetup
             "Styles" ==> Docx.exportStylesToEditor editor.Doc.Styles
             "HeaderParts" ==> Docx.exportHeaderFooterPartsToEditor editor.Doc.HeaderParts
             "FooterParts" ==> Docx.exportHeaderFooterPartsToEditor editor.Doc.FooterParts

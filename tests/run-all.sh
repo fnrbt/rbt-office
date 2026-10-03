@@ -14,6 +14,8 @@ PROJECTS=(
     src/Office.Formats/Rbt.OfficeFormat.fsproj
     src/Word/Rbt.Word.fsproj
     src/Word.Pdf/Rbt.Word.Pdf.fsproj
+    src/Word.Import/Rbt.WordImport.fsproj
+    src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj
 )
 
 if [ "${1:-}" != "--skip-build" ]; then
@@ -47,7 +49,7 @@ for f in tests/office-formats/*.fsx; do
 done
 
 echo "=== word ==="
-for s in textbuffer layout incremental-layout pdf; do
+for s in textbuffer layout incremental-layout pdf import-smoke; do
     run_suite "word-$s" "tests/word/$s.fsx"
 done
 

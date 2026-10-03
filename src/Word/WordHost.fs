@@ -165,7 +165,10 @@ module Host =
     [<Emit("window.open($0, '_blank')")>]
     let private openWindow (_: string) : unit = jsNative
 
-    [<Emit("import('../word-pdf-export/browser.js').then(m => m.exportPdfFromEditor($0))")>]
+    // The PDF exporter needs the Word.Pdf build and font data, which the host
+    // application bundles; it registers itself as window.RedBatWordPdfExport,
+    // the same way the shaped text engine registers RedBatWordTextStack.
+    [<Emit("(window.RedBatWordPdfExport ? window.RedBatWordPdfExport.exportPdfFromEditor($0) : Promise.reject(new Error('PDF export is not installed by the host application')))")>]
     let private exportPdfFromEditor (_: WordApi.Editor) : JS.Promise<obj> = jsNative
 
     let printPdf host =
