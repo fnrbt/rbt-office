@@ -244,8 +244,41 @@ let generateRunProps (run: EditorRun) : string list =
 
 /// The content of a run. Inside w:del the schema only allows w:delText;
 /// a w:t there makes Word report the file as corrupt.
+///
+/// The reader turns <w:tab/> into "\t" and <w:br/> / <w:cr/> into "\n" inside
+/// the run text. They have to go back out as elements: a literal tab or line
+/// feed inside w:t is plain whitespace to Word, so tabbed columns collapsed and
+/// manual line breaks disappeared after one save.
 let private runTextElements (deleted: bool) (text: string) : string list =
-    [ elementWithText (if deleted then "w:delText" else "w:t") [("xml:space", "preserve")] text ]
+    let textName = if deleted then "w:delText" else "w:t"
+    let textElement (value: string) = elementWithText textName [("xml:space", "preserve")] value
+    if isNull text || text = "" then [ textElement "" ]
+    elif text.IndexOf('\t') < 0 && text.IndexOf('\n') < 0 && text.IndexOf('\r') < 0 then [ textElement text ]
+    else
+        let parts = ResizeArray<string>()
+        let mutable segmentStart = 0
+        let flush upTo =
+            if upTo > segmentStart then parts.Add (textElement (text.Substring(segmentStart, upTo - segmentStart)))
+        let mutable i = 0
+        while i < text.Length do
+            match text.[i] with
+            | '\t' ->
+                flush i
+                parts.Add (selfClosing "w:tab" [])
+                segmentStart <- i + 1
+            | '\n' ->
+                flush i
+                parts.Add (selfClosing "w:br" [])
+                segmentStart <- i + 1
+            | '\r' ->
+                flush i
+                parts.Add (selfClosing "w:br" [])
+                if i + 1 < text.Length && text.[i + 1] = '\n' then i <- i + 1
+                segmentStart <- i + 1
+            | _ -> ()
+            i <- i + 1
+        flush text.Length
+        List.ofSeq parts
 
 let private runElement (rPr: string list) (deleted: bool) (text: string) : string =
     let rPrElement = if List.isEmpty rPr then [] else [element "w:rPr" [] rPr]
