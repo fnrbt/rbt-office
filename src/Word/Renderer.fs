@@ -766,11 +766,13 @@ let pageCount (ctx: RenderContext) (doc: Document) =
 
 /// Convert mouse position to document position
 let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) =
-    Rbt.Word.Layout.hitTestWithRange (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
+    // Same layout the last render produced (reused while the document is
+    // unchanged) rather than a fresh full layout per mouse event.
+    Rbt.Word.Layout.hitTestIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
 
 /// Hit test for images - returns blockId, offset, and image dimensions if clicking on an image
 let hitTestForImage (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) : (string * int * float * float * float * float) option =
-    Rbt.Word.Layout.hitTestForImage (layoutSettings ctx doc) (measureWithContext ctx) doc mouseX mouseY
+    Rbt.Word.Layout.hitTestForImageIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
 
 /// Render document with hover indicators for images
 let renderWithHover (ctx: RenderContext) (doc: Document) (hoveredImage: (string * int) option) =
