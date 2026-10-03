@@ -284,7 +284,13 @@ module XlsxRead =
                         | _ -> ()
                         maxRow <- max maxRow r
                         maxCol <- max maxCol c
-                        Some(({ Row = r; Col = c } : M.CellAddress), ({ Value = valueOf wb cell.Value; Format = fmt; Comment = comment } : M.CellData))))
+                        // Keep the formula with its cached result, not just the result.
+                        let cellValue =
+                            match cell.Formula, valueOf wb cell.Value with
+                            | Some _, (M.Formula _ as uncached) -> uncached
+                            | Some formula, cached -> M.Formula(formula, cached)
+                            | None, value -> value
+                        Some(({ Row = r; Col = c } : M.CellAddress), ({ Value = cellValue; Format = fmt; Comment = comment } : M.CellData))))
             |> Map.ofList
         let rowHeights =
             sheet.Rows
