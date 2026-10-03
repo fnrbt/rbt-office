@@ -572,7 +572,12 @@ module Docx =
         |> Option.bind (fun cols ->
             let num = attr "num" cols |> Option.bind (fun v -> match System.Int32.TryParse v with | true, n -> Some n | _ -> None) |> Option.defaultValue 1
             let space = twips (attr "space" cols) |> Option.defaultValue 36.0
-            let sep = onOff "sep" cols |> Option.defaultValue false
+            // w:sep is an attribute of w:cols (onOff looks for a child element, so
+            // the separator line was never read).
+            let sep =
+                match attr "sep" cols |> Option.map (fun value -> value.ToLowerInvariant()) with
+                | Some "1" | Some "true" | Some "on" -> true
+                | _ -> false
             let colWidths =
                 Ns.descendantsNs "col" cols
                 |> List.choose (fun col -> twips (attr "w" col) |> Option.map (fun w -> w, twips (attr "space" col) |> Option.defaultValue 0.0))
@@ -2573,10 +2578,17 @@ module Shapes =
     let parseShapes (doc: XmlNode) : Shape list =
         // Import a node if it carries text (txbxContent) OR a real geometry
         // (prstGeom/custGeom) — so autoshapes with no text still render.
+        // A plain picture also has a:prstGeom (inside pic:spPr). It is already
+        // read as an image run; without this guard every picture was imported
+        // a second time as a rectangle shape and saved as a text box.
+        let isPicture node =
+            (Ns.descendantsNs "pic" node |> List.isEmpty |> not)
+            && (Ns.descendantsNs "wsp" node |> List.isEmpty)
         let hasContent node =
             (Ns.descendantsNs "txbxContent" node |> List.isEmpty |> not)
-            || (Ns.descendantsNs "prstGeom" node |> List.isEmpty |> not)
-            || (Ns.descendantsNs "custGeom" node |> List.isEmpty |> not)
+            || (not (isPicture node)
+                && ((Ns.descendantsNs "prstGeom" node |> List.isEmpty |> not)
+                    || (Ns.descendantsNs "custGeom" node |> List.isEmpty |> not)))
         // For DrawingML, parse from the wp:anchor / wp:inline wrapper — position
         // (wp:positionH/V) and display size (wp:extent) live there, while the
         // geometry/fill live in the nested wsp. parseShape reads everything via
