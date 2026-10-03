@@ -228,6 +228,17 @@ type private Placement = {
     BlackAndWhite: bool
 }
 
+/// usWinAscent / usWinDescent from the font's OS/2 table, in font units.
+/// Rbt.Pdf's TrueTypeFont carries only the hhea metrics, so they are read from
+/// the font data here; a font without a usable OS/2 table falls back to hhea.
+let private winMetrics (ttf: PdfFont.TrueTypeFont) : float * float =
+    let readUInt16 offset = (int ttf.Data.[offset] <<< 8) ||| int ttf.Data.[offset + 1]
+    match Map.tryFind "OS/2" ttf.Tables with
+    | Some table when table.Length >= 78u && int table.Offset + 78 <= ttf.Data.Length ->
+        let start = int table.Offset
+        float (readUInt16 (start + 74)), float (readUInt16 (start + 76))
+    | _ -> float ttf.Ascender, float (abs ttf.Descender)
+
 let private bwFill (bw: bool) (color: string) =
     if bw then "#FFFFFF" else color
 
@@ -300,8 +311,9 @@ let private appendDrawTextOps
             // line with embedded CJK glyphs doesn't jitter when fallback
             // ascents differ. Mirrors SpreadsheetGrid.toRendererCommands.
             let scaleY = fontPx / float primaryTtf.UnitsPerEm
-            let ascent = float primaryTtf.WinAscent * scaleY
-            let descent = float primaryTtf.WinDescent * scaleY
+            let winAscent, winDescent = winMetrics primaryTtf
+            let ascent = winAscent * scaleY
+            let descent = winDescent * scaleY
             let lineHeight = ascent + descent
             let blockHeight = lineHeight * float t.LineCount
             let blockTopY =
