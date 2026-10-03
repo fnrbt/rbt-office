@@ -1968,6 +1968,29 @@ let private wildcardRegex (pattern: string) =
     System.Text.RegularExpressions.Regex(
         sb.ToString(), System.Text.RegularExpressions.RegexOptions.IgnoreCase)
 
+/// The same translation without anchors, for SEARCH: the pattern may match
+/// anywhere in the text.
+let private wildcardSearchRegex (pattern: string) =
+    let sb = System.Text.StringBuilder()
+    let mutable i = 0
+    while i < pattern.Length do
+        match pattern.[i] with
+        | '~' when i + 1 < pattern.Length ->
+            appendRegexLiteralChar sb pattern.[i + 1]
+            i <- i + 2
+        | '*' ->
+            sb.Append(".*?") |> ignore
+            i <- i + 1
+        | '?' ->
+            sb.Append('.') |> ignore
+            i <- i + 1
+        | c ->
+            appendRegexLiteralChar sb c
+            i <- i + 1
+    System.Text.RegularExpressions.Regex(
+        sb.ToString(),
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase ||| System.Text.RegularExpressions.RegexOptions.Singleline)
+
 type private CriteriaOp =
     | CriteriaEq
     | CriteriaNe
@@ -2004,6 +2027,15 @@ let private hasCriteriaWildcard (text: string) =
         | _ -> ()
         index <- index + 1
     found
+
+/// An exact-match lookup value that uses `*`, `?` or `~` matches text cells
+/// by pattern (VLOOKUP / HLOOKUP / MATCH with match type 0). None otherwise.
+let private wildcardLookupPredicate (target: CellValue) : (CellValue -> bool) option =
+    match unwrapValue target with
+    | CellValue.String pattern when hasCriteriaWildcard pattern ->
+        let rx = wildcardRegex pattern
+        Some (fun v -> match unwrapValue v with CellValue.String text -> rx.IsMatch text | _ -> false)
+    | _ -> None
 
 let private tryCriteriaNumber value =
     match unwrapValue value with
@@ -2205,12 +2237,15 @@ let private compareValuesNoError (l: CellValue) (r: CellValue) : int voption =
         match right with
         | CellValue.Error _ -> ValueNone
         | CellValue.Boolean y -> ValueSome (compareBools x y)
+        // A blank compares as FALSE against a boolean.
+        | CellValue.Empty -> ValueSome (compareBools x false)
         | _ -> ValueSome (compareInts (cellValueRank left) (cellValueRank right))
     | CellValue.Empty ->
         let right = unwrapValue r
         match right with
         | CellValue.Error _ -> ValueNone
         | CellValue.Empty -> ValueSome 0
+        | CellValue.Boolean y -> ValueSome (compareBools false y)
         | CellValue.Number y -> ValueSome (compareFloats 0.0 y)
         | CellValue.String y -> ValueSome (String.Compare("", y, StringComparison.OrdinalIgnoreCase))
         | _ -> ValueSome (compareInts (cellValueRank left) (cellValueRank right))
@@ -3309,11 +3344,13 @@ let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
              | Result.Error e, _ -> err e
              | _, Result.Error e -> err e
              | Ok a, Ok b ->
+                // A result beyond the double range is #NUM!, never infinity.
+                let finite (x: float) = if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x
                 match op with
-                | "+" -> CellValue.Number (a + b)
-                | "-" -> CellValue.Number (a - b)
-                | "*" -> CellValue.Number (a * b)
-                | "/" -> if b = 0.0 then err Err.div0 else CellValue.Number (a / b)
+                | "+" -> finite (a + b)
+                | "-" -> finite (a - b)
+                | "*" -> finite (a * b)
+                | "/" -> if b = 0.0 then err Err.div0 else finite (a / b)
                 | "^" -> (let p = a ** b in if Double.IsNaN p || Double.IsInfinity p then err Err.num else CellValue.Number p)
                 | _ -> err Err.value)
 
@@ -5406,7 +5443,13 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
     let argBool i = coerceBool (argRaw i)
     // Apply a unary numeric function to arg 0 with error propagation.
     let unaryNum f =
-        match argNum 0 with Ok x -> f x | Result.Error e -> err e
+        match argNum 0 with
+        | Ok x ->
+            // Overflow (EXP(1000)) and undefined results are #NUM!.
+            (match f x with
+             | CellValue.Number result when Double.IsInfinity result || Double.IsNaN result -> err Err.num
+             | value -> value)
+        | Result.Error e -> err e
     let numericBufferOfRangeValue (e: Expr) =
         let bounds = rangeBounds e
         let capacity =
@@ -10822,6 +10865,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     iterArg arg ctx (fun value ->
                         match unwrapValue value with
                         | CellValue.Empty when ignoreEmpty -> ()
+                        | CellValue.String "" when ignoreEmpty -> ()
                         | other ->
                             match coerceText other with
                             | Ok text -> appendPart text
@@ -10856,22 +10900,25 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | Result.Error e -> err e
         | Ok s ->
             let cnt = if nargs >= 2 then (match argNum 1 with Ok n -> int n | _ -> 1) else 1
-            CellValue.String (s.Substring(0, max 0 (min s.Length cnt)))
+            if cnt < 0 then err Err.value
+            else CellValue.String (s.Substring(0, min s.Length cnt))
     | "RIGHT" ->
         if nargs < 1 then err Err.value else
         match argText 0 with
         | Result.Error e -> err e
         | Ok s ->
             let cnt = if nargs >= 2 then (match argNum 1 with Ok n -> int n | _ -> 1) else 1
-            let c = max 0 (min s.Length cnt)
-            CellValue.String (s.Substring(s.Length - c, c))
+            if cnt < 0 then err Err.value
+            else
+                let c = min s.Length cnt
+                CellValue.String (s.Substring(s.Length - c, c))
     | "MID" ->
         if nargs <> 3 then err Err.value else
         match argText 0, argNum 1, argNum 2 with
         | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
         | Ok s, Ok startN, Ok lenN ->
             let start0 = int startN - 1   // Excel MID is 1-indexed
-            if start0 < 0 then err Err.value
+            if start0 < 0 || lenN < 0.0 then err Err.value
             elif start0 >= s.Length then CellValue.String ""
             else
                 let take = max 0 (min (s.Length - start0) (int lenN))
@@ -10880,7 +10927,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         if nargs <> 2 then err Err.value else
         match argText 0, argNum 1 with
         | Result.Error e, _ | _, Result.Error e -> err e
-        | Ok s, Ok cnt -> CellValue.String (String.replicate (max 0 (int cnt)) s)
+        | Ok s, Ok cnt ->
+            if cnt < 0.0 then err Err.value
+            else CellValue.String (String.replicate (int cnt) s)
     | "FIND" | "SEARCH" ->
         // FIND is case-sensitive, SEARCH is not. Both 1-indexed.
         if nargs < 2 then err Err.value else
@@ -10892,7 +10941,11 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             else
                 let idx =
                     if fnName = "FIND" then
-                        hay.IndexOf(needle, startAt)
+                        hay.IndexOf(needle, startAt, StringComparison.Ordinal)
+                    elif hasCriteriaWildcard needle then
+                        // SEARCH understands `*`, `?` and `~`.
+                        let m = (wildcardSearchRegex needle).Match(hay.Substring startAt)
+                        if m.Success then startAt + m.Index else -1
                     else
                         indexOfOrdinalIgnoreCase needle hay startAt
                 if idx < 0 then err Err.value else CellValue.Number (float (idx + 1))
@@ -11005,6 +11058,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let matchType = if nargs >= 3 then (match argNum 2 with Ok m -> int m | _ -> 1) else 1
             let result =
                 if matchType = 0 then
+                    match wildcardLookupPredicate target with
+                    | Some matches -> findIndexBySearchMode la.Count 1 (fun k -> matches (rangeRead la k))
+                    | None ->
                     match trySparseExactMatchResult target la 1 with
                     | ValueSome (Some k) -> Some k
                     | ValueSome None -> None
@@ -11067,6 +11123,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 | _ -> ()
                             last
                     else
+                        match wildcardLookupPredicate target with
+                        | Some matches -> findIndexBySearchMode lineLen 1 (fun i -> matches (lineCell i))
+                        | None ->
                         match trySparseExactMatchResult target lookupLine 1 with
                         | ValueSome (Some k) -> Some k
                         | ValueSome None -> None
@@ -11146,12 +11205,24 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
     | "MONTH" -> unaryNum (fun s -> CellValue.Number (float (serialToDate s).Month))
     | "DAY" -> unaryNum (fun s -> CellValue.Number (float (serialToDate s).Day))
     | "WEEKDAY" ->
-        match argNum 0 with
-        | Result.Error e -> err e
-        | Ok s ->
-            // Default type 1: Sunday = 1 … Saturday = 7.
+        // WEEKDAY(serial, [return_type]): 1 = Sunday..Saturday as 1..7
+        // (default), 2 = Monday..Sunday as 1..7, 3 = Monday..Sunday as 0..6,
+        // 11..17 = the week starting Monday..Sunday, numbered 1..7.
+        if nargs < 1 then err Err.value else
+        let returnType =
+            if nargs < 2 then Ok 1.0
+            else (match argExpr 1 with MissingArg -> Ok 1.0 | _ -> argNum 1)
+        match argNum 0, returnType with
+        | Result.Error e, _ | _, Result.Error e -> err e
+        | Ok s, Ok kind ->
             let dow = int (serialToDate s).DayOfWeek  // Sunday = 0
-            CellValue.Number (float (dow + 1))
+            let fromMonday = (dow + 6) % 7            // Monday = 0
+            match int kind with
+            | 1 -> CellValue.Number (float (dow + 1))
+            | 2 -> CellValue.Number (float (fromMonday + 1))
+            | 3 -> CellValue.Number (float fromMonday)
+            | k when k >= 11 && k <= 17 -> CellValue.Number (float ((fromMonday - (k - 11) + 7) % 7 + 1))
+            | _ -> err Err.num
     | "EOMONTH" ->
         if nargs <> 2 then err Err.value else
         match argNum 0, argNum 1 with

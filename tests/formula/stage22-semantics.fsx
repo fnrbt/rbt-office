@@ -214,6 +214,44 @@ check "product-direct"       "=PRODUCT(\"2\",3,TRUE)"   (n 6.0)
 check "median-range"         "=MEDIAN(E1:E5)"           (n 0.5)
 check "sum-mixed"            "=SUM(A1:A2,\"5\",E3)"     (n 35.0)
 
+// ----- item 11 -----------------------------------------------------------------
+check "vlookup-wildcard"   "=VLOOKUP(\"ki*\",D1:E5,1,FALSE)"  (s "kiwi")
+check "vlookup-question"   "=VLOOKUP(\"f?g\",D1:D5,1,FALSE)"  (s "fig")
+check "vlookup-tilde"      "=VLOOKUP(\"a~*\",D1:D5,1,FALSE)"  (e "N/A")
+check "hlookup-wildcard"   "=HLOOKUP(\"app*\",D1:E2,2,FALSE)" (s "fig")
+check "match-wildcard"     "=MATCH(\"p*\",D1:D5,0)"           (n 5.0)
+check "match-wildcard-mid" "=MATCH(\"*iw*\",D1:D5,0)"         (n 3.0)
+check "match-exact-still"  "=MATCH(\"fig\",D1:D5,0)"          (n 2.0)
+check "search-wildcard"    "=SEARCH(\"b*d\",\"abcde\")"      (n 2.0)
+check "search-question"    "=SEARCH(\"c?e\",\"abcde\")"      (n 3.0)
+check "search-tilde"       "=SEARCH(\"~?\",\"is it?\")"      (n 6.0)
+check "search-plain"       "=SEARCH(\"CD\",\"abcde\")"       (n 3.0)
+check "search-from"        "=SEARCH(\"a*\",\"banana\",3)"    (n 4.0)
+check "weekday-default"    "=WEEKDAY(45292)"                  (n 2.0)   // 2024-01-01, a Monday
+check "weekday-type2"      "=WEEKDAY(45292,2)"                (n 1.0)
+check "weekday-type3"      "=WEEKDAY(45292,3)"                (n 0.0)
+check "weekday-type11"     "=WEEKDAY(45292,11)"               (n 1.0)
+check "weekday-type16"     "=WEEKDAY(45292,16)"               (n 3.0)   // week starts Saturday
+check "weekday-type17"     "=WEEKDAY(45298,17)"               (n 1.0)   // 2024-01-07, a Sunday
+check "weekday-sunday-2"   "=WEEKDAY(45298,2)"                (n 7.0)
+check "weekday-bad-type"   "=WEEKDAY(45292,5)"                (e "NUM!")
+check "overflow-mul"       "=1E308*10"                        (e "NUM!")
+check "overflow-add"       "=1E308+1E308"                     (e "NUM!")
+check "overflow-exp"       "=EXP(1000)"                       (e "NUM!")
+check "exp-ok"             "=ROUND(EXP(1),4)"                 (n 2.7183)
+check "textjoin-ignore"    "=TEXTJOIN(\",\",TRUE,\"a\",\"\",\"b\",G1:G3)" (s "a,b,2,4")
+check "textjoin-keep"      "=TEXTJOIN(\",\",FALSE,\"a\",\"\",\"b\")"      (s "a,,b")
+check "mid-negative"       "=MID(\"abc\",1,-1)"               (e "VALUE!")
+check "left-negative"      "=LEFT(\"abc\",-1)"                (e "VALUE!")
+check "right-negative"     "=RIGHT(\"abc\",-1)"               (e "VALUE!")
+check "rept-negative"      "=REPT(\"a\",-1)"                  (e "VALUE!")
+check "left-zero"          "=LEFT(\"abc\",0)"                 (s "")
+check "blank-eq-false"     "=E4=FALSE"                        (b true)
+check "blank-eq-zero"      "=E4=0"                            (b true)
+check "blank-eq-empty"     "=E4=\"\""                         (b true)
+check "blank-ne-true"      "=E4=TRUE"                         (b false)
+check "false-eq-blank"     "=FALSE=E4"                        (b true)
+
 printfn ""
 printfn "Stage 22 semantics tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
