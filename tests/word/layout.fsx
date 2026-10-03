@@ -906,6 +906,34 @@ let overrideLayout =
         "style-override"
 check "paragraph multiple overrides exact style" (lineRulePitch overrideLayout > lineRulePitch autoLayout * 1.5) true
 
+// ---------------------------------------------------------------------------
+// lastRenderedPageBreak hints must not be honoured on the 1,000,000px page
+// used to measure a table row's natural height.
+// ---------------------------------------------------------------------------
+let hintText = "first line of the paragraph second line after the hint"
+let hintBuffer =
+    ofString hintText
+    |> applyStyle 28 (hintText.Length - 28) (fun style -> { style with RenderedPageBreakBefore = true })
+let hintCellContent =
+    [ for i in 1 .. 8 -> paragraph (sprintf "hint-cell-lead-%d" i) "x" ]
+    @ [ { paragraph "hint-cell" hintText with Buffer = hintBuffer } ]
+let hintTable =
+    { wideFastTable with
+        Id = "hint-table"
+        Rows = [ tableRow [ tableCell hintCellContent None ] ] }
+let hintTableSettings = { settings with Width = 600.0; PageHeight = 1000.0 }
+let hintRowMeasurement =
+    measureTableRowForDocumentRowLocal hintTableSettings measureText (rangeMeasurerFromTextMeasurer measureText) Doc.empty hintTable 600.0 [ 600.0 ] 0.0 0.0 hintTable.Rows.Head
+check "rendered break hint row-local height" (hintRowMeasurement.Height < 1000.0) true
+let hintDocLayouts =
+    layoutDocument hintTableSettings measureText
+        { Doc.empty with
+            Blocks = [ Doc.Table hintTable; Doc.Paragraph (paragraph "hint-after" "after") ]
+            Selection = None }
+check "rendered break hint keeps document short"
+    ((uniformPageInfos hintTableSettings hintDocLayouts).Length <= 2)
+    true
+
 printfn ""
 printfn "Word layout tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

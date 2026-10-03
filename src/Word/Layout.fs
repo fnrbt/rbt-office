@@ -776,6 +776,10 @@ let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
                 lines
     | _ -> lines
 
+/// Page height used when content is measured for its natural height rather
+/// than placed on a page (table rows; see measureTableRow...RowLocal).
+let private unpagedMeasurementPageHeight = 1000000.0
+
 let private lineHasRenderedPageBreakBefore (line: MeasuredLine) =
     let rec loop segments =
         match segments with
@@ -789,6 +793,7 @@ let private paginateLines settings widowControl (lines: MeasuredLine list) =
     let mutable delta = 0.0
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
     let lines = if widowControl then moveWidowParagraphToNextPage settings lines else lines
+    let unpagedMeasurement = settings.PageHeight >= unpagedMeasurementPageHeight
     let pagedLines = ResizeArray<MeasuredLine>()
     for line in lines do
         let shiftedY = line.Y + delta
@@ -801,7 +806,11 @@ let private paginateLines settings widowControl (lines: MeasuredLine list) =
         let contentBottom =
             WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
             - footnoteReserveHeight settings pageFootnotes
-        let renderedBreakBefore = lineHasRenderedPageBreakBefore line
+        // A lastRenderedPageBreak hint only means something on a real page.
+        // Table rows are first measured on a 1,000,000px "page" to get their
+        // natural height; honouring the hint there would move the line a
+        // million pixels down and report that as the row height.
+        let renderedBreakBefore = not unpagedMeasurement && lineHasRenderedPageBreakBefore line
         if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineVisibleFitHeight line > contentBottom + pageFitTolerance) then
             let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
             delta <- delta + (nextY - shiftedY)
@@ -2863,7 +2872,7 @@ let measureTableRowForDocument settings measureText measureRange doc tableBlock 
 let internal measureTableRowForContextRowLocalWithColumnMetrics settings measureText measureRange context tableBlock columnMetrics outerLeft tableHorizontalOffset row =
     let rowLocalSettings = {
         settings with
-            PageHeight = 1000000.0
+            PageHeight = unpagedMeasurementPageHeight
             MarginBottom = 0.0
             TableContinuationHeaderHeight = 0.0
     }
