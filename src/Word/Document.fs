@@ -1273,68 +1273,102 @@ let deleteSelection doc =
                 }
                 { newDoc with Selection = Some newSel }
         | _ ->
-            // Multi-block selection
-            // Keep text before selection start in first block
-            // Keep text after selection end in last block
-            // Delete middle blocks
+            // Multi-block selection: keep the text before the selection
+            // start and after its end, drop everything in between.
+            let firstBlockId = List.head blockIds
+            let lastBlockId = List.last blockIds
 
-            if blockIds.IsEmpty then doc
-            else
-                let firstBlockId = List.head blockIds
-                let lastBlockId = List.last blockIds
+            match findParagraph doc firstBlockId, findParagraph doc lastBlockId with
+            | Some firstPara, Some lastPara ->
+                // Index of the top-level block holding a paragraph, and
+                // whether the paragraph is that block (as opposed to sitting
+                // in a table cell or text box inside it).
+                let topLevel paragraphId =
+                    doc.Blocks
+                    |> List.mapi (fun index block -> index, block)
+                    |> List.tryPick (fun (index, block) ->
+                        match block with
+                        | Paragraph p
+                        | Heading (_, p) -> if p.Id = paragraphId then Some (index, true, 0) else None
+                        | Table table ->
+                            table.Rows
+                            |> List.collect (fun row -> row.Cells)
+                            |> List.tryFindIndex (fun cell -> cell.Content |> List.exists (fun p -> p.Id = paragraphId))
+                            |> Option.map (fun cellIndex -> index, false, cellIndex)
+                        | TextBox textBox ->
+                            if textBox.Content |> List.exists (fun p -> p.Id = paragraphId) then Some (index, false, 0) else None)
 
-                match findBlock doc firstBlockId, findBlock doc lastBlockId with
-                | Some firstBlock, Some lastBlock ->
-                    let firstPara = getParagraph firstBlock
-                    let lastPara = getParagraph lastBlock
-
+                match topLevel firstBlockId, topLevel lastBlockId with
+                | Some (firstIndex, firstIsBlock, firstCell), Some (lastIndex, lastIsBlock, lastCell) ->
                     // Content before the selection start and after its end,
                     // with runs intact
                     let beforeBuffer = TextBuffer.sliceBuffer 0 startPos.Offset firstPara.Buffer
                     let lastBufferLen = TextBuffer.length lastPara.Buffer
                     let afterBuffer = TextBuffer.sliceBuffer endPos.Offset (lastBufferLen - endPos.Offset) lastPara.Buffer
-                    let mergedBuffer = TextBuffer.append beforeBuffer afterBuffer
-                    let mergeOffset = TextBuffer.length beforeBuffer
 
-                    // Update first block with merged content
-                    let mergedPara = { firstPara with Buffer = mergedBuffer }
-                    let mergedBlock =
-                        match firstBlock with
-                        | Paragraph _ -> Paragraph mergedPara
-                        | Heading (level, _) -> Heading (level, mergedPara)
-                        | Table t -> Table t
-                        | TextBox t -> TextBox t
+                    // The two ends join into one paragraph only when they
+                    // live in the same container: both in the body, or both
+                    // in the same cell / text box. Across a table boundary
+                    // each end keeps its own paragraph.
+                    let joins =
+                        (firstIsBlock && lastIsBlock)
+                        || (not firstIsBlock && not lastIsBlock && firstIndex = lastIndex && firstCell = lastCell)
+                    let newFirstPara =
+                        { firstPara with Buffer = if joins then TextBuffer.append beforeBuffer afterBuffer else beforeBuffer }
+                    let newLastPara = { lastPara with Buffer = afterBuffer }
+                    let removeIds =
+                        blockIds
+                        |> List.filter (fun id -> id <> firstBlockId && id <> lastBlockId)
+                        |> Set.ofList
 
-                    // Remove all selected editable paragraphs and replace the first with merged content.
-                    // Table-cell paragraphs are not top-level blocks, so filter them inside table cells.
-                    let removeIds = Set.ofList (List.tail blockIds)
+                    // Paragraphs of a cell or text box. A container never
+                    // ends up with no paragraph at all: an emptied one keeps
+                    // its first paragraph, blank.
+                    let editContent (content: ParagraphBlock list) =
+                        let touched =
+                            content |> List.exists (fun p -> p.Id = firstBlockId || p.Id = lastBlockId || Set.contains p.Id removeIds)
+                        if not touched then content
+                        else
+                            let kept =
+                                content
+                                |> List.choose (fun p ->
+                                    if p.Id = firstBlockId then Some newFirstPara
+                                    elif p.Id = lastBlockId then (if joins then None else Some newLastPara)
+                                    elif Set.contains p.Id removeIds then None
+                                    else Some p)
+                            match kept, content with
+                            | [], head :: _ -> [ { head with Buffer = TextBuffer.empty } ]
+                            | _ -> kept
+
                     let newBlocks =
                         doc.Blocks
-                        |> List.choose (function
-                            | Paragraph p when Set.contains p.Id removeIds -> None
-                            | Heading (_, p) when Set.contains p.Id removeIds -> None
-                            | Paragraph p when p.Id = firstBlockId -> Some mergedBlock
-                            | Heading (_, p) when p.Id = firstBlockId -> Some mergedBlock
-                            | Table t ->
-                                let rows =
-                                    t.Rows
-                                    |> List.map (fun row ->
-                                        { row with
-                                            Cells =
-                                                row.Cells
-                                                |> List.map (fun cell ->
-                                                    { cell with Content = cell.Content |> List.filter (fun p -> not (Set.contains p.Id removeIds)) }) })
-                                Some (Table { t with Rows = rows })
-                            | block -> Some block)
+                        |> List.mapi (fun index block -> index, block)
+                        |> List.choose (fun (index, block) ->
+                            if index > firstIndex && index < lastIndex then
+                                // Wholly inside the selection, tables and
+                                // text boxes included.
+                                None
+                            else
+                                match block with
+                                | Paragraph p when p.Id = firstBlockId -> Some (Paragraph newFirstPara)
+                                | Heading (level, p) when p.Id = firstBlockId -> Some (Heading (level, newFirstPara))
+                                | Paragraph p when p.Id = lastBlockId -> if joins then None else Some (Paragraph newLastPara)
+                                | Heading (level, p) when p.Id = lastBlockId -> if joins then None else Some (Heading (level, newLastPara))
+                                | Table table when index = firstIndex || index = lastIndex ->
+                                    let rows =
+                                        table.Rows
+                                        |> List.map (fun row ->
+                                            { row with Cells = row.Cells |> List.map (fun cell -> { cell with Content = editContent cell.Content }) })
+                                    Some (Table { table with Rows = rows })
+                                | TextBox textBox when index = firstIndex || index = lastIndex ->
+                                    Some (TextBox { textBox with Content = editContent textBox.Content })
+                                | block -> Some block)
 
-                    // Move cursor to merge point
-                    let newSel = {
-                        Anchor = { BlockId = firstBlockId; Offset = mergeOffset }
-                        Focus = { BlockId = firstBlockId; Offset = mergeOffset }
-                    }
-
-                    { doc with Blocks = newBlocks; Selection = Some newSel }
+                    // Move cursor to the start of the deleted range
+                    let caret = { BlockId = firstBlockId; Offset = TextBuffer.length beforeBuffer }
+                    { doc with Blocks = newBlocks; Selection = Some { Anchor = caret; Focus = caret } }
                 | _ -> doc
+            | _ -> doc
 
 /// Delete forward (Delete key)
 let deleteForward doc =

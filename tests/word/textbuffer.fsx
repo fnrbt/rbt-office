@@ -1734,6 +1734,51 @@ let refreshCaretDoc =
 check "refresh fields text" (paraText "rf" refreshCaretDoc) "1tail"
 check "refresh fields moves caret back" (caretOf refreshCaretDoc) (Some (5, 5))
 
+// Deleting a selection that touches a table never leaves a cell without a paragraph.
+let cellParagraphCounts (doc: Doc.Document) =
+    doc.Blocks
+    |> List.collect (function
+        | Doc.Table table -> table.Rows |> List.collect (fun row -> row.Cells |> List.map (fun cell -> cell.Content.Length))
+        | _ -> [])
+let twoRowTable id =
+    { (singleCellTable id (tableCell (id + "-a") "one")) with
+        Rows = [ singleColumnTableRow (tableCell (id + "-a") "one"); singleColumnTableRow (tableCell (id + "-b") "two") ] }
+let acrossTableDoc = { besideTableDoc with Selection = Some { Anchor = pos "above" 2; Focus = pos "below" 3 } }
+match Doc.deleteSelection acrossTableDoc with
+| { Blocks = [ Doc.Paragraph merged ] } as doc ->
+    check "delete across table joins ends" (toString merged.Buffer) "abow"
+    check "delete across table caret" (caretOf doc) (Some (2, 2))
+| doc ->
+    fail <- fail + 1
+    printfn "FAIL %-28s expected one paragraph got %d blocks" "delete across table shape" doc.Blocks.Length
+let intoTableDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (para "lead" (ofString "lead")); Doc.Table (twoRowTable "t4") ]
+        Selection = Some { Anchor = pos "lead" 2; Focus = pos "t4-b" 1 } }
+let intoTableDeleted = Doc.deleteSelection intoTableDoc
+check "delete into table text" (Doc.getText intoTableDeleted) "le\n\nwo"
+check "delete into table keeps cell paragraphs" (cellParagraphCounts intoTableDeleted) [ 1; 1 ]
+check "delete into table caret" (intoTableDeleted.Selection |> Option.map (fun sel -> sel.Focus.BlockId, sel.Focus.Offset)) (Some ("lead", 2))
+let selectAllEndingInCell = Doc.selectAll { intoTableDoc with Selection = None } |> Doc.deleteSelection
+check "select all delete ending in cell" (Doc.getText selectAllEndingInCell) "\n\n"
+check "select all delete keeps cell paragraphs" (cellParagraphCounts selectAllEndingInCell) [ 1; 1 ]
+let withinTableDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Table (twoRowTable "t5") ]
+        Selection = Some { Anchor = pos "t5-b" 2; Focus = pos "t5-a" 1 } }
+let withinTableDeleted = Doc.deleteSelection withinTableDoc
+check "delete across cells text" (Doc.getText withinTableDeleted) "o\no"
+check "delete across cells keeps cell paragraphs" (cellParagraphCounts withinTableDeleted) [ 1; 1 ]
+let twoParagraphCell =
+    { tableCell "c6-a" "first" with Content = [ para "c6-a" (ofString "first"); para "c6-b" (ofString "second") ] }
+let sameCellDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Table (singleCellTable "t6" twoParagraphCell) ]
+        Selection = Some { Anchor = pos "c6-a" 2; Focus = pos "c6-b" 3 } }
+let sameCellDeleted = Doc.deleteSelection sameCellDoc
+check "delete within one cell joins paragraphs" (Doc.getText sameCellDeleted) "fiond"
+check "delete within one cell paragraph count" (cellParagraphCounts sameCellDeleted) [ 1 ]
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail
