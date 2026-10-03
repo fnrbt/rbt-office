@@ -23,7 +23,7 @@
 // With no fixture arguments it runs the built-in synthetic documents (one per
 // feature the writer has to preserve) plus the small corpus files listed in
 // DEFAULT_CORPUS. --out keeps the saved documents (pass 1 and 2) so the .NET
-// reader can be pointed at them (tests/office-formats/docx-roundtrip-native.fsx).
+// reader can be pointed at them: dotnet fsi tools/docx-roundtrip/native-check.fsx DIR
 //
 // Environment:
 //   PLAYWRIGHT  path to playwright's index.mjs (default: resolve "playwright")
