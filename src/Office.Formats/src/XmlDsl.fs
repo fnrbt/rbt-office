@@ -84,6 +84,15 @@ module Xml =
 [<Emit("new DOMParser().parseFromString($0, 'text/xml')")>]
 let private domParse (xml: string) : obj = jsNative
 
+// DOMParser never throws on malformed XML: it returns a document holding a
+// <parsererror> element (the root in Firefox, nested in the partial tree in
+// Chromium/WebKit). Returns the error text, or null when the parse was clean.
+[<Emit("(function (d) { var e = d.getElementsByTagName('parsererror'); return e.length > 0 ? (e[0].textContent || 'parse error') : null; })($0)")>]
+let private domParseError (doc: obj) : string = jsNative
+
+[<Emit("($0.doctype != null)")>]
+let private domHasDoctype (doc: obj) : bool = jsNative
+
 let rec private convertNode (node: obj) (parentAttrs: Map<string, string> option) : XmlNode =
     let nodeType: int = node?nodeType
     let nodeName: string = node?nodeName
@@ -128,12 +137,23 @@ let rec private convertNode (node: obj) (parentAttrs: Map<string, string> option
             let trimmed = textContent.Trim()
             if trimmed.Length > 0 then Text trimmed else Empty
 
+    | 4 -> // CDATA_SECTION_NODE — literal text, kept verbatim like the .NET path
+        let textContent: string = node?textContent
+        if textContent.Length > 0 then Text textContent else Empty
+
     | _ -> Empty
 
 let parse (xmlString: string) : XmlNode =
+    let xmlString = xmlString.TrimStart(char 0xFEFF, char 0x200B)
     let doc = domParse xmlString
+    let error = domParseError doc
+    if not (isNull error) then
+        failwith ("Malformed XML: " + error)
+    // OPC parts must not carry a DTD; the .NET path prohibits them too.
+    if domHasDoctype doc then
+        failwith "Malformed XML: DTD is not allowed"
     let root: obj = doc?documentElement
-    convertNode root None
+    if isNull root then Empty else convertNode root None
 #else
 let private xName (element: XElement) (name: XName) =
     let prefix = element.GetPrefixOfNamespace(name.Namespace)
@@ -175,7 +195,14 @@ let rec private convertXNode (parentAttrs: Map<string, string> option) (node: XN
 
 let parse (xmlString: string) : XmlNode =
     let xmlString = xmlString.TrimStart(char 0xFEFF, char 0x200B)
-    let doc = XDocument.Parse(xmlString, LoadOptions.PreserveWhitespace)
+    // Parts come from untrusted packages: never process a DTD (entity
+    // expansion / external subsets), matching the streaming XmlReader path.
+    let settings = System.Xml.XmlReaderSettings()
+    settings.DtdProcessing <- System.Xml.DtdProcessing.Prohibit
+    settings.XmlResolver <- null
+    use stringReader = new System.IO.StringReader(xmlString)
+    use reader = System.Xml.XmlReader.Create(stringReader, settings)
+    let doc = XDocument.Load(reader, LoadOptions.PreserveWhitespace)
     match doc.Root with
     | null -> Empty
     | root -> convertXNode None root
