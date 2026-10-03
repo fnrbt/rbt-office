@@ -9,8 +9,14 @@ open System.IO.Compression
 #endif
 
 // JSZip interop for Fable
+#if FABLE_COMPILER
 [<Import("default", "jszip")>]
 let JSZip: obj = jsNative
+#else
+// `jsNative` throws when evaluated, and on .NET every module-level value of
+// this file is initialised together, so the binding must be inert there.
+let JSZip: obj = null
+#endif
 
 type ZipFile = {
     Name: string
