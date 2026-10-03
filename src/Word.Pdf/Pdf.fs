@@ -21,9 +21,21 @@ module PdfImage = Rbt.Pdf.Image
 let private textCacheLimit = 100000
 let private pdfPointScale = 72.0 / 96.0
 
-let private pdfScaleForPageWidth width =
-    // Browser-imported Word documents use CSS pixels; native diagnostics use points.
-    if width > 700.0 then pdfPointScale else 1.0
+/// Unit of a paint plan's page geometry and drawing coordinates.
+type PageUnit =
+    /// CSS pixels at 96 DPI. Every Document is in this unit (both importers
+    /// convert twips to px), so every plan collected from a document is too.
+    | CssPixels
+    /// PDF points, for plans built directly in points.
+    | Points
+
+// The unit comes from the plan, never from the page size: guessing "wide
+// pages are pixels" exported A5 (559px wide) a third too large and would
+// shrink a landscape Letter plan built in points (792pt wide).
+let private pdfScaleForUnit unit =
+    match unit with
+    | CssPixels -> pdfPointScale
+    | Points -> 1.0
 
 #if FABLE_COMPILER
 [<Emit("try { if (new URLSearchParams(window.location.search).has('rbPdfExportTrace') || window.localStorage.getItem('rb.word.pdfExportTrace') === '1') console.log(new Date().toISOString() + ' word-pdf:' + $0); } catch (_) {}")>]
@@ -91,6 +103,7 @@ type PaintPlan = {
     Pages: WordCanvasLayout.PageInfo list
     ImageSources: string list
     ImageUses: ImageUse list
+    PageUnit: PageUnit
 }
 
 [<Struct>]
@@ -983,7 +996,8 @@ let private collectPaintPlanWithCachedLayouts (cachedLayouts: WordCanvasLayout.B
       Commands = commands
       Pages = pages
       ImageSources = imageSourcesFromCommands commands
-      ImageUses = imageUsesFromCommands commands }
+      ImageUses = imageUsesFromCommands commands
+      PageUnit = CssPixels }
 
 let collectPaintPlan (options: RenderOptions) (doc: Document) =
     collectPaintPlanWithCachedLayouts None options doc
@@ -1069,7 +1083,7 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
     pageOps
     |> List.iteri (fun pageIndex ops ->
         let info = pages.[pageIndex]
-        let pageScale = pdfScaleForPageWidth info.Width
+        let pageScale = pdfScaleForUnit plan.PageUnit
         let pageSize = info.Width * pageScale, info.Height * pageScale
         PdfDoc.addPage builder pageSize pageFonts usedImages (remapAndScalePageOps remappedPairCache remaps pageScale ops) |> ignore)
     trace "toBytes:addPages:done"

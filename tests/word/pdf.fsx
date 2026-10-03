@@ -116,7 +116,8 @@ let blankPlan: Pdf.PaintPlan =
             MarginLeft = 0.0
             MarginRight = 0.0 } ]
       ImageSources = []
-      ImageUses = [] }
+      ImageUses = []
+      PageUnit = Pdf.CssPixels }
 
 let imageResource source dataSize : Pdf.ImageResource =
     { Source = source
@@ -221,6 +222,42 @@ check "word pdf many page emits" (manyPageBytes.Length > 1000)
 check "word pdf many page perf"
     (manyPageSw.Elapsed.TotalMilliseconds < 1500.0)
     (sprintf "many-page export took %.1f ms" manyPageSw.Elapsed.TotalMilliseconds)
+
+// ---------------------------------------------------------------------------
+// Page size: the unit comes from the plan (documents are CSS px), not from a
+// guess based on the page width.
+// ---------------------------------------------------------------------------
+let mediaBoxes (bytes: byte[]) =
+    let text = Text.Encoding.GetEncoding("ISO-8859-1").GetString bytes
+    [ for m in Text.RegularExpressions.Regex.Matches(text, @"/MediaBox\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]") ->
+        let value (index: int) = Double.Parse(m.Groups.[index].Value, Globalization.CultureInfo.InvariantCulture)
+        Math.Round(value 3 - value 1, 1), Math.Round(value 4 - value 2, 1) ]
+    |> List.distinct
+
+let pageSizedDoc width height =
+    { Doc.empty with
+        Blocks = [ paragraph 20000 ]
+        PageSetup = { Doc.defaultPageSetup with PageWidth = width; PageHeight = height; MarginLeft = 48.0; MarginRight = 48.0; MarginTop = 48.0; MarginBottom = 48.0 }
+        Selection = None }
+
+// A5 is 148 x 210 mm = 559.4 x 793.7 px = 419.5 x 595.3 pt.
+let a5Boxes = mediaBoxes (Pdf.toBytes options (pageSizedDoc 559.37 793.7))
+// (The PDF writer emits whole points.)
+check "word pdf A5 page is A5 in points"
+    (match a5Boxes with [ width, height ] -> abs (width - 419.5) <= 1.0 && abs (height - 595.3) <= 1.0 | _ -> false)
+    (sprintf "%A" a5Boxes)
+let letterBoxes = mediaBoxes (Pdf.toBytes options (pageSizedDoc 816.0 1056.0))
+check "word pdf Letter page is Letter in points" (letterBoxes = [ 612.0, 792.0 ]) (sprintf "%A" letterBoxes)
+let smallBoxes = mediaBoxes (Pdf.toBytes options (pageSizedDoc 400.0 600.0))
+check "word pdf small page is scaled like any other" (smallBoxes = [ 300.0, 450.0 ]) (sprintf "%A" smallBoxes)
+// A plan built in points keeps its size, even when wide (landscape Letter).
+let pointsPlan =
+    { blankPlan with
+        Settings = { blankPlan.Settings with Width = 792.0; PageHeight = 612.0 }
+        Pages = [ { blankPlan.Pages.Head with Width = 792.0; Height = 612.0 } ]
+        PageUnit = Pdf.Points }
+let pointsBoxes = mediaBoxes (Pdf.toBytesWithPaintPlan options pointsPlan)
+check "word pdf points plan is not shrunk" (pointsBoxes = [ 792.0, 612.0 ]) (sprintf "%A" pointsBoxes)
 
 printfn ""
 printfn "Word PDF tests: %d passed, %d failed" pass fail
