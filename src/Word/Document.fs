@@ -2382,11 +2382,32 @@ let clearHeading doc =
                 | _ -> block)
         if sameReference blocks doc.Blocks then doc else { doc with Blocks = blocks }
 
+/// The editable paragraph before or after the given one in reading order
+/// (table cells and text boxes included).
+let private neighbourParagraph forward doc paragraphId =
+    let paragraphs = editableParagraphsInOrder doc
+    match paragraphs |> List.tryFindIndex (fun para -> para.Id = paragraphId) with
+    | None -> None
+    | Some index ->
+        if forward then List.tryItem (index + 1) paragraphs
+        elif index > 0 then List.tryItem (index - 1) paragraphs
+        else None
+
+/// Position just across the paragraph boundary: the end of the previous
+/// paragraph, or the start of the next one.
+let private positionAcrossBoundary forward doc paragraphId =
+    neighbourParagraph forward doc paragraphId
+    |> Option.map (fun para -> { BlockId = para.Id; Offset = if forward then 0 else TextBuffer.length para.Buffer })
+
 /// Move cursor left
 let moveCursorLeft doc =
     match doc.Selection with
     | None -> doc
-    | Some sel when sel.Focus.Offset = 0 -> doc
+    | Some sel when sel.Focus.Offset = 0 ->
+        // Start of the paragraph: continue at the end of the previous one
+        match positionAcrossBoundary false doc sel.Focus.BlockId with
+        | Some position -> { doc with Selection = Some { Anchor = position; Focus = position } }
+        | None -> doc
     | Some sel ->
         let step =
             match findParagraph doc sel.Focus.BlockId with
@@ -2407,7 +2428,11 @@ let moveCursorRight doc =
         | None -> doc
         | Some para ->
             let maxOffset = TextBuffer.length para.Buffer
-            if sel.Focus.Offset >= maxOffset then doc
+            if sel.Focus.Offset >= maxOffset then
+                // End of the paragraph: continue at the start of the next one
+                match positionAcrossBoundary true doc sel.Focus.BlockId with
+                | Some position -> { doc with Selection = Some { Anchor = position; Focus = position } }
+                | None -> doc
             else
                 let step = forwardStep para.Buffer sel.Focus.Offset
                 let newSel = {
@@ -2420,7 +2445,10 @@ let moveCursorRight doc =
 let extendSelectionLeft doc =
     match doc.Selection with
     | None -> doc
-    | Some sel when sel.Focus.Offset = 0 -> doc
+    | Some sel when sel.Focus.Offset = 0 ->
+        match positionAcrossBoundary false doc sel.Focus.BlockId with
+        | Some position -> { doc with Selection = Some { sel with Focus = position } }
+        | None -> doc
     | Some sel ->
         // Keep anchor, move focus left
         let step =
@@ -2439,7 +2467,10 @@ let extendSelectionRight doc =
         | None -> doc
         | Some para ->
             let maxOffset = TextBuffer.length para.Buffer
-            if sel.Focus.Offset >= maxOffset then doc
+            if sel.Focus.Offset >= maxOffset then
+                match positionAcrossBoundary true doc sel.Focus.BlockId with
+                | Some position -> { doc with Selection = Some { sel with Focus = position } }
+                | None -> doc
             else
                 // Keep anchor, move focus right
                 let newFocus = { sel.Focus with Offset = sel.Focus.Offset + forwardStep para.Buffer sel.Focus.Offset }

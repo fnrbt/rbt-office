@@ -1900,6 +1900,18 @@ check "paragraph command without change keeps document"
     (obj.ReferenceEquals(Doc.alignLeft paragraphCommandDoc, paragraphCommandDoc))
     true
 
+// Left/Right continue into the neighbouring paragraph, table cells included.
+let focusOf (doc: Doc.Document) = doc.Selection |> Option.map (fun sel -> sel.Anchor.BlockId, sel.Anchor.Offset, sel.Focus.BlockId, sel.Focus.Offset)
+let caretAt id offset = { paragraphCommandDoc with Selection = Some { Anchor = pos id offset; Focus = pos id offset } }
+check "arrow left crosses to previous paragraph" (focusOf (Doc.moveCursorLeft (caretAt "pc2" 0))) (Some ("pc1", 3, "pc1", 3))
+check "arrow right crosses to next paragraph" (focusOf (Doc.moveCursorRight (caretAt "pc1" 3))) (Some ("pc2", 0, "pc2", 0))
+check "arrow right enters table cell" (focusOf (Doc.moveCursorRight (caretAt "pc2" 3))) (Some ("pc3", 0, "pc3", 0))
+check "arrow left leaves table cell" (focusOf (Doc.moveCursorLeft (caretAt "pc3" 0))) (Some ("pc2", 3, "pc2", 3))
+check "arrow left at document start stays" (focusOf (Doc.moveCursorLeft (caretAt "pc1" 0))) (Some ("pc1", 0, "pc1", 0))
+check "arrow right at document end stays" (focusOf (Doc.moveCursorRight (caretAt "pc4" 4))) (Some ("pc4", 4, "pc4", 4))
+check "shift right extends into next paragraph" (focusOf (Doc.extendSelectionRight (caretAt "pc1" 3))) (Some ("pc1", 3, "pc2", 0))
+check "shift left extends into previous paragraph" (focusOf (Doc.extendSelectionLeft (caretAt "pc2" 0))) (Some ("pc2", 0, "pc1", 3))
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail
