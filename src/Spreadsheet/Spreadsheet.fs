@@ -2516,6 +2516,15 @@ type Spreadsheet(container: Element) =
     member _.SheetNames() : string array =
         Array.copy sheetNames
 
+    /// Whether each sheet (parallel to `SheetNames()`) should get a tab.
+    /// False for sheets an imported workbook marks hidden / veryHidden: they
+    /// stay loaded because formulas refer to them, but Excel shows no tab.
+    member _.SheetVisibility() : bool array =
+        Array.init sheets.Length (fun i ->
+            match workbook |> Option.bind (fun wb -> Map.tryFind (sheetIdForIndex i) wb.Sheets) with
+            | Some sheet -> sheet.Visible
+            | None -> true)
+
     /// 0-based index of the currently displayed sheet.
     member _.ActiveSheetIndex
         with get () : int = activeSheetIndex
@@ -2551,6 +2560,15 @@ type Spreadsheet(container: Element) =
     /// `activeIndex` selects which sheet shows first; out-of-range values
     /// clamp to 0.
     member this.SetWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int) =
+        this.InstallWorkbook(newSheets, names, activeIndex, None)
+
+    /// Replace the workbook content together with its context. `context`
+    /// carries what the sheets alone cannot: defined names, declared table
+    /// columns and sheet visibility. Without one (plain `SetWorkbook`) a
+    /// context is built from the sheets, registering each sheet's tables.
+    /// Either way the previous workbook's context is discarded — keeping it
+    /// would resolve sheet ids, tables and names against sheets that are gone.
+    member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         if newSheets.Length = 0 then () else
         invalidateCalcEngine()
         sheets <- newSheets
@@ -2560,6 +2578,12 @@ type Spreadsheet(container: Element) =
         let safeIndex = max 0 (min (sheets.Length - 1) activeIndex)
         activeSheetIndex <- safeIndex
         model <- sheets.[safeIndex]
+        workbook <-
+            match context with
+            | Some wb when List.length wb.SheetOrder = sheets.Length ->
+                Some { wb with ActiveSheet = List.item safeIndex wb.SheetOrder }
+            | _ ->
+                Some (buildWorkbookContext sheets sheetNames (Array.create sheets.Length true) Map.empty Map.empty safeIndex)
         scrollTop <- 0.0
         scrollLeft <- 0.0
         render()
@@ -3074,25 +3098,35 @@ type Spreadsheet(container: Element) =
     /// Use: await spreadsheet.ImportXlsxFromBuffer(buffer, sheetName)
     /// To import from File: const buffer = await file.arrayBuffer(); await spreadsheet.ImportXlsxFromBuffer(buffer, null);
     member this.ImportXlsxFromBuffer(buffer: JS.ArrayBuffer, sheetName: string option): JS.Promise<unit> =
-        async {
-            let! loaded = importAllSheets buffer
-            if loaded.Length = 0 then () else
-                let names = loaded |> Array.map fst
-                let models = loaded |> Array.map snd
-                let active =
-                    match sheetName with
-                    | Some n ->
-                        names
-                        |> Array.tryFindIndex (fun s -> s = n)
-                        |> Option.defaultValue 0
-                    | None -> 0
-                this.SetWorkbook(models, names, active)
-        } |> Async.StartAsPromise
+        // The promise rejects when the file cannot be read; the current
+        // workbook is left untouched in that case.
+        (importWorkbookPromise buffer).``then``(fun imported ->
+            let names = imported.Sheets |> Array.map (fun sheet -> sheet.Name)
+            let models = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
+            // Land on the requested sheet, else the first one Excel shows.
+            let firstVisible =
+                imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Visible) |> Option.defaultValue 0
+            let active =
+                match sheetName with
+                | Some n ->
+                    names
+                    |> Array.tryFindIndex (fun s -> s = n)
+                    |> Option.defaultValue firstVisible
+                | None -> firstVisible
+            // The imported context (defined names, tables, hidden sheets) is
+            // what lets later recalculation resolve cross-sheet references.
+            this.InstallWorkbook(models, names, active, Some imported.Context))
 
-    /// Get list of sheet names from XLSX buffer (returns Promise)
+    /// Get list of sheet names from XLSX buffer (returns Promise). Hidden
+    /// sheets are included; see GetXlsxSheetInfos.
     /// Use: const sheets = await spreadsheet.GetXlsxSheetNames(buffer)
     member _.GetXlsxSheetNames(buffer: JS.ArrayBuffer): JS.Promise<string[]> =
-        getSheetNames buffer |> Async.StartAsPromise
+        getSheetNamesPromise buffer
+
+    /// `{ name, state, visible }` for every sheet in an XLSX buffer, so a
+    /// sheet picker can leave out hidden sheets.
+    member _.GetXlsxSheetInfos(buffer: JS.ArrayBuffer): JS.Promise<obj[]> =
+        getSheetInfosPromise buffer
 
     // ===== Formula Bar Integration =====
 

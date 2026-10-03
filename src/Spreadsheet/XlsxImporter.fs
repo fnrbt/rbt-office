@@ -114,25 +114,39 @@ let private hexColor (value: string) =
     let cleaned = if trimmed.Length = 8 then trimmed.Substring(2) else trimmed
     if cleaned.Length = 6 then Some ("#" + cleaned) else None
 
+/// Value of a non-formula cell, or the result a formula cell cached in the
+/// file. `errorObj` is the error code ("DIV/0!") for error cells.
+let private storedValue (rawValue: obj) (errorObj: obj): CellValue =
+        if not (isNullOrUndefined errorObj) then
+            CellValue.Error ((string errorObj).TrimStart('#'))
+        elif isNullOrUndefined rawValue then
+            CellValue.Empty
+        else
+            match rawValue with
+            | :? float as n -> CellValue.Number n
+            | :? bool as b -> CellValue.Boolean b
+            | :? string as s -> CellValue.String s
+            | other -> CellValue.String (string other)
+
     /// <summary>
-    /// Convert office-format cell value to Rbt.Grid CellValue.
+    /// Convert office-format cell value to Rbt.Grid CellValue. A formula cell
+    /// keeps the result the file cached for it: that is what Excel shows on
+    /// open, and it stays correct where our engine lacks a function. Only a
+    /// formula the file has no result for is left with an Empty value, for
+    /// the workbook-level pass in `finishWorkbook` to compute.
     /// </summary>
-let private convertCellValue (excelCell: ExcelCell): CellValue =
+let private convertCellValue (excelCell: ExcelCell) (errorObj: obj): CellValue =
+        let stored =
+            match excelCell.value with
+            | Some v -> storedValue v errorObj
+            | None -> storedValue null errorObj
         match excelCell.formula with
         | Some formula when not (System.String.IsNullOrWhiteSpace(formula)) ->
-            // Formula cell: store formula text and empty cached value
-            // (Rbt.Grid will re-evaluate the formula)
-            CellValue.Formula (formula, CellValue.Empty)
+            CellValue.Formula (formula, stored)
         | _ ->
-            match excelCell.value with
-            | None -> CellValue.Empty
-            | Some v ->
-                match v with
-                | :? float as n -> CellValue.Number n
-                | :? int as i -> CellValue.Number (float i)
-                | :? bool as b -> CellValue.Boolean b
-                | :? string as s -> CellValue.String s
-                | _ -> CellValue.String (string v)
+            match stored with
+            | CellValue.String "" -> CellValue.Empty
+            | other -> other
 
     /// <summary>
     /// Convert ExcelBorder to BorderStyle.
@@ -278,32 +292,347 @@ let private parseMergedCellRange (refRange: string) =
         else
             None
 
-    /// <summary>
-    /// Import a sheet from office-format workbook into SpreadsheetModel.
-    /// </summary>
-    /// <param name="workbook">office-format workbook object</param>
-    /// <param name="sheetName">Name of sheet to import (or first sheet if not specified)</param>
-    /// <returns>SpreadsheetModel populated with sheet data</returns>
-let importSheet (workbook: ExcelWorkbook) (sheetName: string option): SpreadsheetModel =
-        try
-            // Get API interface
-            let api = officeFormatApi?``default``()
-            let excel = api?excel
+// ---------------------------------------------------------------------------
+// Sheet metadata (api().excel.sheetMeta) -> model
+// ---------------------------------------------------------------------------
 
-            // Get sheet (use provided name or first sheet)
-            let actualSheetName =
-                match sheetName with
-                | Some name -> name
-                | None ->
-                    let sheetNames =
-                        excel?sheetNames(workbook)
-                        |> arrayFrom
-                        |> Array.map string
-                    if sheetNames.Length > 0 then sheetNames.[0]
-                    else failwith "Workbook has no sheets"
+module Wb = Rbt.Spreadsheet.Workbook
 
-            let sheet = excel?sheet(actualSheetName, workbook)
+let private arrayProp (source: obj) (name: string): obj[] =
+    let value = getProp source name
+    if isNullOrUndefined value then [||] else arrayFrom value
 
+let private boolProp (source: obj) (name: string) (fallback: bool) =
+    optBoolProp source name |> Option.defaultValue fallback
+
+let private intProp (source: obj) (name: string) (fallback: int) =
+    optIntProp source name |> Option.defaultValue fallback
+
+let private invariantNumber (text: string): float option =
+    match System.Double.TryParse(text.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+    | true, n when not (System.Double.IsNaN n) -> Some n
+    | _ -> None
+
+/// One corner of a range ("$B$7", "B", "7") as (row0, col0); a part that is
+/// absent (whole column / whole row) is None.
+let private parseCorner (text: string): (int option * int option) option =
+    let mutable col = 0
+    let mutable row = 0
+    let mutable hasCol = false
+    let mutable hasRow = false
+    let mutable valid = text <> ""
+    for c in text do
+        if c = '$' then ()
+        elif System.Char.IsLetter c && not hasRow && col < 20000 then
+            hasCol <- true
+            col <- col * 26 + (int (System.Char.ToUpperInvariant c) - int 'A' + 1)
+        elif System.Char.IsDigit c && row < 10000000 then
+            hasRow <- true
+            row <- row * 10 + (int c - int '0')
+        else
+            valid <- false
+    if not valid || (not hasCol && not hasRow) || (hasRow && row = 0) then None
+    else Some ((if hasRow then Some (row - 1) else None), (if hasCol then Some (col - 1) else None))
+
+/// "A1", "$A$1:$C$9", "A:C" or "2:5" as 0-based inclusive bounds, clipped
+/// to `maxRow` / `maxCol`. None when malformed or wholly outside the clip.
+let private parseRangeClipped (maxRow: int) (maxCol: int) (range: string): (int * int * int * int) option =
+    let parts = range.Trim().Split(':')
+    let corners =
+        match parts.Length with
+        | 1 -> parseCorner parts.[0] |> Option.map (fun c -> c, c)
+        | 2 ->
+            match parseCorner parts.[0], parseCorner parts.[1] with
+            | Some a, Some b -> Some (a, b)
+            | _ -> None
+        | _ -> None
+    corners
+    |> Option.bind (fun ((r1, c1), (r2, c2)) ->
+        let sr = r1 |> Option.defaultValue 0
+        let sc = c1 |> Option.defaultValue 0
+        let er = r2 |> Option.defaultValue maxRow
+        let ec = c2 |> Option.defaultValue maxCol
+        let sr, er = min sr er, max sr er
+        let sc, ec = min sc ec, max sc ec
+        if sr > maxRow || sc > maxCol then None
+        else Some (sr, sc, min er maxRow, min ec maxCol))
+
+/// The ranges of an sqref ("A1:A9 C3"), clipped.
+let private parseSqref (maxRow: int) (maxCol: int) (sqref: string) =
+    sqref.Split([| ' ' |], System.StringSplitOptions.RemoveEmptyEntries)
+    |> Array.choose (parseRangeClipped maxRow maxCol)
+
+/// A list validation whose source is a range or a defined name rather than
+/// a literal; it can only be resolved once the sheets it may point at exist.
+type private PendingList = {
+    Bounds: (int * int * int * int) array
+    Source: string
+    ErrorMessage: string option
+    InputMessage: string option
+}
+
+/// (min, max) for a numeric validation; None when the rule cannot be
+/// expressed as an inclusive range (notBetween, notEqual, formula bounds).
+let private validationBounds (isWhole: bool) (operator: string) (f1: string option) (f2: string option): (float option * float option) option =
+    let n1 = f1 |> Option.bind invariantNumber
+    let n2 = f2 |> Option.bind invariantNumber
+    match operator, n1, n2 with
+    | "between", Some a, Some b -> Some (Some (min a b), Some (max a b))
+    | "equal", Some a, _ -> Some (Some a, Some a)
+    | "greaterThanOrEqual", Some a, _ -> Some (Some a, None)
+    | "lessThanOrEqual", Some a, _ -> Some (None, Some a)
+    // The model's ranges are inclusive: exact for whole numbers; for
+    // decimals the bound itself is accepted, which errs on the lenient side.
+    | "greaterThan", Some a, _ -> Some (Some (if isWhole then a + 1.0 else a), None)
+    | "lessThan", Some a, _ -> Some (None, Some (if isWhole then a - 1.0 else a))
+    | _ -> None
+
+let private convertPageSetup (meta: obj): PageSetup =
+    let setup =
+        let p = getProp meta "pageSetup"
+        if isNullOrUndefined p then defaultPageSetup
+        else
+            let w, h =
+                optIntProp p "paperSize"
+                |> Option.map paperSizePoints
+                |> Option.defaultValue (defaultPageSetup.PageWidth, defaultPageSetup.PageHeight)
+            { defaultPageSetup with
+                PageWidth = w
+                PageHeight = h
+                Orientation = (if optStringProp p "orientation" = Some "landscape" then LandscapeOrientation else PortraitOrientation)
+                FitToPage = boolProp p "fitToPage" false
+                FitToWidth = intProp p "fitToWidth" 1
+                FitToHeight = intProp p "fitToHeight" 1
+                Scale = intProp p "scale" 100
+                FirstPageNumber = intProp p "firstPageNumber" 1
+                UseFirstPageNumber = boolProp p "useFirstPageNumber" false
+                PageOrder = (if optStringProp p "pageOrder" = Some "overThenDown" then OverThenDown else DownThenOver)
+                BlackAndWhite = boolProp p "blackAndWhite" false
+                CellComments =
+                    match optStringProp p "cellComments" with
+                    | Some "asDisplayed" -> CellCommentsAsDisplayed
+                    | Some "atEnd" -> CellCommentsAtEnd
+                    | _ -> CellCommentsNone }
+    let margins =
+        let m = getProp meta "pageMargins"
+        if isNullOrUndefined m then defaultPageMargins
+        else
+            let get name fallback = optFloatProp m name |> Option.defaultValue fallback
+            ({ Top = get "top" 0.75; Bottom = get "bottom" 0.75; Left = get "left" 0.7; Right = get "right" 0.7
+               Header = get "header" 0.3; Footer = get "footer" 0.3 } : PageMargins)
+    let options =
+        let o = getProp meta "printOptions"
+        ({ GridLines = boolProp o "gridLines" false
+           Headings = boolProp o "headings" false
+           HorizontalCentered = boolProp o "horizontalCentered" false
+           VerticalCentered = boolProp o "verticalCentered" false } : PrintOptions)
+    let headerFooter =
+        let h = getProp meta "headerFooter"
+        ({ OddHeader = optStringProp h "oddHeader"
+           OddFooter = optStringProp h "oddFooter"
+           EvenHeader = optStringProp h "evenHeader"
+           EvenFooter = optStringProp h "evenFooter"
+           FirstHeader = optStringProp h "firstHeader"
+           FirstFooter = optStringProp h "firstFooter"
+           DifferentOddEven = boolProp h "differentOddEven" false
+           DifferentFirst = boolProp h "differentFirst" false
+           ScaleWithDoc = boolProp h "scaleWithDoc" true } : HeaderFooter)
+    let wholeSheet = parseRangeClipped 1048575 16383
+    { setup with
+        Margins = margins
+        Options = options
+        HeaderFooter = headerFooter
+        ManualRowBreaks = arrayProp meta "rowBreaks" |> Array.map unbox<int> |> Array.toList
+        ManualColBreaks = arrayProp meta "colBreaks" |> Array.map unbox<int> |> Array.toList
+        PrintArea =
+            optStringProp meta "printArea"
+            |> Option.bind wholeSheet
+            |> Option.map (fun (sr, sc, er, ec) -> ({ From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } } : CellRange))
+        RepeatRows = optStringProp meta "printTitleRows" |> Option.bind wholeSheet |> Option.map (fun (sr, _, er, _) -> sr, er)
+        RepeatCols = optStringProp meta "printTitleCols" |> Option.bind wholeSheet |> Option.map (fun (_, sc, _, ec) -> sc, ec) }
+
+let private convertTables (meta: obj): Table list * Map<string, string list> =
+    let mutable columns = Map.empty<string, string list>
+    let tables =
+        arrayProp meta "tables"
+        |> Array.map (fun t ->
+            let name = optStringProp t "name" |> Option.defaultValue ""
+            columns <- Map.add name (arrayProp t "columns" |> Array.map string |> Array.toList) columns
+            let style =
+                let s = getProp t "style"
+                if isNullOrUndefined s then None
+                else
+                    // HeaderFill / StripeFill make `applyTableStyles` paint the
+                    // table at render time; nothing is baked into the cells.
+                    Some ({ Name = optStringProp s "name" |> Option.defaultValue ""
+                            ShowFirstColumn = boolProp s "showFirstColumn" false
+                            ShowLastColumn = boolProp s "showLastColumn" false
+                            ShowRowStripes = boolProp s "showRowStripes" false
+                            ShowColumnStripes = boolProp s "showColumnStripes" false
+                            HeaderFill = optStringProp s "headerFill"
+                            StripeFill = optStringProp s "stripeFill" } : TableStyle)
+            let autoFilter =
+                match arrayProp t "autoFilter" with
+                | [| c1; c2 |] -> Some (unbox<int> c1, unbox<int> c2)
+                | _ -> None
+            ({ Name = name
+               StartRow = intProp t "startRow" 1
+               StartCol = intProp t "startCol" 1
+               EndRow = intProp t "endRow" 1
+               EndCol = intProp t "endCol" 1
+               HeaderRowCount = intProp t "headerRowCount" 1
+               Style = style
+               AutoFilter = autoFilter
+               HasTotals = intProp t "totalsRowCount" 0 > 0 } : Table))
+        |> Array.toList
+    tables, columns
+
+/// Rules the model can express (it knows > < between = and "contains
+/// text", each with an overlay style). Other rule types are left out rather
+/// than approximated.
+let private convertConditionalFormats (maxRow: int) (maxCol: int) (meta: obj): Map<CellAddress, ConditionalFormat list> =
+    let mutable result = Map.empty<CellAddress, (int * ConditionalFormat) list>
+    let mutable sequence = 0
+    for cf in arrayProp meta "conditionalFormats" do
+        let bounds = optStringProp cf "range" |> Option.map (parseSqref maxRow maxCol) |> Option.defaultValue [||]
+        for rule in arrayProp cf "rules" do
+            sequence <- sequence + 1
+            let formulas = arrayProp rule "formulas" |> Array.map string
+            let number index = if index < formulas.Length then invariantNumber formulas.[index] else None
+            let converted =
+                match optStringProp rule "type" |> Option.defaultValue "", optStringProp rule "operator" |> Option.defaultValue "" with
+                | "cellIs", "greaterThan" -> number 0 |> Option.map GreaterThan
+                | "cellIs", "lessThan" -> number 0 |> Option.map LessThan
+                | "cellIs", "equal" -> number 0 |> Option.map Equal
+                | "cellIs", "between" ->
+                    match number 0, number 1 with
+                    | Some a, Some b -> Some (Between (min a b, max a b))
+                    | _ -> None
+                | "containsText", _ -> optStringProp rule "text" |> Option.map ContainsText
+                | _ -> None
+            let style = getProp rule "style"
+            match converted with
+            | Some modelRule when not (isNullOrUndefined style) ->
+                let format =
+                    { defaultFormat with
+                        TextColor = optStringProp style "fontColor"
+                        BgColor = optStringProp style "fillColor"
+                        Bold = boolProp style "bold" false
+                        Italic = boolProp style "italic" false }
+                // Lower priority number wins in Excel; ties keep file order.
+                let priority = optIntProp rule "priority" |> Option.defaultValue (100000 + sequence)
+                let entry = priority, ({ Rule = modelRule; Style = format } : ConditionalFormat)
+                for (sr, sc, er, ec) in bounds do
+                    for r in sr .. er do
+                        for c in sc .. ec do
+                            let addr = { Row = r; Col = c }
+                            let existing = Map.tryFind addr result |> Option.defaultValue []
+                            result <- Map.add addr (existing @ [ entry ]) result
+            | _ -> ()
+    result |> Map.map (fun _ entries -> entries |> List.sortBy fst |> List.map snd)
+
+/// Validations with a literal definition become rules now; list validations
+/// that point at a range or a name are returned as pending.
+let private convertValidations (maxRow: int) (maxCol: int) (meta: obj): Map<CellAddress, DataValidation> * PendingList list =
+    let mutable rules = Map.empty<CellAddress, DataValidation>
+    let pending = ResizeArray<PendingList>()
+    for dv in arrayProp meta "validations" do
+        let bounds = optStringProp dv "range" |> Option.map (parseSqref maxRow maxCol) |> Option.defaultValue [||]
+        let kind = optStringProp dv "type" |> Option.defaultValue "none"
+        let operator = optStringProp dv "operator" |> Option.defaultValue "between"
+        let f1 = optStringProp dv "formula1"
+        let f2 = optStringProp dv "formula2"
+        let errorMessage = optStringProp dv "error"
+        let inputMessage = if boolProp dv "showInputMessage" false then optStringProp dv "prompt" else None
+        // Excel only rejects an entry when showErrorMessage is set; without
+        // it the rule is advisory, so only a list (for its dropdown) is kept.
+        let enforced = boolProp dv "showErrorMessage" false
+        let rule =
+            match kind, f1 with
+            | "list", Some source ->
+                let source = source.Trim()
+                if source.StartsWith "\"" then
+                    let values = source.Trim('"').Split(',') |> Array.map (fun v -> v.Trim()) |> Array.toList
+                    Some (ListValues values)
+                else
+                    pending.Add { Bounds = bounds; Source = source; ErrorMessage = errorMessage; InputMessage = inputMessage }
+                    None
+            | "whole", _ when enforced -> validationBounds true operator f1 f2 |> Option.map WholeNumber
+            | "decimal", _ when enforced -> validationBounds false operator f1 f2 |> Option.map DecimalRange
+            | "textLength", _ when enforced -> validationBounds true operator f1 f2 |> Option.map TextLength
+            | "date", _ when enforced -> validationBounds false operator f1 f2 |> Option.map DateRange
+            | _ -> None
+        match rule with
+        | Some rule ->
+            let validation = { Rule = rule; ErrorMessage = errorMessage; InputMessage = inputMessage }
+            for (sr, sc, er, ec) in bounds do
+                for r in sr .. er do
+                    for c in sc .. ec do
+                        rules <- Map.add { Row = r; Col = c } validation rules
+        | None -> ()
+    rules, List.ofSeq pending
+
+/// Values of a list validation's source range. `lookupSheet None` is the
+/// sheet that owns the validation.
+let private resolveListSource (lookupSheet: string option -> SpreadsheetModel option) (lookupName: string -> string option) (source: string): string list option =
+    let rec resolve (depth: int) (text: string) =
+        let text = (if text.StartsWith "=" then text.Substring 1 else text).Trim()
+        let sheetName, rangeText =
+            match text.LastIndexOf '!' with
+            | -1 -> None, text
+            | idx ->
+                let raw = text.Substring(0, idx)
+                let name =
+                    if raw.Length >= 2 && raw.StartsWith "'" && raw.EndsWith "'" then raw.Substring(1, raw.Length - 2).Replace("''", "'")
+                    else raw
+                Some name, text.Substring(idx + 1)
+        match lookupSheet sheetName with
+        | None -> None
+        | Some model ->
+            match parseRangeClipped (model.RowCount - 1) (model.ColCount - 1) rangeText with
+            | Some (sr, sc, er, ec) ->
+                [ for r in sr .. er do
+                    for c in sc .. ec do
+                        let text = displayValue (getCellValue { Row = r; Col = c } model)
+                        if text <> "" then yield text ]
+                |> Some
+            | None ->
+                // Not a range: a defined name whose refers-to is one.
+                if depth > 0 || sheetName.IsSome then None
+                else lookupName text |> Option.bind (resolve (depth + 1))
+    resolve 0 source
+
+let private applyPendingLists (lookupSheet: string option -> SpreadsheetModel option) (lookupName: string -> string option) (pending: PendingList list) (model: SpreadsheetModel): SpreadsheetModel =
+    let mutable validations = model.Validations
+    for item in pending do
+        match resolveListSource lookupSheet lookupName item.Source with
+        | Some values when not (List.isEmpty values) ->
+            let validation = { Rule = ListValues values; ErrorMessage = item.ErrorMessage; InputMessage = item.InputMessage }
+            for (sr, sc, er, ec) in item.Bounds do
+                for r in sr .. er do
+                    for c in sc .. ec do
+                        validations <- Map.add { Row = r; Col = c } validation validations
+        | _ -> ()
+    if obj.ReferenceEquals(validations, model.Validations) then model
+    else { model with Validations = validations }
+
+// ---------------------------------------------------------------------------
+// Sheet import
+// ---------------------------------------------------------------------------
+
+type private SheetImport = {
+    Model: SpreadsheetModel
+    PendingLists: PendingList list
+    /// `<tableColumn>` names per table, for structured references.
+    TableColumns: Map<string, string list>
+    State: string
+}
+
+let private excelApi (): obj =
+    let api = officeFormatApi?``default``()
+    api?excel
+
+let private importSheetCore (excel: obj) (workbook: ExcelWorkbook) (sheet: ExcelSheet): SheetImport =
             let mutable rowCount = 0
             let mutable colCount = 0
             let setDimensionsFromSheet () =
@@ -317,12 +646,6 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
             let mutable richRunsMap = Map.empty<CellAddress, (string * RunOverride) list>
             let mutable columnWidths = Map.empty<int, float>
             let mutable rowHeights = Map.empty<int, float>
-            let mutable formulaCount = 0
-
-            let noteImportedValue value =
-                match value with
-                | CellValue.Formula _ -> formulaCount <- formulaCount + 1
-                | _ -> ()
 
             let extractBorder (borderObj: obj) =
                 if isNullOrUndefined borderObj then None
@@ -334,7 +657,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
 
             let excelCellFromObj rawValue cellObj formulaOverride hasCommentOverride hasListDropdownOverride =
                 {
-                    value = if isNullOrUndefined rawValue || string rawValue = "" then None else Some rawValue
+                    value = if isNullOrUndefined rawValue then None else Some rawValue
                     formula =
                         match formulaOverride with
                         | Some value -> Some value
@@ -374,7 +697,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                     let excelCell: ExcelCell =
                         excelCellFromObj rawValue cellObj None None None
 
-                    let cellValue = convertCellValue excelCell
+                    let cellValue = convertCellValue excelCell (getProp cellObj "error")
                     let cellFormat = convertCellFormat excelCell
 
                     // Read comment if present. Older office-format builds expose comments as a collection only.
@@ -400,7 +723,6 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                     // comment markers, and validation dropdowns even when
                     // the cell has no value.
                     if cellValue <> CellValue.Empty || cellFormat <> defaultFormat || comment.IsSome then
-                        noteImportedValue cellValue
                         let addr = { Row = row; Col = col }
                         cellMap <- Map.add addr { Value = cellValue; Format = cellFormat; Comment = comment } cellMap
 
@@ -436,14 +758,14 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                         styleCache.[styleIndex] <- format
                         format
 
-            let importCompactCell row col rawValue formulaObj styleIndex hasComment hasListDropdown richRunObjs =
+            let importCompactCell row col rawValue formulaObj (errorObj: obj) styleIndex hasComment hasListDropdown richRunObjs =
                 if row >= 0 && col >= 0 then
                     if row + 1 > rowCount then rowCount <- row + 1
                     if col + 1 > colCount then colCount <- col + 1
                     let formula =
                         if isNullOrUndefined formulaObj then None else Some (string formulaObj)
                     let valueCell = excelCellFromObj rawValue null formula None None
-                    let cellValue = convertCellValue valueCell
+                    let cellValue = convertCellValue valueCell errorObj
                     let baseFormat = styleFormat styleIndex
                     let cellFormat =
                         { baseFormat with
@@ -465,7 +787,6 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                         if comment.IsSome then { cellFormat with HasComment = true }
                         else cellFormat
                     if cellValue <> CellValue.Empty || cellFormat <> defaultFormat || comment.IsSome then
-                        noteImportedValue cellValue
                         let addr = { Row = row; Col = col }
                         cellMap <- Map.add addr { Value = cellValue; Format = cellFormat; Comment = comment } cellMap
 
@@ -488,6 +809,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 let hasComments: bool[] = unbox (getProp columnarCells "hasComments")
                 let hasListDropdowns: bool[] = unbox (getProp columnarCells "hasListDropdowns")
                 let richRuns: obj[] = unbox (getProp columnarCells "richRuns")
+                let errors: obj[] = arrayProp columnarCells "errors"
                 let count =
                     [| rows.Length; cols.Length; values.Length; formulas.Length; styleIndexes.Length
                        hasComments.Length; hasListDropdowns.Length; richRuns.Length |]
@@ -498,6 +820,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                         cols.[index]
                         values.[index]
                         formulas.[index]
+                        (if index < errors.Length then errors.[index] else null)
                         styleIndexes.[index]
                         hasComments.[index]
                         hasListDropdowns.[index]
@@ -513,6 +836,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                         col
                         (getIndex compactCell 2)
                         (getIndex compactCell 3)
+                        null
                         (getIndex compactCell 4 |> unbox<int>)
                         (getIndex compactCell 5 |> unbox<bool>)
                         (getIndex compactCell 6 |> unbox<bool>)
@@ -604,11 +928,55 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                         with _ -> ()
                     resizeArrayToList ranges
 
+            let modelRows = max rowCount 100  // Minimum 100 rows
+            let modelCols = max colCount 26   // Minimum 26 columns (A-Z)
+
+            // Everything that is not a cell: freeze panes, hidden rows and
+            // columns, tables, validations, conditional formats, print setup.
+            let meta: obj =
+                if isFunction excel?sheetMeta then excel?sheetMeta(workbook, sheet) else null
+            let hasMeta = not (isNullOrUndefined meta)
+
+            // A size of 0 is how the model marks a hidden row / column.
+            if hasMeta then
+                for row in arrayProp meta "hiddenRows" do
+                    rowHeights <- Map.add (unbox<int> row) 0.0 rowHeights
+                for col in arrayProp meta "hiddenCols" do
+                    columnWidths <- Map.add (unbox<int> col) 0.0 columnWidths
+
+            // Rules over whole columns / rows are stored per cell, so they
+            // are clipped to the used range plus room to grow.
+            let ruleRows = modelRows + 200 - 1
+            let ruleCols = modelCols + 50 - 1
+            let validations, pendingLists =
+                if hasMeta then convertValidations ruleRows ruleCols meta else Map.empty, []
+            let tables, tableColumns =
+                if hasMeta then convertTables meta else [], Map.empty
+
+            // The model has no hyperlink store; show link cells the way Excel
+            // styles them so they are at least recognisable.
+            if hasMeta then
+                for link in arrayProp meta "hyperlinks" do
+                    match optStringProp link "range" |> Option.bind (parseRangeClipped (modelRows - 1) (modelCols - 1)) with
+                    | Some (sr, sc, er, ec) when (er - sr + 1) * (ec - sc + 1) <= 4096 ->
+                        for r in sr .. er do
+                            for c in sc .. ec do
+                                let addr = { Row = r; Col = c }
+                                match Map.tryFind addr cellMap with
+                                | Some data ->
+                                    let format =
+                                        { data.Format with
+                                            TextColor = data.Format.TextColor |> Option.orElse (Some "#0563C1")
+                                            Underline = true }
+                                    cellMap <- Map.add addr { data with Format = format } cellMap
+                                | None -> ()
+                    | _ -> ()
+
             // Create model with imported data
             let importedModel = {
                 Cells = cellMap
-                RowCount = max rowCount 100  // Minimum 100 rows
-                ColCount = max colCount 26   // Minimum 26 columns (A-Z)
+                RowCount = modelRows
+                ColCount = modelCols
                 Selection = SingleCell (0, 0)
                 EditingCell = None
                 EditBuffer = ""
@@ -624,59 +992,273 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
                 SearchCaseSensitive = None
                 SearchResults = [||]
                 SearchIndex = 0
-                ConditionalFormats = Map.empty
+                ConditionalFormats = if hasMeta then convertConditionalFormats (modelRows - 1) (modelCols - 1) meta else Map.empty
                 RichRuns = richRunsMap
                 MergedCells = mergedCellList
-                FrozenRows = 0
-                FrozenCols = 0
-                PageSetup = defaultPageSetup
-                Tables = []
+                FrozenRows = if hasMeta then intProp meta "frozenRows" 0 else 0
+                FrozenCols = if hasMeta then intProp meta "frozenCols" 0 else 0
+                PageSetup = if hasMeta then convertPageSetup meta else defaultPageSetup
+                Tables = tables
                 CfBoldCells = Set.empty
-                ShowGridLines = true
+                ShowGridLines = if hasMeta then boolProp meta "showGridLines" true else true
                 Spill = Map.empty
-                Validations = Map.empty
+                Validations = validations
                 Macros = ""
             }
-            if formulaCount = 0 then
-                importedModel
-            else
-                recalculateAllFormulas None None importedModel
-
-        with ex ->
-            printfn "Error importing XLSX: %s" ex.Message
-            // Return empty model on error
             {
-                Cells = Map.empty
-                RowCount = 100
-                ColCount = 26
-                Selection = SingleCell (0, 0)
-                EditingCell = None
-                EditBuffer = ""
-                Clipboard = None
-                History = { Past = []; Future = []; MaxSize = 50 }
-                SortState = None
-                Filters = Map.empty
-                FilterVisibleRows = None
-                FilterHiddenRows = [||]
-                RowHeights = Map.empty
-                ColumnWidths = Map.empty
-                SearchQuery = None
-                SearchCaseSensitive = None
-                SearchResults = [||]
-                SearchIndex = 0
-                ConditionalFormats = Map.empty
-                RichRuns = Map.empty
-                MergedCells = []
-                FrozenRows = 0
-                FrozenCols = 0
-                PageSetup = defaultPageSetup
-                Tables = []
-                CfBoldCells = Set.empty
-                ShowGridLines = true
-                Spill = Map.empty
-                Validations = Map.empty
-                Macros = ""
+                Model = importedModel
+                PendingLists = pendingLists
+                TableColumns = tableColumns
+                State = (if hasMeta then optStringProp meta "state" |> Option.defaultValue "visible" else "visible")
             }
+
+// ---------------------------------------------------------------------------
+// Workbook assembly
+// ---------------------------------------------------------------------------
+
+/// One sheet of an imported workbook. `State` is "visible", "hidden" or
+/// "veryHidden"; hidden sheets are imported (formulas refer to them) but a
+/// host should not offer a tab for them.
+type ImportedSheet = {
+    Name: string
+    Model: SpreadsheetModel
+    State: string
+    Visible: bool
+}
+
+/// A whole imported workbook: every sheet in file order, and the workbook
+/// context (sheets, structured-reference tables, defined names) the formula
+/// engine needs to evaluate anything that looks outside its own sheet.
+type ImportedWorkbook = {
+    Sheets: ImportedSheet array
+    Context: Rbt.Spreadsheet.Workbook.Workbook
+    /// The file used the 1904 date system. Date serials have already been
+    /// converted to the 1900 system the engine uses.
+    Date1904: bool
+}
+
+/// Sheet id of the sheet at `index`. Must agree with the ids the Spreadsheet
+/// component assigns (`sheetN`, 1-based).
+let sheetIdOfIndex (index: int): string =
+    sprintf "sheet%d" (index + 1)
+
+/// Workbook context for a set of sheet models: every table on every sheet is
+/// registered for structured references. `tableColumns` supplies declared
+/// column names by table name; a table without them reads its header row.
+let buildWorkbookContext (models: SpreadsheetModel array) (names: string array) (visible: bool array)
+                         (tableColumns: Map<string, string list>)
+                         (definedNames: Map<Rbt.Spreadsheet.Workbook.SheetId option * string, string>)
+                         (activeIndex: int): Rbt.Spreadsheet.Workbook.Workbook =
+    let sheetEntries =
+        [ for i in 0 .. models.Length - 1 ->
+            let id = sheetIdOfIndex i
+            id, ({ Id = id
+                   Name = (if i < names.Length then names.[i] else sprintf "Sheet%d" (i + 1))
+                   Model = models.[i]
+                   Visible = (if i < visible.Length then visible.[i] else true) } : Rbt.Spreadsheet.Workbook.Sheet) ]
+    let tables =
+        [ for i in 0 .. models.Length - 1 do
+            for t in models.[i].Tables do
+                if t.Name <> "" then
+                    let columns = Map.tryFind t.Name tableColumns |> Option.defaultValue []
+                    yield t.Name,
+                          Wb.makeTableFromRegion (sheetIdOfIndex i) t.Name t.StartRow t.StartCol t.EndRow t.EndCol
+                              t.HeaderRowCount (if t.HasTotals then 1 else 0) columns models.[i] ]
+    { Sheets = Map.ofList sheetEntries
+      SheetOrder = sheetEntries |> List.map fst
+      ActiveSheet = sheetIdOfIndex (max 0 (min (models.Length - 1) activeIndex))
+      Tables = Map.ofList tables
+      Names = definedNames }
+
+let private isUncached (cell: CellData) =
+    match cell.Value with
+    | CellValue.Formula (_, CellValue.Empty) -> true
+    | _ -> false
+
+/// Compute the formulas the file carries no result for (workbooks written by
+/// libraries rather than by Excel). The calculation runs over the WHOLE
+/// workbook — a sheet recalculated on its own turns every cross-sheet
+/// reference into #REF! and every defined name into #NAME? — and afterwards
+/// every formula that did have a cached result gets it back, so values Excel
+/// computed are never replaced by ours.
+let private computeUncachedFormulas (context: Rbt.Spreadsheet.Workbook.Workbook): Rbt.Spreadsheet.Workbook.Workbook =
+    let needsWork =
+        context.Sheets |> Map.exists (fun _ sheet -> sheet.Model.Cells |> Map.exists (fun _ cell -> isUncached cell))
+    if not needsWork then context
+    else
+        let recalculated = recalculateWorkbook context
+        let sheets =
+            recalculated.Sheets
+            |> Map.map (fun id sheet ->
+                match Map.tryFind id context.Sheets with
+                | None -> sheet
+                | Some original ->
+                    let mutable cells = sheet.Model.Cells
+                    for KeyValue(addr, cell) in original.Model.Cells do
+                        match cell.Value with
+                        | CellValue.Formula (_, cached) when cached <> CellValue.Empty ->
+                            cells <- Map.add addr cell cells
+                        | _ -> ()
+                    { sheet with Model = { sheet.Model with Cells = cells } })
+        { recalculated with Sheets = sheets }
+
+let private requireWorkbook (workbook: ExcelWorkbook): ExcelWorkbook =
+    if isNullOrUndefined workbook then
+        failwith "Not a readable XLSX workbook: the package has no workbook part"
+    workbook
+
+/// Convert a loaded office-format workbook: every sheet, plus the workbook
+/// context. Throws when the workbook has no sheets.
+let importWorkbook (workbook: ExcelWorkbook): ImportedWorkbook =
+    let workbook = requireWorkbook workbook
+    let excel = excelApi ()
+    let names: string[] = excel?sheetNames(workbook) |> arrayFrom |> Array.map string
+    if names.Length = 0 then failwith "XLSX workbook has no worksheets"
+    let imports =
+        names |> Array.map (fun name -> importSheetCore excel workbook (excel?sheet(name, workbook)))
+    let info: obj = if isFunction excel?workbookInfo then excel?workbookInfo(workbook) else null
+
+    // Defined names. `localSheetId` indexes the workbook's sheet list, which
+    // is the list just imported (every sheet is loaded here).
+    let definedNames =
+        arrayProp info "definedNames"
+        |> Array.choose (fun entry ->
+            match optStringProp entry "name", optStringProp entry "refersTo" with
+            | Some name, Some refersTo ->
+                let scope = optIntProp entry "localSheetId" |> Option.map sheetIdOfIndex
+                Some (scope, name, refersTo)
+            | _ -> None)
+        |> Wb.namesOfTriples
+
+    // List validations that point at a range or a name, now that every sheet exists.
+    let lookupName (index: int) (name: string) =
+        let key = name.ToUpperInvariant()
+        Map.tryFind (Some (sheetIdOfIndex index), key) definedNames
+        |> Option.orElse (Map.tryFind (None, key) definedNames)
+    let models =
+        imports
+        |> Array.mapi (fun index import ->
+            let lookupSheet (name: string option) =
+                match name with
+                | None -> Some import.Model
+                | Some name ->
+                    names
+                    |> Array.tryFindIndex (fun n -> System.String.Equals(n, name, System.StringComparison.OrdinalIgnoreCase))
+                    |> Option.map (fun i -> imports.[i].Model)
+            applyPendingLists lookupSheet (lookupName index) import.PendingLists import.Model)
+
+    let visible = imports |> Array.map (fun import -> import.State = "visible")
+    let tableColumns =
+        imports |> Array.fold (fun acc import -> Map.fold (fun m k v -> Map.add k v m) acc import.TableColumns) Map.empty
+    let firstVisible = visible |> Array.tryFindIndex id |> Option.defaultValue 0
+    let context =
+        buildWorkbookContext models names visible tableColumns definedNames firstVisible
+        |> computeUncachedFormulas
+    {
+        Sheets =
+            names
+            |> Array.mapi (fun index name ->
+                { Name = name
+                  Model =
+                    (match Map.tryFind (sheetIdOfIndex index) context.Sheets with
+                     | Some sheet -> sheet.Model
+                     | None -> models.[index])
+                  State = imports.[index].State
+                  Visible = visible.[index] })
+        Context = context
+        Date1904 = (not (isNullOrUndefined info)) && boolProp info "date1904" false
+    }
+
+    /// <summary>
+    /// Import a sheet from office-format workbook into SpreadsheetModel.
+    /// Formulas keep the values cached in the file. A formula the file has no
+    /// value for is computed with this sheet as the only context — use
+    /// `importWorkbook` when other sheets or defined names matter.
+    /// Throws when the workbook is unreadable or the sheet does not exist.
+    /// </summary>
+    /// <param name="workbook">office-format workbook object</param>
+    /// <param name="sheetName">Name of sheet to import (or first sheet if not specified)</param>
+    /// <returns>SpreadsheetModel populated with sheet data</returns>
+let importSheet (workbook: ExcelWorkbook) (sheetName: string option): SpreadsheetModel =
+    let workbook = requireWorkbook workbook
+    let excel = excelApi ()
+    let actualSheetName =
+        match sheetName with
+        | Some name -> name
+        | None ->
+            let sheetNames = excel?sheetNames(workbook) |> arrayFrom |> Array.map string
+            if sheetNames.Length > 0 then sheetNames.[0]
+            else failwith "XLSX workbook has no worksheets"
+    let sheet = excel?sheet(actualSheetName, workbook)
+    if isNullOrUndefined sheet then
+        failwith (sprintf "XLSX workbook has no worksheet named '%s'" actualSheetName)
+    let import = importSheetCore excel workbook sheet
+    let model =
+        applyPendingLists (fun name -> if name.IsNone then Some import.Model else None) (fun _ -> None) import.PendingLists import.Model
+    let context =
+        buildWorkbookContext [| model |] [| actualSheetName |] [| true |] import.TableColumns Map.empty 0
+        |> computeUncachedFormulas
+    match Map.tryFind (sheetIdOfIndex 0) context.Sheets with
+    | Some sheet -> sheet.Model
+    | None -> model
+
+// ---------------------------------------------------------------------------
+// Buffer entry points. A failure (not a zip, corrupt XML, no workbook, an
+// archive over the size limits) rejects / throws: it must never come back as
+// an empty sheet the user could save over the original.
+//
+// The `…Promise` functions are for JavaScript callers, which cannot await an
+// F# Async; the Async ones remain for F# callers.
+// ---------------------------------------------------------------------------
+
+let private loadWorkbook (buffer: JS.ArrayBuffer) (selected: string option option): JS.Promise<ExcelWorkbook> =
+    let excel = excelApi ()
+    let loading: JS.Promise<ExcelWorkbook> =
+        match selected with
+        | Some sheetName when isFunction excel?loadSelected -> excel?loadSelected(buffer, sheetName)
+        | _ -> excel?load(buffer)
+    loading.``then``(requireWorkbook)
+
+/// Import one sheet. Only that sheet is parsed, so formulas keep their
+/// cached values but nothing outside the sheet is available to recompute.
+let importFromBufferPromise (buffer: JS.ArrayBuffer) (sheetName: string option): JS.Promise<SpreadsheetModel> =
+    (loadWorkbook buffer (Some sheetName)).``then``(fun workbook -> importSheet workbook sheetName)
+
+/// Import the whole workbook: sheets with their visibility, and the context
+/// (tables, defined names) cross-sheet formulas need.
+let importWorkbookPromise (buffer: JS.ArrayBuffer): JS.Promise<ImportedWorkbook> =
+    (loadWorkbook buffer None).``then``(importWorkbook)
+
+/// Import every sheet in source order, paired with its name (hidden sheets
+/// included — see `importWorkbookPromise` for visibility).
+let importAllSheetsPromise (buffer: JS.ArrayBuffer): JS.Promise<(string * SpreadsheetModel) array> =
+    (importWorkbookPromise buffer).``then``(fun imported ->
+        imported.Sheets |> Array.map (fun sheet -> sheet.Name, sheet.Model))
+
+/// Name and visibility of every sheet: `{ name, state, visible }` where
+/// state is "visible" | "hidden" | "veryHidden".
+let getSheetInfosPromise (buffer: JS.ArrayBuffer): JS.Promise<obj[]> =
+    (loadWorkbook buffer None).``then``(fun workbook ->
+        let excel = excelApi ()
+        let names: string[] = excel?sheetNames(workbook) |> arrayFrom |> Array.map string
+        let states: string[] =
+            if isFunction excel?sheetStates then excel?sheetStates(workbook) |> arrayFrom |> Array.map string
+            else names |> Array.map (fun _ -> "visible")
+        names
+        |> Array.mapi (fun index name ->
+            let state = if index < states.Length then states.[index] else "visible"
+            createObj [ "name" ==> name; "state" ==> state; "visible" ==> (state = "visible") ]))
+
+/// Names of every sheet in the workbook, hidden ones included.
+let getSheetNamesPromise (buffer: JS.ArrayBuffer): JS.Promise<string[]> =
+    (getSheetInfosPromise buffer).``then``(fun infos -> infos |> Array.map (fun info -> string (getProp info "name")))
+
+/// Names of the sheets Excel shows a tab for.
+let getVisibleSheetNamesPromise (buffer: JS.ArrayBuffer): JS.Promise<string[]> =
+    (getSheetInfosPromise buffer).``then``(fun infos ->
+        infos
+        |> Array.filter (fun info -> unbox<bool> (getProp info "visible"))
+        |> Array.map (fun info -> string (getProp info "name")))
 
     /// <summary>
     /// Import XLSX file from ArrayBuffer.
@@ -685,59 +1267,7 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
     /// <param name="sheetName">Optional sheet name (or first sheet if not specified)</param>
     /// <returns>SpreadsheetModel populated with sheet data</returns>
 let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<SpreadsheetModel> =
-        async {
-            try
-                let api = officeFormatApi?``default``()
-                let excel = api?excel
-
-                // Load only the requested sheet when the office-format bundle
-                // supports it. Full workbook loading still exists for callers
-                // that need every sheet, but single-sheet import should not
-                // parse unrelated large worksheets.
-                let loadPromise =
-                    if isFunction excel?loadSelected then excel?loadSelected(buffer, sheetName)
-                    else excel?load(buffer)
-                let! workbook = loadPromise |> Async.AwaitPromise
-
-                // Import sheet
-                return importSheet workbook sheetName
-
-            with ex ->
-                printfn "Error loading XLSX from buffer: %s" ex.Message
-                return {
-                    Cells = Map.empty
-                    RowCount = 100
-                    ColCount = 26
-                    Selection = SingleCell (0, 0)
-                    EditingCell = None
-                    EditBuffer = ""
-                    Clipboard = None
-                    History = { Past = []; Future = []; MaxSize = 50 }
-                    SortState = None
-                    Filters = Map.empty
-                    FilterVisibleRows = None
-                    FilterHiddenRows = [||]
-                    RowHeights = Map.empty
-                    ColumnWidths = Map.empty
-                    SearchQuery = None
-                    SearchCaseSensitive = None
-                    SearchResults = [||]
-                    SearchIndex = 0
-                    ConditionalFormats = Map.empty
-                    RichRuns = Map.empty
-                    MergedCells = []
-                    FrozenRows = 0
-                    FrozenCols = 0
-                    PageSetup = defaultPageSetup
-                    Tables = []
-                    CfBoldCells = Set.empty
-                    ShowGridLines = true
-                    Spill = Map.empty
-                    Validations = Map.empty
-                    Macros = ""
-                }
-        }
-
+    importFromBufferPromise buffer sheetName |> Async.AwaitPromise
 
     /// <summary>
     /// Import every sheet in the workbook in source order, paired with
@@ -746,19 +1276,7 @@ let importFromBuffer (buffer: JS.ArrayBuffer) (sheetName: string option): Async<
     /// without re-parsing the XLSX each time.
     /// </summary>
 let importAllSheets (buffer: JS.ArrayBuffer): Async<(string * SpreadsheetModel) array> =
-        async {
-            try
-                let api = officeFormatApi?``default``()
-                let excel = api?excel
-                let! workbook = excel?load(buffer) |> Async.AwaitPromise
-                let names: string[] = excel?sheetNames(workbook)
-                return
-                    names
-                    |> Array.map (fun n -> n, importSheet workbook (Some n))
-            with ex ->
-                printfn "Error loading workbook: %s" ex.Message
-                return [||]
-        }
+    importAllSheetsPromise buffer |> Async.AwaitPromise
 
     /// <summary>
     /// Get list of sheet names from workbook buffer.
@@ -767,16 +1285,4 @@ let importAllSheets (buffer: JS.ArrayBuffer): Async<(string * SpreadsheetModel) 
     /// <param name="buffer">ArrayBuffer containing XLSX file data</param>
     /// <returns>Array of sheet names</returns>
 let getSheetNames (buffer: JS.ArrayBuffer): Async<string[]> =
-        async {
-            try
-                let api = officeFormatApi?``default``()
-                let excel = api?excel
-
-                let! workbook = excel?load(buffer) |> Async.AwaitPromise
-                let sheetNames: string[] = excel?sheetNames(workbook)
-                return sheetNames
-
-            with ex ->
-                printfn "Error getting sheet names: %s" ex.Message
-                return [||]
-        }
+    getSheetNamesPromise buffer |> Async.AwaitPromise
