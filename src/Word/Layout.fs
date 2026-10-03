@@ -1416,6 +1416,16 @@ let private hitTestLayoutWithRangeValue (measureRange: TextRangeMeasurer) (paddi
                                 low <- mid + 1
                             else
                                 high <- mid
+                        // `low` is the first boundary at or right of the click,
+                        // i.e. the far side of the clicked glyph. Put the caret
+                        // on whichever side of that glyph is nearer.
+                        if low > 0 then
+                            let rightEdge =
+                                if low >= text.Length then x + width
+                                else x + measureRange displayText displayStyle 0 low
+                            let leftEdge = x + measureRange displayText displayStyle 0 (low - 1)
+                            if relativeX - leftEdge < rightEdge - relativeX then
+                                low <- low - 1
                         offset <- startOffset + low
                         found <- true
                     else
@@ -1605,8 +1615,14 @@ let private iterWordWrapTokenRanges (text: string) (f: int -> int -> unit) =
             else
                 index <- index + 1
             f start (index - start)
+        elif text.[index] = '\t' then
+            // Every tab is its own token: each one advances to the next tab
+            // stop. A run of tabs (or spaces followed by a tab) in one token
+            // would be given the width of a single tab.
+            index <- index + 1
+            f start 1
         elif isWhitespaceChar text.[index] then
-            while index < text.Length && isWhitespaceChar text.[index] && text.[index] <> '\r' && text.[index] <> '\n' do
+            while index < text.Length && isWhitespaceChar text.[index] && text.[index] <> '\r' && text.[index] <> '\n' && text.[index] <> '\t' do
                 index <- index + 1
             f start (index - start)
         else
@@ -1645,16 +1661,18 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
     let mutable currentLineEnd = availableWidth
     let mutable floatObstacles = initialObstacles
     let mutable placedBoxes = initialPlacedBoxes
-    let placedImageSources = System.Collections.Generic.HashSet<string>()
 
-    let addPlacedImageSource (box: PlacedFloatingBox) =
-        match box.Kind with
-        | WordLayout.Floating.ImageBox image when image.Src <> "" ->
-            placedImageSources.Add image.Src |> ignore
-        | _ -> ()
-
-    for box in initialPlacedBoxes do
-        addPlacedImageSource box
+    // A float is "already placed" when the anchor-extended second pass handed
+    // us the box this very image run produced in the first pass. Identity is
+    // the image run itself, not its Src: the same picture used twice is two
+    // floats, and the second one must still become a wrap obstacle.
+    let isPrePlacedImage (imgRun: TextBuffer.ImageRun) =
+        let mutable found = false
+        for box in initialPlacedBoxes do
+            match box.Kind with
+            | WordLayout.Floating.ImageBox image when obj.ReferenceEquals(image, imgRun) -> found <- true
+            | _ -> ()
+        found
 
     let noteTextMetric style =
         if not currentHasTextMetric then
@@ -1972,10 +1990,7 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
             // source against the existing placed boxes; in that case the
             // obstacle is already in `floatObstacles` with an extended (upward)
             // top, so just emit the ImageSegment and keep wrapping as before.
-            let alreadyPlaced =
-                imgRun.Floating
-                && imgRun.Src <> ""
-                && placedImageSources.Contains imgRun.Src
+            let alreadyPlaced = imgRun.Floating && isPrePlacedImage imgRun
             if imgRun.Floating && WordLayout.Floating.participatesInWrap floatingBox && not alreadyPlaced then
                 let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox availableWidth floatingBox
                 if WordLayout.Floating.wrapsTopAndBottom floatingBox.Wrap then
@@ -1999,7 +2014,6 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                 currentX <- currentX + imgWidth
             if imgRun.Floating && not alreadyPlaced then
                 placedBoxes <- floatingBox :: placedBoxes
-                addPlacedImageSource floatingBox
 
         | TextBuffer.Text textRun when textRun.Style.Hidden ->
             // w:vanish — hidden text is not laid out and takes no space.
@@ -2064,6 +2078,19 @@ let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureR
                         let hadSegments = currentSegments.Count > 0
                         flushLine ()
                         if not hadSegments then
+                            // A break on an otherwise empty line still makes a
+                            // line: emit it so the caret, selection and
+                            // pagination have something to refer to.
+                            let breakOffset = textRun.Start + consumed
+                            lines <- {
+                                Segments = []
+                                Y = y
+                                Width = 0.0
+                                Height = settings.LineHeight
+                                StartOffset = breakOffset
+                                EndOffset = breakOffset
+                            } :: lines
+                            flushedLineCount <- flushedLineCount + 1
                             y <- y + settings.LineHeight
                             moveToWrappableLine ()
                         consumed <- consumed + tokenLength
@@ -2658,7 +2685,99 @@ let private orderedCellContent (cell: TableCell) : CellContentItem list =
             result <- items.[i] :: result
         result
 
-let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
+// ---------------------------------------------------------------------------
+// List numbering inside tables.
+//
+// Rows are measured one at a time and from several places (document layout,
+// the table plan, painting), so the numbering state a row starts with cannot
+// be threaded from caller to caller. It is derived from the table instead:
+// counters start empty at the top of a top-level table and run through its
+// cells in reading order (rows, then cells, then paragraphs and nested tables
+// in content order). A list that continues from body text into a table (or
+// from one table into the next) therefore restarts inside the table.
+// ---------------------------------------------------------------------------
+
+type private ListCounters = Map<string * int, int>
+
+type private ListCounterWalk =
+    | WalkRow of TableRow * int
+    | WalkCell of TableCell * int
+    | WalkParagraph of ParagraphBlock
+
+/// Advance the counters through a row in reading order. Iterative (imported
+/// tables can be nested hundreds deep) and allocation-free for the usual row
+/// without nested tables.
+let private advanceListCountersThroughRow (counters: ListCounters) (row: TableRow) : ListCounters =
+    let mutable current = counters
+    for cell in row.Cells do
+        if cell.NestedTables.IsEmpty then
+            for para in cell.Content do
+                if para.Metadata.ListStyle = Numbered then
+                    current <- snd (WordLayout.Numbering.markerAndCounters para.Metadata current)
+        else
+            let frames = System.Collections.Generic.Stack<ListCounterWalk>()
+            frames.Push(WalkCell (cell, 0))
+            while frames.Count > 0 do
+                match frames.Pop() with
+                | WalkParagraph para ->
+                    current <- snd (WordLayout.Numbering.markerAndCounters para.Metadata current)
+                | WalkRow (walkRow, depth) ->
+                    for walkCell in List.rev walkRow.Cells do
+                        frames.Push(WalkCell (walkCell, depth))
+                | WalkCell (walkCell, depth) ->
+                    if walkCell.NestedTables.IsEmpty then
+                        for para in List.rev walkCell.Content do
+                            if para.Metadata.ListStyle = Numbered then frames.Push(WalkParagraph para)
+                    else
+                        for item in List.rev (orderedCellContent walkCell) do
+                            match item with
+                            | CellParagraph para ->
+                                if para.Metadata.ListStyle = Numbered then frames.Push(WalkParagraph para)
+                            | CellNestedTable nestedTable ->
+                                if depth < maxNestedTableLayoutDepth then
+                                    for nestedRow in List.rev nestedTable.Rows do
+                                        frames.Push(WalkRow (nestedRow, depth + 1))
+    current
+
+type private TableListCounters = {
+    CountersTable: TableBlock
+    /// None when the table contains no numbered paragraphs at all.
+    BeforeRow: System.Collections.Generic.Dictionary<TableRow, ListCounters> option
+}
+
+/// Counters of the table measured last. Built completely before it is
+/// published and never mutated afterwards, so a stale read only costs a rebuild.
+let mutable private lastTableListCounters: TableListCounters option = None
+
+/// Counters a top-level row starts with; ValueNone when the table has no
+/// numbered paragraphs (nothing to track).
+let private listCountersBeforeRow (tableBlock: TableBlock) (row: TableRow) : ListCounters voption =
+    let entry =
+        match lastTableListCounters with
+        | Some entry when obj.ReferenceEquals(entry.CountersTable, tableBlock) -> entry
+        | _ ->
+            let beforeRow = System.Collections.Generic.Dictionary<TableRow, ListCounters>(HashIdentity.Reference)
+            let mutable counters: ListCounters = Map.empty
+            for tableRow in tableBlock.Rows do
+                if not (beforeRow.ContainsKey tableRow) then
+                    beforeRow.[tableRow] <- counters
+                counters <- advanceListCountersThroughRow counters tableRow
+            let entry = {
+                CountersTable = tableBlock
+                BeforeRow = if counters.IsEmpty then None else Some beforeRow
+            }
+            lastTableListCounters <- Some entry
+            entry
+    match entry.BeforeRow with
+    | None -> ValueNone
+    | Some beforeRow ->
+        match beforeRow.TryGetValue row with
+        | true, counters -> ValueSome counters
+        | false, _ -> ValueSome Map.empty
+
+let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (rowListCounters: ListCounters voption) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
+    let trackListCounters = rowListCounters.IsSome
+    let mutable listCounters: ListCounters = match rowListCounters with ValueSome counters -> counters | ValueNone -> Map.empty
     let cellSettings = {
         settings with
             InTableCell = true
@@ -2724,8 +2843,11 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (settings
                     let nestedLayouts = ResizeArray<BlockLayout>()
 
                     for nestedRow in nestedTable.Rows do
+                        let nestedRowCounters = if trackListCounters then ValueSome listCounters else ValueNone
+                        if trackListCounters then
+                            listCounters <- advanceListCountersThroughRow listCounters nestedRow
                         let measurement =
-                            measureTableRowWithStyleAtDepth (nestedTableLayoutDepth + 1) cellSettings measureText measureRange nestedTable nestedColumnMetrics nestedOuterLeft nestedHorizontalOffset nestedRow nestedY 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
+                            measureTableRowWithStyleAtDepth (nestedTableLayoutDepth + 1) nestedRowCounters cellSettings measureText measureRange nestedTable nestedColumnMetrics nestedOuterLeft nestedHorizontalOffset nestedRow nestedY 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
                         for group in measurement.CellGroups do
                             let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment measurement.Height group.PaddingTop group.PaddingBottom group.ContentHeight
                             let adjustedLayouts =
@@ -2744,7 +2866,8 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (settings
         let layoutCellParagraph rawPara =
             let para = tableCellParagraphForLayout rawPara
             let paragraphStyle = paragraphStyleForParagraph para
-            let layout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange cellSettings measureText measureRange cellMaxWidth paraY cellX paragraphStyle effectiveBufferForParagraph para Map.empty [] []
+            let layout, updatedListCounters, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange cellSettings measureText measureRange cellMaxWidth paraY cellX paragraphStyle effectiveBufferForParagraph para listCounters [] []
+            listCounters <- updatedListCounters
             let layout = if layout.Lines.IsEmpty then moveLayoutToY paraY layout else layout
             let layout =
                 match layout.Lines with
@@ -2791,7 +2914,7 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (settings
     { Height = rowHeight; CellGroups = List.rev cellGroups; Traces = List.rev traces }
 
 let internal measureTableRowWithStyleUsingMetrics (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
-    measureTableRowWithStyleAtDepth 0 settings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset row rowY tableContinuationHeaderHeight paragraphStyleForParagraph effectiveBufferForParagraph
+    measureTableRowWithStyleAtDepth 0 (listCountersBeforeRow tableBlock row) settings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset row rowY tableContinuationHeaderHeight paragraphStyleForParagraph effectiveBufferForParagraph
 
 let measureTableRowWithStyle (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (tableMaxWidth: float) (columnWidths: float list) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
     let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths

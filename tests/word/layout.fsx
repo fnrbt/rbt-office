@@ -934,6 +934,121 @@ check "rendered break hint keeps document short"
     ((uniformPageInfos hintTableSettings hintDocLayouts).Length <= 2)
     true
 
+// ---------------------------------------------------------------------------
+// Consecutive tabs each advance to the next tab stop.
+// ---------------------------------------------------------------------------
+let segmentXOf (needle: string) (line: MeasuredLine) =
+    line.Segments
+    |> List.pick (function
+        | TextSegment (text, _, x, _, _) when text.StartsWith needle -> Some x
+        | _ -> None)
+let tabLineFor text = (layoutLinesStyled settings measureText (ofString text) 2000.0).Head
+// "a" is 7px wide; default tab stops are every 48px.
+check "one tab reaches the first stop" (segmentXOf "b" (tabLineFor "a\tb")) 48.0
+check "two tabs reach the second stop" (segmentXOf "b" (tabLineFor "a\t\tb")) 96.0
+check "three tabs reach the third stop" (segmentXOf "b" (tabLineFor "a\t\t\tb")) 144.0
+check "space then tab keeps the tab" (segmentXOf "b" (tabLineFor "a \tb")) 48.0
+check "tabs keep their offsets" (tabLineFor "a\t\tb").EndOffset 4
+
+// ---------------------------------------------------------------------------
+// A click puts the caret on the nearer side of the clicked glyph.
+// ---------------------------------------------------------------------------
+let clickLayouts =
+    layoutDocument { settings with Width = 2000.0 } measureText
+        { Doc.empty with Blocks = [ Doc.Paragraph { paragraph "click" "abcdefgh" with Metadata = { Doc.defaultMetadata with SpacingBefore = Some 0.0 } } ]; Selection = None }
+let clickY = clickLayouts.Head.Lines.Head.Y + 2.0
+let clickAt x = hitTestLayouts measureText 0.0 clickLayouts x clickY |> Option.map snd
+// Glyphs are 7px wide: "c" spans 14..21.
+check "click in left half of a glyph" (clickAt 15.0) (Some 2)
+check "click in right half of a glyph" (clickAt 20.0) (Some 3)
+check "click in left half of first glyph" (clickAt 1.0) (Some 0)
+check "click in right half of last glyph" (clickAt 55.0) (Some 8)
+check "click past the line end" (clickAt 500.0) (Some 8)
+
+// ---------------------------------------------------------------------------
+// The same floating picture used twice is two wrap obstacles.
+// ---------------------------------------------------------------------------
+let floatingParagraph id =
+    let buffer =
+        ofString (String.concat " " [ for _ in 1 .. 30 -> "wrap" ])
+        |> insertImageWithMetadata 0 "memory://same" false (Some 100.0) (Some 60.0) None None None true (Some "square") (Some 0.0) (Some 0.0) None None None None None None None None None None None None None None None None None None
+    { paragraph id "" with Buffer = buffer; Metadata = { Doc.defaultMetadata with SpacingBefore = Some 0.0 } }
+let floatSettings = { settings with Width = 400.0; PageHeight = 100000.0 }
+let floatLayouts =
+    layoutDocument floatSettings measureText
+        { Doc.empty with
+            Blocks =
+                [ Doc.Paragraph (floatingParagraph "float-a")
+                  Doc.Paragraph (paragraph "float-gap-1" "gap")
+                  Doc.Paragraph (paragraph "float-gap-2" "gap")
+                  Doc.Paragraph (paragraph "float-gap-3" "gap")
+                  Doc.Paragraph (paragraph "float-gap-4" "gap")
+                  Doc.Paragraph (floatingParagraph "float-b") ]
+            Selection = None }
+let firstTextX id =
+    floatLayouts
+    |> List.find (fun layout -> layout.BlockId = id)
+    |> fun layout ->
+        layout.Lines.Head.Segments
+        |> List.pick (function TextSegment (_, _, x, _, _) -> Some x | _ -> None)
+check "first float pushes text aside" (firstTextX "float-a" >= 100.0) true
+check "second use of the picture pushes text aside" (firstTextX "float-b" >= 100.0) true
+
+// ---------------------------------------------------------------------------
+// A blank line made by soft breaks is a line (the caret needs one).
+// ---------------------------------------------------------------------------
+let softBreakLines = layoutLinesStyled settings measureText (ofString "a\n\nb") 2000.0
+check "soft break blank line count" softBreakLines.Length 3
+check "soft break blank line offsets" (softBreakLines.[1].StartOffset, softBreakLines.[1].EndOffset) (2, 2)
+check "soft break blank line has height" (softBreakLines.[1].Height > 0.0) true
+check "soft break blank line is between" (softBreakLines.[0].Y < softBreakLines.[1].Y && softBreakLines.[1].Y < softBreakLines.[2].Y) true
+let softBreakPara = { paragraph "soft" "a\n\nb" with Metadata = { Doc.defaultMetadata with SpacingBefore = Some 0.0 } }
+let softBreakLayout, _ = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 500.0 0.0 0.0 softBreakPara Map.empty
+check "caret on blank line finds that line" (lineForOffset softBreakLayout 2).Y softBreakLayout.Lines.[1].Y
+
+// ---------------------------------------------------------------------------
+// Numbered lists inside table cells count up.
+// ---------------------------------------------------------------------------
+let numberedCellPara id listId =
+    { paragraph id "item" with Metadata = { Doc.defaultMetadata with ListStyle = Doc.Numbered; ListLevel = 1; ListId = Some listId } }
+let listTable =
+    { wideFastTable with
+        Id = "list-table"
+        Rows =
+            [ tableRow [ tableCell [ numberedCellPara "lt-1" "L"; numberedCellPara "lt-2" "L" ] None
+                         tableCell [ numberedCellPara "lt-3" "L" ] None ]
+              tableRow [ tableCell [ numberedCellPara "lt-4" "L" ] None
+                         tableCell [ numberedCellPara "lt-other" "M" ] None ] ] }
+let listTableLayouts =
+    layoutDocument { settings with Width = 600.0 } measureText { Doc.empty with Blocks = [ Doc.Table listTable ]; Selection = None }
+let listPrefix id = (listTableLayouts |> List.find (fun layout -> layout.BlockId = id)).Prefix.Trim()
+check "cell list item 1" (listPrefix "lt-1") "1."
+check "cell list item 2" (listPrefix "lt-2") "2."
+check "cell list continues in next cell" (listPrefix "lt-3") "3."
+check "cell list continues in next row" (listPrefix "lt-4") "4."
+check "second list in table starts at 1" (listPrefix "lt-other") "1."
+
+// ---------------------------------------------------------------------------
+// A table in a header paints its text, not only its borders.
+// ---------------------------------------------------------------------------
+let headerTextTable =
+    { wideFastTable with
+        Id = "header-text-table"
+        Rows = [ tableRow [ tableCell [ paragraph "header-cell-a" "Left cell" ] None; tableCell [ paragraph "header-cell-b" "Right cell" ] None ] ] }
+let headerTableDoc =
+    { staticHeaderDoc with
+        Headers = []
+        HeaderParts = [ { Kind = "default"; RelationshipId = None; Blocks = [ Doc.Table headerTextTable ] } ] }
+let headerTableTexts = headerTexts headerTableDoc
+let headerTableHas (needle: string) = headerTableTexts |> List.filter (fun (text, _) -> text.Contains needle)
+check "header table text painted on each page" ((headerTableHas "Left").Length, (headerTableHas "Right").Length) (2, 2)
+let headerTableBaselines = headerTableHas "Left" |> List.map snd
+check "header table text sits at the page top"
+    (headerTableBaselines |> List.forall (fun baseline ->
+        let pageTop = floor (baseline / (pageHeight settings + pageGap)) * (pageHeight settings + pageGap)
+        baseline - pageTop > 0.0 && baseline - pageTop < 120.0))
+    true
+
 printfn ""
 printfn "Word layout tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
