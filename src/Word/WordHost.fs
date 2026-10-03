@@ -661,7 +661,10 @@ module Host =
                              if shapedTextEnabled () then
                                  host.Status.Value <- "Loading shaped text engine"
                                  installShapedText editor (fun status -> host.Status.Value <- status)
-                             fun () -> host.Editor <- None; host.Canvas <- None) ] []
+                             fun () ->
+                                 WordApi.dispose editor
+                                 host.Editor <- None
+                                 host.Canvas <- None) ] []
                 commentLayer host
             ]
 

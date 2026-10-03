@@ -14,6 +14,18 @@ let private documentsEqualForChange (left: Rbt.Word.Document.Document) (right: R
         && sameListOrEqual left.HeaderParts right.HeaderParts
         && sameListOrEqual left.FooterParts right.FooterParts)
 
+/// True when two documents differ at most in their selection. Moving the
+/// caret is not something Undo steps through.
+let private sameContent (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
+    obj.ReferenceEquals(left, right)
+    || (left.PageSetup = right.PageSetup
+        && sameListOrEqual left.Blocks right.Blocks
+        && sameListOrEqual left.Styles right.Styles
+        && sameListOrEqual left.Headers right.Headers
+        && sameListOrEqual left.Footers right.Footers
+        && sameListOrEqual left.HeaderParts right.HeaderParts
+        && sameListOrEqual left.FooterParts right.FooterParts)
+
 #if FABLE_COMPILER
 open Fable.Core
 open Fable.Core.JsInterop
@@ -29,6 +41,25 @@ module Clipboard = Rbt.Word.Clipboard
 
 [<Emit("$0.style.cursor = $1")>]
 let setCursor (elem: HTMLCanvasElement) (cursor: string) : unit = jsNative
+
+[<Emit("window.addEventListener($0, $1)")>]
+let private addWindowListener (eventName: string) (listener: Event -> unit) : unit = jsNative
+
+[<Emit("window.removeEventListener($0, $1)")>]
+let private removeWindowListener (eventName: string) (listener: Event -> unit) : unit = jsNative
+
+/// A `key` value that is one typed character: a single UTF-16 unit, or a
+/// surrogate pair (emoji and other astral characters arrive as length 2).
+/// Named keys ("Enter", "ArrowLeft", "Dead", ...) are longer or not a pair.
+let private isSingleCodePoint (key: string) =
+    if key.Length = 1 then
+        true
+    elif key.Length = 2 then
+        let high = int key.[0]
+        let low = int key.[1]
+        high >= 0xD800 && high <= 0xDBFF && low >= 0xDC00 && low <= 0xDFFF
+    else
+        false
 
 let private keyEquals (expected: char) (key: string) =
     if key.Length <> 1 then
@@ -69,7 +100,48 @@ type InputHandler = {
     mutable TrackChanges: bool
     mutable TrackChangesAuthor: string
     mutable TrackChangesDate: string
+    /// Document as it was when the current image resize/drag started, so the
+    /// whole gesture becomes one undo step.
+    mutable PointerStartDocument: Doc.Document option
+    /// Removes listeners registered outside the canvas (set by `create`).
+    mutable Dispose: unit -> unit
 }
+
+/// Record a finished change in the undo history as one step. Selection-only
+/// changes are not recorded.
+let private recordChange (handler: InputHandler) (description: string) (beforeDoc: Doc.Document) (afterDoc: Doc.Document) =
+    if not (sameContent beforeDoc afterDoc) then
+        let cmd = DeleteTextCommand(beforeDoc, afterDoc, description) :> ICommand
+        let _, history = Cmd.execute cmd beforeDoc handler.History
+        handler.History <- history
+
+let private showDocument (handler: InputHandler) (doc: Doc.Document) =
+    handler.Document <- doc
+    renderWithHover handler.RenderContext doc handler.HoveredImage
+    handler.OnChange doc
+
+/// Undo the last recorded change. Returns false when there is nothing to undo.
+let undo (handler: InputHandler) =
+    if handler.History.Undos.IsEmpty then
+        false
+    else
+        let doc, history = Cmd.undo handler.Document handler.History
+        handler.History <- history
+        showDocument handler doc
+        true
+
+/// Redo the last undone change. Returns false when there is nothing to redo.
+let redo (handler: InputHandler) =
+    if handler.History.Redos.IsEmpty then
+        false
+    else
+        let doc, history = Cmd.redo handler.Document handler.History
+        handler.History <- history
+        showDocument handler doc
+        true
+
+let canUndo (handler: InputHandler) = not handler.History.Undos.IsEmpty
+let canRedo (handler: InputHandler) = not handler.History.Redos.IsEmpty
 
 /// Create input handler
 let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc.Document -> unit) =
@@ -88,6 +160,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         TrackChanges = false
         TrackChangesAuthor = "RedBat Word"
         TrackChangesDate = ""
+        PointerStartDocument = None
+        Dispose = ignore
     }
 
     let insertTextForMode text doc =
@@ -143,6 +217,13 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 newDoc <- doc'
                 newHistory <- hist'
                 useCommand <- true
+            e.preventDefault()
+        | key when commandKey && keyEquals 'y' key ->
+            // Redo (Ctrl+Y)
+            let (doc', hist') = Cmd.redo handler.Document handler.History
+            newDoc <- doc'
+            newHistory <- hist'
+            useCommand <- true
             e.preventDefault()
         | key when commandKey && keyEquals 'a' key ->
             newDoc <- Doc.selectAll handler.Document
@@ -335,7 +416,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                     e.preventDefault()
             | None ->
                 e.preventDefault()
-        | key when key.Length = 1 && not ke.ctrlKey && not ke.metaKey ->
+        | key when isSingleCodePoint key && not ke.ctrlKey && not ke.metaKey ->
             // Regular character - use command
             let beforeDoc = handler.Document
             let afterDoc = insertTextForMode key handler.Document
@@ -348,10 +429,17 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | _ -> ()
 
+        if useCommand then
+            // Also when the document compares equal (undoing a no-op step
+            // must still pop it).
+            handler.History <- newHistory
         if not (documentsEqualForChange newDoc handler.Document) then
+            if not useCommand then
+                // Shortcuts that changed the document without building a
+                // command (heading level, Tab indent, leaving a list) are
+                // undo steps too.
+                recordChange handler "Edit" handler.Document newDoc
             handler.Document <- newDoc
-            if useCommand || newHistory <> handler.History then
-                handler.History <- newHistory
             renderWithHover handler.RenderContext newDoc handler.HoveredImage
             handler.OnChange newDoc
     )
@@ -377,6 +465,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 }
             else
                 handler.DraggingImage <- Some { BlockId = blockId; Offset = offset; InitialX = x; InitialY = y }
+            handler.PointerStartDocument <- Some handler.Document
             handler.IsMouseDown <- true
             canvas.focus()
         | None ->
@@ -438,51 +527,95 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                     renderWithHover handler.RenderContext handler.Document None
     )
 
-    // Handle mouse up - end selection or resize
-    canvas.addEventListener("mouseup", fun (e: Event) ->
-        let me = e :?> MouseEvent
-        let rect = canvas.getBoundingClientRect()
-        let x = me.clientX - rect.left
-        let y = me.clientY - rect.top
+    // Handle mouse up - end selection, resize or drag. Listening on the
+    // window rather than the canvas means a release outside the canvas still
+    // ends the gesture; otherwise IsMouseDown stays set and the next mouse
+    // move over the canvas keeps selecting or resizing with no button held.
+    let onMouseUp (e: Event) =
+        if handler.IsMouseDown || handler.ResizingImage.IsSome || handler.DraggingImage.IsSome then
+            let me = e :?> MouseEvent
+            let rect = canvas.getBoundingClientRect()
+            let x = me.clientX - rect.left
+            let y = me.clientY - rect.top
 
-        match handler.DraggingImage with
-        | Some dragState when abs (x - dragState.InitialX) > 3.0 || abs (y - dragState.InitialY) > 3.0 ->
-            let target =
-                match hitTest handler.RenderContext handler.Document x y with
-                | Some target -> target
-                | None ->
-                    match Doc.findParagraph handler.Document dragState.BlockId with
-                    | Some para -> (dragState.BlockId, TextBuffer.length para.Buffer)
-                    | None -> (dragState.BlockId, dragState.Offset)
-            let targetBlockId, targetOffset = target
-            let effectiveOffset =
-                match Doc.findParagraph handler.Document targetBlockId with
-                | Some para when targetBlockId = dragState.BlockId && targetOffset <= dragState.Offset -> TextBuffer.length para.Buffer
-                | Some para when targetBlockId = dragState.BlockId && targetOffset = dragState.Offset -> TextBuffer.length para.Buffer
-                | _ -> targetOffset
-            let newDoc = Doc.moveImage dragState.BlockId dragState.Offset targetBlockId effectiveOffset handler.Document
-            applyPointerDocumentChange newDoc
-        | _ -> ()
+            match handler.DraggingImage with
+            | Some dragState when abs (x - dragState.InitialX) > 3.0 || abs (y - dragState.InitialY) > 3.0 ->
+                let target =
+                    match hitTest handler.RenderContext handler.Document x y with
+                    | Some target -> target
+                    | None ->
+                        match Doc.findParagraph handler.Document dragState.BlockId with
+                        | Some para -> (dragState.BlockId, TextBuffer.length para.Buffer)
+                        | None -> (dragState.BlockId, dragState.Offset)
+                let targetBlockId, targetOffset = target
+                let effectiveOffset =
+                    match Doc.findParagraph handler.Document targetBlockId with
+                    | Some para when targetBlockId = dragState.BlockId && targetOffset <= dragState.Offset -> TextBuffer.length para.Buffer
+                    | Some para when targetBlockId = dragState.BlockId && targetOffset = dragState.Offset -> TextBuffer.length para.Buffer
+                    | _ -> targetOffset
+                let newDoc = Doc.moveImage dragState.BlockId dragState.Offset targetBlockId effectiveOffset handler.Document
+                applyPointerDocumentChange newDoc
+            | _ -> ()
 
-        handler.IsMouseDown <- false
-        handler.ResizingImage <- None
-        handler.DraggingImage <- None
-    )
+            // The whole resize or move is one undo step.
+            match handler.PointerStartDocument with
+            | Some startDoc ->
+                recordChange handler (if handler.ResizingImage.IsSome then "Resize image" else "Move image") startDoc handler.Document
+            | None -> ()
+
+            handler.PointerStartDocument <- None
+            handler.IsMouseDown <- false
+            handler.ResizingImage <- None
+            handler.DraggingImage <- None
+
+    addWindowListener "mouseup" onMouseUp
+    handler.Dispose <- fun () ->
+        removeWindowListener "mouseup" onMouseUp
+        handler.Dispose <- ignore
 
     // Initial render
     renderWithHover ctx initialDoc None
 
     handler
 
-/// Update document
+/// Show a document without touching the undo history (selection changes,
+/// re-renders).
 let updateDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.Document <- doc
     renderWithHover handler.RenderContext doc None
     handler.OnChange doc
+
+/// Apply a change made outside the keyboard (API call, toolbar, dialog) as
+/// one undo step.
+let applyEdit (handler: InputHandler) (description: string) (doc: Doc.Document) =
+    recordChange handler description handler.Document doc
+    updateDocument handler doc
+
+/// Replace the document with a newly loaded one. Undo history belongs to the
+/// previous document and is discarded.
+let loadDocument (handler: InputHandler) (doc: Doc.Document) =
+    handler.History <- Cmd.empty
+    handler.PointerStartDocument <- None
+    handler.IsMouseDown <- false
+    handler.ResizingImage <- None
+    handler.DraggingImage <- None
+    handler.SelectionAnchor <- None
+    updateDocument handler doc
+
+/// Detach listeners registered outside the canvas.
+let dispose (handler: InputHandler) =
+    handler.Dispose ()
 
 #else
 // Server-side stub
 type InputHandler = unit
 let create _ _ _ = ()
 let updateDocument _ _ = ()
+let applyEdit _ _ _ = ()
+let loadDocument _ _ = ()
+let undo _ = false
+let redo _ = false
+let canUndo _ = false
+let canRedo _ = false
+let dispose _ = ()
 #endif

@@ -36,10 +36,39 @@ module API =
         Ren.cachedLayouts editor.Handler.RenderContext editor.Doc
         |> Option.defaultWith (fun () -> Ren.layoutDocument editor.Handler.RenderContext editor.Doc)
 
+    /// Apply a change made through the API (toolbar, dialogs, scripts). It
+    /// becomes one step in the same undo history as keystrokes; a change that
+    /// only moves the selection is shown without being recorded.
     let private commitDocumentUpdate (editor: Editor) newDoc =
         if not (obj.ReferenceEquals(newDoc, editor.Doc)) then
-            Inp.updateDocument editor.Handler newDoc
+            Inp.applyEdit editor.Handler "Edit" newDoc
             editor.Doc <- newDoc
+
+    /// Show a newly loaded document (import, setContent). It replaces the
+    /// previous document wholesale, so the undo history is cleared rather
+    /// than letting Ctrl+Z swap the old document back in.
+    let private loadDocument (editor: Editor) newDoc =
+        Inp.loadDocument editor.Handler newDoc
+        editor.Doc <- newDoc
+
+    /// Undo the last change, whether typed or made through the API.
+    /// Returns false when there was nothing to undo.
+    let undo (editor: Editor) =
+        Inp.undo editor.Handler
+
+    /// Redo the last undone change. Returns false when there was nothing to redo.
+    let redo (editor: Editor) =
+        Inp.redo editor.Handler
+
+    let canUndo (editor: Editor) =
+        Inp.canUndo editor.Handler
+
+    let canRedo (editor: Editor) =
+        Inp.canRedo editor.Handler
+
+    /// Detach the editor's window-level listeners. Call when the canvas is removed.
+    let dispose (editor: Editor) =
+        Inp.dispose editor.Handler
 
     let initializeCanvasWithChange (canvas: HTMLCanvasElement) (afterChange: unit -> unit) =
         let doc = Doc.empty
@@ -1133,14 +1162,14 @@ module API =
     /// Set document content
     let setContent (editor: Editor) (text: string) =
         let doc = Doc.setPlainTextContent text editor.Doc
-        commitDocumentUpdate editor doc
+        if not (obj.ReferenceEquals(doc, editor.Doc)) then loadDocument editor doc
 
     /// Set document content as one paragraph per input string (unlike
     /// setContent, which puts the whole text in a single paragraph with
     /// hard breaks)
     let setParagraphs (editor: Editor) (texts: string array) =
         let doc = Doc.setParagraphContents (Array.toList texts) editor.Doc
-        commitDocumentUpdate editor doc
+        if not (obj.ReferenceEquals(doc, editor.Doc)) then loadDocument editor doc
     
     /// Toggle bold on selection
     let toggleBold (editor: Editor) =
@@ -1497,23 +1526,23 @@ module API =
     /// Use with: Office.Formats processors.forEditorPackage() Paragraphs output
     let importFromDocx (editor: Editor) (editorParagraphs: obj array) =
         let newDoc = Docx.importFromEditor editorParagraphs
-        commitDocumentUpdate editor newDoc
+        loadDocument editor newDoc
 
     let importFromDocxWithHeaderFooters (editor: Editor) (editorParagraphs: obj array) (headerParagraphs: obj array) (footerParagraphs: obj array) =
         let newDoc = Docx.importFromEditorWithHeaderFooters editorParagraphs headerParagraphs footerParagraphs
-        commitDocumentUpdate editor newDoc
+        loadDocument editor newDoc
 
     let importFromDocxWithHeaderFooterParts (editor: Editor) (editorParagraphs: obj array) (headerParts: obj array) (footerParts: obj array) =
         let newDoc = Docx.importFromEditorWithHeaderFooterParts editorParagraphs headerParts footerParts
-        commitDocumentUpdate editor newDoc
+        loadDocument editor newDoc
 
     let importFromDocxWithPageSetupAndHeaderFooterParts (editor: Editor) (editorParagraphs: obj array) (pageSetup: obj) (headerParts: obj array) (footerParts: obj array) =
         let newDoc = Docx.importFromEditorWithPageSetupAndHeaderFooterParts editorParagraphs pageSetup headerParts footerParts
-        commitDocumentUpdate editor newDoc
+        loadDocument editor newDoc
 
     let importFromDocxPackage (editor: Editor) (package: obj) =
         let newDoc = Docx.importFromEditorPackage package
-        commitDocumentUpdate editor newDoc
+        loadDocument editor newDoc
 
     let setPageSetup (editor: Editor) (pageWidth: float) (pageHeight: float) (marginLeft: float) (marginRight: float) (marginTop: float) (marginBottom: float) (headerDistance: float) (footerDistance: float) =
         let setup: Doc.PageSetup = {
@@ -1848,6 +1877,11 @@ module API =
             "initialize" ==> initialize
             "createViewer" ==> createViewer
             "getText" ==> getText
+            "undo" ==> undo
+            "redo" ==> redo
+            "canUndo" ==> canUndo
+            "canRedo" ==> canRedo
+            "dispose" ==> dispose
             "getTrackChanges" ==> getTrackChanges
             "setTrackChanges" ==> setTrackChanges
             "setTrackChangesOptions" ==> setTrackChangesOptions
