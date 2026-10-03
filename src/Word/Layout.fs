@@ -3490,6 +3490,31 @@ let buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tabl
     buildTableLayoutPlanForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
 
 /// Layout document blocks. Table cell paragraphs are included so shared hit/cursor logic works inside tables.
+let private footnoteParagraphMetadataForLayout = { defaultMetadata with SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 }
+
+/// Lay out one page's footnotes in the reserved area at the bottom of the
+/// page. The notes are laid out at a temporary origin to get their real height
+/// (10pt body font, superscript mark number), then placed so the block ends
+/// just above the bottom margin, the way Word stacks footnotes.
+let private footnoteLayoutsForPage (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) maxWidth (pageIndex: int) pageContentBottom (notes: (string * string) list) : BlockLayout list =
+    // An unpaged page: the notes are positioned explicitly below.
+    let noteSettings = { settings with PageHeight = unpagedMeasurementPageHeight }
+    let mutable tempY = 0.0
+    let laidOut =
+        notes |> List.mapi (fun noteIndex (id, text) ->
+            let noteString = sprintf "%s %s" id (text.Trim())
+            let buffer =
+                TextBuffer.ofString noteString
+                |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
+                |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
+                |> TextBuffer.setVertAlign 0 id.Length (Some "superscript")
+            let para = { Id = sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadataForLayout }
+            let layout, _ = layoutParagraphAtWithRange noteSettings measureText measureRange maxWidth tempY 0.0 para Map.empty
+            tempY <- tempY + layout.Height
+            layout)
+    let blockTop = pageContentBottom - footnoteBottomPad - tempY
+    laidOut |> List.map (fun layout -> moveLayoutToY (blockTop + layout.Y) layout)
+
 let private layoutDocumentWithRangeAndInitial
         (settings: LayoutSettings)
         (measureText: TextMeasurer)
@@ -3996,25 +4021,7 @@ let private layoutDocumentWithRangeAndInitial
         if not notes.IsEmpty then
             let pageTop = float pageIndex * footnoteStride
             let pageContentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-            // Lay out the notes at a temporary origin to get their real height
-            // (10pt body font, superscript mark number), then place the block so
-            // it ends just above the bottom margin, the way Word stacks footnotes.
-            let mutable tempY = 0.0
-            let laidOut =
-                notes |> List.mapi (fun noteIndex (id, text) ->
-                    let noteString = sprintf "%s %s" id (text.Trim())
-                    let buffer =
-                        TextBuffer.ofString noteString
-                        |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
-                        |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
-                        |> TextBuffer.setVertAlign 0 id.Length (Some "superscript")
-                    let para = { Id = sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
-                    let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth tempY 0.0 para Map.empty
-                    tempY <- tempY + layout.Height
-                    layout)
-            let blockTop = pageContentBottom - footnoteBottomPad - tempY
-            for layout in laidOut do
-                layouts.Add(moveLayoutToY (blockTop + layout.Y) layout)
+            layouts.AddRange(footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex pageContentBottom notes)
 
     // Endnotes: collect every endnote in document order and lay them out after
     // the body content (Word stacks endnotes at the end of the document), with a
@@ -4193,7 +4200,28 @@ let private takeLines count (lines: MeasuredLine list) =
 /// balances a column section that ends with a section break); otherwise each
 /// column fills to the page bottom and the flow wraps to the next page after
 /// `count` columns. Returns the placed layouts.
-let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) =
+/// Move a continuation fragment's offsets back into the paragraph's own
+/// offset space (it was laid out from a buffer with the leading text removed).
+let private shiftLayoutOffsets (delta: int) (layout: BlockLayout) =
+    if delta = 0 then layout
+    else
+        let shiftSegment segment =
+            match segment with
+            | TextSegment (text, style, x, width, startOffset) -> TextSegment (text, style, x, width, startOffset + delta)
+            | ImageSegment (src, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom) ->
+                ImageSegment (src, x, yOffset, width, height, startOffset + delta, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom)
+            | MathSegment (prims, style, x, width, ascent, descent, startOffset, length) ->
+                MathSegment (prims, style, x, width, ascent, descent, startOffset + delta, length)
+        { layout with
+            Lines =
+                layout.Lines
+                |> List.map (fun line ->
+                    { line with
+                        StartOffset = line.StartOffset + delta
+                        EndOffset = line.EndOffset + delta
+                        Segments = line.Segments |> List.map shiftSegment }) }
+
+let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
     let styleContext = styleContextForLayout doc
     let n = max 1 columns.Count
     let full = settings.Width - settings.PaddingLeft - settings.MarginRight
@@ -4232,6 +4260,19 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
     let mutable page = startPage
     let mutable y = startY
     let mutable counters : Map<string * int, int> = Map.empty
+    // Footnotes referenced so far, by page. Their block sits at the bottom of
+    // the page, so each page's columns end above it.
+    let mutable footnotesByPage = initialFootnotes
+    let pageFootnotes () = footnotesByPage |> Map.tryFind page |> Option.defaultValue []
+    let layoutFootnotes (lines: MeasuredLine list) =
+        let mutable notes = []
+        for line in lines do
+            notes <- appendNewNotes notes (footnotesInLine line)
+        notes
+    let addPageFootnotes notes =
+        match notes with
+        | [] -> ()
+        | _ -> footnotesByPage <- footnotesByPage |> Map.add page (appendNewNotes (pageFootnotes ()) notes)
     // First column-row starts at startY; later pages start at their content top.
     let columnTop () =
         match balancedHeight with
@@ -4243,7 +4284,7 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
         // in it rather than wrapping back over column 0.
         | Some _ when col >= n - 1 -> System.Double.MaxValue
         | Some bh -> startY + bh
-        | None -> contentBottomAt page
+        | None -> contentBottomAt page - footnoteReserveHeight settings (pageFootnotes ())
     let atColumnTop () = abs (y - columnTop ()) < 0.5
     let advanceColumn () =
         col <- col + 1
@@ -4259,25 +4300,53 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
                 advanceColumn ()
             let style = forBlockInContext styleContext block
             let mutable remaining = para0
+            // Characters of the paragraph already placed in earlier columns.
+            // A continuation is laid out from the rest of the text, so its
+            // offsets are moved back by this much: every fragment of a
+            // paragraph reports offsets in the paragraph's own text.
+            let mutable consumedOffset = 0
             let mutable placed = false
             while not placed do
                 let colBottom = columnBottom ()
-                let layout, newCounters, _, _ =
+                let isContinuation = consumedOffset > 0
+                let rawLayout, newCounters, _, _ =
                     layoutParagraphAtWithStyleAndObstaclesWithRange flowSettings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInContext styleContext) remaining counters [] []
+                let layout =
+                    if isContinuation then
+                        // The list marker belongs to the first fragment only.
+                        { shiftLayoutOffsets consumedOffset rawLayout with Prefix = ""; PrefixStyle = None }
+                    else rawLayout
+                // A line fits when it ends above the column bottom, which
+                // moves up as the lines placed so far bring footnotes with them.
+                let existingNotes = pageFootnotes ()
+                let existingReserve = if balancedHeight.IsSome then 0.0 else footnoteReserveHeight settings existingNotes
+                let mutable fitNotes = existingNotes
                 let mutable fitCount = 0
                 let mutable lastFit = None
+                let mutable stillFitting = true
                 for line in layout.Lines do
-                    if line.Y + line.Height <= colBottom + 0.5 then
-                        fitCount <- fitCount + 1
-                        lastFit <- Some line
+                    if stillFitting then
+                        let lineNotes = footnotesInLine line
+                        let candidateNotes = if lineNotes.IsEmpty then fitNotes else appendNewNotes fitNotes lineNotes
+                        let extraReserve =
+                            if balancedHeight.IsSome || LanguagePrimitives.PhysicalEquality candidateNotes existingNotes then 0.0
+                            else footnoteReserveHeight settings candidateNotes - existingReserve
+                        if line.Y + line.Height <= colBottom - extraReserve + 0.5 then
+                            fitCount <- fitCount + 1
+                            lastFit <- Some line
+                            fitNotes <- candidateNotes
+                        else
+                            stillFitting <- false
                 if fitCount = layout.Lines.Length then
                     results.Add(shiftBlockX (columnDx col) layout)
+                    addPageFootnotes (layoutFootnotes layout.Lines)
                     counters <- newCounters
                     y <- layout.Y + layout.Height
                     placed <- true
                 elif fitCount = 0 then
                     if atColumnTop () then
                         results.Add(shiftBlockX (columnDx col) layout)
+                        addPageFootnotes (layoutFootnotes layout.Lines)
                         counters <- newCounters
                         y <- layout.Y + layout.Height
                         placed <- true
@@ -4287,7 +4356,16 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
                     match lastFit with
                     | Some lastFit ->
                         results.Add(shiftBlockX (columnDx col) { layout with Lines = fitLines; Height = lastFit.Y + lastFit.Height - layout.Y })
-                        remaining <- { remaining with Buffer = TextBuffer.delete 0 lastFit.EndOffset remaining.Buffer }
+                        addPageFootnotes (layoutFootnotes fitLines)
+                        // lastFit.EndOffset is in paragraph offsets; the buffer
+                        // being cut starts at consumedOffset.
+                        let cut = lastFit.EndOffset - consumedOffset
+                        let continuationMetadata =
+                            { remaining.Metadata with
+                                SpacingBefore = Some 0.0
+                                FirstLineIndent = if remaining.Metadata.ListStyle = NoList then Some 0.0 else remaining.Metadata.FirstLineIndent }
+                        remaining <- { remaining with Buffer = TextBuffer.delete 0 cut remaining.Buffer; Metadata = continuationMetadata }
+                        consumedOffset <- lastFit.EndOffset
                         advanceColumn ()
                     | None ->
                         advanceColumn ()
@@ -4296,6 +4374,12 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
             let sub = { doc with Blocks = [block] }
             let subLayouts, _ =
                 layoutDocumentWithRangeAndInitial { settings with Width = settings.PaddingLeft + columnWidth col + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange sub [] []
+            // The sub-pass lays its own footnotes out at the bottom of its
+            // 100,000px page; they belong at the bottom of the real page.
+            let subLayouts =
+                subLayouts
+                |> List.filter (fun layout ->
+                    not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
             match subLayouts with
             | [] -> ()
             | _ ->
@@ -4310,8 +4394,9 @@ let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (
                 let dy = y - subTop
                 for sl in subLayouts do
                     results.Add(sl |> shiftBlockY dy |> shiftBlockX (columnDx col))
+                    addPageFootnotes (layoutFootnotes sl.Lines)
                 y <- y + height
-    resizeArrayToList results, page, y
+    resizeArrayToList results, page, y, footnotesByPage
 
 /// Absolute geometry of one rendered page. For single-section documents every
 /// page is identical (uniform), matching the legacy stride-based model; with
@@ -4379,6 +4464,8 @@ let private layoutSections (settings: LayoutSettings) (measureText: TextMeasurer
     let mutable currentPage = 0
     let mutable currentY = 0.0             // absolute Y where the next section starts
     let mutable started = false
+    // Footnotes are per page, and a page can hold several (continuous) sections.
+    let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
     let recordPage page (s: LayoutSettings) top =
         while pageTops.Count <= page do pageTops.Add 0.0
         while pageSettings.Count <= page do pageSettings.Add s
@@ -4411,13 +4498,19 @@ let private layoutSections (settings: LayoutSettings) (measureText: TextMeasurer
         let secColumns = columnsOrSingle columns
         let secDoc = { doc with Blocks = blocks; PageSetup = { doc.PageSetup with Columns = columns } }
         let balanced = (not isFinal) && secColumns.Count >= 2
-        let secLayouts, endPage, endY = flowColumns secSettings measureText measureRange secDoc secColumns pageTopOf true currentPage currentY balanced
+        let secLayouts, endPage, endY, secFootnotes = flowColumns secSettings measureText measureRange secDoc secColumns pageTopOf true currentPage currentY balanced footnotesByPage
+        footnotesByPage <- secFootnotes
         results.AddRange secLayouts
         // Record the geometry of every page this section used.
         for p in sectionBase .. endPage do recordPage p secSettings (pageTopOf p)
         currentPage <- endPage
         currentY <- endY)
     let maxPage = pageTops.Count - 1
+    for KeyValue (pageIndex, notes) in footnotesByPage do
+        if not notes.IsEmpty && pageIndex <= maxPage && pageIndex < pageSettings.Count then
+            let s = pageSettings.[pageIndex]
+            let contentBottom = WordLayout.Page.contentBottom (pageHeight s) s.MarginBottom pageTops.[pageIndex]
+            results.AddRange(footnoteLayoutsForPage s measureText measureRange (s.Width - s.PaddingLeft - s.MarginRight) pageIndex contentBottom notes)
     let pages = [ for p in 0 .. maxPage -> pageInfoOf pageSettings.[p] pageTops.[p] ]
     resizeArrayToList results, pages
 
@@ -4430,8 +4523,14 @@ let layoutDocumentPages (settings: LayoutSettings) (measureText: TextMeasurer) (
             match columns with
             | Some c when c.Count >= 2 ->
                 let stride = pageHeight settings + pageGap
-                let r, _, _ = flowColumns settings measureText measureRange doc c (fun p -> float p * stride) false 0 (WordLayout.Page.contentTop settings.PaddingTop 0.0) false
-                r
+                let r, _, _, footnotesByPage = flowColumns settings measureText measureRange doc c (fun p -> float p * stride) false 0 (WordLayout.Page.contentTop settings.PaddingTop 0.0) false Map.empty
+                let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+                let footnotes =
+                    [ for KeyValue (pageIndex, notes) in footnotesByPage do
+                        if not notes.IsEmpty then
+                            let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (float pageIndex * stride)
+                            yield! footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex contentBottom notes ]
+                r @ footnotes
             | _ ->
                 let firstPass, placedAfterFirst =
                     layoutDocumentWithRangeAndInitial settings measureText measureRange doc [] []

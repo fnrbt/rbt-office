@@ -1049,6 +1049,66 @@ check "header table text sits at the page top"
         baseline - pageTop > 0.0 && baseline - pageTop < 120.0))
     true
 
+// ---------------------------------------------------------------------------
+// Columns and sections: a paragraph continued in the next column keeps the
+// paragraph's own offsets, and footnotes are laid out.
+// ---------------------------------------------------------------------------
+let flowSettings = { settings with Width = 500.0; PageHeight = 400.0; PaddingTop = 40.0; MarginBottom = 40.0 }
+let flowPageSetup =
+    { Doc.defaultPageSetup with
+        PageWidth = 500.0; PageHeight = 400.0; MarginLeft = 0.0; MarginRight = 0.0; MarginTop = 40.0; MarginBottom = 40.0 }
+let twoColumns : Doc.SectionColumns = { Count = 2; Gap = 20.0; Separator = false; Widths = [] }
+let longFlowText = String.concat " " [ for i in 1 .. 220 -> sprintf "w%03d" i ]
+let columnFlowDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (paragraph "flow-lead" "lead"); Doc.Paragraph (paragraph "flow-long" longFlowText) ]
+        PageSetup = { flowPageSetup with Columns = Some twoColumns }
+        Selection = None }
+let columnFlowLayouts = layoutDocument flowSettings measureText columnFlowDoc
+let longFragments = columnFlowLayouts |> List.filter (fun layout -> layout.BlockId = "flow-long")
+check "long paragraph continues in further columns" (longFragments.Length >= 2) true
+let fragmentRanges =
+    longFragments |> List.map (fun layout -> layout.Lines.Head.StartOffset, (layout.Lines |> List.last).EndOffset)
+check "first fragment starts at 0" (fst fragmentRanges.Head) 0
+check "fragments continue where the previous one ended"
+    (fragmentRanges |> List.pairwise |> List.forall (fun ((_, previousEnd), (nextStart, _)) -> nextStart = previousEnd))
+    true
+check "fragments cover the whole paragraph" (snd (List.last fragmentRanges)) longFlowText.Length
+let fragmentText =
+    longFragments
+    |> List.collect (fun layout -> layout.Lines)
+    |> List.collect (fun line -> line.Segments)
+    |> List.forall (function
+        | TextSegment (text, _, _, _, startOffset) -> longFlowText.Substring(startOffset, text.Length) = text
+        | _ -> true)
+check "fragment segments map to the paragraph's own characters" fragmentText true
+
+let footnotedPara id =
+    let text = "body text with a note x"
+    { paragraph id text with Buffer = ofString text |> setNote (text.Length - 1) 1 (Some "1") (Some "footnote") (Some "the footnote text") }
+let isFootnoteLayout (layout: BlockLayout) = layout.BlockId.StartsWith footnoteBlockIdPrefix
+let columnFootnoteLayouts =
+    layoutDocument flowSettings measureText
+        { columnFlowDoc with Blocks = [ Doc.Paragraph (footnotedPara "flow-note"); Doc.Paragraph (paragraph "flow-after" "after") ] }
+check "two-column document lays its footnote out" (columnFootnoteLayouts |> List.filter isFootnoteLayout |> List.length) 1
+let sectionBreakPara = { paragraph "sec-break" "end of first section" with Metadata = { Doc.defaultMetadata with SectionBreak = Some "nextPage" } }
+let sectionFootnoteLayouts, sectionFootnotePages =
+    layoutDocumentPages flowSettings measureText (rangeMeasurerFromTextMeasurer measureText)
+        { Doc.empty with
+            Blocks = [ Doc.Paragraph sectionBreakPara; Doc.Paragraph (footnotedPara "sec-note"); Doc.Paragraph (paragraph "sec-after" "after") ]
+            PageSetup = flowPageSetup
+            Selection = None }
+let sectionFootnotes = sectionFootnoteLayouts |> List.filter isFootnoteLayout
+check "sectioned document lays its footnote out" sectionFootnotes.Length 1
+let sectionNoteBody = sectionFootnoteLayouts |> List.find (fun layout -> layout.BlockId = "sec-note")
+let secondPage = sectionFootnotePages.[1]
+check "section footnote sits at the bottom of the referencing page"
+    (sectionFootnotes |> List.forall (fun layout ->
+        layout.Y > sectionNoteBody.Y + sectionNoteBody.Height - 0.5
+        && layout.Y >= secondPage.Top
+        && layout.Y + layout.Height <= secondPage.Top + secondPage.Height - secondPage.MarginBottom + 0.5))
+    true
+
 printfn ""
 printfn "Word layout tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
