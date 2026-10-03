@@ -398,6 +398,65 @@ type Spreadsheet(container: Element) =
         }
         model <- pushCommand command model
 
+    /// Cut the selection: copy it to the clipboard, clear the cells and
+    /// recalculate, as one undoable step.
+    let cutSelection () =
+        let selection = model.Selection
+        let clipboardData = serializeSelection selection model true
+        let oldCells = model.Cells
+        model <- { model with Clipboard = Some clipboardData }
+        model <- clearSelectionCells selection model
+        recalculateFormulas()
+        if not (obj.ReferenceEquals(oldCells, model.Cells)) then
+            let command = {
+                Undo = fun m -> restoreCellMap oldCells m
+                Redo = fun m -> clearSelectionCells selection m
+                Description = "Cut"
+            }
+            model <- pushCommand command model
+
+    /// Replace in the selected cell as one undoable step. True when it matched.
+    let replaceInSelection (findText: string) (replaceText: string) (caseSensitive: bool) =
+        let changedAddr =
+            match model.Selection with
+            | SingleCell (row, col) -> Some { Row = row; Col = col }
+            | _ -> None
+        let oldCells =
+            match changedAddr with
+            | Some addr -> [ addr, getCell addr model ]
+            | None -> []
+        match replaceAtSelection findText replaceText caseSensitive model with
+        | Some newModel ->
+            let newCells =
+                match changedAddr with
+                | Some addr -> [ addr, getCell addr newModel ]
+                | None -> []
+            let command = {
+                Undo = restoreCellOptions oldCells
+                Redo = restoreCellOptions newCells
+                Description = "Replace"
+            }
+            model <- newModel
+            // Formulas reading the replaced cell must see the new text.
+            recalculateFormulas()
+            model <- pushCommand command model
+            true
+        | None -> false
+
+    /// Replace every match on the sheet as one undoable step; returns the count.
+    let replaceEverywhere (findText: string) (replaceText: string) (caseSensitive: bool) =
+        let newModel, count, oldCells, newCells = replaceAllWithChanges findText replaceText caseSensitive model
+        if count > 0 then
+            model <- newModel
+            recalculateFormulas()
+            let command = {
+                Undo = restoreCellOptions oldCells
+                Redo = restoreCellOptions newCells
+                Description = "Replace All"
+            }
+            model <- pushCommand command model
+        count
+
     let recalculateSingleCellEdit (addr: CellAddress) (cellData: CellData) =
         let wb = currentWorkbookSnapshot()
         let sheetCell = { Sheet = wb.ActiveSheet; Cell = addr }
@@ -667,12 +726,7 @@ type Spreadsheet(container: Element) =
                 | "x" ->
                     // Cut
                     preventDefault e
-                    let clipboardData = serializeSelection model.Selection model true
-                    model <- { model with Clipboard = Some clipboardData }
-
-                    // Clear source cells
-                    model <- clearSelectionCells model.Selection model
-                    recalculateFormulas()
+                    cutSelection()
                     render()
 
                 | "v" ->
@@ -1865,9 +1919,8 @@ type Spreadsheet(container: Element) =
             let replaceText = getValue replaceInput
             let caseSensitive = getChecked caseSensitiveCheckbox
 
-            match replaceAtSelection findText replaceText caseSensitive model with
-            | Some newModel ->
-                model <- newModel
+            match replaceInSelection findText replaceText caseSensitive with
+            | true ->
                 setTextContent resultsDiv "Replaced current match"
 
                 // Find next automatically
@@ -1876,8 +1929,9 @@ type Spreadsheet(container: Element) =
                     model <- nextModel
                     render()
                 | None ->
+                    render()
                     setTextContent resultsDiv "No more matches"
-            | None ->
+            | false ->
                 setTextContent resultsDiv "No match at current selection"
         )
         appendChild buttonRow replaceBtn
@@ -1901,12 +1955,9 @@ type Spreadsheet(container: Element) =
             let caseSensitive = getChecked caseSensitiveCheckbox
 
             if not (System.String.IsNullOrWhiteSpace(findText)) then
-                // Count matches before replacing
-                let matches = searchCells findText caseSensitive model
-                let count = matches.Length
+                let count = replaceEverywhere findText replaceText caseSensitive
 
                 if count > 0 then
-                    model <- replaceAll findText replaceText caseSensitive model
                     setTextContent resultsDiv (sprintf "Replaced %d matches" count)
                     render()
                 else
@@ -2684,10 +2735,12 @@ type Spreadsheet(container: Element) =
                 | Some n -> CellValue.Number n
                 | None -> CellValue.String value
 
+        // Setting a value keeps the cell's formatting and comment.
+        let existing = getCell addr model
         let cellData = {
             Value = cellValue
-            Format = defaultFormat
-            Comment = None
+            Format = existing |> Option.map (fun cd -> cd.Format) |> Option.defaultValue defaultFormat
+            Comment = existing |> Option.bind (fun cd -> cd.Comment)
         }
         recalculateSingleCellEdit addr cellData
         render()
@@ -2871,7 +2924,7 @@ type Spreadsheet(container: Element) =
         | Some wb ->
             let table: Rbt.Spreadsheet.Workbook.Table = {
                 Name = name
-                SheetId = "sheet1"  // Default sheet ID
+                SheetId = sheetIdForIndex activeSheetIndex  // the sheet being edited
                 StartRow = startRow
                 StartCol = startCol
                 EndRow = endRow
@@ -2882,6 +2935,8 @@ type Spreadsheet(container: Element) =
             }
             let newWb = Rbt.Spreadsheet.Workbook.defineTable table wb
             workbook <- Some newWb
+            // Structured references to the table resolve from now on.
+            recalculateFormulas()
             render()  // Re-render to apply table styles
         | None -> ()
 
@@ -2891,6 +2946,7 @@ type Spreadsheet(container: Element) =
         | Some wb ->
             let newWb = Rbt.Spreadsheet.Workbook.deleteTable name wb
             workbook <- Some newWb
+            recalculateFormulas()
             render()
         | None -> ()
 
@@ -2936,42 +2992,13 @@ type Spreadsheet(container: Element) =
 
     /// Replace current selection
     member _.Replace(findText: string, replaceText: string, caseSensitive: bool) =
-        let changedAddr =
-            match model.Selection with
-            | SingleCell (row, col) -> Some { Row = row; Col = col }
-            | _ -> None
-        let oldCells =
-            match changedAddr with
-            | Some addr -> [ addr, getCell addr model ]
-            | None -> []
-        match replaceAtSelection findText replaceText caseSensitive model with
-        | Some newModel ->
-            let newCells =
-                match changedAddr with
-                | Some addr -> [ addr, getCell addr newModel ]
-                | None -> []
-            let command = {
-                Undo = restoreCellOptions oldCells
-                Redo = restoreCellOptions newCells
-                Description = "Replace"
-            }
-            model <- pushCommand command newModel
-            render()
-            true
-        | None -> false
+        let replaced = replaceInSelection findText replaceText caseSensitive
+        if replaced then render()
+        replaced
 
     /// Replace all occurrences
     member _.ReplaceAll(findText: string, replaceText: string, caseSensitive: bool) =
-        let newModel, count, oldCells, newCells = replaceAllWithChanges findText replaceText caseSensitive model
-        model <- newModel
-
-        if count > 0 then
-            let command = {
-                Undo = restoreCellOptions oldCells
-                Redo = restoreCellOptions newCells
-                Description = "Replace All"
-            }
-            model <- pushCommand command model
+        replaceEverywhere findText replaceText caseSensitive |> ignore
         render()
 
     /// Get search results count
@@ -3165,11 +3192,7 @@ type Spreadsheet(container: Element) =
 
     /// Cut selection to clipboard
     member _.Cut() =
-        let clipboardData = serializeSelection model.Selection model true
-        model <- { model with Clipboard = Some clipboardData }
-
-        model <- clearSelectionCells model.Selection model
-        recalculateFormulas()
+        cutSelection()
         render()
 
     /// Copy selection to clipboard
