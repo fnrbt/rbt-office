@@ -1,19 +1,61 @@
 module XmlGenerator
 
+let private isForbiddenXmlChar (code: int) =
+    (code < 0x20 && code <> 0x9 && code <> 0xA && code <> 0xD) || code = 0xFFFE || code = 0xFFFF
+
+/// Drop characters XML 1.0 cannot represent at all: C0 controls other than
+/// tab / LF / CR, U+FFFE / U+FFFF and unpaired surrogates. They cannot be
+/// written as character references either (&#7; is just as ill-formed), so a
+/// stray BEL or form feed pasted into a document used to produce a part that
+/// neither Word nor this library's reader could open.
+let stripInvalidXmlChars (text: string) : string =
+    if isNull text then ""
+    else
+        let mutable suspect = false
+        let mutable i = 0
+        while not suspect && i < text.Length do
+            let code = int text.[i]
+            if isForbiddenXmlChar code || (code >= 0xD800 && code <= 0xDFFF) then suspect <- true
+            i <- i + 1
+        if not suspect then text
+        else
+            let sb = System.Text.StringBuilder(text.Length)
+            let mutable j = 0
+            while j < text.Length do
+                let ch = text.[j]
+                let code = int ch
+                if code >= 0xD800 && code <= 0xDBFF then
+                    if j + 1 < text.Length && int text.[j + 1] >= 0xDC00 && int text.[j + 1] <= 0xDFFF then
+                        sb.Append(ch).Append(text.[j + 1]) |> ignore
+                        j <- j + 1
+                elif code >= 0xDC00 && code <= 0xDFFF then ()
+                elif not (isForbiddenXmlChar code) then sb.Append(ch) |> ignore
+                j <- j + 1
+            sb.ToString()
+
 /// Escape XML entities
 let escapeXml (text: string) : string =
-    text
+    (stripInvalidXmlChars text)
         .Replace("&", "&amp;")
         .Replace("<", "&lt;")
         .Replace(">", "&gt;")
         .Replace("\"", "&quot;")
         .Replace("'", "&apos;")
 
+/// Escape an attribute value. Literal tab / LF / CR in an attribute are
+/// normalised to spaces by every XML parser, so they go out as character
+/// references to survive the round trip.
+let escapeXmlAttribute (text: string) : string =
+    (escapeXml text)
+        .Replace("\t", "&#9;")
+        .Replace("\n", "&#10;")
+        .Replace("\r", "&#13;")
+
 /// Generate XML element with attributes and children
 let element (name: string) (attrs: (string * string) list) (children: string list) : string =
     let attrStr =
         attrs
-        |> List.map (fun (k, v) -> sprintf "%s=\"%s\"" k (escapeXml v))
+        |> List.map (fun (k, v) -> sprintf "%s=\"%s\"" k (escapeXmlAttribute v))
         |> String.concat " "
 
     let attrPart = if attrStr = "" then "" else " " + attrStr
@@ -28,7 +70,7 @@ let element (name: string) (attrs: (string * string) list) (children: string lis
 let elementWithText (name: string) (attrs: (string * string) list) (text: string) : string =
     let attrStr =
         attrs
-        |> List.map (fun (k, v) -> sprintf "%s=\"%s\"" k (escapeXml v))
+        |> List.map (fun (k, v) -> sprintf "%s=\"%s\"" k (escapeXmlAttribute v))
         |> String.concat " "
 
     let attrPart = if attrStr = "" then "" else " " + attrStr

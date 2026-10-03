@@ -7,7 +7,7 @@ open ZipInterop
 open System.Text
 
 let private appendEscaped (sb: StringBuilder) (text: string) =
-    for ch in text do
+    for ch in stripInvalidXmlChars text do
         match ch with
         | '&' -> sb.Append("&amp;") |> ignore
         | '<' -> sb.Append("&lt;") |> ignore
