@@ -12,7 +12,12 @@ open Fable.Core
 let private trace (_label: string) : unit = jsNative
 
 [<Emit("(function(){ try { return new URLSearchParams(window.location.search).has('rbPdfExportTrace') || window.localStorage.getItem('rb.word.pdfExportTrace') === '1'; } catch (_) { return false; } })()")>]
-let private traceTimingEnabled : bool = jsNative
+let private readTraceTimingEnabled () : bool = jsNative
+
+// Read once at load. As an emitted expression it was re-evaluated (parsing
+// the URL and reading localStorage) at every use, several times per paragraph
+// on every layout pass.
+let private traceTimingEnabled : bool = readTraceTimingEnabled ()
 
 [<Emit("performance.now()")>]
 let private nowMs () : float = jsNative
@@ -3890,7 +3895,7 @@ let private layoutDocumentWithRangeAndInitial
                 | None -> ()
             let initialStart = timingStart ()
             let initialLayout, initialCounters, initialObstacles, initialPlacedBoxes = layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth y 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters floatingObstacles placedFloatingBoxes
-            traceSlow (sprintf "block[%d]:initial lines=%d" index initialLayout.Lines.Length) initialStart
+            if traceTimingEnabled then traceSlow (sprintf "block[%d]:initial lines=%d" index initialLayout.Lines.Length) initialStart
             let keepWithNextY =
                 if paragraphStyle.KeepNext = Some true then
                     let keepStart = timingStart ()
@@ -3929,7 +3934,7 @@ let private layoutDocumentWithRangeAndInitial
                                 probeIndex <- probeIndex + 1
                         | None -> shouldContinue <- false
 
-                    traceSlow (sprintf "block[%d]:keepNextProbe lines=%d" index probedLines) keepStart
+                    if traceTimingEnabled then traceSlow (sprintf "block[%d]:keepNextProbe lines=%d" index probedLines) keepStart
                     if groupIsMoveable && probedLines > 0 && shouldMoveKeepGroup y groupHeight then advanceToNextPage settings y else y
                 else y
             let initialLinesSpanPages = linesSpanPages settings initialLayout.Lines
@@ -3955,7 +3960,7 @@ let private layoutDocumentWithRangeAndInitial
                         let nearFooterStart = timingStart ()
                         let nextStyle = forBlockInContext styleContext nextBlock
                         let nextLayout, _, _, _ = layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth (pagedY + initialLayout.Height) 0.0 nextStyle (effectiveBufferInContext styleContext) nextPara numberedCounters initialObstacles initialPlacedBoxes
-                        traceSlow (sprintf "block[%d]:nearFooterProbe lines=%d" index nextLayout.Lines.Length) nearFooterStart
+                        if traceTimingEnabled then traceSlow (sprintf "block[%d]:nearFooterProbe lines=%d" index nextLayout.Lines.Length) nearFooterStart
                         Some nextLayout.Lines.Length
                     | None -> None
                 else None
@@ -3974,7 +3979,7 @@ let private layoutDocumentWithRangeAndInitial
                     let relayoutStart = timingStart ()
                     let result =
                         layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText measureRange maxWidth pagedY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters floatingObstacles placedFloatingBoxes
-                    traceSlow (sprintf "block[%d]:relayout" index) relayoutStart
+                    if traceTimingEnabled then traceSlow (sprintf "block[%d]:relayout" index) relayoutStart
                     result
             let layout =
                 if pagedY = y then layout
@@ -4010,7 +4015,7 @@ let private layoutDocumentWithRangeAndInitial
             if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
                 y <- advanceToNextPage settings y
                 resetPreviousParagraph ()
-            traceSlow (sprintf "block[%d]:paragraph total lines=%d" index layout.Lines.Length) blockStart
+            if traceTimingEnabled then traceSlow (sprintf "block[%d]:paragraph total lines=%d" index layout.Lines.Length) blockStart
 
     // Lay out each page's footnotes in the reserved area at the bottom of the
     // page, at a smaller font, tagged with footnoteBlockIdPrefix so Paint can
