@@ -83,6 +83,11 @@ check "let-sumifs"    "=LET(v,B1:B6,cat,A1:A6,SUMIFS(v,cat,\"X\"))" (n 90.0)
 check "let-reuse"     "=LET(r,B1:B6,SUM(r)/COUNT(r))"            (n 35.0)
 check "let-bad-arity" "=LET(x,5)"                                (e "VALUE!")
 
+// ----- forward-compatibility prefixes, as stored in XLSX files -----
+check "xlfn-prefix"      "=_xlfn.XLOOKUP(2,K1:K4,L1:L4)"         (s "x")
+check "xlfn-xlws-prefix" "=_xlfn._xlws.XMATCH(3,D1:D5)"          (n 3.0)
+check "xlpm-prefix"      "=_xlfn.LET(_xlpm.x,5,_xlpm.x+1)"       (n 6.0)
+
 printfn ""
 printfn "Stage 6 modern-function tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

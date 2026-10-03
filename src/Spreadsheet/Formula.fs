@@ -209,6 +209,8 @@ type Token =
     | TComma | TColon | TBang
     | TEnd
 
+let private futureFunctionPrefixes = [ "_xlfn."; "_xlws."; "_xlpm." ]
+
 let private tokenizeFrom (input: string) startIndex : Token array =
     let n = input.Length
     let tokens = System.Collections.Generic.List<Token>(max 1 (n - startIndex + 1))
@@ -285,7 +287,18 @@ let private tokenizeFrom (input: string) startIndex : Token array =
             let start = i
             while i < n && (input.[i] = '$' || Char.IsLetterOrDigit input.[i] || input.[i] = '_' || input.[i] = '.') do
                 i <- i + 1
-            tokens.Add(TIdent (input.Substring(start, i - start)))
+            // XLSX files store newer functions and LAMBDA parameters behind
+            // forward-compatibility prefixes (`_xlfn.XLOOKUP`,
+            // `_xlfn._xlws.FILTER`, `_xlpm.x`); the name is what follows.
+            let mutable ident = input.Substring(start, i - start)
+            let mutable stripped = true
+            while stripped do
+                stripped <- false
+                for prefix in futureFunctionPrefixes do
+                    if ident.Length > prefix.Length && ident.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) then
+                        ident <- ident.Substring prefix.Length
+                        stripped <- true
+            tokens.Add(TIdent ident)
         else
             // Operators / punctuation. Two-char operators checked first.
             if i + 1 < n && c = '<' && input.[i + 1] = '=' then

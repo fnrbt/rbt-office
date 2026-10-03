@@ -834,6 +834,11 @@ let rec displayValue (value: CellValue): string =
     | Error e -> sprintf "#%s" e
     | Formula (_, cached) -> displayValue cached
 
+/// Formula text as the user edits it. Cells typed in the web editor store the
+/// leading "="; imported cells store the bare expression.
+let formulaText (text: string) : string =
+    if text.StartsWith "=" then text else "=" + text
+
 /// Display value with the legacy named formats applied. Real Excel format
 /// codes need CellText.cellDisplayText, which compiles after this module.
 let displayValueWithFormat (value: CellValue) (format: CellFormat): string =

@@ -499,7 +499,12 @@ type Spreadsheet(container: Element) =
         if not readOnly then
             let addr = { Row = row; Col = col }
             let cellValue = getCellValue addr model
-            let currentValue = displayValue cellValue
+            // Edit the formula itself, not its cached result, or committing
+            // the edit would replace the formula with a constant.
+            let currentValue =
+                match cellValue with
+                | Formula (text, _) -> formulaText text
+                | other -> displayValue other
 
             model <- {
                 model with
@@ -1101,7 +1106,9 @@ type Spreadsheet(container: Element) =
                 let value = getCellValue addr model
                 let displayText =
                     match cellData with
-                    | Some data -> displayValueWithFormat value data.Format
+                    // Unbounded width: the cell's CSS clips, so only the
+                    // number format is wanted here, not ##### overflow.
+                    | Some data -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format value
                     | None -> displayValue value
                 setTextContent cell displayText
 
@@ -3106,7 +3113,7 @@ type Spreadsheet(container: Element) =
             match Map.tryFind addr model.Cells with
             | Some cellData ->
                 match cellData.Value with
-                | Formula (formula, _) -> formula
+                | Formula (formula, _) -> formulaText formula
                 | other -> displayValue other
             | None -> ""
         | Range _ -> ""  // Can't edit range
@@ -3156,8 +3163,8 @@ type Spreadsheet(container: Element) =
     member _.Undo() =
         match undo model with
         | Some newModel ->
-            invalidateCalcEngine()
             model <- newModel
+            recalculateFormulas()
             render()
         | None -> ()
 
@@ -3165,8 +3172,8 @@ type Spreadsheet(container: Element) =
     member _.Redo() =
         match redo model with
         | Some newModel ->
-            invalidateCalcEngine()
             model <- newModel
+            recalculateFormulas()
             render()
         | None -> ()
 
