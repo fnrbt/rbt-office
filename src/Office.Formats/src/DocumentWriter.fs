@@ -189,63 +189,83 @@ module InverseConversion =
     let fixedLineSpacingToTwips (fontSizePixels: float) (spacing: float) : string =
         string (roundToInt (spacing * (max 1.0 fontSizePixels) * 15.0))
 
+/// Run properties the typed EditorRun record does not carry; read off the
+/// untyped editor run object.
+type private RunExtras = {
+    StyleId: string option
+    AllCaps: bool
+    SmallCaps: bool
+}
+
+let private noRunExtras = { StyleId = None; AllCaps = false; SmallCaps = false }
+
+/// The editor run carries *effective* formatting (style and document defaults
+/// already merged in by the reader), so "not bold" has to be written as an
+/// explicit w:val="0": leaving the element out would hand the property back to
+/// the paragraph style and e.g. make every run of a bold heading style bold.
+let private toggle name (isOn: bool) =
+    if isOn then selfClosing name [] else selfClosing name [("w:val", "0")]
+
+/// Run properties in CT_RPr (EG_RPrBase) sequence order. Word rejects or
+/// silently repairs w:rPr whose children are out of order, so the order of the
+/// yields below is significant: rStyle, rFonts, b, i, caps, smallCaps, strike,
+/// dstrike, vanish, color, spacing, position, sz, szCs, highlight, u, vertAlign.
+let private orderedRunProps (extras: RunExtras) (run: EditorRun) : string list =
+    [
+        match extras.StyleId with
+        | Some styleId when styleId <> "" -> yield selfClosing "w:rStyle" [("w:val", styleId)]
+        | _ -> ()
+        yield selfClosing "w:rFonts" [("w:ascii", run.FontFamily); ("w:hAnsi", run.FontFamily); ("w:cs", run.FontFamily)]
+        yield toggle "w:b" run.Bold
+        yield toggle "w:i" run.Italic
+        yield toggle "w:caps" extras.AllCaps
+        yield toggle "w:smallCaps" extras.SmallCaps
+        yield toggle "w:strike" run.Strike
+        match InverseConversion.cssColorToWord run.Color with
+        | Some color -> yield selfClosing "w:color" [("w:val", color)]
+        | None -> ()
+        if abs run.CharacterSpacing >= 0.001 then
+            yield selfClosing "w:spacing" [("w:val", InverseConversion.pixelsToTwips run.CharacterSpacing)]
+        let sz = InverseConversion.pixelsToHalfPoints run.FontSize
+        yield selfClosing "w:sz" [("w:val", sz)]
+        yield selfClosing "w:szCs" [("w:val", sz)]
+        match run.Highlight with
+        | Some color -> yield selfClosing "w:highlight" [("w:val", color)]
+        | None -> ()
+        yield selfClosing "w:u" [("w:val", (if run.Underline then "single" else "none"))]
+        match run.VertAlign with
+        | Some value when value = "superscript" || value = "subscript" -> yield selfClosing "w:vertAlign" [("w:val", value)]
+        | _ -> ()
+    ]
+
 /// Generate run properties XML
 let generateRunProps (run: EditorRun) : string list =
-    let props = []
+    orderedRunProps noRunExtras run
 
-    let props = if run.Bold then (selfClosing "w:b" []) :: props else props
-    let props = if run.Italic then (selfClosing "w:i" []) :: props else props
-    let props = if run.Underline then (selfClosing "w:u" [("w:val", "single")]) :: props else props
-    let props = if run.Strike then (selfClosing "w:strike" []) :: props else props
-    let props =
-        match run.Highlight with
-        | Some color -> (selfClosing "w:highlight" [("w:val", color)]) :: props
-        | None -> props
+/// The content of a run. Inside w:del the schema only allows w:delText;
+/// a w:t there makes Word report the file as corrupt.
+let private runTextElements (deleted: bool) (text: string) : string list =
+    [ elementWithText (if deleted then "w:delText" else "w:t") [("xml:space", "preserve")] text ]
 
-    let props =
-        match run.VertAlign with
-        | Some value when value = "superscript" || value = "subscript" -> (selfClosing "w:vertAlign" [("w:val", value)]) :: props
-        | _ -> props
-
-    let props =
-        let sz = InverseConversion.pixelsToHalfPoints run.FontSize
-        (selfClosing "w:sz" [("w:val", sz)]) ::
-        (selfClosing "w:szCs" [("w:val", sz)]) :: props
-
-    let props =
-        if abs run.CharacterSpacing >= 0.001 then
-            (selfClosing "w:spacing" [("w:val", InverseConversion.pixelsToTwips run.CharacterSpacing)]) :: props
-        else props
-
-    let props =
-        (selfClosing "w:rFonts" [("w:ascii", run.FontFamily); ("w:hAnsi", run.FontFamily); ("w:cs", run.FontFamily)]) :: props
-
-    let props =
-        match InverseConversion.cssColorToWord run.Color with
-        | Some color -> (selfClosing "w:color" [("w:val", color)]) :: props
-        | None -> props
-
-    List.rev props
+let private runElement (rPr: string list) (deleted: bool) (text: string) : string =
+    let rPrElement = if List.isEmpty rPr then [] else [element "w:rPr" [] rPr]
+    element "w:r" [] (rPrElement @ runTextElements deleted text)
 
 /// Generate a run element with formatting
 let generateRun (run: EditorRun) : string =
-    let rPr = generateRunProps run
-    let rPrElement = if List.isEmpty rPr then "" else element "w:rPr" [] rPr
-    let tElement = elementWithText "w:t" [("xml:space", "preserve")] run.Text
+    runElement (generateRunProps run) false run.Text
 
-    element "w:r" [] [rPrElement; tElement]
+let private runExtrasFromObject (runObj: obj) = {
+    StyleId = optionalString (runObj?Style) |> Option.orElse (optionalString (runObj?RunStyle)) |> Option.orElse (optionalString (runObj?CharacterStyle))
+    AllCaps = boolOrDefault false (runObj?AllCaps)
+    SmallCaps = boolOrDefault false (runObj?SmallCaps)
+}
+
+let private isDeletedRun (runObj: obj) =
+    optionalString (runObj?RevisionType) = Some "delete"
 
 let private generateRunWithObjectProps (runObj: obj) (run: EditorRun) : string =
-    let rPr =
-        generateRunProps run
-        @ [ match optionalString (runObj?Style) |> Option.orElse (optionalString (runObj?RunStyle)) |> Option.orElse (optionalString (runObj?CharacterStyle)) with
-            | Some styleId when styleId <> "" -> yield selfClosing "w:rStyle" [("w:val", styleId)]
-            | _ -> ()
-            if boolOrDefault false (runObj?AllCaps) then yield selfClosing "w:caps" []
-            if boolOrDefault false (runObj?SmallCaps) then yield selfClosing "w:smallCaps" [] ]
-    let rPrElement = if List.isEmpty rPr then "" else element "w:rPr" [] rPr
-    let tElement = elementWithText "w:t" [("xml:space", "preserve")] run.Text
-    element "w:r" [] [rPrElement; tElement]
+    runElement (orderedRunProps (runExtrasFromObject runObj) run) (isDeletedRun runObj) run.Text
 
 let private generateFieldRun (runObj: obj) (fallbackRun: EditorRun) (fieldCode: string) =
     let result = optionalString (runObj?FieldResult) |> Option.defaultValue fallbackRun.Text
@@ -802,7 +822,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
                     | Some asset -> generateImageRun asset runObj
                     | None ->
                         let alt = optionalString (runObj?ImageAlt) |> Option.defaultValue "Image"
-                        element "w:r" [] [elementWithText "w:t" [("xml:space", "preserve")] alt]
+                        runElement [] (isDeletedRun runObj) alt
                 else
                     let run: EditorRun = {
                         Text = runObj?Text |> unbox<string>
@@ -1389,7 +1409,7 @@ let generateComments (comments: CommentRef list) : string =
                 @ (comment.Date |> Option.map (fun date -> [("w:date", date)]) |> Option.defaultValue [])
             element "w:comment" attrs [
                 element "w:p" [] [
-                    element "w:r" [] [elementWithText "w:t" [("xml:space", "preserve")] comment.Text]
+                    runElement [] false comment.Text
                 ]
             ])
 
@@ -1401,7 +1421,7 @@ let generateNotes (rootName: string) (noteElementName: string) (notes: NoteRef l
         |> List.map (fun note ->
             element noteElementName [("w:id", note.Id)] [
                 element "w:p" [] [
-                    element "w:r" [] [elementWithText "w:t" [("xml:space", "preserve")] note.Text]
+                    runElement [] false note.Text
                 ]
             ])
 
@@ -1672,17 +1692,27 @@ let private collectPackageStyles (styles: obj array) =
     |> Array.toList
     |> List.choose (styleInfoFromObject "paragraph")
 
+/// Style run properties, in CT_RPr order (see orderedRunProps). A style only
+/// states what it sets, so absent properties are left out rather than written off.
 let private styleRunProps style =
+    let styleToggle name value =
+        match value with
+        | Some isOn -> [toggle name isOn]
+        | None -> []
     [
-        match style.Bold with | Some true -> yield selfClosing "w:b" [] | _ -> ()
-        match style.Italic with | Some true -> yield selfClosing "w:i" [] | _ -> ()
-        match style.Underline with | Some true -> yield selfClosing "w:u" [("w:val", "single")] | _ -> ()
-        match style.AllCaps with | Some true -> yield selfClosing "w:caps" [] | _ -> ()
-        match style.SmallCaps with | Some true -> yield selfClosing "w:smallCaps" [] | _ -> ()
-        match style.Strike with | Some true -> yield selfClosing "w:strike" [] | _ -> ()
-        match style.VertAlign with | Some value when value = "superscript" || value = "subscript" -> yield selfClosing "w:vertAlign" [("w:val", value)] | _ -> ()
         match style.FontFamily with
         | Some family when family <> "" -> yield selfClosing "w:rFonts" [("w:ascii", family); ("w:hAnsi", family); ("w:cs", family)]
+        | _ -> ()
+        yield! styleToggle "w:b" style.Bold
+        yield! styleToggle "w:i" style.Italic
+        yield! styleToggle "w:caps" style.AllCaps
+        yield! styleToggle "w:smallCaps" style.SmallCaps
+        yield! styleToggle "w:strike" style.Strike
+        match InverseConversion.cssColorToWord style.Color with
+        | Some color -> yield selfClosing "w:color" [("w:val", color)]
+        | None -> ()
+        match style.CharacterSpacing with
+        | Some spacing when abs spacing >= 0.001 -> yield selfClosing "w:spacing" [("w:val", InverseConversion.pixelsToTwips spacing)]
         | _ -> ()
         match style.FontSize with
         | Some size ->
@@ -1690,15 +1720,13 @@ let private styleRunProps style =
             yield selfClosing "w:sz" [("w:val", value)]
             yield selfClosing "w:szCs" [("w:val", value)]
         | _ -> ()
-        match style.CharacterSpacing with
-        | Some spacing when abs spacing >= 0.001 -> yield selfClosing "w:spacing" [("w:val", InverseConversion.pixelsToTwips spacing)]
-        | _ -> ()
-        match InverseConversion.cssColorToWord style.Color with
-        | Some color -> yield selfClosing "w:color" [("w:val", color)]
-        | None -> ()
         match style.Highlight with
         | Some color when color <> "" -> yield selfClosing "w:highlight" [("w:val", color)]
         | _ -> ()
+        match style.Underline with
+        | Some isOn -> yield selfClosing "w:u" [("w:val", (if isOn then "single" else "none"))]
+        | None -> ()
+        match style.VertAlign with | Some value when value = "superscript" || value = "subscript" -> yield selfClosing "w:vertAlign" [("w:val", value)] | _ -> ()
     ]
 
 let private styleParagraphProps style =
