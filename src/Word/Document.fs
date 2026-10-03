@@ -12,8 +12,13 @@ let mutable private blockIdCounter = 0
 
 /// Generate next block ID
 let private nextBlockId () =
+#if FABLE_COMPILER
     blockIdCounter <- blockIdCounter + 1
     sprintf "block-%d" blockIdCounter
+#else
+    // Documents may be edited on several threads at once on a server.
+    sprintf "block-%d" (System.Threading.Interlocked.Increment &blockIdCounter)
+#endif
 
 /// Text style for runs
 type TextStyle = {
