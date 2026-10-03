@@ -1421,27 +1421,6 @@ let private blocksForPage (settings: LayoutSettings) (pageSetup: PageSetup) page
         | Some part -> part.Blocks
         | None -> fallbackBlocks ()
 
-let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureText measureRange pageNumber pageCount startY blocks =
-    let repeatedSettings = { settings with MarginBottom = 0.0 }
-    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-    let commands = ResizeArray<PaintCommand>()
-    let mutable y = startY
-    for rawBlock in blocks do
-        let block, _ = blockWithRunningFields pageNumber pageCount rawBlock
-        match block with
-        | Paragraph para
-        | Heading (_, para) ->
-            let safePara = { para with Metadata = { para.Metadata with PageBreakAfter = false } }
-            let layout, _ = layoutParagraphAtWithRange repeatedSettings measureText measureRange maxWidth y 0.0 safePara Map.empty
-            addParagraphCommands settings fontFamily measureText measureRange commands layout
-            y <- layout.Y + layout.Height
-        | Table table ->
-            let tableCommands, nextY = tableBorderCommandsWithRange repeatedSettings measureText measureRange table y
-            commands.AddRange(tableCommands)
-            y <- nextY
-        | TextBox _ -> ()
-    resizeArrayToList commands
-
 let private shiftCommandY dy command =
     match command with
     | DrawText (t, s, x, b, w) -> DrawText (t, s, x, b + dy, w)
@@ -1461,6 +1440,38 @@ let private shiftCommandsY dy commands =
         for command in commands do
             shifted.Add(shiftCommandY dy command)
         resizeArrayToList shifted
+
+let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureText measureRange pageNumber pageCount startY blocks =
+    let repeatedSettings = { settings with MarginBottom = 0.0 }
+    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+    let commands = ResizeArray<PaintCommand>()
+    let mutable y = startY
+    for rawBlock in blocks do
+        let block, _ = blockWithRunningFields pageNumber pageCount rawBlock
+        match block with
+        | Paragraph para
+        | Heading (_, para) ->
+            let safePara = { para with Metadata = { para.Metadata with PageBreakAfter = false } }
+            let layout, _ = layoutParagraphAtWithRange repeatedSettings measureText measureRange maxWidth y 0.0 safePara Map.empty
+            addParagraphCommands settings fontFamily measureText measureRange commands layout
+            y <- layout.Y + layout.Height
+        | Table table ->
+            let tableCommands, nextY = tableBorderCommandsWithRange repeatedSettings measureText measureRange table y
+            commands.AddRange(tableCommands)
+            // The borders alone are not the table: lay its cells out as well
+            // and paint their text. The table is laid out at the body origin
+            // on an unpaged measuring page (a header/footer table never
+            // splits) and the resulting commands are moved to y.
+            let measureSettings = { repeatedSettings with PageHeight = max repeatedSettings.PageHeight 1000000.0 }
+            let tableDoc = { Rbt.Word.Document.empty with Blocks = [ Table table ]; Selection = None }
+            let cellCommands = ResizeArray<PaintCommand>()
+            for layout in layoutDocumentWithRange measureSettings measureText measureRange tableDoc do
+                if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix) then
+                    addParagraphCommands settings fontFamily measureText measureRange cellCommands layout
+            commands.AddRange(shiftCommandsY (y - measureSettings.PaddingTop) (resizeArrayToList cellCommands))
+            y <- nextY
+        | TextBox _ -> ()
+    resizeArrayToList commands
 
 let private headerFooterCommands (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) layouts (pages: PageInfo list) =
     let pageCount = pages.Length
