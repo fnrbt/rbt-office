@@ -1325,29 +1325,40 @@ let private textRunsInRangeHaveFontFamily start len family buffer =
             | [] -> ()
         allMatch
 
+/// True when every text run overlapping the range satisfies the predicate.
+let rangeSatisfies start len (predicate: TextStyle -> bool) buffer =
+    textRunsInRangeSatisfy start len predicate buffer
+
+/// Toggle an on/off character property the way Word does: if the whole
+/// range already has it, clear it; otherwise set it on the whole range.
+/// (Flipping each run separately would turn "bold plain" into "plain bold".)
+let private toggleProperty start len (isSet: TextStyle -> bool) (apply: bool -> TextStyle -> TextStyle) buffer =
+    let turnOn = not (textRunsInRangeSatisfy start len isSet buffer)
+    applyStyle start len (apply turnOn) buffer
+
 /// Toggle bold for range
 let toggleBold start len buffer =
-    applyStyle start len (fun style -> { style with Bold = not style.Bold }) buffer
+    toggleProperty start len (fun style -> style.Bold) (fun on style -> if style.Bold = on then style else { style with Bold = on }) buffer
 
 /// Toggle italic for range
 let toggleItalic start len buffer =
-    applyStyle start len (fun style -> { style with Italic = not style.Italic }) buffer
+    toggleProperty start len (fun style -> style.Italic) (fun on style -> if style.Italic = on then style else { style with Italic = on }) buffer
 
 /// Toggle underline for range
 let toggleUnderline start len buffer =
-    applyStyle start len (fun style -> { style with Underline = not style.Underline }) buffer
+    toggleProperty start len (fun style -> style.Underline) (fun on style -> if style.Underline = on then style else { style with Underline = on }) buffer
 
 /// Toggle all caps for range
 let toggleAllCaps start len buffer =
-    applyStyle start len (fun style -> { style with AllCaps = not style.AllCaps; SmallCaps = false }) buffer
+    toggleProperty start len (fun style -> style.AllCaps) (fun on style -> { style with AllCaps = on; SmallCaps = false }) buffer
 
 /// Toggle small caps for range
 let toggleSmallCaps start len buffer =
-    applyStyle start len (fun style -> { style with SmallCaps = not style.SmallCaps; AllCaps = false }) buffer
+    toggleProperty start len (fun style -> style.SmallCaps) (fun on style -> { style with SmallCaps = on; AllCaps = false }) buffer
 
 /// Toggle strikethrough for range
 let toggleStrike start len buffer =
-    applyStyle start len (fun style -> { style with Strike = not style.Strike }) buffer
+    toggleProperty start len (fun style -> style.Strike) (fun on style -> if style.Strike = on then style else { style with Strike = on }) buffer
 
 /// Set vertical alignment for range
 let setVertAlign start len align buffer =

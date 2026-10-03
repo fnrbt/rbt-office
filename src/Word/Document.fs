@@ -2572,29 +2572,43 @@ let applyFormattingToSelection formatFn doc =
 
             mapEditableParagraphs formatParagraph doc
 
+/// Toggle an on/off character property over the whole selection, deciding
+/// once for all of it: clear when every selected run already has it, set
+/// otherwise. The decision spans paragraphs, so a selection covering a bold
+/// paragraph and a plain one becomes bold throughout.
+let private toggleOnSelection (isSet: TextBuffer.TextStyle -> bool) (apply: bool -> TextBuffer.TextStyle -> TextBuffer.TextStyle) doc =
+    let mutable allSet = true
+    applyFormattingToSelection (fun start len buffer ->
+        if allSet && not (TextBuffer.rangeSatisfies start len isSet buffer) then
+            allSet <- false
+        buffer) doc
+    |> ignore
+    let turnOn = not allSet
+    applyFormattingToSelection (fun start len buffer -> TextBuffer.applyStyle start len (apply turnOn) buffer) doc
+
 /// Toggle bold on selection
 let toggleBold doc =
-    applyFormattingToSelection TextBuffer.toggleBold doc
+    toggleOnSelection (fun style -> style.Bold) (fun on style -> if style.Bold = on then style else { style with Bold = on }) doc
 
 /// Toggle italic on selection
 let toggleItalic doc =
-    applyFormattingToSelection TextBuffer.toggleItalic doc
+    toggleOnSelection (fun style -> style.Italic) (fun on style -> if style.Italic = on then style else { style with Italic = on }) doc
 
 /// Toggle underline on selection
 let toggleUnderline doc =
-    applyFormattingToSelection TextBuffer.toggleUnderline doc
+    toggleOnSelection (fun style -> style.Underline) (fun on style -> if style.Underline = on then style else { style with Underline = on }) doc
 
 /// Toggle all caps on selection
 let toggleAllCaps doc =
-    applyFormattingToSelection TextBuffer.toggleAllCaps doc
+    toggleOnSelection (fun style -> style.AllCaps) (fun on style -> { style with AllCaps = on; SmallCaps = false }) doc
 
 /// Toggle small caps on selection
 let toggleSmallCaps doc =
-    applyFormattingToSelection TextBuffer.toggleSmallCaps doc
+    toggleOnSelection (fun style -> style.SmallCaps) (fun on style -> { style with SmallCaps = on; AllCaps = false }) doc
 
 /// Toggle strikethrough on selection
 let toggleStrike doc =
-    applyFormattingToSelection TextBuffer.toggleStrike doc
+    toggleOnSelection (fun style -> style.Strike) (fun on style -> if style.Strike = on then style else { style with Strike = on }) doc
 
 /// Clear direct character formatting on selection.
 let clearFormatting doc =

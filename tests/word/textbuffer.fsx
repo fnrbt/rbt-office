@@ -1816,6 +1816,35 @@ check "tracked delete marks whole pair"
     (Doc.revisionInfos (Doc.trackDeleteForward "me" "d1" (emojiDoc 1)) |> List.map (fun revision -> revision.Start, revision.End))
     [ 1, 3 ]
 
+// Bold/italic/underline toggle the selection as a whole, not run by run.
+let boldFlags buffer = buffer.Runs |> List.choose (function Text tr -> Some (tr.Length, tr.Style.Bold) | Image _ -> None)
+let mixedBold = ofString "Hello World" |> applyStyle 0 5 (fun style -> { style with Bold = true })
+check "toggle bold on mixed range sets all" (boldFlags (toggleBold 0 11 mixedBold)) [ 11, true ]
+check "toggle bold on all-bold range clears" (boldFlags (toggleBold 0 11 (toggleBold 0 11 mixedBold))) [ 11, false ]
+check "toggle bold on bold part clears it" (boldFlags (toggleBold 0 5 mixedBold)) [ 11, false ]
+check "toggle italic on mixed range sets all"
+    ((ofString "abcd" |> applyStyle 2 2 (fun style -> { style with Italic = true }) |> toggleItalic 0 4).Runs
+     |> List.choose (function Text tr -> Some (tr.Length, tr.Style.Italic) | Image _ -> None))
+    [ 4, true ]
+let mixedBoldDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (para "mb1" mixedBold); Doc.Paragraph (para "mb2" (ofString "plain")) ]
+        Selection = Some { Anchor = pos "mb1" 0; Focus = pos "mb2" 5 } }
+let paraBold id doc = Doc.findParagraph doc id |> Option.map (fun p -> boldFlags p.Buffer)
+let mixedBoldOn = Doc.toggleBold mixedBoldDoc
+check "doc toggle bold mixed first paragraph" (paraBold "mb1" mixedBoldOn) (Some [ 11, true ])
+check "doc toggle bold mixed second paragraph" (paraBold "mb2" mixedBoldOn) (Some [ 5, true ])
+let mixedBoldOff = Doc.toggleBold mixedBoldOn
+check "doc toggle bold all-bold clears first" (paraBold "mb1" mixedBoldOff) (Some [ 11, false ])
+check "doc toggle bold all-bold clears second" (paraBold "mb2" mixedBoldOff) (Some [ 5, false ])
+let boldThenPlainDoc =
+    { Doc.empty with
+        Blocks =
+            [ Doc.Paragraph (para "bp1" (ofString "bold" |> applyStyle 0 4 (fun style -> { style with Bold = true })))
+              Doc.Paragraph (para "bp2" (ofString "plain")) ]
+        Selection = Some { Anchor = pos "bp1" 0; Focus = pos "bp2" 5 } }
+check "doc toggle bold decides across paragraphs" (paraBold "bp1" (Doc.toggleBold boldThenPlainDoc)) (Some [ 4, true ])
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail
