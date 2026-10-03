@@ -51,15 +51,30 @@ let private optionalIntString (value: obj) =
         | true, parsed -> Some (string parsed)
         | false, _ -> None)
 
+[<Fable.Core.Emit("Number($0)")>]
+let private jsNumber (_value: obj) : float = jsNative
+
+/// Numbers arrive as JS numbers from the editor, but some reader fields
+/// (table widths) are passed through as the raw attribute string.
 let private optionalFloat (value: obj) =
     if isNullOrUndefined value then None
-    else Some (unbox<float> value)
+    else
+        let number = jsNumber value
+        if System.Double.IsNaN number || System.Double.IsInfinity number then None else Some number
 
 let private floatOrDefault defaultValue (value: obj) =
     optionalFloat value |> Option.defaultValue defaultValue
 
+/// Round half away from zero. `int` truncates (11pt -> 14.667px -> 29
+/// half-points -> 14.5pt), and Math.Round's MidpointRounding overloads are not
+/// dependable under Fable, so every unit conversion below goes through this.
+let private roundToInt (value: float) : int =
+    if System.Double.IsNaN value || System.Double.IsInfinity value then 0
+    elif value >= 0.0 then int (System.Math.Floor (value + 0.5))
+    else -(int (System.Math.Floor (0.5 - value)))
+
 let private pixelsToTwips (value: float) =
-    int (value * 15.0) |> string
+    roundToInt (value * 15.0) |> string
 
 let private pixelsToPoints (value: float) =
     value * 72.0 / 96.0
@@ -120,10 +135,27 @@ let private sectionPageSetupChildren (setup: PageSetupInfo) =
       if setup.DifferentFirstPage then yield selfClosing "w:titlePg" [] ]
 
 /// Type conversion helpers (inverse of TypeConversion in DocumentProcessors)
+///
+/// The editor model is in CSS pixels at 96 dpi except where noted, because that
+/// is what DocxReader.toEditorParagraphs produces. Each function here is the
+/// exact inverse of the reader conversion named in its comment; keep the two
+/// in step.
 module InverseConversion =
-    /// Convert points to Word half-points (Word uses half-points for font sizes)
+    /// Font size: px -> half-points. Reader: wordFontSizeToPoints = halfPoints / 2 * 96 / 72.
+    let pixelsToHalfPoints (pixels: float) : string =
+        string (max 1 (roundToInt (pixels * 1.5)))
+
+    /// w:position: points -> half-points. Reader: wordPositionToPoints = halfPoints / 2.
     let pointsToHalfPoints (points: float) : string =
-        string (int (points * 2.0))
+        string (roundToInt (points * 2.0))
+
+    /// Indents, tab positions, character spacing, page geometry: px -> twips. Reader: twips / 15.
+    let pixelsToTwips (pixels: float) : string =
+        string (roundToInt (pixels * 15.0))
+
+    /// Border width: px -> eighths of a point. Reader: borderWidthToPoints = sz / 6.
+    let pixelsToEighthPoints (pixels: float) : string =
+        string (max 0 (roundToInt (pixels * 6.0)))
 
     /// Convert CSS color (#RRGGBB) to Word format (RRGGBB)
     let cssColorToWord (color: string option) : string option =
@@ -143,11 +175,19 @@ module InverseConversion =
         | "justify" -> "both"
         | _ -> "left"
 
+    /// Paragraph spacing before/after: points -> twips. Reader: wordSpacingTwipsToPoints = twips / 20.
     let pointsToTwips (points: float) : string =
-        string (int (points * 20.0))
+        string (roundToInt (points * 20.0))
 
+    /// Line spacing as a multiple of single spacing -> 240ths of a line. Reader: line / 240.
     let lineSpacingToWord (spacing: float) : string =
-        string (int (spacing * 240.0))
+        string (roundToInt (spacing * 240.0))
+
+    /// Exact / at-least line spacing. The reader stores it as a multiple of the
+    /// paragraph's font size in px: (twips / 15) / fontSize, so the inverse needs
+    /// the same font size (ParagraphMarkFontSize).
+    let fixedLineSpacingToTwips (fontSizePixels: float) (spacing: float) : string =
+        string (roundToInt (spacing * (max 1.0 fontSizePixels) * 15.0))
 
 /// Generate run properties XML
 let generateRunProps (run: EditorRun) : string list =
@@ -168,13 +208,13 @@ let generateRunProps (run: EditorRun) : string list =
         | _ -> props
 
     let props =
-        let sz = InverseConversion.pointsToHalfPoints run.FontSize
+        let sz = InverseConversion.pixelsToHalfPoints run.FontSize
         (selfClosing "w:sz" [("w:val", sz)]) ::
         (selfClosing "w:szCs" [("w:val", sz)]) :: props
 
     let props =
         if abs run.CharacterSpacing >= 0.001 then
-            (selfClosing "w:spacing" [("w:val", string (int (run.CharacterSpacing * 15.0)))]) :: props
+            (selfClosing "w:spacing" [("w:val", InverseConversion.pixelsToTwips run.CharacterSpacing)]) :: props
         else props
 
     let props =
@@ -494,8 +534,9 @@ let private buildImageScope (mediaStartIndex: int) (items: obj array) =
         |> List.toArray
     { Assets = assets; AssetBySrc = assets |> Array.map (fun asset -> asset.Src, asset) |> Map.ofArray }, nextMediaIndex
 
+/// Reader: emuToPixels = emu / 9525.
 let private pixelsToEmus (pixels: float) =
-    int (pixels * 9525.0)
+    roundToInt (pixels * 9525.0)
 
 let private optionalImageSize defaultValue (value: obj) =
     optionalFloat value |> Option.defaultValue defaultValue |> pixelsToEmus |> string
@@ -638,6 +679,19 @@ let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj)
     ]
     if children.IsEmpty then None else Some (element "w:sectPr" [] children)
 
+let private defaultFontSizePixels = 11.0 * 96.0 / 72.0
+
+/// The font size the reader divided exact/at-least line spacing by: the
+/// paragraph mark size it reported, else the largest text run.
+let private paragraphFontSize (para: obj) : float =
+    match optionalFloat (para?ParagraphMarkFontSize) with
+    | Some size when size > 0.0 -> size
+    | _ ->
+        optionalArray (para?Runs)
+        |> Array.choose (fun run ->
+            if boolOrDefault false (run?IsImage) then None else optionalFloat (run?FontSize))
+        |> fun sizes -> if sizes.Length = 0 then defaultFontSizePixels else Array.max sizes
+
 let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: obj) : string =
     let alignment = para?Alignment |> stringOrDefault "left" |> InverseConversion.alignmentToWord
     let jcElement = selfClosing "w:jc" [("w:val", alignment)]
@@ -650,8 +704,13 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         | None -> ()
         match optionalFloat (para?LineSpacing) with
         | Some value ->
-            yield ("w:line", InverseConversion.lineSpacingToWord value)
-            yield ("w:lineRule", "auto")
+            match optionalString (para?LineSpacingRule) with
+            | Some rule when rule = "exact" || rule = "atLeast" ->
+                yield ("w:line", InverseConversion.fixedLineSpacingToTwips (paragraphFontSize para) value)
+                yield ("w:lineRule", rule)
+            | _ ->
+                yield ("w:line", InverseConversion.lineSpacingToWord value)
+                yield ("w:lineRule", "auto")
         | None -> ()
     ]
     let spacingElement =
@@ -659,15 +718,16 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         else Some (selfClosing "w:spacing" spacingAttributes)
     let indentAttributes = [
         match optionalFloat (para?IndentLeft) with
-        | Some value -> yield ("w:left", InverseConversion.pointsToTwips value)
+        | Some value -> yield ("w:left", InverseConversion.pixelsToTwips value)
         | None -> ()
         match optionalFloat (para?IndentRight) with
-        | Some value -> yield ("w:right", InverseConversion.pointsToTwips value)
+        | Some value -> yield ("w:right", InverseConversion.pixelsToTwips value)
         | None -> ()
         match optionalFloat (para?FirstLineIndent) with
-        | Some value when value > 0.0 -> yield ("w:firstLine", InverseConversion.pointsToTwips value)
-        | Some value when value < 0.0 -> yield ("w:hanging", InverseConversion.pointsToTwips -value)
-        | _ -> ()
+        | Some value when value < 0.0 -> yield ("w:hanging", InverseConversion.pixelsToTwips -value)
+        // An explicit 0 matters: it overrides a first-line indent from the style.
+        | Some value -> yield ("w:firstLine", InverseConversion.pixelsToTwips value)
+        | None -> ()
     ]
     let indentElement =
         if indentAttributes.IsEmpty then None
@@ -750,7 +810,7 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
                         Italic = boolOrDefault false (runObj?Italic)
                         Underline = boolOrDefault false (runObj?Underline)
                         Strike = boolOrDefault false (runObj?Strike)
-                        FontSize = if isNullOrUndefined runObj?FontSize then 11.0 else unbox<float> runObj?FontSize
+                        FontSize = optionalFloat (runObj?FontSize) |> Option.defaultValue defaultFontSizePixels
                         CharacterSpacing = optionalFloat (runObj?CharacterSpacing) |> Option.defaultValue 0.0
                         FontFamily = runObj?FontFamily |> stringOrDefault "Calibri"
                         Color = if isNullOrUndefined runObj?Color then None else unbox<string option> runObj?Color
@@ -841,7 +901,7 @@ let private borderElement name (value: obj) =
             |> Option.defaultValue "auto"
         let width =
             match optionalFloat (value?Width) with
-            | Some amount -> string (int (amount * 8.0))
+            | Some amount -> InverseConversion.pixelsToEighthPoints amount
             | None -> if style = "none" || style = "nil" then "0" else "4"
         Some (selfClosing name [("w:val", if style = "none" then "nil" else style); ("w:sz", width); ("w:color", color)])
 
@@ -858,15 +918,16 @@ let private bordersElement elementName (value: obj) =
 
 let private tableWidthValue widthType width =
     match widthType with
-    | "pct" -> int (width * 50.0) |> string
-    | "pt" -> InverseConversion.pointsToTwips width
+    | "pct" -> roundToInt (width * 50.0) |> string
+    // Editor-made widths ("pt" kind) are px; DOCX has no such unit, so they go out as dxa.
+    | "pt" -> InverseConversion.pixelsToTwips width
     | "auto" | "nil" -> "0"
-    | _ -> int width |> string
+    | _ -> roundToInt width |> string
 
 let private optionalTableWidth elementName value typeValue =
     match optionalFloat value, optionalString typeValue with
-    | Some width, Some widthType -> Some (selfClosing elementName [("w:w", tableWidthValue widthType width); ("w:type", widthType)])
-    | Some width, None -> Some (selfClosing elementName [("w:w", string (int width)); ("w:type", "dxa")])
+    | Some width, Some widthType -> Some (selfClosing elementName [("w:w", tableWidthValue widthType width); ("w:type", (if widthType = "pt" then "dxa" else widthType))])
+    | Some width, None -> Some (selfClosing elementName [("w:w", string (roundToInt width)); ("w:type", "dxa")])
     | None, Some widthType when widthType = "auto" || widthType = "nil" -> Some (selfClosing elementName [("w:w", "0"); ("w:type", widthType)])
     | _ -> None
 
@@ -907,8 +968,9 @@ let private generateTableCell (hyperlinks: Map<string, string>) (images: ImageSc
         | Some width -> yield width
         | None ->
             if not (isNullOrUndefined cell?Width) then
-                let width = cell?Width |> unbox<float> |> int |> string
-                yield selfClosing "w:tcW" [("w:w", width); ("w:type", "dxa")]
+                match optionalFloat (cell?Width) with
+                | Some width -> yield selfClosing "w:tcW" [("w:w", string (roundToInt width)); ("w:type", "dxa")]
+                | None -> ()
 
         match shadingElement (cell?Shading) |> Option.orElseWith (fun () -> backgroundShadingElement (cell?BackgroundColor)) with
         | Some shading -> yield shading
@@ -927,7 +989,7 @@ let private generateTableCell (hyperlinks: Map<string, string>) (images: ImageSc
                     | _ -> "auto"
             let width =
                 if isNullOrUndefined cell?BorderWidth then "8"
-                else cell?BorderWidth |> unbox<float> |> (*) 8.0 |> int |> string
+                else optionalFloat (cell?BorderWidth) |> Option.map InverseConversion.pixelsToEighthPoints |> Option.defaultValue "8"
             let border name = selfClosing name [("w:val", "single"); ("w:sz", width); ("w:color", color)]
             yield element "w:tcBorders" [] [
                 border "w:top"
@@ -944,7 +1006,7 @@ let private generateTableCell (hyperlinks: Map<string, string>) (images: ImageSc
 
         let padding name (value: obj) =
             match optionalFloat value with
-            | Some amount when amount >= 0.0 -> Some (selfClosing name [("w:w", string (int amount)); ("w:type", "dxa")])
+            | Some amount when amount >= 0.0 -> Some (selfClosing name [("w:w", string (roundToInt amount)); ("w:type", "dxa")])
             | _ -> None
         let paddingChildren =
             [ padding "w:top" cell?PaddingTop
@@ -987,7 +1049,7 @@ let private generateTableRow (hyperlinks: Map<string, string>) (images: ImageSco
         match optionalFloat (row?Height) with
         | Some height ->
             let attrs =
-                [("w:val", string (int height))]
+                [("w:val", string (roundToInt height))]
                 @ (optionalString (row?HeightRule) |> Option.map (fun rule -> [("w:hRule", rule)]) |> Option.defaultValue [])
             yield selfClosing "w:trHeight" attrs
         | None -> ()
@@ -1006,7 +1068,7 @@ let private generateTableGrid (table: obj) =
             |> unbox<obj array>
             |> Array.toList
             |> List.choose (fun value -> optionalFloat value)
-            |> List.map (fun width -> selfClosing "w:gridCol" [("w:w", string (int width))])
+            |> List.map (fun width -> selfClosing "w:gridCol" [("w:w", string (roundToInt width))])
         if columns.IsEmpty then "" else element "w:tblGrid" [] columns
 
 let private generateTable (hyperlinks: Map<string, string>) (images: ImageScope) (table: obj) : string =
@@ -1397,6 +1459,7 @@ type StyleInfo = {
     SpacingBefore: float option
     SpacingAfter: float option
     LineSpacing: float option
+    LineRule: string option
     Alignment: string option
     IndentLeft: float option
     IndentRight: float option
@@ -1437,6 +1500,7 @@ let private emptyStyleInfo styleId styleType = {
     SpacingBefore = None
     SpacingAfter = None
     LineSpacing = None
+    LineRule = None
     Alignment = None
     IndentLeft = None
     IndentRight = None
@@ -1485,6 +1549,7 @@ let private styleInfoFromObject defaultType (value: obj) =
                     SpacingBefore = optionalFloat (value?StyleSpacingBefore)
                     SpacingAfter = optionalFloat (value?StyleSpacingAfter)
                     LineSpacing = optionalFloat (value?StyleLineSpacing)
+                    LineRule = optionalString (value?StyleLineRule) |> Option.orElse (optionalString (value?StyleLineSpacingRule))
                     Alignment = optionalString (value?StyleAlignment)
                     IndentLeft = optionalFloat (value?StyleIndentLeft)
                     IndentRight = optionalFloat (value?StyleIndentRight)
@@ -1528,6 +1593,7 @@ let private styleIdFromParagraph (para: obj) =
                 SpacingBefore = optionalFloat (para?StyleSpacingBefore)
                 SpacingAfter = optionalFloat (para?StyleSpacingAfter)
                 LineSpacing = optionalFloat (para?StyleLineSpacing)
+                LineRule = optionalString (para?StyleLineRule) |> Option.orElse (optionalString (para?StyleLineSpacingRule))
                 Alignment = optionalString (para?StyleAlignment)
                 IndentLeft = optionalFloat (para?StyleIndentLeft)
                 IndentRight = optionalFloat (para?StyleIndentRight)
@@ -1620,12 +1686,12 @@ let private styleRunProps style =
         | _ -> ()
         match style.FontSize with
         | Some size ->
-            let value = InverseConversion.pointsToHalfPoints size
+            let value = InverseConversion.pixelsToHalfPoints size
             yield selfClosing "w:sz" [("w:val", value)]
             yield selfClosing "w:szCs" [("w:val", value)]
         | _ -> ()
         match style.CharacterSpacing with
-        | Some spacing when abs spacing >= 0.001 -> yield selfClosing "w:spacing" [("w:val", string (int (spacing * 15.0)))]
+        | Some spacing when abs spacing >= 0.001 -> yield selfClosing "w:spacing" [("w:val", InverseConversion.pixelsToTwips spacing)]
         | _ -> ()
         match InverseConversion.cssColorToWord style.Color with
         | Some color -> yield selfClosing "w:color" [("w:val", color)]
@@ -1641,7 +1707,13 @@ let private styleParagraphProps style =
             [
                 match style.SpacingBefore with | Some value -> yield ("w:before", InverseConversion.pointsToTwips value) | None -> ()
                 match style.SpacingAfter with | Some value -> yield ("w:after", InverseConversion.pointsToTwips value) | None -> ()
-                match style.LineSpacing with | Some value -> yield ("w:line", InverseConversion.lineSpacingToWord value) | None -> ()
+                // Styles.styleToObj reads exact/at-least as px (twips / 15) and auto as a multiple (line / 240).
+                match style.LineSpacing, style.LineRule with
+                | Some value, Some rule when rule = "exact" || rule = "atLeast" ->
+                    yield ("w:line", InverseConversion.pixelsToTwips value)
+                    yield ("w:lineRule", rule)
+                | Some value, _ -> yield ("w:line", InverseConversion.lineSpacingToWord value)
+                | None, _ -> ()
             ]
         if not spacingAttrs.IsEmpty then yield selfClosing "w:spacing" spacingAttrs
         match style.Alignment with
@@ -1649,12 +1721,12 @@ let private styleParagraphProps style =
         | _ -> ()
         let indentAttrs =
             [
-                match style.IndentLeft with | Some value -> yield ("w:left", InverseConversion.pointsToTwips value) | None -> ()
-                match style.IndentRight with | Some value -> yield ("w:right", InverseConversion.pointsToTwips value) | None -> ()
+                match style.IndentLeft with | Some value -> yield ("w:left", InverseConversion.pixelsToTwips value) | None -> ()
+                match style.IndentRight with | Some value -> yield ("w:right", InverseConversion.pixelsToTwips value) | None -> ()
                 match style.FirstLineIndent with
-                | Some value when value > 0.0 -> yield ("w:firstLine", InverseConversion.pointsToTwips value)
-                | Some value when value < 0.0 -> yield ("w:hanging", InverseConversion.pointsToTwips -value)
-                | _ -> ()
+                | Some value when value < 0.0 -> yield ("w:hanging", InverseConversion.pixelsToTwips -value)
+                | Some value -> yield ("w:firstLine", InverseConversion.pixelsToTwips value)
+                | None -> ()
             ]
         if not indentAttrs.IsEmpty then yield selfClosing "w:ind" indentAttrs
         match InverseConversion.cssColorToWord style.BackgroundColor with
@@ -1672,7 +1744,7 @@ let private defaultStyleId = "__docDefaults"
 let private docDefaultsFromStyle (style: StyleInfo option) =
     let defaultRunStyle =
         style
-        |> Option.defaultValue { emptyStyleInfo defaultStyleId "defaults" with FontFamily = Some "Calibri"; FontSize = Some 11.0 }
+        |> Option.defaultValue { emptyStyleInfo defaultStyleId "defaults" with FontFamily = Some "Calibri"; FontSize = Some defaultFontSizePixels }
     let runProps = styleRunProps defaultRunStyle
     let rPr = element "w:rPr" [] runProps
     let rPrDefault = element "w:rPrDefault" [] [rPr]

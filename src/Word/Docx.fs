@@ -52,6 +52,13 @@ let private optionalIntAsFloat (value: obj) =
 let private optionalDxaAsCanvasPixels (value: obj) =
     optionalIntAsFloat value |> Option.map (fun dxa -> dxa / WordLayout.canvasScale.DxaPerUnit)
 
+/// Inverse of optionalDxaAsCanvasPixels, for the export: the editor package
+/// carries table paddings and cell spacing in dxa (that is what the reader
+/// emits and what the writer puts in w:w), the document model in canvas px.
+/// Exporting the px value unchanged shrank every padding 15x per save.
+let private canvasPixelsToDxa (value: float option) =
+    value |> Option.map (fun pixels -> System.Math.Floor (pixels * WordLayout.canvasScale.DxaPerUnit + 0.5))
+
 let private optionalDxaAsPoints (value: obj) =
     optionalIntAsFloat value |> Option.map (fun dxa -> dxa / WordLayout.printScale.DxaPerUnit)
 
@@ -194,10 +201,11 @@ let private shadingToEditor (shading: Shading option) =
 
 /// Convert alignment string to Alignment type
 let private alignmentFromString (align: string) : Alignment =
+    // The reader passes w:jc through verbatim, so the OOXML spellings arrive here too.
     match align.ToLower() with
     | "center" -> Center
-    | "right" -> Right
-    | "justify" -> Justify
+    | "right" | "end" -> Right
+    | "justify" | "both" | "distribute" -> Justify
     | _ -> Left
 
 /// Convert Alignment type to string
@@ -1252,6 +1260,8 @@ let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
         "StyleContextualSpacing" ==> para.Metadata.ContextualSpacing
         "LineSpacing" ==> para.Metadata.LineSpacing
         "LineSpacingRule" ==> para.Metadata.LineSpacingRule
+        // Exact/at-least line spacing is stored relative to this size; the writer needs it to get the twips back.
+        "ParagraphMarkFontSize" ==> para.Metadata.ParagraphMarkFontSize
         "WidowControl" ==> para.Metadata.WidowControl
         "BackgroundColor" ==> para.Metadata.BackgroundColor
         "ParagraphBorders" ==> paragraphBordersToEditor para.Metadata.ParagraphBorders
@@ -1311,10 +1321,10 @@ let rec private blockToEditor block =
                                 "Borders" ==> tableBordersToEditor cell.Borders
                                 "VerticalAlignment" ==> cell.VerticalAlignment
                                 "VerticalMerge" ==> tableVerticalMergeToString cell.VerticalMerge
-                                "PaddingTop" ==> cell.PaddingTop
-                                "PaddingRight" ==> cell.PaddingRight
-                                "PaddingBottom" ==> cell.PaddingBottom
-                                "PaddingLeft" ==> cell.PaddingLeft
+                                "PaddingTop" ==> canvasPixelsToDxa cell.PaddingTop
+                                "PaddingRight" ==> canvasPixelsToDxa cell.PaddingRight
+                                "PaddingBottom" ==> canvasPixelsToDxa cell.PaddingBottom
+                                "PaddingLeft" ==> canvasPixelsToDxa cell.PaddingLeft
                             ])
                         |> List.toArray
 
@@ -1324,11 +1334,11 @@ let rec private blockToEditor block =
                         "Height" ==> row.Height
                         "HeightRule" ==> row.HeightRule
                         "CanSplit" ==> row.CanSplit
-                        "CellSpacing" ==> row.CellSpacing
-                        "PaddingTop" ==> row.PaddingTop
-                        "PaddingRight" ==> row.PaddingRight
-                        "PaddingBottom" ==> row.PaddingBottom
-                        "PaddingLeft" ==> row.PaddingLeft
+                        "CellSpacing" ==> canvasPixelsToDxa row.CellSpacing
+                        "PaddingTop" ==> canvasPixelsToDxa row.PaddingTop
+                        "PaddingRight" ==> canvasPixelsToDxa row.PaddingRight
+                        "PaddingBottom" ==> canvasPixelsToDxa row.PaddingBottom
+                        "PaddingLeft" ==> canvasPixelsToDxa row.PaddingLeft
                     ])
                 |> List.toArray
 
@@ -1343,11 +1353,11 @@ let rec private blockToEditor block =
                 "Borders" ==> tableBordersToEditor table.Borders
                 "BackgroundColor" ==> table.BackgroundColor
                 "Shading" ==> shadingToEditor table.Shading
-                "CellSpacing" ==> table.CellSpacing
-                "PaddingTop" ==> table.PaddingTop
-                "PaddingRight" ==> table.PaddingRight
-                "PaddingBottom" ==> table.PaddingBottom
-                "PaddingLeft" ==> table.PaddingLeft
+                "CellSpacing" ==> canvasPixelsToDxa table.CellSpacing
+                "PaddingTop" ==> canvasPixelsToDxa table.PaddingTop
+                "PaddingRight" ==> canvasPixelsToDxa table.PaddingRight
+                "PaddingBottom" ==> canvasPixelsToDxa table.PaddingBottom
+                "PaddingLeft" ==> canvasPixelsToDxa table.PaddingLeft
             ]
 
 let exportToEditor (doc: Document) : obj array =

@@ -3080,6 +3080,17 @@ let private wordFontSizeToPoints (fontSize: string option) =
         | false, _ -> 11.0 * 96.0 / 72.0
     | None -> 11.0 * 96.0 / 72.0
 
+/// w:position is in half-points and the editor (Paint) takes points. It used to
+/// go through wordFontSizeToPoints, which turned it into px and, worse, turned
+/// "no w:position" into the 11pt font-size default instead of 0.
+let private wordPositionToPoints (position: string option) =
+    match position with
+    | Some value ->
+        match System.Double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+        | true, halfPoints -> halfPoints / 2.0
+        | false, _ -> 0.0
+    | None -> 0.0
+
 let private wordCharacterSpacingToCssPixels (spacing: string option) =
     spacing
     |> Option.bind (fun value ->
@@ -3697,7 +3708,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                             "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
                             "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                            "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                            "Position" ==> wordPositionToPoints effectiveRunProps.Position
                             "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                             "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                             "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
@@ -3764,7 +3775,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                             "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                             "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
                             "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                            "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                            "Position" ==> wordPositionToPoints effectiveRunProps.Position
                             "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                             "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                             "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
@@ -3856,7 +3867,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                                 "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
                                 "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                                "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                                "Position" ==> wordPositionToPoints effectiveRunProps.Position
                                 "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                                 "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
@@ -3977,7 +3988,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                                 "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
                                 "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                                "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                                "Position" ==> wordPositionToPoints effectiveRunProps.Position
                                 "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                                 "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
@@ -4042,7 +4053,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Strike" ==> effectiveOnOff effectiveLinkProps.Strike
                                 "DoubleStrike" ==> effectiveOnOff effectiveLinkProps.DoubleStrike
                                 "Hidden" ==> effectiveOnOff effectiveLinkProps.Hidden
-                                "Position" ==> wordFontSizeToPoints effectiveLinkProps.Position
+                                "Position" ==> wordPositionToPoints effectiveLinkProps.Position
                                 "EmphasisMark" ==> effectiveLinkProps.EmphasisMark
                                 "FontSize" ==> wordFontSizeToPoints effectiveLinkProps.FontSize
                                 "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveLinkProps.CharacterSpacing |> Option.defaultValue 0.0)
@@ -4134,7 +4145,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                                 "Strike" ==> effectiveOnOff effectiveRunProps.Strike
                                 "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
                                 "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                                "Position" ==> wordFontSizeToPoints effectiveRunProps.Position
+                                "Position" ==> wordPositionToPoints effectiveRunProps.Position
                                 "EmphasisMark" ==> effectiveRunProps.EmphasisMark
                                 "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
                                 "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
