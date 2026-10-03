@@ -180,6 +180,40 @@ check "index-of-expr"       "=INDEX(A1:A5*2,2)"                 (n 40.0)
 check "index-range-2d"      "=INDEX(A1:B5,2,2)"                 (n 2.0)
 check "index-out-of-range"  "=INDEX(A1:A5,9)"                   (e "REF!")
 
+// ----- item 8: *IF criteria do not coerce blanks or booleans ------------------
+check "countif-lt-numbers-only" "=COUNTIF(E1:E5,\"<5\")"   (n 2.0)
+check "countif-zero"            "=COUNTIF(E1:E5,0)"         (n 1.0)
+check "countif-one"             "=COUNTIF(E1:E5,1)"         (n 1.0)
+check "countif-numeric-text"    "=COUNTIF(E1:E5,2)"         (n 1.0)
+check "countif-eq-text-number"  "=COUNTIF(E1:E5,\"=2\")"   (n 1.0)
+check "countif-true"            "=COUNTIF(E1:E5,TRUE)"      (n 1.0)
+check "countif-ne-number"       "=COUNTIF(E1:E5,\"<>1\")"  (n 4.0)
+check "countif-ge"              "=COUNTIF(E1:E5,\">=0\")"  (n 2.0)
+check "countif-wildcard-text"   "=COUNTIF(D1:E5,\"*\")"    (n 6.0)
+check "countif-blank"           "=COUNTIF(E1:E5,\"\")"     (n 1.0)
+check "averageif-skips-blank"   "=AVERAGEIF(G1:G3,\"<5\")" (n 3.0)
+check "sumif-lt"                "=SUMIF(E1:E5,\"<5\",A1:A5)" (n 60.0)
+check "sumifs-zero"             "=SUMIFS(A1:A5,E1:E5,0)"    (n 50.0)
+check "countifs-pair"           "=COUNTIFS(E1:E5,\"<5\",A1:A5,\">10\")" (n 1.0)
+check "countif-text-order"      "=COUNTIF(D1:D5,\">=g\")"  (n 2.0)
+
+// ----- item 10: aggregates coerce direct arguments, not range values ----------
+check "sum-direct-coerced"   "=SUM(\"3\",TRUE)"         (n 4.0)
+check "sum-direct-text"      "=SUM(1,\"a\")"            (e "VALUE!")
+check "sum-range-uncoerced"  "=SUM(E1:E3)"              (n 1.0)
+check "sum-cell-ref-text"    "=SUM(E2)"                 (n 0.0)
+check "sum-array-booleans"   "=SUM({-1,2.5,TRUE})"      (n 1.5)
+check "sum-computed-bool"    "=SUM(1=1,2)"              (n 3.0)
+check "count-direct"         "=COUNT(1,\"2\",\"a\",TRUE)" (n 3.0)
+check "count-range"          "=COUNT(E1:E5)"            (n 2.0)
+check "average-direct"       "=AVERAGE(\"4\",TRUE,1)"   (n 2.0)
+check "average-range"        "=AVERAGE(E1:E5)"          (n 0.5)
+check "max-range-bool"       "=MAX(E1:E5)"              (n 1.0)
+check "min-direct-text"      "=MIN(5,\"x\")"            (e "VALUE!")
+check "product-direct"       "=PRODUCT(\"2\",3,TRUE)"   (n 6.0)
+check "median-range"         "=MEDIAN(E1:E5)"           (n 0.5)
+check "sum-mixed"            "=SUM(A1:A2,\"5\",E3)"     (n 35.0)
+
 printfn ""
 printfn "Stage 22 semantics tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -2044,39 +2044,54 @@ let private criteriaTextCompare rest value =
 /// Compile a criteria value (`">5"`, `"<>0"`, `"app*"`, `42`, …) into a
 /// predicate over candidate cell values. Used by the *IF / *IFS family.
 let private compileCriteria (criteria: CellValue) : CellValue -> bool =
+    // Excel does not coerce the cells it tests: a blank is not 0 and TRUE is
+    // not 1. An ordering test (`<5`) looks at real numbers only; an equality
+    // test also accepts text that reads as that number (`"2"` equals 2).
+    let equalsNumber (num: float) (v: CellValue) =
+        match unwrapValue v with
+        | CellValue.Number x -> x = num
+        | CellValue.String s ->
+            let struct (start, length) = trimBounds s
+            (match Double.TryParse(trimmedNumberText s start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
+             | true, x -> x = num
+             | _ -> false)
+        | _ -> false
     match unwrapValue criteria with
-    | CellValue.Number cn ->
-        fun v -> match tryCriteriaNumber v with ValueSome x -> x = cn | ValueNone -> false
+    | CellValue.Number cn -> equalsNumber cn
     | CellValue.Boolean cb ->
-        fun v -> match tryCriteriaBool v with ValueSome x -> x = cb | ValueNone -> false
+        fun v -> match unwrapValue v with CellValue.Boolean x -> x = cb | _ -> false
     | CellValue.String raw ->
         let op, restStart = parseCriteriaOperator raw
         let rest = if restStart = 0 then raw else raw.Substring(restStart)
         match Double.TryParse(rest, NumberStyles.Float, CultureInfo.InvariantCulture) with
         | true, num ->
-            fun v ->
-                match tryCriteriaNumber v with
-                | ValueSome x ->
-                    match op with
-                    | CriteriaGe -> x >= num
-                    | CriteriaLe -> x <= num
-                    | CriteriaGt -> x > num
-                    | CriteriaLt -> x < num
-                    | CriteriaNe -> x <> num
-                    | CriteriaEq -> x = num
-                | ValueNone -> false
+            match op with
+            | CriteriaEq -> equalsNumber num
+            | CriteriaNe -> fun v -> not (equalsNumber num v)
+            | _ ->
+                fun v ->
+                    match unwrapValue v with
+                    | CellValue.Number x ->
+                        match op with
+                        | CriteriaGe -> x >= num
+                        | CriteriaLe -> x <= num
+                        | CriteriaGt -> x > num
+                        | _ -> x < num
+                    | _ -> false
         | _ ->
             match op with
             | CriteriaGt | CriteriaLt | CriteriaGe | CriteriaLe ->
                 fun v ->
-                    match criteriaTextCompare rest v with
-                    | ValueSome c ->
-                        match op with
-                        | CriteriaGt -> c > 0
-                        | CriteriaLt -> c < 0
-                        | CriteriaGe -> c >= 0
-                        | _ -> c <= 0
-                    | ValueNone -> false
+                    // Ordering against text compares text cells only.
+                    match unwrapValue v with
+                    | CellValue.String s ->
+                        let c = String.Compare(s, rest, StringComparison.OrdinalIgnoreCase)
+                        (match op with
+                         | CriteriaGt -> c > 0
+                         | CriteriaLt -> c < 0
+                         | CriteriaGe -> c >= 0
+                         | _ -> c <= 0)
+                    | _ -> false
             | CriteriaNe ->
                 if hasCriteriaWildcard rest then
                     let rx = wildcardRegex rest
@@ -2086,7 +2101,11 @@ let private compileCriteria (criteria: CellValue) : CellValue -> bool =
             | CriteriaEq ->
                 if hasCriteriaWildcard rest then
                     let rx = wildcardRegex rest
-                    fun v -> match coerceText v with Ok t -> rx.IsMatch t | _ -> false
+                    fun v ->
+                        // Wildcards match text; `*` does not match a number or a blank.
+                        match unwrapValue v with
+                        | CellValue.String t -> rx.IsMatch t
+                        | _ -> false
                 else
                     fun v -> match criteriaTextCompare rest v with ValueSome c -> c = 0 | ValueNone -> false
     | CellValue.Empty ->
@@ -2859,6 +2878,25 @@ let private trySparseBlankValueIfs fn (valueAccess: RangeAccess) (crits: ResizeA
                     | ValueNone -> ()
                 | _ -> ())
         ValueSome (n, acc)
+
+/// Coerce a value typed directly as an aggregate's argument: booleans and
+/// numeric text become numbers, any other text is #VALUE!.
+let private directNumericArgument (v: CellValue) : CellValue =
+    match v with
+    | CellValue.Boolean flag -> CellValue.Number (if flag then 1.0 else 0.0)
+    | CellValue.String text ->
+        let struct (start, length) = trimBounds text
+        (match Double.TryParse(trimmedNumberText text start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
+         | true, n when length > 0 -> CellValue.Number n
+         | _ -> CellValue.Error Err.value)
+    | _ -> v
+
+/// COUNT's version: the same coercion, but text that is not a number is
+/// simply not counted.
+let private directCountArgument (v: CellValue) : CellValue =
+    match directNumericArgument v with
+    | CellValue.Error _ when (match v with CellValue.String _ -> true | _ -> false) -> v
+    | coerced -> coerced
 
 /// Numeric reducer over already-unwrapped values: numbers and booleans fold
 /// via `(z, op)`; text/blanks are skipped; the first `Error` short-circuits
@@ -5124,6 +5162,19 @@ and foldArgs (f: Fold<CellValue, 'S, 'R>) (args: Expr list) (ctx: EvalContext) :
 /// sparse ranges, scanning stored cells avoids allocating one temporary
 /// CellAddress per grid coordinate.
 and foldArgsIgnoringMissingCells (f: Fold<CellValue, 'S, 'R>) (args: Expr list) (ctx: EvalContext) : 'R =
+    foldArgsIgnoringMissingCellsWith id f args ctx
+
+/// Numeric aggregates (SUM, AVERAGE, MIN, STDEV, …) with Excel's two rules:
+/// a value typed directly as an argument is coerced — `"3"` and TRUE count,
+/// other text is #VALUE! — while values read from a range or an array are
+/// not: text and booleans there are ignored.
+and foldNumericArgs (f: Fold<CellValue, 'S, 'R>) (args: Expr list) (ctx: EvalContext) : 'R =
+    let rangeFold = { f with Step = fun state v -> match v with CellValue.Boolean _ -> state | _ -> f.Step state v }
+    foldArgsIgnoringMissingCellsWith directNumericArgument rangeFold args ctx
+
+/// `direct` is applied to the value of an argument that is neither a
+/// reference nor an array — a literal or a computed scalar.
+and foldArgsIgnoringMissingCellsWith (direct: CellValue -> CellValue) (f: Fold<CellValue, 'S, 'R>) (args: Expr list) (ctx: EvalContext) : 'R =
     let model = ctx.Model
     let workbook = ctx.Workbook
     let mutable s = f.Init
@@ -5158,7 +5209,8 @@ and foldArgsIgnoringMissingCells (f: Fold<CellValue, 'S, 'R>) (args: Expr list) 
             | Some (TableRef sel) -> iterTableSel sel workbook ctx.Sheet ctx.CurrentCell model (fun v -> s <- f.Step s v)
             | Some inner -> s <- f.Step s (unwrapValue (eval inner ctx))
             | None -> s <- f.Step s (err Err.name)
-        | _ -> s <- f.Step s (unwrapValue (eval arg ctx))
+        | CellRef _ -> s <- f.Step s (unwrapValue (eval arg ctx))
+        | _ -> s <- f.Step s (direct (unwrapValue (eval arg ctx)))
     f.Extract s
 
 and countBlankArgs (args: Expr list) (ctx: EvalContext) : CellValue =
@@ -5235,7 +5287,7 @@ and numbersOf (values: CellValue list) : Result<float list, string> =
         Ok result
 
 and numbersOfArgs (args: Expr list) (ctx: EvalContext) : Result<float list, string> =
-    foldArgsIgnoringMissingCells
+    foldNumericArgs
         { Init = struct (ValueNone, ResizeArray<float>())
           Step = fun (struct (firstErr, numbers)) value ->
             match firstErr with
@@ -5262,7 +5314,7 @@ and numbersOfArgs (args: Expr list) (ctx: EvalContext) : Result<float list, stri
         ctx
 
 and numbersArrayOfArgs (args: Expr list) (ctx: EvalContext) : Result<float array, string> =
-    foldArgsIgnoringMissingCells
+    foldNumericArgs
         { Init = struct (ValueNone, ResizeArray<float>())
           Step = fun (struct (firstErr, numbers)) value ->
             match firstErr with
@@ -5376,9 +5428,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 | CellValue.Number n ->
                     values.[count] <- n
                     count <- count + 1
-                | CellValue.Boolean b ->
-                    values.[count] <- if b then 1.0 else 0.0
-                    count <- count + 1
+                // Booleans and text read from a range are not numbers.
                 | _ -> ()
         match bounds with
         | Some (sr, sc, er, ec) ->
@@ -5392,7 +5442,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 for r in sr .. er do
                     for c in sc .. ec do
                         addValue (gridCell model r c)
-        | None -> addValue (eval e ctx)
+        | None -> addValue (directNumericArgument (unwrapValue (eval e ctx)))
         match firstErr with
         | ValueSome e -> Result.Error e
         | ValueNone -> Ok (struct (values, count))
@@ -9307,7 +9357,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                                 | ValueNone ->
                                                     match trySparseScanAggregate () with
                                                     | ValueSome result -> result
-                                                    | ValueNone -> foldArgsIgnoringMissingCells (numAggFold 0.0 (+) (fun _ a -> CellValue.Number a)) args ctx
+                                                    | ValueNone -> foldNumericArgs (numAggFold 0.0 (+) (fun _ a -> CellValue.Number a)) args ctx
     | "PRODUCT" ->
         match tryRangeUnaryAggregate () with
         | ValueSome result -> result
@@ -9332,7 +9382,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 | ValueNone ->
                                     match trySparseFilterAggregate () with
                                     | ValueSome result -> result
-                                    | ValueNone -> foldArgsIgnoringMissingCells (numAggFold 1.0 ( * ) (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
+                                    | ValueNone -> foldNumericArgs (numAggFold 1.0 ( * ) (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
     | "AVERAGE" ->
         match tryRangeUnaryAggregate () with
         | ValueSome result -> result
@@ -9366,7 +9416,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                             | ValueNone ->
                                                 match trySparseScanAggregate () with
                                                 | ValueSome result -> result
-                                                | ValueNone -> foldArgsIgnoringMissingCells (numAggFold 0.0 (+) (fun n a -> if n = 0 then err Err.div0 else CellValue.Number (a / float n))) args ctx
+                                                | ValueNone -> foldNumericArgs (numAggFold 0.0 (+) (fun n a -> if n = 0 then err Err.div0 else CellValue.Number (a / float n))) args ctx
     | "MIN" ->
         match tryRangeUnaryAggregate () with
         | ValueSome result -> result
@@ -9400,7 +9450,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                             | ValueNone ->
                                                 match trySparseScanAggregate () with
                                                 | ValueSome result -> result
-                                                | ValueNone -> foldArgsIgnoringMissingCells (numAggFold infinity min (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
+                                                | ValueNone -> foldNumericArgs (numAggFold infinity min (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
     | "MAX" ->
         match tryRangeUnaryAggregate () with
         | ValueSome result -> result
@@ -9434,7 +9484,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                             | ValueNone ->
                                                 match trySparseScanAggregate () with
                                                 | ValueSome result -> result
-                                                | ValueNone -> foldArgsIgnoringMissingCells (numAggFold (-infinity) max (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
+                                                | ValueNone -> foldNumericArgs (numAggFold (-infinity) max (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
     | "MEDIAN" ->
         match args with
         | [ sourceExpr ] ->
@@ -9495,7 +9545,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                                 | ValueNone ->
                                                     match trySparseScanAggregate () with
                                                     | ValueSome result -> result
-                                                    | ValueNone -> foldArgsIgnoringMissingCells (countFold true (fun v -> match v with CellValue.Number _ -> true | _ -> false)) args ctx
+                                                    | ValueNone -> foldArgsIgnoringMissingCellsWith directCountArgument (countFold true (fun v -> match v with CellValue.Number _ -> true | _ -> false)) args ctx
     | "COUNTA" ->
         let mutable fastCount = 0
         let mutable slowArgs = []
@@ -9519,7 +9569,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | ValueNone ->
             match tryRangeBinOpAggregate () with
             | ValueSome result -> result
-            | ValueNone -> foldArgsIgnoringMissingCells (varianceFold sample true) args ctx
+            | ValueNone -> foldNumericArgs (varianceFold sample true) args ctx
     | "VAR" | "VAR.S" | "VARP" | "VAR.P" ->
         let sample = fnName = "VAR" || fnName = "VAR.S"
         match tryRangeUnaryAggregate () with
@@ -9527,7 +9577,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | ValueNone ->
             match tryRangeBinOpAggregate () with
             | ValueSome result -> result
-            | ValueNone -> foldArgsIgnoringMissingCells (varianceFold sample false) args ctx
+            | ValueNone -> foldNumericArgs (varianceFold sample false) args ctx
     | "SUBTOTAL" | "AGGREGATE" ->
         // SUBTOTAL(fnum, ref…) / AGGREGATE(fnum, options, ref…). Aggregate
         // over the refs while (a) skipping rows hidden by a filter — and, for
@@ -10236,7 +10286,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | ValueNone ->
             match tryRangeBinOpAggregate () with
             | ValueSome result -> result
-            | ValueNone -> foldArgsIgnoringMissingCells (numAggFold 0.0 (fun acc x -> acc + x * x) (fun _ sum -> CellValue.Number sum)) args ctx
+            | ValueNone -> foldNumericArgs (numAggFold 0.0 (fun acc x -> acc + x * x) (fun _ sum -> CellValue.Number sum)) args ctx
     | "FACT" ->
         match argNum 0 with
         | Result.Error e -> err e
@@ -10275,36 +10325,36 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 match trySparseOrderedArithmeticValues sourceExpr with
                 | ValueSome (Ok values) -> modeCompressed values
                 | ValueSome (Result.Error e) -> err e
-                | ValueNone -> foldArgsIgnoringMissingCells (modeFold ()) args ctx
-        | _ -> foldArgsIgnoringMissingCells (modeFold ()) args ctx
+                | ValueNone -> foldNumericArgs (modeFold ()) args ctx
+        | _ -> foldNumericArgs (modeFold ()) args ctx
     | "DEVSQ" ->
         match tryRangeUnaryAggregate () with
         | ValueSome result -> result
         | ValueNone ->
             match tryRangeBinOpAggregate () with
             | ValueSome result -> result
-            | ValueNone -> foldArgsIgnoringMissingCells devSqFold args ctx
+            | ValueNone -> foldNumericArgs devSqFold args ctx
     | "AVEDEV" ->
         match tryRangeUnaryAggregate () with
         | ValueSome result -> result
         | ValueNone ->
             match tryRangeBinOpAggregate () with
             | ValueSome result -> result
-            | ValueNone -> foldArgsIgnoringMissingCells (aveDevFold ()) args ctx
+            | ValueNone -> foldNumericArgs (aveDevFold ()) args ctx
     | "GEOMEAN" ->
         match tryRangeUnaryAggregate () with
         | ValueSome result -> result
         | ValueNone ->
             match tryRangeBinOpAggregate () with
             | ValueSome result -> result
-            | ValueNone -> foldArgsIgnoringMissingCells geoMeanFold args ctx
+            | ValueNone -> foldNumericArgs geoMeanFold args ctx
     | "HARMEAN" ->
         match tryRangeUnaryAggregate () with
         | ValueSome result -> result
         | ValueNone ->
             match tryRangeBinOpAggregate () with
             | ValueSome result -> result
-            | ValueNone -> foldArgsIgnoringMissingCells harmonicMeanFold args ctx
+            | ValueNone -> foldNumericArgs harmonicMeanFold args ctx
     | "RANK" | "RANK.EQ" ->
         if nargs < 2 then err Err.value else
         match argNum 0 with

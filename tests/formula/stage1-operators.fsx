@@ -74,7 +74,7 @@ check "err-prop-deep"  "=(1/0)*2"      (e "DIV/0!")
 
 // functions
 check "sum-range"      "=SUM(A1:A2)"   (n 30.0)
-check "sum-mixed"      "=SUM(A1:A4)"   (n 31.0)       // 10+20+TRUE(1), "hi" ignored
+check "sum-mixed"      "=SUM(A1:A4)"   (n 30.0)       // 10+20; "hi" and TRUE in a range are ignored
 check "average"        "=AVERAGE(A1:A2)" (n 15.0)
 check "count"          "=COUNT(A1:A4)" (n 2.0)        // only 2 numbers
 check "min"            "=MIN(A1:A2)"   (n 10.0)

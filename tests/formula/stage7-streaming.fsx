@@ -63,9 +63,10 @@ let ev f = evaluateFormula f mixed None
 let n x = CellValue.Number x
 let e x = CellValue.Error x
 
-check "sum skips text, counts bool" (ev "=SUM(A1:A5)")   (n 21.0)   // 5 + 1(true) + 15
-check "average over numerics+bool"  (ev "=AVERAGE(A1:A5)") (n 7.0)  // 21 / 3
-check "min ignores text"            (ev "=MIN(A1:A5)")    (n 1.0)   // true=1
+// Excel ignores text AND booleans read from a range (only direct arguments coerce).
+check "sum skips text and bool"     (ev "=SUM(A1:A5)")   (n 20.0)   // 5 + 15
+check "average over numerics"       (ev "=AVERAGE(A1:A5)") (n 10.0) // 20 / 2
+check "min ignores text and bool"   (ev "=MIN(A1:A5)")    (n 5.0)
 check "max ignores text"            (ev "=MAX(A1:A5)")    (n 15.0)
 check "count numbers only"          (ev "=COUNT(A1:A5)")  (n 2.0)   // 5,15 (bool/text excluded)
 check "counta non-empty"            (ev "=COUNTA(A1:A5)") (n 5.0)   // 5,txt,true,15,"" — Excel counts "" as non-empty
@@ -77,7 +78,7 @@ check "average empty = DIV/0"       (ev "=AVERAGE(Z1:Z9)") (e "DIV/0!")
 check "min all-text = 0"            (ev "=MIN(C1:C3)")    (n 0.0)
 check "max all-text = 0"            (ev "=MAX(C1:C3)")    (n 0.0)
 check "product empty = 0"           (ev "=PRODUCT(Z1:Z9)") (n 0.0)
-check "multi-arg sum ranges+scalar" (ev "=SUM(A1:A5,B1:B1,100)") (n 122.0) // 21 + 1 + 100
+check "multi-arg sum ranges+scalar" (ev "=SUM(A1:A5,B1:B1,100)") (n 121.0) // 20 + 1 + 100
 
 // ── 3. Large range: 100k cells, streamed (no list materialized) ───────
 let bigCells = [ for r in 0..99999 -> { Row = r; Col = 0 }, cell (CellValue.Number (float (r + 1))) ] |> Map.ofList
