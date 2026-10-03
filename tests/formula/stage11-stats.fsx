@@ -1,12 +1,12 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // Stats / date / lookup batch: AVERAGEA/MAXA/MINA, MODE, RANK, PERCENTILE,
 // QUARTILE, DEVSQ, AVEDEV, GEOMEAN, HARMEAN, VAR.S/.P, STDEV.S/.P; WEEKNUM,
 // DATEDIF, NETWORKDAYS, WORKDAY; LOOKUP; NUMBERVALUE; TEXTSPLIT.
 
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Formula
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Formula
 
 let cell v = { Value = v; Format = defaultFormat; Comment = None }
 let nC r c v = ({ Row=r; Col=c }, cell (CellValue.Number v))

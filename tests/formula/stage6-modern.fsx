@@ -1,12 +1,12 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // Batch 1 — modern functions: MAXIFS / MINIFS / AVERAGEIFS, XLOOKUP / XMATCH,
 // LET. Expected values are Excel's documented results (cross-checked against
 // real Excel via tools/excel-parity probes).
 
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Formula
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Formula
 
 // Grid layout (0-indexed row,col):
 //   A1:A6 (col0) category  : X Y X Y X Z

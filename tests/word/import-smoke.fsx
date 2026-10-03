@@ -1,10 +1,10 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "../../src/Office.Formats/bin/Debug/netstandard2.0/OfficeFormat.dll"
-#r "../../src/Word/bin/Debug/netstandard2.0/RedBat.Word.dll"
-#r "../../src/Word.Import/bin/Debug/net10.0/RedBat.WordImport.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
+#r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"
+#r "../../src/Word.Import/bin/Debug/net10.0/Rbt.WordImport.dll"
 
 open System
-open RedBat.Word.Document
+open Rbt.Word.Document
 
 let mutable pass = 0
 let mutable fail = 0
@@ -24,7 +24,7 @@ let ok label cond detail =
         printfn "FAIL %-34s %s" label detail
 
 let textOfPara (para: ParagraphBlock) =
-    RedBat.Word.TextBuffer.toString para.Buffer
+    Rbt.Word.TextBuffer.toString para.Buffer
 
 let firstParagraphText (doc: Document) =
     doc.Blocks
@@ -113,7 +113,7 @@ let assertFixture (expected: Expected) (doc: Document) =
     check (expected.Path + " section setup") (hasSectionPageSetup doc) expected.HasSectionSetup
 
 for expected in fixtures do
-    let doc = importFixture expected.Path RedBat.Word.Import.importDoc
+    let doc = importFixture expected.Path Rbt.Word.Import.importDoc
     assertFixture expected doc
 
 let summary (doc: Document) =
@@ -123,7 +123,7 @@ let summary (doc: Document) =
     (doc.Blocks |> List.map blockKind),
     hasSectionPageSetup doc
 
-let libraryDoc = importFixture fixtures.[1].Path RedBat.Word.Import.importDoc
+let libraryDoc = importFixture fixtures.[1].Path Rbt.Word.Import.importDoc
 let compatDoc = importFixture fixtures.[1].Path NativeRunner.importDoc
 check "compat alias summary" (summary compatDoc) (summary libraryDoc)
 

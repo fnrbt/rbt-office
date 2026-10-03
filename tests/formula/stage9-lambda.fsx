@@ -1,5 +1,5 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // Batch 2 — LAMBDA + higher-order helpers (MAP/REDUCE/SCAN/MAKEARRAY).
 // Lambdas are first-class via beta-reduction (expression substitution),
@@ -7,8 +7,8 @@
 // MAP/REDUCE/… are reduced and evaluated. (Direct IIFE `LAMBDA(x,..)(5)` is
 // deferred — needs a parser apply-node.)
 
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Formula
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Formula
 
 let cell v = { Value = v; Format = defaultFormat; Comment = None }
 // A1:A4 = 1,2,3,4

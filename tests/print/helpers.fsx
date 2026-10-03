@@ -1,9 +1,9 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office-spreadsheet/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
-#r "/home/dave/Dev/browser/office-spreadsheet/src/Spreadsheet.Pdf/bin/Debug/net10.0/RedBat.Spreadsheet.Pdf.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
+#r "../../src/Spreadsheet.Pdf/bin/Debug/net10.0/Rbt.Spreadsheet.Pdf.dll"
 
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Pdf
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Pdf
 
 let mutable pass = 0
 let mutable fail = 0

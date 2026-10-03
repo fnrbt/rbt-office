@@ -1,11 +1,11 @@
-#r "/home/dave/Dev/browser/office/src/Word/bin/Debug/netstandard2.0/RedBat.Word.dll"
-#r "/home/dave/Dev/browser/fsvb/bin/Debug/netstandard2.0/FsVb.dll"
+#r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Vb.dll"
 
-open RedBat.Word.TextBuffer
+open Rbt.Word.TextBuffer
 open System.Reflection
-module Doc = RedBat.Word.Document
-module Cmd = RedBat.Word.Commands
-module Vba = RedBat.Word.Vba
+module Doc = Rbt.Word.Document
+module Cmd = Rbt.Word.Commands
+module Vba = Rbt.Word.Vba
 
 let mutable pass = 0
 let mutable fail = 0
@@ -31,12 +31,12 @@ check "style before buffer default" (getStyleAt -1 repeatedAppend).Bold false
 check "style after buffer default" (getStyleAt 1000 repeatedAppend).Bold false
 
 let styleLookupA =
-    { Rope = RedBat.Word.Rope.ofString "ab"
+    { Rope = Rbt.Word.Rope.ofString "ab"
       Runs =
         [ Text { Start = 0; Length = 1; Style = { defaultStyle with Bold = true } }
           Text { Start = 1; Length = 1; Style = defaultStyle } ] }
 let styleLookupB =
-    { Rope = RedBat.Word.Rope.ofString "ab"
+    { Rope = Rbt.Word.Rope.ofString "ab"
       Runs =
         [ Text { Start = 0; Length = 1; Style = defaultStyle }
           Text { Start = 1; Length = 1; Style = { defaultStyle with Italic = true } } ] }
@@ -68,7 +68,7 @@ check "style full run count" fullStyle.Runs.Length 1
 check "style full bold" (getStyleAt 0 fullStyle).Bold true
 
 let fragmented =
-    { Rope = RedBat.Word.Rope.ofString "abcd"
+    { Rope = Rbt.Word.Rope.ofString "abcd"
       Runs =
         [ for i in 0 .. 3 ->
             Text { Start = i; Length = 1; Style = defaultStyle } ] }
@@ -91,7 +91,7 @@ check "style fragmented noop text" (toString noopStyledFragment) "abcd"
 
 let bridgeDelete =
     let bold = { defaultStyle with Bold = true }
-    { Rope = RedBat.Word.Rope.ofString "abXcd"
+    { Rope = Rbt.Word.Rope.ofString "abXcd"
       Runs =
         [ Text { Start = 0; Length = 2; Style = bold }
           Text { Start = 2; Length = 1; Style = defaultStyle }
@@ -101,31 +101,31 @@ check "delete bridge text" (toString bridgeDelete) "abcd"
 check "delete bridge merges" bridgeDelete.Runs.Length 1
 
 let largeText = String.init 5000 (fun i -> string (char (int 'a' + (i % 26))))
-let largeRope = RedBat.Word.Rope.ofString largeText
-check "rope slice all" (RedBat.Word.Rope.slice 0 largeText.Length largeRope) largeText
-check "rope slice first half" (RedBat.Word.Rope.slice 0 2500 largeRope) (largeText.Substring(0, 2500))
-check "rope slice second half" (RedBat.Word.Rope.slice 2500 2500 largeRope) (largeText.Substring(2500, 2500))
-check "rope slice cross leaf" (RedBat.Word.Rope.slice 1010 80 largeRope) (largeText.Substring(1010, 80))
-check "rope char first" (RedBat.Word.Rope.charAt 0 largeRope) (Some largeText.[0])
-check "rope char middle" (RedBat.Word.Rope.charAt 2517 largeRope) (Some largeText.[2517])
-check "rope char last" (RedBat.Word.Rope.charAt (largeText.Length - 1) largeRope) (Some largeText.[largeText.Length - 1])
-check "rope char before" (RedBat.Word.Rope.charAt -1 largeRope) None
-check "rope char after" (RedBat.Word.Rope.charAt largeText.Length largeRope) None
-check "rope linecol same leaf" (RedBat.Word.Rope.lineColToPosition 0 10 largeRope) 10
-check "rope linecol later leaf" (RedBat.Word.Rope.lineColToPosition 0 2500 largeRope) 2500
-check "rope pos linecol later leaf" (RedBat.Word.Rope.positionToLineCol 2500 largeRope) (0, 2500)
+let largeRope = Rbt.Word.Rope.ofString largeText
+check "rope slice all" (Rbt.Word.Rope.slice 0 largeText.Length largeRope) largeText
+check "rope slice first half" (Rbt.Word.Rope.slice 0 2500 largeRope) (largeText.Substring(0, 2500))
+check "rope slice second half" (Rbt.Word.Rope.slice 2500 2500 largeRope) (largeText.Substring(2500, 2500))
+check "rope slice cross leaf" (Rbt.Word.Rope.slice 1010 80 largeRope) (largeText.Substring(1010, 80))
+check "rope char first" (Rbt.Word.Rope.charAt 0 largeRope) (Some largeText.[0])
+check "rope char middle" (Rbt.Word.Rope.charAt 2517 largeRope) (Some largeText.[2517])
+check "rope char last" (Rbt.Word.Rope.charAt (largeText.Length - 1) largeRope) (Some largeText.[largeText.Length - 1])
+check "rope char before" (Rbt.Word.Rope.charAt -1 largeRope) None
+check "rope char after" (Rbt.Word.Rope.charAt largeText.Length largeRope) None
+check "rope linecol same leaf" (Rbt.Word.Rope.lineColToPosition 0 10 largeRope) 10
+check "rope linecol later leaf" (Rbt.Word.Rope.lineColToPosition 0 2500 largeRope) 2500
+check "rope pos linecol later leaf" (Rbt.Word.Rope.positionToLineCol 2500 largeRope) (0, 2500)
 let leafSource = System.String([| 'l'; 'e'; 'a'; 'f' |])
 
 let multiLineText =
     String.init 5000 (fun i ->
         if i % 100 = 99 then "\n"
         else string (char (int 'a' + (i % 26))))
-let multiLineRope = RedBat.Word.Rope.ofString multiLineText
-check "rope linecol multiline" (RedBat.Word.Rope.lineColToPosition 20 17 multiLineRope) 2017
-check "rope pos linecol multiline" (RedBat.Word.Rope.positionToLineCol 2017 multiLineRope) (20, 17)
-check "rope linecol multiline tail" (RedBat.Word.Rope.lineColToPosition 49 99 multiLineRope) 4999
-check "rope pos linecol multiline tail" (RedBat.Word.Rope.positionToLineCol 4999 multiLineRope) (49, 99)
-check "rope linecol after final newline" (RedBat.Word.Rope.lineColToPosition 50 0 multiLineRope) 5000
+let multiLineRope = Rbt.Word.Rope.ofString multiLineText
+check "rope linecol multiline" (Rbt.Word.Rope.lineColToPosition 20 17 multiLineRope) 2017
+check "rope pos linecol multiline" (Rbt.Word.Rope.positionToLineCol 2017 multiLineRope) (20, 17)
+check "rope linecol multiline tail" (Rbt.Word.Rope.lineColToPosition 49 99 multiLineRope) 4999
+check "rope pos linecol multiline tail" (Rbt.Word.Rope.positionToLineCol 4999 multiLineRope) (49, 99)
+check "rope linecol after final newline" (Rbt.Word.Rope.lineColToPosition 50 0 multiLineRope) 5000
 let longParagraphText = System.String('x', 4096)
 let longTextDoc =
     { Doc.empty with
@@ -155,7 +155,7 @@ check "nonbreaking blank text" (isNonbreakingBlank (ofString "\u00A0x")) false
 
 let red = { defaultStyle with Color = Some "#ff0000" }
 let styledBuffer =
-    { Rope = RedBat.Word.Rope.ofString "abcd"
+    { Rope = Rbt.Word.Rope.ofString "abcd"
       Runs =
         [ Text { Start = 0; Length = 2; Style = { defaultStyle with Bold = true } }
           Text { Start = 2; Length = 2; Style = red } ] }
@@ -520,7 +520,7 @@ let bookmarkDoc =
             [ Doc.Paragraph
                 { para "bm1" (ofString "")
                     with Buffer =
-                            { Rope = RedBat.Word.Rope.ofString "abcdef"
+                            { Rope = Rbt.Word.Rope.ofString "abcdef"
                               Runs =
                                 [ Text { Start = 0; Length = 1; Style = defaultStyle }
                                   Text { Start = 1; Length = 2; Style = bookmarkStyle }
@@ -586,7 +586,7 @@ let commentDoc =
             [ Doc.Paragraph
                 { para "comment-p" (ofString "")
                     with Buffer =
-                            { Rope = RedBat.Word.Rope.ofString "abcdef"
+                            { Rope = Rbt.Word.Rope.ofString "abcdef"
                               Runs =
                                 [ Text { Start = 0; Length = 1; Style = defaultStyle }
                                   Text { Start = 1; Length = 3; Style = commentStyle }
@@ -653,13 +653,13 @@ let fieldRefreshDoc =
             [ Doc.Paragraph
                 { Id = "field-ref"
                   Buffer =
-                    { Rope = RedBat.Word.Rope.ofString "mark"
+                    { Rope = Rbt.Word.Rope.ofString "mark"
                       Runs = [ Text { Start = 0; Length = 4; Style = bookmarkStyle } ] }
                   Metadata = { Doc.defaultMetadata with PageBreakAfter = true } }
               Doc.Paragraph
                 { Id = "field-page"
                   Buffer =
-                    { Rope = RedBat.Word.Rope.ofString "0 0"
+                    { Rope = Rbt.Word.Rope.ofString "0 0"
                       Runs =
                         [ Text { Start = 0; Length = 1; Style = pageFieldStyle }
                           Text { Start = 1; Length = 1; Style = defaultStyle }
@@ -752,7 +752,7 @@ let tocRefreshDoc =
             [ Doc.Paragraph
                 { Id = "toc-field"
                   Buffer =
-                    { Rope = RedBat.Word.Rope.ofString "toc"
+                    { Rope = Rbt.Word.Rope.ofString "toc"
                       Runs = [ Text { Start = 0; Length = 3; Style = tocFieldStyle } ] }
                   Metadata = Doc.defaultMetadata }
               Doc.Heading (1, para "toc-h1" (ofString "Intro"))
@@ -771,7 +771,7 @@ let fieldParagraph id text fieldCode bookmarkName =
     Doc.Paragraph
         { Id = id
           Buffer =
-            { Rope = RedBat.Word.Rope.ofString text
+            { Rope = Rbt.Word.Rope.ofString text
               Runs = [ Text { Start = 0; Length = text.Length; Style = style } ] }
           Metadata = Doc.defaultMetadata }
 let sequenceFieldDoc =
@@ -822,7 +822,7 @@ let styleRefDoc =
               Doc.Paragraph
                 { Id = "style-ref"
                   Buffer =
-                    { Rope = RedBat.Word.Rope.ofString "old"
+                    { Rope = Rbt.Word.Rope.ofString "old"
                       Runs = [ Text { Start = 0; Length = 3; Style = styleRefFieldStyle } ] }
                   Metadata = Doc.defaultMetadata } ] }
 let refreshedStyleRef = Doc.refreshFields styleRefDoc
@@ -880,7 +880,7 @@ let cursorDoc = { selectionDoc with Selection = Some { Anchor = pos "p1" 1; Focu
 let lineStartDoc = { selectionDoc with Selection = Some { Anchor = pos "p1" 0; Focus = pos "p1" 0 } }
 let lineEndDoc = { selectionDoc with Selection = Some { Anchor = pos "p1" (length styledBuffer); Focus = pos "p1" (length styledBuffer) } }
 let inputDocumentsEqualForChange =
-    typeof<Doc.Document>.Assembly.GetType("RedBat.Word.Input").GetMethod(
+    typeof<Doc.Document>.Assembly.GetType("Rbt.Word.Input").GetMethod(
         "documentsEqualForChange",
         System.Reflection.BindingFlags.NonPublic ||| System.Reflection.BindingFlags.Static)
 if isNull inputDocumentsEqualForChange then
@@ -1197,7 +1197,7 @@ let styledSingleRunReplaceDoc =
         Blocks =
             [ Doc.Paragraph (
                 para "styled-single-replace"
-                    { Rope = RedBat.Word.Rope.ofString "target target"
+                    { Rope = Rbt.Word.Rope.ofString "target target"
                       Runs = [ Text { Start = 0; Length = 13; Style = { defaultStyle with Bold = true } } ] }) ] }
 let styledSingleRunReplacedDoc, styledSingleRunReplaceCount = Doc.replaceAllText "target" "x" false styledSingleRunReplaceDoc
 check "replace styled single-run count" styledSingleRunReplaceCount 2
@@ -1218,7 +1218,7 @@ match replacedDoc.Blocks with
     printfn "FAIL %-28s expected two paragraphs got %A" "replace all shape" blocks.Length
 
 let boundaryReplaceBuffer =
-    { Rope = RedBat.Word.Rope.ofString "abtargetcd"
+    { Rope = Rbt.Word.Rope.ofString "abtargetcd"
       Runs =
         [ Text { Start = 0; Length = 2; Style = { defaultStyle with Bold = true } }
           Text { Start = 2; Length = 8; Style = red } ] }
@@ -1238,7 +1238,7 @@ match boundaryReplacedDoc.Blocks with
 
 let fragmentedReplaceText = "target target"
 let fragmentedReplaceBuffer =
-    { Rope = RedBat.Word.Rope.ofString fragmentedReplaceText
+    { Rope = Rbt.Word.Rope.ofString fragmentedReplaceText
       Runs =
         [ for i in 0 .. fragmentedReplaceText.Length - 1 ->
             let style = if i % 2 = 0 then { defaultStyle with Bold = true } else red
@@ -1268,7 +1268,7 @@ let fragmentedRevisionBuffer =
             RevisionId = Some "r1"
             RevisionAuthor = Some "author"
             RevisionDate = Some "date" }
-    { Rope = RedBat.Word.Rope.ofString "abcd"
+    { Rope = Rbt.Word.Rope.ofString "abcd"
       Runs =
         [ for i in 0 .. 3 ->
             Text { Start = i; Length = 1; Style = style } ] }
@@ -1296,7 +1296,7 @@ let splitRevisionBuffer =
         { defaultStyle with
             RevisionType = Some "insert"
             RevisionId = Some revisionId }
-    { Rope = RedBat.Word.Rope.ofString "abcd"
+    { Rope = Rbt.Word.Rope.ofString "abcd"
       Runs =
         [ Text { Start = 0; Length = 2; Style = style "r1" }
           Text { Start = 2; Length = 2; Style = style "r2" } ] }
@@ -1343,7 +1343,7 @@ let trackedInsertBaseDoc =
     { Doc.empty with
         Blocks =
             [ Doc.Paragraph (para "tracked" {
-                Rope = RedBat.Word.Rope.ofString "abc"
+                Rope = Rbt.Word.Rope.ofString "abc"
                 Runs = [ Text { Start = 0; Length = 3; Style = trackedInsertBaseStyle } ]
             }) ] }
 let trackedAdjacent =

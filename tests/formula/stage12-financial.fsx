@@ -1,11 +1,11 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // Financial (time-value-of-money) functions: PMT, FV, PV, NPER, RATE, NPV,
 // IRR, SLN. Expected values match Excel.
 
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Formula
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Formula
 
 let cell v = { Value = v; Format = defaultFormat; Comment = None }
 // A1:A3 = -100, 50, 60  (cashflow for IRR)

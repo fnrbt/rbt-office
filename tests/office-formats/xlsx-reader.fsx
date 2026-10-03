@@ -1,5 +1,5 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office/src/Office.Formats/bin/Debug/netstandard2.0/OfficeFormat.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 
 open System
 open System.Collections.Generic

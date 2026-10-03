@@ -1,13 +1,13 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // Batch 2, Step 1 — dynamic arrays. Array functions (SEQUENCE/RANDARRAY/UNIQUE/
 // SORT/SORTBY/FILTER/TRANSPOSE) + element-wise operator broadcasting. Arrays
 // flow through the engine: consumable by aggregates, collapsing to top-left in
 // scalar context. (Spill placement into cells + render is Step 2.)
 
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Formula
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Formula
 
 let cell v = { Value = v; Format = defaultFormat; Comment = None }
 let nC r c v = ({ Row=r; Col=c }, cell (CellValue.Number v))

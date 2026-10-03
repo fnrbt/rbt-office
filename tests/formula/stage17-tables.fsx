@@ -1,10 +1,10 @@
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // Structured references (rich grammar) + SUBTOTAL / AGGREGATE.
 
-open RedBat.Spreadsheet.Model
-module F = RedBat.Spreadsheet.Formula
-module WB = RedBat.Spreadsheet.Workbook
+open Rbt.Spreadsheet.Model
+module F = Rbt.Spreadsheet.Formula
+module WB = Rbt.Spreadsheet.Workbook
 
 let cell v = { Value = v; Format = defaultFormat; Comment = None }
 let S = CellValue.String

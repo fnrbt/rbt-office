@@ -1,18 +1,18 @@
-#r "/home/dave/Dev/browser/pdf/bin/Debug/net10.0/FsPdf.dll"
-#r "/home/dave/Dev/browser/text/unicode/src/Unicode/bin/Debug/net10.0/Unicode.Core.dll"
-#r "/home/dave/Dev/browser/text/bidi/bin/Debug/net10.0/Bidi.Core.dll"
-#r "/home/dave/Dev/browser/text/opentype/bin/Debug/net10.0/OpenType.Core.dll"
-#r "/home/dave/Dev/browser/text/shaper/bin/Debug/net10.0/Shaper.Core.dll"
-#r "/home/dave/Dev/browser/text/engine/bin/Debug/net10.0/Text.Engine.dll"
-#r "/home/dave/Dev/browser/office/src/Word/bin/Debug/netstandard2.0/RedBat.Word.dll"
-#r "/home/dave/Dev/browser/office/src/ShaperText/bin/Debug/net10.0/RedBat.Word.ShaperText.dll"
-#r "/home/dave/Dev/browser/office/src/Word.Pdf/bin/Debug/net10.0/RedBat.Word.Pdf.dll"
+#r "../../src/Word.Pdf/bin/Debug/net10.0/Rbt.Pdf.dll"
+#r "../../src/Word.Pdf/bin/Debug/net10.0/Rbt.Unicode.Core.dll"
+#r "../../src/Word.Pdf/bin/Debug/net10.0/Rbt.Bidi.Core.dll"
+#r "../../src/Word.Pdf/bin/Debug/net10.0/Rbt.OpenType.Core.dll"
+#r "../../src/Word.Pdf/bin/Debug/net10.0/Rbt.Shaper.Core.dll"
+#r "../../src/Word.Pdf/bin/Debug/net10.0/Rbt.Text.Engine.dll"
+#r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"
+#r "../../src/ShaperText/bin/Debug/net10.0/Rbt.Word.ShaperText.dll"
+#r "../../src/Word.Pdf/bin/Debug/net10.0/Rbt.Word.Pdf.dll"
 
 open System
-module Doc = RedBat.Word.Document
-module Layout = RedBat.Word.Layout
-module Paint = RedBat.Word.Paint
-module Pdf = RedBat.Word.Pdf
+module Doc = Rbt.Word.Document
+module Layout = Rbt.Word.Layout
+module Paint = Rbt.Word.Paint
+module Pdf = Rbt.Word.Pdf
 
 let mutable pass = 0
 let mutable fail = 0
@@ -48,7 +48,7 @@ let retainedBytesFor (f: unit -> 'a) =
 let paragraph index =
     Doc.Paragraph {
         Id = sprintf "pdf-p-%04d" index
-        Buffer = RedBat.Word.TextBuffer.ofString "The quick brown fox jumps over the lazy dog."
+        Buffer = Rbt.Word.TextBuffer.ofString "The quick brown fox jumps over the lazy dog."
         Metadata = Doc.defaultMetadata
     }
 

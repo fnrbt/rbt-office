@@ -1,9 +1,9 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // AutoFilter model: unique values for the checklist, apply, and visible rows.
 
-open RedBat.Spreadsheet.Model
+open Rbt.Spreadsheet.Model
 
 let cell v = { Value = v; Format = defaultFormat; Comment = None }
 let S = CellValue.String

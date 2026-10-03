@@ -8,9 +8,9 @@
 #load "../../src/Word/Math.fs"
 #load "../../src/Word/Layout.fs"
 
-open RedBat.Word.TextBuffer
-module Doc = RedBat.Word.Document
-module Layout = RedBat.Word.Layout
+open Rbt.Word.TextBuffer
+module Doc = Rbt.Word.Document
+module Layout = Rbt.Word.Layout
 
 let mutable pass = 0
 let mutable fail = 0

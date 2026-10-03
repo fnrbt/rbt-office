@@ -1,10 +1,10 @@
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/FsVb.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Vb.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // VBA runs natively (cross-platform) AND writes cells back via runOnModel.
 
-open RedBat.Spreadsheet.Model
-module V = RedBat.Spreadsheet.Vba
+open Rbt.Spreadsheet.Model
+module V = Rbt.Spreadsheet.Vba
 
 let cell v = { Value = v; Format = defaultFormat; Comment = None }
 let model =

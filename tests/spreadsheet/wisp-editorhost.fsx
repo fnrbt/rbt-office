@@ -1,9 +1,9 @@
-#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
-#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.OfficeUi.dll"
-#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Grid.dll"
-#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/FsVb.dll"
-#r "../../src/Office.Formats/bin/Debug/netstandard2.0/OfficeFormat.dll"
-#r "../../office-wisp/bin/Debug/net10.0/OfficeWisp.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.OfficeUi.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Grid.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Vb.dll"
+#r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
+#r "../../office-wisp/bin/Debug/net10.0/Rbt.OfficeWisp.dll"
 #r "../../../wisp/bin/Debug/net10.0/Wisp.dll"
 #r "../../../rbt-renderer/bin/Debug/net10.0/Renderer.dll"
 #r "../../../wisp/bin/Debug/net10.0/Platform.dll"
@@ -11,8 +11,8 @@
 #load "../../spreadsheet-wisp/GridRender.fs"
 #load "../../spreadsheet-wisp/EditorHost.fs"
 
-open RedBat.Spreadsheet.Model
-open RedBat.SpreadsheetWisp.EditorHost
+open Rbt.Spreadsheet.Model
+open Rbt.SpreadsheetWisp.EditorHost
 
 let fail name detail =
     failwithf "%s failed: %s" name detail

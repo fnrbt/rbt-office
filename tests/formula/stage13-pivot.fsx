@@ -1,11 +1,11 @@
-#r "/home/dave/.nuget/packages/fable.core/4.0.0/lib/netstandard2.0/Fable.Core.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // Pivot-table engine: group-by + cross-tab + Grand Totals.
 
-open RedBat.Spreadsheet.Model
-open RedBat.Spreadsheet.Pivot
-open RedBat.Spreadsheet.Formula
+open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet.Pivot
+open Rbt.Spreadsheet.Formula
 
 let S = CellValue.String
 let N = CellValue.Number

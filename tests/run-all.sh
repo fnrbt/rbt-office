@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
-# Repo-wide test gate: build the solution, then run every test suite against
-# THIS worktree's freshly built dlls. Each suite's `#r` paths are normalized
-# to the local build (the .fsx files hard-code the author's absolute paths),
-# so the gate is portable across machines and worktrees.
+# Repo-wide test gate: build the projects under test, then run every test
+# suite. Each .fsx references this worktree's build output by relative path.
 #
 # Usage: tests/run-all.sh [--skip-build]
 # Suitable as a pre-push hook: ln -s ../../tests/run-all.sh .git/hooks/pre-push
 set -u
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-FSVB="$(cd .. && pwd)/fsvb"
+
+# Built one by one rather than through Office.slnx: the solution also pulls in
+# sibling-repo hosts (widgets, wisp) that these suites do not exercise.
+PROJECTS=(
+    src/Office.Formats/Rbt.OfficeFormat.fsproj
+    src/Word/Rbt.Word.fsproj
+    src/Word.Pdf/Rbt.Word.Pdf.fsproj
+)
 
 if [ "${1:-}" != "--skip-build" ]; then
-    echo "building Office.slnx..."
-    if ! dotnet build Office.slnx -v quiet >/dev/null; then
-        echo "SOLUTION BUILD FAILED" >&2
-        exit 1
-    fi
+    for p in "${PROJECTS[@]}"; do
+        echo "building $p..."
+        if ! dotnet build "$p" -v quiet >/dev/null; then
+            echo "BUILD FAILED: $p" >&2
+            exit 1
+        fi
+    done
 fi
 
 failed=0
@@ -26,18 +33,9 @@ run_suite () {
     local label="$1" f="$2"
     [ -f "$f" ] || { echo "--- $label (missing, skipped) ---"; return; }
     echo "--- $label ---"
-    local tmp
-    tmp="$(mktemp --suffix=.fsx)"
-    # Normalize every hard-coded #r path to this worktree / sibling fsvb.
-    sed -E \
-        -e "s#\"[^\"]*/office/(src|word-native|spreadsheet-native)/#\"$ROOT/\1/#" \
-        -e "s#\"[^\"]*/fsvb/bin/#\"$FSVB/bin/#" \
-        -e "s#\"/home/[^/]+/\.nuget/#\"$HOME/.nuget/#" \
-        "$f" > "$tmp"
-    if ! dotnet fsi --quiet "$tmp"; then
+    if ! dotnet fsi --quiet "$f"; then
         failed=1
     fi
-    rm -f "$tmp"
 }
 
 echo "=== formula engine ==="

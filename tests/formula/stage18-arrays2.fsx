@@ -1,9 +1,9 @@
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // Phase A: BYROW/BYCOL, by_col UNIQUE/SORT, multi-key SORTBY, LAMBDA IIFE.
 
-open RedBat.Spreadsheet.Model
-module F = RedBat.Spreadsheet.Formula
+open Rbt.Spreadsheet.Model
+module F = Rbt.Spreadsheet.Formula
 
 let cell v = { Value = v; Format = defaultFormat; Comment = None }
 let N = CellValue.Number

@@ -1,10 +1,10 @@
-#r "/home/dave/Dev/browser/office/src/Word/bin/Debug/netstandard2.0/RedBat.Word.dll"
+#r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"
 
-open RedBat.Word.TextBuffer
-open RedBat.Word.Layout
-open RedBat.Word.Paint
-module Doc = RedBat.Word.Document
-module Styles = RedBat.Word.WordStyles
+open Rbt.Word.TextBuffer
+open Rbt.Word.Layout
+open Rbt.Word.Paint
+module Doc = Rbt.Word.Document
+module Styles = Rbt.Word.WordStyles
 
 let mutable pass = 0
 let mutable fail = 0
@@ -54,7 +54,7 @@ check "wide line coalesced text"
     (String.concat " " [ for _ in 1 .. 20 -> "word" ])
 
 let fragmented =
-    { Rope = RedBat.Word.Rope.ofString "alpha beta gamma"
+    { Rope = Rbt.Word.Rope.ofString "alpha beta gamma"
       Runs =
         [ Text { Start = 0; Length = 6; Style = defaultStyle }
           Text { Start = 6; Length = 4; Style = { defaultStyle with Bold = true } }
@@ -73,7 +73,7 @@ check "layout indent shifts segment" (match indentedReuseLayout.Lines.[0].Segmen
 
 let effectiveMerged =
     Styles.effectiveBuffer Styles.normal
-        { Rope = RedBat.Word.Rope.ofString "abcd"
+        { Rope = Rbt.Word.Rope.ofString "abcd"
           Runs =
             [ Text { Start = 0; Length = 2; Style = defaultStyle }
               Text { Start = 2; Length = 2; Style = defaultStyle } ] }
@@ -129,7 +129,7 @@ let styleDoc =
               namedStyle "child-char" (Some "base-char") (Some { defaultStyle with Color = Some "#111111" }) ] }
 let inheritedStyleBuffer =
     Styles.effectiveBufferInDocument styleDoc Styles.normal
-        { Rope = RedBat.Word.Rope.ofString "ab"
+        { Rope = Rbt.Word.Rope.ofString "ab"
           Runs =
             [ Text { Start = 0; Length = 2; Style = { defaultStyle with Style = Some "child-char" } } ] }
 let inheritedStyle =
@@ -146,7 +146,7 @@ let blockLayout id y line : BlockLayout =
       Y = y
       Height = line.Height
       AvailableWidth = 120.0
-      Metadata = RedBat.Word.Document.defaultMetadata
+      Metadata = Rbt.Word.Document.defaultMetadata
       Prefix = ""
       PrefixStyle = None
       PrefixWidth = 0.0
@@ -284,7 +284,7 @@ let tableRow cells : Doc.TableRow =
       BordersOverride = None }
 
 let verticalMergeRows =
-    RedBat.Word.WordLayout.Table.distributeVerticalMergeContent
+    Rbt.Word.WordLayout.Table.distributeVerticalMergeContent
         [ tableRow [ tableCell [ paragraph "vm-1" "one"; paragraph "vm-2" "two"; paragraph "vm-3" "three" ] (Some Doc.RestartMerge) ]
           tableRow [ tableCell [ paragraph "vm-empty-1" "" ] (Some Doc.ContinueMerge) ]
           tableRow [ tableCell [ paragraph "vm-empty-2" "" ] (Some Doc.ContinueMerge) ] ]
@@ -307,7 +307,7 @@ let verticalMergeDistributionRows =
             tableCell [ paragraph (sprintf "vm-dist-%05d-empty" col) "" ] (Some Doc.ContinueMerge) ] ]
 let verticalMergeDistributionSw = System.Diagnostics.Stopwatch.StartNew()
 let verticalMergeDistributionResolved =
-    RedBat.Word.WordLayout.Table.distributeVerticalMergeContent verticalMergeDistributionRows
+    Rbt.Word.WordLayout.Table.distributeVerticalMergeContent verticalMergeDistributionRows
 verticalMergeDistributionSw.Stop()
 let verticalMergeDistributionFirst =
     verticalMergeDistributionResolved.[1].Cells.[0].Content |> List.map (fun para -> toString para.Buffer)
@@ -365,7 +365,7 @@ let wideFastWidths = tableColumnWidths 3200.0 wideFastTable
 let wideFastHeight =
     tryMeasureTableRowHeightWithStyle settings measureText wideFastTable 3200.0 wideFastWidths wideFastRow (fun _ -> Styles.normal) (fun style textStyle -> Styles.effectiveTextStyle style textStyle)
 check "wide table fast height" (wideFastHeight |> Option.map (fun height -> height > 0.0)) (Some true)
-let wideResolved = RedBat.Word.WordLayout.Table.resolveTable RedBat.Word.WordLayout.canvasScale (Some 3200.0) wideFastTable
+let wideResolved = Rbt.Word.WordLayout.Table.resolveTable Rbt.Word.WordLayout.canvasScale (Some 3200.0) wideFastTable
 check "wide table resolve cells" wideResolved.BodyRows.[0].Cells.Length 32
 let wideResolvedHasBorders =
     wideResolved.BodyRows
@@ -384,7 +384,7 @@ let vMergeResolveTable =
             [ tableRow [ tableCell [ paragraph "resolve-vm-a" "a" ] (Some Doc.RestartMerge); tableCell [ paragraph "resolve-vm-b" "b" ] (Some Doc.RestartMerge) ]
               tableRow [ tableCell [ paragraph "resolve-vm-a2" "" ] (Some Doc.ContinueMerge); tableCell [ paragraph "resolve-vm-b2" "" ] (Some Doc.ContinueMerge) ]
               tableRow [ tableCell [ paragraph "resolve-vm-a3" "" ] (Some Doc.ContinueMerge); tableCell [ paragraph "resolve-vm-b3" "" ] (Some Doc.ContinueMerge) ] ] }
-let vMergeResolved = RedBat.Word.WordLayout.Table.resolveTable RedBat.Word.WordLayout.canvasScale (Some 3200.0) vMergeResolveTable
+let vMergeResolved = Rbt.Word.WordLayout.Table.resolveTable Rbt.Word.WordLayout.canvasScale (Some 3200.0) vMergeResolveTable
 check "vmerge resolve row spans" (vMergeResolved.BodyRows.[0].Cells |> List.map _.RowSpan) [ 3; 3 ]
 check "vmerge resolve continuations" (vMergeResolved.BodyRows.[1].Cells.Length, vMergeResolved.BodyRows.[2].Cells.Length) (0, 0)
 let vMergeLookupColumnCount = 16000
@@ -436,7 +436,7 @@ let testBorders : Doc.TableBorders =
       InsideH = Some testBorder
       InsideV = Some testBorder }
 let borderedResolveTable = { wideFastTable with Borders = Some testBorders; Rows = [ tableRow [ tableCell [ paragraph "border-left" "x" ] None; tableCell [ paragraph "border-right" "x" ] None ] ] }
-let borderedResolve = RedBat.Word.WordLayout.Table.resolveTable RedBat.Word.WordLayout.canvasScale (Some 3200.0) borderedResolveTable
+let borderedResolve = Rbt.Word.WordLayout.Table.resolveTable Rbt.Word.WordLayout.canvasScale (Some 3200.0) borderedResolveTable
 let borderedLeft = borderedResolve.BodyRows.[0].Cells.[0].Borders
 let borderedRight = borderedResolve.BodyRows.[0].Cells.[1].Borders
 check "bordered table shared border" (borderedLeft.Right.IsSome, borderedRight.Left.IsNone) (true, true)
@@ -678,9 +678,9 @@ let headerDepthDoc =
                     [ Doc.Paragraph (paragraph "depth-header-1" "one")
                       Doc.Paragraph (paragraph "depth-header-2" "two")
                       Doc.Paragraph (paragraph "depth-header-3" "three") ] } ] }
-let headerDepthBodyTop = RedBat.Word.WordLayout.Page.bodyTopWithRunningHeader headerDepthDoc
+let headerDepthBodyTop = Rbt.Word.WordLayout.Page.bodyTopWithRunningHeader headerDepthDoc
 let headerDepthChanged =
-    RedBat.Word.WordLayout.Page.bodyTopWithRunningHeader
+    Rbt.Word.WordLayout.Page.bodyTopWithRunningHeader
         { headerDepthDoc with HeaderParts = [ { Kind = "other"; RelationshipId = None; Blocks = [] } ] }
 check "header part lookup depth updates" (headerDepthBodyTop > Doc.defaultPageSetup.MarginTop, headerDepthChanged) (true, Doc.defaultPageSetup.MarginTop)
 let oversizedHeaderDepthParagraph = paragraph "oversized-header-depth-para" ""
@@ -711,7 +711,7 @@ let oversizedHeaderDepthDoc =
                 RelationshipId = None
                 Blocks = [ Doc.Table oversizedHeaderDepthTable ] } ] }
 let oversizedHeaderDepthTop =
-    RedBat.Word.WordLayout.Page.bodyTopWithRunningHeader oversizedHeaderDepthDoc
+    Rbt.Word.WordLayout.Page.bodyTopWithRunningHeader oversizedHeaderDepthDoc
 check "header depth paragraph count cap"
     oversizedHeaderDepthTop
     (Doc.defaultPageSetup.HeaderDistance + 100001.0 * 30.0)
@@ -755,8 +755,8 @@ let modernBlocksSkipLegacyFallbackDoc =
             [ { Kind = "default"
                 RelationshipId = None
                 Blocks = [ Doc.Paragraph (paragraph "modern-default-footer" "Modern footer blocks") ] } ] }
-let defaultHeaderBlocks = RedBat.Word.WordLayout.Page.defaultHeaderBlocks
-let defaultFooterBlocks = RedBat.Word.WordLayout.Page.defaultFooterBlocks
+let defaultHeaderBlocks = Rbt.Word.WordLayout.Page.defaultHeaderBlocks
+let defaultFooterBlocks = Rbt.Word.WordLayout.Page.defaultFooterBlocks
 let blockText = function
     | Doc.Paragraph paragraph -> toString paragraph.Buffer
     | _ -> ""
@@ -795,7 +795,7 @@ check "selection layout lookup multi-block count"
     (selectionCommandsWithRange settings selectionLookupMeasureRange selectionLookupMultiBlockDoc selectionLookupPerfLayouts |> List.length)
     11
 // removed: tested deleted cache machinery
-let bodyTopWithRunningHeader = RedBat.Word.WordLayout.Page.bodyTopWithRunningHeader
+let bodyTopWithRunningHeader = Rbt.Word.WordLayout.Page.bodyTopWithRunningHeader
 let legacyHeaderBodyTopDoc =
     { Doc.empty with
         Headers = [ for i in 0 .. 4999 -> paragraph (sprintf "legacy-header-%04d" i) "" ] }
@@ -806,9 +806,9 @@ let legacyHeaderBodyTopBytes =
 check "legacy header body top allocation" (legacyHeaderBodyTopBytes < 1000000L) true
 // removed: tested deleted cache machinery
 
-let roundRectShapePath = RedBat.Word.Shapes.presetPath "roundRect" 320.0 180.0
-let ellipseShapePath = RedBat.Word.Shapes.presetPath "ellipse" 320.0 180.0
-let star32ShapePath = RedBat.Word.Shapes.presetPath "star32" 320.0 180.0
+let roundRectShapePath = Rbt.Word.Shapes.presetPath "roundRect" 320.0 180.0
+let ellipseShapePath = Rbt.Word.Shapes.presetPath "ellipse" 320.0 180.0
+let star32ShapePath = Rbt.Word.Shapes.presetPath "star32" 320.0 180.0
 check "shape roundrect segments" roundRectShapePath.Length 10
 check "shape ellipse segments" ellipseShapePath.Length 6
 check "shape star32 segments" star32ShapePath.Length 65

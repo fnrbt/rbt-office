@@ -1,12 +1,12 @@
-#r "/home/dave/Dev/browser/office/src/Office.Formats/bin/Debug/netstandard2.0/OfficeFormat.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/FsVb.dll"
-#r "/home/dave/Dev/browser/office/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+#r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Vb.dll"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 // vbaProject.bin: write a source-only macro project, read it back through the
 // CFB + MS-OVBA path, and run the recovered macro on a model.
 
-open RedBat.Spreadsheet.Model
-module V = RedBat.Spreadsheet.Vba
+open Rbt.Spreadsheet.Model
+module V = Rbt.Spreadsheet.Vba
 
 let mutable pass = 0
 let mutable fail = 0
