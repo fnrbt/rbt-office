@@ -11030,3 +11030,34 @@ let recalcAndSpill (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         recalculateAllFormulas workbook currentSheet spilled
     else
         spilled
+
+/// Recalculate every sheet of a workbook (formulas + spills). A formula may
+/// read another sheet, and sheets are visited in tab order, so the pass is
+/// repeated until nothing changes — bounded, because volatile functions
+/// (RAND, NOW) never settle and a cross-sheet chain is rarely deeper than the
+/// number of sheets that hold formulas.
+let recalculateWorkbook (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Rbt.Spreadsheet.Workbook.Workbook =
+    let needsCalc (sheet: Rbt.Spreadsheet.Workbook.Sheet) =
+        not (Map.isEmpty sheet.Model.Spill) || cellsHaveFormulaCells sheet.Model.Cells
+    let formulaSheets =
+        workbook.SheetOrder
+        |> List.filter (fun id ->
+            match Map.tryFind id workbook.Sheets with
+            | Some sheet -> needsCalc sheet
+            | None -> false)
+    let maxPasses = min 4 (List.length formulaSheets)
+    let mutable wb = workbook
+    let mutable pass = 0
+    let mutable changed = true
+    while changed && pass < maxPasses do
+        changed <- false
+        for id in formulaSheets do
+            match Map.tryFind id wb.Sheets with
+            | Some sheet ->
+                let recalculated = recalcAndSpill (Some wb) (Some id) sheet.Model
+                if not (obj.ReferenceEquals(recalculated, sheet.Model)) then
+                    wb <- Rbt.Spreadsheet.Workbook.updateSheetModel id recalculated wb
+                    changed <- true
+            | None -> ()
+        pass <- pass + 1
+    wb

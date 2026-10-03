@@ -111,6 +111,146 @@ prints "=A1!B2+XFD1!A1+XFE1!A1" "'A1'!B2+'XFD1'!A1+XFE1!A1"
 let longChain = "=" + String.concat "+" [ for i in 1 .. 4000 -> sprintf "A%d" i ]
 ok "print-long-chain" (shiftFormulaText 1 0 longChain = "=" + String.concat "+" [ for i in 2 .. 4001 -> sprintf "A%d" i ]) "long chain shifted wrongly"
 
+// --- Insert / delete rows and columns (single sheet) ------------------------
+let sumSheet = modelOf [ at 0 0, num 1.0; at 1 0, num 2.0; at 2 0, fml "=SUM(A1:A2)" ]
+
+let insertedMid = sumSheet |> insertRow 1 |> recalcAndSpill None None
+eq "insert-row-formula-moves" (formulaAt 3 0 insertedMid) "=SUM(A1:A3)"
+eq "insert-row-value"         (valueAt 3 0 insertedMid) (CellValue.Number 3.0)
+eq "insert-row-count"         insertedMid.RowCount 101
+
+let insertedTop = sumSheet |> insertRow 0 |> recalcAndSpill None None
+eq "insert-above-range" (formulaAt 3 0 insertedTop) "=SUM(A2:A3)"
+eq "insert-above-value" (valueAt 3 0 insertedTop) (CellValue.Number 3.0)
+
+let insertedBelow = sumSheet |> insertRow 2 |> recalcAndSpill None None
+eq "insert-after-range" (formulaAt 3 0 insertedBelow) "=SUM(A1:A2)"
+
+let deletedTop = sumSheet |> deleteRow 0 |> recalcAndSpill None None
+eq "delete-row-shrinks"  (formulaAt 1 0 deletedTop) "=SUM(A1:A1)"
+eq "delete-row-value"    (valueAt 1 0 deletedTop) (CellValue.Number 2.0)
+
+let refSheet = modelOf [ at 0 0, num 5.0; at 1 0, num 7.0; at 4 0, fml "=A1+A2"; at 5 0, fml "=SUM(A1:A2)"; at 6 0, fml "=$A$2*2" ]
+let refDeleted = refSheet |> deleteRow 0 |> recalcAndSpill None None
+eq "delete-ref-is-REF"     (formulaAt 3 0 refDeleted) "=#REF!+A1"
+eq "delete-ref-value"      (valueAt 3 0 refDeleted) (CellValue.Error "REF!")
+eq "delete-range-shrinks"  (formulaAt 4 0 refDeleted) "=SUM(A1:A1)"
+eq "delete-abs-ref-moves"  (formulaAt 5 0 refDeleted) "=$A$1*2"
+eq "delete-abs-ref-value"  (valueAt 5 0 refDeleted) (CellValue.Number 14.0)
+let bothDeleted = refSheet |> Rbt.Spreadsheet.Model.applyStructureEdit (DeleteRows (0, 2))
+eq "delete-whole-range-REF" (formulaAt 3 0 bothDeleted) "=SUM(#REF!)"
+
+let colSheet = modelOf [ at 0 0, num 1.0; at 0 1, num 2.0; at 0 2, fml "=SUM(A1:B1)"; at 1 2, fml "=B1*10" ]
+let colInserted = colSheet |> insertColumn 1 |> recalcAndSpill None None
+eq "insert-col-grows"   (formulaAt 0 3 colInserted) "=SUM(A1:C1)"
+eq "insert-col-ref"     (formulaAt 1 3 colInserted) "=C1*10"
+eq "insert-col-value"   (valueAt 1 3 colInserted) (CellValue.Number 20.0)
+eq "insert-col-count"   colInserted.ColCount 27
+let colDeleted = colSheet |> deleteColumn 1 |> recalcAndSpill None None
+eq "delete-col-shrinks" (formulaAt 0 1 colDeleted) "=SUM(A1:A1)"
+eq "delete-col-REF"     (formulaAt 1 1 colDeleted) "=#REF!*10"
+eq "delete-col-count"   colDeleted.ColCount 25
+
+// Everything stored by position moves with the rows/columns.
+let dressed =
+    { modelOf [ at 4 1, num 1.0; at 6 2, str "x" ] with
+        MergedCells = [ { StartRow = 3; StartCol = 0; EndRow = 5; EndCol = 1 } ]
+        RowHeights = Map.ofList [ 4, 40.0 ]
+        ColumnWidths = Map.ofList [ 1, 150.0 ]
+        ConditionalFormats = Map.ofList [ at 4 1, [ { Rule = GreaterThan 0.0; Style = defaultFormat } ] ]
+        Validations = Map.ofList [ at 6 2, { Rule = ListValues [ "x" ]; ErrorMessage = None; InputMessage = None } ]
+        Spill = Map.ofList [ at 7 0, at 6 0 ]
+        Tables = [ { Name = "T"; StartRow = 4; StartCol = 2; EndRow = 8; EndCol = 3; HeaderRowCount = 1; Style = None; AutoFilter = Some (2, 3); HasTotals = false } ] }
+let dressedIns = insertRow 4 dressed
+eq "insert-merge-grows"   dressedIns.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 6; EndCol = 1 } ]
+eq "insert-row-heights"   dressedIns.RowHeights (Map.ofList [ 5, 40.0 ])
+eq "insert-cond-formats"  (Map.containsKey (at 5 1) dressedIns.ConditionalFormats) true
+eq "insert-validations"   (Map.containsKey (at 7 2) dressedIns.Validations) true
+eq "insert-spill-map"     dressedIns.Spill (Map.ofList [ at 8 0, at 7 0 ])
+eq "insert-table-grows"   (dressedIns.Tables |> List.map (fun t -> t.StartRow, t.EndRow)) [ 4, 9 ]
+let dressedDel = deleteRow 4 dressed
+eq "delete-merge-shrinks" dressedDel.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 4; EndCol = 1 } ]
+eq "delete-row-heights"   dressedDel.RowHeights Map.empty
+eq "delete-cond-formats"  dressedDel.ConditionalFormats Map.empty
+eq "delete-validations"   (Map.containsKey (at 5 2) dressedDel.Validations) true
+eq "delete-spill-map"     dressedDel.Spill (Map.ofList [ at 6 0, at 5 0 ])
+eq "delete-table-shrinks" (dressedDel.Tables |> List.map (fun t -> t.StartRow, t.EndRow)) [ 4, 7 ]
+let dressedCol = insertColumn 1 dressed
+eq "insert-col-widths"    dressedCol.ColumnWidths (Map.ofList [ 2, 150.0 ])
+eq "insert-col-merge"     dressedCol.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 5; EndCol = 2 } ]
+eq "insert-col-table"     (dressedCol.Tables |> List.map (fun t -> t.StartCol, t.EndCol, t.AutoFilter)) [ 3, 4, Some (3, 4) ]
+eq "insert-col-cf"        (Map.containsKey (at 4 2) dressedCol.ConditionalFormats) true
+let dressedColDel = deleteColumn 1 dressed
+eq "delete-col-widths"    dressedColDel.ColumnWidths Map.empty
+eq "delete-col-merge"     dressedColDel.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 5; EndCol = 0 } ]
+eq "delete-col-cells"     (Map.containsKey (at 6 1) dressedColDel.Cells && not (Map.containsKey (at 4 1) dressedColDel.Cells)) true
+
+// --- Insert / delete across a workbook --------------------------------------
+let wbOf (sheets: (string * string * SpreadsheetModel) list) : Workbook =
+    { Sheets = sheets |> List.map (fun (id, name, m) -> id, { Id = id; Name = name; Model = m; Visible = true }) |> Map.ofList
+      SheetOrder = sheets |> List.map (fun (id, _, _) -> id)
+      ActiveSheet = (let (id, _, _) = List.head sheets in id)
+      Tables = Map.empty
+      Names = Map.empty }
+let sheetModel id (wb: Workbook) = wb.Sheets.[id].Model
+
+let dataSheet = modelOf [ at 0 0, num 1.0; at 1 0, num 2.0; at 2 0, fml "=SUM(Data!A1:A2)"; at 3 0, fml "=Other!A1" ]
+let otherSheet = modelOf [ at 0 0, fml "=Data!A2*10"; at 1 0, fml "=SUM(Data!A1:A2)"; at 2 0, fml "=A1+1"; at 3 0, fml "=SUM(Totals)" ]
+let wb0 =
+    { wbOf [ "sheet1", "Data", dataSheet; "sheet2", "Other", otherSheet ] with
+        Names = namesOfTriples [ None, "Totals", "Data!$A$1:$A$2"; Some "sheet1", "Local", "$A$2"; Some "sheet2", "Mine", "$A$2" ]
+        Tables = Map.ofList [ "T", { Name = "T"; SheetId = "sheet1"; StartRow = 0; StartCol = 0; EndRow = 1; EndCol = 1
+                                     Columns = [ "a"; "b" ]; HasHeaders = true; HasTotals = false } ] }
+
+let wb1, undo1 = Rbt.Spreadsheet.Workbook.applyStructureEdit "sheet1" (InsertRows (1, 1)) wb0
+let wb1c = recalculateWorkbook wb1
+eq "wb-own-qualified"     (formulaAt 3 0 (sheetModel "sheet1" wb1)) "=SUM(Data!A1:A3)"
+eq "wb-own-other-sheet"   (formulaAt 4 0 (sheetModel "sheet1" wb1)) "=Other!A1"
+eq "wb-foreign-ref"       (formulaAt 0 0 (sheetModel "sheet2" wb1)) "=Data!A3*10"
+eq "wb-foreign-range"     (formulaAt 1 0 (sheetModel "sheet2" wb1)) "=SUM(Data!A1:A3)"
+eq "wb-foreign-local-ref" (formulaAt 2 0 (sheetModel "sheet2" wb1)) "=A1+1"
+eq "wb-foreign-value"     (valueAt 0 0 (sheetModel "sheet2" wb1c)) (CellValue.Number 20.0)
+eq "wb-name-value"        (valueAt 3 0 (sheetModel "sheet2" wb1c)) (CellValue.Number 3.0)
+eq "wb-global-name"       (getName None "Totals" wb1) (Some "Data!$A$1:$A$3")
+eq "wb-local-name"        (getName (Some "sheet1") "Local" wb1) (Some "$A$3")
+eq "wb-foreign-name"      (getName (Some "sheet2") "Mine" wb1) (Some "$A$2")
+eq "wb-table-grows"       (wb1.Tables.["T"].StartRow, wb1.Tables.["T"].EndRow) (0, 2)
+eq "wb-foreign-recorded"  (List.length undo1.ForeignCells) 2
+
+let wbUndone = undoStructureEdit undo1 wb1c
+eq "wb-undo-own"     (formulaAt 2 0 (sheetModel "sheet1" wbUndone)) "=SUM(Data!A1:A2)"
+eq "wb-undo-foreign" (formulaAt 0 0 (sheetModel "sheet2" wbUndone)) "=Data!A2*10"
+eq "wb-undo-names"   wbUndone.Names wb0.Names
+eq "wb-undo-tables"  wbUndone.Tables wb0.Tables
+eq "wb-undo-rows"    (sheetModel "sheet1" wbUndone).RowCount 100
+
+// A foreign formula the user re-typed after the edit is not clobbered by undo.
+let wbRetyped =
+    updateSheetModel "sheet2" (setCell (at 0 0) (fml "=99") (sheetModel "sheet2" wb1)) wb1
+    |> undoStructureEdit undo1
+eq "wb-undo-keeps-retyped" (formulaAt 0 0 (sheetModel "sheet2" wbRetyped)) "=99"
+
+let wbDel, _ = Rbt.Spreadsheet.Workbook.applyStructureEdit "sheet1" (DeleteRows (1, 1)) wb0
+eq "wb-delete-foreign-REF"   (formulaAt 0 0 (sheetModel "sheet2" wbDel)) "=#REF!*10"
+eq "wb-delete-foreign-range" (formulaAt 1 0 (sheetModel "sheet2" wbDel)) "=SUM(Data!A1:A1)"
+eq "wb-delete-name"          (getName None "Totals" wbDel) (Some "Data!$A$1:$A$1")
+
+let wbCols, _ = Rbt.Spreadsheet.Workbook.applyStructureEdit "sheet1" (InsertCols (1, 1)) wb0
+eq "wb-table-new-column" wbCols.Tables.["T"].Columns [ "a"; "Column1"; "b" ]
+eq "wb-table-col-span"   (wbCols.Tables.["T"].StartCol, wbCols.Tables.["T"].EndCol) (0, 2)
+let wbColDel, _ = Rbt.Spreadsheet.Workbook.applyStructureEdit "sheet1" (DeleteCols (1, 1)) wb0
+eq "wb-table-col-removed" wbColDel.Tables.["T"].Columns [ "a" ]
+let wbHeaderGone, _ = Rbt.Spreadsheet.Workbook.applyStructureEdit "sheet1" (DeleteRows (0, 1)) wb0
+eq "wb-table-header-deleted" (Map.containsKey "T" wbHeaderGone.Tables) false
+
+// Workbook-wide recalculation: a sheet earlier in tab order that reads a later one.
+let chainWb =
+    wbOf [ "sheet1", "First", modelOf [ at 0 0, fml "=Second!A1+1" ]
+           "sheet2", "Second", modelOf [ at 0 0, fml "=Third!A1+1" ]
+           "sheet3", "Third", modelOf [ at 0 0, num 10.0; at 1 0, fml "=A1" ] ]
+    |> recalculateWorkbook
+eq "wb-recalc-chain" (valueAt 0 0 (sheetModel "sheet1" chainWb)) (CellValue.Number 12.0)
+
 printfn ""
 printfn "Stage 21 structure tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

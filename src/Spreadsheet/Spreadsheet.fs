@@ -348,17 +348,40 @@ type Spreadsheet(container: Element) =
                 | _ -> ()
             canvasRestore ctx
 
+    /// Full recalculation of the whole workbook. A formula on any sheet can
+    /// read the sheet that was just edited, so every sheet is recalculated
+    /// (formulas, then dynamic-array spills, then formulas again so readers of
+    /// spilled cells settle), not only the visible one.
     let recalculateFormulas () =
         invalidateCalcEngine()
-        let currentSheet = workbook |> Option.map (fun w -> w.ActiveSheet)
-        // Recalc, then materialize dynamic-array spills (writes spilled values +
-        // #SPILL! on collision into model.Cells), then recalc again so formulas
-        // reading spilled cells / A1# settle. spillArrays is a no-op when no
-        // formula uses a spilling function, so non-array sheets are untouched.
-        model <-
-            recalculateAllFormulas workbook currentSheet model
-            |> spillArrays workbook currentSheet
-            |> recalculateAllFormulas workbook currentSheet
+        currentWorkbookSnapshot()
+        |> recalculateWorkbook
+        |> installWorkbookSnapshot
+
+    /// Insert or delete rows/columns on the active sheet as one undoable
+    /// step. The edit and its undo both go through the workbook so formulas on
+    /// other sheets, defined names and structured-reference tables follow.
+    let applyStructureEdit (edit: StructureEdit) (description: string) =
+        let sheetId = sheetIdForIndex activeSheetIndex
+        let edited, undoInfo = Rbt.Spreadsheet.Workbook.applyStructureEdit sheetId edit (currentWorkbookSnapshot())
+        installWorkbookSnapshot edited
+        recalculateFormulas()
+        // Undo()/Redo() recalculate after running the command.
+        let command = {
+            Undo = fun _ ->
+                currentWorkbookSnapshot()
+                |> Rbt.Spreadsheet.Workbook.undoStructureEdit undoInfo
+                |> installWorkbookSnapshot
+                model
+            Redo = fun _ ->
+                currentWorkbookSnapshot()
+                |> Rbt.Spreadsheet.Workbook.applyStructureEdit sheetId edit
+                |> fst
+                |> installWorkbookSnapshot
+                model
+            Description = description
+        }
+        model <- pushCommand command model
 
     let recalculateSingleCellEdit (addr: CellAddress) (cellData: CellData) =
         let wb = currentWorkbookSnapshot()
@@ -2876,74 +2899,22 @@ type Spreadsheet(container: Element) =
 
     /// Insert a row at the specified index
     member _.InsertRow(atRow: int) =
-        invalidateCalcEngine()
-        let oldCells = model.Cells
-        let oldSelection = model.Selection
-        let oldRowCount = model.RowCount
-
-        model <- insertRow atRow model
-
-        // Create undo command
-        let command = {
-            Undo = fun m -> { restoreCellMap oldCells m with Selection = oldSelection; RowCount = oldRowCount }
-            Redo = fun m -> insertRow atRow m
-            Description = sprintf "Insert row at %d" atRow
-        }
-        model <- pushCommand command model
+        applyStructureEdit (InsertRows (atRow, 1)) (sprintf "Insert row at %d" atRow)
         render()
 
     /// Delete a row at the specified index
     member _.DeleteRow(atRow: int) =
-        invalidateCalcEngine()
-        let oldCells = model.Cells
-        let oldSelection = model.Selection
-        let oldRowCount = model.RowCount
-
-        model <- deleteRow atRow model
-
-        // Create undo command
-        let command = {
-            Undo = fun m -> { restoreCellMap oldCells m with Selection = oldSelection; RowCount = oldRowCount }
-            Redo = fun m -> deleteRow atRow m
-            Description = sprintf "Delete row %d" atRow
-        }
-        model <- pushCommand command model
+        applyStructureEdit (DeleteRows (atRow, 1)) (sprintf "Delete row %d" atRow)
         render()
 
     /// Insert a column at the specified index
     member _.InsertColumn(atCol: int) =
-        invalidateCalcEngine()
-        let oldCells = model.Cells
-        let oldSelection = model.Selection
-        let oldColCount = model.ColCount
-
-        model <- insertColumn atCol model
-
-        // Create undo command
-        let command = {
-            Undo = fun m -> { restoreCellMap oldCells m with Selection = oldSelection; ColCount = oldColCount }
-            Redo = fun m -> insertColumn atCol m
-            Description = sprintf "Insert column at %s" (columnToLetter atCol)
-        }
-        model <- pushCommand command model
+        applyStructureEdit (InsertCols (atCol, 1)) (sprintf "Insert column at %s" (columnToLetter atCol))
         render()
 
     /// Delete a column at the specified index
     member _.DeleteColumn(atCol: int) =
-        invalidateCalcEngine()
-        let oldCells = model.Cells
-        let oldSelection = model.Selection
-        let oldColCount = model.ColCount
-
-        model <- deleteColumn atCol model
-
-        // Create undo command
-        let command = {
-            Undo = fun m -> { restoreCellMap oldCells m with Selection = oldSelection; ColCount = oldColCount }
-            Redo = fun m -> deleteColumn atCol m
-            Description = sprintf "Delete column %s" (columnToLetter atCol)
-        }
-        model <- pushCommand command model
+        applyStructureEdit (DeleteCols (atCol, 1)) (sprintf "Delete column %s" (columnToLetter atCol))
         render()
 
     /// Start a search

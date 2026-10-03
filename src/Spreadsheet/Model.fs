@@ -1326,208 +1326,195 @@ let applyTableStyles (model: SpreadsheetModel): SpreadsheetModel =
         | _ -> m
     model.Tables |> List.fold styleTable model
 
-let private insertRowInAddressMap atRow (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> =
-    let before, shifted = items |> Map.partition (fun addr _ -> addr.Row < atRow)
-    shifted
-    |> Map.fold (fun acc addr value -> Map.add { addr with Row = addr.Row + 1 } value acc) before
+// --- Row / column insertion and deletion ------------------------------------
+// One implementation serves all four operations: everything a sheet stores by
+// position (cells, merges, sizes, conditional formats, validations, tables,
+// the spill map, filters) is moved the same way, and formulas are re-pointed.
 
-let private deleteRowInAddressMap atRow (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> =
-    let before, tail = items |> Map.partition (fun addr _ -> addr.Row < atRow)
-    tail
-    |> Map.fold (fun acc addr value ->
-        if addr.Row = atRow then acc
-        else Map.add { addr with Row = addr.Row - 1 } value acc) before
+let private structureEditParts (edit: StructureEdit) =
+    match edit with
+    | InsertRows (at, count) -> true, true, at, max 0 count
+    | DeleteRows (at, count) -> true, false, at, max 0 count
+    | InsertCols (at, count) -> false, true, at, max 0 count
+    | DeleteCols (at, count) -> false, false, at, max 0 count
 
-let private insertRowInRowMap atRow (items: Map<int, 'T>) : Map<int, 'T> =
-    let before, shifted = items |> Map.partition (fun row _ -> row < atRow)
-    shifted
-    |> Map.fold (fun acc row value -> Map.add (row + 1) value acc) before
+/// Where an index on the edited axis ends up; None when it was deleted.
+let private moveEditIndex isInsert at count index =
+    if isInsert then Some (if index >= at then index + count else index)
+    elif index >= at + count then Some (index - count)
+    elif index >= at then None
+    else Some index
 
-let private deleteRowInRowMap atRow (items: Map<int, 'T>) : Map<int, 'T> =
-    let before, tail = items |> Map.partition (fun row _ -> row < atRow)
-    tail
-    |> Map.fold (fun acc row value ->
-        if row = atRow then acc
-        else Map.add (row - 1) value acc) before
-
-let private insertRowInAddressSet atRow (items: Set<CellAddress>) : Set<CellAddress> =
-    items
-    |> Set.map (fun addr -> if addr.Row >= atRow then { addr with Row = addr.Row + 1 } else addr)
-
-let private deleteRowInAddressSet atRow (items: Set<CellAddress>) : Set<CellAddress> =
-    items
-    |> Seq.choose (fun addr ->
-        if addr.Row = atRow then None
-        elif addr.Row > atRow then Some { addr with Row = addr.Row - 1 }
-        else Some addr)
-    |> Set.ofSeq
-
-let private insertRowInMerge atRow (merge: MergedCell) : MergedCell =
-    let shift row = if row >= atRow then row + 1 else row
-    { merge with StartRow = shift merge.StartRow; EndRow = shift merge.EndRow }
-
-let private deleteRowInMerge atRow (merge: MergedCell) : MergedCell option =
-    if merge.StartRow = atRow && merge.EndRow = atRow then
+/// Where an inclusive span on the edited axis ends up: an insertion inside it
+/// grows it, a deletion overlapping it shrinks it, None when nothing is left.
+let private moveEditSpan isInsert at count lo hi =
+    if isInsert then
+        Some ((if lo >= at then lo + count else lo), (if hi >= at then hi + count else hi))
+    elif lo >= at && hi < at + count then
         None
     else
-        let shift row = if row > atRow then row - 1 else row
-        let shrinkEnd row = if row = atRow then row - 1 else shift row
-        let updated =
-            { merge with
-                StartRow = shift merge.StartRow
-                EndRow = shrinkEnd merge.EndRow }
-        if updated.StartRow > updated.EndRow then None else Some updated
+        let newLo = if lo >= at + count then lo - count elif lo >= at then at else lo
+        let newHi = if hi >= at + count then hi - count elif hi >= at then at - 1 else hi
+        Some (newLo, newHi)
 
-let private insertRowInTable atRow (table: Table) : Table =
-    let startRow0 = table.StartRow - 1
-    let endRow0 = table.EndRow - 1
-    let startRow1 = if startRow0 >= atRow then table.StartRow + 1 else table.StartRow
-    let endRow1 = if endRow0 >= atRow then table.EndRow + 1 else table.EndRow
-    { table with StartRow = startRow1; EndRow = endRow1 }
+/// Re-point the formulas of a sheet after `edit` happened on the sheet that
+/// `targetsEditedSheet` selects. Used for the *other* sheets of a workbook;
+/// returns the same model when no formula changed.
+let rewriteFormulasForEdit (edit: StructureEdit) (targetsEditedSheet: string option -> bool) (model: SpreadsheetModel) : SpreadsheetModel =
+    let mutable cells = model.Cells
+    let mutable changed = false
+    for KeyValue(addr, cellData) in model.Cells do
+        match cellData.Value with
+        | Formula (formula, cached) ->
+            let adjusted = adjustFormulaForEdit edit targetsEditedSheet formula
+            if adjusted <> formula then
+                cells <- Map.add addr { cellData with Value = Formula (adjusted, cached) } cells
+                changed <- true
+        | _ -> ()
+    if changed then { model with Cells = cells } |> invalidateFilterProjection else model
 
-let private deleteRowInTable atRow (table: Table) : Table option =
-    let startRow0 = table.StartRow - 1
-    let endRow0 = table.EndRow - 1
-    if startRow0 = atRow && endRow0 = atRow then
-        None
-    else
-        let startRow1 = if startRow0 > atRow then table.StartRow - 1 else table.StartRow
-        let endRow1 =
-            if endRow0 = atRow then table.EndRow - 1
-            elif endRow0 > atRow then table.EndRow - 1
-            else table.EndRow
-        if startRow1 > endRow1 then None else Some { table with StartRow = startRow1; EndRow = endRow1 }
+/// Insert or delete rows/columns on a sheet. `targetsEditedSheet` tells which
+/// sheet qualifiers in this sheet's own formulas refer back to it (always the
+/// unqualified ones; a workbook also passes the sheet's name).
+let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: StructureEdit) (model: SpreadsheetModel) : SpreadsheetModel =
+    let onRows, isInsert, at, count = structureEditParts edit
+    if count = 0 || at < 0 then model else
+    let moveIndex = moveEditIndex isInsert at count
+    let moveSpan = moveEditSpan isInsert at count
+    let moveAddr (addr: CellAddress) =
+        if onRows then moveIndex addr.Row |> Option.map (fun row -> { addr with Row = row })
+        else moveIndex addr.Col |> Option.map (fun col -> { addr with Col = col })
+    let moveAddressMap (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> =
+        items
+        |> Map.fold (fun acc addr value ->
+            match moveAddr addr with
+            | Some moved -> Map.add moved value acc
+            | None -> acc) Map.empty
+    let moveIndexMap (items: Map<int, 'T>) : Map<int, 'T> =
+        items
+        |> Map.fold (fun acc index value ->
+            match moveIndex index with
+            | Some moved -> Map.add moved value acc
+            | None -> acc) Map.empty
+
+    let cells =
+        model.Cells
+        |> Map.fold (fun acc addr cellData ->
+            match moveAddr addr with
+            | None -> acc
+            | Some moved ->
+                let cellData =
+                    match cellData.Value with
+                    | Formula (formula, cached) ->
+                        let adjusted = adjustFormulaForEdit edit targetsEditedSheet formula
+                        if adjusted = formula then cellData
+                        else { cellData with Value = Formula (adjusted, cached) }
+                    | _ -> cellData
+                Map.add moved cellData acc) Map.empty
+
+    // A deleted selection falls back onto the row/column that took its place.
+    let moveSelected index =
+        match moveIndex index with
+        | Some moved -> moved
+        | None -> max 0 (at - 1)
+    let selection =
+        match model.Selection with
+        | SingleCell (row, col) ->
+            if onRows then SingleCell (moveSelected row, col) else SingleCell (row, moveSelected col)
+        | Range (sr, sc, er, ec) ->
+            if onRows then Range (moveSelected sr, sc, moveSelected er, ec)
+            else Range (sr, moveSelected sc, er, moveSelected ec)
+
+    let merges =
+        model.MergedCells
+        |> List.choose (fun merge ->
+            if onRows then
+                moveSpan merge.StartRow merge.EndRow
+                |> Option.map (fun (lo, hi) -> { merge with StartRow = lo; EndRow = hi })
+            else
+                moveSpan merge.StartCol merge.EndCol
+                |> Option.map (fun (lo, hi) -> { merge with StartCol = lo; EndCol = hi }))
+        // A merge squeezed down to one cell is no merge at all.
+        |> List.filter (fun merge -> merge.StartRow <> merge.EndRow || merge.StartCol <> merge.EndCol)
+
+    // Table coordinates are 1-indexed; spans are computed 0-indexed.
+    let tables =
+        model.Tables
+        |> List.choose (fun table ->
+            if onRows then
+                moveSpan (table.StartRow - 1) (table.EndRow - 1)
+                |> Option.map (fun (lo, hi) -> { table with StartRow = lo + 1; EndRow = hi + 1 })
+            else
+                moveSpan (table.StartCol - 1) (table.EndCol - 1)
+                |> Option.map (fun (lo, hi) ->
+                    let autoFilter =
+                        table.AutoFilter
+                        |> Option.bind (fun (first, last) -> moveSpan (first - 1) (last - 1))
+                        |> Option.map (fun (first, last) -> first + 1, last + 1)
+                    { table with StartCol = lo + 1; EndCol = hi + 1; AutoFilter = autoFilter }))
+
+    let spill =
+        model.Spill
+        |> Map.fold (fun acc ghost anchor ->
+            match moveAddr ghost, moveAddr anchor with
+            | Some movedGhost, Some movedAnchor -> Map.add movedGhost movedAnchor acc
+            | _ -> acc) Map.empty
+
+    let delta = if isInsert then count else -count
+    { model with
+        Cells = cells
+        Selection = selection
+        RowCount = if onRows then max 1 (model.RowCount + delta) else model.RowCount
+        ColCount = if onRows then model.ColCount else max 1 (model.ColCount + delta)
+        RowHeights = if onRows then moveIndexMap model.RowHeights else model.RowHeights
+        ColumnWidths = if onRows then model.ColumnWidths else moveIndexMap model.ColumnWidths
+        ConditionalFormats = moveAddressMap model.ConditionalFormats
+        RichRuns = moveAddressMap model.RichRuns
+        MergedCells = merges
+        Tables = tables
+        CfBoldCells = model.CfBoldCells |> Seq.choose moveAddr |> Set.ofSeq
+        Spill = spill
+        Validations = moveAddressMap model.Validations
+        Filters =
+            if onRows then model.Filters
+            else
+                model.Filters
+                |> Map.fold (fun acc col filter ->
+                    match moveIndex col with
+                    | Some moved -> Map.add moved { filter with Column = moved } acc
+                    | None -> acc) Map.empty
+        SortState =
+            if onRows then model.SortState
+            else
+                model.SortState
+                |> Option.bind (fun sort -> moveIndex sort.Column |> Option.map (fun col -> { sort with Column = col }))
+        SearchResults = model.SearchResults |> Array.choose moveAddr
+        SearchIndex = 0
+    }
+    |> refreshFilterProjection
+
+/// Insert or delete rows/columns on a stand-alone sheet. Unqualified
+/// references in its formulas follow the edit; a workbook host should call
+/// `Workbook.applyStructureEdit`, which also fixes the other sheets, defined
+/// names and structured-reference tables.
+let applyStructureEdit (edit: StructureEdit) (model: SpreadsheetModel) : SpreadsheetModel =
+    applyStructureEditWith Option.isNone edit model
 
 /// Insert a row at the specified index (shifts rows down)
 let insertRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
-    // Update selection if affected
-    let newSelection =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            if row >= atRow then SingleCell (row + 1, col)
-            else model.Selection
-        | Range (sr, sc, er, ec) ->
-            let newSr = if sr >= atRow then sr + 1 else sr
-            let newEr = if er >= atRow then er + 1 else er
-            Range (newSr, sc, newEr, ec)
-
-    { model with
-        Cells = insertRowInAddressMap atRow model.Cells
-        Selection = newSelection
-        RowCount = model.RowCount + 1
-        RowHeights = insertRowInRowMap atRow model.RowHeights
-        ConditionalFormats = insertRowInAddressMap atRow model.ConditionalFormats
-        RichRuns = insertRowInAddressMap atRow model.RichRuns
-        MergedCells = model.MergedCells |> List.map (insertRowInMerge atRow)
-        Tables = model.Tables |> List.map (insertRowInTable atRow)
-        CfBoldCells = insertRowInAddressSet atRow model.CfBoldCells
-        Spill = insertRowInAddressMap atRow model.Spill |> Map.map (fun _ anchor -> if anchor.Row >= atRow then { anchor with Row = anchor.Row + 1 } else anchor)
-        Validations = insertRowInAddressMap atRow model.Validations
-    }
-    |> refreshFilterProjection
+    applyStructureEdit (InsertRows (atRow, 1)) model
 
 /// Delete a row at the specified index (shifts rows up)
 let deleteRow (atRow: int) (model: SpreadsheetModel): SpreadsheetModel =
-    // Update selection if affected
-    let newSelection =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            if row = atRow then SingleCell (max 0 (atRow - 1), col)
-            elif row > atRow then SingleCell (row - 1, col)
-            else model.Selection
-        | Range (sr, sc, er, ec) ->
-            let newSr = if sr > atRow then sr - 1 elif sr = atRow then max 0 (atRow - 1) else sr
-            let newEr = if er > atRow then er - 1 elif er = atRow then max 0 (atRow - 1) else er
-            Range (newSr, sc, newEr, ec)
-
-    { model with
-        Cells = deleteRowInAddressMap atRow model.Cells
-        Selection = newSelection
-        RowCount = max 1 (model.RowCount - 1)
-        RowHeights = deleteRowInRowMap atRow model.RowHeights
-        ConditionalFormats = deleteRowInAddressMap atRow model.ConditionalFormats
-        RichRuns = deleteRowInAddressMap atRow model.RichRuns
-        MergedCells = model.MergedCells |> List.choose (deleteRowInMerge atRow)
-        Tables = model.Tables |> List.choose (deleteRowInTable atRow)
-        CfBoldCells = deleteRowInAddressSet atRow model.CfBoldCells
-        Spill =
-            deleteRowInAddressMap atRow model.Spill
-            |> Map.fold (fun acc ghost anchor ->
-                if anchor.Row = atRow then acc
-                elif anchor.Row > atRow then Map.add ghost { anchor with Row = anchor.Row - 1 } acc
-                else Map.add ghost anchor acc) Map.empty
-        Validations = deleteRowInAddressMap atRow model.Validations
-    }
-    |> refreshFilterProjection
+    applyStructureEdit (DeleteRows (atRow, 1)) model
 
 /// Insert a column at the specified index (shifts columns right)
 let insertColumn (atCol: int) (model: SpreadsheetModel): SpreadsheetModel =
-    // Shift all columns >= atCol right by 1
-    let newCells =
-        model.Cells
-        |> Map.toList
-        |> List.map (fun (addr, cellData) ->
-            if addr.Col >= atCol then
-                let newAddr = { addr with Col = addr.Col + 1 }
-                (newAddr, cellData)
-            else
-                (addr, cellData)
-        )
-        |> Map.ofList
-
-    // Update selection if affected
-    let newSelection =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            if col >= atCol then SingleCell (row, col + 1)
-            else model.Selection
-        | Range (sr, sc, er, ec) ->
-            let newSc = if sc >= atCol then sc + 1 else sc
-            let newEc = if ec >= atCol then ec + 1 else ec
-            Range (sr, newSc, er, newEc)
-
-    { model with
-        Cells = newCells
-        Selection = newSelection
-        ColCount = model.ColCount + 1
-    }
-    |> refreshFilterProjection
+    applyStructureEdit (InsertCols (atCol, 1)) model
 
 /// Delete a column at the specified index (shifts columns left)
 let deleteColumn (atCol: int) (model: SpreadsheetModel): SpreadsheetModel =
-    // Remove cells in the deleted column and shift columns left
-    let newCells =
-        model.Cells
-        |> Map.toList
-        |> List.choose (fun (addr, cellData) ->
-            if addr.Col = atCol then
-                None  // Remove this column
-            elif addr.Col > atCol then
-                let newAddr = { addr with Col = addr.Col - 1 }
-                Some (newAddr, cellData)
-            else
-                Some (addr, cellData)
-        )
-        |> Map.ofList
-
-    // Update selection if affected
-    let newSelection =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            if col = atCol then SingleCell (row, max 0 (atCol - 1))
-            elif col > atCol then SingleCell (row, col - 1)
-            else model.Selection
-        | Range (sr, sc, er, ec) ->
-            let newSc = if sc > atCol then sc - 1 elif sc = atCol then max 0 (atCol - 1) else sc
-            let newEc = if ec > atCol then ec - 1 elif ec = atCol then max 0 (atCol - 1) else ec
-            Range (sr, newSc, er, newEc)
-
-    { model with
-        Cells = newCells
-        Selection = newSelection
-        ColCount = max 1 (model.ColCount - 1)
-    }
-    |> refreshFilterProjection
+    applyStructureEdit (DeleteCols (atCol, 1)) model
 
 /// Get row height (with default)
 let getRowHeight (row: int) (model: SpreadsheetModel): float =
