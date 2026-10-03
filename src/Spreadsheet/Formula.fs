@@ -178,6 +178,9 @@ type Expr =
     | UnaryOp of op: string * operand: Expr
     | BinOp of left: Expr * op: string * right: Expr
     | Function of name: string * args: Expr list
+    /// An argument left empty between commas (`IF(A1,,2)`). Evaluates as a
+    /// blank; functions with optional arguments treat it as "not supplied".
+    | MissingArg
 
 // ---------------------------------------------------------------------------
 // Lexer
@@ -827,7 +830,7 @@ let referencesInExpr (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         let struct (seen, e) = stack.[last]
         stack.RemoveAt last
         match e with
-        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ -> ()
+        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ | MissingArg -> ()
         | NameRef name ->
             let key = name.ToUpperInvariant()
             if not (Set.contains key seen) then
@@ -877,7 +880,7 @@ let referencesQualified (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         let struct (seen, e) = stack.[last]
         stack.RemoveAt last
         match e with
-        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ -> ()
+        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ | MissingArg -> ()
         | NameRef name ->
             let key = name.ToUpperInvariant()
             if not (Set.contains key seen) then
@@ -948,7 +951,7 @@ let referencesRanged (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         let struct (seen, e) = stack.[last]
         stack.RemoveAt last
         match e with
-        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ -> ()
+        | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ | MissingArg -> ()
         | NameRef name ->
             let key = name.ToUpperInvariant()
             if not (Set.contains key seen) then
@@ -1009,7 +1012,7 @@ let rec shiftExpr (dr: int) (dc: int) (expr: Expr) : Expr =
             result <- BinOp(result, op, shiftExpr dr dc right)
         result
     match expr with
-    | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ | ArrayLit _ -> expr
+    | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ | ArrayLit _ | MissingArg -> expr
     | CellRef r -> CellRef (shiftRef r)
     | SpillRef r -> SpillRef (shiftRef r)
     | RangeRef (a, b) -> RangeRef (shiftRef a, shiftRef b)
@@ -1020,6 +1023,299 @@ let rec shiftExpr (dr: int) (dc: int) (expr: Expr) : Expr =
         for arg in args do
             shifted.Add(shiftExpr dr dc arg)
         Function (name, resizeArrayToList shifted)
+
+// ---------------------------------------------------------------------------
+// Expr → formula text. The inverse of `parseFormula`: the printed text parses
+// back to the same tree, so a formula can be rewritten structurally (shifted
+// for copy/fill, re-pointed after a row/column edit) and stored again.
+// ---------------------------------------------------------------------------
+
+/// Last row / column index of a sheet (Excel's 1,048,576 × 16,384 grid). A
+/// range whose rows run 0..lastSheetRow is a whole-column reference (`A:C`);
+/// one whose columns run 0..lastSheetCol is a whole-row reference (`1:3`).
+[<Literal>]
+let lastSheetRow = 1048575
+[<Literal>]
+let lastSheetCol = 16383
+
+let isWholeColumnRange (a: RefAst) (b: RefAst) =
+    min a.Row b.Row = 0 && max a.Row b.Row = lastSheetRow
+
+let isWholeRowRange (a: RefAst) (b: RefAst) =
+    min a.Col b.Col = 0 && max a.Col b.Col = lastSheetCol
+
+let private sheetNameNeedsQuotes (name: string) =
+    if name.Length = 0 then true
+    elif not (Char.IsLetter name.[0] || name.[0] = '_') then true
+    elif equalsOrdinalIgnoreCase name "TRUE" || equalsOrdinalIgnoreCase name "FALSE" then true
+    elif (match parseRefToken name with
+          | Some r -> r.Row <= lastSheetRow && r.Col <= lastSheetCol
+          | None -> false) then true
+    else
+        let mutable plain = true
+        for ch in name do
+            if not (Char.IsLetterOrDigit ch || ch = '_' || ch = '.') then plain <- false
+        not plain
+
+let private sheetPrefixText (sheet: string option) =
+    match sheet with
+    | None -> ""
+    | Some name when sheetNameNeedsQuotes name -> "'" + name.Replace("'", "''") + "'!"
+    | Some name -> name + "!"
+
+let private refOnSheet (r: RefAst) =
+    r.Row >= 0 && r.Row <= lastSheetRow && r.Col >= 0 && r.Col <= lastSheetCol
+
+let private refCellText (r: RefAst) =
+    (if r.ColAbs then "$" else "") + columnToLetter r.Col
+    + (if r.RowAbs then "$" else "") + string (r.Row + 1)
+
+let private numberLiteralText (n: float) =
+    let magnitude = abs n
+    let text =
+        if magnitude = Math.Floor magnitude && magnitude < 1e15 then
+            (int64 magnitude).ToString(CultureInfo.InvariantCulture)
+        else
+            magnitude.ToString("R", CultureInfo.InvariantCulture)
+    if n < 0.0 then "-" + text else text
+
+let private stringLiteralText (s: string) = "\"" + s.Replace("\"", "\"\"") + "\""
+
+let private arrayLiteralText (rows: CellValue[][]) =
+    let sb = Text.StringBuilder()
+    sb.Append('{') |> ignore
+    for r = 0 to rows.Length - 1 do
+        if r > 0 then sb.Append(';') |> ignore
+        for c = 0 to rows.[r].Length - 1 do
+            if c > 0 then sb.Append(',') |> ignore
+            match unwrapValue rows.[r].[c] with
+            | CellValue.Number n -> sb.Append(numberLiteralText n) |> ignore
+            | CellValue.String s -> sb.Append(stringLiteralText s) |> ignore
+            | CellValue.Boolean b -> sb.Append(if b then "TRUE" else "FALSE") |> ignore
+            | CellValue.Error e -> sb.Append('#').Append(e) |> ignore
+            | _ -> ()
+    sb.Append('}') |> ignore
+    sb.ToString()
+
+let private tableSelText (sel: TableSel) =
+    let plainColumn (name: string) =
+        let mutable plain = name.Length > 0
+        for ch in name do
+            if not (Char.IsLetterOrDigit ch || ch = '_' || ch = ' ' || ch = '.') then plain <- false
+        plain && name = name.Trim()
+    let columns =
+        match sel.ColStart, sel.ColEnd with
+        | Some first, Some last -> Some ("[" + first + "]:[" + last + "]")
+        | Some only, None -> Some ("[" + only + "]")
+        | None, _ -> None
+    let itemText =
+        match sel.Item with
+        | TblAll -> "#All"
+        | TblHeaders -> "#Headers"
+        | TblTotals -> "#Totals"
+        | TblData -> "#Data"
+        | TblThisRow -> "@"
+    let inner =
+        match sel.Item, columns with
+        | TblThisRow, None -> "@"
+        | TblThisRow, Some cols ->
+            match sel.ColStart, sel.ColEnd with
+            | Some only, None when plainColumn only && not (only.Contains " ") -> "@" + only
+            | _ -> "@" + cols
+        | TblData, Some cols ->
+            match sel.ColStart, sel.ColEnd with
+            | Some only, None when plainColumn only -> only
+            | _ -> cols
+        | _, None -> itemText
+        | _, Some cols -> "[" + itemText + "]," + cols
+    sel.Table + "[" + inner + "]"
+
+let private binaryPrecedence (op: string) =
+    match op with
+    | "=" | "<>" | "<" | ">" | "<=" | ">=" -> 1
+    | "&" -> 2
+    | "+" | "-" -> 3
+    | "*" | "/" -> 4
+    | _ -> 5   // ^
+
+let rec private appendExpr (sb: Text.StringBuilder) (minPrecedence: int) (expr: Expr) : unit =
+    match expr with
+    | Number n ->
+        // A negative literal reads back as unary minus, so it binds like one.
+        if n < 0.0 && minPrecedence > 6 then sb.Append('(').Append(numberLiteralText n).Append(')') |> ignore
+        else sb.Append(numberLiteralText n) |> ignore
+    | Str s -> sb.Append(stringLiteralText s) |> ignore
+    | Bool b -> sb.Append(if b then "TRUE" else "FALSE") |> ignore
+    | ErrorLit e -> sb.Append('#').Append(e) |> ignore
+    | MissingArg -> ()
+    | NameRef name -> sb.Append(name) |> ignore
+    | CellRef r ->
+        if refOnSheet r then sb.Append(sheetPrefixText r.Sheet).Append(refCellText r) |> ignore
+        else sb.Append("#REF!") |> ignore
+    | SpillRef r ->
+        if refOnSheet r then sb.Append(sheetPrefixText r.Sheet).Append(refCellText r).Append('#') |> ignore
+        else sb.Append("#REF!") |> ignore
+    | RangeRef (a, b) ->
+        if not (refOnSheet a && refOnSheet b) then sb.Append("#REF!") |> ignore
+        else
+            sb.Append(sheetPrefixText a.Sheet) |> ignore
+            if isWholeColumnRange a b then
+                let first, last = (if a.Col <= b.Col then a, b else b, a)
+                sb.Append(if first.ColAbs then "$" else "").Append(columnToLetter first.Col).Append(':')
+                  .Append(if last.ColAbs then "$" else "").Append(columnToLetter last.Col) |> ignore
+            elif isWholeRowRange a b then
+                let first, last = (if a.Row <= b.Row then a, b else b, a)
+                sb.Append(if first.RowAbs then "$" else "").Append(first.Row + 1).Append(':')
+                  .Append(if last.RowAbs then "$" else "").Append(last.Row + 1) |> ignore
+            else
+                sb.Append(refCellText a).Append(':').Append(refCellText b) |> ignore
+    | TableRef sel -> sb.Append(tableSelText sel) |> ignore
+    | ArrayLit rows -> sb.Append(arrayLiteralText rows) |> ignore
+    | Function (name, args) ->
+        sb.Append(name).Append('(') |> ignore
+        let mutable first = true
+        for arg in args do
+            if not first then sb.Append(',') |> ignore
+            first <- false
+            appendExpr sb 1 arg
+        sb.Append(')') |> ignore
+    | UnaryOp ("%", operand) ->
+        appendExpr sb 7 operand
+        sb.Append('%') |> ignore
+    | UnaryOp (op, operand) ->
+        let wrap = minPrecedence > 6
+        if wrap then sb.Append('(') |> ignore
+        sb.Append(op) |> ignore
+        appendExpr sb 6 operand
+        if wrap then sb.Append(')') |> ignore
+    | BinOp _ ->
+        // Walk the left spine iteratively: `a+b+c+…` nests thousands deep on
+        // the left and must not recurse once per operator.
+        let levels = ResizeArray<struct (string * Expr)>()
+        let mutable current = expr
+        let mutable collecting = true
+        while collecting do
+            match current with
+            | BinOp (left, op, right) ->
+                levels.Add(struct (op, right))
+                current <- left
+            | _ -> collecting <- false
+        let wrapped = Array.zeroCreate<bool> levels.Count
+        for i = 0 to levels.Count - 1 do
+            let struct (op, _) = levels.[i]
+            let required =
+                if i = 0 then minPrecedence
+                else (let struct (outer, _) = levels.[i - 1] in binaryPrecedence outer)
+            wrapped.[i] <- binaryPrecedence op < required
+            if wrapped.[i] then sb.Append('(') |> ignore
+        let struct (innermostOp, _) = levels.[levels.Count - 1]
+        appendExpr sb (binaryPrecedence innermostOp) current
+        for i = levels.Count - 1 downto 0 do
+            let struct (op, right) = levels.[i]
+            sb.Append(op) |> ignore
+            appendExpr sb (binaryPrecedence op + 1) right
+            if wrapped.[i] then sb.Append(')') |> ignore
+
+/// Print an expression as formula text (no leading `=`).
+let exprToFormula (expr: Expr) : string =
+    let sb = Text.StringBuilder()
+    appendExpr sb 1 expr
+    sb.ToString()
+
+/// Parse `formula`, apply `rewrite` to its tree and print it back, keeping the
+/// leading `=` exactly as the original had it. Text that does not parse — or
+/// that the rewrite leaves untouched — is returned as it was, so formulas that
+/// need no change keep their original spelling.
+let rewriteFormulaText (rewrite: Expr -> Expr) (formula: string) : string =
+    match parseFormula formula with
+    | Result.Error _ -> formula
+    | Ok expr ->
+        let rewritten = rewrite expr
+        if rewritten = expr then formula
+        else
+            let text = exprToFormula rewritten
+            if formula.StartsWith "=" then "=" + text else text
+
+/// Shift a formula's relative references by (rows, cols) — what copying or
+/// filling it to another cell does.
+let shiftFormulaText (dr: int) (dc: int) (formula: string) : string =
+    rewriteFormulaText (shiftExpr dr dc) formula
+
+/// Re-point references after rows/columns are inserted or deleted, with
+/// Excel's rules: references at or after an insertion move, a range spanning
+/// it grows, a reference to a deleted cell becomes #REF!, a range that loses
+/// some of its rows/columns shrinks. Only references whose sheet qualifier
+/// satisfies `targetsEditedSheet` (None = unqualified) are touched.
+let rec adjustExprForEdit (edit: StructureEdit) (targetsEditedSheet: string option -> bool) (expr: Expr) : Expr =
+    let onRows, isInsert, at, count =
+        match edit with
+        | InsertRows (at, count) -> true, true, at, count
+        | DeleteRows (at, count) -> true, false, at, count
+        | InsertCols (at, count) -> false, true, at, count
+        | DeleteCols (at, count) -> false, false, at, count
+    let coord (r: RefAst) = if onRows then r.Row else r.Col
+    let withCoord (r: RefAst) value = if onRows then { r with Row = value } else { r with Col = value }
+    let deleted index = index >= at && index < at + count
+    let movePoint index =
+        if isInsert then (if index >= at then index + count else index)
+        elif index >= at + count then index - count
+        else index
+    let recurse = adjustExprForEdit edit targetsEditedSheet
+    match expr with
+    | Number _ | Str _ | Bool _ | ErrorLit _ | NameRef _ | TableRef _ | ArrayLit _ | MissingArg -> expr
+    | CellRef r when not (targetsEditedSheet r.Sheet) -> expr
+    | SpillRef r when not (targetsEditedSheet r.Sheet) -> expr
+    | RangeRef (a, _) when not (targetsEditedSheet a.Sheet) -> expr
+    | CellRef r ->
+        if not isInsert && deleted (coord r) then ErrorLit Err.ref
+        else CellRef (withCoord r (movePoint (coord r)))
+    | SpillRef r ->
+        if not isInsert && deleted (coord r) then ErrorLit Err.ref
+        else SpillRef (withCoord r (movePoint (coord r)))
+    | RangeRef (a, b) ->
+        let wholeAxis = if onRows then isWholeColumnRange a b else isWholeRowRange a b
+        if wholeAxis then expr
+        else
+            let lo = min (coord a) (coord b)
+            let hi = max (coord a) (coord b)
+            if isInsert then
+                RangeRef (withCoord a (movePoint (coord a)), withCoord b (movePoint (coord b)))
+            elif lo >= at && hi < at + count then
+                ErrorLit Err.ref
+            else
+                // A boundary inside the deleted band snaps to the band's edge.
+                let newLo = if deleted lo then at else movePoint lo
+                let newHi = if deleted hi then at - 1 else movePoint hi
+                let aIsLo = coord a <= coord b
+                RangeRef (withCoord a (if aIsLo then newLo else newHi),
+                          withCoord b (if aIsLo then newHi else newLo))
+    | UnaryOp (op, operand) -> UnaryOp (op, recurse operand)
+    | BinOp _ ->
+        let operations = ResizeArray<struct (string * Expr)>()
+        let mutable current = expr
+        let mutable collecting = true
+        while collecting do
+            match current with
+            | BinOp (left, op, right) ->
+                operations.Add(struct (op, right))
+                current <- left
+            | _ -> collecting <- false
+        let mutable result = recurse current
+        for index = operations.Count - 1 downto 0 do
+            let struct (op, right) = operations.[index]
+            result <- BinOp (result, op, recurse right)
+        result
+    | Function (name, args) -> Function (name, args |> List.map recurse)
+
+let adjustFormulaTextForEdit (edit: StructureEdit) (targetsEditedSheet: string option -> bool) (formula: string) : string =
+    rewriteFormulaText (adjustExprForEdit edit targetsEditedSheet) formula
+
+/// Installs the formula rewrites Model.fs needs for paste and row/column
+/// edits (it compiles before this file). Model.fs reads this value to force
+/// the installation on hosts that have not touched this module yet.
+let formulaHooksInstalled : bool =
+    installFormulaHooks { Shift = shiftFormulaText; Adjust = adjustFormulaTextForEdit }
+    true
 
 /// Replace every `NameRef` whose (case-insensitive) name is bound in `subst`
 /// with its bound expression. This is how LET inlines its names: a LET value
@@ -1048,7 +1344,7 @@ let rec substituteNames (subst: Map<string, Expr>) (expr: Expr) : Expr =
         match Map.tryFind (n.ToUpperInvariant()) subst with
         | Some e -> e
         | None -> expr
-    | Number _ | Str _ | Bool _ | ErrorLit _ | CellRef _ | RangeRef _ | TableRef _ | ArrayLit _ | SpillRef _ -> expr
+    | Number _ | Str _ | Bool _ | ErrorLit _ | CellRef _ | RangeRef _ | TableRef _ | ArrayLit _ | SpillRef _ | MissingArg -> expr
     | UnaryOp (op, e) -> UnaryOp (op, substituteNames subst e)
     | BinOp _ -> substituteBinOpChain expr
     | Function (nm, fa) ->
@@ -2752,6 +3048,7 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
         firstRangeRefValue a b model workbook
     | TableRef sel -> firstTableSelValue sel workbook ctx.Sheet ctx.CurrentCell model
     | ArrayLit a -> if a.Length > 0 && a.[0].Length > 0 then a.[0].[0] else err Err.value
+    | MissingArg -> CellValue.Empty
     | SpillRef anchor -> let a, b = spillRangeOf anchor model in eval (RangeRef (a, b)) ctx
     | UnaryOp (op, operand) -> applyUnary op (eval operand ctx)
     | BinOp _ -> evalBinOpChain expr ctx
@@ -10480,7 +10777,7 @@ let recalculateAllFormulas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
                 let struct (seen, e) = stack.[last]
                 stack.RemoveAt last
                 match e with
-                | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ -> ()
+                | Number _ | Str _ | Bool _ | ErrorLit _ | TableRef _ | ArrayLit _ | MissingArg -> ()
                 | NameRef name ->
                     let key = name.ToUpperInvariant()
                     if not (Set.contains key seen) then

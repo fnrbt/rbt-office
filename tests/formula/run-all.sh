@@ -33,6 +33,7 @@ stages=(
     stage18-arrays2
     stage19-vba
     stage20-vbabin
+    stage21-structure
     numbertext
 )
 

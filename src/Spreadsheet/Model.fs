@@ -891,64 +891,66 @@ let private refreshFilterProjection (model: SpreadsheetModel): SpreadsheetModel 
         let hidden = hiddenRowsFromVisible visible model
         { model with FilterVisibleRows = Some visible; FilterHiddenRows = hidden }
 
-/// Adjust formula references when pasting (relative reference adjustment)
-let rec adjustFormulaReferences (formula: string) (deltaRow: int) (deltaCol: int): string =
-    try
-        // Simple adjustment: parse the formula and adjust cell references
-        // For now, we'll use a simple string replacement approach
-        // TODO: Implement proper AST-based formula adjustment for absolute refs ($A$1)
-        let mutable adjusted = formula
+/// A row/column insertion or deletion. `at` is the 0-indexed first row/column
+/// affected; `count` rows/columns are inserted before it or deleted from it.
+type StructureEdit =
+    | InsertRows of at: int * count: int
+    | DeleteRows of at: int * count: int
+    | InsertCols of at: int * count: int
+    | DeleteCols of at: int * count: int
 
-        // Find all cell references in the formula (simple regex-like approach)
-        let mutable i = 0
-        let mutable result = System.Text.StringBuilder()
+/// Formula-text rewrites. They need the formula parser and printer, which
+/// compile after this module (Formula.fs), so Formula.fs installs them here.
+type FormulaHooks = {
+    /// Shift every relative reference by (rows, cols) — copy/paste and fill.
+    Shift: int -> int -> string -> string
+    /// Re-point references after a structure edit. The predicate says whether
+    /// a reference's sheet qualifier (None = unqualified) names the edited sheet.
+    Adjust: StructureEdit -> (string option -> bool) -> string -> string
+}
 
-        while i < formula.Length do
-            let c = formula.[i]
-            if Char.IsLetter(c) && (i = 0 || not (Char.IsLetterOrDigit(formula.[i-1]))) then
-                // Potential cell reference
-                let mutable colPart = string c
-                let mutable j = i + 1
+let mutable private formulaHooks : FormulaHooks option = None
 
-                // Collect column letters
-                while j < formula.Length && Char.IsLetter(formula.[j]) do
-                    colPart <- colPart + string formula.[j]
-                    j <- j + 1
+/// Called once by Formula.fs when it initialises.
+let installFormulaHooks (hooks: FormulaHooks) : unit =
+    formulaHooks <- Some hooks
 
-                // Collect row digits
-                let mutable rowPart = ""
-                while j < formula.Length && Char.IsDigit(formula.[j]) do
-                    rowPart <- rowPart + string formula.[j]
-                    j <- j + 1
+let private currentFormulaHooks () : FormulaHooks option =
+    match formulaHooks with
+    | Some _ -> formulaHooks
+    | None ->
+#if !FABLE_COMPILER
+        // A .NET library initialises a file only when one of its values is
+        // first read, so a host that has not evaluated a formula yet would
+        // find no hooks. Reading Formula.formulaHooksInstalled runs that
+        // file's initialiser, which installs them.
+        try
+            let formulaModule = typeof<CellAddress>.Assembly.GetType "Rbt.Spreadsheet.Formula"
+            if not (isNull formulaModule) then
+                let installed = formulaModule.GetProperty "formulaHooksInstalled"
+                if not (isNull installed) then
+                    installed.GetValue(null, null) |> ignore
+        with _ -> ()
+#endif
+        formulaHooks
 
-                // Check if this is a valid cell reference
-                if not (String.IsNullOrEmpty(rowPart)) then
-                    // Valid cell reference - adjust it
-                    let col = letterToColumn colPart
-                    let row = Int32.Parse(rowPart) - 1
+/// Shift the relative references of a formula by (deltaRow, deltaCol), the way
+/// copying it to another cell does. `$`-locked parts stay put; a reference
+/// pushed off the sheet becomes #REF!. Text that does not parse is returned
+/// unchanged.
+let shiftFormulaReferences (deltaRow: int) (deltaCol: int) (formula: string) : string =
+    if deltaRow = 0 && deltaCol = 0 then formula
+    else
+        match currentFormulaHooks () with
+        | Some hooks -> hooks.Shift deltaRow deltaCol formula
+        | None -> formula
 
-                    let newRow = row + deltaRow
-                    let newCol = col + deltaCol
-
-                    if newRow >= 0 && newCol >= 0 then
-                        let newRef = formatCellRef newRow newCol
-                        result.Append(newRef) |> ignore
-                    else
-                        // Reference out of bounds, keep original
-                        result.Append(colPart + rowPart) |> ignore
-
-                    i <- j
-                else
-                    // Not a cell reference, just a word
-                    result.Append(c) |> ignore
-                    i <- i + 1
-            else
-                result.Append(c) |> ignore
-                i <- i + 1
-
-        result.ToString()
-    with
-    | _ -> formula  // On error, return original formula
+/// Re-point a formula's references after rows/columns were inserted or
+/// deleted on the sheet selected by `targetsEditedSheet`.
+let adjustFormulaForEdit (edit: StructureEdit) (targetsEditedSheet: string option -> bool) (formula: string) : string =
+    match currentFormulaHooks () with
+    | Some hooks -> hooks.Adjust edit targetsEditedSheet formula
+    | None -> formula
 
 /// Serialize selection to clipboard data
 let serializeSelection (selection: Selection) (model: SpreadsheetModel) (isCut: bool): ClipboardData =
@@ -994,13 +996,14 @@ let pasteClipboard (targetAddr: CellAddress) (clipboardData: ClipboardData) (mod
         if pasteRow >= 0 && pasteRow < model.RowCount && pasteCol >= 0 && pasteCol < model.ColCount then
             let pasteAddr = { Row = pasteRow; Col = pasteCol }
 
-            // Adjust formula references if this is a formula
+            // A copied formula follows its new position; a cut formula is moved
+            // as written (Excel keeps a moved formula pointing at the same cells).
             let adjustedValue =
                 match cellData.Value with
+                | Formula (formula, _) when not clipboardData.IsCut ->
+                    Formula (shiftFormulaReferences deltaRow deltaCol formula, Empty)
                 | Formula (formula, _) ->
-                    let adjustedFormula = adjustFormulaReferences formula deltaRow deltaCol
-                    // Will be re-evaluated when set
-                    Formula (adjustedFormula, Empty)
+                    Formula (formula, Empty)
                 | other -> other
 
             let adjustedCellData = { cellData with Value = adjustedValue }
