@@ -4,8 +4,7 @@ bin/
 *.user
 artifacts/
 
-# Top-level Fable bundle target consumed by sibling repos. Generated
-# by `pnpm build:fable`; rebuild on each consumer build (e.g.
-# redbatnet/deploy/build.sh runs it before mega's frontend build).
+# Generated npm package output.
 dist/
 node_modules/
+.pnpm-store/
