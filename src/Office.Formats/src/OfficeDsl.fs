@@ -27,8 +27,10 @@ module Office =
         Map.tryFind path doc.Parts
 
 // Relationship parsing DSL
+// Matched by local name: a package may bind the relationships namespace to a
+// prefix (`<rel:Relationship>`), which is still a valid .rels part.
 let parseRelationships (xmlNode: XmlNode) : Relationship list =
-    Xml.descendants "Relationship" xmlNode
+    Ns.descendantsNs "Relationship" xmlNode
     |> List.choose (fun node ->
         xml {
             let! id = Xml.attr "Id" node
@@ -36,6 +38,21 @@ let parseRelationships (xmlNode: XmlNode) : Relationship list =
             let! target = Xml.attr "Target" node
             return { Id = id; Type = relType; Target = target; TargetMode = Xml.attr "TargetMode" node }
         })
+
+/// The relationship id an element carries (`r:id` in practice). The prefix is
+/// whatever the part bound the relationships namespace to, so fall back to any
+/// prefixed `id` attribute — the unprefixed `id` (e.g. on `<brk>`) is a
+/// different attribute and never matches.
+let relationshipId (node: XmlNode) : string option =
+    match Xml.attr "r:id" node with
+    | Some v -> Some v
+    | None ->
+        match node with
+        | Element(_, attrs, _) ->
+            attrs
+            |> Map.tryPick (fun name value ->
+                if name.EndsWith ":id" && not (name.StartsWith "xmlns:") then Some value else None)
+        | _ -> None
 
 // Common text extraction pattern
 type TextRun = {
