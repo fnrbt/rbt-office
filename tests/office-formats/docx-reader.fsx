@@ -155,6 +155,114 @@ ok "revisions-read-prefixed-attributes"
    (revisionSummary = [ "7", Some "Ann", "added"; "8", Some "Bob", "removed" ])
    (sprintf "%A" revisionSummary)
 
+
+// ---- content the reader used to drop -------------------------------------
+
+let wNs = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/picture\""
+
+/// A package with arbitrary extra parts (text or binary) next to document.xml.
+let docxWithParts (body: string) (textParts: (string * string) list) (binaryParts: (string * byte[]) list) =
+    use stream = new System.IO.MemoryStream()
+    do
+        use archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create, true)
+        let add (name: string) (text: string) =
+            use writer = new System.IO.StreamWriter(archive.CreateEntry(name).Open(), System.Text.UTF8Encoding(false))
+            writer.Write text
+        add "[Content_Types].xml" """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"""
+        add "word/document.xml" (sprintf "<w:document %s><w:body>%s</w:body></w:document>" wNs body)
+        for name, text in textParts do add name text
+        for name, (bytes: byte[]) in binaryParts do
+            use entry = archive.CreateEntry(name).Open()
+            entry.Write(bytes, 0, bytes.Length)
+    stream.ToArray()
+
+let rec paragraphText (para: DocxReader.Paragraph) =
+    para.Runs
+    |> List.map (fun run ->
+        match run.Content with
+        | DocxReader.Text text -> text
+        | DocxReader.Link link -> link.Text
+        | _ -> "")
+    |> String.concat ""
+let rec contentTexts (content: DocxReader.DocumentContent list) =
+    content
+    |> List.collect (function
+        | DocxReader.Para para -> [ paragraphText para ]
+        | DocxReader.Tbl table -> tableTexts table)
+and tableTexts (table: DocxReader.Table) =
+    table.Rows
+    |> List.collect (fun row ->
+        row.Cells
+        |> List.collect (fun cell -> (cell.Paragraphs |> List.map paragraphText) @ (cell.NestedTables |> List.collect tableTexts)))
+let loadBody body = docxWithBody body |> DocxReader.loadBytesNative |> Option.get
+
+let specialRuns =
+    loadBody """<w:p><w:r><w:t>e</w:t><w:noBreakHyphen/><w:t>mail co</w:t><w:softHyphen/><w:t>operate</w:t><w:cr/><w:t>next</w:t><w:ptab w:relativeTo="margin" w:alignment="right" w:leader="none"/><w:t>end</w:t></w:r><w:r><w:sym w:font="Wingdings" w:char="F0FC"/></w:r></w:p>"""
+ok "run-special-children-kept"
+   (contentTexts specialRuns.Content = [ "e‑mail co­operate\nnext\tend" ])
+   (sprintf "%A" (contentTexts specialRuns.Content))
+let symFont =
+    specialRuns.Content
+    |> List.collect (function DocxReader.Para para -> para.Runs | _ -> [])
+    |> List.tryPick (fun run -> match run.Content with DocxReader.Text "" -> run.Properties.FontFamily | _ -> None)
+ok "sym-keeps-font" (symFont = Some "Wingdings") (sprintf "%A" symFont)
+
+let wrappers =
+    docxWithParts
+        """<w:p><w:smartTag w:uri="u" w:element="e"><w:r><w:t>smart</w:t></w:r></w:smartTag><w:customXml w:element="x"><w:r><w:t xml:space="preserve"> custom</w:t></w:r></w:customXml><w:dir w:val="rtl"><w:r><w:t xml:space="preserve"> dir</w:t></w:r></w:dir><w:bdo w:val="ltr"><w:r><w:t xml:space="preserve"> bdo</w:t></w:r></w:bdo><mc:AlternateContent><mc:Choice Requires="wps"><w:r><w:t xml:space="preserve"> choice</w:t></w:r></mc:Choice><mc:Fallback><w:r><w:t xml:space="preserve"> fallback</w:t></w:r></mc:Fallback></mc:AlternateContent></w:p><w:p><w:moveFrom w:id="1" w:author="Cy"><w:r><w:t>origin</w:t></w:r></w:moveFrom><w:moveTo w:id="2" w:author="Cy"><w:r><w:t>destination</w:t></w:r></w:moveTo></w:p>"""
+        [] []
+    |> DocxReader.loadBytesNative |> Option.get
+ok "paragraph-wrappers-kept"
+   (contentTexts wrappers.Content = [ "smart custom dir bdo fallback"; "origindestination" ])
+   (sprintf "%A" (contentTexts wrappers.Content))
+let moveRevisions =
+    wrappers.Content
+    |> List.collect (function DocxReader.Para para -> para.Runs | _ -> [])
+    |> List.choose (fun run -> match run.Content, run.RevisionType with DocxReader.Text text, Some kind -> Some (text, kind) | _ -> None)
+ok "tracked-move-as-revisions"
+   (moveRevisions = [ "origin", "delete"; "destination", "insert" ])
+   (sprintf "%A" moveRevisions)
+
+let sdtTable =
+    loadBody """<w:tbl><w:tr><w:tc><w:sdt><w:sdtContent><w:p><w:r><w:t>sdt in cell</w:t></w:r></w:p></w:sdtContent></w:sdt></w:tc><w:sdt><w:sdtContent><w:tc><w:p><w:r><w:t>sdt cell</w:t></w:r></w:p></w:tc></w:sdtContent></w:sdt></w:tr><w:sdt><w:sdtContent><w:tr><w:tc><w:p><w:r><w:t>sdt row</w:t></w:r></w:p></w:tc></w:tr></w:sdtContent></w:sdt></w:tbl>"""
+ok "table-sdt-wrappers-kept"
+   (contentTexts sdtTable.Content = [ "sdt in cell"; "sdt cell"; "sdt row" ])
+   (sprintf "%A" (contentTexts sdtTable.Content))
+
+let relsXml (rels: string) = sprintf "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">%s</Relationships>" rels
+let relType name = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/" + name
+let drawing rid = sprintf "<w:r><w:drawing><wp:inline><wp:extent cx=\"914400\" cy=\"457200\"/><wp:docPr id=\"1\" name=\"p\"/><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic><pic:blipFill><a:blip r:embed=\"%s\"/></pic:blipFill><pic:spPr><a:prstGeom prst=\"rect\"/></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>" rid
+let partsDoc =
+    docxWithParts
+        (sprintf "<w:p>%s</w:p><w:sectPr><w:headerReference w:type=\"default\" r:id=\"rId9\"/><w:cols w:num=\"2\" w:space=\"708\" w:sep=\"1\"/></w:sectPr>" (drawing "rId1"))
+        [ "word/_rels/document.xml.rels", relsXml (sprintf "<Relationship Id=\"rId1\" Type=\"%s\" Target=\"media/body.png\"/><Relationship Id=\"rId9\" Type=\"%s\" Target=\"header1.xml\"/>" (relType "image") (relType "header"))
+          "word/header1.xml", sprintf "<w:hdr %s><w:p>%s</w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>in header table</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:hdr>" wNs (drawing "rId1")
+          "word/_rels/header1.xml.rels", relsXml (sprintf "<Relationship Id=\"rId1\" Type=\"%s\" Target=\"media/head.png\"/>" (relType "image"))
+          "word/settings.xml", sprintf "<w:settings %s><w:evenAndOddHeaders w:val=\"0\"/></w:settings>" wNs ]
+        [ "word/media/body.png", [| 1uy; 2uy; 3uy |]; "word/media/head.png", [| 9uy; 8uy; 7uy; 6uy |] ]
+    |> DocxReader.loadBytesNative |> Option.get
+let imageKeys (paras: DocxReader.Paragraph list) =
+    paras |> List.collect (fun para -> para.Runs) |> List.choose (fun run -> match run.Content with DocxReader.Image image -> Some image.RelationshipId | _ -> None)
+let bodyImageKey = partsDoc.Content |> List.choose (function DocxReader.Para para -> Some para | _ -> None) |> imageKeys
+let headerImageKey = partsDoc.Headers |> List.collect (fun header -> header.Content) |> imageKeys
+let imageFor key = key |> List.tryHead |> Option.bind (fun k -> Map.tryFind k partsDoc.Images)
+ok "part-images-do-not-collide"
+   (bodyImageKey <> headerImageKey && (imageFor bodyImageKey).IsSome && (imageFor headerImageKey).IsSome && imageFor bodyImageKey <> imageFor headerImageKey)
+   (sprintf "body %A header %A map %A" bodyImageKey headerImageKey (partsDoc.Images |> Map.toList |> List.map fst))
+ok "header-keeps-table-structure"
+   (partsDoc.Headers |> List.exists (fun header -> header.Blocks |> List.exists (function DocxReader.Tbl _ -> true | _ -> false)))
+   (sprintf "%A" (partsDoc.Headers |> List.map (fun header -> header.Blocks.Length)))
+ok "even-and-odd-headers-val-0-is-off"
+   (partsDoc.PageSetup |> Option.bind (fun setup -> setup.EvenAndOddHeaders) = Some false)
+   (sprintf "%A" (partsDoc.PageSetup |> Option.map (fun setup -> setup.EvenAndOddHeaders)))
+ok "column-separator-read"
+   (partsDoc.PageSetup |> Option.bind (fun setup -> setup.Columns) |> Option.exists (fun columns -> columns.Count = 2 && columns.Separator))
+   (sprintf "%A" (partsDoc.PageSetup |> Option.map (fun setup -> setup.Columns)))
+ok "picture-is-not-a-shape" partsDoc.Shapes.IsEmpty (sprintf "%d shapes" partsDoc.Shapes.Length)
+ok "default-run-size-is-11pt-in-px"
+   (abs (DocumentProcessors.StyleResolution.defaultRunProps.FontSize - 11.0 * 96.0 / 72.0) < 1e-9)
+   (string DocumentProcessors.StyleResolution.defaultRunProps.FontSize)
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

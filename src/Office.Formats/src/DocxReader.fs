@@ -318,15 +318,18 @@ and TableCell = {
     Properties: TableCellProperties option
 }
 
-type HeaderFooter = {
-    Content: Paragraph list
-    Type: string  // "header", "footer", "first", "even"
-    RelationshipId: string option
-}
-
 type DocumentContent =
     | Para of Paragraph
     | Tbl of Table
+
+type HeaderFooter = {
+    /// Every paragraph of the part, tables flattened (kept for callers that only want text).
+    Content: Paragraph list
+    /// The part's blocks in order, with tables kept as tables.
+    Blocks: DocumentContent list
+    Type: string  // "header", "footer", "first", "even"
+    RelationshipId: string option
+}
 
 type StyleDefinition = {
     Id: string
@@ -1320,7 +1323,28 @@ module Docx =
                     match Ns.stripNs name with
                     | "t"
                     | "delText" -> Xml.text child |> Option.map (Text >> makeRun >> RunToken)
-                    | "tab" -> Some (makeRun (Text "\t") |> RunToken)
+                    | "tab"
+                    // w:ptab is an absolute-position tab; a plain tab is the closest the model has.
+                    | "ptab" -> Some (makeRun (Text "\t") |> RunToken)
+                    // These used to be dropped: "e-mail" written with a non-breaking
+                    // hyphen came out as "email".
+                    | "noBreakHyphen" -> Some (makeRun (Text "\u2011") |> RunToken)
+                    | "softHyphen" -> Some (makeRun (Text "\u00AD") |> RunToken)
+                    | "cr" -> Some (makeRun (Text "\n") |> RunToken)
+                    | "sym" ->
+                        // <w:sym w:font="Wingdings" w:char="F0FC"/>: one character in a named font.
+                        attr "char" child
+                        |> Option.bind (fun hex ->
+                            match System.Int32.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture) with
+                            | true, code when code > 0 && code < 0xFFFF && not (code >= 0xD800 && code <= 0xDFFF) -> Some (string (char code))
+                            | _ -> None)
+                        |> Option.map (fun text ->
+                            let run = makeRun (Text text)
+                            let run =
+                                match attr "font" child with
+                                | Some font when font <> "" -> { run with Properties = { run.Properties with FontFamily = Some font; ThemeFont = None } }
+                                | _ -> run
+                            RunToken run)
                     | "br" ->
                         match attr "type" child with
                         // A column break forces the following content to the next
@@ -1493,8 +1517,18 @@ module Docx =
                     attr "id" child
                     |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStart = None; BookmarkEnd = None; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None })
                     |> Option.toList
-                | Some name when Ns.stripNs name = "ins" || Ns.stripNs name = "del" ->
-                    let revisionType = if Ns.stripNs name = "del" then "delete" else "insert"
+                // Transparent inline wrappers: their runs are ordinary paragraph content.
+                | Some name when (match Ns.stripNs name with "smartTag" | "customXml" | "dir" | "bdo" -> true | _ -> false) ->
+                    tokensFromNode child
+                | Some name when Ns.stripNs name = "AlternateContent" ->
+                    // Take the fallback (plain WordprocessingML/VML) when there is one, else the first choice.
+                    match Ns.childNs "Fallback" child |> Option.orElseWith (fun () -> Ns.childNs "Choice" child) with
+                    | Some branch -> tokensFromNode branch
+                    | None -> []
+                // A tracked move is an insertion at the destination and a deletion at the
+                // source; without this the moved text was missing from both places.
+                | Some name when (match Ns.stripNs name with "ins" | "del" | "moveTo" | "moveFrom" -> true | _ -> false) ->
+                    let revisionType = if Ns.stripNs name = "del" || Ns.stripNs name = "moveFrom" then "delete" else "insert"
                     let revisionId = Xml.attr "id" child |> Option.orElse (Xml.attr "w:id" child)
                     let author = Xml.attr "author" child |> Option.orElse (Xml.attr "w:author" child)
                     let date = Xml.attr "date" child |> Option.orElse (Xml.attr "w:date" child)
@@ -1595,6 +1629,21 @@ module Docx =
         Xml.children node
         |> List.filter (fun child -> Xml.name child |> Option.exists (fun childName -> Ns.stripNs childName = name))
 
+    /// Children of a table / row / cell with content-control and customXml
+    /// wrappers opened up: <w:sdt><w:sdtContent><w:tr>.. is a row of the table
+    /// (a repeating-section or bound row), not something to skip.
+    let rec private unwrappedChildren (node: XmlNode) : XmlNode list =
+        Xml.children node
+        |> List.collect (fun child ->
+            match Xml.name child |> Option.map Ns.stripNs with
+            | Some "sdt" -> Ns.childNs "sdtContent" child |> Option.map unwrappedChildren |> Option.defaultValue []
+            | Some "customXml" -> unwrappedChildren child
+            | _ -> [child])
+
+    let private unwrappedChildElems name (node: XmlNode) =
+        unwrappedChildren node
+        |> List.filter (fun child -> Xml.name child |> Option.exists (fun childName -> Ns.stripNs childName = name))
+
     // Table extraction with nested document builder
     let rec tableCell (tcNode: XmlNode) : TableCell =
         // Walk p/tbl children in document order so we can record, for each nested
@@ -1603,7 +1652,7 @@ module Docx =
         let mutable paragraphs = []
         let mutable nestedTables = []
         let mutable nestedAnchors = []
-        for child in Xml.children tcNode do
+        for child in unwrappedChildren tcNode do
             match Xml.name child |> Option.map Ns.stripNs with
             | Some "p" ->
                 paragraphs <- paragraph child :: paragraphs
@@ -1621,7 +1670,7 @@ module Docx =
 
     and tableRow (trNode: XmlNode) : TableRow =
         let cells =
-            wChildElems "tc" trNode
+            unwrappedChildElems "tc" trNode
             |> List.map tableCell
         let height = wElem "trPr" trNode
                      |> Option.bind (wElem "trHeight")
@@ -1683,7 +1732,7 @@ module Docx =
 
     and table (tblNode: XmlNode) : Table =
         let rows =
-            wChildElems "tr" tblNode
+            unwrappedChildElems "tr" tblNode
             |> List.map tableRow
 
         let borders =
@@ -1787,6 +1836,8 @@ module Docx =
                             let controlProps = contentControlProps child
                             yield! (contentFromNode content |> List.map (applyContentControl controlProps))
                         | None -> ()
+                    | Some name when Ns.stripNs name = "customXml" ->
+                        yield! contentFromNode child
                     | _ -> ()
             }
 
@@ -2273,15 +2324,49 @@ module Properties =
             Description = Ns.childNs "description" doc |> Option.bind Xml.text
         }
 
+/// Key of an image that belongs to a header/footer part in WordDocument.Images.
+let partImageKey (partRelationshipId: string) (imageRelationshipId: string) =
+    partRelationshipId + "/" + imageRelationshipId
+
 // Header/Footer parsing
 module HeaderFooter =
     let parseHeaderFooter (xml: string) (hfType: string) (relationshipId: string option) : HeaderFooter =
         let doc = XmlDsl.parse xml
+        // Relationship ids are local to a part: the header's rId1 is not the
+        // body's rId1. Image references are qualified with the part's own
+        // relationship id so they cannot collide in the document-wide image map.
+        let qualify = relationshipId |> Option.map partImageKey |> Option.defaultValue id
+        let rec qualifyParagraph (para: Paragraph) =
+            { para with
+                Runs =
+                    para.Runs
+                    |> List.map (fun run ->
+                        match run.Content with
+                        | Image image -> { run with Content = Image { image with RelationshipId = qualify image.RelationshipId } }
+                        | _ -> run) }
+        and qualifyTable (table: Table) =
+            { table with
+                Rows =
+                    table.Rows
+                    |> List.map (fun row ->
+                        { row with
+                            Cells =
+                                row.Cells
+                                |> List.map (fun cell ->
+                                    { cell with
+                                        Paragraphs = cell.Paragraphs |> List.map qualifyParagraph
+                                        NestedTables = cell.NestedTables |> List.map qualifyTable }) }) }
         let paragraphs =
             Ns.descendantsNs "p" doc
-            |> List.map Docx.paragraph
+            |> List.map (Docx.paragraph >> qualifyParagraph)
+        let blocks =
+            Docx.bodyContent doc
+            |> List.map (function
+                | Para para -> Para (qualifyParagraph para)
+                | Tbl table -> Tbl (qualifyTable table))
         {
             Content = paragraphs
+            Blocks = blocks
             Type = hfType
             RelationshipId = relationshipId
         }
@@ -2654,7 +2739,14 @@ let private wordTwipsToPixels value =
 let private parseSettings (xml: string option) =
     xml
     |> Option.map XmlDsl.parse
-    |> Option.map (fun settings -> Ns.descendantsNs "evenAndOddHeaders" settings |> List.isEmpty |> not)
+    |> Option.map (fun settings ->
+        // An on/off element: <w:evenAndOddHeaders w:val="0"/> means off.
+        match Ns.descendantsNs "evenAndOddHeaders" settings |> List.tryHead with
+        | Some node ->
+            match Docx.attr "val" node |> Option.map (fun value -> value.ToLowerInvariant()) with
+            | Some "0" | Some "false" | Some "off" -> false
+            | _ -> true
+        | None -> false)
     |> Option.defaultValue false
 
 let private parsePageSetup evenAndOddHeaders (sectPr: XmlNode option) : PageSetup option =
@@ -2889,7 +2981,8 @@ let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument opt
                         |> List.map (fun partRel ->
                             promise {
                                 let! partRelationships = loadPartRelationships archive partRel
-                                return! loadImageData archive (relationshipTargetBase partRel) partRelationships
+                                let! partImages = loadImageData archive (relationshipTargetBase partRel) partRelationships
+                                return partImages |> Array.map (Option.map (fun (relId, dataUrl) -> partImageKey partRel.Id relId, dataUrl))
                             })
                         |> List.toArray
                         |> Promise.all
@@ -3012,7 +3105,8 @@ let parseDocumentNative (archive: ZipArchive) : WordDocument option =
             partRels
             |> List.collect (fun partRel ->
                 let partRelationships = loadPartRelationshipsNative archive partRel
-                loadImageDataNative archive (relationshipTargetBase partRel) partRelationships)
+                loadImageDataNative archive (relationshipTargetBase partRel) partRelationships
+                |> List.map (fun (relId, dataUrl) -> partImageKey partRel.Id relId, dataUrl))
 
         let images =
             (bodyImages @ runningContentImages)
@@ -4586,7 +4680,7 @@ let toEditorHeaderFooters (items: HeaderFooter list) (images: Map<string, string
         objFromFields [
             "Type" ==> item.Type
             "RelationshipId" ==> item.RelationshipId
-            "Paragraphs" ==> toEditorParagraphs (item.Content |> List.map Para) images
+            "Paragraphs" ==> toEditorParagraphs item.Blocks images
         ])
     |> List.toArray
 
@@ -4596,7 +4690,7 @@ let toEditorHeaderFootersWithStyles (items: HeaderFooter list) (images: Map<stri
         objFromFields [
             "Type" ==> item.Type
             "RelationshipId" ==> item.RelationshipId
-            "Paragraphs" ==> toEditorParagraphsWithStyles (item.Content |> List.map Para) images styles
+            "Paragraphs" ==> toEditorParagraphsWithStyles item.Blocks images styles
         ])
     |> List.toArray
 
@@ -4606,7 +4700,7 @@ let toEditorHeaderFootersWithStylesAndTheme (theme: Theme option) (items: Header
         objFromFields [
             "Type" ==> item.Type
             "RelationshipId" ==> item.RelationshipId
-            "Paragraphs" ==> toEditorParagraphsWithStylesAndTheme theme (item.Content |> List.map Para) images styles
+            "Paragraphs" ==> toEditorParagraphsWithStylesAndTheme theme item.Blocks images styles
         ])
     |> List.toArray
 
