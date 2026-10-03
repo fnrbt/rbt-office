@@ -88,6 +88,8 @@ let mkCell col row value : XlsxReader.Cell =
     {
         Reference = { Column = col; Row = row }
         Value = value
+        Formula = None
+        ArrayRef = None
         StyleIndex = None
         Style = None
         InlineRuns = []
@@ -106,6 +108,7 @@ let mkRow index cells : XlsxReader.Row =
 let mkSheetWithColumns columns rows : XlsxReader.Worksheet =
     {
         Name = "Sheet1"
+        State = XlsxReader.SheetVisible
         Rows = rows
         MergedCells = []
         Columns = columns
@@ -143,6 +146,7 @@ let mkWorkbook sheet : XlsxReader.Workbook =
         Relationships = []
         NamedRanges = []
         ThemeAccents = [||]
+        Date1904 = false
     }
 
 let isString expected (value: obj) =
@@ -260,7 +264,13 @@ let styledSheet =
                   Formula2 = None
                   AllowBlank = true
                   ShowDropDown = true
-                  ErrorMessage = None } ] }
+                  ErrorMessage = None
+                  ErrorTitle = None
+                  ErrorStyle = None
+                  ShowErrorMessage = false
+                  Prompt = None
+                  PromptTitle = None
+                  ShowInputMessage = false } ] }
 let styledWorkbook = mkWorkbook styledSheet
 Main.Excel.cellsWithStyle styledWorkbook styledSheet |> ignore
 GC.Collect()
@@ -546,6 +556,238 @@ ok "resolve-target"
     && ZipInterop.resolveTarget "word" "../customXml/item1.xml" = "customXml/item1.xml"
     && ZipInterop.resolveTarget "" "word/document.xml" = "word/document.xml")
    (ZipInterop.resolveTarget "word" "/word/media/a.png")
+
+// ----- synthetic packages ----------------------------------------------------
+
+let ssNs = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+let relNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+let pkgRelNs = "http://schemas.openxmlformats.org/package/2006/relationships"
+
+let zipOf (parts: (string * string) list) =
+    use stream = new MemoryStream()
+    do
+        use archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create, true)
+        for name, text in parts do
+            use writer = new StreamWriter(archive.CreateEntry(name).Open(), UTF8Encoding(false))
+            writer.Write text
+    stream.ToArray()
+
+let workbookXml (extra: string) (sheets: (string * string) list) =
+    let sheetXml =
+        sheets
+        |> List.mapi (fun i (name, attrs) -> sprintf "<sheet name=\"%s\" sheetId=\"%d\" r:id=\"rId%d\"%s/>" name (i + 1) (i + 1) attrs)
+        |> String.concat ""
+    sprintf "<workbook xmlns=\"%s\" xmlns:r=\"%s\">%s<sheets>%s</sheets></workbook>" ssNs relNs extra sheetXml
+
+let workbookRels (count: int) (extra: string) =
+    let rels =
+        [ for i in 1 .. count ->
+            sprintf "<Relationship Id=\"rId%d\" Type=\"%s/worksheet\" Target=\"worksheets/sheet%d.xml\"/>" i relNs i ]
+        |> String.concat ""
+    sprintf "<Relationships xmlns=\"%s\">%s%s</Relationships>" pkgRelNs rels extra
+
+let worksheetXml (body: string) = sprintf "<worksheet xmlns=\"%s\" xmlns:r=\"%s\">%s</worksheet>" ssNs relNs body
+
+/// Single-sheet package. `pad` pushes the sheet XML past the 1,000,000-char
+/// threshold so the streaming parser takes it instead of the DOM parser;
+/// every test that touches cell parsing runs through both.
+let onePackage (pad: bool) (wbExtra: string) (sheetBody: string) (extraParts: (string * string) list) =
+    let padding = if pad then "<!--" + String('x', 1000100) + "-->" else ""
+    zipOf ([ "xl/workbook.xml", workbookXml wbExtra [ "Data", "" ]
+             "xl/_rels/workbook.xml.rels", workbookRels 1 ""
+             "xl/worksheets/sheet1.xml", worksheetXml (padding + sheetBody) ] @ extraParts)
+
+let loadOne pad wbExtra sheetBody extraParts =
+    match XlsxReader.loadBytesNative (onePackage pad wbExtra sheetBody extraParts) with
+    | Some wb -> wb
+    | None -> failwith "package did not load"
+
+let cellOf (wb: XlsxReader.Workbook) (ref: string) =
+    wb.Sheets.Head.Rows
+    |> List.collect (fun r -> r.Cells)
+    |> List.tryFind (fun c -> sprintf "%s%d" c.Reference.Column c.Reference.Row = ref)
+
+let bothPaths = [ "dom", false; "stream", true ]
+
+// ----- formula text is kept next to the cached value -------------------------
+
+let formulaBody =
+    "<sheetData>"
+    + "<row r=\"1\"><c r=\"A1\"><v>2</v></c><c r=\"B1\"><f>A1*2</f><v>4</v></c>"
+    + "<c r=\"C1\"><f t=\"shared\" ref=\"C1:C3\" si=\"0\">A1*2+$A$1+Sheet2!B$1+SUM(A:A)+LOG10(A1)+LEN(\"A1\")+'A1'!A1+SUM(1:1)</f><v>10</v></c>"
+    + "<c r=\"D1\"><f t=\"array\" ref=\"D1:D2\">A1:A2*2</f><v>4</v></c>"
+    + "<c r=\"E1\"><f>1+1</f></c>"
+    + "<c r=\"F1\" t=\"str\"><f>\"a\"&amp;\"b\"</f><v>ab</v></c>"
+    + "<c r=\"G1\" t=\"e\"><f>1/0</f><v>#DIV/0!</v></c>"
+    + "<c r=\"H1\"><f t=\"shared\" ref=\"H1:I1\" si=\"1\">A1+$B1+C$1+A:A</f><v>1</v></c><c r=\"I1\"><f t=\"shared\" si=\"1\"/><v>2</v></c></row>"
+    + "<row r=\"2\"><c r=\"A2\"><v>3</v></c><c r=\"C2\"><f t=\"shared\" si=\"0\"/><v>12</v></c></row>"
+    + "<row r=\"3\"><c r=\"C3\"><f t=\"shared\" si=\"0\"/><v>14</v></c></row>"
+    + "</sheetData>"
+for label, pad in bothPaths do
+    let wb = loadOne pad "" formulaBody []
+    let formula ref = cellOf wb ref |> Option.bind (fun c -> c.Formula)
+    let value ref = cellOf wb ref |> Option.map (fun c -> c.Value)
+    ok (sprintf "formula-keeps-cached-%s" label)
+       (formula "B1" = Some "A1*2" && value "B1" = Some (XlsxReader.Number 4.0))
+       (sprintf "%A" (cellOf wb "B1"))
+    ok (sprintf "formula-shared-expanded-%s" label)
+       (formula "C2" = Some "A2*2+$A$1+Sheet2!B$1+SUM(A:A)+LOG10(A2)+LEN(\"A1\")+'A1'!A2+SUM(2:2)"
+        && formula "C3" = Some "A3*2+$A$1+Sheet2!B$1+SUM(A:A)+LOG10(A3)+LEN(\"A1\")+'A1'!A3+SUM(3:3)"
+        && value "C2" = Some (XlsxReader.Number 12.0))
+       (sprintf "%A / %A" (formula "C2") (formula "C3"))
+    ok (sprintf "formula-shared-across-columns-%s" label)
+       (formula "I1" = Some "B1+$B1+D$1+B:B")
+       (sprintf "%A" (formula "I1"))
+    ok (sprintf "formula-array-%s" label)
+       (formula "D1" = Some "A1:A2*2" && (cellOf wb "D1" |> Option.bind (fun c -> c.ArrayRef)) = Some "D1:D2")
+       (sprintf "%A" (cellOf wb "D1"))
+    ok (sprintf "formula-uncached-%s" label)
+       (formula "E1" = Some "1+1" && value "E1" = Some (XlsxReader.Formula "1+1"))
+       (sprintf "%A" (cellOf wb "E1"))
+    ok (sprintf "formula-string-and-error-cached-%s" label)
+       (value "F1" = Some (XlsxReader.String "ab") && formula "F1" = Some "\"a\"&\"b\""
+        && value "G1" = Some (XlsxReader.Error "DIV/0!") && formula "G1" = Some "1/0")
+       (sprintf "%A / %A" (cellOf wb "F1") (cellOf wb "G1"))
+
+// ----- rows and cells without `r` --------------------------------------------
+
+let noRefBody =
+    "<sheetData><row><c><v>1</v></c><c><v>2</v></c></row>"
+    + "<row r=\"5\"><c r=\"C5\"><v>3</v></c><c><v>4</v></c></row>"
+    + "<row><c t=\"inlineStr\"><is><t>x</t></is></c></row></sheetData>"
+for label, pad in bothPaths do
+    let wb = loadOne pad "" noRefBody []
+    let cells =
+        wb.Sheets.Head.Rows
+        |> List.collect (fun r -> r.Cells |> List.map (fun c -> sprintf "%s%d" c.Reference.Column c.Reference.Row, c.Value))
+    ok (sprintf "positions-inferred-%s" label)
+       (cells = [ "A1", XlsxReader.Number 1.0; "B1", XlsxReader.Number 2.0
+                  "C5", XlsxReader.Number 3.0; "D5", XlsxReader.Number 4.0
+                  "A6", XlsxReader.String "x" ]
+        && (wb.Sheets.Head.Rows |> List.map (fun r -> r.Index)) = [ 1; 5; 6 ])
+       (sprintf "%A" cells)
+
+// ----- 1904 date system -------------------------------------------------------
+
+let dateStyles =
+    sprintf "<styleSheet xmlns=\"%s\"><fonts count=\"1\"><font/></fonts><fills count=\"1\"><fill/></fills><borders count=\"1\"><border/></borders><cellXfs count=\"3\"><xf numFmtId=\"0\"/><xf numFmtId=\"14\" applyNumberFormat=\"1\"/><xf numFmtId=\"4\" applyNumberFormat=\"1\"/></cellXfs></styleSheet>" ssNs
+let dateBody = "<sheetData><row r=\"1\"><c r=\"A1\" s=\"1\"><v>42000</v></c><c r=\"B1\"><v>42000</v></c><c r=\"C1\" s=\"2\"><v>42000</v></c><c r=\"D1\" s=\"1\"><f>A1+1</f><v>42001</v></c></row></sheetData>"
+for label, pad in bothPaths do
+    let wb1904 = loadOne pad "<workbookPr date1904=\"1\"/>" dateBody [ "xl/styles.xml", dateStyles ]
+    let wb1900 = loadOne pad "<workbookPr/>" dateBody [ "xl/styles.xml", dateStyles ]
+    let v wb ref = cellOf wb ref |> Option.map (fun c -> c.Value)
+    ok (sprintf "date1904-shifted-%s" label)
+       (wb1904.Date1904
+        && v wb1904 "A1" = Some (XlsxReader.Number 43462.0)
+        && v wb1904 "D1" = Some (XlsxReader.Number 43463.0)
+        && v wb1904 "B1" = Some (XlsxReader.Number 42000.0)
+        && v wb1904 "C1" = Some (XlsxReader.Number 42000.0))
+       (sprintf "%A %A %A %A" (v wb1904 "A1") (v wb1904 "B1") (v wb1904 "C1") (v wb1904 "D1"))
+    ok (sprintf "date1900-untouched-%s" label)
+       (not wb1900.Date1904 && v wb1900 "A1" = Some (XlsxReader.Number 42000.0))
+       (sprintf "%A" (v wb1900 "A1"))
+
+// ----- sheet state, hidden rows / columns ------------------------------------
+
+let stateWorkbook =
+    zipOf [ "xl/workbook.xml", workbookXml "" [ "Shown", ""; "Hidden", " state=\"hidden\""; "Deep", " state=\"veryHidden\"" ]
+            "xl/_rels/workbook.xml.rels", workbookRels 3 ""
+            "xl/worksheets/sheet1.xml", worksheetXml "<cols><col min=\"2\" max=\"3\" width=\"9\" hidden=\"true\"/></cols><sheetData><row r=\"1\" hidden=\"1\"><c r=\"A1\"><v>1</v></c></row><row r=\"2\"><c r=\"A2\"><v>2</v></c></row></sheetData>"
+            "xl/worksheets/sheet2.xml", worksheetXml "<sheetData/>"
+            "xl/worksheets/sheet3.xml", worksheetXml "<sheetData/>" ]
+match XlsxReader.loadBytesNative stateWorkbook with
+| Some wb ->
+    ok "sheet-state"
+       ((wb.Sheets |> List.map (fun s -> s.Name, s.State)) = [ "Shown", XlsxReader.SheetVisible; "Hidden", XlsxReader.SheetHidden; "Deep", XlsxReader.SheetVeryHidden ])
+       (sprintf "%A" (wb.Sheets |> List.map (fun s -> s.Name, s.State)))
+    ok "sheet-visible-names"
+       (Main.Excel.visibleSheetNames wb = [| "Shown" |] && Main.Excel.sheetStates wb = [| "visible"; "hidden"; "veryHidden" |])
+       (sprintf "%A %A" (Main.Excel.visibleSheetNames wb) (Main.Excel.sheetStates wb))
+    let shown = wb.Sheets.Head
+    ok "hidden-rows-and-columns"
+       ((shown.Rows |> List.map (fun r -> r.Hidden)) = [ true; false ]
+        && (shown.Columns |> List.map (fun c -> c.Index, c.MaxIndex, c.Hidden)) = [ 2, 3, true ])
+       (sprintf "%A %A" shown.Rows shown.Columns)
+| None -> ok "sheet-state" false "package did not load"
+
+// ----- namespace prefixes and package relationships --------------------------
+
+let prefixedWorkbook =
+    zipOf [ "_rels/.rels", sprintf "<pr:Relationships xmlns:pr=\"%s\"><pr:Relationship Id=\"rId1\" Type=\"%s/officeDocument\" Target=\"/book/main.xml\"/></pr:Relationships>" pkgRelNs relNs
+            "book/main.xml", sprintf "<x:workbook xmlns:x=\"%s\" xmlns:rel=\"%s\"><x:sheets><x:sheet name=\"Data\" sheetId=\"1\" rel:id=\"rId7\"/></x:sheets></x:workbook>" ssNs relNs
+            "book/_rels/main.xml.rels", sprintf "<pr:Relationships xmlns:pr=\"%s\"><pr:Relationship Id=\"rId7\" Type=\"%s/worksheet\" Target=\"sheets/one.xml\"/><pr:Relationship Id=\"rId8\" Type=\"%s/sharedStrings\" Target=\"strings.xml\"/></pr:Relationships>" pkgRelNs relNs relNs
+            "book/strings.xml", sprintf "<sst xmlns=\"%s\"><si><t>hello</t></si></sst>" ssNs
+            "book/sheets/one.xml", sprintf "<x:worksheet xmlns:x=\"%s\" xmlns:rel=\"%s\"><x:sheetData><x:row r=\"1\"><x:c r=\"A1\" t=\"s\"><x:v>0</x:v></x:c></x:row></x:sheetData><x:hyperlinks><x:hyperlink ref=\"A1\" rel:id=\"rId1\"/></x:hyperlinks></x:worksheet>" ssNs relNs
+            "book/sheets/_rels/one.xml.rels", sprintf "<Relationships xmlns=\"%s\"><Relationship Id=\"rId1\" Type=\"%s/hyperlink\" Target=\"https://example.com/\" TargetMode=\"External\"/></Relationships>" pkgRelNs relNs ]
+match XlsxReader.loadBytesNative prefixedWorkbook with
+| Some wb ->
+    let sheet = wb.Sheets |> List.tryHead
+    ok "prefixed-workbook-loads"
+       ((sheet |> Option.map (fun s -> s.Name)) = Some "Data"
+        && (sheet |> Option.bind (fun s -> s.Rows |> List.tryHead) |> Option.map (fun r -> XlsxReader.resolveValue wb r.Cells.Head.Value)) = Some (XlsxReader.String "hello"))
+       (sprintf "%A" wb.Sheets)
+    ok "prefixed-hyperlink-resolved"
+       ((sheet |> Option.map (fun s -> s.Hyperlinks |> List.map (fun h -> h.Target))) = Some [ "https://example.com/" ])
+       (sprintf "%A" (sheet |> Option.map (fun s -> s.Hyperlinks)))
+| None -> ok "prefixed-workbook-loads" false "package did not load"
+
+// ----- invariant-culture parsing ---------------------------------------------
+
+let cultureBody = "<sheetData><row r=\"1\" ht=\"12.5\" customHeight=\"1\"><c r=\"A1\"><v>1.5</v></c><c r=\"B1\"><v>-2</v></c><c r=\"C1\" t=\"s\"><v>oops</v></c><c r=\"D1\" t=\"s\"><v>0.0</v></c></row></sheetData>"
+let savedCulture = Globalization.CultureInfo.CurrentCulture
+for cultureName in [ "de-DE"; "sv-SE" ] do
+    for label, pad in bothPaths do
+        Globalization.CultureInfo.CurrentCulture <- Globalization.CultureInfo cultureName
+        let result =
+            try Result.Ok (loadOne pad "" cultureBody [ "xl/sharedStrings.xml", sprintf "<sst xmlns=\"%s\"><si><t>zero</t></si></sst>" ssNs ])
+            with ex -> Result.Error ex.Message
+        Globalization.CultureInfo.CurrentCulture <- savedCulture
+        match result with
+        | Result.Ok wb ->
+            let v ref = cellOf wb ref |> Option.map (fun c -> c.Value)
+            ok (sprintf "culture-%s-%s" cultureName label)
+               (v "A1" = Some (XlsxReader.Number 1.5)
+                && v "B1" = Some (XlsxReader.Number -2.0)
+                && v "C1" = Some XlsxReader.Empty
+                && v "D1" = Some (XlsxReader.SharedString 0)
+                && wb.Sheets.Head.Rows.Head.Height = Some 12.5)
+               (sprintf "%A %A %A %A %A" (v "A1") (v "B1") (v "C1") (v "D1") wb.Sheets.Head.Rows.Head.Height)
+        | Result.Error message -> ok (sprintf "culture-%s-%s" cultureName label) false message
+
+// ----- comments: authors and rich runs ---------------------------------------
+
+let commentsPart =
+    sprintf "<comments xmlns=\"%s\"><authors><author>Ada</author><author>Grace</author></authors><commentList><comment ref=\"A1\" authorId=\"1\"><text><r><rPr><b/></rPr><t>Hel</t></r><r><t xml:space=\"preserve\">lo </t></r><r><t>there_x000D_</t></r></text></comment><comment ref=\"B2\" authorId=\"0\"><text><t>plain</t></text></comment></commentList></comments>" ssNs
+let commentRels =
+    sprintf "<Relationships xmlns=\"%s\"><Relationship Id=\"rId1\" Type=\"%s/comments\" Target=\"../notes/c.xml\"/></Relationships>" pkgRelNs relNs
+for label, pad in bothPaths do
+    let wb = loadOne pad "" "<sheetData><row r=\"1\"><c r=\"A1\"><v>1</v></c></row></sheetData>" [ "xl/notes/c.xml", commentsPart; "xl/worksheets/_rels/sheet1.xml.rels", commentRels ]
+    let comments = wb.Sheets.Head.Comments |> List.map (fun c -> c.CellRef.Column, c.Author, c.Text)
+    ok (sprintf "comments-author-and-runs-%s" label)
+       (comments = [ "A", Some "Grace", "Hello there\r"; "B", Some "Ada", "plain" ])
+       (sprintf "%A" comments)
+
+// ----- data validation attributes, _xHHHH_ escapes ---------------------------
+
+let dvBody =
+    "<sheetData><row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"inlineStr\"><is><t>x_x0009_y</t></is></c><c r=\"C1\" t=\"str\"><f>\"q\"</f><v>a_x000A_b</v></c></row></sheetData>"
+    + "<dataValidations count=\"2\"><dataValidation type=\"whole\" errorStyle=\"warning\" operator=\"between\" allowBlank=\"1\" showInputMessage=\"1\" showErrorMessage=\"1\" errorTitle=\"Bad\" error=\"1 to 5\" promptTitle=\"Pick\" prompt=\"A number\" sqref=\"A1\"><formula1>1</formula1><formula2>5</formula2></dataValidation>"
+    + "<dataValidation type=\"list\" showDropDown=\"1\" sqref=\"B1\"><formula1>\"a,b\"</formula1></dataValidation></dataValidations>"
+let dvWb = loadOne false "" dvBody [ "xl/sharedStrings.xml", sprintf "<sst xmlns=\"%s\"><si><t>line1_x000D_\nline2 _x005F_x0041_ _x0041_</t></si></sst>" ssNs ]
+ok "validation-attributes"
+   (match dvWb.Sheets.Head.DataValidations with
+    | [ a; b ] ->
+        a.ShowErrorMessage && a.ShowInputMessage && a.AllowBlank && a.ShowDropDown
+        && a.ErrorTitle = Some "Bad" && a.ErrorMessage = Some "1 to 5" && a.ErrorStyle = Some "warning"
+        && a.PromptTitle = Some "Pick" && a.Prompt = Some "A number"
+        && not b.ShowErrorMessage && not b.ShowInputMessage && not b.AllowBlank && not b.ShowDropDown
+    | _ -> false)
+   (sprintf "%A" dvWb.Sheets.Head.DataValidations)
+ok "xstring-escapes-decoded"
+   (dvWb.SharedStrings.[0] = "line1\r\nline2 _x0041_ A"
+    && (cellOf dvWb "B1" |> Option.map (fun c -> c.Value)) = Some (XlsxReader.String "x\ty")
+    && (cellOf dvWb "C1" |> Option.map (fun c -> c.Value)) = Some (XlsxReader.String "a\nb"))
+   (sprintf "%A %A %A" dvWb.SharedStrings.[0] (cellOf dvWb "B1") (cellOf dvWb "C1"))
 
 printfn ""
 printfn "OfficeFormat XLSX reader tests: %d passed, %d failed" pass fail

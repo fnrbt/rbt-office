@@ -133,7 +133,17 @@ type MergeCell = {
 
 type Cell = {
     Reference: CellReference
+    /// The cell's value. For a formula cell this is the result Excel cached
+    /// in `<v>`; only a formula with no cached result (an uncalculated
+    /// workbook) surfaces as `Formula text` here.
     Value: CellValue
+    /// Formula text without the leading `=`, when the cell has an `<f>`.
+    /// Shared formulas (`t="shared"`) are expanded: every cell in the group
+    /// carries the master's text with its relative references shifted.
+    Formula: string option
+    /// For the anchor of a legacy array formula (`<f t="array" ref="B1:B3">`),
+    /// the range the formula fills. None for ordinary formulas.
+    ArrayRef: string option
     StyleIndex: int option
     Style: CellStyle option
     /// Per-run rich-text formatting for inline-string cells whose
@@ -212,6 +222,9 @@ type ConditionalFormatRule = {
     /// `dataBar` min/max cfvo bounds — (type, optional value) pairs.
     /// Two entries when present; empty otherwise.
     DataBarCfvo: (string * string option) list
+    /// `text` attribute of containsText / notContainsText / beginsWith /
+    /// endsWith rules — the literal the rule searches for.
+    Text: string option
     /// `iconSet` family name (e.g. "3TrafficLights1", "5Arrows").
     /// None for non-iconSet rules.
     IconSet: string option
@@ -265,6 +278,20 @@ type DataValidation = {
     AllowBlank: bool
     ShowDropDown: bool
     ErrorMessage: string option
+    /// `errorTitle` — caption of the error alert.
+    ErrorTitle: string option
+    /// `errorStyle`: "stop" (default, rejects the entry), "warning" or
+    /// "information". None when the attribute is absent.
+    ErrorStyle: string option
+    /// `showErrorMessage`. Excel only enforces a validation (shows the
+    /// alert and rejects the entry) when this is set.
+    ShowErrorMessage: bool
+    /// `prompt` — the input message shown while the cell is selected.
+    Prompt: string option
+    /// `promptTitle` — caption of the input message.
+    PromptTitle: string option
+    /// `showInputMessage`.
+    ShowInputMessage: bool
 }
 
 type NamedRange = {
@@ -491,8 +518,17 @@ let defaultHeaderFooter =
       FirstHeader = None; FirstFooter = None; DifferentOddEven = false; DifferentFirst = false
       ScaleWithDoc = true }
 
+/// `<sheet state="…">` in workbook.xml. Hidden sheets can be unhidden from
+/// the UI; very hidden ones only through VBA. Neither shows a tab.
+type SheetState =
+    | SheetVisible
+    | SheetHidden
+    | SheetVeryHidden
+
 type Worksheet = {
     Name: string
+    /// Tab visibility, from the workbook's `<sheet state>`.
+    State: SheetState
     Rows: Row list
     MergedCells: MergeCell list
     Columns: ColumnInfo list
@@ -549,7 +585,31 @@ type Workbook = {
     Relationships: Relationship list
     NamedRanges: NamedRange list
     ThemeAccents: string array
+    /// True when the source workbook uses the 1904 date system
+    /// (`<workbookPr date1904="1"/>`). Every consumer of this model assumes
+    /// 1900-system serials, so the reader has already shifted the value of
+    /// each date-formatted numeric cell by +1462 days; the flag records the
+    /// origin only. Numbers that are dates but carry no date number format
+    /// are left as stored.
+    Date1904: bool
 }
+
+// File content is always written with invariant formatting, whatever the
+// machine's culture: every numeric parse of package text goes through these.
+// (Under de-DE a culture-sensitive parse reads "1.5" as 15; under sv-SE it
+// rejects "-1" because the culture's minus sign is U+2212.)
+let internal tryParseInt (text: string) : int option =
+    match System.Int32.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture) with
+    | true, value -> Some value
+    | _ -> None
+
+let internal tryParseFloat (text: string) : float option =
+    match System.Double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+    | true, value -> Some value
+    | _ -> None
+
+let internal isTrueText (text: string) =
+    text = "1" || text = "true"
 
 // DSL for XLSX-specific patterns
 module Xlsx =
@@ -564,16 +624,46 @@ module Xlsx =
             | Some name when Ns.stripNs name = localName -> Some child
             | _ -> None)
 
-    let private descendantTextConcat localName node =
+    /// Undo SpreadsheetML's `_xHHHH_` escaping (ST_Xstring): characters that
+    /// XML cannot carry — control characters, and a carriage return that
+    /// must survive line-end normalisation — are stored as `_x000D_` etc.
+    /// A literal underscore that would otherwise read as an escape is itself
+    /// written `_x005F_`, which this decodes back to `_`.
+    let internal decodeXmlEscapes (text: string) : string =
+        if not (text.Contains "_x") then text
+        else
+            let isHex (c: char) =
+                (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+            let sb = StringBuilder(text.Length)
+            let mutable i = 0
+            while i < text.Length do
+                if text.[i] = '_'
+                   && i + 6 < text.Length
+                   && text.[i + 1] = 'x'
+                   && text.[i + 6] = '_'
+                   && isHex text.[i + 2] && isHex text.[i + 3] && isHex text.[i + 4] && isHex text.[i + 5] then
+                    sb.Append(char (System.Convert.ToInt32(text.Substring(i + 2, 4), 16))) |> ignore
+                    i <- i + 7
+                else
+                    sb.Append(text.[i]) |> ignore
+                    i <- i + 1
+            sb.ToString()
+
+    /// Concatenated text of every `<localName>` element under `node`, in
+    /// document order, skipping phonetic runs. Each element's text is
+    /// `_xHHHH_`-decoded.
+    let internal descendantTextConcat localName node =
         let sb = StringBuilder()
         let rec walk current =
             match current with
             | XmlDsl.Element(name, _, children) ->
                 if Ns.stripNs name = localName then
+                    let own = StringBuilder()
                     for child in children do
                         match child with
-                        | XmlDsl.Text text -> sb.Append(text) |> ignore
+                        | XmlDsl.Text text -> own.Append(text) |> ignore
                         | _ -> walk child
+                    sb.Append(decodeXmlEscapes (own.ToString())) |> ignore
                 elif Ns.stripNs name = "rPh" then
                     // Phonetic (furigana) run: a reading aid, not cell text.
                     ()
@@ -583,6 +673,24 @@ module Xlsx =
             | _ -> ()
         walk node
         sb.ToString()
+
+    /// 1-based column index -> letters ("A", "B", ..., "AA").
+    let internal indexToColumnLetters (n: int) : string =
+        let mutable k = n
+        let mutable letters = ""
+        while k > 0 do
+            let rem = (k - 1) % 26
+            letters <- string (char (int 'A' + rem)) + letters
+            k <- (k - 1) / 26
+        letters
+
+    /// Column letters (A, B, ..., AA) -> 1-based column index; 0 when empty.
+    let internal columnLettersToIndex (letters: string) =
+        let mutable acc = 0
+        for c in letters do
+            if System.Char.IsLetter c then
+                acc <- acc * 26 + (int (System.Char.ToUpperInvariant c) - int 'A' + 1)
+        acc
 
     let private richRunText (runs: (string * RunProps) list) =
         let sb = StringBuilder()
@@ -649,7 +757,7 @@ module Xlsx =
         let fontSize =
             sElem "sz" rPr
             |> Option.bind (Xml.attr "val")
-            |> Option.bind (fun v -> try Some (float v) with _ -> None)
+            |> Option.bind tryParseFloat
         let vertAlign =
             sElem "vertAlign" rPr
             |> Option.bind (Xml.attr "val")
@@ -728,7 +836,7 @@ module Xlsx =
                     doneReading <- true
                 | _ -> ()
             let text = sb.ToString()
-            if preserve then text else text.Trim()
+            decodeXmlEscapes (if preserve then text else text.Trim())
 
     let private parseSharedStringRunProps (reader: System.Xml.XmlReader) =
         let mutable bold = false
@@ -854,13 +962,21 @@ module Xlsx =
         entries.ToArray()
 #endif
 
-    let private cellValueFromParts cellType formula value inlineText : CellValue =
+    let private cellValueFromParts (cellType: string option) (value: string option) (inlineText: string option) : CellValue =
         match cellType, value with
         | Some "inlineStr", _ ->
             inlineText |> Option.defaultValue "" |> String
-        | Some "s", Some v -> SharedString (int v)
-        | Some "b", Some v -> Boolean (v = "1")
-        | Some "str", Some v -> String v
+        | Some "s", Some v ->
+            // The index is an integer; tolerate "3.0" from sloppy writers and
+            // treat anything unusable as an empty cell rather than throwing.
+            match tryParseInt (v.Trim()) with
+            | Some idx -> SharedString idx
+            | None ->
+                match tryParseFloat v with
+                | Some n when n >= 0.0 && n < 2147483647.0 && n = System.Math.Floor n -> SharedString (int n)
+                | _ -> Empty
+        | Some "b", Some v -> Boolean (isTrueText (v.Trim()))
+        | Some "str", Some v -> String (decodeXmlEscapes v)
         | Some "e", Some v ->
             // Error cell: <c t="e"><v>#DIV/0!</v></c>. Strip the leading
             // `#` so downstream `Error` rendering doesn't double up the
@@ -868,39 +984,222 @@ module Xlsx =
             let stripped = if v.StartsWith "#" then v.Substring 1 else v
             CellValue.Error stripped
         | _, Some v ->
-            match System.Double.TryParse(v) with
-            | true, n -> Number n
-            | false, _ -> String v
+            match tryParseFloat v with
+            | Some n -> Number n
+            | None -> if v = "" then Empty else String v
         | _ ->
-            match formula with
-            | Some f -> Formula f
-            | None ->
-                // No <v>, no <f> — but an <is>/<t> might still be present
-                // even if the cell omits an explicit t="inlineStr".
-                match inlineText with
-                | Some t when t <> "" -> String t
-                | _ -> Empty
+            // No <v> — but an <is>/<t> might still be present even if the
+            // cell omits an explicit t="inlineStr".
+            match inlineText with
+            | Some t when t <> "" -> String t
+            | _ -> Empty
 
-    // Cell value extraction with pattern matching. Excel formula cells
-    // store both the expression and a cached result in <v>; we can't
-    // evaluate the expression, so prefer the cached value (matching what
-    // any XLSX viewer shows) and only fall back to the formula text when
-    // no cache is present (uncalculated workbooks).
-    let cellValue (cNode: XmlNode) : CellValue =
-        let cellType = Xml.attr "t" cNode
-        let formula = sElem "f" cNode |> Option.bind Xml.text
-        let value = sElem "v" cNode |> Option.bind Xml.text
-        // `t="inlineStr"` cells carry their text directly inside <is><t>...</t></is>
-        // instead of pointing at a sharedStrings index. Rare in normal
-        // Excel exports but emitted by various code generators (POI, the
-        // .NET OpenXmlSdk's row-streaming writer, sql-server-style mass
-        // importers) where deduping into sharedStrings isn't worth the
-        // cost. Without this case those cells came back as Empty.
-        let inlineText =
-            sElem "is" cNode
-            |> Option.map (descendantTextConcat "t")
+    let private isAsciiLetter (c: char) = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+    let private isAsciiDigit (c: char) = c >= '0' && c <= '9'
+    /// Characters that continue a name / function / sheet identifier.
+    let private isNameChar (c: char) =
+        isAsciiLetter c || isAsciiDigit c || c = '_' || c = '.' || c = '\\' || c > '\127'
 
-        cellValueFromParts cellType formula value inlineText
+    /// Rewrite a formula for a cell `dRow` rows and `dCol` columns away from
+    /// where it was written, the way Excel fills a shared formula: relative
+    /// parts of A1 references, whole-column (`A:C`) and whole-row (`1:3`)
+    /// ranges move, `$`-anchored parts stay. String literals, quoted sheet
+    /// names, structured references and function names are left alone. A
+    /// reference pushed off the sheet becomes `#REF!`.
+    let internal shiftFormulaRefs (formula: string) (dRow: int) (dCol: int) : string =
+        if dRow = 0 && dCol = 0 then formula
+        else
+            let n = formula.Length
+            let sb = StringBuilder(n + 8)
+            let maxRow = 1048576
+            let maxCol = 16384
+            // `$`? + 1..3 letters at p -> (absolute, column index, next); index 0 = no match.
+            let readCol (p: int) : bool * int * int =
+                let mutable q = p
+                let abs = q < n && formula.[q] = '$'
+                if abs then q <- q + 1
+                let start = q
+                let mutable col = 0
+                while q < n && isAsciiLetter formula.[q] && q - start < 4 do
+                    col <- col * 26 + (int (System.Char.ToUpperInvariant formula.[q]) - int 'A' + 1)
+                    q <- q + 1
+                if q = start || q - start > 3 || col > maxCol then abs, 0, p else abs, col, q
+            // `$`? + digits at p -> (absolute, row, next); row 0 = no match.
+            let readRow (p: int) : bool * int * int =
+                let mutable q = p
+                let abs = q < n && formula.[q] = '$'
+                if abs then q <- q + 1
+                let start = q
+                let mutable row = 0
+                while q < n && isAsciiDigit formula.[q] && q - start < 8 do
+                    row <- row * 10 + (int formula.[q] - int '0')
+                    q <- q + 1
+                if q = start || q - start > 7 || row < 1 || row > maxRow then abs, 0, p else abs, row, q
+            // A reference must not run into more identifier text, a call
+            // (`LOG10(`) or a sheet qualifier (`AB1!`).
+            let endsToken (p: int) =
+                p >= n || not (isNameChar formula.[p] || formula.[p] = '(' || formula.[p] = '!')
+            let appendCol (abs: bool) (col: int) =
+                if abs then sb.Append('$') |> ignore
+                sb.Append(indexToColumnLetters col) |> ignore
+            let appendRow (abs: bool) (row: int) =
+                if abs then sb.Append('$') |> ignore
+                sb.Append(row) |> ignore
+            let mutable i = 0
+            // `1:3` / `$1:$3` at p: emit shifted and advance, or leave untouched.
+            let tryRowRange (p: int) : bool =
+                let a1, r1, q1 = readRow p
+                if r1 > 0 && q1 < n && formula.[q1] = ':' then
+                    let a2, r2, q2 = readRow (q1 + 1)
+                    if r2 > 0 && endsToken q2 then
+                        let n1 = if a1 then r1 else r1 + dRow
+                        let n2 = if a2 then r2 else r2 + dRow
+                        if n1 < 1 || n1 > maxRow || n2 < 1 || n2 > maxRow then
+                            sb.Append("#REF!") |> ignore
+                        else
+                            appendRow a1 n1
+                            sb.Append(':') |> ignore
+                            appendRow a2 n2
+                        i <- q2
+                        true
+                    else false
+                else false
+            while i < n do
+                let ch = formula.[i]
+                if ch = '"' || ch = '\'' then
+                    // String literal or quoted sheet name; a doubled quote is an escape.
+                    sb.Append(ch) |> ignore
+                    i <- i + 1
+                    let mutable closed = false
+                    while not closed && i < n do
+                        let c = formula.[i]
+                        sb.Append(c) |> ignore
+                        i <- i + 1
+                        if c = ch then
+                            if i < n && formula.[i] = ch then
+                                sb.Append(ch) |> ignore
+                                i <- i + 1
+                            else
+                                closed <- true
+                elif ch = '[' then
+                    // Structured reference / external-workbook index: copy to the matching bracket.
+                    let mutable depth = 0
+                    let mutable finished = false
+                    while not finished && i < n do
+                        let c = formula.[i]
+                        if c = '[' then depth <- depth + 1
+                        elif c = ']' then depth <- depth - 1
+                        sb.Append(c) |> ignore
+                        i <- i + 1
+                        if depth = 0 then finished <- true
+                elif ch = '$' || isAsciiLetter ch then
+                    let cAbs, col, afterCol = readCol i
+                    let mutable handled = false
+                    if col > 0 then
+                        let rAbs, row, afterRow = readRow afterCol
+                        if row > 0 && endsToken afterRow then
+                            let c2 = if cAbs then col else col + dCol
+                            let r2 = if rAbs then row else row + dRow
+                            if c2 < 1 || c2 > maxCol || r2 < 1 || r2 > maxRow then
+                                sb.Append("#REF!") |> ignore
+                            else
+                                appendCol cAbs c2
+                                appendRow rAbs r2
+                            i <- afterRow
+                            handled <- true
+                        elif row = 0 && afterCol < n && formula.[afterCol] = ':' then
+                            let cAbs2, col2, afterCol2 = readCol (afterCol + 1)
+                            if col2 > 0 && endsToken afterCol2 then
+                                let n1 = if cAbs then col else col + dCol
+                                let n2 = if cAbs2 then col2 else col2 + dCol
+                                if n1 < 1 || n1 > maxCol || n2 < 1 || n2 > maxCol then
+                                    sb.Append("#REF!") |> ignore
+                                else
+                                    appendCol cAbs n1
+                                    sb.Append(':') |> ignore
+                                    appendCol cAbs2 n2
+                                i <- afterCol2
+                                handled <- true
+                    elif ch = '$' then
+                        handled <- tryRowRange i
+                    if not handled then
+                        if ch = '$' then
+                            sb.Append(ch) |> ignore
+                            i <- i + 1
+                        else
+                            // Function / defined name / sheet name: copy the whole run.
+                            while i < n && isNameChar formula.[i] do
+                                sb.Append(formula.[i]) |> ignore
+                                i <- i + 1
+                elif isAsciiDigit ch then
+                    if not (tryRowRange i) then
+                        while i < n && isNameChar formula.[i] do
+                            sb.Append(formula.[i]) |> ignore
+                            i <- i + 1
+                else
+                    sb.Append(ch) |> ignore
+                    i <- i + 1
+            sb.ToString()
+
+    /// True when a number-format code renders a date or time — i.e. the
+    /// number under it is a date serial. Literal text ("..."), escaped
+    /// characters and bracketed sections ([Red], [$-409]) are ignored, except
+    /// the elapsed-time brackets [h] [m] [s].
+    let internal isDateFormatCode (code: string) : bool =
+        if code = "" || code = "@" || code.Equals("General", System.StringComparison.OrdinalIgnoreCase) then false
+        else
+            let mutable found = false
+            let mutable i = 0
+            let n = code.Length
+            while not found && i < n do
+                let ch = code.[i]
+                if ch = '"' then
+                    i <- i + 1
+                    while i < n && code.[i] <> '"' do i <- i + 1
+                    i <- i + 1
+                elif ch = '\\' || ch = '_' || ch = '*' then
+                    i <- i + 2
+                elif ch = '[' then
+                    let close = code.IndexOf(']', i)
+                    let inner = if close > i then code.Substring(i + 1, close - i - 1).ToLowerInvariant() else ""
+                    if inner <> "" && (inner |> Seq.forall (fun c -> c = 'h') || inner |> Seq.forall (fun c -> c = 'm') || inner |> Seq.forall (fun c -> c = 's')) then
+                        found <- true
+                    i <- if close > i then close + 1 else n
+                else
+                    match System.Char.ToLowerInvariant ch with
+                    | 'd' | 'm' | 'y' | 'h' | 's' -> found <- true
+                    | 'e' ->
+                        // `E+00` is scientific notation; a bare `e` is the era year.
+                        if i + 1 < n && (code.[i + 1] = '+' || code.[i + 1] = '-') then i <- i + 1
+                        else found <- true
+                    | _ -> ()
+                    i <- i + 1
+            found
+
+    /// State one worksheet parse carries from cell to cell. Shared by the
+    /// DOM and the streaming parser so both resolve cells identically.
+    type internal SheetParseContext = {
+        Styles: CellStyle array option
+        /// Per cellXf index: the number under this style is a 1904-system
+        /// date serial to move into the 1900 system. Empty for 1900 workbooks.
+        DateShift: bool array
+        /// Shared-formula masters seen so far: `si` -> (row, column, text).
+        SharedFormulas: System.Collections.Generic.Dictionary<string, int * int * string>
+    }
+
+    /// Days between the 1904 and 1900 date systems' epochs.
+    let internal date1904Offset = 1462.0
+
+    let internal newSheetContext (styles: CellStyle array option) (date1904: bool) : SheetParseContext =
+        {
+            Styles = styles
+            DateShift =
+                match styles, date1904 with
+                | Some styles, true ->
+                    styles |> Array.map (fun style -> style.NumberFormat |> Option.exists isDateFormatCode)
+                | _ -> [||]
+            SharedFormulas = System.Collections.Generic.Dictionary<string, int * int * string>()
+        }
 
     let private resolvedStyle (styles: CellStyle array option) styleIdx =
         match styles, styleIdx with
@@ -908,94 +1207,183 @@ module Xlsx =
         | Some styles, None when styles.Length > 0 -> Some styles.[0]
         | _ -> None
 
+    /// Assemble a cell from the pieces either parser extracted. Excel stores
+    /// both the formula and its last computed result; the model keeps both.
+    let private buildCell (ctx: SheetParseContext) (column: string) (colIndex: int) (rowIndex: int)
+                          (cellType: string option) (styleIdx: int option)
+                          (fText: string option) (fType: string option) (fRef: string option) (fSi: string option)
+                          (value: string option) (inlineText: string option) (inlineRuns: (string * RunProps) list) : Cell =
+        let formula, arrayRef =
+            match fText with
+            | None -> None, None
+            | Some text ->
+                match fType with
+                | Some "shared" ->
+                    if text <> "" then
+                        // Master cell of a shared group: later cells reuse its text.
+                        match fSi with
+                        | Some si -> ctx.SharedFormulas.[si] <- (rowIndex, colIndex, text)
+                        | None -> ()
+                        Some text, None
+                    else
+                        match fSi with
+                        | Some si ->
+                            match ctx.SharedFormulas.TryGetValue si with
+                            | true, (masterRow, masterCol, masterText) ->
+                                Some (shiftFormulaRefs masterText (rowIndex - masterRow) (colIndex - masterCol)), None
+                            | _ -> None, None
+                        | None -> None, None
+                | Some "array" -> (if text <> "" then Some text else None), fRef
+                // A what-if data table: its "formula" is a pair of input-cell
+                // references, not an expression. Keep the cached result only.
+                | Some "dataTable" -> None, None
+                | _ -> (if text <> "" then Some text else None), None
+        let cached =
+            match cellValueFromParts cellType value inlineText with
+            | Number n ->
+                let idx = styleIdx |> Option.defaultValue 0
+                if idx >= 0 && idx < ctx.DateShift.Length && ctx.DateShift.[idx] then Number (n + date1904Offset)
+                else Number n
+            | other -> other
+        {
+            Reference = { Column = column; Row = rowIndex }
+            Value =
+                match cached, formula with
+                | Empty, Some f -> Formula f
+                | _ -> cached
+            Formula = formula
+            ArrayRef = arrayRef
+            StyleIndex = styleIdx
+            Style = resolvedStyle ctx.Styles styleIdx
+            InlineRuns =
+                match cellType with
+                | Some "inlineStr" -> inlineRuns
+                | _ -> []
+        }
+
+    // Cell value extraction with pattern matching. Returns the cached
+    // result when there is one, the formula text otherwise (uncalculated
+    // workbooks); the `Cell` record carries both.
+    let cellValue (cNode: XmlNode) : CellValue =
+        let cellType = Xml.attr "t" cNode
+        let value = sElem "v" cNode |> Option.bind Xml.text
+        let inlineText =
+            sElem "is" cNode
+            |> Option.map (descendantTextConcat "t")
+        match cellValueFromParts cellType value inlineText, sElem "f" cNode |> Option.bind Xml.text with
+        | Empty, Some f when f <> "" -> Formula f
+        | cached, _ -> cached
+
+    /// Parse one `<c>`. `r` is optional (streaming writers omit it): a cell
+    /// without it sits one column right of the previous cell in its row.
+    /// Returns the cell and its 1-based column index.
+    let private cellFromNode (ctx: SheetParseContext) (rowIndex: int) (prevCol: int) (cNode: XmlNode) : Cell * int =
+        let column, colIndex, row =
+            let inferred () = indexToColumnLetters (prevCol + 1), prevCol + 1, rowIndex
+            match Xml.attr "r" cNode with
+            | Some ref ->
+                let letters, parsedRow = parseCellRefParts ref
+                if letters = "" then inferred ()
+                else letters, columnLettersToIndex letters, (if parsedRow > 0 then parsedRow else rowIndex)
+            | None -> inferred ()
+        let cellType = Xml.attr "t" cNode
+        let styleIdx = Xml.attr "s" cNode |> Option.bind tryParseInt
+        let fNode = sElem "f" cNode
+        let fText = fNode |> Option.map (fun f -> Xml.text f |> Option.defaultValue "")
+        let value = sElem "v" cNode |> Option.bind Xml.text
+        // `t="inlineStr"` cells carry their text directly inside <is><t>...</t></is>
+        // instead of pointing at a sharedStrings index. Rare in normal
+        // Excel exports but emitted by various code generators (POI, the
+        // .NET OpenXmlSdk's row-streaming writer, sql-server-style mass
+        // importers) where deduping into sharedStrings isn't worth the cost.
+        let isNode = sElem "is" cNode
+        let inlineText = isNode |> Option.map (descendantTextConcat "t")
+        // Inline-string cells with <r> children carry per-run formatting
+        // identical in shape to sharedStrings rich text.
+        let inlineRuns =
+            match cellType with
+            | Some "inlineStr" -> isNode |> Option.map richRunsOf |> Option.defaultValue []
+            | _ -> []
+        let cell =
+            buildCell ctx column colIndex row cellType styleIdx
+                fText (fNode |> Option.bind (Xml.attr "t")) (fNode |> Option.bind (Xml.attr "ref")) (fNode |> Option.bind (Xml.attr "si"))
+                value inlineText inlineRuns
+        cell, colIndex
+
     // Cell extraction with applicative style
     let cellWithStyles (styles: CellStyle array option) (cNode: XmlNode) : Cell option =
         Xml.attr "r" cNode
-        |> Option.map (fun ref ->
-            let styleIdx = Xml.attr "s" cNode |> Option.map int
-            // Inline-string cells with <r> children carry per-run formatting
-            // identical in shape to sharedStrings rich text. Lift those runs
-            // here so the consumer can route them through the same
-            // RichRuns map as SharedString-backed rich text.
-            let inlineRuns =
-                match Xml.attr "t" cNode with
-                | Some "inlineStr" ->
-                    sElem "is" cNode
-                    |> Option.map richRunsOf
-                    |> Option.defaultValue []
-                | _ -> []
-            {
-                Reference = parseCellRef ref
-                Value = cellValue cNode
-                StyleIndex = styleIdx
-                Style = resolvedStyle styles styleIdx
-                InlineRuns = inlineRuns
-            })
+        |> Option.map (fun _ -> cellFromNode (newSheetContext styles false) 0 0 cNode |> fst)
 
     let cell cNode = cellWithStyles None cNode
 
-    /// 1-based column index -> letters ("A", "B", ..., "AA").
-    let private indexToColumnLetters (n: int) : string =
-        let mutable k = n
-        let mutable letters = ""
-        while k > 0 do
-            let rem = (k - 1) % 26
-            letters <- string (char (int 'A' + rem)) + letters
-            k <- (k - 1) / 26
-        letters
+    /// Cells a `<row s=… customFormat="1" spans="a:b">` implies but does not
+    /// list: the row style (e.g. a fill bar) applies to every cell across the
+    /// span, so synthesize the missing ones (empty value, row style) — e.g. a
+    /// full-width title bar where only A1 carries text.
+    let private rowSpanCells (ctx: SheetParseContext) (rowIndex: int) (rowStyle: int option) (customFormat: bool) (spans: string option) (explicitCells: Cell list) : Cell list =
+        match (if customFormat then rowStyle else None), spans with
+        | Some s, Some spans ->
+            match spans.Split(':') with
+            | [| a; b |] ->
+                match tryParseInt a, tryParseInt b with
+                | Some c1, Some c2 when c2 >= c1 && c2 - c1 <= 256 ->
+                    let present = explicitCells |> List.map (fun c -> c.Reference.Column) |> Set.ofList
+                    let synth =
+                        [ for col in c1 .. c2 do
+                            let letters = indexToColumnLetters col
+                            if not (present.Contains letters) then
+                                yield { Reference = { Column = letters; Row = rowIndex }
+                                        Value = Empty
+                                        Formula = None
+                                        ArrayRef = None
+                                        StyleIndex = Some s
+                                        Style = resolvedStyle ctx.Styles (Some s)
+                                        InlineRuns = [] } ]
+                    explicitCells @ synth
+                | _ -> explicitCells
+            | _ -> explicitCells
+        | _ -> explicitCells
+
+    /// Parse one `<row>`. `r` is optional: a row without it follows the
+    /// previous row.
+    let private rowFromNode (ctx: SheetParseContext) (prevRow: int) (rowNode: XmlNode) : Row =
+        let rowIndex =
+            match Xml.attr "r" rowNode |> Option.bind tryParseInt with
+            | Some r when r > 0 -> r
+            | _ -> prevRow + 1
+        let customHeightAttr = Xml.attr "customHeight" rowNode |> Option.map isTrueText
+        // OOXML §18.3.1.73 default for customHeight is FALSE. When
+        // absent, the row's stored `ht` is just a hint Excel may
+        // override with the font-derived auto height. Only honor `ht`
+        // as the row's final height when customHeight is explicitly
+        // set to true.
+        let customHeight = customHeightAttr |> Option.defaultValue false
+        let rawHeight = Xml.attr "ht" rowNode |> Option.bind tryParseFloat
+        let height = if customHeight then rawHeight else None
+        let hidden = Xml.attr "hidden" rowNode |> Option.map isTrueText |> Option.defaultValue false
+        let mutable prevCol = 0
+        let explicitCells =
+            childElems "c" rowNode
+            |> List.map (fun cNode ->
+                let cell, colIndex = cellFromNode ctx rowIndex prevCol cNode
+                prevCol <- colIndex
+                cell)
+        let rowStyle = Xml.attr "s" rowNode |> Option.bind tryParseInt
+        let customFormat = Xml.attr "customFormat" rowNode |> Option.map isTrueText |> Option.defaultValue false
+        {
+            Index = rowIndex
+            Cells = rowSpanCells ctx rowIndex rowStyle customFormat (Xml.attr "spans" rowNode) explicitCells
+            Height = height
+            RawHeight = rawHeight
+            CustomHeight = customHeightAttr
+            Hidden = hidden
+        }
 
     // Row extraction
     let rowWithStyles (styles: CellStyle array option) (rowNode: XmlNode) : Row option =
         Xml.attr "r" rowNode
-        |> Option.map (fun r ->
-            let customHeightAttr =
-                Xml.attr "customHeight" rowNode
-                |> Option.map (fun v -> v = "1" || v = "true")
-            // OOXML §18.3.1.73 default for customHeight is FALSE. When
-            // absent, the row's stored `ht` is just a hint Excel may
-            // override with the font-derived auto height. Only honor `ht`
-            // as the row's final height when customHeight is explicitly
-            // set to true.
-            let customHeight = customHeightAttr |> Option.defaultValue false
-            let rawHeight = Xml.attr "ht" rowNode |> Option.map float
-            let height = if customHeight then rawHeight else None
-            let hidden = Xml.attr "hidden" rowNode |> Option.map (fun h -> h = "1" || h = "true") |> Option.defaultValue false
-            let explicitCells = sElems "c" rowNode |> List.choose (cellWithStyles styles)
-            // A `<row s=… customFormat="1">` applies that style (e.g. a fill
-            // bar) to every cell in the row across its `spans`. Synthesize the
-            // missing span cells (empty value, row style) so the fill renders
-            // — e.g. a full-width title bar where only A1 carries text.
-            let rowStyle = Xml.attr "s" rowNode |> Option.map int
-            let customFormat = Xml.attr "customFormat" rowNode |> Option.map (fun v -> v = "1" || v = "true") |> Option.defaultValue false
-            let cells =
-                match (if customFormat then rowStyle else None), Xml.attr "spans" rowNode with
-                | Some s, Some spans ->
-                    match spans.Split(':') with
-                    | [| a; b |] ->
-                        match System.Int32.TryParse a, System.Int32.TryParse b with
-                        | (true, c1), (true, c2) when c2 >= c1 && c2 - c1 <= 256 ->
-                            let present = explicitCells |> List.map (fun c -> c.Reference.Column) |> Set.ofList
-                            let synth =
-                                [ for col in c1 .. c2 do
-                                    let letters = indexToColumnLetters col
-                                    if not (present.Contains letters) then
-                                        yield { Reference = { Column = letters; Row = int r }
-                                                Value = Empty
-                                                StyleIndex = Some s
-                                                Style = resolvedStyle styles (Some s)
-                                                InlineRuns = [] } ]
-                            explicitCells @ synth
-                        | _ -> explicitCells
-                    | _ -> explicitCells
-                | _ -> explicitCells
-            {
-                Index = int r
-                Cells = cells
-                Height = height
-                RawHeight = rawHeight
-                CustomHeight = customHeightAttr
-                Hidden = hidden
-            })
+        |> Option.map (fun _ -> rowFromNode (newSheetContext styles false) 0 rowNode)
 
     let row rowNode = rowWithStyles None rowNode
 
@@ -1022,15 +1410,15 @@ module Xlsx =
     // range so the runner can fan the width out to every column in it.
     let columnInfo (colNode: XmlNode) : ColumnInfo option =
         Xml.attr "min" colNode
-        |> Option.map (fun minCol ->
-            let minIdx = int minCol
+        |> Option.bind tryParseInt
+        |> Option.map (fun minIdx ->
             let maxIdx =
                 Xml.attr "max" colNode
-                |> Option.map int
+                |> Option.bind tryParseInt
                 |> Option.defaultValue minIdx
-            let width = Xml.attr "width" colNode |> Option.map float
-            let hidden = Xml.attr "hidden" colNode |> Option.map (fun h -> h = "1") |> Option.defaultValue false
-            let style = Xml.attr "style" colNode |> Option.bind (fun s -> try Some (int s) with _ -> None)
+            let width = Xml.attr "width" colNode |> Option.bind tryParseFloat
+            let hidden = Xml.attr "hidden" colNode |> Option.map isTrueText |> Option.defaultValue false
+            let style = Xml.attr "style" colNode |> Option.bind tryParseInt
             {
                 Index = minIdx
                 MaxIndex = maxIdx
@@ -1061,9 +1449,9 @@ module Xlsx =
         | None -> emptySheetFormat
         | Some node ->
             {
-                BaseColWidth = Xml.attr "baseColWidth" node |> Option.bind (fun v -> try Some (float v) with _ -> None)
-                DefaultColWidth = Xml.attr "defaultColWidth" node |> Option.bind (fun v -> try Some (float v) with _ -> None)
-                DefaultRowHeight = Xml.attr "defaultRowHeight" node |> Option.bind (fun v -> try Some (float v) with _ -> None)
+                BaseColWidth = Xml.attr "baseColWidth" node |> Option.bind tryParseFloat
+                DefaultColWidth = Xml.attr "defaultColWidth" node |> Option.bind tryParseFloat
+                DefaultRowHeight = Xml.attr "defaultRowHeight" node |> Option.bind tryParseFloat
                 CustomDefaultHeight =
                     Xml.attr "customHeight" node
                     |> Option.map (fun v -> v = "1" || v = "true")
@@ -1088,7 +1476,7 @@ module Xlsx =
             | None -> None
             | Some range ->
                 let location = Xml.attr "location" node
-                let rid = Xml.attr "r:id" node
+                let rid = relationshipId node
                 let target, isInternal =
                     match location with
                     | Some loc -> loc, true
@@ -1131,10 +1519,8 @@ module Xlsx =
             else
                 let parseSplit a =
                     Xml.attr a pane
-                    |> Option.bind (fun s ->
-                        match System.Double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
-                        | true, v -> Some (int v)
-                        | _ -> None)
+                    |> Option.bind tryParseFloat
+                    |> Option.map int
                     |> Option.defaultValue 0
                 let x = parseSplit "xSplit"
                 let y = parseSplit "ySplit"
@@ -1144,18 +1530,10 @@ module Xlsx =
     // ----- print-related parsers -----
 
     let private parseFloatAttr (node: XmlNode) (name: string) : float option =
-        Xml.attr name node
-        |> Option.bind (fun s ->
-            match System.Double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
-            | true, v -> Some v
-            | _ -> None)
+        Xml.attr name node |> Option.bind tryParseFloat
 
     let private parseIntAttr (node: XmlNode) (name: string) : int option =
-        Xml.attr name node
-        |> Option.bind (fun s ->
-            match System.Int32.TryParse s with
-            | true, v -> Some v
-            | _ -> None)
+        Xml.attr name node |> Option.bind tryParseInt
 
     let private parseBoolAttr (node: XmlNode) (name: string) : bool =
         match Xml.attr name node with
@@ -1277,20 +1655,21 @@ module Xlsx =
         | null -> None
         | value -> Some value
 
+    let private strictRelationshipsNamespace = "http://purl.oclc.org/ooxml/officeDocument/relationships"
+
+    /// The element's relationship id, looked up by namespace so any prefix
+    /// (and the Strict-conformance namespace) works.
     let private nativeRelId (reader: System.Xml.XmlReader) =
         match reader.GetAttribute("id", relationshipsNamespace) with
-        | null -> nativeAttr reader "r:id"
+        | null ->
+            match reader.GetAttribute("id", strictRelationshipsNamespace) with
+            | null -> nativeAttr reader "r:id"
+            | value -> Some value
         | value -> Some value
 
-    let private tryParseNativeInt (value: string) =
-        match System.Int32.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture) with
-        | true, parsed -> Some parsed
-        | false, _ -> None
+    let private tryParseNativeInt (value: string) = tryParseInt value
 
-    let private tryParseNativeFloat (value: string) =
-        match System.Double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
-        | true, parsed -> Some parsed
-        | false, _ -> None
+    let private tryParseNativeFloat (value: string) = tryParseFloat value
 
     let private nativeIntAttr reader name =
         nativeAttr reader name |> Option.bind tryParseNativeInt
@@ -1341,7 +1720,8 @@ module Xlsx =
             columnsByIndex.[index] <- value
             value
 
-    let private parseCellRefNative (columnsByIndex: System.Collections.Generic.Dictionary<int, string>) defaultRow (value: string) =
+    /// Split an A1 reference into (1-based column index, row); 0 = absent.
+    let private cellPositionNative (value: string) : int * int =
         let mutable index = 0
         while index < value.Length && value.[index] = '$' do
             index <- index + 1
@@ -1356,16 +1736,11 @@ module Xlsx =
             index <- index + 1
 
         let mutable row = 0
-        let mutable hasRow = false
         while index < value.Length && System.Char.IsDigit value.[index] do
-            hasRow <- true
             row <- row * 10 + int value.[index] - int '0'
             index <- index + 1
 
-        {
-            Column = if colIndex > 0 then nativeColumnName columnsByIndex colIndex else ""
-            Row = if hasRow then row else defaultRow
-        }
+        colIndex, row
 
     let private inlineStringNative (reader: System.Xml.XmlReader) =
         let depth = reader.Depth
@@ -1392,102 +1767,87 @@ module Xlsx =
                 sb.Append(text) |> ignore
             sb.ToString(), resizeListToList runs
 
-    let private cellNativeWithStyles (styles: CellStyle array option) (columnsByIndex: System.Collections.Generic.Dictionary<int, string>) rowIndex (reader: System.Xml.XmlReader) : Cell option =
-        nativeAttr reader "r"
-        |> Option.map (fun ref ->
-            let cellType = nativeAttr reader "t"
-            let styleIdx = nativeIntAttr reader "s"
-            let mutable formula = None
-            let mutable value = None
-            let mutable inlineText = None
-            let mutable inlineRuns = []
-            if not reader.IsEmptyElement then
-                let depth = reader.Depth
-                let mutable doneReading = false
-                while not doneReading && reader.Read() do
-                    match reader.NodeType with
-                    | System.Xml.XmlNodeType.Element ->
-                        match reader.LocalName with
-                        | "f" -> formula <- Some (readElementTextNative reader)
-                        | "v" -> value <- Some (readElementTextNative reader)
-                        | "is" ->
-                            let text, runs = inlineStringNative reader
-                            inlineText <- Some text
-                            inlineRuns <- runs
-                        | _ -> ()
-                    | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
-                        doneReading <- true
+    /// Streaming twin of `cellFromNode`: same inference for a missing `r`,
+    /// same `buildCell`.
+    let private cellNative (ctx: SheetParseContext) (columnsByIndex: System.Collections.Generic.Dictionary<int, string>) (rowIndex: int) (prevCol: int) (reader: System.Xml.XmlReader) : Cell * int =
+        let colIndex, row =
+            match reader.GetAttribute("r") with
+            | null -> prevCol + 1, rowIndex
+            | ref ->
+                let col, parsedRow = cellPositionNative ref
+                if col = 0 then prevCol + 1, rowIndex
+                else col, (if parsedRow > 0 then parsedRow else rowIndex)
+        let cellType = nativeAttr reader "t"
+        let styleIdx = nativeIntAttr reader "s"
+        let mutable fText = None
+        let mutable fType = None
+        let mutable fRef = None
+        let mutable fSi = None
+        let mutable value = None
+        let mutable inlineText = None
+        let mutable inlineRuns = []
+        if not reader.IsEmptyElement then
+            let depth = reader.Depth
+            let mutable doneReading = false
+            while not doneReading && reader.Read() do
+                match reader.NodeType with
+                | System.Xml.XmlNodeType.Element ->
+                    match reader.LocalName with
+                    | "f" ->
+                        fType <- nativeAttr reader "t"
+                        fRef <- nativeAttr reader "ref"
+                        fSi <- nativeAttr reader "si"
+                        fText <- Some (readElementTextNative reader)
+                    | "v" -> value <- Some (readElementTextNative reader)
+                    | "is" ->
+                        let text, runs = inlineStringNative reader
+                        inlineText <- Some text
+                        inlineRuns <- runs
                     | _ -> ()
-            {
-                Reference = parseCellRefNative columnsByIndex rowIndex ref
-                Value = cellValueFromParts cellType formula value inlineText
-                StyleIndex = styleIdx
-                Style = resolvedStyle styles styleIdx
-                InlineRuns =
-                    match cellType with
-                    | Some "inlineStr" -> inlineRuns
-                    | _ -> []
-            })
+                | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
+                    doneReading <- true
+                | _ -> ()
+        let cell =
+            buildCell ctx (nativeColumnName columnsByIndex colIndex) colIndex row cellType styleIdx
+                fText fType fRef fSi value inlineText inlineRuns
+        cell, colIndex
 
-    let private rowNativeWithStyles (styles: CellStyle array option) (columnsByIndex: System.Collections.Generic.Dictionary<int, string>) (reader: System.Xml.XmlReader) : Row option =
-        nativeIntAttr reader "r"
-        |> Option.map (fun rowIndex ->
-            let customHeightAttr = nativeOptionalBoolAttr reader "customHeight"
-            let customHeight = customHeightAttr |> Option.defaultValue false
-            let rawHeight = nativeFloatAttr reader "ht"
-            let height = if customHeight then rawHeight else None
-            let hidden = nativeBoolAttr reader "hidden"
-            let rowStyle = nativeIntAttr reader "s"
-            let customFormat = nativeBoolAttr reader "customFormat"
-            let spans = nativeAttr reader "spans"
-            let explicitCells = System.Collections.Generic.List<Cell>()
-            if not reader.IsEmptyElement then
-                let depth = reader.Depth
-                let mutable doneReading = false
-                while not doneReading && reader.Read() do
-                    match reader.NodeType with
-                    | System.Xml.XmlNodeType.Element when reader.LocalName = "c" ->
-                        match cellNativeWithStyles styles columnsByIndex rowIndex reader with
-                        | Some cell -> explicitCells.Add(cell)
-                        | None -> ()
-                    | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
-                        doneReading <- true
-                    | _ -> ()
-
-            let explicit = resizeListToList explicitCells
-            let cells =
-                match (if customFormat then rowStyle else None), spans with
-                | Some style, Some spanValue ->
-                    match spanValue.Split(':') with
-                    | [| a; b |] ->
-                        match tryParseNativeInt a, tryParseNativeInt b with
-                        | Some c1, Some c2 when c2 >= c1 && c2 - c1 <= 256 ->
-                            let present = System.Collections.Generic.HashSet<string>()
-                            for cell in explicit do
-                                present.Add(cell.Reference.Column) |> ignore
-                            let synth = System.Collections.Generic.List<Cell>()
-                            for col in c1 .. c2 do
-                                let letters = nativeColumnName columnsByIndex col
-                                if not (present.Contains letters) then
-                                    synth.Add({
-                                        Reference = { Column = letters; Row = rowIndex }
-                                        Value = Empty
-                                        StyleIndex = Some style
-                                        Style = resolvedStyle styles (Some style)
-                                        InlineRuns = []
-                                    })
-                            explicit @ resizeListToList synth
-                        | _ -> explicit
-                    | _ -> explicit
-                | _ -> explicit
-            {
-                Index = rowIndex
-                Cells = cells
-                Height = height
-                RawHeight = rawHeight
-                CustomHeight = customHeightAttr
-                Hidden = hidden
-            })
+    /// Streaming twin of `rowFromNode`.
+    let private rowNative (ctx: SheetParseContext) (columnsByIndex: System.Collections.Generic.Dictionary<int, string>) (prevRow: int) (reader: System.Xml.XmlReader) : Row =
+        let rowIndex =
+            match nativeIntAttr reader "r" with
+            | Some r when r > 0 -> r
+            | _ -> prevRow + 1
+        let customHeightAttr = nativeOptionalBoolAttr reader "customHeight"
+        let customHeight = customHeightAttr |> Option.defaultValue false
+        let rawHeight = nativeFloatAttr reader "ht"
+        let height = if customHeight then rawHeight else None
+        let hidden = nativeBoolAttr reader "hidden"
+        let rowStyle = nativeIntAttr reader "s"
+        let customFormat = nativeBoolAttr reader "customFormat"
+        let spans = nativeAttr reader "spans"
+        let explicitCells = System.Collections.Generic.List<Cell>()
+        let mutable prevCol = 0
+        if not reader.IsEmptyElement then
+            let depth = reader.Depth
+            let mutable doneReading = false
+            while not doneReading && reader.Read() do
+                match reader.NodeType with
+                | System.Xml.XmlNodeType.Element when reader.LocalName = "c" ->
+                    let cell, colIndex = cellNative ctx columnsByIndex rowIndex prevCol reader
+                    prevCol <- colIndex
+                    explicitCells.Add(cell)
+                | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
+                    doneReading <- true
+                | _ -> ()
+        {
+            Index = rowIndex
+            Cells = rowSpanCells ctx rowIndex rowStyle customFormat spans (resizeListToList explicitCells)
+            Height = height
+            RawHeight = rawHeight
+            CustomHeight = customHeightAttr
+            Hidden = hidden
+        }
 
     let private columnInfoNative (reader: System.Xml.XmlReader) : ColumnInfo option =
         nativeIntAttr reader "min"
@@ -1699,7 +2059,7 @@ module Xlsx =
         && sheetXml.IndexOf("conditionalFormatting", System.StringComparison.Ordinal) < 0
         && sheetXml.IndexOf("dataValidation", System.StringComparison.Ordinal) < 0
 
-    let worksheetNativeFastWithStyles (styles: CellStyle array option) (name: string) (sheetXml: string) (comments: CellComment list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet option =
+    let internal worksheetNativeFastCore (ctx: SheetParseContext) (name: string) (state: SheetState) (sheetXml: string) (comments: CellComment list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet option =
         if not (worksheetFastNativeSupported sheetXml) then
             None
         else
@@ -1724,6 +2084,7 @@ module Xlsx =
             let mutable headerFooterValue = defaultHeaderFooter
             let mutable rowBreaksValue = []
             let mutable colBreaksValue = []
+            let mutable prevRow = 0
             let resolveRel rid =
                 sheetRels
                 |> List.tryFind (fun r -> r.Id = rid && r.Type.EndsWith("/hyperlink"))
@@ -1747,9 +2108,9 @@ module Xlsx =
                         | Some col -> columns.Add(col)
                         | None -> ()
                     | "row" ->
-                        match rowNativeWithStyles styles columnNamesByIndex reader with
-                        | Some row -> rows.Add(row)
-                        | None -> ()
+                        let row = rowNative ctx columnNamesByIndex prevRow reader
+                        prevRow <- row.Index
+                        rows.Add(row)
                     | "mergeCell" ->
                         match mergeCellNative reader with
                         | Some mergeCell -> mergedCells.Add(mergeCell)
@@ -1781,6 +2142,7 @@ module Xlsx =
 
             Some {
                 Name = name
+                State = state
                 Rows = resizeListToList rows
                 MergedCells = resizeListToList mergedCells
                 Columns = resizeListToList columns
@@ -1789,7 +2151,7 @@ module Xlsx =
                 ConditionalFormats = []
                 DataValidations = []
                 Charts = []
-                PivotTables = []
+                PivotTables = pivotTables
                 Tables = tables
                 FrozenPane = frozenPaneValue
                 ShowZeros = showZerosValue
@@ -1805,16 +2167,23 @@ module Xlsx =
                 PrintTitleRows = printNames.PrintTitleRows
                 PrintTitleCols = printNames.PrintTitleCols
             }
+
+    let worksheetNativeFastWithStyles (styles: CellStyle array option) (name: string) (sheetXml: string) (comments: CellComment list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet option =
+        worksheetNativeFastCore (newSheetContext styles false) name SheetVisible sheetXml comments [] tables sheetRels printNames
 #endif
 
-    let worksheetFromNodeWithStyles (styles: CellStyle array option) (name: string) (sheet: XmlNode) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
+    let internal worksheetFromNodeCore (ctx: SheetParseContext) (name: string) (state: SheetState) (sheet: XmlNode) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
         let sheetData = sElem "sheetData" sheet
 
+        let mutable prevRow = 0
         let rows =
             sheetData
-            |> Option.map (sElems "row")
+            |> Option.map (childElems "row")
             |> Option.defaultValue []
-            |> List.choose (rowWithStyles styles)
+            |> List.map (fun rowNode ->
+                let row = rowFromNode ctx prevRow rowNode
+                prevRow <- row.Index
+                row)
 
         // Resolve hyperlink r:id values against the sheet rels: external
         // hyperlinks (Target on the Relationship is the actual URL) get
@@ -1827,6 +2196,7 @@ module Xlsx =
 
         {
             Name = name
+            State = state
             Rows = rows
             MergedCells = mergeCells sheet
             Columns = columns sheet
@@ -1852,21 +2222,15 @@ module Xlsx =
             PrintTitleCols = printNames.PrintTitleCols
         }
 
+    let worksheetFromNodeWithStyles (styles: CellStyle array option) (name: string) (sheet: XmlNode) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
+        worksheetFromNodeCore (newSheetContext styles false) name SheetVisible sheet comments condFormats dataVals charts pivotTables tables sheetRels printNames
+
     let worksheetWithStyles (styles: CellStyle array option) (name: string) (sheetXml: string) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
         let sheet = XmlDsl.parse sheetXml
         worksheetFromNodeWithStyles styles name sheet comments condFormats dataVals charts pivotTables tables sheetRels printNames
 
     let worksheet name sheetXml comments condFormats dataVals charts pivotTables tables sheetRels printNames =
         worksheetWithStyles None name sheetXml comments condFormats dataVals charts pivotTables tables sheetRels printNames
-
-    /// Parse a column letter run (A, B, ..., AA) into a 1-based column index
-    /// matching the rest of the reader's `CellReference.Row/Column` convention.
-    let private columnLettersToIndex (letters: string) =
-        let mutable acc = 0
-        for c in letters do
-            if System.Char.IsLetter c then
-                acc <- acc * 26 + (int (System.Char.ToUpper c) - int 'A' + 1)
-        acc
 
     /// Parse an `A1:F5` style range into 1-indexed inclusive bounds.
     let private parseRange (ref: string) =
@@ -1896,7 +2260,7 @@ module Xlsx =
                 | Some (r1, c1, r2, c2) ->
                     let headerCount =
                         Xml.attr "headerRowCount" doc
-                        |> Option.bind (fun v -> try Some (int v) with _ -> None)
+                        |> Option.bind tryParseInt
                         |> Option.defaultValue 1
                     let style =
                         sElem "tableStyleInfo" doc
@@ -1924,11 +2288,11 @@ module Xlsx =
                         |> Option.orElse (Xml.attr "name" doc)
                         |> Option.defaultValue ""
                     let columns =
-                        Xml.descendants "tableColumn" doc
+                        Ns.descendantsNs "tableColumn" doc
                         |> List.choose (Xml.attr "name")
                     let totalsRowCount =
                         Xml.attr "totalsRowCount" doc
-                        |> Option.bind (fun v -> try Some (int v) with _ -> None)
+                        |> Option.bind tryParseInt
                         |> Option.defaultValue 0
                     Some {
                         Name = tableName
@@ -2109,15 +2473,12 @@ module Xlsx =
         let themed =
             Xml.attr "theme" node
             |> Option.bind (fun s ->
-                match System.Int32.TryParse s with
-                | true, n when n >= 0 && n < themeColors.Length -> Some themeColors.[n]
+                match tryParseInt s with
+                | Some n when n >= 0 && n < themeColors.Length -> Some themeColors.[n]
                 | _ -> None)
         let indexed =
             Xml.attr "indexed" node
-            |> Option.bind (fun s ->
-                match System.Int32.TryParse s with
-                | true, n -> indexedPaletteColor n
-                | _ -> None)
+            |> Option.bind (fun s -> tryParseInt s |> Option.bind indexedPaletteColor)
         let baseColor =
             rgb
             |> Option.orElseWith (fun () -> themed)
@@ -2133,10 +2494,7 @@ module Xlsx =
             let c = if stripped.Length = 8 then stripped.Substring 2 else stripped
             let tint =
                 Xml.attr "tint" node
-                |> Option.bind (fun s ->
-                    match System.Double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
-                    | true, v -> Some v
-                    | _ -> None)
+                |> Option.bind tryParseFloat
                 |> Option.defaultValue 0.0
             if tint = 0.0 then Some c
             else Some (applyColorTint c tint)
@@ -2157,7 +2515,7 @@ module Xlsx =
             |> Option.defaultValue false
         let strike = sElem "strike" fontNode |> Option.isSome
         let color = sElem "color" fontNode |> Option.bind (resolveColorElement themeColors)
-        let size = sElem "sz" fontNode |> Option.bind (Xml.attr "val") |> Option.map float
+        let size = sElem "sz" fontNode |> Option.bind (Xml.attr "val") |> Option.bind tryParseFloat
         let name = sElem "name" fontNode |> Option.bind (Xml.attr "val")
         let scheme =
             sElem "scheme" fontNode
@@ -2205,10 +2563,7 @@ module Xlsx =
                 |> List.choose (fun stop ->
                     let pos =
                         Xml.attr "position" stop
-                        |> Option.bind (fun s ->
-                            match System.Double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
-                            | true, v -> Some v
-                            | _ -> None)
+                        |> Option.bind tryParseFloat
                         |> Option.defaultValue 0.0
                     sElem "color" stop
                     |> Option.bind (resolveColorElement themeColors)
@@ -2415,7 +2770,7 @@ module Xlsx =
         // the base wins; if `1`, the cellXf wins. We resolve the
         // effective fontId/fillId/borderId/numFmtId by checking each
         // applyXxx flag against the base's id from cellStyleXfs.
-        let xfId = Xml.attr "xfId" xfNode |> Option.bind (fun s -> try Some (int s) with _ -> None)
+        let xfId = Xml.attr "xfId" xfNode |> Option.bind tryParseInt
         let baseFontId, baseFillId, baseBorderId, baseNumFmtId =
             match xfId with
             | Some id when id >= 0 && id < cellStyleXfs.Length ->
@@ -2425,7 +2780,7 @@ module Xlsx =
         let applyFlag name =
             Xml.attr name xfNode
             |> Option.map (fun v -> v = "1" || v = "true")
-        let ownInt name = Xml.attr name xfNode |> Option.bind (fun s -> try Some (int s) with _ -> None)
+        let ownInt name = Xml.attr name xfNode |> Option.bind tryParseInt
         let resolveId (flagName: string) (ownAttr: string) (baseId: int) (defaultId: int) =
             let own = ownInt ownAttr
             match applyFlag flagName, own with
@@ -2507,7 +2862,7 @@ module Xlsx =
         let indent =
             alignmentNode
             |> Option.bind (Xml.attr "indent")
-            |> Option.bind (fun v -> try Some (int v) with _ -> None)
+            |> Option.bind tryParseInt
             |> Option.defaultValue 0
         let shrinkToFit =
             alignmentNode
@@ -2517,7 +2872,7 @@ module Xlsx =
         let textRotation =
             alignmentNode
             |> Option.bind (Xml.attr "textRotation")
-            |> Option.bind (fun v -> try Some (int v) with _ -> None)
+            |> Option.bind tryParseInt
             |> Option.defaultValue 0
 
         {
@@ -2597,7 +2952,7 @@ module Xlsx =
             |> Option.defaultValue []
             |> List.choose (fun nf ->
                 xml {
-                    let! id = Xml.attr "numFmtId" nf |> Option.map int
+                    let! id = Xml.attr "numFmtId" nf |> Option.bind tryParseInt
                     let! code = parseNumberFormat nf
                     return (id, code)
                 })
@@ -2613,7 +2968,7 @@ module Xlsx =
             |> Option.map (sElems "xf")
             |> Option.defaultValue []
             |> List.map (fun xf ->
-                let intOf name = Xml.attr name xf |> Option.bind (fun s -> try Some (int s) with _ -> None)
+                let intOf name = Xml.attr name xf |> Option.bind tryParseInt
                 let fontId = intOf "fontId" |> Option.defaultValue 0
                 let fillId = intOf "fillId" |> Option.defaultValue 0
                 let borderId = intOf "borderId" |> Option.defaultValue 0
@@ -2653,7 +3008,15 @@ module Xlsx =
         Name: string
         SheetId: string
         RelationshipId: string
+        State: SheetState
     }
+
+    /// `<workbookPr date1904="1"/>`: serial 0 is 1904-01-01, not 1899-12-30.
+    let date1904 (wbNode: XmlNode) : bool =
+        sElem "workbookPr" wbNode
+        |> Option.bind (Xml.attr "date1904")
+        |> Option.map isTrueText
+        |> Option.defaultValue false
 
     let sheets (wbNode: XmlNode) : SheetInfo list =
         let sheetsElem = sElem "sheets" wbNode
@@ -2664,12 +3027,17 @@ module Xlsx =
         |> List.choose (fun sheet ->
             xml {
                 let! name = Xml.attr "name" sheet
-                let! sheetId = Xml.attr "sheetId" sheet
-                let! rId = Xml.attr "r:id" sheet
+                // The relationships namespace may be bound to any prefix.
+                let! rId = relationshipId sheet
                 return {
                     Name = name
-                    SheetId = sheetId
+                    SheetId = Xml.attr "sheetId" sheet |> Option.defaultValue ""
                     RelationshipId = rId
+                    State =
+                        match Xml.attr "state" sheet with
+                        | Some "hidden" -> SheetHidden
+                        | Some "veryHidden" -> SheetVeryHidden
+                        | _ -> SheetVisible
                 }
             })
 
@@ -2688,34 +3056,55 @@ let private sheetInfosForLoad loadAll sheetName (sheetInfos: Xlsx.SheetInfo list
 
 // Cell Comments parsing
 module CellComments =
-    let parseComment (commentNode: XmlNode) : CellComment option =
+    /// Parse one `<comment ref authorId>`. The author is an index into the
+    /// part's `<authors>` list, and the text is the concatenation of the
+    /// `<t>` runs under `<text>` exactly as written — runs are pieces of one
+    /// string, not words to be spaced apart.
+    let parseCommentWithAuthors (authors: string array) (commentNode: XmlNode) : CellComment option =
         Xml.attr "ref" commentNode
         |> Option.map (fun ref ->
             let cellRef = Xlsx.parseCellRef ref
-            let author = Ns.childNs "author" commentNode |> Option.bind Xml.text
+            let author =
+                Xml.attr "authorId" commentNode
+                |> Option.bind tryParseInt
+                |> Option.bind (fun idx -> if idx >= 0 && idx < authors.Length then Some authors.[idx] else None)
+                |> Option.filter (fun name -> name <> "")
             let text =
-                Ns.descendantsNs "t" commentNode
-                |> List.choose Xml.text
-                |> String.concat " "
+                match Ns.childNs "text" commentNode with
+                | Some textNode -> Xlsx.descendantTextConcat "t" textNode
+                | None -> Xlsx.descendantTextConcat "t" commentNode
             {
                 CellRef = cellRef
                 Author = author
                 Text = text
             })
 
+    let parseComment (commentNode: XmlNode) : CellComment option =
+        parseCommentWithAuthors [||] commentNode
+
     let parseComments (xml: string) : CellComment list =
         let doc = XmlDsl.parse xml
+        let authors =
+            Ns.childNs "authors" doc
+            |> Option.map (fun node ->
+                Xml.children node
+                |> List.choose (fun child ->
+                    match Xml.name child with
+                    | Some name when Ns.stripNs name = "author" -> Some (Xml.text child |> Option.defaultValue "")
+                    | _ -> None))
+            |> Option.defaultValue []
+            |> List.toArray
         Ns.descendantsNs "comment" doc
-        |> List.choose parseComment
+        |> List.choose (parseCommentWithAuthors authors)
 
 // Conditional Formatting parsing
 module ConditionalFormats =
     let parseRule (themeColors: string array) (ruleNode: XmlNode) : ConditionalFormatRule =
         let ruleType = Xml.attr "type" ruleNode |> Option.defaultValue "cellIs"
-        let priority = Xml.attr "priority" ruleNode |> Option.map int
-        let stopIfTrue = Xml.attr "stopIfTrue" ruleNode |> Option.map (fun v -> v = "1") |> Option.defaultValue false
+        let priority = Xml.attr "priority" ruleNode |> Option.bind tryParseInt
+        let stopIfTrue = Xml.attr "stopIfTrue" ruleNode |> Option.map isTrueText |> Option.defaultValue false
         let operator = Xml.attr "operator" ruleNode
-        let dxfId = Xml.attr "dxfId" ruleNode |> Option.bind (fun s -> match System.Int32.TryParse s with | true, n -> Some n | _ -> None)
+        let dxfId = Xml.attr "dxfId" ruleNode |> Option.bind tryParseInt
         // cellIs uses one or two <formula> children (two for between);
         // collect them in document order.
         let formulas =
@@ -2771,7 +3160,7 @@ module ConditionalFormats =
         // <cfRule> element itself rather than a child element.
         let attrInt name =
             Xml.attr name ruleNode
-            |> Option.bind (fun s -> match System.Int32.TryParse s with | true, n -> Some n | _ -> None)
+            |> Option.bind tryParseInt
         let attrBool name fallback =
             Xml.attr name ruleNode
             |> Option.map (fun v -> v = "1" || v = "true")
@@ -2792,6 +3181,7 @@ module ConditionalFormats =
             ColorScale = colorScale
             DataBarColor = dataBarColor
             DataBarCfvo = dataBarCfvo
+            Text = Xml.attr "text" ruleNode
             IconSet = iconSet
             IconSetCfvo = iconSetCfvo
             Rank = rank
@@ -2861,20 +3251,28 @@ module DataValidations =
         |> Option.map (fun range ->
             let valType = Xml.attr "type" dvNode |> Option.defaultValue "none"
             let operator = Xml.attr "operator" dvNode
-            let allowBlank = Xml.attr "allowBlank" dvNode |> Option.map (fun v -> v = "1") |> Option.defaultValue true
-            let showDropDown = Xml.attr "showDropDown" dvNode |> Option.map (fun v -> v = "0") |> Option.defaultValue true
+            let flag name fallback =
+                Xml.attr name dvNode |> Option.map isTrueText |> Option.defaultValue fallback
+            // `showDropDown="1"` means the in-cell arrow is SUPPRESSED (the
+            // attribute is named backwards in the schema).
+            let showDropDown = not (flag "showDropDown" false)
             let formula1 = Ns.childNs "formula1" dvNode |> Option.bind Xml.text
             let formula2 = Ns.childNs "formula2" dvNode |> Option.bind Xml.text
-            let errorMsg = Xml.attr "error" dvNode
             {
                 Range = range
                 ValidationType = valType
                 Operator = operator
                 Formula1 = formula1
                 Formula2 = formula2
-                AllowBlank = allowBlank
+                AllowBlank = flag "allowBlank" false
                 ShowDropDown = showDropDown
-                ErrorMessage = errorMsg
+                ErrorMessage = Xml.attr "error" dvNode
+                ErrorTitle = Xml.attr "errorTitle" dvNode
+                ErrorStyle = Xml.attr "errorStyle" dvNode
+                ShowErrorMessage = flag "showErrorMessage" false
+                Prompt = Xml.attr "prompt" dvNode
+                PromptTitle = Xml.attr "promptTitle" dvNode
+                ShowInputMessage = flag "showInputMessage" false
             })
 
     let parseDataValidations (sheet: XmlNode) : DataValidation list =
@@ -2935,7 +3333,7 @@ module NamedRanges =
         let parseScope (scope: string option) =
             scope
             |> Option.bind (fun s ->
-                match System.Int32.TryParse s with true, i -> Some i | _ -> None)
+                tryParseInt s)
         for nr in names do
             match nr.Name, parseScope nr.Scope with
             | "_xlnm.Print_Area", Some idx ->
@@ -3016,7 +3414,7 @@ module PivotTables =
     let parseField (fieldNode: XmlNode) : PivotTableField option =
         xml {
             let! name = Xml.attr "name" fieldNode
-            let! idx = Xml.attr "fld" fieldNode |> Option.map int
+            let! idx = Xml.attr "fld" fieldNode |> Option.bind tryParseInt
             return {
                 Name = name
                 Index = idx
@@ -3091,149 +3489,234 @@ let applyStyling (styles: CellStyle array) (sheet: Worksheet) : Worksheet =
 
     { sheet with Rows = sheet.Rows |> List.map applyToRow }
 
-// Parse XLSX archive
+// ---------------------------------------------------------------------------
+// Workbook loading. One implementation, written against a synchronous part
+// source: the native entry points read the archive directly, the JSZip entry
+// points first await the parts each stage needs and then run the same code.
+// ---------------------------------------------------------------------------
+
+/// Text of package parts by path, plus an existence test for parts that
+/// have not been fetched yet.
+type private PartSource = {
+    Exists: string -> bool
+    Text: string -> string option
+}
+
+let private partDirectory (partPath: string) =
+    match partPath.LastIndexOf '/' with
+    | -1 -> ""
+    | idx -> partPath.Substring(0, idx)
+
+/// `xl/worksheets/sheet1.xml` -> `xl/worksheets/_rels/sheet1.xml.rels`.
+let private relsPathFor (partPath: string) =
+    let dir = partDirectory partPath
+    if dir = "" then "_rels/" + partPath + ".rels"
+    else dir + "/_rels/" + partPath.Substring(dir.Length + 1) + ".rels"
+
+let private relationshipsOf (source: PartSource) (partPath: string) : Relationship list =
+    source.Text (relsPathFor partPath)
+    |> Option.map (XmlDsl.parse >> parseRelationships)
+    |> Option.defaultValue []
+
+let private isInternal (rel: Relationship) =
+    rel.TargetMode <> Some "External"
+
+/// Path of the part a relationship of `ownerPath` points at.
+let private relTargetPath (ownerPath: string) (rel: Relationship) =
+    ZipInterop.resolveTarget (partDirectory ownerPath) rel.Target
+
+let private defaultWorkbookPath = "xl/workbook.xml"
+
+/// The main part is whatever the package relationships say it is
+/// (`_rels/.rels`, type …/officeDocument); `xl/workbook.xml` is only a
+/// convention, kept as the fallback for packages without a usable root rel.
+let private mainPartPath (source: PartSource) =
+    let fromRels =
+        try
+            source.Text "_rels/.rels"
+            |> Option.map (XmlDsl.parse >> parseRelationships)
+            |> Option.defaultValue []
+            |> List.tryFind (fun r -> r.Type.EndsWith "/officeDocument" && isInternal r)
+            |> Option.map (fun r -> ZipInterop.resolveTarget "" r.Target)
+        with _ -> None
+    match fromRels with
+    | Some path when source.Exists path -> path
+    | _ -> defaultWorkbookPath
+
+type private WorkbookHeader = {
+    WorkbookPath: string
+    Rels: Relationship list
+    SheetInfos: Xlsx.SheetInfo list
+    Date1904: bool
+    NamedRanges: NamedRange list
+    PrintNames: Map<int, WorksheetPrintNames>
+    StylesPath: string
+    SharedStringsPath: string
+    ThemePath: string
+}
+
+let private readWorkbookHeader (source: PartSource) (workbookPath: string) : WorkbookHeader option =
+    source.Text workbookPath
+    |> Option.map (fun wbXml ->
+        let wb = XmlDsl.parse wbXml
+        let rels = relationshipsOf source workbookPath
+        let partOfType (suffix: string) (fallback: string) =
+            rels
+            |> List.tryFind (fun r -> r.Type.EndsWith suffix && isInternal r)
+            |> Option.map (relTargetPath workbookPath)
+            |> Option.filter source.Exists
+            |> Option.defaultValue (ZipInterop.resolveTarget (partDirectory workbookPath) fallback)
+        let namedRanges, printNames = NamedRanges.parseNamedRanges wb |> NamedRanges.splitPrintNames
+        {
+            WorkbookPath = workbookPath
+            Rels = rels
+            SheetInfos = Xlsx.sheets wb
+            Date1904 = Xlsx.date1904 wb
+            NamedRanges = namedRanges
+            PrintNames = printNames
+            StylesPath = partOfType "/styles" "styles.xml"
+            SharedStringsPath = partOfType "/sharedStrings" "sharedStrings.xml"
+            ThemePath = partOfType "/theme" "theme/theme1.xml"
+        })
+
+/// The sheets to load, with their index in the workbook and their part path.
+let private selectedSheets (header: WorkbookHeader) loadAll sheetName : (int * Xlsx.SheetInfo * string) list =
+    sheetInfosForLoad loadAll sheetName header.SheetInfos
+    |> List.choose (fun (sheetIdx, info) ->
+        Office.relById info.RelationshipId header.Rels
+        |> Option.map (fun rel -> sheetIdx, info, relTargetPath header.WorkbookPath rel))
+
+/// Parts a sheet reaches through its own relationships: comments, tables
+/// and pivot tables. Their paths come from the rels, never from a guess
+/// based on the sheet number.
+let private sheetDependencyPaths (source: PartSource) (sheetPath: string) : string list =
+    relationshipsOf source sheetPath
+    |> List.filter (fun r ->
+        isInternal r
+        && (r.Type.EndsWith "/comments" || r.Type.EndsWith "/table" || r.Type.EndsWith "/pivotTable"))
+    |> List.map (relTargetPath sheetPath)
+
+let private defaultThemeColors = [|
+    "FFFFFF"; "000000"; "E7E6E6"; "44546A"
+    "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47"
+    "0563C1"; "954F72"
+|]
+
+let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsToLoad: (int * Xlsx.SheetInfo * string) list) : Workbook =
+    let sharedStringEntries =
+        source.Text header.SharedStringsPath
+        |> Option.map Xlsx.sharedStrings
+        |> Option.defaultValue [||]
+
+    // The theme is needed before styles so font/fill/border colors can
+    // resolve theme="N" + tint references.
+    let themeXml = source.Text header.ThemePath
+    let themeColors =
+        themeXml
+        |> Option.map Xlsx.parseThemeColors
+        |> Option.defaultValue defaultThemeColors
+    let themeMajorFont, themeMinorFont =
+        themeXml
+        |> Option.map Xlsx.parseThemeFonts
+        |> Option.defaultValue (None, None)
+    let themeAccents =
+        themeXml
+        |> Option.map Xlsx.parseThemeAccents
+        |> Option.defaultValue [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
+
+    let stylesXml = source.Text header.StylesPath
+    let styles =
+        stylesXml
+        |> Option.map (Xlsx.parseStyles themeColors themeMajorFont themeMinorFont)
+        |> Option.defaultValue [||]
+    let dxfs =
+        stylesXml
+        |> Option.map (XmlDsl.parse >> ConditionalFormats.parseDxfs themeColors)
+        |> Option.defaultValue [||]
+
+    let worksheets =
+        sheetsToLoad
+        |> List.choose (fun (sheetIdx, info, sheetPath) ->
+            source.Text sheetPath
+            |> Option.map (fun xml ->
+                let printNames =
+                    Map.tryFind sheetIdx header.PrintNames
+                    |> Option.defaultValue emptyPrintNames
+                let sheetRels = relationshipsOf source sheetPath
+                let partsOfType (suffix: string) =
+                    sheetRels
+                    |> List.filter (fun r -> r.Type.EndsWith suffix && isInternal r)
+                    |> List.choose (fun r -> source.Text (relTargetPath sheetPath r))
+                let tables = partsOfType "/table" |> List.choose Xlsx.parseTable
+                let comments = partsOfType "/comments" |> List.collect CellComments.parseComments
+                let pivots =
+                    partsOfType "/pivotTable"
+                    |> List.collect (fun pivotXml -> try PivotTables.parsePivotTables pivotXml with _ -> [])
+                // A fresh context per sheet: shared-formula groups are sheet-local.
+                let ctx = Xlsx.newSheetContext (Some styles) header.Date1904
+                let viaDom () =
+                    let sheet = XmlDsl.parse xml
+                    let condFormats = ConditionalFormats.parseConditionalFormats themeColors sheet
+                    let dataVals = DataValidations.parseDataValidations sheet
+                    Xlsx.worksheetFromNodeCore ctx info.Name info.State sheet comments condFormats dataVals [] pivots tables sheetRels printNames
+#if FABLE_COMPILER
+                viaDom ()
+#else
+                match Xlsx.worksheetNativeFastCore ctx info.Name info.State xml comments pivots tables sheetRels printNames with
+                | Some sheet -> sheet
+                | None -> viaDom ()
+#endif
+            ))
+
+    {
+        Sheets = worksheets
+        SharedStrings = sharedStringEntries |> Array.map (fun e -> e.Text)
+        SharedStringRuns = sharedStringEntries |> Array.map (fun e -> e.Runs)
+        Styles = styles
+        Dxfs = dxfs
+        Relationships = header.Rels
+        NamedRanges = header.NamedRanges
+        ThemeAccents = themeAccents
+        Date1904 = header.Date1904
+    }
+
+// JSZip entry: await the parts each stage needs into a cache, then run the
+// shared synchronous stages over it.
 let private parseWorkbookFiltered loadAll sheetName (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option> =
+    let cache = System.Collections.Generic.Dictionary<string, string>()
+    let source = {
+        Exists = fun path -> (ZipInterop.tryFindFile archive path).IsSome
+        Text = fun path ->
+            match cache.TryGetValue path with
+            | true, text -> Some text
+            | _ -> None
+    }
+    let fetch (paths: string list) : Fable.Core.JS.Promise<unit> =
+        let wanted =
+            paths
+            |> List.distinct
+            |> List.filter (fun path -> not (cache.ContainsKey path))
+            |> List.choose (fun path -> ZipInterop.tryFindFile archive path |> Option.map (fun file -> path, file))
+            |> List.toArray
+        wanted
+        |> Array.map (fun (_, file) -> file.GetText())
+        |> Promise.all
+        |> Promise.map (fun texts ->
+            texts |> Array.iteri (fun i text -> cache.[fst wanted.[i]] <- text))
     promise {
-        // Load workbook.xml
-        let! wbXml = getFileText archive "xl/workbook.xml"
-
-        // Load shared strings
-        let! sstXml = getFileText archive "xl/sharedStrings.xml"
-
-        // Load styles
-        let! stylesXml = getFileText archive "xl/styles.xml"
-
-        // Load theme (needed before styles so font/fill/border colors can
-        // resolve theme="N" + tint references).
-        let! themeXml = getFileText archive "xl/theme/theme1.xml"
-
-        // Load relationships
-        let! relsXml = getFileText archive "xl/_rels/workbook.xml.rels"
-
-        match wbXml with
-        | Some xml ->
-            let wb = XmlDsl.parse xml
-            let sheetInfos = Xlsx.sheets wb
-
-            let rels =
-                relsXml
-                |> Option.map XmlDsl.parse
-                |> Option.map parseRelationships
-                |> Option.defaultValue []
-
-            let sharedStringEntries =
-                sstXml
-                |> Option.map Xlsx.sharedStrings
-                |> Option.defaultValue [||]
-            let sharedStrings = sharedStringEntries |> Array.map (fun e -> e.Text)
-            let sharedStringRuns = sharedStringEntries |> Array.map (fun e -> e.Runs)
-
-            let themeColors =
-                themeXml
-                |> Option.map Xlsx.parseThemeColors
-                |> Option.defaultValue [|
-                    "FFFFFF"; "000000"; "E7E6E6"; "44546A"
-                    "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47"
-                    "0563C1"; "954F72"
-                |]
-
-            let themeMajorFont, themeMinorFont =
-                themeXml
-                |> Option.map Xlsx.parseThemeFonts
-                |> Option.defaultValue (None, None)
-
-            let styles =
-                stylesXml
-                |> Option.map (Xlsx.parseStyles themeColors themeMajorFont themeMinorFont)
-                |> Option.defaultValue [||]
-
-            let dxfs =
-                stylesXml
-                |> Option.map (XmlDsl.parse >> ConditionalFormats.parseDxfs themeColors)
-                |> Option.defaultValue [||]
-
-            let allNamedRanges = NamedRanges.parseNamedRanges wb
-            let namedRanges, printNamesBySheet = NamedRanges.splitPrintNames allNamedRanges
-
-            let sheetInfosToLoad = sheetInfosForLoad loadAll sheetName sheetInfos
-
-            // Load requested worksheets with advanced features.
-            let! worksheets =
-                sheetInfosToLoad
-                |> List.map (fun (sheetIdx, info) ->
-                    promise {
-                        let sheetPrintNames =
-                            Map.tryFind sheetIdx printNamesBySheet
-                            |> Option.defaultValue emptyPrintNames
-                        let rel = Office.relById info.RelationshipId rels
-                        match rel with
-                        | Some r ->
-                            let sheetPath = ZipInterop.resolveTarget "xl" r.Target
-                            let sheetNum = info.SheetId
-
-                            // Load sheet XML
-                            let! sheetXml = getFileText archive sheetPath
-
-                            match sheetXml with
-                            | Some xml ->
-                                let sheet = XmlDsl.parse xml
-
-                                // Parse conditional formats and data validations from sheet
-                                let condFormats = ConditionalFormats.parseConditionalFormats themeColors sheet
-                                let dataVals = DataValidations.parseDataValidations sheet
-
-                                // Load comments for this sheet
-                                let commentsPath = $"xl/comments{sheetNum}.xml"
-                                let! commentsXml = getFileText archive commentsPath
-                                let comments =
-                                    commentsXml
-                                    |> Option.map CellComments.parseComments
-                                    |> Option.defaultValue []
-
-                                // Load charts for this sheet (from drawings)
-                                let drawingsPath = $"xl/drawings/drawing{sheetNum}.xml"
-                                let! drawingsXml = getFileText archive drawingsPath
-                                let charts =
-                                    drawingsXml
-                                    |> Option.map (fun _ ->
-                                        // Charts are in separate chart*.xml files
-                                        // For simplicity, we'll return empty list here
-                                        // Full implementation would parse drawing rels and load chart files
-                                        [])
-                                    |> Option.defaultValue []
-
-                                // Load pivot tables for this sheet
-                                let pivotPath = $"xl/pivotTables/pivotTable{sheetNum}.xml"
-                                let! pivotXml = getFileText archive pivotPath
-                                let pivots =
-                                    pivotXml
-                                    |> Option.map PivotTables.parsePivotTables
-                                    |> Option.defaultValue []
-
-                                // Tables (header/banded styling) aren't wired
-                                // through the async loader — only the native
-                                // path consumes them today. Pass empty for now.
-                                return Some (Xlsx.worksheetFromNodeWithStyles (Some styles) info.Name sheet comments condFormats dataVals charts pivots [] [] sheetPrintNames)
-                            | None -> return None
-                        | None -> return None
-                    })
-                |> List.toArray
-                |> Promise.all
-
-            let sheets = worksheets |> Array.choose id |> Array.toList
-
-            return Some {
-                Sheets = sheets
-                SharedStrings = sharedStrings
-                SharedStringRuns = sharedStringRuns
-                Styles = styles
-                Dxfs = dxfs
-                Relationships = rels
-                NamedRanges = namedRanges
-                ThemeAccents = [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
-            }
-
+        do! fetch [ "_rels/.rels" ]
+        let workbookPath = mainPartPath source
+        do! fetch [ workbookPath; relsPathFor workbookPath ]
+        match readWorkbookHeader source workbookPath with
         | None -> return None
+        | Some header ->
+            let sheetsToLoad = selectedSheets header loadAll sheetName
+            let sheetPaths = sheetsToLoad |> List.map (fun (_, _, path) -> path)
+            do! fetch ([ header.StylesPath; header.SharedStringsPath; header.ThemePath ]
+                       @ sheetPaths
+                       @ (sheetPaths |> List.map relsPathFor))
+            do! fetch (sheetPaths |> List.collect (sheetDependencyPaths source))
+            return Some (buildWorkbook source header sheetsToLoad)
     }
 
 let parseWorkbook (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option> =
@@ -3255,9 +3738,7 @@ module FormulaEngine =
     // Full implementation requires a lexer, parser, and evaluator for Excel formula syntax.
     let evaluateFormula (ctx: EvalContext) (formula: string) : float option =
         // Stub: Just try to parse as a number
-        match System.Double.TryParse(formula) with
-        | true, n -> Some n
-        | false, _ -> None
+        tryParseFloat formula
 
     // Stub: Evaluate a cell's formula
     let evaluateCell (wb: Workbook) (sheet: Worksheet) (cell: Cell) : CellValue =
@@ -3333,155 +3814,15 @@ let sheetToArray (wb: Workbook) (sheet: Worksheet) : obj array array =
     result
 
 #if !FABLE_COMPILER
-/// Resolve a relative archive target (e.g. "../tables/table1.xml") against
-/// the directory of `basePath`. Walks `..` segments without normalizing back
-/// past the archive root.
-let private resolveArchivePath (basePath: string) (target: string) =
-    let normalized = ZipInterop.normalizePath target
-    let baseSegments = basePath.Split('/') |> Array.toList
-    let baseDir =
-        match baseSegments with
-        | [] -> []
-        | _ -> baseSegments |> List.take (List.length baseSegments - 1)
-    let targetSegments = normalized.Split('/') |> Array.toList
-    let rec walk dir parts =
-        match parts with
-        | [] -> dir
-        | ".." :: rest ->
-            let trimmed = if List.isEmpty dir then dir else List.take (List.length dir - 1) dir
-            walk trimmed rest
-        | "." :: rest -> walk dir rest
-        | p :: rest -> walk (dir @ [p]) rest
-    walk baseDir targetSegments |> String.concat "/"
-
-// Synchronous native loader. Mirrors `parseWorkbook` but uses
-// `getFileTextNative` so the native runners don't need a Promise scheduler.
+// Synchronous native loader: the same stages as the JSZip entry, reading
+// parts straight from the archive so native runners need no Promise scheduler.
 let private parseWorkbookNativeFiltered loadAll sheetName (archive: ZipArchive) : Workbook option =
-    match ZipInterop.getFileTextNative archive "xl/workbook.xml" with
-    | None -> None
-    | Some wbXml ->
-        let wb = XmlDsl.parse wbXml
-        let sheetInfos = Xlsx.sheets wb
-
-        let rels =
-            ZipInterop.getFileTextNative archive "xl/_rels/workbook.xml.rels"
-            |> Option.map (XmlDsl.parse >> parseRelationships)
-            |> Option.defaultValue []
-
-        let sharedStringEntries =
-            ZipInterop.getFileTextNative archive "xl/sharedStrings.xml"
-            |> Option.map Xlsx.sharedStrings
-            |> Option.defaultValue [||]
-        let sharedStrings = sharedStringEntries |> Array.map (fun e -> e.Text)
-        let sharedStringRuns = sharedStringEntries |> Array.map (fun e -> e.Runs)
-
-        let themeXml = ZipInterop.getFileTextNative archive "xl/theme/theme1.xml"
-
-        let themeColors =
-            themeXml
-            |> Option.map Xlsx.parseThemeColors
-            |> Option.defaultValue [|
-                "FFFFFF"; "000000"; "E7E6E6"; "44546A"
-                "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47"
-                "0563C1"; "954F72"
-            |]
-
-        let themeMajorFont, themeMinorFont =
-            themeXml
-            |> Option.map Xlsx.parseThemeFonts
-            |> Option.defaultValue (None, None)
-
-        let stylesXmlNative = ZipInterop.getFileTextNative archive "xl/styles.xml"
-
-        let styles =
-            stylesXmlNative
-            |> Option.map (Xlsx.parseStyles themeColors themeMajorFont themeMinorFont)
-            |> Option.defaultValue [||]
-
-        let dxfs =
-            stylesXmlNative
-            |> Option.map (XmlDsl.parse >> ConditionalFormats.parseDxfs themeColors)
-            |> Option.defaultValue [||]
-
-        let themeAccents =
-            themeXml
-            |> Option.map Xlsx.parseThemeAccents
-            |> Option.defaultValue [| "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47" |]
-
-        let allNamedRanges = NamedRanges.parseNamedRanges wb
-        let namedRanges, printNamesBySheet = NamedRanges.splitPrintNames allNamedRanges
-
-        let loadSheetRels (sheetPath: string) : Relationship list =
-            let lastSlash = sheetPath.LastIndexOf('/')
-            if lastSlash < 0 then []
-            else
-                let dir = sheetPath.Substring(0, lastSlash)
-                let file = sheetPath.Substring(lastSlash + 1)
-                let relsPath = sprintf "%s/_rels/%s.rels" dir file
-                match ZipInterop.getFileTextNative archive relsPath with
-                | None -> []
-                | Some relsXml -> relsXml |> XmlDsl.parse |> parseRelationships
-
-        let loadSheetTables (sheetPath: string) (sheetRels: Relationship list) =
-            sheetRels
-            |> List.filter (fun r -> r.Type.EndsWith("/table"))
-            |> List.choose (fun r ->
-                let tablePath = resolveArchivePath sheetPath r.Target
-                ZipInterop.getFileTextNative archive tablePath
-                |> Option.bind Xlsx.parseTable)
-
-        let sheetInfosToLoad = sheetInfosForLoad loadAll sheetName sheetInfos
-
-        let worksheets =
-            sheetInfosToLoad
-            |> List.map (fun (sheetIdx, info) ->
-                let sheetPrintNames =
-                    Map.tryFind sheetIdx printNamesBySheet
-                    |> Option.defaultValue emptyPrintNames
-                match Office.relById info.RelationshipId rels with
-                | Some r ->
-                    let sheetPath = ZipInterop.resolveTarget "xl" r.Target
-                    match ZipInterop.getFileTextNative archive sheetPath with
-                    | Some xml ->
-                        let sheetRels = loadSheetRels sheetPath
-                        let tables = loadSheetTables sheetPath sheetRels
-                        // Cell comments live in xl/comments<sheetNum>.xml. The
-                        // sheetN.xml.rels has a Relationship with Type ending
-                        // in /comments pointing at the comments XML. Use that
-                        // rel to locate the file (sheetNum-based pathing fails
-                        // for renamed-on-disk sheets); fall back to the
-                        // commonly-conventional comments<N>.xml path when no
-                        // rel exists.
-                        let comments =
-                            sheetRels
-                            |> List.tryFind (fun r -> r.Type.EndsWith("/comments"))
-                            |> Option.map (fun r ->
-                                let p = resolveArchivePath sheetPath r.Target
-                                ZipInterop.getFileTextNative archive p
-                                |> Option.map CellComments.parseComments
-                                |> Option.defaultValue [])
-                            |> Option.defaultValue []
-                        match Xlsx.worksheetNativeFastWithStyles (Some styles) info.Name xml comments tables sheetRels sheetPrintNames with
-                        | Some sheet -> Some sheet
-                        | None ->
-                            let sheet = XmlDsl.parse xml
-                            let condFormats = ConditionalFormats.parseConditionalFormats themeColors sheet
-                            let dataVals = DataValidations.parseDataValidations sheet
-                            Some (Xlsx.worksheetFromNodeWithStyles (Some styles) info.Name sheet comments condFormats dataVals [] [] tables sheetRels sheetPrintNames)
-                    | None -> None
-                | None -> None)
-            |> List.choose id
-
-        Some {
-            Sheets = worksheets
-            SharedStrings = sharedStrings
-            SharedStringRuns = sharedStringRuns
-            Styles = styles
-            Dxfs = dxfs
-            Relationships = rels
-            NamedRanges = namedRanges
-            ThemeAccents = themeAccents
-        }
+    let source = {
+        Exists = fun path -> (ZipInterop.tryFindFile archive path).IsSome
+        Text = ZipInterop.getFileTextNative archive
+    }
+    readWorkbookHeader source (mainPartPath source)
+    |> Option.map (fun header -> buildWorkbook source header (selectedSheets header loadAll sheetName))
 
 let parseWorkbookNative (archive: ZipArchive) : Workbook option =
     parseWorkbookNativeFiltered true None archive

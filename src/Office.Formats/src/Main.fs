@@ -620,18 +620,28 @@ module Excel =
                 lift workbook.SharedStringRuns.[idx]
             | _ -> null
 
+    /// Formula text (no leading "="), or null for a plain value cell.
     let private cellFormula (cell: XlsxReader.Cell) =
-        match cell.Value with
-        | XlsxReader.Formula f -> f
-        | _ -> null
+        match cell.Formula with
+        | Some f -> f
+        | None -> null
 
+    /// The cell's value — for a formula cell, the result cached in the file.
+    /// null for empty cells, error cells (see `cellErrorObj`) and formulas
+    /// the file carries no cached result for.
     let private cellValueObj (workbook: XlsxReader.Workbook) (cell: XlsxReader.Cell) : obj =
         match XlsxReader.resolveValue workbook cell.Value with
         | XlsxReader.String s -> box s
         | XlsxReader.Number n -> box n
         | XlsxReader.Boolean b -> box b
         | XlsxReader.Date d -> box d
-        | XlsxReader.Formula f -> box f
+        | _ -> null
+
+    /// Error code without the leading "#" ("DIV/0!", "N/A") for an error
+    /// cell or a formula whose cached result is an error; null otherwise.
+    let private cellErrorObj (cell: XlsxReader.Cell) : obj =
+        match cell.Value with
+        | XlsxReader.Error e -> box e
         | _ -> null
 
     let private listDropdownAt row col (sheet: XlsxReader.Worksheet) =
@@ -704,6 +714,9 @@ module Excel =
         let formula = cellFormula c
         if not (isNull formula) then
             addField fields "formula" formula
+        let error = cellErrorObj c
+        if not (isNull error) then
+            addField fields "error" error
         match style with
         | Some _ -> addStyleFields fields style
         | None -> ()
@@ -728,9 +741,27 @@ module Excel =
     /// Load only one worksheet from an XLSX file. None selects the first sheet.
     let loadSelected = XlsxReader.loadSelected
 
-    /// Get all worksheet names
+    /// Get all worksheet names, hidden ones included (formulas may refer to
+    /// them). Pair with `sheetStates`, or use `visibleSheetNames` for tabs.
     let sheetNames (wb: XlsxReader.Workbook) =
         wb.Sheets |> List.map (fun s -> s.Name) |> List.toArray
+
+    let private sheetStateText (state: XlsxReader.SheetState) =
+        match state with
+        | XlsxReader.SheetVisible -> "visible"
+        | XlsxReader.SheetHidden -> "hidden"
+        | XlsxReader.SheetVeryHidden -> "veryHidden"
+
+    /// "visible" | "hidden" | "veryHidden" for each sheet, parallel to `sheetNames`.
+    let sheetStates (wb: XlsxReader.Workbook) =
+        wb.Sheets |> List.map (fun s -> sheetStateText s.State) |> List.toArray
+
+    /// Names of the sheets Excel shows a tab for.
+    let visibleSheetNames (wb: XlsxReader.Workbook) =
+        wb.Sheets
+        |> List.filter (fun s -> s.State = XlsxReader.SheetVisible)
+        |> List.map (fun s -> s.Name)
+        |> List.toArray
 
     /// Get a worksheet by name
     let sheet name (wb: XlsxReader.Workbook) =
@@ -801,6 +832,7 @@ module Excel =
 
     /// Compact cell stream for importers. Slots are:
     /// row0, col0, value, formula, styleIndex, hasComment, hasListDropdown, richRuns.
+    /// (Error results are only reported by `cellsColumnar` / `cellsWithStyle`.)
     let cellsCompact (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
         let comments = commentCoordSet sheet
         let dropdownRanges = listDropdownRangeBounds sheet
@@ -842,6 +874,7 @@ module Excel =
         let hasComments = ResizeArray<bool>()
         let hasListDropdowns = ResizeArray<bool>()
         let richRuns = ResizeArray<obj>()
+        let errors = ResizeArray<obj>()
         for row in sheet.Rows do
             for cell in row.Cells do
                 let rowIndex = cell.Reference.Row - 1
@@ -862,6 +895,7 @@ module Excel =
                 hasComments.Add hasComment
                 hasListDropdowns.Add hasListDropdown
                 richRuns.Add(richRunsObjForCell workbook cell)
+                errors.Add(cellErrorObj cell)
         objFromFields [
             objField "rows" (box (rows.ToArray()))
             objField "cols" (box (cols.ToArray()))
@@ -871,6 +905,7 @@ module Excel =
             objField "hasComments" (box (hasComments.ToArray()))
             objField "hasListDropdowns" (box (hasListDropdowns.ToArray()))
             objField "richRuns" (box (richRuns.ToArray()))
+            objField "errors" (box (errors.ToArray()))
         ]
 
     let styleAt (index: int) (workbook: XlsxReader.Workbook) =
@@ -987,6 +1022,229 @@ module Excel =
     /// Get named ranges from workbook
     let namedRanges (wb: XlsxReader.Workbook) = wb.NamedRanges
 
+    let private optObj (value: string option) : obj =
+        match value with
+        | Some v -> box v
+        | None -> null
+
+    let private optIntObj (value: int option) : obj =
+        match value with
+        | Some v -> box v
+        | None -> null
+
+    /// Header / band fills for a built-in table style, from the workbook
+    /// theme: Excel's `TableStyle{Light,Medium,Dark}N` cycle through black
+    /// and the six accents (N mod 7).
+    let private tableFills (workbook: XlsxReader.Workbook) (styleName: string) : string * string =
+        let digits = styleName |> Seq.filter System.Char.IsDigit |> Seq.toArray |> System.String
+        let n = match System.Int32.TryParse(digits, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture) with | true, v -> v | _ -> 2
+        let slot = (max 1 n - 1) % 7
+        let accent =
+            if slot = 0 || slot - 1 >= workbook.ThemeAccents.Length then "000000"
+            else workbook.ThemeAccents.[slot - 1]
+        "#" + accent, "#" + XlsxReader.Xlsx.applyColorTint accent 0.8
+
+    /// Workbook-level facts the cell streams do not carry: the date system,
+    /// every sheet with its visibility, and the defined names. `localSheetId`
+    /// is the index of the owning sheet in the workbook (null = global).
+    let workbookInfo (wb: XlsxReader.Workbook) : obj =
+        objFromFields [
+            objField "date1904" (box wb.Date1904)
+            objField "sheets"
+                (box [| for s in wb.Sheets ->
+                          objFromFields [ objField "name" (box s.Name); objField "state" (box (sheetStateText s.State)) ] |])
+            objField "definedNames"
+                (box [| for n in wb.NamedRanges ->
+                          objFromFields [
+                              objField "name" (box n.Name)
+                              objField "refersTo" (box n.RefersTo)
+                              objField "localSheetId"
+                                  (n.Scope
+                                   |> Option.bind (fun s ->
+                                       match System.Int32.TryParse(s, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture) with
+                                       | true, v -> Some v
+                                       | _ -> None)
+                                   |> optIntObj)
+                          ] |])
+            objField "themeAccents" (box wb.ThemeAccents)
+        ]
+
+    /// Everything about a sheet besides its cells, as plain objects/arrays an
+    /// importer can read without knowing the reader's record types: tab
+    /// state, freeze panes, hidden rows/columns (0-based), tables,
+    /// data validations, conditional formats (with the dxf each rule
+    /// applies already resolved), hyperlinks and print setup.
+    let sheetMeta (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : obj =
+        let tables =
+            [| for t in sheet.Tables ->
+                 objFromFields [
+                     objField "name" (box t.Name)
+                     objField "startRow" (box t.StartRow)
+                     objField "startCol" (box t.StartCol)
+                     objField "endRow" (box t.EndRow)
+                     objField "endCol" (box t.EndCol)
+                     objField "headerRowCount" (box t.HeaderRowCount)
+                     objField "totalsRowCount" (box t.TotalsRowCount)
+                     objField "columns" (box (List.toArray t.Columns))
+                     objField "autoFilter"
+                         (match t.AutoFilter with
+                          | Some (c1, c2) -> box [| c1; c2 |]
+                          | None -> null)
+                     objField "style"
+                         (match t.Style with
+                          | Some s ->
+                              let headerFill, stripeFill = tableFills workbook s.Name
+                              objFromFields [
+                                  objField "name" (box s.Name)
+                                  objField "showFirstColumn" (box s.ShowFirstColumn)
+                                  objField "showLastColumn" (box s.ShowLastColumn)
+                                  objField "showRowStripes" (box s.ShowRowStripes)
+                                  objField "showColumnStripes" (box s.ShowColumnStripes)
+                                  objField "headerFill" (box headerFill)
+                                  objField "stripeFill" (box stripeFill)
+                              ]
+                          | None -> null)
+                 ] |]
+        let validations =
+            [| for dv in sheet.DataValidations ->
+                 objFromFields [
+                     objField "range" (box dv.Range)
+                     objField "type" (box dv.ValidationType)
+                     objField "operator" (optObj dv.Operator)
+                     objField "formula1" (optObj dv.Formula1)
+                     objField "formula2" (optObj dv.Formula2)
+                     objField "allowBlank" (box dv.AllowBlank)
+                     objField "showDropDown" (box dv.ShowDropDown)
+                     objField "error" (optObj dv.ErrorMessage)
+                     objField "errorTitle" (optObj dv.ErrorTitle)
+                     objField "errorStyle" (optObj dv.ErrorStyle)
+                     objField "showErrorMessage" (box dv.ShowErrorMessage)
+                     objField "prompt" (optObj dv.Prompt)
+                     objField "promptTitle" (optObj dv.PromptTitle)
+                     objField "showInputMessage" (box dv.ShowInputMessage)
+                 ] |]
+        let conditionalFormats =
+            [| for cf in sheet.ConditionalFormats ->
+                 objFromFields [
+                     objField "range" (box cf.Range)
+                     objField "rules"
+                         (box [| for rule in cf.Rules ->
+                                   let dxf =
+                                       rule.DxfId
+                                       |> Option.bind (fun id -> if id >= 0 && id < workbook.Dxfs.Length then Some workbook.Dxfs.[id] else None)
+                                   objFromFields [
+                                       objField "type" (box rule.Type)
+                                       objField "operator" (optObj rule.Operator)
+                                       objField "formulas" (box (List.toArray rule.Formulas))
+                                       objField "text" (optObj rule.Text)
+                                       objField "priority" (optIntObj rule.Priority)
+                                       objField "stopIfTrue" (box rule.StopIfTrue)
+                                       objField "style"
+                                           (match dxf with
+                                            | Some d ->
+                                                objFromFields [
+                                                    objField "fontColor" (cssColor d.FontColor)
+                                                    objField "fillColor" (cssColor d.FillColor)
+                                                    objField "bold" (box (d.Bold = Some true))
+                                                    objField "italic" (box (d.Italic = Some true))
+                                                ]
+                                            | None -> null)
+                                   ] |])
+                 ] |]
+        let hyperlinks =
+            [| for h in sheet.Hyperlinks ->
+                 objFromFields [
+                     objField "range" (box h.Range)
+                     objField "target" (box h.Target)
+                     objField "isInternal" (box h.IsInternal)
+                 ] |]
+        let hiddenRows = [| for r in sheet.Rows do if r.Hidden then yield r.Index - 1 |]
+        let hiddenCols =
+            [| for c in sheet.Columns do
+                 // A hidden range can run to the last column (16384); the
+                 // importer only needs the ones near the data.
+                 if c.Hidden then
+                     for idx in c.Index .. min c.MaxIndex (c.Index + 1023) do
+                         yield idx - 1 |]
+        let pageSetup =
+            match sheet.PageSetup with
+            | None -> null
+            | Some p ->
+                objFromFields [
+                    objField "paperSize" (optIntObj p.PaperSize)
+                    objField "orientation"
+                        (match p.Orientation with
+                         | XlsxReader.OrientationLandscape -> box "landscape"
+                         | XlsxReader.OrientationPortrait -> box "portrait"
+                         | XlsxReader.OrientationDefault -> null)
+                    objField "fitToPage" (box p.FitToPage)
+                    objField "fitToWidth" (box p.FitToWidth)
+                    objField "fitToHeight" (box p.FitToHeight)
+                    objField "scale" (box p.Scale)
+                    objField "firstPageNumber" (box p.FirstPageNumber)
+                    objField "useFirstPageNumber" (box p.UseFirstPageNumber)
+                    objField "pageOrder" (box (match p.PageOrder with XlsxReader.OverThenDown -> "overThenDown" | XlsxReader.DownThenOver -> "downThenOver"))
+                    objField "blackAndWhite" (box p.BlackAndWhite)
+                    objField "cellComments"
+                        (box (match p.CellComments with
+                              | XlsxReader.CellCommentsAsDisplayed -> "asDisplayed"
+                              | XlsxReader.CellCommentsAtEnd -> "atEnd"
+                              | XlsxReader.CellCommentsNone -> "none"))
+                ]
+        let pageMargins =
+            match sheet.PageMargins with
+            | None -> null
+            | Some m ->
+                objFromFields [
+                    objField "top" (box m.Top)
+                    objField "bottom" (box m.Bottom)
+                    objField "left" (box m.Left)
+                    objField "right" (box m.Right)
+                    objField "header" (box m.Header)
+                    objField "footer" (box m.Footer)
+                ]
+        let hf = sheet.HeaderFooter
+        objFromFields [
+            objField "name" (box sheet.Name)
+            objField "state" (box (sheetStateText sheet.State))
+            objField "frozenRows" (box (sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0))
+            objField "frozenCols" (box (sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0))
+            objField "showGridLines" (box sheet.ShowGridLines)
+            objField "showZeros" (box sheet.ShowZeros)
+            objField "hiddenRows" (box hiddenRows)
+            objField "hiddenCols" (box hiddenCols)
+            objField "tables" (box tables)
+            objField "validations" (box validations)
+            objField "conditionalFormats" (box conditionalFormats)
+            objField "hyperlinks" (box hyperlinks)
+            objField "pageSetup" pageSetup
+            objField "pageMargins" pageMargins
+            objField "printOptions"
+                (objFromFields [
+                    objField "gridLines" (box sheet.PrintOptions.GridLines)
+                    objField "headings" (box sheet.PrintOptions.Headings)
+                    objField "horizontalCentered" (box sheet.PrintOptions.HorizontalCentered)
+                    objField "verticalCentered" (box sheet.PrintOptions.VerticalCentered)
+                ])
+            objField "headerFooter"
+                (objFromFields [
+                    objField "oddHeader" (optObj hf.OddHeader)
+                    objField "oddFooter" (optObj hf.OddFooter)
+                    objField "evenHeader" (optObj hf.EvenHeader)
+                    objField "evenFooter" (optObj hf.EvenFooter)
+                    objField "firstHeader" (optObj hf.FirstHeader)
+                    objField "firstFooter" (optObj hf.FirstFooter)
+                    objField "differentOddEven" (box hf.DifferentOddEven)
+                    objField "differentFirst" (box hf.DifferentFirst)
+                    objField "scaleWithDoc" (box hf.ScaleWithDoc)
+                ])
+            objField "rowBreaks" (box (List.toArray sheet.RowBreaks))
+            objField "colBreaks" (box (List.toArray sheet.ColBreaks))
+            objField "printArea" (optObj sheet.PrintArea)
+            objField "printTitleRows" (optObj sheet.PrintTitleRows)
+            objField "printTitleCols" (optObj sheet.PrintTitleCols)
+        ]
+
     /// Evaluate a cell's formula (stub)
     let evaluateFormula (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) (cell: XlsxReader.Cell) =
         XlsxReader.FormulaEngine.evaluateCell wb sheet cell
@@ -1030,6 +1288,10 @@ let api () = {|
         load = Excel.load
         loadSelected = Excel.loadSelected
         sheetNames = Excel.sheetNames
+        sheetStates = Excel.sheetStates
+        visibleSheetNames = Excel.visibleSheetNames
+        workbookInfo = Excel.workbookInfo
+        sheetMeta = Excel.sheetMeta
         sheet = Excel.sheet
         toArray = Excel.toArray
         dimensions = Excel.dimensions
