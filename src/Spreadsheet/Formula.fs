@@ -3220,7 +3220,9 @@ type ArrVal = CellValue[][]
 let private arrayFunctionNames =
     [| "SEQUENCE"; "RANDARRAY"; "UNIQUE"; "SORT"; "SORTBY"; "FILTER"; "TRANSPOSE"
        "MAP"; "REDUCE"; "SCAN"; "MAKEARRAY"; "TEXTSPLIT"; "GROUPBY"; "PIVOTBY"
-       "BYROW"; "BYCOL" |]
+       "BYROW"; "BYCOL"
+       "VSTACK"; "HSTACK"; "TAKE"; "DROP"; "CHOOSECOLS"; "CHOOSEROWS"; "TOCOL"; "TOROW"
+       "MMULT"; "MINVERSE"; "FREQUENCY" |]
 
 #if FABLE_COMPILER
 let isArrayFunction (name: string) =
@@ -3271,6 +3273,9 @@ let isArrayExpr (e: Expr) : bool =
         | Function (name, _)
             when (name.Length = 6 && equalsOrdinalIgnoreCase name "OFFSET")
                  || (name.Length = 8 && equalsOrdinalIgnoreCase name "INDIRECT") -> found <- true
+        // ROW(A1:A5) / COLUMN(A1:C1) number every row / column of the range.
+        | Function (name, [ RangeRef _ ])
+            when equalsOrdinalIgnoreCase name "ROW" || equalsOrdinalIgnoreCase name "COLUMN" -> found <- true
         // A liftable scalar function is an array when any argument is.
         | Function (name, args) when isLiftableFunction name ->
             for arg in args do
@@ -3406,6 +3411,14 @@ let private clampOpenRange (m: SpreadsheetModel) (a: RefAst) (b: RefAst) : RefAs
         let right = if isWholeRowRange a b then max left (lastUsedCol m) else max a.Col b.Col
         { a with Row = top; Col = left }, { b with Row = bottom; Col = right }
 
+/// Functions that ask about a reference's shape or position, not its
+/// values: a whole-column argument must reach them unbounded (ROWS(A:A) is
+/// 1,048,576).
+let private keepsOpenRanges (name: string) =
+    equalsOrdinalIgnoreCase name "ROWS" || equalsOrdinalIgnoreCase name "COLUMNS"
+    || equalsOrdinalIgnoreCase name "ROW" || equalsOrdinalIgnoreCase name "COLUMN"
+    || equalsOrdinalIgnoreCase name "ISREF"
+
 /// OFFSET and INDIRECT return a reference, not a value.
 let private isReferenceFunction (name: string) =
     (name.Length = 6 && equalsOrdinalIgnoreCase name "OFFSET")
@@ -3462,7 +3475,7 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
     | Function (name, args) ->
         // An array-producing function in scalar context collapses to its
         // top-left element (implicit intersection; spill placement is Step 2).
-        let args = if argsNeedPreparing args then prepareArgs args ctx else args
+        let args = if argsNeedPreparing args then prepareArgs (keepsOpenRanges name) args ctx else args
         if isArrayFunction name then
             match tryEvalArrayTopLeft name args ctx with
             | ValueSome value -> value
@@ -3491,10 +3504,11 @@ and argsNeedPreparing (args: Expr list) : bool =
 /// Rewrite the arguments that stand for a range: whole-column/row references
 /// are bounded by the used range, and OFFSET/INDIRECT calls are replaced by
 /// the reference they return, so `SUM(OFFSET(A1,0,0,2,1))` sums two cells.
-and prepareArgs (args: Expr list) (ctx: EvalContext) : Expr list =
+and prepareArgs (keepOpenRanges: bool) (args: Expr list) (ctx: EvalContext) : Expr list =
     args
     |> List.map (fun arg ->
         match arg with
+        | RangeRef _ when keepOpenRanges -> arg
         | RangeRef (a, b) when isOpenRange a b ->
             match resolveModel a.Sheet ctx.Model ctx.Workbook with
             | Some m -> RangeRef (clampOpenRange m a b)
@@ -4072,16 +4086,22 @@ and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
     let scalar v : ArrVal = [| [| v |] |]
     match expr with
     | Function (name, args) when isArrayFunction name ->
-        let args = if argsNeedPreparing args then prepareArgs args ctx else args
+        let args = if argsNeedPreparing args then prepareArgs false args ctx else args
         evalArrayFunction (name.ToUpperInvariant()) args ctx
     | Function (name, args) when isReferenceFunction name ->
         match resolveReferenceFunction name args ctx with
         | ErrorLit e -> scalar (err e)
         | reference -> evalArray reference ctx
+    | Function (name, [ RangeRef _ ])
+        when equalsOrdinalIgnoreCase name "ROW" || equalsOrdinalIgnoreCase name "COLUMN" ->
+        // Deliberately not bounded: ROW(A:A) is rarely meant, and shape matters here.
+        (match expr with
+         | Function (_, args) -> evalExtendedArrayFunction (name.ToUpperInvariant()) args ctx
+         | _ -> scalar (eval expr ctx))
     | Function (name, args) when isLiftableFunction name && isArrayExpr expr ->
         // Apply a scalar function element by element over its array arguments;
         // scalar arguments stay unevaluated so IF remains lazy per element.
-        let args = (if argsNeedPreparing args then prepareArgs args ctx else args) |> List.toArray
+        let args = (if argsNeedPreparing args then prepareArgs false args ctx else args) |> List.toArray
         let arrays = args |> Array.map (fun arg -> if isArrayExpr arg then Some (evalArray arg ctx) else None)
         let mutable rows = 1
         let mutable cols = 1
@@ -5160,7 +5180,7 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
         match sparsePivotBy1 () with
         | ValueSome result -> result
         | ValueNone -> Rbt.Spreadsheet.Pivot.pivotBy (evalArray (argExpr 0) ctx) (evalArray (argExpr 1) ctx) (evalArray (argExpr 2) ctx) agg
-    | _ -> errArr Err.name
+    | _ -> evalExtendedArrayFunction name args ctx
 
 /// Run a one-pass `Fold` across an aggregate's whole argument list WITHOUT
 /// materializing it: each range arg is streamed cell-by-cell through a
@@ -11241,9 +11261,862 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let l, h = int (ceil lo), int (floor hi)
             if l > h then err Err.num
             else CellValue.Number (float (rng.Next(l, h + 1)))
+    | _ -> evalExtendedFunction fnName args ctx
+
+/// Functions added after the main dispatcher grew large: reference
+/// information, inverse/hyperbolic trigonometry, day-count and working-day
+/// calendars, regression and normal-distribution statistics, matrix scalars,
+/// database functions, base conversion and bit operations.
+and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) : CellValue =
+    let argsArray = List.toArray args
+    let nargs = argsArray.Length
+    let supplied i = i < nargs && argsArray.[i] <> MissingArg
+    let argRaw i = eval argsArray.[i] ctx
+    let argNum i = coerceNumber (argRaw i)
+    let argText i = coerceText (argRaw i)
+    let numOr i (fallback: float) = if supplied i then argNum i else Ok fallback
+    let finite (x: float) = if Double.IsNaN x || Double.IsInfinity x then err Err.num else CellValue.Number x
+    let unary (f: float -> CellValue) =
+        if nargs <> 1 then err Err.value
+        else match argNum 0 with Ok x -> f x | Result.Error e -> err e
+    /// The rectangle an argument refers to, when it is a reference.
+    let rec referenceBounds (e: Expr) : (string option * int * int * int * int) option =
+        match e with
+        | CellRef r -> Some (r.Sheet, r.Row, r.Col, r.Row, r.Col)
+        | RangeRef (a, b) -> let sr, sc, er, ec = normalizeRange a b in Some (a.Sheet, sr, sc, er, ec)
+        | SpillRef anchor -> let a, b = spillRangeOf anchor ctx.Model in referenceBounds (RangeRef (a, b))
+        | TableRef sel ->
+            match tableSelArea sel ctx.Workbook ctx.Sheet ctx.CurrentCell with
+            | Ok (r0, c0, r1, c1) when r0 <= r1 -> Some (None, r0, c0, r1, c1)
+            | _ -> None
+        | NameRef n ->
+            match ctx.Workbook |> Option.bind (resolveNameExpr n ctx.Sheet) with
+            | Some (NameRef _) | None -> None
+            | Some resolved -> referenceBounds resolved
+        | _ -> None
+    let arrayOf i : ArrVal = evalArray argsArray.[i] ctx
+    let firstErrorIn (arr: ArrVal) =
+        arr |> Array.tryPick (Array.tryPick (fun v -> match unwrapValue v with CellValue.Error e -> Some e | _ -> None))
+    /// Numbers of an array argument, row-major; text, booleans and blanks are skipped.
+    let numbersOf i : Result<float[], string> =
+        let arr = arrayOf i
+        match firstErrorIn arr with
+        | Some e -> Result.Error e
+        | None ->
+            Ok [| for row in arr do
+                    for v in row do
+                        match unwrapValue v with
+                        | CellValue.Number x -> yield x
+                        | _ -> () |]
+    /// Position-aligned (y, x) pairs of two equally sized arrays where both are numbers.
+    let pairsOf iy ix : Result<(float * float)[], string> =
+        let ys = arrayOf iy |> Array.collect id
+        let xs = arrayOf ix |> Array.collect id
+        let errorOf (vs: CellValue[]) = vs |> Array.tryPick (fun v -> match unwrapValue v with CellValue.Error e -> Some e | _ -> None)
+        match errorOf ys, errorOf xs with
+        | Some e, _ | _, Some e -> Result.Error e
+        | None, None ->
+            if ys.Length <> xs.Length then Result.Error Err.na
+            else
+                Ok [| for i in 0 .. ys.Length - 1 do
+                        match unwrapValue ys.[i], unwrapValue xs.[i] with
+                        | CellValue.Number y, CellValue.Number x -> yield y, x
+                        | _ -> () |]
+    /// (n, mean y, mean x, Syy, Sxx, Sxy) of the pairs.
+    let regression (pairs: (float * float)[]) =
+        let count = float pairs.Length
+        let meanY = (pairs |> Array.sumBy fst) / count
+        let meanX = (pairs |> Array.sumBy snd) / count
+        let mutable syy = 0.0
+        let mutable sxx = 0.0
+        let mutable sxy = 0.0
+        for (y, x) in pairs do
+            syy <- syy + (y - meanY) * (y - meanY)
+            sxx <- sxx + (x - meanX) * (x - meanX)
+            sxy <- sxy + (y - meanY) * (x - meanX)
+        count, meanY, meanX, syy, sxx, sxy
+    // Standard normal CDF (Marsaglia's series; exact to double precision).
+    let normCdf (z: float) =
+        if z < -8.0 then 0.0
+        elif z > 8.0 then 1.0
+        else
+            let q = z * z
+            let mutable sum = z
+            let mutable previous = 0.0
+            let mutable term = z
+            let mutable i = 1.0
+            while sum <> previous do
+                previous <- sum
+                i <- i + 2.0
+                term <- term * q / i
+                sum <- sum + term
+            0.5 + sum * exp (-0.5 * q - 0.91893853320467274178)
+    let normPdf (z: float) = exp (-0.5 * z * z) / sqrt (2.0 * Math.PI)
+    // Inverse standard normal: Acklam's rational approximation, then one
+    // Halley step against the exact CDF.
+    let normInv (p: float) =
+        let a = [| -3.969683028665376e+01; 2.209460984245205e+02; -2.759285104469687e+02; 1.383577518672690e+02; -3.066479806614716e+01; 2.506628277459239e+00 |]
+        let b = [| -5.447609879822406e+01; 1.615858368580409e+02; -1.556989798598866e+02; 6.680131188771972e+01; -1.328068155288572e+01 |]
+        let c = [| -7.784894002430293e-03; -3.223964580411365e-01; -2.400758277161838e+00; -2.549732539343734e+00; 4.374664141464968e+00; 2.938163982698783e+00 |]
+        let d = [| 7.784695709041462e-03; 3.224671290700398e-01; 2.445134137142996e+00; 3.754408661907416e+00 |]
+        let low = 0.02425
+        let x =
+            if p < low then
+                let q = sqrt (-2.0 * log p)
+                (((((c.[0] * q + c.[1]) * q + c.[2]) * q + c.[3]) * q + c.[4]) * q + c.[5]) / ((((d.[0] * q + d.[1]) * q + d.[2]) * q + d.[3]) * q + 1.0)
+            elif p <= 1.0 - low then
+                let q = p - 0.5
+                let r = q * q
+                (((((a.[0] * r + a.[1]) * r + a.[2]) * r + a.[3]) * r + a.[4]) * r + a.[5]) * q / (((((b.[0] * r + b.[1]) * r + b.[2]) * r + b.[3]) * r + b.[4]) * r + 1.0)
+            else
+                let q = sqrt (-2.0 * log (1.0 - p))
+                -(((((c.[0] * q + c.[1]) * q + c.[2]) * q + c.[3]) * q + c.[4]) * q + c.[5]) / ((((d.[0] * q + d.[1]) * q + d.[2]) * q + d.[3]) * q + 1.0)
+        let e = normCdf x - p
+        let u = e * sqrt (2.0 * Math.PI) * exp (x * x / 2.0)
+        x - u / (1.0 + x * u / 2.0)
+    let isLeapYear year = (year % 4 = 0 && year % 100 <> 0) || year % 400 = 0
+    let lastDayOfMonth (d: DateTime) = d.Day = DateTime.DaysInMonth(d.Year, d.Month)
+    let days360 (startSerial: float) (endSerial: float) (european: bool) =
+        let d1 = serialToDate (floor startSerial)
+        let d2 = serialToDate (floor endSerial)
+        let mutable day1 = d1.Day
+        let mutable day2 = d2.Day
+        if european then
+            if day1 = 31 then day1 <- 30
+            if day2 = 31 then day2 <- 30
+        else
+            let startIsFebEnd = d1.Month = 2 && lastDayOfMonth d1
+            if startIsFebEnd && d2.Month = 2 && lastDayOfMonth d2 then day2 <- 30
+            if startIsFebEnd then day1 <- 30
+            if day2 = 31 && day1 >= 30 then day2 <- 30
+            if day1 = 31 then day1 <- 30
+        float ((d2.Year - d1.Year) * 360 + (d2.Month - d1.Month) * 30 + (day2 - day1))
+    /// Monday = 0 … Sunday = 6 for a date serial.
+    let mondayIndex (serial: int) = ((serial + 5) % 7 + 7) % 7
+    /// Weekend mask (Monday..Sunday) from a WORKDAY.INTL / NETWORKDAYS.INTL weekend argument.
+    let weekendMask i : Result<bool[], string> =
+        if not (supplied i) then Ok [| false; false; false; false; false; true; true |]
+        else
+            match unwrapValue (argRaw i) with
+            | CellValue.String pattern ->
+                if pattern.Length = 7 && pattern |> Seq.forall (fun ch -> ch = '0' || ch = '1') && pattern <> "1111111" then
+                    Ok (pattern.ToCharArray() |> Array.map (fun ch -> ch = '1'))
+                else Result.Error Err.value
+            | CellValue.Error e -> Result.Error e
+            | other ->
+                match coerceNumber other with
+                | Result.Error e -> Result.Error e
+                | Ok code ->
+                    let mask = Array.create 7 false
+                    match int code with
+                    | k when k >= 1 && k <= 7 ->
+                        // 1 = Sat+Sun, 2 = Sun+Mon, … 7 = Fri+Sat
+                        let first = (k + 4) % 7
+                        mask.[first] <- true
+                        mask.[(first + 1) % 7] <- true
+                        Ok mask
+                    | k when k >= 11 && k <= 17 ->
+                        // 11 = Sunday only, 12 = Monday only, … 17 = Saturday only
+                        mask.[(k - 11 + 6) % 7] <- true
+                        Ok mask
+                    | _ -> Result.Error Err.num
+    let holidaysOf i : Result<HashSet<int>, string> =
+        let set = HashSet<int>()
+        if not (supplied i) then Ok set
+        else
+            match numbersOf i with
+            | Result.Error e -> Result.Error e
+            | Ok days ->
+                for day in days do set.Add(int (floor day)) |> ignore
+                Ok set
+    let parseDigits (text: string) (radix: int) (maxDigits: int) : float option =
+        let t = text.Trim().ToUpperInvariant()
+        if t.Length = 0 || t.Length > maxDigits then None
+        else
+            let mutable value = 0.0
+            let mutable valid = true
+            for ch in t do
+                let digit =
+                    if ch >= '0' && ch <= '9' then int ch - int '0'
+                    elif ch >= 'A' && ch <= 'F' then int ch - int 'A' + 10
+                    else 99
+                if digit >= radix then valid <- false
+                else value <- value * float radix + float digit
+            if not valid then None
+            else
+                // A full-width number is two's complement.
+                let limit = Math.Pow(float radix, float maxDigits)
+                if t.Length = maxDigits && value >= limit / 2.0 then Some (value - limit) else Some value
+    let formatDigits (value: float) (radix: int) (maxDigits: int) (places: float option) : CellValue =
+        let limit = Math.Pow(float radix, float maxDigits)
+        let whole = Math.Truncate value
+        if whole < -(limit / 2.0) || whole > limit / 2.0 - 1.0 then err Err.num
+        else
+            let mutable remaining = if whole < 0.0 then whole + limit else whole
+            let mutable digits = if remaining = 0.0 then "0" else ""
+            while remaining > 0.0 do
+                let digit = int (remaining - Math.Floor(remaining / float radix) * float radix)
+                digits <- "0123456789ABCDEF".Substring(digit, 1) + digits
+                remaining <- Math.Floor(remaining / float radix)
+            match places with
+            | Some p when whole >= 0.0 ->
+                let width = int (Math.Truncate p)
+                if width < digits.Length || width > maxDigits then err Err.num
+                else CellValue.String (String.replicate (width - digits.Length) "0" + digits)
+            | _ -> CellValue.String digits
+    let fromBase radix maxDigits =
+        if nargs <> 1 then err Err.value
+        else
+            match argText 0 with
+            | Result.Error e -> err e
+            | Ok text ->
+                match parseDigits text radix maxDigits with
+                | Some value -> CellValue.Number value
+                | None -> err Err.num
+    let toBase radix maxDigits =
+        if nargs < 1 || nargs > 2 then err Err.value
+        else
+            match argNum 0, (if supplied 1 then argNum 1 |> Result.map Some else Ok None) with
+            | Result.Error e, _ | _, Result.Error e -> err e
+            | Ok value, Ok places -> formatDigits value radix maxDigits places
+    let bitOperation (op: int64 -> int64 -> int64) =
+        if nargs <> 2 then err Err.value
+        else
+            match argNum 0, argNum 1 with
+            | Result.Error e, _ | _, Result.Error e -> err e
+            | Ok a, Ok b ->
+                let limit = 281474976710656.0   // 2^48
+                if a < 0.0 || b < 0.0 || a >= limit || b >= limit || a <> Math.Floor a || b <> Math.Floor b then err Err.num
+                else CellValue.Number (float (op (int64 a) (int64 b)))
+    /// Square numeric matrix of an argument, or the error to report.
+    let squareMatrix i : Result<float[][], string> =
+        let arr = arrayOf i
+        let size = arr.Length
+        if size = 0 || arr |> Array.exists (fun row -> row.Length <> size) then Result.Error Err.value
+        else
+            match firstErrorIn arr with
+            | Some e -> Result.Error e
+            | None ->
+                let mutable numeric = true
+                let m =
+                    arr |> Array.map (Array.map (fun v ->
+                        match unwrapValue v with
+                        | CellValue.Number x -> x
+                        | _ -> numeric <- false; 0.0))
+                if numeric then Ok m else Result.Error Err.value
+    /// Database functions: the numeric/raw values of `field` in the records that match `criteria`.
+    let databaseValues () : Result<CellValue[], string> =
+        if nargs <> 3 then Result.Error Err.value
+        else
+            let database = arrayOf 0
+            let criteria = arrayOf 2
+            if database.Length < 1 || criteria.Length < 2 then Result.Error Err.value
+            else
+                let header (v: CellValue) = match coerceText v with Ok t -> t.Trim() | _ -> ""
+                let columns = database.[0] |> Array.map header
+                let columnIndex (name: string) = columns |> Array.tryFindIndex (fun c -> equalsOrdinalIgnoreCase c (name.Trim()))
+                let field =
+                    match unwrapValue (argRaw 1) with
+                    | CellValue.Number index when index >= 1.0 && int index <= columns.Length -> Ok (int index - 1)
+                    | CellValue.String name ->
+                        (match columnIndex name with Some i -> Ok i | None -> Result.Error Err.value)
+                    | CellValue.Error e -> Result.Error e
+                    | _ -> Result.Error Err.value
+                match field with
+                | Result.Error e -> Result.Error e
+                | Ok fieldIndex ->
+                    let criteriaColumns = criteria.[0] |> Array.map (fun v -> columnIndex (header v))
+                    // Each criteria row is an AND of its non-blank cells; rows are OR-ed.
+                    let tests =
+                        [| for r in 1 .. criteria.Length - 1 ->
+                            [| for c in 0 .. criteria.[r].Length - 1 do
+                                match unwrapValue criteria.[r].[c], criteriaColumns.[c] with
+                                | CellValue.Empty, _ -> ()
+                                | CellValue.String "", _ -> ()
+                                | condition, Some column -> yield column, compileCriteria condition
+                                | _, None -> yield -1, (fun _ -> false) |] |]
+                    let matches (record: CellValue[]) =
+                        tests |> Array.exists (fun row ->
+                            row |> Array.forall (fun (column, test) -> column >= 0 && column < record.Length && test record.[column]))
+                    Ok [| for r in 1 .. database.Length - 1 do
+                            if matches database.[r] && fieldIndex < database.[r].Length then
+                                yield unwrapValue database.[r].[fieldIndex] |]
+    let databaseNumbers (finish: float[] -> CellValue) =
+        match databaseValues () with
+        | Result.Error e -> err e
+        | Ok values ->
+            match values |> Array.tryPick (fun v -> match v with CellValue.Error e -> Some e | _ -> None) with
+            | Some e -> err e
+            | None -> finish (values |> Array.choose (fun v -> match v with CellValue.Number x -> Some x | _ -> None))
+    match fnName with
+    // ----- reference information --------------------------------------------
+    | "ROW" | "COLUMN" ->
+        let pick (row: int) (col: int) = CellValue.Number (float ((if fnName = "ROW" then row else col) + 1))
+        if nargs = 0 then
+            match ctx.CurrentCell with
+            | Some cell -> pick cell.Row cell.Col
+            | None -> err Err.value
+        else
+            match referenceBounds argsArray.[0] with
+            | Some (_, sr, sc, _, _) -> pick sr sc
+            | None -> (match argsArray.[0] with ErrorLit e -> err e | _ -> err Err.value)
+    | "ROWS" | "COLUMNS" ->
+        if nargs <> 1 then err Err.value
+        else
+            match referenceBounds argsArray.[0] with
+            | Some (_, sr, sc, er, ec) -> CellValue.Number (float (if fnName = "ROWS" then er - sr + 1 else ec - sc + 1))
+            | None ->
+                let arr = arrayOf 0
+                if arr.Length = 1 && arr.[0].Length = 1 then
+                    match unwrapValue arr.[0].[0] with
+                    | CellValue.Error e -> err e
+                    | _ -> CellValue.Number 1.0
+                else CellValue.Number (float (if fnName = "ROWS" then arr.Length else (if arr.Length > 0 then arr.[0].Length else 0)))
+    | "ADDRESS" ->
+        // ADDRESS(row, column, [abs_num], [a1], [sheet_text])
+        if nargs < 2 then err Err.value
+        else
+            match argNum 0, argNum 1, numOr 2 1.0 with
+            | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+            | Ok rowN, Ok colN, Ok absN ->
+                let row = int rowN
+                let col = int colN
+                let kind = int absN
+                if row < 1 || row > lastSheetRow + 1 || col < 1 || col > lastSheetCol + 1 || kind < 1 || kind > 4 then err Err.value
+                else
+                    let a1 = if supplied 3 then (match coerceBool (argRaw 3) with Ok flag -> flag | _ -> true) else true
+                    let rowAbs = kind = 1 || kind = 2
+                    let colAbs = kind = 1 || kind = 3
+                    let cellText =
+                        if a1 then
+                            (if colAbs then "$" else "") + columnToLetter (col - 1) + (if rowAbs then "$" else "") + string row
+                        else
+                            (if rowAbs then "R" + string row else "R[" + string row + "]")
+                            + (if colAbs then "C" + string col else "C[" + string col + "]")
+                    let prefix =
+                        if supplied 4 then (match argText 4 with Ok sheet -> sheetPrefixText (Some sheet) | _ -> "")
+                        else ""
+                    CellValue.String (prefix + cellText)
+    | "ISERR" ->
+        // Any error except #N/A.
+        if nargs <> 1 then err Err.value
+        else
+            match unwrapValue (argRaw 0) with
+            | CellValue.Error code -> CellValue.Boolean (code <> Err.na)
+            | _ -> CellValue.Boolean false
+    | "ISREF" ->
+        if nargs <> 1 then err Err.value
+        else CellValue.Boolean (referenceBounds argsArray.[0]).IsSome
+    | "ERROR.TYPE" ->
+        if nargs <> 1 then err Err.value
+        else
+            match unwrapValue (argRaw 0) with
+            | CellValue.Error code ->
+                (match code with
+                 | "NULL!" -> CellValue.Number 1.0
+                 | "DIV/0!" -> CellValue.Number 2.0
+                 | "VALUE!" -> CellValue.Number 3.0
+                 | "REF!" -> CellValue.Number 4.0
+                 | "NAME?" -> CellValue.Number 5.0
+                 | "NUM!" -> CellValue.Number 6.0
+                 | "N/A" -> CellValue.Number 7.0
+                 | "SPILL!" -> CellValue.Number 9.0
+                 | "CALC!" -> CellValue.Number 14.0
+                 | _ -> err Err.na)
+            | _ -> err Err.na
+    | "TYPE" ->
+        if nargs <> 1 then err Err.value
+        else
+            let isMultiCell =
+                match referenceBounds argsArray.[0] with
+                | Some (_, sr, sc, er, ec) -> er > sr || ec > sc
+                | None ->
+                    match argsArray.[0] with
+                    | ArrayLit rows -> rows.Length > 1 || (rows.Length = 1 && rows.[0].Length > 1)
+                    | Function (name, _) when isArrayFunction name ->
+                        let arr = arrayOf 0
+                        arr.Length > 1 || (arr.Length = 1 && arr.[0].Length > 1)
+                    | _ -> false
+            if isMultiCell then CellValue.Number 64.0
+            else
+                match unwrapValue (argRaw 0) with
+                | CellValue.Number _ | CellValue.Empty -> CellValue.Number 1.0
+                | CellValue.String _ -> CellValue.Number 2.0
+                | CellValue.Boolean _ -> CellValue.Number 4.0
+                | _ -> CellValue.Number 16.0
+    | "HYPERLINK" ->
+        // The cell shows the friendly name (or the link when none is given).
+        if nargs < 1 || nargs > 2 then err Err.value
+        elif supplied 1 then argRaw 1
+        else argRaw 0
+    // ----- trigonometry -----------------------------------------------------
+    | "ASIN" -> unary (fun x -> if x < -1.0 || x > 1.0 then err Err.num else CellValue.Number (Math.Asin x))
+    | "ACOS" -> unary (fun x -> if x < -1.0 || x > 1.0 then err Err.num else CellValue.Number (Math.Acos x))
+    | "ATAN" -> unary (fun x -> CellValue.Number (Math.Atan x))
+    | "ATAN2" ->
+        if nargs <> 2 then err Err.value
+        else
+            match argNum 0, argNum 1 with
+            | Result.Error e, _ | _, Result.Error e -> err e
+            | Ok x, Ok y -> if x = 0.0 && y = 0.0 then err Err.div0 else CellValue.Number (Math.Atan2(y, x))
+    | "SINH" -> unary (fun x -> finite ((exp x - exp (-x)) / 2.0))
+    | "COSH" -> unary (fun x -> finite ((exp x + exp (-x)) / 2.0))
+    | "TANH" ->
+        unary (fun x ->
+            if x > 20.0 then CellValue.Number 1.0
+            elif x < -20.0 then CellValue.Number -1.0
+            else (let a, b = exp x, exp (-x) in CellValue.Number ((a - b) / (a + b))))
+    | "ASINH" -> unary (fun x -> CellValue.Number (if x < 0.0 then -(log (-x + sqrt (x * x + 1.0))) else log (x + sqrt (x * x + 1.0))))
+    | "ACOSH" -> unary (fun x -> if x < 1.0 then err Err.num else CellValue.Number (log (x + sqrt (x * x - 1.0))))
+    | "ATANH" -> unary (fun x -> if x <= -1.0 || x >= 1.0 then err Err.num else CellValue.Number (0.5 * log ((1.0 + x) / (1.0 - x))))
+    | "COT" -> unary (fun x -> if x = 0.0 then err Err.div0 else finite (1.0 / Math.Tan x))
+    // ----- dates ------------------------------------------------------------
+    | "DAYS360" ->
+        if nargs < 2 then err Err.value
+        else
+            match argNum 0, argNum 1 with
+            | Result.Error e, _ | _, Result.Error e -> err e
+            | Ok startSerial, Ok endSerial ->
+                let european = supplied 2 && (match coerceBool (argRaw 2) with Ok flag -> flag | _ -> false)
+                CellValue.Number (days360 startSerial endSerial european)
+    | "YEARFRAC" ->
+        // YEARFRAC(start, end, [basis]): 0 = US 30/360, 1 = actual/actual,
+        // 2 = actual/360, 3 = actual/365, 4 = European 30/360.
+        if nargs < 2 then err Err.value
+        else
+            match argNum 0, argNum 1, numOr 2 0.0 with
+            | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+            | Ok first, Ok second, Ok basisN ->
+                let startSerial = floor (min first second)
+                let endSerial = floor (max first second)
+                let actual = endSerial - startSerial
+                match int basisN with
+                | 0 -> CellValue.Number (days360 startSerial endSerial false / 360.0)
+                | 4 -> CellValue.Number (days360 startSerial endSerial true / 360.0)
+                | 2 -> CellValue.Number (actual / 360.0)
+                | 3 -> CellValue.Number (actual / 365.0)
+                | 1 ->
+                    let d1 = serialToDate startSerial
+                    let d2 = serialToDate endSerial
+                    let withinOneYear =
+                        d1.Year = d2.Year
+                        || (d2.Year = d1.Year + 1 && (d2.Month < d1.Month || (d2.Month = d1.Month && d2.Day <= d1.Day)))
+                    let denominator =
+                        if withinOneYear then
+                            if d1.Year = d2.Year then (if isLeapYear d1.Year then 366.0 else 365.0)
+                            else
+                                // The span crosses New Year: it is a 366-day year only if it contains a 29 February.
+                                let leapDayInSpan =
+                                    (isLeapYear d1.Year && (d1.Month < 3))
+                                    || (isLeapYear d2.Year && (d2.Month > 2 || (d2.Month = 2 && d2.Day = 29)))
+                                if leapDayInSpan then 366.0 else 365.0
+                        else
+                            let mutable total = 0.0
+                            for year in d1.Year .. d2.Year do
+                                total <- total + (if isLeapYear year then 366.0 else 365.0)
+                            total / float (d2.Year - d1.Year + 1)
+                    CellValue.Number (actual / denominator)
+                | _ -> err Err.num
+    | "TIMEVALUE" ->
+        if nargs <> 1 then err Err.value
+        else
+            match argText 0 with
+            | Result.Error e -> err e
+            | Ok text ->
+                let clock = Text.RegularExpressions.Regex.Match(text, "(\\d{1,2}):(\\d{1,2})(?::(\\d{1,2}(?:\\.\\d+)?))?\\s*([AaPp])?")
+                let hourOnly = Text.RegularExpressions.Regex.Match(text, "(\\d{1,2})\\s*([AaPp])[Mm]?\\s*$")
+                let build (hourText: string) (minuteText: string) (secondText: string) (meridiem: string) =
+                    let hour = float (Int32.Parse hourText)
+                    let minute = if minuteText = "" then 0.0 else float (Int32.Parse minuteText)
+                    let second = if secondText = "" then 0.0 else Double.Parse(secondText, CultureInfo.InvariantCulture)
+                    let hour =
+                        match meridiem.ToUpperInvariant() with
+                        | "P" -> if hour < 12.0 then hour + 12.0 else hour
+                        | "A" -> if hour = 12.0 then 0.0 else hour
+                        | _ -> hour
+                    if (meridiem <> "" && Int32.Parse hourText > 12) || minute > 59.0 || second >= 60.0 then err Err.value
+                    else
+                        let fraction = (hour * 3600.0 + minute * 60.0 + second) / 86400.0
+                        CellValue.Number (fraction - Math.Floor fraction)
+                if clock.Success then build clock.Groups.[1].Value clock.Groups.[2].Value clock.Groups.[3].Value clock.Groups.[4].Value
+                elif hourOnly.Success then build hourOnly.Groups.[1].Value "" "" hourOnly.Groups.[2].Value
+                else err Err.value
+    | "NETWORKDAYS.INTL" ->
+        if nargs < 2 then err Err.value
+        else
+            match argNum 0, argNum 1, weekendMask 2, holidaysOf 3 with
+            | Result.Error e, _, _, _ | _, Result.Error e, _, _ | _, _, Result.Error e, _ | _, _, _, Result.Error e -> err e
+            | Ok first, Ok second, Ok weekend, Ok holidays ->
+                let lo = int (floor (min first second))
+                let hi = int (floor (max first second))
+                let mutable count = 0
+                for day in lo .. hi do
+                    if not weekend.[mondayIndex day] && not (holidays.Contains day) then count <- count + 1
+                CellValue.Number (float (if second < first then -count else count))
+    | "WORKDAY.INTL" ->
+        if nargs < 2 then err Err.value
+        else
+            match argNum 0, argNum 1, weekendMask 2, holidaysOf 3 with
+            | Result.Error e, _, _, _ | _, Result.Error e, _, _ | _, _, Result.Error e, _ | _, _, _, Result.Error e -> err e
+            | Ok start, Ok days, Ok weekend, Ok holidays ->
+                let step = if days < 0.0 then -1 else 1
+                let mutable remaining = int (abs (Math.Truncate days))
+                let mutable current = int (floor start)
+                while remaining > 0 do
+                    current <- current + step
+                    if not weekend.[mondayIndex current] && not (holidays.Contains current) then remaining <- remaining - 1
+                CellValue.Number (float current)
+    // ----- regression and correlation ---------------------------------------
+    | "CORREL" | "PEARSON" | "RSQ" | "SLOPE" | "INTERCEPT" | "STEYX" | "COVAR" | "COVARIANCE.P" | "COVARIANCE.S" ->
+        if nargs <> 2 then err Err.value
+        else
+            // CORREL/COVAR take (array1, array2); the regression functions take (known_y's, known_x's).
+            match pairsOf 0 1 with
+            | Result.Error e -> err e
+            | Ok pairs when pairs.Length = 0 -> err Err.div0
+            | Ok pairs ->
+                let count, meanY, meanX, syy, sxx, sxy = regression pairs
+                match fnName with
+                | "COVAR" | "COVARIANCE.P" -> CellValue.Number (sxy / count)
+                | "COVARIANCE.S" -> if count < 2.0 then err Err.div0 else CellValue.Number (sxy / (count - 1.0))
+                | "CORREL" | "PEARSON" -> if sxx = 0.0 || syy = 0.0 then err Err.div0 else CellValue.Number (sxy / sqrt (sxx * syy))
+                | "RSQ" -> if sxx = 0.0 || syy = 0.0 then err Err.div0 else CellValue.Number (sxy * sxy / (sxx * syy))
+                | "SLOPE" -> if sxx = 0.0 then err Err.div0 else CellValue.Number (sxy / sxx)
+                | "INTERCEPT" -> if sxx = 0.0 then err Err.div0 else CellValue.Number (meanY - sxy / sxx * meanX)
+                | _ ->
+                    if count < 3.0 || sxx = 0.0 then err Err.div0
+                    else CellValue.Number (sqrt (max 0.0 (syy - sxy * sxy / sxx) / (count - 2.0)))
+    | "FORECAST" | "FORECAST.LINEAR" ->
+        if nargs <> 3 then err Err.value
+        else
+            match argNum 0, pairsOf 1 2 with
+            | Result.Error e, _ | _, Result.Error e -> err e
+            | Ok _, Ok pairs when pairs.Length = 0 -> err Err.na
+            | Ok x, Ok pairs ->
+                let _, meanY, meanX, _, sxx, sxy = regression pairs
+                if sxx = 0.0 then err Err.div0 else CellValue.Number (meanY + sxy / sxx * (x - meanX))
+    | "RANK.AVG" ->
+        if nargs < 2 then err Err.value
+        else
+            match argNum 0, numbersOf 1, numOr 2 0.0 with
+            | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+            | Ok x, Ok values, Ok order ->
+                let equal = values |> Array.filter (fun v -> v = x) |> Array.length
+                if equal = 0 then err Err.na
+                else
+                    let ahead = values |> Array.filter (fun v -> if order = 0.0 then v > x else v < x) |> Array.length
+                    CellValue.Number (float ahead + (float equal + 1.0) / 2.0)
+    | "PERCENTRANK" | "PERCENTRANK.INC" ->
+        if nargs < 2 then err Err.value
+        else
+            match numbersOf 0, argNum 1, numOr 2 3.0 with
+            | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+            | Ok values, Ok x, Ok significance ->
+                let sorted = Array.sort values
+                let count = sorted.Length
+                if count = 0 || significance < 1.0 then err Err.num
+                elif x < sorted.[0] || x > sorted.[count - 1] then err Err.na
+                elif count = 1 then CellValue.Number 1.0
+                else
+                    let below = sorted |> Array.filter (fun v -> v < x) |> Array.length
+                    let rank =
+                        if sorted |> Array.exists (fun v -> v = x) then float below / float (count - 1)
+                        else
+                            let lower = sorted.[below - 1]
+                            let upper = sorted.[below]
+                            (float (below - 1) + (x - lower) / (upper - lower)) / float (count - 1)
+                    // Truncated (not rounded) to the requested number of digits.
+                    let scale = Math.Pow(10.0, Math.Truncate significance)
+                    CellValue.Number (Math.Floor(rank * scale + 1e-9) / scale)
+    // ----- normal distribution ----------------------------------------------
+    | "NORM.S.DIST" | "NORMSDIST" ->
+        if nargs < 1 then err Err.value
+        else
+            match argNum 0 with
+            | Result.Error e -> err e
+            | Ok z ->
+                let cumulative = fnName = "NORMSDIST" || not (supplied 1) || (match coerceBool (argRaw 1) with Ok flag -> flag | _ -> true)
+                CellValue.Number (if cumulative then normCdf z else normPdf z)
+    | "NORM.DIST" | "NORMDIST" ->
+        if nargs < 4 then err Err.value
+        else
+            match argNum 0, argNum 1, argNum 2, coerceBool (argRaw 3) with
+            | Result.Error e, _, _, _ | _, Result.Error e, _, _ | _, _, Result.Error e, _ | _, _, _, Result.Error e -> err e
+            | Ok x, Ok mean, Ok sd, Ok cumulative ->
+                if sd <= 0.0 then err Err.num
+                else
+                    let z = (x - mean) / sd
+                    CellValue.Number (if cumulative then normCdf z else normPdf z / sd)
+    | "NORM.S.INV" | "NORMSINV" ->
+        unary (fun p -> if p <= 0.0 || p >= 1.0 then err Err.num else CellValue.Number (normInv p))
+    | "NORM.INV" | "NORMINV" ->
+        if nargs <> 3 then err Err.value
+        else
+            match argNum 0, argNum 1, argNum 2 with
+            | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
+            | Ok p, Ok mean, Ok sd ->
+                if p <= 0.0 || p >= 1.0 || sd <= 0.0 then err Err.num
+                else CellValue.Number (mean + sd * normInv p)
+    // ----- matrices ---------------------------------------------------------
+    | "MDETERM" ->
+        if nargs <> 1 then err Err.value
+        else
+            match squareMatrix 0 with
+            | Result.Error e -> err e
+            | Ok m ->
+                let size = m.Length
+                let a = m |> Array.map Array.copy
+                let mutable det = 1.0
+                let mutable col = 0
+                while det <> 0.0 && col < size do
+                    let mutable pivot = col
+                    for r in col + 1 .. size - 1 do
+                        if abs a.[r].[col] > abs a.[pivot].[col] then pivot <- r
+                    if a.[pivot].[col] = 0.0 then det <- 0.0
+                    else
+                        if pivot <> col then
+                            let swap = a.[pivot]
+                            a.[pivot] <- a.[col]
+                            a.[col] <- swap
+                            det <- -det
+                        det <- det * a.[col].[col]
+                        for r in col + 1 .. size - 1 do
+                            let factor = a.[r].[col] / a.[col].[col]
+                            for c in col .. size - 1 do
+                                a.[r].[c] <- a.[r].[c] - factor * a.[col].[c]
+                    col <- col + 1
+                CellValue.Number det
+    // ----- database functions -----------------------------------------------
+    | "DSUM" -> databaseNumbers (fun xs -> CellValue.Number (Array.sum xs))
+    | "DPRODUCT" -> databaseNumbers (fun xs -> CellValue.Number (if xs.Length = 0 then 0.0 else Array.fold (*) 1.0 xs))
+    | "DCOUNT" -> databaseNumbers (fun xs -> CellValue.Number (float xs.Length))
+    | "DAVERAGE" -> databaseNumbers (fun xs -> if xs.Length = 0 then err Err.div0 else CellValue.Number (Array.average xs))
+    | "DMAX" -> databaseNumbers (fun xs -> CellValue.Number (if xs.Length = 0 then 0.0 else Array.max xs))
+    | "DMIN" -> databaseNumbers (fun xs -> CellValue.Number (if xs.Length = 0 then 0.0 else Array.min xs))
+    | "DCOUNTA" ->
+        match databaseValues () with
+        | Result.Error e -> err e
+        | Ok values -> CellValue.Number (float (values |> Array.filter (fun v -> v <> CellValue.Empty) |> Array.length))
+    | "DGET" ->
+        match databaseValues () with
+        | Result.Error e -> err e
+        | Ok values ->
+            if values.Length = 0 then err Err.value
+            elif values.Length > 1 then err Err.num
+            else values.[0]
+    // ----- base conversion and bit operations ---------------------------------
+    | "BIN2DEC" -> fromBase 2 10
+    | "OCT2DEC" -> fromBase 8 10
+    | "HEX2DEC" -> fromBase 16 10
+    | "DEC2BIN" -> toBase 2 10
+    | "DEC2OCT" -> toBase 8 10
+    | "DEC2HEX" -> toBase 16 10
+    | "BITAND" -> bitOperation (fun a b -> a &&& b)
+    | "BITOR" -> bitOperation (fun a b -> a ||| b)
+    | "BITXOR" -> bitOperation (fun a b -> a ^^^ b)
     | _ ->
         // Unknown / unsupported function.
         err Err.name
+
+/// Array-returning functions added alongside `evalExtendedFunction`: stacking
+/// and slicing of arrays, matrix product/inverse, FREQUENCY, and the array
+/// forms of ROW / COLUMN.
+and evalExtendedArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrVal =
+    let argsArray = List.toArray args
+    let nargs = argsArray.Length
+    let supplied i = i < nargs && argsArray.[i] <> MissingArg
+    let errArr e : ArrVal = [| [| err e |] |]
+    let arrayOf i : ArrVal = evalArray argsArray.[i] ctx
+    let widthOf (a: ArrVal) = if a.Length > 0 then a.[0].Length else 0
+    let isErrorArray (a: ArrVal) =
+        if a.Length = 1 && a.[0].Length = 1 then
+            match unwrapValue a.[0].[0] with
+            | CellValue.Error e -> Some e
+            | _ -> None
+        else None
+    let intArg i : Result<int, string> =
+        match coerceNumber (eval argsArray.[i] ctx) with
+        | Ok n -> Ok (int (Math.Truncate n))
+        | Result.Error e -> Result.Error e
+    /// Indices given as scalars and/or arrays, flattened (CHOOSECOLS / CHOOSEROWS).
+    let indicesFrom first : Result<int list, string> =
+        let mutable result = Ok []
+        for i in first .. nargs - 1 do
+            match result with
+            | Result.Error _ -> ()
+            | Ok acc ->
+                let mutable collected = acc
+                let mutable failure = None
+                for row in arrayOf i do
+                    for v in row do
+                        match coerceNumber v with
+                        | Ok n -> collected <- int (Math.Truncate n) :: collected
+                        | Result.Error e -> failure <- Some e
+                result <- (match failure with Some e -> Result.Error e | None -> Ok collected)
+        result |> Result.map List.rev
+    /// 1-based index (negative counts from the end) to a 0-based position.
+    let position (index: int) (size: int) =
+        if index > 0 && index <= size then Some (index - 1)
+        elif index < 0 && -index <= size then Some (size + index)
+        else None
+    let numericMatrix i : Result<float[][], string> =
+        let arr = arrayOf i
+        match isErrorArray arr with
+        | Some e -> Result.Error e
+        | None ->
+            let mutable numeric = arr.Length > 0
+            let m =
+                arr |> Array.map (Array.map (fun v ->
+                    match unwrapValue v with
+                    | CellValue.Number x -> x
+                    | _ -> numeric <- false; 0.0))
+            if numeric then Ok m else Result.Error Err.value
+    match name with
+    | "ROW" | "COLUMN" ->
+        match (if nargs = 1 then argsArray.[0] else MissingArg) with
+        | RangeRef (a, b) ->
+            let sr, sc, er, ec = normalizeRange a b
+            if name = "ROW" then [| for r in sr .. er -> [| CellValue.Number (float (r + 1)) |] |]
+            else [| [| for c in sc .. ec -> CellValue.Number (float (c + 1)) |] |]
+        | _ -> [| [| evalExtendedFunction name args ctx |] |]
+    | "VSTACK" | "HSTACK" ->
+        if nargs = 0 then errArr Err.value
+        else
+            let parts = [| for i in 0 .. nargs - 1 -> arrayOf i |]
+            let cell (a: ArrVal) r c = if r < a.Length && c < a.[r].Length then a.[r].[c] else err Err.na
+            if name = "VSTACK" then
+                let width = parts |> Array.map widthOf |> Array.max
+                [| for part in parts do
+                    for r in 0 .. part.Length - 1 ->
+                        [| for c in 0 .. width - 1 -> cell part r c |] |]
+            else
+                let height = parts |> Array.map (fun part -> part.Length) |> Array.max
+                [| for r in 0 .. height - 1 ->
+                    [| for part in parts do
+                        for c in 0 .. widthOf part - 1 -> cell part r c |] |]
+    | "TAKE" | "DROP" ->
+        if nargs < 2 then errArr Err.value
+        else
+            let source = arrayOf 0
+            let rows = source.Length
+            let cols = widthOf source
+            let count i = if supplied i then intArg i |> Result.map Some else Ok None
+            match isErrorArray source, count 1, count 2 with
+            | Some e, _, _ -> errArr e
+            | _, Result.Error e, _ | _, _, Result.Error e -> errArr e
+            | None, Ok rowCount, Ok colCount ->
+                // (first index, length) of the slice kept along one axis.
+                let slice (size: int) (n: int option) =
+                    match n with
+                    | None -> Some (0, size)
+                    | Some 0 when name = "TAKE" -> None
+                    | Some k when name = "TAKE" ->
+                        let keep = min size (abs k)
+                        Some ((if k > 0 then 0 else size - keep), keep)
+                    | Some k ->
+                        let dropped = min size (abs k)
+                        if dropped = size then None
+                        else Some ((if k >= 0 then dropped else 0), size - dropped)
+                match slice rows rowCount, slice cols colCount with
+                | Some (r0, rn), Some (c0, cn) when rn > 0 && cn > 0 ->
+                    [| for r in r0 .. r0 + rn - 1 -> [| for c in c0 .. c0 + cn - 1 -> source.[r].[c] |] |]
+                | _ -> errArr Err.calc
+    | "CHOOSECOLS" | "CHOOSEROWS" ->
+        if nargs < 2 then errArr Err.value
+        else
+            let source = arrayOf 0
+            let byCols = name = "CHOOSECOLS"
+            let size = if byCols then widthOf source else source.Length
+            match isErrorArray source, indicesFrom 1 with
+            | Some e, _ -> errArr e
+            | None, Result.Error e -> errArr e
+            | None, Ok indices ->
+                let positions = indices |> List.map (fun index -> position index size)
+                if positions |> List.exists Option.isNone then errArr Err.value
+                else
+                    let picked = positions |> List.choose id |> List.toArray
+                    if byCols then source |> Array.map (fun row -> picked |> Array.map (fun c -> row.[c]))
+                    else picked |> Array.map (fun r -> source.[r])
+    | "TOCOL" | "TOROW" ->
+        if nargs < 1 then errArr Err.value
+        else
+            let source = arrayOf 0
+            let ignore = if supplied 1 then (match intArg 1 with Ok n -> n | _ -> 0) else 0
+            let byColumn = supplied 2 && (match coerceBool (eval argsArray.[2] ctx) with Ok flag -> flag | _ -> false)
+            let ordered =
+                if byColumn then [| for c in 0 .. widthOf source - 1 do for r in 0 .. source.Length - 1 -> source.[r].[c] |]
+                else Array.collect id source
+            let kept =
+                ordered |> Array.filter (fun v ->
+                    match unwrapValue v with
+                    | CellValue.Empty -> ignore <> 1 && ignore <> 3
+                    | CellValue.Error _ -> ignore <> 2 && ignore <> 3
+                    | _ -> true)
+            if kept.Length = 0 then errArr Err.calc
+            elif name = "TOCOL" then kept |> Array.map (fun v -> [| v |])
+            else [| kept |]
+    | "MMULT" ->
+        if nargs <> 2 then errArr Err.value
+        else
+            match numericMatrix 0, numericMatrix 1 with
+            | Result.Error e, _ | _, Result.Error e -> errArr e
+            | Ok a, Ok b ->
+                let inner = if a.Length > 0 then a.[0].Length else 0
+                if inner <> b.Length then errArr Err.value
+                else
+                    let cols = b.[0].Length
+                    [| for r in 0 .. a.Length - 1 ->
+                        [| for c in 0 .. cols - 1 ->
+                            let mutable sum = 0.0
+                            for k in 0 .. inner - 1 do sum <- sum + a.[r].[k] * b.[k].[c]
+                            CellValue.Number sum |] |]
+    | "MINVERSE" ->
+        if nargs <> 1 then errArr Err.value
+        else
+            match numericMatrix 0 with
+            | Result.Error e -> errArr e
+            | Ok m when m |> Array.exists (fun row -> row.Length <> m.Length) -> errArr Err.value
+            | Ok m ->
+                // Gauss-Jordan elimination with partial pivoting on [m | I].
+                let size = m.Length
+                let a = m |> Array.mapi (fun r row -> Array.append row (Array.init size (fun c -> if c = r then 1.0 else 0.0)))
+                let mutable singular = false
+                for col in 0 .. size - 1 do
+                    if not singular then
+                        let mutable pivot = col
+                        for r in col + 1 .. size - 1 do
+                            if abs a.[r].[col] > abs a.[pivot].[col] then pivot <- r
+                        if abs a.[pivot].[col] < 1e-14 then singular <- true
+                        else
+                            let swap = a.[pivot]
+                            a.[pivot] <- a.[col]
+                            a.[col] <- swap
+                            let divisor = a.[col].[col]
+                            for c in 0 .. 2 * size - 1 do a.[col].[c] <- a.[col].[c] / divisor
+                            for r in 0 .. size - 1 do
+                                if r <> col then
+                                    let factor = a.[r].[col]
+                                    if factor <> 0.0 then
+                                        for c in 0 .. 2 * size - 1 do a.[r].[c] <- a.[r].[c] - factor * a.[col].[c]
+                if singular then errArr Err.num
+                else [| for r in 0 .. size - 1 -> [| for c in 0 .. size - 1 -> CellValue.Number a.[r].[size + c] |] |]
+    | "FREQUENCY" ->
+        if nargs <> 2 then errArr Err.value
+        else
+            let numbers (arr: ArrVal) = [| for row in arr do for v in row do match unwrapValue v with CellValue.Number x -> yield x | _ -> () |]
+            let data = numbers (arrayOf 0)
+            let bins = numbers (arrayOf 1) |> Array.sort
+            let counts = Array.zeroCreate<int> (bins.Length + 1)
+            for x in data do
+                // First bin whose upper bound is >= x; past the last bin otherwise.
+                let mutable slot = bins.Length
+                let mutable i = 0
+                while slot = bins.Length && i < bins.Length do
+                    if x <= bins.[i] then slot <- i
+                    i <- i + 1
+                counts.[slot] <- counts.[slot] + 1
+            counts |> Array.map (fun n -> [| CellValue.Number (float n) |])
+    | _ -> errArr Err.name
 
 /// Parse + evaluate a formula string in one shot. Defined names resolve at
 /// the workbook's active sheet — the right scope for an interactive
