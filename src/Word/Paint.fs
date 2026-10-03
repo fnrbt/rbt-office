@@ -993,6 +993,8 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                 Priority = priority
             }: RedBat.BorderGrid.Stroke))
 
+        // The table's list numbering, built at most once for all its rows.
+        let measureScope = lazy (tableMeasureScope None tableBlock)
         let rowHeightAt (row: WordLayout.Table.ResolvedRow) =
             let paragraphStyleForParagraph, effectiveBufferForParagraph, effectiveTextStyleForParagraph =
                 match styleContext with
@@ -1007,7 +1009,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
             match tryMeasureTableRowHeightWithMetrics rowLocalSettings measureText tableBlock columnMetrics row.Source paragraphStyleForParagraph effectiveTextStyleForParagraph with
             | Some height -> height
             | None ->
-                let measurement = measureTableRowWithStyleUsingMetrics rowLocalSettings measureText measureRange tableBlock columnMetrics outerLeft tableHorizontalOffset row.Source 0.0 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
+                let measurement = measureTableRowWithStyleUsingMetrics measureScope.Value rowLocalSettings measureText measureRange tableBlock columnMetrics outerLeft tableHorizontalOffset row.Source 0.0 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
                 measurement.Height
 
         let rowHeights = ResizeArray<float>()
@@ -1620,7 +1622,7 @@ let private plannedContentOffsetForBlock (settings: LayoutSettings) measureText 
         for row in tableBlock.Rows do
             if result.IsNone && rowContainsBlock blockId row then
                 let measurement =
-                    measureTableRowForContextRowLocalWithColumnMetrics settings measureText measureRange styleContext tableBlock columnMetrics outerLeft tableHorizontalOffset row
+                    measureTableRowForContextRowLocalWithColumnMetrics (tableMeasureScope None tableBlock) settings measureText measureRange styleContext tableBlock columnMetrics outerLeft tableHorizontalOffset row
                 for group in measurement.CellGroups do
                     if result.IsNone then
                         let offset =

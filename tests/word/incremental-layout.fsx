@@ -356,5 +356,91 @@ let withBold =
         | block -> block))
 compare "style change after run formatting" styleState withBold |> ignore
 
+// ---------------------------------------------------------------------------
+// No layout state is shared between documents or threads.
+//
+// The library is used server-side, where several documents are laid out at
+// once. Two different documents (each with numbered lists inside a table, the
+// case that used to go through a process-wide cache) are laid out on one
+// thread interleaved, and concurrently on many threads; every result must
+// equal the single-threaded result for that document.
+// ---------------------------------------------------------------------------
+let listCell id listId (texts: string list) =
+    { templateCell with
+        Content = texts |> List.mapi (fun i text -> paraWith (sprintf "%s-%d" id i) (numbered listId 1) text) }
+
+let listTable id listId rowCount itemsPerCell =
+    Doc.Table
+        { templateTable with
+            Id = id
+            Rows =
+                [ for r in 1 .. rowCount ->
+                    { templateRow with
+                        Cells =
+                            [ listCell (sprintf "%s-r%d-a" id r) listId [ for i in 1 .. itemsPerCell -> words (sprintf "a%d_" i) (3 + (r + i) % 9) ]
+                              listCell (sprintf "%s-r%d-b" id r) listId [ for i in 1 .. itemsPerCell -> words (sprintf "b%d_" i) (2 + (r * i) % 14) ] ] } ] }
+
+// The two documents reuse the same block ids on purpose: a cache keyed by id
+// alone would hand one document the other's measurements.
+let sharedIdDoc variant =
+    let listId, rows, items, wordCount = if variant = 0 then "list-x", 30, 2, 25 else "list-y", 18, 3, 55
+    [ for i in 1 .. 12 -> Doc.Paragraph (paraWith (sprintf "shared-n%d" i) (numbered listId 1) (words (sprintf "v%d_" variant) (wordCount + i)))
+      yield listTable "shared-table" listId rows items
+      for i in 1 .. 25 -> Doc.Paragraph (para (sprintf "shared-p%d" i) (words (sprintf "tail%d_" variant) (wordCount + (i * 7) % 40))) ]
+    |> document
+
+let docA0, docB0 = sharedIdDoc 0, sharedIdDoc 1
+let docA1, docB1 = typeIn "shared-p3" 2 (words "edit" 30) docA0, typeIn "shared-table-r2-a-0" 1 "X" docB0
+let coldOf doc = Layout.layoutDocumentPages settings measureText measureRange doc
+let expectedA0, expectedB0, expectedA1, expectedB1 = coldOf docA0, coldOf docB0, coldOf docA1, coldOf docB1
+checkTrue "the two documents lay out differently" (fst expectedA0 <> fst expectedB0)
+let cellPrefix id (layouts: Layout.BlockLayout list) = (layouts |> List.find (fun layout -> layout.BlockId = id)).Prefix.Trim()
+// Cell numbering restarts at the top of each table and runs through its cells.
+check "document A numbers its table cells" (cellPrefix "shared-table-r1-a-0" (fst expectedA0), cellPrefix "shared-table-r2-a-0" (fst expectedA0)) ("1.", "5.")
+check "document B numbers its table cells" (cellPrefix "shared-table-r1-a-0" (fst expectedB0), cellPrefix "shared-table-r2-a-0" (fst expectedB0)) ("1.", "7.")
+
+// Interleaved on one thread, each document with its own state.
+let stateA, stateB = Layout.createIncrementalLayoutState (), Layout.createIncrementalLayoutState ()
+let incrementalOf state doc = Layout.layoutDocumentPagesIncremental state settings measureText measureRange doc
+check "interleaved A first pass" (incrementalOf stateA docA0) expectedA0
+check "interleaved B first pass" (incrementalOf stateB docB0) expectedB0
+check "interleaved A after edit" (incrementalOf stateA docA1) expectedA1
+check "interleaved B after edit" (incrementalOf stateB docB1) expectedB1
+check "interleaved A back to original" (incrementalOf stateA docA0) expectedA0
+check "interleaved B back to original" (incrementalOf stateB docB0) expectedB0
+
+// Interleaved through ONE state: nothing measured for one document may be
+// reused for the other, even though they share block ids.
+let sharedState = Layout.createIncrementalLayoutState ()
+for round in 1 .. 3 do
+    check (sprintf "shared state round %d A" round) (incrementalOf sharedState docA0) expectedA0
+    check (sprintf "shared state round %d B" round) (incrementalOf sharedState docB0) expectedB0
+    check (sprintf "shared state round %d A edited" round) (incrementalOf sharedState docA1) expectedA1
+    check (sprintf "shared state round %d B edited" round) (incrementalOf sharedState docB1) expectedB1
+    // Cold layouts in between must not disturb or be disturbed by the state.
+    check (sprintf "shared state round %d cold B" round) (coldOf docB0) expectedB0
+
+// Concurrently on several threads: cold layouts, and incremental layouts with
+// a state per task (a state is one editor's and is not itself thread-safe).
+let concurrentFailures = System.Collections.Concurrent.ConcurrentQueue<string>()
+let concurrentThreads = System.Collections.Concurrent.ConcurrentDictionary<int, bool>()
+System.Threading.Tasks.Parallel.For(
+    0, 64,
+    System.Threading.Tasks.ParallelOptions(MaxDegreeOfParallelism = 8),
+    fun iteration ->
+        concurrentThreads.[System.Threading.Thread.CurrentThread.ManagedThreadId] <- true
+        let original, edited, expectedOriginal, expectedEdited =
+            if iteration % 2 = 0 then docA0, docA1, expectedA0, expectedA1 else docB0, docB1, expectedB0, expectedB1
+        try
+            if coldOf original <> expectedOriginal then concurrentFailures.Enqueue(sprintf "iteration %d: cold original" iteration)
+            let state = Layout.createIncrementalLayoutState ()
+            if incrementalOf state original <> expectedOriginal then concurrentFailures.Enqueue(sprintf "iteration %d: incremental original" iteration)
+            if incrementalOf state edited <> expectedEdited then concurrentFailures.Enqueue(sprintf "iteration %d: incremental edited" iteration)
+            if coldOf edited <> expectedEdited then concurrentFailures.Enqueue(sprintf "iteration %d: cold edited" iteration)
+        with ex -> concurrentFailures.Enqueue(sprintf "iteration %d: %s" iteration ex.Message))
+|> ignore
+check "concurrent layouts match the single-threaded results" (List.ofSeq concurrentFailures) []
+checkTrue "concurrent layouts ran on more than one thread" (concurrentThreads.Count > 1)
+
 printfn "incremental-layout: %d passed, %d failed" pass fail
 if fail > 0 then failwithf "%d incremental layout checks failed" fail
