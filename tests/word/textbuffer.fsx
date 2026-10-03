@@ -1657,6 +1657,63 @@ check "arrow down steps over table"
      |> Option.map (fun sel -> sel.Focus.BlockId))
     (Some "below")
 
+// Text typed at the edge of an annotated run takes its formatting, not its identity.
+let caretDoc id buffer offset =
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (para id buffer) ]
+        Selection = Some { Anchor = pos id offset; Focus = pos id offset } }
+let paraText id doc =
+    Doc.findParagraph doc id |> Option.map (fun p -> toString p.Buffer) |> Option.defaultValue "<missing>"
+let afterFieldDoc =
+    caretDoc "fld" (ofString "Page ") 5
+    |> Doc.insertField "PAGE" "1"
+    |> Doc.insertText "Z"
+check "typing after field text" (paraText "fld" afterFieldDoc) "Page 1Z"
+check "typing after field is not field"
+    (Doc.findParagraph afterFieldDoc "fld" |> Option.map (fun p -> (getStyleAt 5 p.Buffer).FieldCode, (getStyleAt 6 p.Buffer).FieldCode))
+    (Some (Some "PAGE", None))
+check "typing after field survives refresh" (paraText "fld" (Doc.refreshFields afterFieldDoc)) "Page 1Z"
+let annotated =
+    { defaultStyle with
+        Bold = true
+        Hyperlink = Some "http://x"
+        CommentId = Some "c1"
+        CommentText = Some "note"
+        NoteId = Some "n1"
+        BookmarkStartId = Some "b1"
+        BookmarkName = Some "bm"
+        BookmarkEndId = Some "b1"
+        RevisionType = Some "delete"
+        RevisionId = Some "r1" }
+let annotatedBuffer = { Rope = Rbt.Word.Rope.ofString "link"; Runs = [ Text { Start = 0; Length = 4; Style = annotated } ] }
+let afterAnnotated = getStyleAt 4 (insert 4 "x" annotatedBuffer)
+check "typing after annotated run keeps formatting" afterAnnotated.Bold true
+check "typing after annotated run drops identity"
+    (afterAnnotated.Hyperlink, afterAnnotated.CommentId, afterAnnotated.CommentText, afterAnnotated.NoteId, afterAnnotated.BookmarkName, afterAnnotated.BookmarkEndId, afterAnnotated.RevisionType)
+    (None, None, None, None, None, None, None)
+let beforeAnnotated = getStyleAt 0 (insert 0 "x" annotatedBuffer)
+check "typing before annotated run drops identity" (beforeAnnotated.Bold, beforeAnnotated.Hyperlink, beforeAnnotated.NoteId) (true, None, None)
+let insideAnnotated = insert 2 "x" annotatedBuffer
+check "typing inside hyperlink stays in it" (getStyleAt 2 insideAnnotated).Hyperlink (Some "http://x")
+check "typing inside revision is not a revision" (getStyleAt 2 insideAnnotated).RevisionType None
+let twoRunLink =
+    { Rope = Rbt.Word.Rope.ofString "abcd"
+      Runs =
+        [ Text { Start = 0; Length = 2; Style = { defaultStyle with Bold = true; Hyperlink = Some "http://x" } }
+          Text { Start = 2; Length = 2; Style = { defaultStyle with Hyperlink = Some "http://x" } } ] }
+check "typing between runs of one hyperlink stays in it" (getStyleAt 2 (insert 2 "x" twoRunLink)).Hyperlink (Some "http://x")
+check "typing after last hyperlink run leaves it" (getStyleAt 4 (insert 4 "x" twoRunLink)).Hyperlink None
+let replaceAfterField =
+    { Rope = Rbt.Word.Rope.ofString "1abc"
+      Runs =
+        [ Text { Start = 0; Length = 1; Style = { defaultStyle with Italic = true; FieldCode = Some "PAGE" } }
+          Text { Start = 1; Length = 3; Style = defaultStyle } ] }
+let replacedAfterField =
+    let ranges = ResizeArray<struct (int * int)>()
+    ranges.Add(struct (1, 4))
+    replaceRanges ranges "Z" replaceAfterField
+check "replace after field is not field" ((getStyleAt 1 replacedAfterField).FieldCode, (getStyleAt 1 replacedAfterField).Italic) (None, true)
+
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""
 printfn "Word textbuffer tests: %d passed, %d failed" pass fail

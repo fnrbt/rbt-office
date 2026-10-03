@@ -200,14 +200,14 @@ let private mergedRunList (runs: ResizeArray<Run>) =
             result <- run :: result
     result
 
-let private tryExtendLastTextRun bufferLen textLen (runs: Run list) =
+let private tryExtendLastTextRun (canExtendStyle: TextStyle -> bool) bufferLen textLen (runs: Run list) =
     let values = ResizeArray<Run>()
     let mutable remaining = runs
     let mutable extendedLast = false
     let mutable canExtend = true
     while canExtend && not remaining.IsEmpty do
         match remaining with
-        | [ Text tr ] when tr.Start + tr.Length = bufferLen ->
+        | [ Text tr ] when tr.Start + tr.Length = bufferLen && canExtendStyle tr.Style ->
             values.Add(Text { tr with Length = tr.Length + textLen })
             extendedLast <- true
             remaining <- []
@@ -409,6 +409,76 @@ let isNonbreakingBlank buffer =
             ropeIsBlank left && ropeIsBlank right
     length buffer > 0 && ropeIsBlank buffer.Rope
 
+let private clearRevisionFields (style: TextStyle) =
+    if style.RevisionType.IsNone && style.RevisionId.IsNone && style.RevisionAuthor.IsNone && style.RevisionDate.IsNone then
+        style
+    else
+        { style with RevisionType = None; RevisionId = None; RevisionAuthor = None; RevisionDate = None }
+
+/// True when a run carries annotation identity (a field, hyperlink, comment,
+/// note reference, bookmark, equation or revision) rather than only
+/// character formatting.
+let private hasAnnotationIdentity (style: TextStyle) =
+    style.Hyperlink.IsSome
+    || style.CommentId.IsSome
+    || style.CommentText.IsSome
+    || style.CommentAuthor.IsSome
+    || style.CommentDate.IsSome
+    || style.NoteId.IsSome
+    || style.NoteType.IsSome
+    || style.NoteText.IsSome
+    || style.BookmarkStartId.IsSome
+    || style.BookmarkName.IsSome
+    || style.BookmarkEndId.IsSome
+    || style.FieldCode.IsSome
+    || style.FieldResult.IsSome
+    || style.EquationXml.IsSome
+    || style.RevisionType.IsSome
+    || style.RevisionId.IsSome
+    || style.RevisionAuthor.IsSome
+    || style.RevisionDate.IsSome
+    || style.RenderedPageBreakBefore
+
+/// Style for text typed at the edge of a run. The new text takes the run's
+/// character formatting but not its annotation identity: text typed after a
+/// field must not become part of the field (it would be thrown away when the
+/// field refreshes), and the same goes for note references, bookmarks,
+/// equations and revisions. A hyperlink or comment is kept only when the run
+/// on the other side of the caret belongs to the same one, i.e. the caret is
+/// really inside it.
+let private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle option) =
+    if not (hasAnnotationIdentity style) then
+        style
+    else
+        let keepHyperlink =
+            match otherSide with
+            | Some other -> style.Hyperlink.IsSome && other.Hyperlink = style.Hyperlink
+            | None -> false
+        let keepComment =
+            match otherSide with
+            | Some other -> style.CommentId.IsSome && other.CommentId = style.CommentId
+            | None -> false
+        { style with
+            Hyperlink = if keepHyperlink then style.Hyperlink else None
+            CommentId = if keepComment then style.CommentId else None
+            CommentText = if keepComment then style.CommentText else None
+            CommentAuthor = if keepComment then style.CommentAuthor else None
+            CommentDate = if keepComment then style.CommentDate else None
+            NoteId = None
+            NoteType = None
+            NoteText = None
+            BookmarkStartId = None
+            BookmarkName = None
+            BookmarkEndId = None
+            FieldCode = None
+            FieldResult = None
+            RenderedPageBreakBefore = false
+            EquationXml = None
+            RevisionId = None
+            RevisionType = None
+            RevisionAuthor = None
+            RevisionDate = None }
+
 /// Insert text at position
 let insert pos (text: string) buffer =
     if String.length text = 0 then buffer
@@ -419,7 +489,9 @@ let insert pos (text: string) buffer =
         let insertByScan () =
             let newRuns = ResizeArray<Run>()
             let mutable inserted = false
+            let mutable remainingRuns = buffer.Runs
             for run in buffer.Runs do
+                remainingRuns <- remainingRuns.Tail
                 let runStart = Run.start run
                 let runEnd = Run.endPos run
                 if not inserted && pos >= runStart && pos <= runEnd then
@@ -436,19 +508,26 @@ let insert pos (text: string) buffer =
                             newRuns.Add(Text { Start = pos; Length = textLen; Style = defaultStyle })
                     | Text tr ->
                         if pos = runStart then
-                            // Insert at start of run
-                            newRuns.Add(Text { Start = tr.Start; Length = textLen; Style = tr.Style })
+                            // Insert at start of run: nothing precedes the
+                            // caret, so the text is outside this run's
+                            // annotations.
+                            newRuns.Add(Text { Start = tr.Start; Length = textLen; Style = boundaryInsertStyle tr.Style None })
                             newRuns.Add(Text { tr with Start = tr.Start + textLen })
                         elif pos = runEnd then
                             // Insert at end of run
+                            let following =
+                                match remainingRuns with
+                                | Text next :: _ when next.Start = runEnd -> Some next.Style
+                                | _ -> None
                             newRuns.Add(run)
-                            newRuns.Add(Text { Start = runEnd; Length = textLen; Style = tr.Style })
+                            newRuns.Add(Text { Start = runEnd; Length = textLen; Style = boundaryInsertStyle tr.Style following })
                         else
-                            // Insert in middle - split into three runs
+                            // Insert in middle - split into three runs. The
+                            // new text is not itself a tracked change.
                             let beforeLen = pos - tr.Start
                             let afterLen = tr.Length - beforeLen
                             newRuns.Add(Text { tr with Length = beforeLen })
-                            newRuns.Add(Text { Start = pos; Length = textLen; Style = tr.Style })
+                            newRuns.Add(Text { Start = pos; Length = textLen; Style = clearRevisionFields tr.Style })
                             newRuns.Add(Text { Start = pos + textLen; Length = afterLen; Style = tr.Style })
                     inserted <- true
                 elif inserted then
@@ -470,12 +549,12 @@ let insert pos (text: string) buffer =
             ofString text
         elif pos = bufferLen then
             match buffer.Runs with
-            | [ Text tr ] when tr.Start = 0 && tr.Length = bufferLen ->
+            | [ Text tr ] when tr.Start = 0 && tr.Length = bufferLen && not (hasAnnotationIdentity tr.Style) ->
                 { buffer with
                     Rope = Rope.insert pos text buffer.Rope
                     Runs = [ Text { tr with Length = tr.Length + textLen } ] }
             | _ ->
-                match tryExtendLastTextRun bufferLen textLen buffer.Runs with
+                match tryExtendLastTextRun (fun style -> not (hasAnnotationIdentity style)) bufferLen textLen buffer.Runs with
                 | Some runs ->
                     { buffer with
                         Rope = Rope.insert pos text buffer.Rope
@@ -733,9 +812,23 @@ let replaceRangesWithText (originalText: string) (ranges: ResizeArray<struct (in
                 addCopiedRuns cursor start outPos
                 outPos <- outPos + (start - cursor)
                 if replacementLength > 0 then
+                    // Same rule as typing at that position: inside a run
+                    // the replacement belongs to it, at a run edge it takes
+                    // the formatting but not the annotation identity.
                     let style =
-                        if start > 0 then styleAtAscending (start - 1)
-                        elif start < originalLength then styleAtAscending start
+                        if start > 0 then
+                            let before = styleAtAscending (start - 1)
+                            if styleRunIndex < runs.Length && Run.endPos runs.[styleRunIndex] > start then
+                                before
+                            else
+                                let after =
+                                    if styleRunIndex + 1 < runs.Length then
+                                        match runs.[styleRunIndex + 1] with
+                                        | Text next when next.Start = start -> Some next.Style
+                                        | _ -> None
+                                    else None
+                                boundaryInsertStyle before after
+                        elif start < originalLength then boundaryInsertStyle (styleAtAscending start) None
                         else defaultStyle
                     text.Append replacement |> ignore
                     newRuns.Add(Text { Start = outPos; Length = replacementLength; Style = style })
