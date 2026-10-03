@@ -6,11 +6,14 @@
 set -u
 cd "$(dirname "$0")/../.."
 
-echo "building Rbt.Spreadsheet..."
-if ! dotnet build src/Spreadsheet/Rbt.Spreadsheet.fsproj -v quiet >/dev/null; then
-    echo "BUILD FAILED" >&2
-    exit 1
-fi
+# Office.Formats is needed by the vbaProject.bin stage.
+for proj in src/Spreadsheet/Rbt.Spreadsheet.fsproj src/Office.Formats/Rbt.OfficeFormat.fsproj; do
+    echo "building $proj..."
+    if ! dotnet build "$proj" -v quiet >/dev/null; then
+        echo "BUILD FAILED: $proj" >&2
+        exit 1
+    fi
+done
 
 stages=(
     stage1-operators
