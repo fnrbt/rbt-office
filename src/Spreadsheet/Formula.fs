@@ -726,7 +726,7 @@ let numberToText (n: float) : string =
     elif n = Math.Floor n && abs n < 1e15 then
         (int64 n).ToString(CultureInfo.InvariantCulture)
     else
-        n.ToString("G15", CultureInfo.InvariantCulture)
+        NumberText.numberToString "G15" n
 
 /// Coerce a value to a number using Excel's rules. Blank → 0, TRUE → 1,
 /// FALSE → 0, numeric text → its value, non-numeric text → #VALUE!,
@@ -9629,7 +9629,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let d = max 0 dec
             let factor = 10.0 ** float d
             let rounded = roundHalfAway (x * factor) / factor
-            CellValue.String (rounded.ToString((if noCommas then "F" else "N") + string d, CultureInfo.InvariantCulture))
+            CellValue.String (NumberText.numberToString ((if noCommas then "F" else "N") + string d) rounded)
     | "T" -> (match unwrapValue (argRaw 0) with CellValue.String s -> CellValue.String s | _ -> CellValue.String "")
     // ----- extended date/time -----------------------------------------------
     | "TIME" ->
@@ -10092,14 +10092,12 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 let after = if start0 + cnt < s.Length then s.Substring(start0 + cnt) else ""
                 CellValue.String (before + newT + after)
     | "TEXT" ->
-        // Minimal TEXT — passes the format through .NET. Common Excel codes
-        // (0, 0.00, #,##0, 0%) are .NET-compatible enough for the usual case.
         if nargs <> 2 then err Err.value else
         match argNum 0, argText 1 with
         | Result.Error e, _ -> err e
         | _, Result.Error e -> err e
         | Ok n, Ok fmt ->
-            try CellValue.String (n.ToString(fmt, CultureInfo.InvariantCulture))
+            try CellValue.String (CellText.formatNumberWithCode fmt n)
             with _ -> CellValue.String (numberToText n)
     // ----- lookup -----------------------------------------------------------
     | "CHOOSE" ->

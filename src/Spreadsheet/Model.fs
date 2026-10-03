@@ -804,22 +804,22 @@ let formatNumber (format: string option) (value: float): string =
     match format with
     | Some "currency" ->
         // Currency format: $1,234.56
-        sprintf "$%s" (value.ToString("N2"))
-    | Some "percentage" ->
+        sprintf "$%s" (NumberText.numberToString "N2" value)
+    | Some "percentage" | Some "percent" ->
         // Percentage format: 45.67%
-        sprintf "%s%%" ((value * 100.0).ToString("N2"))
+        sprintf "%s%%" (NumberText.numberToString "N2" (value * 100.0))
     | Some "date" ->
         try
             let date = excelEpoch.AddDays(value)
-            date.ToString("MM/dd/yyyy")
+            sprintf "%02d/%02d/%04d" date.Month date.Day date.Year
         with
-        | _ -> value.ToString("F2")
+        | _ -> NumberText.numberToString "F2" value
     | Some "decimal2" ->
         // 2 decimal places: 123.46
-        value.ToString("F2")
+        NumberText.numberToString "F2" value
     | Some "number" ->
         // General number with comma separators
-        value.ToString("N2")
+        NumberText.numberToString "N2" value
     | _ ->
         // Default: just show the number
         string value
@@ -828,13 +828,14 @@ let formatNumber (format: string option) (value: float): string =
 let rec displayValue (value: CellValue): string =
     match value with
     | Empty -> ""
-    | Number n -> n.ToString("G", Globalization.CultureInfo.InvariantCulture)
+    | Number n -> NumberText.numberToString "G" n
     | String s -> s
     | Boolean b -> if b then "TRUE" else "FALSE"
     | Error e -> sprintf "#%s" e
     | Formula (_, cached) -> displayValue cached
 
-/// Display value with formatting applied
+/// Display value with the legacy named formats applied. Real Excel format
+/// codes need CellText.cellDisplayText, which compiles after this module.
 let displayValueWithFormat (value: CellValue) (format: CellFormat): string =
     match value with
     | Number n -> formatNumber format.NumberFormat n

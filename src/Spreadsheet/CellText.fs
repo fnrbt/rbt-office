@@ -531,7 +531,10 @@ let private excelSerialToDate (serial: float) : System.DateTime =
     // 1900 as a leap year (it isn't). For serials >= 60 we subtract one to
     // line up with the real Gregorian calendar.
     let days = if serial >= 60.0 then serial else serial + 1.0
-    excelEpoch.AddDays(days)
+    // Day arithmetic in UTC, then the same calendar fields as a local-kind
+    // value: Fable formats some tokens (AM/PM) from local time regardless of kind.
+    let utc = excelEpoch.AddDays(days)
+    System.DateTime(utc.Year, utc.Month, utc.Day, utc.Hour, utc.Minute, utc.Second, utc.Millisecond)
 
 /// Tokenize an Excel format code into .NET DateTime.ToString format. Tracks
 /// context (after `h`/`s` → minute; after month-only marker → month) for the
@@ -889,11 +892,10 @@ let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float)
     let usableWidth = max 0.0 (cellWidthPx - 5.0)
     let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
 
-    let inv = System.Globalization.CultureInfo.InvariantCulture
     let mutable result: string voption = ValueNone
     let mutable i = 0
     while result.IsNone && i < generalNumberFormats.Length do
-        let s = n.ToString(generalNumberFormats.[i], inv)
+        let s = NumberText.numberToString generalNumberFormats.[i] n
         if s.Length <= maxChars then
             result <- ValueSome s
         i <- i + 1
@@ -1030,7 +1032,7 @@ let private trailingScale (section: string) : string * float =
 /// applied to a numeric value (Excel shows the number, e.g. `@`→"5"/"-3.5").
 let private generalString (inv: System.Globalization.CultureInfo) (n: float) : string =
     if n = floor n && abs n < 1e15 then (int64 n).ToString(inv)
-    else n.ToString("G15", inv)
+    else NumberText.numberToString "G15" n
 
 let private isSimpleDotNetNumberFormat (section: string) =
     let mutable i = 0
@@ -1173,10 +1175,8 @@ let private formatExcelNumber (code: string) (n: float) : string * string =
         "", selectedSection
     elif scaleDivisor = 1.0 && not prependMinus && sectionInfo.IsSimple then
         let formatted =
-            try valueForSection.ToString(pos, inv)
-            with _ ->
-                try n.ToString("G", inv)
-                with _ -> string n
+            try NumberText.numberToString pos valueForSection
+            with _ -> NumberText.numberToString "G" n
         formatted, selectedSection
     else
     // Fractions (`# ?/?`, `# ??/??`, `?/??`) have no .NET equivalent and
@@ -1191,10 +1191,8 @@ let private formatExcelNumber (code: string) (n: float) : string * string =
         unwrapTextPlaceholderLiterals s, selectedSection
     else
         let formatted =
-            try valueForSection.ToString(sectionInfo.Cleaned, inv)
-            with _ ->
-                try n.ToString("G", inv)
-                with _ -> string n
+            try NumberText.numberToString sectionInfo.Cleaned valueForSection
+            with _ -> NumberText.numberToString "G" n
         (if prependMinus then "-" + formatted else formatted), selectedSection
 
 /// Expand Excel's `* ` accounting fill when it follows a literal currency
@@ -1498,6 +1496,18 @@ let private fitOrOverflow
         if text.Length <= fitChars then text
         else System.String('#', hashChars)
 
+/// Text for a number under an Excel format code, with no cell-width fitting.
+/// This is what TEXT() returns.
+let formatNumberWithCode (code: string) (n: float) : string =
+    let inv = System.Globalization.CultureInfo.InvariantCulture
+    if System.String.IsNullOrWhiteSpace code
+       || code.Equals("general", System.StringComparison.OrdinalIgnoreCase) then
+        generalString inv n
+    elif isDateOrTimeFormat code || hasElapsedBracket code then
+        formatExcelDateOpt code n |> Option.defaultWith (fun () -> generalString inv n)
+    else
+        fst (formatExcelNumber code n)
+
 /// Per-cell display text logic. Public so the VBA-style API surface
 /// (Spreadsheet GetVbaLayoutCells) can return the same text Excel's
 /// `cell.Text` would produce — including `#####` overflow, format-applied
@@ -1510,6 +1520,17 @@ let cellDisplayText
     | CellValue.Empty -> ""
     | Number n ->
         match format.NumberFormat with
+        | Some "currency"
+        | Some "percentage"
+        | Some "percent"
+        | Some "date"
+        | Some "decimal2"
+        | Some "number" ->
+            // Legacy named format codes from the Fable web UI's formatting
+            // commands. Keep these on the original Model.formatNumber path.
+            // Matched before the date test, which would read "date" and
+            // "currency" as Excel date tokens.
+            fitOrOverflow measure cellWidth format.FontName fontPt (formatNumber format.NumberFormat n)
         | Some code when isDateOrTimeFormat code || hasElapsedBracket code ->
             // Out-of-range serials (e.g. testdateoverflow's 1E+20) can't be
             // formatted as a date; Excel renders ##### overflow for those
@@ -1519,14 +1540,6 @@ let cellDisplayText
             match formatExcelDateOpt code n with
             | Some s -> fitOrOverflow measure cellWidth format.FontName fontPt s
             | None -> fitOrOverflow measure cellWidth format.FontName fontPt (System.String('M', 1000))
-        | Some "currency"
-        | Some "percentage"
-        | Some "date"
-        | Some "decimal2"
-        | Some "number" ->
-            // Legacy named format codes from the Fable web UI's formatting
-            // commands. Keep these on the original Model.formatNumber path.
-            fitOrOverflow measure cellWidth format.FontName fontPt (formatNumber format.NumberFormat n)
         | Some code when System.String.IsNullOrWhiteSpace code ||
                          code.Equals("general", System.StringComparison.OrdinalIgnoreCase) ->
             generalNumberDisplay cellWidth fontPt n
