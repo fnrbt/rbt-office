@@ -2184,9 +2184,137 @@ let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (
                         Some (spacingBefore + borderBefore + max lineHeight textHeight + borderAfter + spacingAfter)
             | _ -> None
 
-let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+// ---------------------------------------------------------------------------
+// Paragraph layout memo (the incremental layout).
+//
+// There is exactly one layout algorithm: the document pass below. What makes a
+// keystroke cheap is that laying out one paragraph is a pure function of its
+// inputs, so its results can be reused between passes:
+//   * the broken lines depend only on the paragraph's text/formatting, the
+//     wrap width and the line box (not on where the paragraph sits), and
+//   * the finished BlockLayout additionally depends on y (pagination), the
+//     list marker and the page geometry.
+// A pass that runs with a memo active therefore returns precisely what a pass
+// without one returns; only paragraphs whose inputs changed are recomputed.
+// Paragraphs that interact with floats (obstacles in or out) bypass the memo.
+//
+// The memo assumes the text measurer and the document's styles are the same
+// between passes: layoutDocumentIncrementalWithRange drops it when the styles
+// change, and hosts must clear the state when fonts/measurers change.
+// ---------------------------------------------------------------------------
+
+type ParagraphLineBreakKey = {
+    LineFontSize: float
+    LineHeight: float
+    LineInTableCell: bool
+    LinePaddingTop: float
+    LineTrailingSpaceFitSafety: float
+    LineAvailableWidth: float
+    LineSingleLineFastPath: bool
+}
+
+type ParagraphPlacementKey = {
+    PlacementSettings: LayoutSettings
+    PlacementMaxWidth: float
+    PlacementY: float
+    PlacementXOffset: float
+    PlacementPrefix: string
+}
+
+type ParagraphLayoutMemoEntry = {
+    MemoBuffer: TextBuffer
+    MemoRawMetadata: BlockMetadata
+    MemoParagraphStyle: ParagraphStyle
+    MemoMetadata: BlockMetadata
+    MemoEffectiveBuffer: TextBuffer
+    MemoHasFloatingImage: bool
+    MemoContentFontSize: float
+    MemoContentTextStyle: TextBuffer.TextStyle
+    mutable MemoLines: (ParagraphLineBreakKey * MeasuredLine list) option
+    mutable MemoPlacement: (ParagraphPlacementKey * BlockLayout) option
+    mutable MemoGeneration: int
+}
+
+type ParagraphLayoutMemo = {
+    MemoEntries: System.Collections.Generic.Dictionary<string, ParagraphLayoutMemoEntry>
+    mutable Generation: int
+    mutable LineBreakCount: int
+    mutable MemoStyles: NamedStyle list
+    mutable MemoStyleContext: WordStyles.DocumentStyleContext option
+}
+
+let private createParagraphLayoutMemo () = {
+    MemoEntries = System.Collections.Generic.Dictionary<string, ParagraphLayoutMemoEntry>()
+    Generation = 0
+    LineBreakCount = 0
+    MemoStyles = []
+    MemoStyleContext = None
+}
+
+/// The memo of the incremental pass currently running, if any. Layout is
+/// single-threaded per editor (and JS is single-threaded); a pass installs
+/// the memo for its own duration only.
+let mutable private activeParagraphMemo: ParagraphLayoutMemo option = None
+
+let private sameOrEqual (left: 'T) (right: 'T) =
+    obj.ReferenceEquals(left, right) || left = right
+
+/// Style context for a document, shared between passes of an incremental
+/// layout while the style list is unchanged (it depends on nothing else).
+let private styleContextForLayout (doc: Document) =
+    match activeParagraphMemo with
+    | Some memo ->
+        match memo.MemoStyleContext with
+        | Some context when obj.ReferenceEquals(memo.MemoStyles, doc.Styles) -> context
+        | _ ->
+            let context = WordStyles.styleContext doc
+            memo.MemoStyles <- doc.Styles
+            memo.MemoStyleContext <- Some context
+            context
+    | None -> WordStyles.styleContext doc
+
+let private bufferHasFloatingImage (buffer: TextBuffer) =
+    let mutable found = false
+    for run in buffer.Runs do
+        match run with
+        | Image image when image.Floating -> found <- true
+        | _ -> ()
+    found
+
+let private paragraphMemoEntry (memo: ParagraphLayoutMemo) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) =
+    let fresh () =
+        let metadata = WordStyles.effectiveMetadata paragraphStyle para.Metadata
+        let buffer = effectiveBufferForParagraph paragraphStyle para.Buffer
+        let contentFontSize, contentTextStyle = paragraphContentMetrics paragraphStyle metadata buffer
+        let entry = {
+            MemoBuffer = para.Buffer
+            MemoRawMetadata = para.Metadata
+            MemoParagraphStyle = paragraphStyle
+            MemoMetadata = metadata
+            MemoEffectiveBuffer = buffer
+            MemoHasFloatingImage = bufferHasFloatingImage para.Buffer
+            MemoContentFontSize = contentFontSize
+            MemoContentTextStyle = contentTextStyle
+            MemoLines = None
+            MemoPlacement = None
+            MemoGeneration = memo.Generation
+        }
+        memo.MemoEntries.[para.Id] <- entry
+        entry
+    match memo.MemoEntries.TryGetValue para.Id with
+    | true, entry when obj.ReferenceEquals(entry.MemoBuffer, para.Buffer)
+                       && sameOrEqual entry.MemoRawMetadata para.Metadata
+                       && sameOrEqual entry.MemoParagraphStyle paragraphStyle ->
+        entry.MemoGeneration <- memo.Generation
+        entry
+    | _ -> fresh ()
+
+let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) (memoEntry: ParagraphLayoutMemoEntry option) =
     let mutable counters = numberedCounters
-    let metadata = WordStyles.effectiveMetadata paragraphStyle para.Metadata
+    let metadata =
+        match memoEntry with
+        | Some entry -> entry.MemoMetadata
+        | None -> WordStyles.effectiveMetadata paragraphStyle para.Metadata
     let indent = WordLayout.Paragraph.leftIndent metadata
     let rightIndent = WordLayout.Paragraph.rightIndent metadata
     let firstLineIndent = WordLayout.Paragraph.firstLineIndent metadata
@@ -2206,7 +2334,10 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let borderBefore, borderAfter = paragraphBorderVerticalAdvance metadata
     let borderRight = paragraphBorderRightAdvance metadata
     let contentY = y + spacingBefore + borderBefore
-    let buffer = effectiveBufferForParagraph paragraphStyle para.Buffer
+    let buffer =
+        match memoEntry with
+        | Some entry -> entry.MemoEffectiveBuffer
+        | None -> effectiveBufferForParagraph paragraphStyle para.Buffer
 
     let prefixOpt, updatedCounters = WordLayout.Numbering.markerAndCounters metadata counters
     counters <- updatedCounters
@@ -2222,15 +2353,43 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
     let isHangingList = prefix <> "" && firstLineIndent < 0.0
     let markerReserve = if isHangingList then 0.0 else prefixWidth
     let availableWidth = maxWidth - indent - rightIndent - markerReserve - max 0.0 firstLineIndent - borderRight
-    let contentFontSize, contentTextStyle = paragraphContentMetrics paragraphStyle metadata buffer
+    let contentFontSize, contentTextStyle =
+        match memoEntry with
+        | Some entry -> entry.MemoContentFontSize, entry.MemoContentTextStyle
+        | None -> paragraphContentMetrics paragraphStyle metadata buffer
     let lineSettings = { settings with FontSize = contentFontSize; LineHeight = lineHeightForSettings settings contentTextStyle contentFontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox }
-    let lines, updatedObstacles, updatedPlacedBoxes =
-        if prefix = "" && not metadata.Rtl then
+    let singleLineFastPath = prefix = "" && not metadata.Rtl
+    let breakLines () =
+        if singleLineFastPath then
             match trySingleLineStyledNoObstacles lineSettings measureRange buffer availableWidth metadata.TabStops initialObstacles initialPlacedBoxes with
             | Some lines -> lines, initialObstacles, initialPlacedBoxes
             | None -> layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.TabStops initialObstacles initialPlacedBoxes
         else
             layoutLinesStyledWithObstaclesWithRange lineSettings measureRange buffer availableWidth contentY metadata.TabStops initialObstacles initialPlacedBoxes
+    let lines, updatedObstacles, updatedPlacedBoxes =
+        match memoEntry with
+        | Some entry ->
+            // Only reached without obstacles and without floating images, so
+            // line breaking does not depend on contentY (see the memo notes).
+            let key = {
+                LineFontSize = lineSettings.FontSize
+                LineHeight = lineSettings.LineHeight
+                LineInTableCell = lineSettings.InTableCell
+                LinePaddingTop = lineSettings.PaddingTop
+                LineTrailingSpaceFitSafety = lineSettings.LongTrailingSpaceFitSafety
+                LineAvailableWidth = availableWidth
+                LineSingleLineFastPath = singleLineFastPath
+            }
+            match entry.MemoLines with
+            | Some (cachedKey, cachedLines) when cachedKey = key -> cachedLines, initialObstacles, initialPlacedBoxes
+            | _ ->
+                let lines, obstacles, placedBoxes = breakLines ()
+                entry.MemoLines <- Some (key, lines)
+                match activeParagraphMemo with
+                | Some memo -> memo.LineBreakCount <- memo.LineBreakCount + 1
+                | None -> ()
+                lines, obstacles, placedBoxes
+        | None -> breakLines ()
 
     let mutable isFirstLine = true
     let mutable hasRenderedPageBreak = false
@@ -2329,6 +2488,32 @@ let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (
         VAlignOffset = 0.0
     }, counters, updatedObstacles, updatedPlacedBoxes)
 
+let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+    let uncached () =
+        layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes None
+    match activeParagraphMemo with
+    | Some memo when initialObstacles.IsEmpty && initialPlacedBoxes.IsEmpty ->
+        let entry = paragraphMemoEntry memo paragraphStyle effectiveBufferForParagraph para
+        if entry.MemoHasFloatingImage then uncached ()
+        else
+            let prefixOpt, updatedCounters = WordLayout.Numbering.markerAndCounters entry.MemoMetadata numberedCounters
+            let key = {
+                PlacementSettings = settings
+                PlacementMaxWidth = maxWidth
+                PlacementY = y
+                PlacementXOffset = xOffset
+                PlacementPrefix = prefixOpt |> Option.defaultValue ""
+            }
+            match entry.MemoPlacement with
+            | Some (cachedKey, layout) when cachedKey = key ->
+                layout, updatedCounters, initialObstacles, initialPlacedBoxes
+            | _ ->
+                let layout, counters, obstacles, placedBoxes =
+                    layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes (Some entry)
+                entry.MemoPlacement <- Some (key, layout)
+                layout, counters, obstacles, placedBoxes
+    | _ -> uncached ()
+
 let layoutParagraphAtWithStyleAndObstacles (settings: LayoutSettings) (measureText: TextMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes
 
@@ -2348,7 +2533,7 @@ let layoutParagraphAtWithRange (settings: LayoutSettings) (measureText: TextMeas
 
 let private defaultParagraphFirstLineOffsetInDocument doc =
     let para = { Id = ""; Buffer = TextBuffer.empty; Metadata = defaultMetadata }
-    let paragraphStyle = forBlockInDocument doc (Paragraph para)
+    let paragraphStyle = forBlockInContext (styleContextForLayout doc) (Paragraph para)
     paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
 
 let private defaultParagraphFirstLineOffsetInContext context =
@@ -2627,7 +2812,7 @@ let measureTableRowForContext settings measureText measureRange context tableBlo
     measureTableRowForContextWithColumnMetrics settings measureText measureRange context tableBlock columnMetrics outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
 
 let measureTableRowForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight =
-    let context = WordStyles.styleContext doc
+    let context = styleContextForLayout doc
     measureTableRowForContext settings measureText measureRange context tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row rowY tableContinuationHeaderHeight
 
 let internal measureTableRowForContextRowLocalWithColumnMetrics settings measureText measureRange context tableBlock columnMetrics outerLeft tableHorizontalOffset row =
@@ -2644,7 +2829,7 @@ let measureTableRowForContextRowLocal settings measureText measureRange context 
     measureTableRowForContextRowLocalWithColumnMetrics settings measureText measureRange context tableBlock columnMetrics outerLeft tableHorizontalOffset row
 
 let measureTableRowForDocumentRowLocal settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row =
-    let context = WordStyles.styleContext doc
+    let context = styleContextForLayout doc
     measureTableRowForContextRowLocal settings measureText measureRange context tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset row
 
 let moveTableRowMeasurementToY rowY (measurement: TableRowMeasurement) =
@@ -3032,7 +3217,7 @@ let private fragmentPlanForRowTransaction settings firstTablePage headerHeight r
     currentY, resizeArrayToList fragments
 
 let buildTableLayoutPlanForDocument settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY =
-    let styleContext = WordStyles.styleContext doc
+    let styleContext = styleContextForLayout doc
     let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
     let outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock |> snd
     let tableX = settings.PaddingLeft + tableHorizontalOffset - outerLeft
@@ -3137,7 +3322,7 @@ let private layoutDocumentWithRangeAndInitial
         (initialPlacedBoxes: PlacedFloatingBox list) =
     // Multi-column sections are flowed by columnFlowLayout, which drives this
     // function per column at the column width; here we always use the full width.
-    let styleContext = WordStyles.styleContext doc
+    let styleContext = styleContextForLayout doc
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
     let mutable y = settings.PaddingTop
     let layouts = ResizeArray<BlockLayout>()
@@ -3832,7 +4017,7 @@ let private takeLines count (lines: MeasuredLine list) =
 /// column fills to the page bottom and the flow wraps to the next page after
 /// `count` columns. Returns the placed layouts.
 let private flowColumns (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) =
-    let styleContext = WordStyles.styleContext doc
+    let styleContext = styleContextForLayout doc
     let n = max 1 columns.Count
     let full = settings.Width - settings.PaddingLeft - settings.MarginRight
     let widthsArr =
@@ -4004,251 +4189,6 @@ let uniformPageInfosWithLayoutCount (settings: LayoutSettings) (layouts: BlockLa
 let uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
     uniformPageInfosWithLayoutCount settings layouts |> fst
 
-type IncrementalBlockLayoutGroup = {
-    BlockId: BlockId
-    Layouts: BlockLayout list
-    MeasureY: float
-    Advance: float
-    Height: float
-}
-
-type IncrementalBlockCacheEntry = {
-    BlockId: BlockId
-    Block: Block
-    PageSetup: PageSetup
-    Styles: NamedStyle list
-    ContentWidth: float
-    Group: IncrementalBlockLayoutGroup
-}
-
-type IncrementalLayoutState = {
-    mutable LastDocument: Document option
-    mutable LastLayouts: BlockLayout list option
-    mutable Entries: IncrementalBlockCacheEntry list
-    mutable MeasuredBlockCount: int
-}
-
-let createIncrementalLayoutState () = {
-    LastDocument = None
-    LastLayouts = None
-    Entries = []
-    MeasuredBlockCount = 0
-}
-
-let resetIncrementalLayoutMeasurements (state: IncrementalLayoutState) =
-    state.MeasuredBlockCount <- 0
-
-let incrementalLayoutMeasuredBlockCount (state: IncrementalLayoutState) =
-    state.MeasuredBlockCount
-
-let clearIncrementalLayoutState (state: IncrementalLayoutState) =
-    state.LastDocument <- None
-    state.LastLayouts <- None
-    state.Entries <- []
-    state.MeasuredBlockCount <- 0
-
-let private topLevelBlockId = function
-    | Paragraph para
-    | Heading (_, para) -> para.Id
-    | Table table -> table.Id
-    | TextBox textBox -> textBox.Id
-
-let private blockParagraphsForLayoutCache = function
-    | Paragraph para
-    | Heading (_, para) -> [para]
-    | Table table ->
-        table.Rows
-        |> List.collect (fun row -> row.Cells)
-        |> List.collect (fun cell -> cell.Content)
-    | TextBox textBox -> textBox.Content
-
-let private blockHasFloatingLayoutDependency block =
-    let paragraphHasFloatingImage (para: ParagraphBlock) =
-        para.Buffer.Runs
-        |> List.exists (function
-            | Image image -> image.Floating
-            | Text _ -> false)
-
-    match block with
-    | TextBox _ -> true
-    | Table table when table.Floating -> true
-    | _ -> blockParagraphsForLayoutCache block |> List.exists paragraphHasFloatingImage
-
-let private documentHasFloatingLayoutDependency doc =
-    doc.Blocks |> List.exists blockHasFloatingLayoutDependency
-
-let private sameBlockStableParts left right =
-    let paragraphSignature (para: ParagraphBlock) =
-        para.Id,
-        System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(box para.Buffer),
-        para.Metadata
-
-    obj.ReferenceEquals(left, right)
-    || (topLevelBlockId left = topLevelBlockId right
-        && blockParagraphsForLayoutCache left
-           |> List.map paragraphSignature
-           = (blockParagraphsForLayoutCache right |> List.map paragraphSignature)
-        && left = right)
-
-let private layoutGroupBottom (layouts: BlockLayout list) measureY =
-    let mutable bottom = measureY
-    for layout in layouts do
-        bottom <- max bottom (layout.Y + layout.Height)
-    bottom
-
-let private moveLayoutBy delta (layout: BlockLayout) =
-    if delta = 0.0 then layout
-    else
-        { layout with
-            Y = layout.Y + delta
-            Lines = shiftLinesY delta layout.Lines }
-
-let private measureIncrementalBlockGroup settings measureText measureRange doc contentWidth block =
-    let groupSettings =
-        { settings with
-            Width = settings.PaddingLeft + contentWidth + settings.MarginRight
-            PageHeight = max settings.PageHeight 1000000.0 }
-    let blockDoc =
-        { doc with
-            Blocks = [ block ]
-            Selection = None
-            PageSetup = { doc.PageSetup with Columns = None; SectionStart = None } }
-    let measuredLayouts, _ = layoutDocumentWithRangeAndInitial groupSettings measureText measureRange blockDoc [] []
-    let layouts =
-        measuredLayouts
-        |> List.filter (fun layout ->
-            not (layout.BlockId.StartsWith footnoteBlockIdPrefix)
-            && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
-    let bottom = layoutGroupBottom layouts groupSettings.PaddingTop
-    let advance = max 0.0 (bottom - groupSettings.PaddingTop)
-    {
-        BlockId = topLevelBlockId block
-        Layouts = layouts
-        MeasureY = groupSettings.PaddingTop
-        Advance = advance
-        Height = advance
-    }
-
-let private tryFindIncrementalEntry (state: IncrementalLayoutState) (doc: Document) contentWidth block =
-    state.Entries
-    |> List.tryFind (fun entry ->
-        entry.BlockId = topLevelBlockId block
-        && entry.ContentWidth = contentWidth
-        && entry.PageSetup = doc.PageSetup
-        && entry.Styles = doc.Styles
-        && sameBlockStableParts entry.Block block)
-
-let private hasSectionedDocument doc =
-    doc.Blocks
-    |> List.exists (fun block ->
-        match tryGetParagraph block with
-        | Some para -> para.Metadata.SectionBreak.IsSome
-        | None -> false)
-
-let private appendSyntheticNotes settings measureText measureRange layouts =
-    let result = ResizeArray<BlockLayout>()
-    result.AddRange layouts
-
-    let footnotesByPage =
-        layouts
-        |> List.fold (fun acc layout -> addLayoutFootnotes settings acc layout) Map.empty
-
-    let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-    let footnoteParagraphMetadata = { defaultMetadata with SpacingBefore = Some 0.0; SpacingAfter = Some 0.0 }
-    let footnoteStride = pageHeight settings + pageGap
-    for KeyValue (pageIndex, notes) in footnotesByPage do
-        if not notes.IsEmpty then
-            let pageTop = float pageIndex * footnoteStride
-            let pageContentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-            let mutable tempY = 0.0
-            let laidOut =
-                notes |> List.mapi (fun noteIndex (id, text) ->
-                    let noteString = sprintf "%s %s" id (text.Trim())
-                    let buffer =
-                        TextBuffer.ofString noteString
-                        |> TextBuffer.setFontFamily 0 noteString.Length footnoteFontFamily
-                        |> TextBuffer.setFontSize 0 noteString.Length footnoteFontSize
-                        |> TextBuffer.setVertAlign 0 id.Length (Some "superscript")
-                    let para = { Id = sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex; Buffer = buffer; Metadata = footnoteParagraphMetadata }
-                    let layout, _ = layoutParagraphAtWithRange settings measureText measureRange maxWidth tempY 0.0 para Map.empty
-                    tempY <- tempY + layout.Height
-                    layout)
-            let blockTop = pageContentBottom - footnoteBottomPad - tempY
-            for layout in laidOut do
-                result.Add(moveLayoutToY (blockTop + layout.Y) layout)
-
-    resizeArrayToList result
-
-let private incrementalHasExplicitLineSpacing (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
-    metadata.LineSpacing.IsSome
-    || paragraphStyle.LineSpacing.IsSome
-    || metadata.LineSpacingRule.IsSome
-    || paragraphStyle.LineSpacingRule.IsSome
-
-let private stackIncrementalGroups settings measureText measureRange doc (groups: IncrementalBlockLayoutGroup list) =
-    let layouts = ResizeArray<BlockLayout>()
-    let mutable y = settings.PaddingTop
-    let mutable groupIndex = 0
-    let styleContext = WordStyles.styleContext doc
-    let mutable previousParagraphContext: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
-    let mutable previousParagraphLayout: BlockLayout option = None
-
-    let resetPreviousParagraph () =
-        previousParagraphContext <- None
-        previousParagraphLayout <- None
-
-    let tableFollowDefaultLineHeightAdjustment () =
-        match previousParagraphContext, previousParagraphLayout with
-        | Some (_, paragraphStyle, metadata, _), Some layout when not (incrementalHasExplicitLineSpacing paragraphStyle metadata) && not (usesDefaultParagraphSpacing metadata) ->
-            let mutable adjustment = 0.0
-            for line in layout.Lines do
-                let fontSize = lineMaxTextFontSize paragraphStyle.Text.FontSize line
-                adjustment <- adjustment + max 0.0 (fontSize * (wordTableFollowSingleLineBoxFactor - wordSingleLineBoxFactor))
-            adjustment
-        | _ -> 0.0
-
-    for block in doc.Blocks do
-        let group = groups.[groupIndex]
-        match block with
-        | TextBox _ -> resetPreviousParagraph ()
-        | _ ->
-            match tryGetParagraph block with
-            | Some para ->
-                y <- applyRenderedPageBreakHint settings y para
-                let paragraphStyle = forBlockInContext styleContext block
-                if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && layouts.Count > 0 then
-                    y <- advanceToNextPage settings y
-                    resetPreviousParagraph ()
-                y <- paginateBlock settings y group.Height
-            | None ->
-                y <- y + tableFollowDefaultLineHeightAdjustment ()
-                resetPreviousParagraph ()
-                y <- paginateBlock settings y group.Height
-
-            let delta = y - group.MeasureY
-            let mutable firstPlacedLayout: BlockLayout option = None
-            for layout in group.Layouts do
-                let placed = moveLayoutBy delta layout
-                if firstPlacedLayout.IsNone then firstPlacedLayout <- Some placed
-                layouts.Add placed
-            y <- y + group.Advance
-
-            match tryGetParagraph block with
-            | Some para ->
-                let paragraphStyle = forBlockInContext styleContext block
-                match firstPlacedLayout with
-                | Some layout ->
-                    previousParagraphContext <- Some (para, paragraphStyle, layout.Metadata, WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata)
-                    previousParagraphLayout <- Some layout
-                | None -> resetPreviousParagraph ()
-                if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
-                    y <- advanceToNextPage settings y
-                    resetPreviousParagraph ()
-            | _ -> ()
-        groupIndex <- groupIndex + 1
-
-    appendSyntheticNotes settings measureText measureRange (resizeArrayToList layouts)
-
 /// Lay out a multi-section document section by section. A continuous break
 /// continues on the same page below the previous section; otherwise the next
 /// section starts on a new page (using that section's page size — supporting a
@@ -4336,59 +4276,89 @@ let layoutDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasure
 let layoutDocument (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) =
     layoutDocumentWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) doc
 
-/// Incremental document layout: reuses per-top-level-block measured line layouts
-/// where the block identity/stable content signature and document-level layout
-/// inputs are unchanged, then recomputes the cheap vertical stacking pass.
-let layoutDocumentIncrementalWithRange (state: IncrementalLayoutState) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
-    match state.LastDocument, state.LastLayouts with
-    | Some cachedDoc, Some layouts when obj.ReferenceEquals(cachedDoc, doc) -> layouts
+/// State of an incremental layout: the last result plus the paragraph memo
+/// that makes the next pass cheap.
+type IncrementalLayoutState = {
+    mutable LastDocument: Document option
+    mutable LastSettings: LayoutSettings option
+    mutable LastLayouts: BlockLayout list option
+    mutable LastPages: PageInfo list option
+    mutable MeasuredBlockCount: int
+    mutable MemoSweepThreshold: int
+    Memo: ParagraphLayoutMemo
+}
+
+let createIncrementalLayoutState () = {
+    LastDocument = None
+    LastSettings = None
+    LastLayouts = None
+    LastPages = None
+    MeasuredBlockCount = 0
+    MemoSweepThreshold = 256
+    Memo = createParagraphLayoutMemo ()
+}
+
+let resetIncrementalLayoutMeasurements (state: IncrementalLayoutState) =
+    state.MeasuredBlockCount <- 0
+
+/// Number of paragraphs whose lines had to be broken afresh since the last
+/// reset (everything else was reused from the memo).
+let incrementalLayoutMeasuredBlockCount (state: IncrementalLayoutState) =
+    state.MeasuredBlockCount
+
+let clearIncrementalLayoutState (state: IncrementalLayoutState) =
+    state.LastDocument <- None
+    state.LastSettings <- None
+    state.LastLayouts <- None
+    state.LastPages <- None
+    state.MeasuredBlockCount <- 0
+    state.MemoSweepThreshold <- 256
+    state.Memo.MemoEntries.Clear()
+    state.Memo.MemoStyles <- []
+    state.Memo.MemoStyleContext <- None
+
+/// Incremental document layout. Runs the same document pass as
+/// layoutDocumentPages (so the result is identical for every document —
+/// pagination, numbering, tables, footnotes, floats, sections and columns
+/// included) with the paragraph memo installed, so only paragraphs whose own
+/// inputs changed are measured and paginated again.
+let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) : BlockLayout list * PageInfo list =
+    match state.LastDocument, state.LastSettings, state.LastLayouts, state.LastPages with
+    | Some cachedDoc, Some cachedSettings, Some layouts, Some pages
+        when obj.ReferenceEquals(cachedDoc, doc) && cachedSettings = settings -> layouts, pages
     | _ ->
-        let contentWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-        let useColdLayout =
-            documentHasFloatingLayoutDependency doc
-            || hasSectionedDocument doc
-            || (match doc.PageSetup.Columns with Some columns when columns.Count >= 2 -> true | _ -> false)
-        if useColdLayout then
-            let layouts = layoutDocumentWithRange settings measureText measureRange doc
-            state.LastDocument <- Some doc
-            state.LastLayouts <- Some layouts
-            state.Entries <-
-                doc.Blocks
-                |> List.map (fun block ->
-                    let group = measureIncrementalBlockGroup settings measureText measureRange doc contentWidth block
-                    { BlockId = topLevelBlockId block
-                      Block = block
-                      PageSetup = doc.PageSetup
-                      Styles = doc.Styles
-                      ContentWidth = contentWidth
-                      Group = group })
-            layouts
-        else
-            let newEntries = ResizeArray<IncrementalBlockCacheEntry>()
-            let groups =
-                doc.Blocks
-                |> List.map (fun block ->
-                    match tryFindIncrementalEntry state doc contentWidth block with
-                    | Some entry ->
-                        newEntries.Add entry
-                        entry.Group
-                    | None ->
-                        state.MeasuredBlockCount <- state.MeasuredBlockCount + 1
-                        let group = measureIncrementalBlockGroup settings measureText measureRange doc contentWidth block
-                        let entry =
-                            { BlockId = topLevelBlockId block
-                              Block = block
-                              PageSetup = doc.PageSetup
-                              Styles = doc.Styles
-                              ContentWidth = contentWidth
-                              Group = group }
-                        newEntries.Add entry
-                        group)
-            let layouts = stackIncrementalGroups settings measureText measureRange doc groups
-            state.LastDocument <- Some doc
-            state.LastLayouts <- Some layouts
-            state.Entries <- resizeArrayToList newEntries
-            layouts
+        let memo = state.Memo
+        if not (obj.ReferenceEquals(memo.MemoStyles, doc.Styles)) then
+            // Named (character) styles feed every paragraph's effective runs.
+            if memo.MemoStyles <> doc.Styles then memo.MemoEntries.Clear()
+            memo.MemoStyles <- doc.Styles
+            memo.MemoStyleContext <- None
+        memo.Generation <- memo.Generation + 1
+        memo.LineBreakCount <- 0
+        let previousMemo = activeParagraphMemo
+        activeParagraphMemo <- Some memo
+        let layouts, pages =
+            try
+                layoutDocumentPages settings measureText measureRange doc
+            finally
+                activeParagraphMemo <- previousMemo
+        state.MeasuredBlockCount <- state.MeasuredBlockCount + memo.LineBreakCount
+        // Drop entries of paragraphs that no longer exist once they pile up.
+        if memo.MemoEntries.Count > state.MemoSweepThreshold then
+            let stale = ResizeArray<string>()
+            for KeyValue (id, entry) in memo.MemoEntries do
+                if entry.MemoGeneration <> memo.Generation then stale.Add id
+            for id in stale do
+                memo.MemoEntries.Remove id |> ignore
+            state.MemoSweepThreshold <- memo.MemoEntries.Count * 2 + 256
+        state.LastDocument <- Some doc
+        state.LastSettings <- Some settings
+        state.LastLayouts <- Some layouts
+        state.LastPages <- Some pages
+        layouts, pages
+
+let layoutDocumentIncrementalWithRange (state: IncrementalLayoutState) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) =
+    layoutDocumentPagesIncremental state settings measureText measureRange doc |> fst
 
 let layoutDocumentIncremental state settings measureText doc =
     layoutDocumentIncrementalWithRange state settings measureText (rangeMeasurerFromTextMeasurer measureText) doc
@@ -4403,4 +4373,14 @@ let hitTestWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (mea
 
 let hitTestForImage (settings: LayoutSettings) (measureText: TextMeasurer) (doc: Document) (mouseX: float) (mouseY: float) : (BlockId * int * float * float * float * float) option =
     let layouts = layoutDocument settings measureText doc
+    hitTestForImageLayouts settings.PaddingLeft layouts mouseX mouseY
+
+/// Hit tests against the incremental layout: an unchanged document reuses the
+/// layout the last render produced instead of laying the document out again.
+let hitTestIncrementalWithRange (state: IncrementalLayoutState) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (mouseX: float) (mouseY: float) =
+    let layouts = layoutDocumentIncrementalWithRange state settings measureText measureRange doc
+    hitTestLayoutsWithRange measureRange settings.PaddingLeft layouts mouseX mouseY
+
+let hitTestForImageIncremental (state: IncrementalLayoutState) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (mouseX: float) (mouseY: float) : (BlockId * int * float * float * float * float) option =
+    let layouts = layoutDocumentIncrementalWithRange state settings measureText measureRange doc
     hitTestForImageLayouts settings.PaddingLeft layouts mouseX mouseY
