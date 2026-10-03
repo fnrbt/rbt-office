@@ -428,7 +428,12 @@ module XlsxWrite =
            AllowBlank = true
            ShowDropDown = true
            ErrorMessage = dv.ErrorMessage
-           InputMessage = dv.InputMessage } : XlsxWriter.XlsxDataValidation)
+           InputMessage = dv.InputMessage
+           ErrorTitle = None
+           PromptTitle = None
+           ErrorStyle = None
+           ShowErrorMessage = true
+           ShowInputMessage = dv.InputMessage.IsSome } : XlsxWriter.XlsxDataValidation)
 
     let private textAt row col (model: M.SpreadsheetModel) =
         let addr : M.CellAddress = { Row = row; Col = col }
@@ -506,6 +511,7 @@ module XlsxWrite =
           ShowGridLines = model.ShowGridLines
           Tables = model.Tables |> List.map (table model)
           DataValidations = model.Validations |> Map.toList |> List.map (fun (addr, dv) -> validation addr dv)
+          ConditionalFormats = []
           Hyperlinks = []
           PageMargins = Some(margins model.PageSetup.Margins)
           PageSetup = Some(pageSetup model.PageSetup)
@@ -523,7 +529,7 @@ module XlsxWrite =
             |> Array.mapi (fun i model -> modelSheet (if i < names.Length then names.[i] else sprintf "Sheet%d" (i + 1)) model)
             |> Array.toList
         let macroSource = sheets |> Array.tryPick (fun m -> if String.IsNullOrWhiteSpace m.Macros then None else Some m.Macros)
-        let workbook = ({ Sheets = sheetDtos; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = macroSource } : XlsxWriter.XlsxWorkbookOut)
+        let workbook = ({ Sheets = sheetDtos; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = macroSource; Dxfs = [] } : XlsxWriter.XlsxWorkbookOut)
         File.WriteAllBytes(path, XlsxWriter.writeWorkbookPackageBytes workbook)
 
 let private sampleWorkbook () =

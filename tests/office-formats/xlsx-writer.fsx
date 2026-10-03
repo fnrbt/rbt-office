@@ -225,7 +225,8 @@ let syntheticSheet : XlsxWriter.XlsxSheetOut =
       Tables =
         [ { Name = "Table1"; StartRow = 1; StartCol = 1; EndRow = 2; EndCol = 2; Columns = [ "Header"; "Value" ]; HeaderRowCount = 1; TotalsRowCount = 0; AutoFilter = Some (1, 2); Style = Some { Name = "TableStyleMedium2"; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false } } ]
       DataValidations =
-        [ { Sqref = "A2"; ValidationType = "decimal"; Operator = Some "between"; Formula1 = Some "1"; Formula2 = Some "100"; AllowBlank = true; ShowDropDown = true; ErrorMessage = Some "No"; InputMessage = Some "Pick" } ]
+        [ { Sqref = "A2"; ValidationType = "decimal"; Operator = Some "between"; Formula1 = Some "1"; Formula2 = Some "100"; AllowBlank = true; ShowDropDown = true; ErrorMessage = Some "No"; InputMessage = Some "Pick"; ErrorTitle = Some "Bad"; PromptTitle = Some "Hint"; ErrorStyle = Some "warning"; ShowErrorMessage = true; ShowInputMessage = true } ]
+      ConditionalFormats = []
       Hyperlinks = [ { Range = "A1"; Target = "https://example.com"; IsInternal = false } ]
       PageMargins = Some { Top = 0.5; Bottom = 0.5; Left = 0.6; Right = 0.6; Header = 0.2; Footer = 0.2 }
       PageSetup = Some { Orientation = Some "landscape"; FitToPage = true; FitToWidth = 1; FitToHeight = 1; Scale = 90; PaperSize = Some 9; FirstPageNumber = 3; UseFirstPageNumber = true; PageOrder = Some "overThenDown"; BlackAndWhite = false; CellComments = Some "asDisplayed" }
@@ -241,7 +242,8 @@ let synthetic : XlsxWriter.XlsxWorkbookOut =
     { XlsxWriter.Sheets = [ syntheticSheet ]
       ActiveSheetIndex = 0
       DefinedNames = [ { Name = "MY_RANGE"; RefersTo = "'RoundTrip'!$A$1:$B$2"; LocalSheetIndex = None } ]
-      VbaProjectSource = Some "Sub Main()\n  Range(\"A1\").Value = 1\nEnd Sub\n" }
+      VbaProjectSource = Some "Sub Main()\n  Range(\"A1\").Value = 1\nEnd Sub\n"
+      Dxfs = [] }
 
 match synthetic |> XlsxWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesNative with
 | None -> ok "synthetic-roundtrip-load" false "reader returned None"
@@ -256,6 +258,166 @@ match synthetic |> XlsxWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesN
     ok "synthetic-comment" (s.Comments.Length = 1 && s.Comments.[0].Text = "Note text") (sprintf "%A" s.Comments)
     ok "synthetic-page" (s.PageSetup |> Option.exists (fun ps -> ps.FitToPage && ps.Orientation = XlsxReader.OrientationLandscape)) (sprintf "%A" s.PageSetup)
     ok "synthetic-defined-name" (wb.NamedRanges |> List.exists (fun n -> n.Name = "MY_RANGE")) (sprintf "%A" wb.NamedRanges)
+
+// ----- writer output Excel accepts --------------------------------------------
+
+let partText (bytes: byte[]) (name: string) =
+    use zip = new System.IO.Compression.ZipArchive(new System.IO.MemoryStream(bytes), System.IO.Compression.ZipArchiveMode.Read)
+    match zip.GetEntry name with
+    | null -> ""
+    | entry ->
+        use reader = new System.IO.StreamReader(entry.Open())
+        reader.ReadToEnd()
+
+let cfRule (kind: string) : XlsxReader.ConditionalFormatRule =
+    { Type = kind; Operator = None; Formulas = []; DxfId = None; ColorScale = []; DataBarColor = None; DataBarCfvo = []
+      Text = None; IconSet = None; IconSetCfvo = []; Rank = None; Percent = false; Bottom = false
+      AboveAverage = true; EqualAverage = false; StdDev = None; Priority = None; StopIfTrue = false }
+
+let nastySheet : XlsxWriter.XlsxSheetOut =
+    { syntheticSheet with
+        Name = "Bob's <Q&A>"
+        Cells =
+          [ { Row = 0; Col = 0; Value = XlsxWriter.XlsxText ("a\u0001b\r\nc _x0041_ end", []); Format = { syntheticFormat with FontName = Some "A&B \"Font\"" }; Comment = Some ("note\u0002!", Some "Me") }
+            { Row = 1; Col = 0; Value = XlsxWriter.XlsxNumber 0.1; Format = { XlsxWriter.defaultXlsxCellFormat with FillColor = Some "#FF0000" }; Comment = None }
+            { Row = 2; Col = 0; Value = XlsxWriter.XlsxFormula ("A2*2", Some (XlsxWriter.XlsxNumber 0.2)); Format = { XlsxWriter.defaultXlsxCellFormat with FillColor = Some "#00FF00" }; Comment = None }
+            { Row = 3; Col = 0; Value = XlsxWriter.XlsxText ("hidden row", []); Format = XlsxWriter.defaultXlsxCellFormat; Comment = None } ]
+        MergedCells = []
+        RowHeights = [ 3, 0.0 ]
+        ColumnWidths = [ 1, 0.0 ]
+        Tables = [ { syntheticSheet.Tables.[0] with Name = "T<1>"; Columns = [ "A&B"; "C" ]; Style = Some { Name = "Style\"X"; ShowFirstColumn = false; ShowLastColumn = false; ShowRowStripes = true; ShowColumnStripes = false } } ]
+        DataValidations =
+          [ { Sqref = "A2"; ValidationType = "whole"; Operator = Some "between"; Formula1 = Some "1"; Formula2 = Some "5"; AllowBlank = false; ShowDropDown = true
+              ErrorMessage = Some "line1\nline2"; InputMessage = Some "Pick"; ErrorTitle = Some "Bad"; PromptTitle = Some "Hint"; ErrorStyle = Some "warning"; ShowErrorMessage = true; ShowInputMessage = true } ]
+        ConditionalFormats =
+          [ { Range = "A2:A3"
+              Rules =
+                [ { cfRule "cellIs" with Operator = Some "greaterThan"; Formulas = [ "0.15" ]; DxfId = Some 0; Priority = Some 1 }
+                  { cfRule "containsText" with Operator = Some "containsText"; Text = Some "x<y"; Formulas = [ "NOT(ISERROR(SEARCH(\"x<y\",A2)))" ]; DxfId = Some 7 } ] }
+            { Range = "B2:B3"
+              Rules =
+                [ { cfRule "colorScale" with ColorScale = [ { CfvoType = "min"; CfvoValue = None; Color = "FF0000" }; { CfvoType = "max"; CfvoValue = None; Color = "00FF00" } ] }
+                  { cfRule "dataBar" with DataBarColor = Some "638EC6"; DataBarCfvo = [ "min", None; "max", None ] }
+                  { cfRule "iconSet" with IconSet = Some "3Arrows"; IconSetCfvo = [ "percent", Some "0"; "percent", Some "33"; "percent", Some "67" ] }
+                  { cfRule "top10" with Rank = Some 3; Bottom = true; Percent = true } ] } ]
+        PrintArea = Some "$A$1:$B$2" }
+
+let nastyWorkbook : XlsxWriter.XlsxWorkbookOut =
+    { Sheets = [ nastySheet ]
+      ActiveSheetIndex = 0
+      DefinedNames = []
+      VbaProjectSource = None
+      Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None } ] }
+let nastyBytes = XlsxWriter.writeWorkbookPackageBytes nastyWorkbook
+
+let nastySheetXml = partText nastyBytes "xl/worksheets/sheet1.xml"
+let nastyStylesXml = partText nastyBytes "xl/styles.xml"
+
+// Every part must be well-formed XML: control characters and unescaped
+// quotes / angle brackets in names used to produce unreadable parts.
+let malformedParts =
+    use zip = new System.IO.Compression.ZipArchive(new System.IO.MemoryStream(nastyBytes), System.IO.Compression.ZipArchiveMode.Read)
+    [ for entry in zip.Entries do
+        if entry.FullName.EndsWith ".xml" || entry.FullName.EndsWith ".rels" then
+            use reader = new System.IO.StreamReader(entry.Open())
+            try System.Xml.Linq.XDocument.Parse(reader.ReadToEnd()) |> ignore
+            with ex -> yield entry.FullName + ": " + ex.Message ]
+ok "writer-parts-well-formed" (List.isEmpty malformedParts) (String.concat "; " malformedParts)
+
+let indexIn (text: string) (needle: string) = text.IndexOf(needle, System.StringComparison.Ordinal)
+// CT_Worksheet order: … mergeCells, conditionalFormatting, dataValidations,
+// hyperlinks, page parts, breaks, legacyDrawing, tableParts.
+ok "writer-element-order"
+   (indexIn nastySheetXml "<conditionalFormatting" > indexIn nastySheetXml "</sheetData>"
+    && indexIn nastySheetXml "<conditionalFormatting" < indexIn nastySheetXml "<dataValidations"
+    && indexIn nastySheetXml "<dataValidations" < indexIn nastySheetXml "<hyperlinks"
+    && indexIn nastySheetXml "<legacyDrawing" > 0
+    && indexIn nastySheetXml "<legacyDrawing" < indexIn nastySheetXml "<tableParts")
+   nastySheetXml
+// Excel reserves fill 0 (none) and fill 1 (gray125); custom fills start at 2.
+ok "writer-fill-ids-start-at-two"
+   (indexIn nastyStylesXml "<fills count=\"5\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill><fill><patternFill patternType=\"solid\">" >= 0
+    && indexIn nastyStylesXml "fillId=\"1\"" < 0
+    && indexIn nastyStylesXml "fillId=\"2\"" > 0 && indexIn nastyStylesXml "fillId=\"3\"" > 0)
+   nastyStylesXml
+ok "writer-validation-enforced"
+   (indexIn nastySheetXml "showErrorMessage=\"1\"" > 0 && indexIn nastySheetXml "showInputMessage=\"1\"" > 0
+    && indexIn nastySheetXml "errorStyle=\"warning\"" > 0 && indexIn nastySheetXml "errorTitle=\"Bad\"" > 0
+    && indexIn nastySheetXml "promptTitle=\"Hint\"" > 0 && indexIn nastySheetXml "error=\"line1&#10;line2\"" > 0)
+   nastySheetXml
+ok "writer-hidden-row-and-column"
+   (indexIn nastySheetXml "<row r=\"4\" hidden=\"1\">" > 0 && indexIn nastySheetXml "hidden=\"1\"/></cols>" > 0)
+   nastySheetXml
+ok "writer-numbers-shortest-roundtrip"
+   (indexIn nastySheetXml "<v>0.1</v>" > 0 && indexIn nastySheetXml "<v>0.2</v>" > 0)
+   nastySheetXml
+
+match XlsxReader.loadBytesNative nastyBytes with
+| None -> ok "writer-nasty-roundtrip" false "reader returned None"
+| Some wb ->
+    let s = wb.Sheets.[0]
+    let first = s.Rows.[0].Cells.[0]
+    ok "writer-control-chars-roundtrip"
+       (XlsxReader.resolveValue wb first.Value = XlsxReader.String "a\u0001b\r\nc _x0041_ end"
+        && (s.Comments |> List.map (fun c -> c.Text, c.Author)) = [ "note\u0002!", Some "Me" ])
+       (sprintf "%A %A" (XlsxReader.resolveValue wb first.Value) s.Comments)
+    ok "writer-names-escaped"
+       (s.Name = "Bob's <Q&A>"
+        && (first.Style |> Option.bind (fun st -> st.FontName)) = Some "A&B \"Font\""
+        && (s.Tables |> List.map (fun t -> t.Name, t.Columns, (t.Style |> Option.map (fun st -> st.Name)))) = [ "T<1>", [ "A&B"; "C" ], Some "Style\"X" ]
+        && s.PrintArea = Some "$A$1:$B$2")
+       (sprintf "%A %A %A %A" s.Name first.Style s.Tables s.PrintArea)
+    ok "writer-fill-colors-roundtrip"
+       ((s.Rows |> List.map (fun r -> r.Cells.Head.Style |> Option.bind (fun st -> st.FillColor))) = [ Some "E2F0D9"; Some "FF0000"; Some "00FF00"; None ])
+       (sprintf "%A" (s.Rows |> List.map (fun r -> r.Cells.Head.Style |> Option.bind (fun st -> st.FillColor))))
+    ok "writer-formula-and-cached-roundtrip"
+       (s.Rows.[2].Cells.Head.Formula = Some "A2*2" && s.Rows.[2].Cells.Head.Value = XlsxReader.Number 0.2)
+       (sprintf "%A" s.Rows.[2].Cells.Head)
+    ok "writer-hidden-roundtrip"
+       ((s.Rows |> List.map (fun r -> r.Hidden)) = [ false; false; false; true ]
+        && (s.Columns |> List.filter (fun c -> c.Hidden) |> List.map (fun c -> c.Index)) = [ 2 ])
+       (sprintf "%A" s.Columns)
+    ok "writer-validation-roundtrip"
+       (match s.DataValidations with
+        | [ dv ] ->
+            dv.ShowErrorMessage && dv.ShowInputMessage && dv.ErrorStyle = Some "warning" && dv.ErrorTitle = Some "Bad"
+            && dv.PromptTitle = Some "Hint" && dv.Prompt = Some "Pick" && dv.ErrorMessage = Some "line1\nline2" && not dv.AllowBlank
+        | _ -> false)
+       (sprintf "%A" s.DataValidations)
+    ok "writer-conditional-formats-roundtrip"
+       (match s.ConditionalFormats with
+        | [ a; b ] ->
+            a.Range = "A2:A3"
+            && (a.Rules |> List.map (fun r -> r.Type, r.Operator, r.Formulas, r.DxfId, r.Text))
+               = [ "cellIs", Some "greaterThan", [ "0.15" ], Some 0, None
+                   "containsText", Some "containsText", [ "NOT(ISERROR(SEARCH(\"x<y\",A2)))" ], None, Some "x<y" ]
+            && (b.Rules |> List.map (fun r -> r.Type)) = [ "colorScale"; "dataBar"; "iconSet"; "top10" ]
+            && (b.Rules.[0].ColorScale |> List.map (fun stop -> stop.CfvoType, stop.Color)) = [ "min", "FF0000"; "max", "00FF00" ]
+            && b.Rules.[1].DataBarColor = Some "638EC6" && b.Rules.[1].DataBarCfvo.Length = 2
+            && b.Rules.[2].IconSet = Some "3Arrows" && b.Rules.[2].IconSetCfvo.Length = 3
+            && b.Rules.[3].Rank = Some 3 && b.Rules.[3].Bottom && b.Rules.[3].Percent
+        | _ -> false)
+       (sprintf "%A" s.ConditionalFormats)
+    ok "writer-dxf-roundtrip"
+       (wb.Dxfs.Length = 1 && wb.Dxfs.[0].FontColor = Some "9C0006" && wb.Dxfs.[0].FillColor = Some "FFC7CE" && wb.Dxfs.[0].Bold = Some true)
+       (sprintf "%A" wb.Dxfs)
+
+// Reader -> writer -> reader keeps formulas (with their cached values),
+// conditional formatting and sheet visibility.
+for cfFile in [ "real-world/saopaulo-condos.xlsx"; "test-documents-excel/synthetic-condformat.xlsx" ] do
+  let cfPath = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", cfFile)
+  match XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes cfPath) with
+  | None -> ok ("cf-load " + cfFile) false "reader returned None"
+  | Some wb1 ->
+    match XlsxWriter.packageFromReaderWorkbook wb1 |> XlsxWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesNative with
+    | None -> ok ("cf-reload " + cfFile) false "reader returned None"
+    | Some wb2 ->
+        let cfSig (wb: XlsxReader.Workbook) =
+            wb.Sheets |> List.map (fun s -> s.ConditionalFormats |> List.map (fun cf -> cf.Range, cf.Rules))
+        ok ("cf-rules-survive-save " + cfFile)
+           (cfSig wb1 = cfSig wb2 && (cfSig wb1 |> List.exists (fun sheet -> not (List.isEmpty sheet))))
+           (sprintf "%A vs %A" (cfSig wb1) (cfSig wb2))
+        ok ("cf-dxfs-survive-save " + cfFile) (wb1.Dxfs = wb2.Dxfs) (sprintf "%A vs %A" wb1.Dxfs wb2.Dxfs)
 
 printfn ""
 printfn "OfficeFormat XLSX writer tests: %d passed, %d failed" pass fail

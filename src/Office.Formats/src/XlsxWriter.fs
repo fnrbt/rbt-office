@@ -19,19 +19,94 @@ let cellRef (row: int) (col: int) : string =
 
 /// Try to parse a value as a number
 let tryParseNumber (value: string) : float option =
-    match System.Double.TryParse(value) with
-    | (true, num) -> Some num
+    // Invariant: the text is written back into the file as a number, so it
+    // must not depend on the machine's culture ("1,5" is not 15).
+    match System.Double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+    | (true, num) when not (System.Double.IsNaN num || System.Double.IsInfinity num) -> Some num
     | _ -> None
+
+/// Number as file text: invariant, round-trippable.
+let private numberText (value: float) : string =
+#if FABLE_COMPILER
+    string value
+#else
+    value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)
+#endif
+
+/// Characters XML 1.0 cannot carry at all (C0 controls other than tab, LF,
+/// CR, and the two non-characters). Emitting them makes the part unreadable.
+let private isXmlIllegal (ch: char) =
+    (ch < ' ' && ch <> '\t' && ch <> '\n' && ch <> '\r') || ch = '\uFFFE' || ch = '\uFFFF'
+
+/// Escape for element text. Illegal characters are dropped; a carriage
+/// return is written as a character reference so line-end normalisation
+/// does not turn it into a line feed.
+let private appendEscapedChar (sb: StringBuilder) (ch: char) =
+    match ch with
+    | '&' -> sb.Append("&amp;") |> ignore
+    | '<' -> sb.Append("&lt;") |> ignore
+    | '>' -> sb.Append("&gt;") |> ignore
+    | '"' -> sb.Append("&quot;") |> ignore
+    | '\'' -> sb.Append("&apos;") |> ignore
+    | '\r' -> sb.Append("&#13;") |> ignore
+    | _ -> if not (isXmlIllegal ch) then sb.Append(ch) |> ignore
 
 let private appendEscaped (sb: StringBuilder) (text: string) =
     for ch in text do
+        appendEscapedChar sb ch
+
+/// Escape for an attribute value: as `appendEscaped`, and tab / line feed
+/// become character references too, since attribute-value normalisation
+/// would otherwise turn them into spaces (multi-line validation messages).
+let private appendEscapedAttr (sb: StringBuilder) (text: string) =
+    for ch in text do
         match ch with
-        | '&' -> sb.Append("&amp;") |> ignore
-        | '<' -> sb.Append("&lt;") |> ignore
-        | '>' -> sb.Append("&gt;") |> ignore
-        | '"' -> sb.Append("&quot;") |> ignore
-        | '\'' -> sb.Append("&apos;") |> ignore
-        | _ -> sb.Append(ch) |> ignore
+        | '\t' -> sb.Append("&#9;") |> ignore
+        | '\n' -> sb.Append("&#10;") |> ignore
+        | _ -> appendEscapedChar sb ch
+
+let private hexDigits = "0123456789ABCDEF"
+
+let private appendXEscape (sb: StringBuilder) (ch: char) =
+    let code = int ch
+    sb.Append("_x")
+        .Append(hexDigits.[(code >>> 12) &&& 15])
+        .Append(hexDigits.[(code >>> 8) &&& 15])
+        .Append(hexDigits.[(code >>> 4) &&& 15])
+        .Append(hexDigits.[code &&& 15])
+        .Append('_') |> ignore
+
+let private isHexDigit (c: char) =
+    (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+
+/// Escape cell text (ST_Xstring: shared strings, inline strings, cached
+/// string results, comments). Characters XML cannot carry — and a carriage
+/// return — are written as `_xHHHH_`, the way Excel stores them, and an
+/// underscore that would itself read as such an escape is written `_x005F_`.
+/// The reader decodes both.
+let private appendCellText (sb: StringBuilder) (text: string) =
+    for i in 0 .. text.Length - 1 do
+        let ch = text.[i]
+        if (ch < ' ' && ch <> '\t' && ch <> '\n') || ch = '\uFFFE' || ch = '\uFFFF' then
+            appendXEscape sb ch
+        elif ch = '_'
+             && i + 6 < text.Length
+             && text.[i + 1] = 'x'
+             && text.[i + 6] = '_'
+             && isHexDigit text.[i + 2] && isHexDigit text.[i + 3] && isHexDigit text.[i + 4] && isHexDigit text.[i + 5] then
+            appendXEscape sb '_'
+        else
+            appendEscapedChar sb ch
+
+let private appendCellTextElement (sb: StringBuilder) (name: string) (text: string) =
+    sb.Append('<').Append(name) |> ignore
+    if text = "" then
+        sb.Append("/>") |> ignore
+    else
+        // Leading / trailing whitespace is only kept with xml:space="preserve".
+        sb.Append(" xml:space=\"preserve\">") |> ignore
+        appendCellText sb text
+        sb.Append("</").Append(name).Append('>') |> ignore
 
 let private appendTextElement (sb: StringBuilder) (name: string) (text: string) =
     sb.Append('<').Append(name) |> ignore
@@ -50,10 +125,10 @@ let private appendSimpleCell (sb: StringBuilder) (rowNumber: string) (colLetters
     appendCellRef sb colLetters rowNumber
     match tryParseNumber value with
     | Some num ->
-        sb.Append("\"><v>").Append(string num).Append("</v></c>") |> ignore
+        sb.Append("\"><v>").Append(numberText num).Append("</v></c>") |> ignore
     | None ->
         sb.Append("\" t=\"inlineStr\"><is>") |> ignore
-        appendTextElement sb "t" value
+        appendCellTextElement sb "t" value
         sb.Append("</is></c>") |> ignore
 
 /// Generate cell element
@@ -64,7 +139,7 @@ let generateCell (rowIdx: int) (colIdx: int) (value: string) : string =
     | Some num ->
         // Numeric cell
         element "c" [("r", ref)] [
-            elementWithText "v" [] (string num)
+            elementWithText "v" [] (numberText num)
         ]
     | None ->
         // Inline string cell
@@ -264,6 +339,15 @@ type XlsxDataValidation = {
     ShowDropDown: bool
     ErrorMessage: string option
     InputMessage: string option
+    /// Caption of the error alert / the input message.
+    ErrorTitle: string option
+    PromptTitle: string option
+    /// "stop" (default), "warning" or "information".
+    ErrorStyle: string option
+    /// Excel only enforces a validation when showErrorMessage is set, and
+    /// only shows the input message when showInputMessage is.
+    ShowErrorMessage: bool
+    ShowInputMessage: bool
 }
 
 type XlsxTableStyle = {
@@ -347,6 +431,9 @@ type XlsxSheetOut = {
     ShowGridLines: bool
     Tables: XlsxTableOut list
     DataValidations: XlsxDataValidation list
+    /// Conditional formatting, in the reader's shape. A rule's `DxfId`
+    /// indexes `XlsxWorkbookOut.Dxfs`.
+    ConditionalFormats: XlsxReader.ConditionalFormat list
     Hyperlinks: XlsxHyperlink list
     PageMargins: XlsxPageMargins option
     PageSetup: XlsxPageSetup option
@@ -370,6 +457,8 @@ type XlsxWorkbookOut = {
     ActiveSheetIndex: int
     DefinedNames: XlsxDefinedName list
     VbaProjectSource: string option
+    /// Differential formats conditional-formatting rules refer to by index.
+    Dxfs: XlsxReader.Dxf list
 }
 
 let defaultXlsxCellFormat = {
@@ -440,6 +529,7 @@ type private SharedStringKey = {
 }
 
 type private StyleBook = {
+    Dxfs: XlsxReader.Dxf list
     Fonts: FontKey list
     Fills: FillKey list
     Borders: BorderKey list
@@ -448,8 +538,7 @@ type private StyleBook = {
     StyleIndex: Map<XfKey, int>
 }
 
-let private invariant (value: float) =
-    value.ToString("G17", System.Globalization.CultureInfo.InvariantCulture)
+let private invariant (value: float) = numberText value
 
 let private invariantFixed (value: float) =
     invariant value
@@ -457,13 +546,18 @@ let private invariantFixed (value: float) =
 let private attr (name: string) (value: string) =
     let sb = StringBuilder()
     sb.Append(name).Append("=\"") |> ignore
-    appendEscaped sb value
+    appendEscapedAttr sb value
     sb.Append('"') |> ignore
     sb.ToString()
 
 let private escaped (value: string) =
     let sb = StringBuilder()
     appendEscaped sb value
+    sb.ToString()
+
+let private escapedCellText (value: string) =
+    let sb = StringBuilder()
+    appendCellText sb value
     sb.ToString()
 
 let private elemText name text =
@@ -562,8 +656,10 @@ let private collectStyles (workbook: XlsxWorkbookOut) =
         |> List.fold (fun acc key -> appendUnique key acc) [ defaultXfKey ]
     let fonts =
         xfs |> List.map (fun x -> x.Font) |> List.fold (fun acc key -> appendUnique key acc) [ defaultFontKey ]
+    // Custom fills only. Fill 0 (none) and fill 1 (gray125) are reserved by
+    // Excel whatever the file says, so custom fills are numbered from 2.
     let fills =
-        xfs |> List.map (fun x -> x.Fill) |> List.fold (fun acc key -> appendUnique key acc) [ None ]
+        xfs |> List.choose (fun x -> x.Fill) |> List.fold (fun acc key -> appendUnique (Some key) acc) []
     let borders =
         xfs |> List.map (fun x -> x.Border) |> List.fold (fun acc key -> appendUnique key acc) [ defaultBorderKey ]
     let customNumFmts =
@@ -574,7 +670,8 @@ let private collectStyles (workbook: XlsxWorkbookOut) =
         |> List.mapi (fun i code -> code, 164 + i)
         |> Map.ofList
     let styleIndex = xfs |> List.mapi (fun i x -> x, i) |> Map.ofList
-    { Fonts = fonts
+    { Dxfs = workbook.Dxfs
+      Fonts = fonts
       Fills = fills
       Borders = borders
       Xfs = xfs
@@ -608,7 +705,7 @@ let private fontXml (font: FontKey) =
         match font.TextColor with
         | Some c -> yield sprintf "<color rgb=\"%s\"/>" c
         | None -> ()
-        yield sprintf "<name val=\"%s\"/>" (font.FontName |> Option.defaultValue "Calibri")
+        yield sprintf "<name %s/>" (attr "val" (font.FontName |> Option.defaultValue "Calibri"))
     ]
     "<font>" + (String.concat "" children) + "</font>"
 
@@ -622,7 +719,7 @@ let private borderSideXml name (side: XlsxBorderSide option) =
     | None -> sprintf "<%s/>" name
     | Some s ->
         let color = s.Color |> Option.map (fun c -> sprintf "<color rgb=\"%s\"/>" c) |> Option.defaultValue ""
-        sprintf "<%s style=\"%s\">%s</%s>" name s.Style color name
+        sprintf "<%s %s>%s</%s>" name (attr "style" s.Style) color name
 
 let private borderXml (border: BorderKey) =
     let attrs = [
@@ -655,14 +752,34 @@ let private stylesXml (book: StyleBook) =
             sprintf "<numFmts count=\"%d\">%s</numFmts>" (Map.count book.NumFmtIds) items
     let fonts = book.Fonts |> List.map fontXml |> String.concat ""
     let fills =
-        let allFills =
-            if book.Fills |> List.exists ((=) None) then
-                book.Fills @ [ Some "__gray125__" ]
-            else
-                None :: book.Fills @ [ Some "__gray125__" ]
-        allFills
-        |> List.map (function Some "__gray125__" -> "<fill><patternFill patternType=\"gray125\"/></fill>" | other -> fillXml other)
-        |> fun body -> sprintf "<fills count=\"%d\">%s</fills>" allFills.Length (String.concat "" body)
+        let body =
+            [ yield fillXml None
+              yield "<fill><patternFill patternType=\"gray125\"/></fill>"
+              for fill in book.Fills -> fillXml fill ]
+        sprintf "<fills count=\"%d\">%s</fills>" body.Length (String.concat "" body)
+    let fillIdOf (fill: FillKey) =
+        match fill with
+        | None -> 0
+        | Some _ -> 2 + indexOf fill book.Fills
+    let dxfs =
+        let dxfXml (d: XlsxReader.Dxf) =
+            let flag name value =
+                match value with
+                | Some true -> sprintf "<%s/>" name
+                | Some false -> sprintf "<%s val=\"0\"/>" name
+                | None -> ""
+            let font =
+                let body =
+                    flag "b" d.Bold + flag "i" d.Italic
+                    + (d.FontColor |> xmlColor |> Option.map (fun c -> sprintf "<color rgb=\"%s\"/>" c) |> Option.defaultValue "")
+                if body = "" then "" else "<font>" + body + "</font>"
+            let fill =
+                d.FillColor
+                |> xmlColor
+                |> Option.map (fun c -> sprintf "<fill><patternFill><bgColor rgb=\"%s\"/></patternFill></fill>" c)
+                |> Option.defaultValue ""
+            "<dxf>" + font + fill + "</dxf>"
+        sprintf "<dxfs count=\"%d\">%s</dxfs>" book.Dxfs.Length (book.Dxfs |> List.map dxfXml |> String.concat "")
     let borders = book.Borders |> List.map borderXml |> String.concat ""
     let xfXml (xf: XfKey) =
         let numFmtId =
@@ -673,7 +790,7 @@ let private stylesXml (book: StyleBook) =
                 |> Option.defaultValue 0
             | None -> 0
         let fontId = indexOf xf.Font book.Fonts
-        let fillId = indexOf xf.Fill book.Fills
+        let fillId = fillIdOf xf.Fill
         let borderId = indexOf xf.Border book.Borders
         let alignmentAttrs = [
             match xf.HorizontalAlign with Some v -> yield attr "horizontal" v | None -> ()
@@ -710,7 +827,7 @@ let private stylesXml (book: StyleBook) =
     + "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
     + sprintf "<cellXfs count=\"%d\">%s</cellXfs>" book.Xfs.Length xfs
     + "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
-    + "<dxfs count=\"0\"/><tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleLight16\"/>"
+    + dxfs + "<tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleLight16\"/>"
     + "</styleSheet>"
 
 let private richRunXml (run: XlsxRichRun) =
@@ -726,7 +843,7 @@ let private richRunXml (run: XlsxRichRun) =
         | Some false -> yield "<u val=\"none\"/>"
         | None -> ()
         match run.Color |> xmlColor with Some c -> yield sprintf "<color rgb=\"%s\"/>" c | None -> ()
-        match run.FontName with Some n -> yield sprintf "<rFont val=\"%s\"/>" n | None -> ()
+        match run.FontName with Some n -> yield sprintf "<rFont %s/>" (attr "val" n) | None -> ()
         match run.FontSize with Some s -> yield sprintf "<sz val=\"%s\"/>" (invariant s) | None -> ()
         match run.VertAlign with
         | Some XlsxSuperscript -> yield "<vertAlign val=\"superscript\"/>"
@@ -734,14 +851,14 @@ let private richRunXml (run: XlsxRichRun) =
         | _ -> ()
     ]
     let pr = if List.isEmpty props then "" else "<rPr>" + String.concat "" props + "</rPr>"
-    sprintf "<r>%s<t xml:space=\"preserve\">%s</t></r>" pr (escaped run.Text)
+    sprintf "<r>%s<t xml:space=\"preserve\">%s</t></r>" pr (escapedCellText run.Text)
 
 let private sharedStringsXmlPreserved (items: SharedStringKey list) =
     let body =
         items
         |> List.map (fun item ->
             if List.isEmpty item.Runs then
-                sprintf "<si><t xml:space=\"preserve\">%s</t></si>" (escaped item.Text)
+                sprintf "<si><t xml:space=\"preserve\">%s</t></si>" (escapedCellText item.Text)
             else
                 "<si>" + (item.Runs |> List.map richRunXml |> String.concat "") + "</si>")
         |> String.concat ""
@@ -844,6 +961,8 @@ let private rowsXml styles sharedIndex (sheet: XlsxSheetOut) =
         let rowAttrs = [
             yield sprintf "r=\"%d\"" (row + 1)
             match Map.tryFind row rowHeights with
+            // Height 0 is how the sheet model says "hidden" (as for columns).
+            | Some h when h <= 0.0 -> yield "hidden=\"1\""
             | Some h ->
                 yield sprintf "ht=\"%s\"" (invariantFixed h)
                 yield "customHeight=\"1\""
@@ -876,10 +995,15 @@ let private dataValidationsXml validations =
                 let attrs = [
                     yield attr "type" dv.ValidationType
                     yield attr "sqref" dv.Sqref
+                    match dv.ErrorStyle with Some style when style <> "stop" -> yield attr "errorStyle" style | _ -> ()
                     match dv.Operator with Some op -> yield attr "operator" op | None -> ()
                     if dv.AllowBlank then yield "allowBlank=\"1\""
                     if not dv.ShowDropDown then yield "showDropDown=\"1\""
+                    if dv.ShowInputMessage then yield "showInputMessage=\"1\""
+                    if dv.ShowErrorMessage then yield "showErrorMessage=\"1\""
+                    match dv.ErrorTitle with Some t -> yield attr "errorTitle" t | None -> ()
                     match dv.ErrorMessage with Some e -> yield attr "error" e | None -> ()
+                    match dv.PromptTitle with Some t -> yield attr "promptTitle" t | None -> ()
                     match dv.InputMessage with Some p -> yield attr "prompt" p | None -> ()
                 ]
                 let f1 = dv.Formula1 |> Option.map (elemText "formula1") |> Option.defaultValue ""
@@ -888,6 +1012,62 @@ let private dataValidationsXml validations =
             |> String.concat ""
         sprintf "<dataValidations count=\"%d\">%s</dataValidations>" validations.Length body
 
+/// `<conditionalFormatting>` blocks. Rules keep their type-specific payload
+/// (formulas, colour scale, data bar, icon set, top-N / above-average
+/// attributes); a `dxfId` outside the workbook's dxf table is dropped rather
+/// than written as a dangling index.
+let private conditionalFormattingXml (dxfCount: int) (formats: XlsxReader.ConditionalFormat list) =
+    let mutable nextPriority = 0
+    let cfvo (kind: string, value: string option) =
+        match value with
+        | Some v -> sprintf "<cfvo %s %s/>" (attr "type" kind) (attr "val" v)
+        | None -> sprintf "<cfvo %s/>" (attr "type" kind)
+    let color (c: string) = sprintf "<color rgb=\"%s\"/>" (cleanRgb c)
+    formats
+    |> List.filter (fun cf -> not (List.isEmpty cf.Rules))
+    |> List.map (fun cf ->
+        let rules =
+            cf.Rules
+            |> List.map (fun (rule: XlsxReader.ConditionalFormatRule) ->
+                nextPriority <- nextPriority + 1
+                let attrs = [
+                    yield attr "type" rule.Type
+                    match rule.DxfId with
+                    | Some id when id >= 0 && id < dxfCount -> yield sprintf "dxfId=\"%d\"" id
+                    | _ -> ()
+                    yield sprintf "priority=\"%d\"" (rule.Priority |> Option.defaultValue nextPriority)
+                    if rule.StopIfTrue then yield "stopIfTrue=\"1\""
+                    if rule.Type = "aboveAverage" && not rule.AboveAverage then yield "aboveAverage=\"0\""
+                    if rule.Percent then yield "percent=\"1\""
+                    if rule.Bottom then yield "bottom=\"1\""
+                    match rule.Operator with Some op -> yield attr "operator" op | None -> ()
+                    match rule.Text with Some t -> yield attr "text" t | None -> ()
+                    match rule.Rank with Some r -> yield sprintf "rank=\"%d\"" r | None -> ()
+                    match rule.StdDev with Some d -> yield sprintf "stdDev=\"%d\"" d | None -> ()
+                    if rule.EqualAverage then yield "equalAverage=\"1\""
+                ]
+                let children = [
+                    for f in rule.Formulas -> elemText "formula" f
+                    if not (List.isEmpty rule.ColorScale) then
+                        yield "<colorScale>"
+                              + (rule.ColorScale |> List.map (fun stop -> cfvo (stop.CfvoType, stop.CfvoValue)) |> String.concat "")
+                              + (rule.ColorScale |> List.map (fun stop -> color stop.Color) |> String.concat "")
+                              + "</colorScale>"
+                    if rule.Type = "dataBar" then
+                        yield "<dataBar>"
+                              + (rule.DataBarCfvo |> List.map cfvo |> String.concat "")
+                              + color (rule.DataBarColor |> Option.defaultValue "638EC6")
+                              + "</dataBar>"
+                    match rule.IconSet with
+                    | Some family ->
+                        yield sprintf "<iconSet %s>%s</iconSet>" (attr "iconSet" family) (rule.IconSetCfvo |> List.map cfvo |> String.concat "")
+                    | None -> ()
+                ]
+                sprintf "<cfRule %s>%s</cfRule>" (String.concat " " attrs) (String.concat "" children))
+            |> String.concat ""
+        sprintf "<conditionalFormatting %s>%s</conditionalFormatting>" (attr "sqref" cf.Range) rules)
+    |> String.concat ""
+
 let private hyperlinksXml hyperlinks =
     if List.isEmpty hyperlinks then ""
     else
@@ -895,9 +1075,9 @@ let private hyperlinksXml hyperlinks =
             hyperlinks
             |> List.mapi (fun i h ->
                 if h.IsInternal then
-                    sprintf "<hyperlink ref=\"%s\" location=\"%s\"/>" h.Range (escaped h.Target)
+                    sprintf "<hyperlink %s %s/>" (attr "ref" h.Range) (attr "location" h.Target)
                 else
-                    sprintf "<hyperlink ref=\"%s\" r:id=\"rIdHyperlink%d\"/>" h.Range (i + 1))
+                    sprintf "<hyperlink %s r:id=\"rIdHyperlink%d\"/>" (attr "ref" h.Range) (i + 1))
             |> String.concat ""
         "<hyperlinks>" + body + "</hyperlinks>"
 
@@ -969,7 +1149,7 @@ let private tablePartsXml count =
         let body = [ 1 .. count ] |> List.map (fun i -> sprintf "<tablePart r:id=\"rIdTable%d\"/>" i) |> String.concat ""
         sprintf "<tableParts count=\"%d\">%s</tableParts>" count body
 
-let private worksheetXml styles sharedIndex sheetIndex active (sheet: XlsxSheetOut) =
+let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (sheet: XlsxSheetOut) =
     let hasFitToPage = sheet.PageSetup |> Option.exists (fun p -> p.FitToPage)
     let sheetPr = if hasFitToPage then "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>" else ""
     declaration + "\n"
@@ -980,14 +1160,17 @@ let private worksheetXml styles sharedIndex sheetIndex active (sheet: XlsxSheetO
     + "<sheetFormatPr defaultRowHeight=\"15\"/>"
     + colsXml sheet
     + ("<sheetData>" + rowsXml styles sharedIndex sheet + "</sheetData>")
+    // Child order is fixed by CT_Worksheet; Excel refuses a part that
+    // deviates (e.g. tableParts before legacyDrawing).
     + mergeCellsXmlFull sheet.MergedCells
+    + conditionalFormattingXml styles.Dxfs.Length sheet.ConditionalFormats
     + dataValidationsXml sheet.DataValidations
     + hyperlinksXml sheet.Hyperlinks
     + pagePartsXml sheet
     + breaksXml "rowBreaks" sheet.RowBreaks
     + breaksXml "colBreaks" sheet.ColBreaks
-    + tablePartsXml sheet.Tables.Length
     + (if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then sprintf "<legacyDrawing r:id=\"rIdCommentsVml%d\"/>" sheetIndex else "")
+    + tablePartsXml sheet.Tables.Length
     + "</worksheet>"
 
 let private commentsXml (cells: XlsxCellOut list) =
@@ -1010,7 +1193,7 @@ let private commentsXml (cells: XlsxCellOut list) =
                 sprintf "<comment ref=\"%s\" authorId=\"%d\"><text><t xml:space=\"preserve\">%s</t></text></comment>"
                     (cellRef cell.Row cell.Col)
                     (authorIndex author)
-                    (escaped text))
+                    (escapedCellText text))
             |> String.concat ""
         Some (sprintf "%s\n<comments xmlns=\"%s\"><authors>%s</authors><commentList>%s</commentList></comments>"
                   declaration Namespaces.spreadsheet authorXml commentXml)
@@ -1038,7 +1221,7 @@ let private tableXml id (table: XlsxTableOut) =
                 |> List.tryItem i
                 |> Option.defaultValue (sprintf "Column%d" (i + 1))
             let totals = if table.TotalsRowCount > 0 then " totalsRowFunction=\"none\"" else ""
-            sprintf "<tableColumn id=\"%d\" name=\"%s\"%s/>" (i + 1) (escaped name) totals)
+            sprintf "<tableColumn id=\"%d\" %s%s/>" (i + 1) (attr "name" name) totals)
         |> String.concat ""
     let autoFilter =
         table.AutoFilter
@@ -1047,11 +1230,11 @@ let private tableXml id (table: XlsxTableOut) =
     let style =
         table.Style
         |> Option.map (fun s ->
-            sprintf "<tableStyleInfo name=\"%s\" showFirstColumn=\"%d\" showLastColumn=\"%d\" showRowStripes=\"%d\" showColumnStripes=\"%d\"/>"
-                s.Name (if s.ShowFirstColumn then 1 else 0) (if s.ShowLastColumn then 1 else 0) (if s.ShowRowStripes then 1 else 0) (if s.ShowColumnStripes then 1 else 0))
+            sprintf "<tableStyleInfo %s showFirstColumn=\"%d\" showLastColumn=\"%d\" showRowStripes=\"%d\" showColumnStripes=\"%d\"/>"
+                (attr "name" s.Name) (if s.ShowFirstColumn then 1 else 0) (if s.ShowLastColumn then 1 else 0) (if s.ShowRowStripes then 1 else 0) (if s.ShowColumnStripes then 1 else 0))
         |> Option.defaultValue ""
-    sprintf "%s\n<table xmlns=\"%s\" id=\"%d\" name=\"%s\" displayName=\"%s\" ref=\"%s\" headerRowCount=\"%d\" totalsRowCount=\"%d\">%s<tableColumns count=\"%d\">%s</tableColumns>%s</table>"
-        declaration Namespaces.spreadsheet id table.Name table.Name refText table.HeaderRowCount table.TotalsRowCount autoFilter (table.EndCol - table.StartCol + 1) cols style
+    sprintf "%s\n<table xmlns=\"%s\" id=\"%d\" %s %s ref=\"%s\" headerRowCount=\"%d\" totalsRowCount=\"%d\">%s<tableColumns count=\"%d\">%s</tableColumns>%s</table>"
+        declaration Namespaces.spreadsheet id (attr "name" table.Name) (attr "displayName" table.Name) refText table.HeaderRowCount table.TotalsRowCount autoFilter (table.EndCol - table.StartCol + 1) cols style
 
 let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) firstTableId =
     let rels = [
@@ -1072,19 +1255,22 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
         workbook.Sheets
         |> List.mapi (fun i s ->
             let visible = if s.Visible then "" else " state=\"hidden\""
-            sprintf "<sheet name=\"%s\" sheetId=\"%d\" r:id=\"rId%d\"%s/>"
-                (escaped s.Name) (i + 1) (i + 1) visible)
+            sprintf "<sheet %s sheetId=\"%d\" r:id=\"rId%d\"%s/>"
+                (attr "name" s.Name) (i + 1) (i + 1) visible)
         |> String.concat ""
+    // In a reference a sheet name is quoted with apostrophes, and an
+    // apostrophe inside the name is doubled ('Bob''s'!$A$1).
+    let quoted (name: string) = "'" + name.Replace("'", "''") + "'"
     let printNames =
         workbook.Sheets
         |> List.mapi (fun i s ->
             [ match s.PrintArea with
-              | Some v -> yield { Name = "_xlnm.Print_Area"; RefersTo = sprintf "'%s'!%s" s.Name v; LocalSheetIndex = Some i }
+              | Some v -> yield { Name = "_xlnm.Print_Area"; RefersTo = sprintf "%s!%s" (quoted s.Name) v; LocalSheetIndex = Some i }
               | None -> ()
               match s.PrintTitleRows, s.PrintTitleCols with
               | None, None -> ()
               | rows, cols ->
-                  let parts = [ rows; cols ] |> List.choose id |> List.map (fun part -> sprintf "'%s'!%s" s.Name part)
+                  let parts = [ rows; cols ] |> List.choose id |> List.map (fun part -> sprintf "%s!%s" (quoted s.Name) part)
                   yield { Name = "_xlnm.Print_Titles"; RefersTo = String.concat "," parts; LocalSheetIndex = Some i } ])
         |> List.concat
     let names = workbook.DefinedNames @ printNames
@@ -1095,8 +1281,8 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
                 names
                 |> List.map (fun n ->
                     let local = n.LocalSheetIndex |> Option.map (fun i -> sprintf " localSheetId=\"%d\"" i) |> Option.defaultValue ""
-                    sprintf "<definedName name=\"%s\"%s>%s</definedName>"
-                        (escaped n.Name) local
+                    sprintf "<definedName %s%s>%s</definedName>"
+                        (attr "name" n.Name) local
                         (escaped n.RefersTo))
                 |> String.concat ""
             "<definedNames>" + body + "</definedNames>"
@@ -1240,6 +1426,7 @@ let private formattedToWorkbook (sheets: FormattedSheet list) =
               ShowGridLines = true
               Tables = []
               DataValidations = []
+              ConditionalFormats = []
               Hyperlinks = []
               PageMargins = None
               PageSetup = None
@@ -1252,7 +1439,8 @@ let private formattedToWorkbook (sheets: FormattedSheet list) =
               PrintTitleCols = None })
       ActiveSheetIndex = 0
       DefinedNames = []
-      VbaProjectSource = None }
+      VbaProjectSource = None
+      Dxfs = [] }
 
 let private cellRefFromReader (r: XlsxReader.CellReference) =
     let col =
@@ -1308,7 +1496,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
             | XlsxReader.VertAlignSuperscript -> Some XlsxSuperscript
             | XlsxReader.VertAlignSubscript -> Some XlsxSubscript
             | _ -> None }
-    let rec valueOf (cell: XlsxReader.Cell) =
+    let plainValueOf (cell: XlsxReader.Cell) =
         match cell.Value with
         | XlsxReader.Number n -> XlsxNumber n
         | XlsxReader.String s -> XlsxText (s, cell.InlineRuns |> List.map (fun (t, p) -> runOf p t))
@@ -1320,9 +1508,14 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
             XlsxText (workbook.SharedStrings.[idx], runs)
         | XlsxReader.Boolean b -> XlsxBoolean b
         | XlsxReader.Error e -> XlsxError (if e.StartsWith "#" then e else "#" + e)
-        | XlsxReader.Formula f -> XlsxFormula (f, None)
         | _ -> XlsxBlank
-    let refText r c = cellRef (r - 1) (c - 1)
+    // A formula is written with the result the source file cached for it.
+    let valueOf (cell: XlsxReader.Cell) =
+        match cell.Formula, cell.Value with
+        | Some f, XlsxReader.Formula _ -> XlsxFormula (f, None)
+        | Some f, _ -> XlsxFormula (f, Some (plainValueOf cell))
+        | None, XlsxReader.Formula f -> XlsxFormula (f, None)
+        | None, _ -> plainValueOf cell
     { Sheets =
         workbook.Sheets
         |> List.map (fun sheet ->
@@ -1333,7 +1526,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                     (r, col), (c.Text, c.Author))
                 |> Map.ofList
             { Name = sheet.Name
-              Visible = true
+              Visible = (sheet.State = XlsxReader.SheetVisible)
               Cells =
                 sheet.Rows
                 |> List.collect (fun row ->
@@ -1361,7 +1554,9 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                         | None -> [])
               RowHeights =
                 sheet.Rows
-                |> List.choose (fun r -> r.Height |> Option.map (fun h -> r.Index - 1, h))
+                |> List.choose (fun r ->
+                    if r.Hidden then Some (r.Index - 1, 0.0)
+                    else r.Height |> Option.map (fun h -> r.Index - 1, h))
               FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
               FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
               ShowGridLines = sheet.ShowGridLines
@@ -1395,7 +1590,13 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                       AllowBlank = dv.AllowBlank
                       ShowDropDown = dv.ShowDropDown
                       ErrorMessage = dv.ErrorMessage
-                      InputMessage = None })
+                      InputMessage = dv.Prompt
+                      ErrorTitle = dv.ErrorTitle
+                      PromptTitle = dv.PromptTitle
+                      ErrorStyle = dv.ErrorStyle
+                      ShowErrorMessage = dv.ShowErrorMessage
+                      ShowInputMessage = dv.ShowInputMessage })
+              ConditionalFormats = sheet.ConditionalFormats
               Hyperlinks = sheet.Hyperlinks |> List.map (fun h -> { Range = h.Range; Target = h.Target; IsInternal = h.IsInternal })
               PageMargins =
                 sheet.PageMargins |> Option.map (fun m -> { Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right; Header = m.Header; Footer = m.Footer })
@@ -1430,7 +1631,8 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
               PrintTitleCols = sheet.PrintTitleCols })
       ActiveSheetIndex = 0
       DefinedNames = workbook.NamedRanges |> List.map (fun n -> { Name = n.Name; RefersTo = n.RefersTo; LocalSheetIndex = n.Scope |> Option.bind (fun s -> match System.Int32.TryParse s with true, v -> Some v | _ -> None) })
-      VbaProjectSource = None }
+      VbaProjectSource = None
+      Dxfs = workbook.Dxfs |> Array.toList }
 
 /// Helper to create a simple cell from string
 let simpleCell (value: string) : FormattedCell = {
@@ -1465,10 +1667,10 @@ let private appendFormattedCell (sb: StringBuilder) (rowNumber: string) (colLett
     | None ->
         match tryParseNumber cell.Value with
         | Some num ->
-            sb.Append("\"><v>").Append(string num).Append("</v></c>") |> ignore
+            sb.Append("\"><v>").Append(numberText num).Append("</v></c>") |> ignore
         | None ->
             sb.Append("\" t=\"inlineStr\"><is>") |> ignore
-            appendTextElement sb "t" cell.Value
+            appendCellTextElement sb "t" cell.Value
             sb.Append("</is></c>") |> ignore
 
 let private appendMergeCells (sb: StringBuilder) (mergedCells: MergedCellRange list) =
@@ -1512,7 +1714,7 @@ let generateFormattedCell (rowIdx: int) (colIdx: int) (cell: FormattedCell) : st
         | Some num ->
             // Numeric cell
             element "c" [("r", ref)] [
-                elementWithText "v" [] (string num)
+                elementWithText "v" [] (numberText num)
             ]
         | None ->
             // Inline string cell
