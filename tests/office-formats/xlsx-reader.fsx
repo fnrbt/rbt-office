@@ -501,6 +501,52 @@ match dashboardWorkbook, dashboardData with
     ok "style-at-dashboard" false "dashboard workbook missing"
     ok "cells-columnar-dashboard-alloc" false "dashboard workbook missing"
 
+// ----- theme, phonetic text and relationship targets ------------------------
+
+let themeXml =
+    """<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:clrScheme name="x"><a:dk1><a:sysClr val="windowText" lastClr="111111"/></a:dk1><a:lt1><a:srgbClr val="FEFEFE"/></a:lt1><a:dk2><a:srgbClr val="1F497D"/></a:dk2><a:lt2><a:srgbClr val="EEECE1"/></a:lt2><a:accent1><a:srgbClr val="4F81BD"/></a:accent1><a:accent2><a:srgbClr val="C0504D"/></a:accent2><a:accent3><a:srgbClr val="9BBB59"/></a:accent3><a:accent4><a:srgbClr val="8064A2"/></a:accent4><a:accent5><a:srgbClr val="4BACC6"/></a:accent5><a:accent6><a:srgbClr val="F79646"/></a:accent6><a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme><a:fontScheme name="x"><a:majorFont><a:latin typeface="Cambria"/></a:majorFont><a:minorFont><a:latin typeface="Georgia"/></a:minorFont></a:fontScheme></a:themeElements></a:theme>"""
+let themeColors = XlsxReader.Xlsx.parseThemeColors themeXml
+ok "theme-colors-prefixed"
+   (themeColors.[0] = "FEFEFE" && themeColors.[1] = "111111" && themeColors.[4] = "4F81BD" && themeColors.[9] = "F79646")
+   (sprintf "%A" themeColors)
+ok "theme-accents-prefixed"
+   ((XlsxReader.Xlsx.parseThemeAccents themeXml).[0] = "4F81BD")
+   (sprintf "%A" (XlsxReader.Xlsx.parseThemeAccents themeXml))
+ok "theme-fonts-prefixed"
+   (XlsxReader.Xlsx.parseThemeFonts themeXml = (Some "Cambria", Some "Georgia"))
+   (sprintf "%A" (XlsxReader.Xlsx.parseThemeFonts themeXml))
+
+let phonetic =
+    XlsxReader.Xlsx.sharedStrings
+        """<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>漢字</t><rPh sb="0" eb="2"><t>カンジ</t></rPh><phoneticPr fontId="1"/></si></sst>"""
+ok "shared-string-skips-phonetic" (phonetic.[0].Text = "漢字") phonetic.[0].Text
+
+let xlsxWithSheetTarget (target: string) =
+    use stream = new MemoryStream()
+    do
+        use archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create, true)
+        let add (name: string) (text: string) =
+            use writer = new StreamWriter(archive.CreateEntry(name).Open(), UTF8Encoding(false))
+            writer.Write text
+        add "[Content_Types].xml" """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"""
+        add "xl/workbook.xml" """<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>"""
+        add "xl/_rels/workbook.xml.rels" (sprintf """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="%s"/></Relationships>""" target)
+        add "xl/worksheets/sheet1.xml" """<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1"><v>42</v></c></row></sheetData></worksheet>"""
+    stream.ToArray()
+
+for label, target in [ "relative", "worksheets/sheet1.xml"; "absolute", "/xl/worksheets/sheet1.xml"; "dotted", "../xl/worksheets/sheet1.xml" ] do
+    let sheets =
+        XlsxReader.loadBytesNative (xlsxWithSheetTarget target)
+        |> Option.map (fun wb -> wb.Sheets |> List.map (fun sheet -> sheet.Name, sheet.Rows.Length))
+    ok (sprintf "sheet-target-%s" label) (sheets = Some [ "Data", 1 ]) (sprintf "%A" sheets)
+
+ok "resolve-target"
+   (ZipInterop.resolveTarget "word" "media/a.png" = "word/media/a.png"
+    && ZipInterop.resolveTarget "word" "/word/media/a.png" = "word/media/a.png"
+    && ZipInterop.resolveTarget "word" "../customXml/item1.xml" = "customXml/item1.xml"
+    && ZipInterop.resolveTarget "" "word/document.xml" = "word/document.xml")
+   (ZipInterop.resolveTarget "word" "/word/media/a.png")
+
 printfn ""
 printfn "OfficeFormat XLSX reader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

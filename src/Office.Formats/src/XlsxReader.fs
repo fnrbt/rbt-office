@@ -574,6 +574,9 @@ module Xlsx =
                         match child with
                         | XmlDsl.Text text -> sb.Append(text) |> ignore
                         | _ -> walk child
+                elif Ns.stripNs name = "rPh" then
+                    // Phonetic (furigana) run: a reading aid, not cell text.
+                    ()
                 else
                     for child in children do
                         walk child
@@ -825,7 +828,7 @@ module Xlsx =
                 | System.Xml.XmlNodeType.Element ->
                     if reader.Depth = depth + 1 && reader.LocalName = "r" then
                         runs.Add(parseSharedStringRun reader)
-                    elif runs.Count = 0 && reader.LocalName = "t" then
+                    elif runs.Count = 0 && reader.Depth = depth + 1 && reader.LocalName = "t" then
                         plainText.Append(readSharedStringText reader) |> ignore
                 | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
                     doneReading <- true
@@ -1949,9 +1952,9 @@ module Xlsx =
         try
             let doc = XmlDsl.parse themeXml
             let pickAccent name =
-                Xml.descendants name doc
+                Ns.descendantsNs name doc
                 |> List.tryHead
-                |> Option.bind (Xml.descendants "srgbClr" >> List.tryHead)
+                |> Option.bind (Ns.descendantsNs "srgbClr" >> List.tryHead)
                 |> Option.bind (Xml.attr "val")
             let names = [| "accent1"; "accent2"; "accent3"; "accent4"; "accent5"; "accent6" |]
             names
@@ -1989,14 +1992,14 @@ module Xlsx =
                 // or <a:sysClr val="windowText" lastClr="..."/>. For sysClr we
                 // prefer lastClr (the persisted RGB) over val (which is just a
                 // system-color label).
-                Xml.descendants name doc
+                Ns.descendantsNs name doc
                 |> List.tryHead
                 |> Option.bind (fun node ->
-                    let srgb = Xml.descendants "srgbClr" node |> List.tryHead |> Option.bind (Xml.attr "val")
+                    let srgb = Ns.descendantsNs "srgbClr" node |> List.tryHead |> Option.bind (Xml.attr "val")
                     match srgb with
                     | Some s -> Some s
                     | None ->
-                        Xml.descendants "sysClr" node
+                        Ns.descendantsNs "sysClr" node
                         |> List.tryHead
                         |> Option.bind (fun sn ->
                             Xml.attr "lastClr" sn
@@ -2021,10 +2024,10 @@ module Xlsx =
         try
             let doc = XmlDsl.parse themeXml
             let latinOf slotName =
-                Xml.descendants slotName doc
+                Ns.descendantsNs slotName doc
                 |> List.tryHead
                 |> Option.bind (fun slot ->
-                    Xml.descendants "latin" slot
+                    Ns.descendantsNs "latin" slot
                     |> List.tryHead
                     |> Option.bind (Xml.attr "typeface"))
             latinOf "majorFont", latinOf "minorFont"
@@ -3165,7 +3168,7 @@ let private parseWorkbookFiltered loadAll sheetName (archive: ZipArchive) : Fabl
                         let rel = Office.relById info.RelationshipId rels
                         match rel with
                         | Some r ->
-                            let sheetPath = "xl/" + ZipInterop.normalizePath r.Target
+                            let sheetPath = ZipInterop.resolveTarget "xl" r.Target
                             let sheetNum = info.SheetId
 
                             // Load sheet XML
@@ -3437,7 +3440,7 @@ let private parseWorkbookNativeFiltered loadAll sheetName (archive: ZipArchive) 
                     |> Option.defaultValue emptyPrintNames
                 match Office.relById info.RelationshipId rels with
                 | Some r ->
-                    let sheetPath = "xl/" + ZipInterop.normalizePath r.Target
+                    let sheetPath = ZipInterop.resolveTarget "xl" r.Target
                     match ZipInterop.getFileTextNative archive sheetPath with
                     | Some xml ->
                         let sheetRels = loadSheetRels sheetPath

@@ -604,7 +604,11 @@ module Docx =
                 Style = getPropVal "rStyle" "val" props
                 Bold = onOff "b" props
                 Italic = onOff "i" props
-                Underline = onOff "u" props
+                // <w:u w:val="none"/> switches an inherited underline off.
+                Underline =
+                    (match getPropVal "u" "val" props with
+                     | Some value when value.ToLowerInvariant() = "none" -> Some false
+                     | _ -> onOff "u" props)
                 UnderlineStyle = getPropVal "u" "val" props
                 UnderlineColor = getPropVal "u" "color" props
                 AllCaps = onOff "caps" props
@@ -1089,7 +1093,7 @@ module Docx =
     let fieldData (rNode: XmlNode) : Field option =
         wElem "fldChar" rNode
         |> Option.bind (fun fld ->
-            let fldType = Xml.attr "fldCharType" fld
+            let fldType = attr "fldCharType" fld
             match fldType with
             | Some "begin" ->
                 // Look for field code in next runs
@@ -1291,7 +1295,7 @@ module Docx =
         let props = runProps rNode
         let revId = wElem "rPr" rNode
                     |> Option.bind (wElem "rPrChange")
-                    |> Option.bind (Xml.attr "id")
+                    |> Option.bind (attr "id")
         let makeRun content =
             { Content = content
               Properties = props
@@ -1756,9 +1760,9 @@ module Docx =
         let renderedBreakCounter = ref 0
         let contentControlProps (sdtNode: XmlNode) =
             let props = Ns.childNs "sdtPr" sdtNode
-            let id = props |> Option.bind (Ns.childNs "id") |> Option.bind (Xml.attr "val")
-            let tag = props |> Option.bind (Ns.childNs "tag") |> Option.bind (Xml.attr "val")
-            let alias = props |> Option.bind (Ns.childNs "alias") |> Option.bind (Xml.attr "val")
+            let id = props |> Option.bind (Ns.childNs "id") |> Option.bind (attr "val")
+            let tag = props |> Option.bind (Ns.childNs "tag") |> Option.bind (attr "val")
+            let alias = props |> Option.bind (Ns.childNs "alias") |> Option.bind (attr "val")
             id, tag, alias
         let applyContentControl (id, tag, alias) = function
             | Para para ->
@@ -2336,14 +2340,15 @@ module Revisions =
     let parseRevision (revNode: XmlNode) : Revision option =
         Xml.name revNode
         |> Option.bind (fun name ->
-            Xml.attr "id" revNode
+            Docx.attr "id" revNode
             |> Option.map (fun id ->
-                let author = Xml.attr "author" revNode
-                let date = Xml.attr "date" revNode
+                let author = Docx.attr "author" revNode
+                let date = Docx.attr "date" revNode
                 let revType = parseRevisionType (Ns.stripNs name)
 
+                // Deleted runs carry their text in <w:delText>.
                 let text =
-                    Ns.descendantsNs "t" revNode
+                    (Ns.descendantsNs "t" revNode) @ (Ns.descendantsNs "delText" revNode)
                     |> List.choose Xml.text
                     |> String.concat " "
 
@@ -2672,7 +2677,7 @@ let extractImageDataUrl (archive: ZipArchive) (relationshipId: string) (relation
                 return Some rel.Target
             else
                 // Normalize path: relationships are relative to word/ folder
-                let imagePath = normalizePath ("word/" + rel.Target)
+                let imagePath = ZipInterop.resolveTarget "word" rel.Target
                 let mimeType = getMimeType rel.Target
 
                 // Extract from archive
@@ -2691,20 +2696,10 @@ let private parentPath (path: string) =
     if index > 0 then normalized.Substring(0, index) else ""
 
 let private resolveRelationshipTarget baseDir target =
-    let rec resolve dir remaining =
-        let normalized = normalizePath remaining
-        if normalized.StartsWith("../") then
-            resolve (parentPath dir) (normalized.Substring(3))
-        elif normalized.StartsWith("/") then
-            normalizePath normalized
-        elif dir = "" then
-            normalizePath normalized
-        else
-            normalizePath (dir + "/" + normalized)
-    resolve baseDir target
+    ZipInterop.resolveTarget baseDir target
 
 let private relationshipTargetBase (rel: Relationship) =
-    parentPath (normalizePath ("word/" + rel.Target))
+    parentPath (ZipInterop.resolveTarget "word" rel.Target)
 
 let private loadPartRelationships archive (rel: Relationship) =
     promise {
@@ -2820,7 +2815,7 @@ let parseDocument (archive: ZipArchive) : Fable.Core.JS.Promise<WordDocument opt
 
             let loadHeaderFooter (rel: Relationship) (hfType: string) =
                 promise {
-                    let path = normalizePath ("word/" + rel.Target)
+                    let path = ZipInterop.resolveTarget "word" rel.Target
                     let! xml = getFileText archive path
                     return xml |> Option.map (fun value -> HeaderFooter.parseHeaderFooter value hfType (Some rel.Id))
                 }
@@ -2969,7 +2964,7 @@ let parseDocumentNative (archive: ZipArchive) : WordDocument option =
             |> Map.ofList
 
         let loadHeaderFooterNative (rel: Relationship) (hfType: string) =
-            let path = normalizePath ("word/" + rel.Target)
+            let path = ZipInterop.resolveTarget "word" rel.Target
             getFileTextNative archive path
             |> Option.map (fun value -> HeaderFooter.parseHeaderFooter value hfType (Some rel.Id))
 

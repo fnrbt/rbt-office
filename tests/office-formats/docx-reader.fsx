@@ -120,6 +120,41 @@ ok "editor-conversion-native-alloc"
    (editorItems.Length = calibreDoc.Content.Length && editorAllocatedMb < 24.0)
    (sprintf "items=%d allocated=%.1f MB in %.1f ms" editorItems.Length editorAllocatedMb editorSw.Elapsed.TotalMilliseconds)
 
+// ----- run properties and revisions on a synthetic package -------------------
+
+let docxWithBody (body: string) =
+    use stream = new System.IO.MemoryStream()
+    do
+        use archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create, true)
+        let add (name: string) (text: string) =
+            use writer = new System.IO.StreamWriter(archive.CreateEntry(name).Open(), System.Text.UTF8Encoding(false))
+            writer.Write text
+        add "[Content_Types].xml" """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"""
+        add "word/document.xml" (sprintf """<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>%s</w:body></w:document>""" body)
+    stream.ToArray()
+
+let underlineDoc =
+    docxWithBody """<w:p><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>on</w:t></w:r><w:r><w:rPr><w:u w:val="none"/></w:rPr><w:t>off</w:t></w:r></w:p><w:p><w:ins w:id="7" w:author="Ann" w:date="2024-01-02T03:04:05Z"><w:r><w:t>added</w:t></w:r></w:ins><w:del w:id="8" w:author="Bob"><w:r><w:delText>removed</w:delText></w:r></w:del></w:p>"""
+    |> DocxReader.loadBytesNative
+    |> Option.get
+let underlineRuns =
+    underlineDoc.Content
+    |> List.collect (function
+        | DocxReader.Para para -> para.Runs
+        | _ -> [])
+    |> List.choose (fun run ->
+        match run.Content with
+        | DocxReader.Text text -> Some (text, run.Properties.Underline)
+        | _ -> None)
+ok "underline-none-is-off"
+   (underlineRuns |> List.contains ("on", Some true) && underlineRuns |> List.contains ("off", Some false))
+   (sprintf "%A" underlineRuns)
+let revisionSummary =
+    underlineDoc.Revisions |> List.map (fun revision -> revision.Id, revision.Author, revision.Text)
+ok "revisions-read-prefixed-attributes"
+   (revisionSummary = [ "7", Some "Ann", "added"; "8", Some "Bob", "removed" ])
+   (sprintf "%A" revisionSummary)
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -28,6 +28,22 @@ type ZipArchive = {
 let normalizePath (path: string) =
     path.TrimStart('/').Replace('\\', '/')
 
+/// Resolve a relationship target to a package path. A target starting with
+/// "/" is relative to the package root; anything else is relative to
+/// `baseDir`, the directory of the part that owns the relationship.
+let resolveTarget (baseDir: string) (target: string) : string =
+    let target = target.Replace('\\', '/')
+    let full =
+        if target.StartsWith "/" || baseDir = "" then target
+        else baseDir + "/" + target
+    let parts = ResizeArray<string>()
+    for segment in full.Split('/') do
+        if segment = ".." then
+            if parts.Count > 0 then parts.RemoveAt(parts.Count - 1)
+        elif segment <> "" && segment <> "." then
+            parts.Add segment
+    System.String.Join("/", parts)
+
 // Promise helpers
 module Promise =
     [<Emit("$1.then($0)")>]
