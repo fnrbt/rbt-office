@@ -426,9 +426,14 @@ let insert pos (text: string) buffer =
                     // Insert within this run
                     match run with
                     | Image _ ->
-                        // Can't split image - insert before it
-                        newRuns.Add(Text { Start = pos; Length = textLen; Style = defaultStyle })
-                        newRuns.Add(Run.shiftStart textLen run)
+                        // Can't split an image: the text goes on whichever
+                        // side of it the position falls, matching the rope.
+                        if pos = runStart then
+                            newRuns.Add(Text { Start = pos; Length = textLen; Style = defaultStyle })
+                            newRuns.Add(Run.shiftStart textLen run)
+                        else
+                            newRuns.Add(run)
+                            newRuns.Add(Text { Start = pos; Length = textLen; Style = defaultStyle })
                     | Text tr ->
                         if pos = runStart then
                             // Insert at start of run

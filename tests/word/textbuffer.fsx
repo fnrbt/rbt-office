@@ -429,6 +429,8 @@ match Doc.splitBlock splitDoc with
 | { Blocks = [ Doc.Paragraph before; Doc.Paragraph after ] } ->
     check "split preserves before text" (toString before.Buffer) "ab"
     check "split preserves after text" (toString after.Buffer) "cd"
+    check "split keeps before style" (getStyleAt 0 before.Buffer).Bold true
+    check "split keeps after style" (getStyleAt 0 after.Buffer).Color (Some "#ff0000")
 | doc ->
     fail <- fail + 1
     printfn "FAIL %-28s expected two paragraphs got %A" "split block shape" doc.Blocks.Length
@@ -839,12 +841,15 @@ let mergeDoc =
 match Doc.mergeWithPrevious mergeDoc "p2" with
 | { Blocks = [ Doc.Paragraph merged ] } ->
     check "merge preserves text" (toString merged.Buffer) "abcd"
+    check "merge keeps first style" (getStyleAt 0 merged.Buffer).Bold true
+    check "merge keeps second style" (getStyleAt 3 merged.Buffer).Color (Some "#ff0000")
 | doc ->
     fail <- fail + 1
     printfn "FAIL %-28s expected one paragraph got %A" "merge block shape" doc.Blocks.Length
 match Doc.mergeWithNext mergeDoc "p1" with
 | { Blocks = [ Doc.Paragraph merged ] } ->
     check "merge next preserves text" (toString merged.Buffer) "abcd"
+    check "merge next keeps second style" (getStyleAt 3 merged.Buffer).Color (Some "#ff0000")
 | doc ->
     fail <- fail + 1
     printfn "FAIL %-28s expected one paragraph got %A" "merge next block shape" doc.Blocks.Length
@@ -1596,6 +1601,61 @@ check "accept delete revision cleared" (Doc.revisionInfos acceptedDeleteDoc |> L
 let rejectedDeleteDoc = Doc.rejectAllRevisions deleteRevisionDoc
 check "reject delete revision text" (Doc.getText rejectedDeleteDoc) "aREVb\naREVb"
 check "reject delete revision cleared" (Doc.revisionInfos rejectedDeleteDoc |> List.length) 0
+
+// Splitting keeps an inline image as an image, not a bare placeholder character.
+let splitImageDoc =
+    { Doc.empty with
+        Blocks = [ Doc.Paragraph (para "img" (ofString "ab" |> insertImage 2 "pic" (Some 10.0) (Some 10.0) None)) ]
+        Selection = Some { Anchor = pos "img" 1; Focus = pos "img" 1 } }
+match Doc.splitBlock splitImageDoc with
+| { Blocks = [ _; Doc.Paragraph after ] } -> check "split keeps image run" (imageSources after.Buffer) [ "pic" ]
+| doc ->
+    fail <- fail + 1
+    printfn "FAIL %-28s expected two paragraphs got %d" "split image shape" doc.Blocks.Length
+
+// Text typed after an inline image lands after it in the runs as well as the rope.
+let afterImageBuffer =
+    ofString "ab"
+    |> insertImage 2 "pic" (Some 10.0) (Some 10.0) None
+    |> insert 3 "cd"
+check "insert after image text" (toString afterImageBuffer) "ab\uFFFCcd"
+check "insert after image runs"
+    (afterImageBuffer.Runs |> List.map (function Image img -> "I", img.Start, 1 | Text tr -> "T", tr.Start, tr.Length))
+    [ "T", 0, 2; "I", 2, 1; "T", 3, 2 ]
+
+// Deleting across paragraphs keeps the surviving runs on both sides.
+let crossDeleteDoc =
+    { Doc.empty with
+        Blocks =
+            [ Doc.Paragraph (para "d1" styledBuffer)
+              Doc.Paragraph (para "d2" styledBuffer) ]
+        Selection = Some { Anchor = pos "d1" 1; Focus = pos "d2" 3 } }
+match Doc.deleteSelection crossDeleteDoc with
+| { Blocks = [ Doc.Paragraph merged ] } ->
+    check "cross delete text" (toString merged.Buffer) "ad"
+    check "cross delete keeps first style" (getStyleAt 0 merged.Buffer).Bold true
+    check "cross delete keeps last style" (getStyleAt 1 merged.Buffer).Color (Some "#ff0000")
+| doc ->
+    fail <- fail + 1
+    printfn "FAIL %-28s expected one paragraph got %d" "cross delete shape" doc.Blocks.Length
+
+// A table neighbour is stepped over or left alone rather than throwing.
+let besideTableDoc =
+    { Doc.empty with
+        Blocks =
+            [ Doc.Paragraph (para "above" (ofString "above"))
+              Doc.Table (singleCellTable "tbl" (tableCell "cell" "x"))
+              Doc.Paragraph (para "below" (ofString "below")) ]
+        Selection = Some { Anchor = pos "below" 0; Focus = pos "below" 0 } }
+check "backspace below table is a no-op" (Doc.mergeWithPrevious besideTableDoc "below").Blocks.Length 3
+check "delete above table is a no-op" (Doc.mergeWithNext besideTableDoc "above").Blocks.Length 3
+check "arrow up steps over table"
+    ((Doc.moveCursorUp besideTableDoc).Selection |> Option.map (fun sel -> sel.Focus.BlockId, sel.Focus.Offset))
+    (Some ("above", 5))
+check "arrow down steps over table"
+    ((Doc.moveCursorDown { besideTableDoc with Selection = Some { Anchor = pos "above" 0; Focus = pos "above" 0 } }).Selection
+     |> Option.map (fun sel -> sel.Focus.BlockId))
+    (Some "below")
 
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""

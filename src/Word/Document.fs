@@ -1121,13 +1121,9 @@ let splitBlock doc =
             let para = getParagraph block
             let offset = sel.Focus.Offset
 
-            // Split buffer at offset
-            let beforeText = TextBuffer.slice 0 offset para.Buffer
-            let afterText = TextBuffer.slice offset (TextBuffer.length para.Buffer - offset) para.Buffer
-
-            // Create two buffers
-            let beforeBuffer = TextBuffer.ofString beforeText
-            let afterBuffer = TextBuffer.ofString afterText
+            // Split buffer at offset, keeping each side's runs (formatting, images)
+            let beforeBuffer = TextBuffer.sliceBuffer 0 offset para.Buffer
+            let afterBuffer = TextBuffer.sliceBuffer offset (TextBuffer.length para.Buffer - offset) para.Buffer
 
             // Create new block for the second part (carry over metadata)
             let newBlockId = nextBlockId()
@@ -1175,14 +1171,16 @@ let mergeWithPrevious doc blockId =
         match findBlock doc blockId with
         | None -> doc
         | Some currentBlock ->
-            let currentPara = getParagraph currentBlock
             let prevBlock = doc.Blocks.[idx - 1]
-            let prevPara = getParagraph prevBlock
+            // A table or text box above is not something a paragraph merges into.
+            match tryGetParagraph currentBlock, tryGetParagraph prevBlock with
+            | None, _
+            | _, None -> doc
+            | Some currentPara, Some prevPara ->
 
-            // Merge buffers: previous + current
-            let prevText = TextBuffer.toString prevPara.Buffer
-            let currentText = TextBuffer.toString currentPara.Buffer
-            let mergedBuffer = TextBuffer.ofString (prevText + currentText)
+            // Merge buffers: previous + current, keeping both sides' runs
+            let prevLength = TextBuffer.length prevPara.Buffer
+            let mergedBuffer = TextBuffer.append prevPara.Buffer currentPara.Buffer
 
             // Update previous block with merged buffer
             let mergedPara = { prevPara with Buffer = mergedBuffer }
@@ -1204,8 +1202,8 @@ let mergeWithPrevious doc blockId =
 
             // Move cursor to junction point
             let newSel = {
-                Anchor = { BlockId = prevPara.Id; Offset = prevText.Length }
-                Focus = { BlockId = prevPara.Id; Offset = prevText.Length }
+                Anchor = { BlockId = prevPara.Id; Offset = prevLength }
+                Focus = { BlockId = prevPara.Id; Offset = prevLength }
             }
             { doc with Blocks = newBlocks; Selection = Some newSel }
 
@@ -1218,14 +1216,14 @@ let mergeWithNext doc blockId =
         match findBlock doc blockId with
         | None -> doc
         | Some currentBlock ->
-            let currentPara = getParagraph currentBlock
             let nextBlock = doc.Blocks.[idx + 1]
-            let nextPara = getParagraph nextBlock
+            match tryGetParagraph currentBlock, tryGetParagraph nextBlock with
+            | None, _
+            | _, None -> doc
+            | Some currentPara, Some nextPara ->
 
-            // Merge buffers: current + next
-            let currentText = TextBuffer.toString currentPara.Buffer
-            let nextText = TextBuffer.toString nextPara.Buffer
-            let mergedBuffer = TextBuffer.ofString (currentText + nextText)
+            // Merge buffers: current + next, keeping both sides' runs
+            let mergedBuffer = TextBuffer.append currentPara.Buffer nextPara.Buffer
 
             // Update current block with merged buffer
             let mergedPara = { currentPara with Buffer = mergedBuffer }
@@ -1290,15 +1288,13 @@ let deleteSelection doc =
                     let firstPara = getParagraph firstBlock
                     let lastPara = getParagraph lastBlock
 
-                    // Get text before selection start
-                    let beforeText = TextBuffer.slice 0 startPos.Offset firstPara.Buffer
-
-                    // Get text after selection end
+                    // Content before the selection start and after its end,
+                    // with runs intact
+                    let beforeBuffer = TextBuffer.sliceBuffer 0 startPos.Offset firstPara.Buffer
                     let lastBufferLen = TextBuffer.length lastPara.Buffer
-                    let afterText = TextBuffer.slice endPos.Offset (lastBufferLen - endPos.Offset) lastPara.Buffer
-
-                    // Merge into single buffer
-                    let mergedBuffer = TextBuffer.ofString (beforeText + afterText)
+                    let afterBuffer = TextBuffer.sliceBuffer endPos.Offset (lastBufferLen - endPos.Offset) lastPara.Buffer
+                    let mergedBuffer = TextBuffer.append beforeBuffer afterBuffer
+                    let mergeOffset = TextBuffer.length beforeBuffer
 
                     // Update first block with merged content
                     let mergedPara = { firstPara with Buffer = mergedBuffer }
@@ -1333,8 +1329,8 @@ let deleteSelection doc =
 
                     // Move cursor to merge point
                     let newSel = {
-                        Anchor = { BlockId = firstBlockId; Offset = String.length beforeText }
-                        Focus = { BlockId = firstBlockId; Offset = String.length beforeText }
+                        Anchor = { BlockId = firstBlockId; Offset = mergeOffset }
+                        Focus = { BlockId = firstBlockId; Offset = mergeOffset }
                     }
 
                     { doc with Blocks = newBlocks; Selection = Some newSel }
@@ -1369,8 +1365,10 @@ let moveCursorUp doc =
         | None -> doc
         | Some idx when idx = 0 -> doc  // Already at first block
         | Some idx ->
-            let prevBlock = doc.Blocks.[idx - 1]
-            let prevPara = getParagraph prevBlock
+            // Nearest paragraph above, stepping over tables and text boxes
+            match doc.Blocks |> List.take idx |> List.rev |> List.tryPick tryGetParagraph with
+            | None -> doc
+            | Some prevPara ->
             let prevLen = TextBuffer.length prevPara.Buffer
 
             // Move to end of previous block
@@ -1389,8 +1387,10 @@ let moveCursorDown doc =
         | None -> doc
         | Some idx when idx >= doc.Blocks.Length - 1 -> doc  // Already at last block
         | Some idx ->
-            let nextBlock = doc.Blocks.[idx + 1]
-            let nextPara = getParagraph nextBlock
+            // Nearest paragraph below, stepping over tables and text boxes
+            match doc.Blocks |> List.skip (idx + 1) |> List.tryPick tryGetParagraph with
+            | None -> doc
+            | Some nextPara ->
 
             // Move to start of next block
             let newSel = {
