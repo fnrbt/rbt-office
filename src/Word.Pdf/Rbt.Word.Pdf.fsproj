@@ -11,6 +11,6 @@
   <ItemGroup>
     <ProjectReference Include="../Word/Rbt.Word.fsproj" />
     <ProjectReference Include="../ShaperText/Rbt.Word.ShaperText.fsproj" />
-    <ProjectReference Include="../../../rbt-pdf/Rbt.Pdf.fsproj" />
+    <ProjectReference Include="../../../rbt-pdf/Rbt.Pdf/Rbt.Pdf.fsproj" />
   </ItemGroup>
 </Project>

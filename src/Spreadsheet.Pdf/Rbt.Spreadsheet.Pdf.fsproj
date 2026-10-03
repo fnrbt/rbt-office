@@ -12,6 +12,6 @@
 
   <ItemGroup>
     <ProjectReference Include="../Spreadsheet/Rbt.Spreadsheet.fsproj" />
-    <ProjectReference Include="../../../rbt-pdf/Rbt.Pdf.fsproj" />
+    <ProjectReference Include="../../../rbt-pdf/Rbt.Pdf/Rbt.Pdf.fsproj" />
   </ItemGroup>
 </Project>

@@ -48,7 +48,7 @@
   <Folder Name="/src/Spreadsheet.Pdf/">
     <Project Path="src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj" />
   </Folder>
-  <Project Path="../rbt-pdf/Rbt.Pdf.fsproj" />
+  <Project Path="../rbt-pdf/Rbt.Pdf/Rbt.Pdf.fsproj" />
   <Project Path="../rbt-renderer/Rbt.Renderer.fsproj" />
   <Project Path="../rbt-text/bidi/Rbt.Bidi.Core.fsproj" />
   <Project Path="../rbt-text/engine/Rbt.Text.Engine.fsproj" />
