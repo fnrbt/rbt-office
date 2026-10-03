@@ -414,6 +414,22 @@ let private metadataFromEditor (item: obj) =
     let sectionPageNumberStart = optionalInt (item?SectionPageNumberStart)
     let renderedPageBreakBefore = optionalInt (item?RenderedPageBreakBefore)
     let sectionPageSetup = sectionPageSetupFromEditor (item?SectionPageSetup)
+    let sectionColumns : SectionColumns option =
+        let value = item?SectionColumns
+        if isNullOrUndefined value then None
+        else
+            match optionalFloat (value?Count) with
+            | Some count when count >= 2.0 ->
+                let widths = value?Widths
+                Some { Count = int count
+                       Gap = optionalFloat (value?Gap) |> Option.defaultValue 0.0
+                       Separator = value?Separator |> boolOrDefault false
+                       Widths =
+                           if isNullOrUndefined widths then []
+                           else [ for i in 0 .. jsArrayLength widths - 1 ->
+                                    let column = jsArrayGet widths i
+                                    (optionalFloat (column?W) |> Option.defaultValue 0.0, optionalFloat (column?S) |> Option.defaultValue 0.0) ] }
+            | _ -> None
     let headerReferences = refsFromEditor (item?HeaderReferences)
     let footerReferences = refsFromEditor (item?FooterReferences)
     {
@@ -453,6 +469,7 @@ let private metadataFromEditor (item: obj) =
             SectionPageNumberStart = sectionPageNumberStart
             RenderedPageBreakBefore = renderedPageBreakBefore
             SectionPageSetup = sectionPageSetup
+            SectionColumns = sectionColumns
             HeaderReferences = headerReferences
             FooterReferences = footerReferences
     }
@@ -1290,6 +1307,15 @@ let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
         "SectionPageNumberStart" ==> para.Metadata.SectionPageNumberStart
         "RenderedPageBreakBefore" ==> para.Metadata.RenderedPageBreakBefore
         "SectionPageSetup" ==> (para.Metadata.SectionPageSetup |> Option.map sectionPageSetupToEditor |> Option.toObj)
+        "SectionColumns" ==> (para.Metadata.SectionColumns
+                              |> Option.map (fun columns ->
+                                  createObj [
+                                      "Count" ==> columns.Count
+                                      "Gap" ==> columns.Gap
+                                      "Separator" ==> columns.Separator
+                                      "Widths" ==> (columns.Widths |> List.map (fun (width, space) -> createObj [ "W" ==> width; "S" ==> space ]) |> List.toArray)
+                                  ])
+                              |> Option.toObj)
         "HeaderReferences" ==> refsToEditor para.Metadata.HeaderReferences
         "FooterReferences" ==> refsToEditor para.Metadata.FooterReferences
     ]

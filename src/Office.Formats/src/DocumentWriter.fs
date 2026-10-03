@@ -477,7 +477,10 @@ let private hyperlinkMap (items: obj array) =
     |> Array.toList
     |> List.collect collectItemHyperlinks
     |> List.distinct
-    |> List.mapi (fun index url -> (url, sprintf "rId%d" (index + 3)))
+    // Not "rId<n>": header/footer parts keep the relationship ids they were read
+    // with (rId7, ...), and a hyperlink numbered into the same range pointed at
+    // header1.xml after saving.
+    |> List.mapi (fun index url -> (url, sprintf "rIdLink%d" (index + 1)))
     |> Map.ofList
 
 type CommentRef = { Id: string; Text: string; Author: string option; Date: string option }
@@ -510,6 +513,10 @@ let private mimeToExtensionAndContentType (mime: string) =
     | "image/gif" -> Some ("gif", "image/gif")
     | "image/bmp" -> Some ("bmp", "image/bmp")
     | "image/svg+xml" -> Some ("svg", "image/svg+xml")
+    | "image/webp" -> Some ("webp", "image/webp")
+    | "image/x-emf" | "image/emf" -> Some ("emf", "image/x-emf")
+    | "image/x-wmf" | "image/wmf" -> Some ("wmf", "image/x-wmf")
+    | "image/tiff" -> Some ("tiff", "image/tiff")
     | _ -> None
 
 let private parseDataUrl (src: string) =
@@ -739,6 +746,7 @@ let private sectionReferences elementName differentFirstPage evenAndOddHeaders (
         value
         |> optionalArray
         |> Array.toList
+        |> List.distinctBy (fun item -> item?Kind |> stringOrDefault (item?Type |> stringOrDefault "default"))
         |> List.choose (fun item ->
             let kind = item?Kind |> stringOrDefault (item?Type |> stringOrDefault "default")
             if includeHeaderFooterKind differentFirstPage evenAndOddHeaders kind then
@@ -747,19 +755,40 @@ let private sectionReferences elementName differentFirstPage evenAndOddHeaders (
                     selfClosing elementName [("w:type", kind); ("r:id", relationshipId)])
             else None)
 
+/// The w:sectPr of a paragraph that ends a section. Only a paragraph with a
+/// SectionBreak gets one: the reader also puts the *final* section's header
+/// references on that section's first paragraph, and writing a sectPr for
+/// those split the last section in two (see finalSectionReferences).
 let private paragraphSectionProperties (packageSetup: PageSetupInfo) (para: obj) =
+    // The reader clears SectionBreak on an empty next-page paragraph that is
+    // followed by a continuous one, but that paragraph still ends a section and
+    // still carries its geometry; it is written back with the default type.
     let sectionBreak = optionalString (para?SectionBreak)
-    let paraSetup =
-        match optionalPageSetup (para?SectionPageSetup) with
-        | Some setup -> Some setup
-        | None -> optionalPageSetup (para?PageSetup)
-    let effectiveSetup = paraSetup |> Option.defaultValue packageSetup
-    let refs =
-        sectionReferences "w:headerReference" effectiveSetup.DifferentFirstPage effectiveSetup.EvenAndOddHeaders (para?HeaderReferences)
-        @ sectionReferences "w:footerReference" effectiveSetup.DifferentFirstPage effectiveSetup.EvenAndOddHeaders (para?FooterReferences)
-    let pageNumberStart = optionalInt (para?SectionPageNumberStart)
-    let children = sectionPropertiesChildren refs sectionBreak paraSetup pageNumberStart
-    if children.IsEmpty then None else Some (element "w:sectPr" [] children)
+    if sectionBreak.IsNone && isNullOrUndefined para?SectionPageSetup then None
+    else
+        let paraSetup =
+            optionalPageSetup (para?SectionPageSetup)
+            |> Option.orElseWith (fun () -> optionalPageSetup (para?PageSetup))
+            // A sectPr without pgSz/pgMar is US Letter with default margins to Word,
+            // so a section with unknown geometry takes the document's.
+            |> Option.defaultValue { packageSetup with DifferentFirstPage = false; ColumnCount = 1; ColumnWidths = []; SectionStart = None }
+        let setup =
+            let columns = para?SectionColumns
+            if isNullOrUndefined columns then paraSetup
+            else
+                { paraSetup with
+                    ColumnCount = optionalFloat (columns?Count) |> Option.map roundToInt |> Option.defaultValue 1
+                    ColumnSpace = floatOrDefault 0.0 (columns?Gap)
+                    ColumnSeparator = boolOrDefault false (columns?Separator)
+                    ColumnWidths =
+                        optionalArray (columns?Widths)
+                        |> Array.toList
+                        |> List.map (fun column -> floatOrDefault 0.0 (column?W), floatOrDefault 0.0 (column?S)) }
+        let refs =
+            sectionReferences "w:headerReference" setup.DifferentFirstPage setup.EvenAndOddHeaders (para?HeaderReferences)
+            @ sectionReferences "w:footerReference" setup.DifferentFirstPage setup.EvenAndOddHeaders (para?FooterReferences)
+        let pageNumberStart = optionalInt (para?SectionPageNumberStart)
+        Some (element "w:sectPr" [] (sectionPropertiesChildren refs sectionBreak (Some setup) pageNumberStart))
 
 let private defaultFontSizePixels = 11.0 * 96.0 / 72.0
 
@@ -1015,7 +1044,13 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
             | None -> runXml
         )
     let runs =
-        if boolOrDefault false (para?PageBreakAfter) then
+        // A next-page section break already starts a new page (the reader reports it
+        // as PageBreakAfter too); adding w:br there would leave a blank page in Word.
+        let sectionBreaksPage =
+            match optionalString (para?SectionBreak) with
+            | Some "nextPage" | Some "evenPage" | Some "oddPage" -> true
+            | _ -> false
+        if boolOrDefault false (para?PageBreakAfter) && not sectionBreaksPage then
             runs @ [element "w:r" [] [selfClosing "w:br" [("w:type", "page")]]]
         else runs
 
@@ -1290,7 +1325,7 @@ let private generateTextBoxRun (packageSetup: PageSetupInfo) (hyperlinks: Map<st
     let content =
         if paragraphs.Length = 0 then generateParagraphWithHyperlinksAndImagesWithPageSetup packageSetup hyperlinks images (createObj [ "Runs" ==> [||]; "Alignment" ==> "left" ])
         else paragraphs |> Array.map (generateParagraphWithHyperlinksAndImagesWithPageSetup packageSetup hyperlinks images) |> String.concat ""
-    let style = sprintf "position:absolute;margin-left:%.2fpt;margin-top:%.2fpt;width:%.2fpt;height:%.2fpt;z-index:1" x y width height
+    let style = sprintf "position:absolute;margin-left:%.4fpt;margin-top:%.4fpt;width:%.4fpt;height:%.4fpt;z-index:1" x y width height
     element "w:r" [] [
         element "w:pict" [] [
             element "v:shape" [
@@ -1394,21 +1429,48 @@ let private generateHeaderFooterXml rootName (hyperlinks: Map<string, string>) (
     let content = if content = "" then element "w:p" [] [] else content
     document (element rootName [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships); ("xmlns:m", Namespaces.math)] [content])
 
-let private generateSectionProperties (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) =
+/// Header/footer references and page-number start that belong to the final
+/// section. The reader moves the body sectPr's references onto a paragraph
+/// that does not end a section (the paragraph after the first section break),
+/// so references found on such a paragraph are the final section's and go
+/// back into the body-level w:sectPr; references on a section-ending
+/// paragraph stay in that paragraph's own sectPr.
+let private finalSectionReferences (items: obj array) =
+    let mutable headers : obj = null
+    let mutable footers : obj = null
+    let mutable pageNumberStart : int option = None
+    for para in items |> Array.toList |> List.collect collectItemParagraphs do
+        let endsSection = (optionalString (para?SectionBreak)).IsSome || not (isNullOrUndefined para?SectionPageSetup)
+        if not endsSection then
+            if (optionalArray (para?HeaderReferences)).Length > 0 then headers <- para?HeaderReferences
+            if (optionalArray (para?FooterReferences)).Length > 0 then footers <- para?FooterReferences
+            match optionalInt (para?SectionPageNumberStart) with
+            | Some start -> pageNumberStart <- Some start
+            | None -> ()
+    headers, footers, pageNumberStart
+
+let private generateSectionProperties (items: obj array) (pageSetup: PageSetupInfo option) (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) =
     let setup = pageSetup |> Option.defaultValue defaultPageSetupInfo
-    let refs name (items: HeaderFooterPartInfo array) =
-        items
-        |> Array.filter (fun item -> includeHeaderFooterKind setup.DifferentFirstPage setup.EvenAndOddHeaders item.Kind)
-        // CT_SectPr allows one reference per type.
-        |> Array.distinctBy (fun item -> item.Kind)
-        |> Array.map (fun item -> selfClosing name [("w:type", item.Kind); ("r:id", item.RelId)])
-        |> Array.toList
+    let finalHeaders, finalFooters, pageNumberStart = finalSectionReferences items
+    let refs name (explicit: obj) (parts: HeaderFooterPartInfo array) =
+        let fromParagraphs =
+            optionalArray explicit
+            |> Array.toList
+            |> List.choose (fun item ->
+                optionalString (item?RelationshipId)
+                |> Option.map (fun relId -> item?Kind |> stringOrDefault (item?Type |> stringOrDefault "default"), relId))
+        let fromParts = parts |> Array.toList |> List.map (fun part -> part.Kind, part.RelId)
+        // CT_SectPr allows one reference per type; the section's own references win.
+        fromParagraphs @ fromParts
+        |> List.filter (fun (kind, _) -> includeHeaderFooterKind setup.DifferentFirstPage setup.EvenAndOddHeaders kind)
+        |> List.distinctBy fst
+        |> List.map (fun (kind, relId) -> selfClosing name [("w:type", kind); ("r:id", relId)])
     let children =
         sectionPropertiesChildren
-            (refs "w:headerReference" headers @ refs "w:footerReference" footers)
+            (refs "w:headerReference" finalHeaders headers @ refs "w:footerReference" finalFooters footers)
             (pageSetup |> Option.bind (fun setup -> setup.SectionStart))
             pageSetup
-            None
+            pageNumberStart
     if children.IsEmpty then "" else element "w:sectPr" [] children
 
 /// Generate document.xml with formatting (handles JS arrays)
@@ -1451,7 +1513,7 @@ let generateDocumentXmlPackage (paragraphs: obj array) (images: ImageScope) (pag
         |> generateBlocks (generateDocumentItemWithImagesAndPageSetup setup hyperlinks images) (generateTextBoxRun setup hyperlinks images)
     let globalHeaders = headers |> Array.filter (fun part -> part.IsGlobal)
     let globalFooters = footers |> Array.filter (fun part -> part.IsGlobal)
-    let body = element "w:body" [] [paraElements; generateSectionProperties pageSetup globalHeaders globalFooters]
+    let body = element "w:body" [] [paraElements; generateSectionProperties paragraphs pageSetup globalHeaders globalFooters]
     let doc = element "w:document" [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships); ("xmlns:m", Namespaces.math)] [body]
     document doc
 
@@ -1952,6 +2014,9 @@ let generateDefaultStylesWithStyles (styles: StyleInfo list) : string =
         |> List.map (fun style ->
             let children = [
                 yield selfClosing "w:name" [("w:val", style.Name |> Option.defaultValue style.StyleId)]
+                match style.Aliases with
+                | Some aliases when aliases <> "" -> yield selfClosing "w:aliases" [("w:val", aliases)]
+                | _ -> ()
                 match style.BasedOn with
                 | Some basedOn when basedOn <> "" -> yield selfClosing "w:basedOn" [("w:val", basedOn)]
                 | _ -> ()
@@ -1960,9 +2025,6 @@ let generateDefaultStylesWithStyles (styles: StyleInfo list) : string =
                 | _ -> ()
                 match style.Linked with
                 | Some linked when linked <> "" -> yield selfClosing "w:link" [("w:val", linked)]
-                | _ -> ()
-                match style.Aliases with
-                | Some aliases when aliases <> "" -> yield selfClosing "w:aliases" [("w:val", aliases)]
                 | _ -> ()
                 match style.UiPriority with
                 | Some priority -> yield selfClosing "w:uiPriority" [("w:val", string priority)]

@@ -29,7 +29,7 @@ const IMAGE_KEYS = ['ImageWidth', 'ImageHeight', 'ImageFloating', 'ImageWrap', '
 const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'ListId', 'ListNumberFormat', 'ListLevelText', 'ListStart',
     'IndentLeft', 'IndentRight', 'FirstLineIndent', 'SpacingBefore', 'SpacingAfter', 'LineSpacing', 'LineSpacingRule',
     'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakAfter', 'SectionBreak',
-    'SectionPageNumberStart', 'StyleContextualSpacing',
+    'SectionPageNumberStart', 'SectionPageSetup', 'SectionColumns', 'StyleContextualSpacing',
     'ContentControlTag', 'ContentControlAlias'];
 const TABLE_KEYS = ['PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
     'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
@@ -103,9 +103,9 @@ function summarise(items, prefix, out) {
 
 function summarisePackage(pkg) {
     const out = [];
-    // The editor drops empty paragraphs at the very end of the body on import.
+    // The editor drops empty / whitespace-only paragraphs at the very end of the body on import.
     const body = [...(pkg.Paragraphs || [])];
-    const blank = (item) => (item.Type || 'Paragraph') !== 'Table' && (item.Type || 'Paragraph') !== 'TextBox' && runsSummary(item.Runs).length === 0
+    const blank = (item) => (item.Type || 'Paragraph') !== 'Table' && (item.Type || 'Paragraph') !== 'TextBox' && runsSummary(item.Runs).every((r) => r.text !== undefined && r.text.trim() === '')
         && !item.SectionBreak && !item.PageBreakAfter && !item.ParagraphBorders && !(item.HeaderReferences || []).length && !(item.FooterReferences || []).length;
     while (body.length && blank(body[body.length - 1])) body.pop();
     summarise(body, 'body', out);

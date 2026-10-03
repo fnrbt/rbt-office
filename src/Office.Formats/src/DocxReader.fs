@@ -175,6 +175,10 @@ type SectionGeometry = {
     MarginBottom: float
     MarginLeft: float
     MarginRight: float
+    HeaderDistance: float
+    FooterDistance: float
+    /// w:titlePg of this section.
+    DifferentFirstPage: bool
 }
 
 type ParagraphProperties = {
@@ -601,6 +605,9 @@ module Docx =
                 MarginBottom = pgMar |> Option.bind (attr "bottom") |> twips |> Option.defaultValue 96.0
                 MarginLeft = pgMar |> Option.bind (attr "left") |> twips |> Option.defaultValue 96.0
                 MarginRight = pgMar |> Option.bind (attr "right") |> twips |> Option.defaultValue 96.0
+                HeaderDistance = pgMar |> Option.bind (attr "header") |> twips |> Option.defaultValue 48.0
+                FooterDistance = pgMar |> Option.bind (attr "footer") |> twips |> Option.defaultValue 48.0
+                DifferentFirstPage = onOff "titlePg" sectPr |> Option.defaultValue false
             }
 
     // Run properties extraction with defaults
@@ -1841,12 +1848,20 @@ module Docx =
                     | _ -> ()
             }
 
-        let rec normalizeSectionBreaks = function
-            | Para para :: (Para nextPara :: _ as rest)
-                when para.Runs.IsEmpty && para.Properties.SectionBreak = Some "nextPage" && nextPara.Properties.SectionBreak = Some "continuous" ->
-                Para { para with Properties = { para.Properties with SectionBreak = None } } :: normalizeSectionBreaks rest
-            | item :: rest -> item :: normalizeSectionBreaks rest
-            | [] -> []
+        // Iterative: the recursive form was not a tail call and overflowed the JS
+        // stack on documents with a few thousand body blocks (the file would not open).
+        let normalizeSectionBreaks (items: DocumentContent list) =
+            let source = List.toArray items
+            source
+            |> Array.mapi (fun index item ->
+                match item with
+                | Para para when index + 1 < source.Length && para.Runs.IsEmpty && para.Properties.SectionBreak = Some "nextPage" ->
+                    match source.[index + 1] with
+                    | Para nextPara when nextPara.Properties.SectionBreak = Some "continuous" ->
+                        Para { para with Properties = { para.Properties with SectionBreak = None } }
+                    | _ -> item
+                | _ -> item)
+            |> Array.toList
 
         let content = contentFromNode bodyNode |> normalizeSectionBreaks
         match finalSectPr with
@@ -1896,7 +1911,11 @@ module Styles =
             Style = None
             Bold = Docx.onOff "b" rPr
             Italic = Docx.onOff "i" rPr
-            Underline = Docx.onOff "u" rPr
+            // As in Docx.runProps: <w:u w:val="none"/> in a style means not underlined.
+            Underline =
+                (match Ns.childNs "u" rPr |> Option.bind (Docx.attr "val") with
+                 | Some value when value.ToLowerInvariant() = "none" -> Some false
+                 | _ -> Docx.onOff "u" rPr)
             UnderlineStyle = Ns.childNs "u" rPr |> Option.bind (Docx.attr "val")
             UnderlineColor = Ns.childNs "u" rPr |> Option.bind (Docx.attr "color")
             AllCaps = Docx.onOff "caps" rPr
@@ -2727,6 +2746,9 @@ let getMimeType (path: string) : string =
     elif ext.EndsWith(".bmp") then "image/bmp"
     elif ext.EndsWith(".svg") then "image/svg+xml"
     elif ext.EndsWith(".webp") then "image/webp"
+    elif ext.EndsWith(".emf") then "image/x-emf"
+    elif ext.EndsWith(".wmf") then "image/x-wmf"
+    elif ext.EndsWith(".tif") || ext.EndsWith(".tiff") then "image/tiff"
     else "application/octet-stream"
 
 let private wordTwipsToPixels value =
@@ -3401,6 +3423,30 @@ let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdv
         "ParagraphBorderBefore" ==> (borderAdvanceSource |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Top))
         "ParagraphBorderAfter" ==> (borderAdvanceSource |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Bottom))
         "RenderedPageBreakBefore" ==> props.RenderedPageBreakBefore
+        // Geometry and columns of the section this paragraph ends (its own w:sectPr).
+        // The native importer has always delivered these; without them a saved
+        // multi-section document lost every section's page size but the last.
+        "SectionPageSetup" ==> (props.SectionGeometry
+                                |> Option.map (fun geometry ->
+                                    objFromFields [
+                                        "PageWidth" ==> geometry.PageWidth
+                                        "PageHeight" ==> geometry.PageHeight
+                                        "MarginLeft" ==> geometry.MarginLeft
+                                        "MarginRight" ==> geometry.MarginRight
+                                        "MarginTop" ==> geometry.MarginTop
+                                        "MarginBottom" ==> geometry.MarginBottom
+                                        "HeaderDistance" ==> geometry.HeaderDistance
+                                        "FooterDistance" ==> geometry.FooterDistance
+                                        "DifferentFirstPage" ==> geometry.DifferentFirstPage
+                                    ]))
+        "SectionColumns" ==> (props.SectionColumns
+                              |> Option.map (fun columns ->
+                                  objFromFields [
+                                      "Count" ==> columns.Count
+                                      "Gap" ==> columns.Gap
+                                      "Separator" ==> columns.Separator
+                                      "Widths" ==> (columns.Widths |> List.map (fun (width, space) -> objFromFields [ "W" ==> width; "S" ==> space ]) |> Array.ofList)
+                                  ]))
     ]
 
 let private directParagraphFormattingResetsMissingSpacing (props: ParagraphProperties) =
