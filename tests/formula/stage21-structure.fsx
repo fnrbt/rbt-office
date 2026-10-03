@@ -251,6 +251,50 @@ let chainWb =
     |> recalculateWorkbook
 eq "wb-recalc-chain" (valueAt 0 0 (sheetModel "sheet1" chainWb)) (CellValue.Number 12.0)
 
+// --- Sort -------------------------------------------------------------------
+// Data in rows 5-9 (0-indexed 4..8) with a header; a note sits apart in row 1.
+let sortSheet =
+    modelOf [ at 0 0, str "note"
+              at 4 0, str "Name";  at 4 1, str "Qty";  at 4 2, str "Double"
+              at 5 0, str "pear";  at 5 1, num 3.0;    at 5 2, fml "=B6*2"
+              at 6 0, str "apple"; at 6 1, num 1.0;    at 6 2, fml "=B7*2"
+              at 7 0, str "fig";                       at 7 2, fml "=B8*2"
+              at 8 0, str "kiwi";  at 8 1, num 2.0;    at 8 2, fml "=B9*2"
+              at 10 0, fml "=B6" ]
+let colValues c (m: SpreadsheetModel) = [ for r in 4 .. 8 -> valueAt r c m ]
+let S = CellValue.String
+let N = CellValue.Number
+
+let sortedAsc = sortSheet |> sortByColumn 1 true |> recalcAndSpill None None
+eq "sort-header-stays"   (valueAt 4 0 sortedAsc, valueAt 4 1 sortedAsc) (S "Name", S "Qty")
+eq "sort-in-place"       (colValues 0 sortedAsc) [ S "Name"; S "apple"; S "kiwi"; S "pear"; S "fig" ]
+eq "sort-blank-last"     (valueAt 8 1 sortedAsc) CellValue.Empty
+eq "sort-outside-kept"   (valueAt 0 0 sortedAsc) (S "note")
+eq "sort-rows-not-moved-up" (Map.containsKey (at 1 0) sortedAsc.Cells) false
+eq "sort-formula-follows" (formulaAt 5 2 sortedAsc) "=B6*2"
+eq "sort-formula-values" (colValues 2 sortedAsc) [ S "Double"; N 2.0; N 4.0; N 6.0; N 0.0 ]
+eq "sort-outside-formula-recalc" (valueAt 10 0 sortedAsc) (N 1.0)
+eq "sort-state"          sortedAsc.SortState (Some { Column = 1; Ascending = true })
+
+let sortedDesc = sortSheet |> sortByColumn 1 false |> recalcAndSpill None None
+eq "sort-desc"            (colValues 0 sortedDesc) [ S "Name"; S "pear"; S "kiwi"; S "apple"; S "fig" ]
+eq "sort-desc-blank-last" (valueAt 8 1 sortedDesc) CellValue.Empty
+
+let sortedText = sortSheet |> sortByColumn 0 true
+eq "sort-text-column" (colValues 0 sortedText) [ S "Name"; S "apple"; S "fig"; S "kiwi"; S "pear" ]
+
+// No header when the first row holds data, not labels.
+let plainSorted = modelOf [ at 0 0, num 3.0; at 1 0, num 1.0; at 2 0, num 2.0 ] |> sortByColumn 0 true
+eq "sort-no-header" [ for r in 0 .. 2 -> valueAt r 0 plainSorted ] [ N 1.0; N 2.0; N 3.0 ]
+
+// AutoFilter: the header is the first row of the filtered block, not the
+// first used row of the sheet, and rows outside the block are never hidden.
+let filtered = sortSheet |> applyFilter 0 (Set.ofList [ "apple" ]) |> applyFilterRowHeights
+eq "filter-header-row"     (getRowHeight 4 filtered) 25.0
+eq "filter-match-kept"     (getRowHeight 6 filtered) 25.0
+eq "filter-others-hidden"  ([ 5; 7; 8 ] |> List.map (fun r -> getRowHeight r filtered)) [ 0.0; 0.0; 0.0 ]
+eq "filter-outside-block"  (getRowHeight 0 filtered, getRowHeight 10 filtered) (25.0, 25.0)
+
 printfn ""
 printfn "Stage 21 structure tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -858,13 +858,72 @@ let private dataRows (model: SpreadsheetModel): Set<int> =
     |> Seq.map (fun (addr, _) -> addr.Row)
     |> Set.ofSeq
 
+/// The block of rows a column-level operation (sort, AutoFilter) acts on, as
+/// (first row, last row). Rows with content form unbroken runs separated by
+/// empty rows (Excel's "current region"); the block is the run holding most of
+/// the column's entries, so a stray title or note elsewhere on the sheet is
+/// not mistaken for the data. A table covering that run wins (its totals row
+/// excluded). The block's first row is where a header would sit. None for an
+/// empty sheet.
+let dataBlockForColumn (col: int) (model: SpreadsheetModel) : (int * int) option =
+    let mutable rows = Set.empty
+    let mutable columnRows = Set.empty
+    for KeyValue(addr, cellData) in model.Cells do
+        if cellData.Value <> Empty then
+            rows <- Set.add addr.Row rows
+            if addr.Col = col then columnRows <- Set.add addr.Row columnRows
+    if Set.isEmpty rows then None
+    else
+        let mutable best = None
+        let mutable bestCount = -1
+        let mutable runStart = -1
+        let mutable previous = -2
+        let mutable count = 0
+        let close () =
+            if runStart >= 0 && count > bestCount then
+                best <- Some (runStart, previous)
+                bestCount <- count
+        for row in rows do
+            if row <> previous + 1 then
+                close ()
+                runStart <- row
+                count <- 0
+            if Set.contains row columnRows then count <- count + 1
+            previous <- row
+        close ()
+        match best with
+        | None -> None
+        | Some (first, last) ->
+            let table =
+                model.Tables
+                |> List.tryFind (fun t ->
+                    col >= t.StartCol - 1 && col <= t.EndCol - 1
+                    && t.StartRow - 1 <= last && t.EndRow - 1 >= first)
+            match table with
+            | Some t -> Some (t.StartRow - 1, t.EndRow - 1 - (if t.HasTotals then 1 else 0))
+            | None -> Some (first, last)
+
+/// The block the active AutoFilter applies to: the one around its leftmost
+/// filtered column.
+let private filterBlock (model: SpreadsheetModel) : (int * int) option =
+    if Map.isEmpty model.Filters then None
+    else
+        let firstFilterCol = model.Filters |> Map.toSeq |> Seq.map fst |> Seq.min
+        dataBlockForColumn firstFilterCol model
+
 let private computeVisibleRows (model: SpreadsheetModel): Set<int> =
     let rows = dataRows model
     if Map.isEmpty model.Filters then
         rows
     else
+        let inBlock =
+            match filterBlock model with
+            | Some (first, last) -> fun row -> row >= first && row <= last
+            | None -> fun _ -> false
         rows
         |> Set.filter (fun row ->
+            // Rows outside the filtered block are never filtered.
+            not (inBlock row) ||
             model.Filters
             |> Map.forall (fun col filter ->
                 let addr = { Row = row; Col = col }
@@ -873,13 +932,12 @@ let private computeVisibleRows (model: SpreadsheetModel): Set<int> =
                 Set.contains displayStr filter.VisibleValues))
 
 let private hiddenRowsFromVisible (visible: Set<int>) (model: SpreadsheetModel): int array =
-    let rows = dataRows model
-    if Set.isEmpty rows then
-        [||]
-    else
-        let headerRow = Set.minElement rows
-        Set.difference rows visible
-        |> Set.remove headerRow
+    match filterBlock model with
+    | None -> [||]
+    | Some (headerRow, lastRow) ->
+        // The block's first row is its header and always stays.
+        dataRows model
+        |> Set.filter (fun row -> row > headerRow && row <= lastRow && not (Set.contains row visible))
         |> Set.toArray
 
 let private refreshFilterProjection (model: SpreadsheetModel): SpreadsheetModel =
@@ -1083,63 +1141,63 @@ let rec compareCellValues (v1: CellValue) (v2: CellValue): int =
             | Formula (_, cached) -> rank cached
         compare (rank v1) (rank v2)
 
-/// Sort spreadsheet by column
+/// Sort the data block around a column by that column, in place. The block's
+/// rows keep their position on the sheet (nothing is compacted to the top) and
+/// rows outside it are untouched. A first row made only of text is taken as
+/// the header and stays first. Blanks sort last in either direction, ties keep
+/// their order, and a formula that moves keeps pointing at its own row (its
+/// relative references shift with it). Cached values of other formulas are
+/// stale afterwards — recalculate.
 let sortByColumn (col: int) (ascending: bool) (model: SpreadsheetModel): SpreadsheetModel =
-    // Collect all rows that have data in any column
-    let allRows =
-        model.Cells
-        |> Map.toList
-        |> List.map (fun (addr, _) -> addr.Row)
-        |> List.distinct
-        |> List.sort
-
-    if List.isEmpty allRows then
-        // No data to sort
-        { model with SortState = Some { Column = col; Ascending = ascending } }
-        |> refreshFilterProjection
-    else
-        // Get the value for the sort column for each row
-        let rowsWithValues =
-            allRows
-            |> List.map (fun row ->
-                let addr = { Row = row; Col = col }
-                let value = getCellValue addr model
-                (row, value)
-            )
-
-        // Sort rows by their values in the sort column
-        let sortedRows =
-            if ascending then
-                rowsWithValues |> List.sortWith (fun (_, v1) (_, v2) -> compareCellValues v1 v2)
-            else
-                rowsWithValues |> List.sortWith (fun (_, v1) (_, v2) -> compareCellValues v2 v1)
-            |> List.map fst
-
-        // Create mapping from old row index to new row index
-        let rowMapping =
-            sortedRows
-            |> List.mapi (fun newIdx oldRow -> (oldRow, newIdx))
-            |> Map.ofList
-
-        // Rebuild cells with new row indices
-        let newCells =
+    let sorted = { model with SortState = Some { Column = col; Ascending = ascending } }
+    match dataBlockForColumn col model with
+    | None -> refreshFilterProjection sorted
+    | Some (firstRow, lastRow) ->
+        let rowCells =
             model.Cells
             |> Map.toList
-            |> List.map (fun (addr, cellData) ->
-                match Map.tryFind addr.Row rowMapping with
-                | Some newRow ->
-                    let newAddr = { addr with Row = newRow }
-                    (newAddr, cellData)
-                | None ->
-                    // Row not in sorted set, keep as is
-                    (addr, cellData)
-            )
-            |> Map.ofList
-
-        { model with
-            Cells = newCells
-            SortState = Some { Column = col; Ascending = ascending }
-        }
+            |> List.filter (fun (addr, _) -> addr.Row >= firstRow && addr.Row <= lastRow)
+        let isTable =
+            model.Tables |> List.exists (fun t -> t.StartRow - 1 = firstRow && col >= t.StartCol - 1 && col <= t.EndCol - 1 && t.HeaderRowCount > 0)
+        let headerCells = rowCells |> List.filter (fun (addr, cellData) -> addr.Row = firstRow && cellData.Value <> Empty)
+        let hasHeader =
+            lastRow > firstRow
+            && (isTable
+                || (not (List.isEmpty headerCells)
+                    && headerCells |> List.forall (fun (_, cellData) -> match cellData.Value with String _ -> true | _ -> false)))
+        let dataStart = if hasHeader then firstRow + 1 else firstRow
+        let isBlank row =
+            match getCellValue { Row = row; Col = col } model |> unwrapFormulaValue with
+            | Empty | String "" -> true
+            | _ -> false
+        let compareRows a b =
+            match isBlank a, isBlank b with
+            | true, true -> 0
+            | true, false -> 1
+            | false, true -> -1
+            | false, false ->
+                let va = getCellValue { Row = a; Col = col } model
+                let vb = getCellValue { Row = b; Col = col } model
+                if ascending then compareCellValues va vb else compareCellValues vb va
+        let order = [ dataStart .. lastRow ] |> List.sortWith compareRows
+        // order.[i] is the source row that lands on row dataStart + i.
+        let target = order |> List.mapi (fun i source -> source, dataStart + i) |> Map.ofList
+        let moveMap (items: Map<CellAddress, 'T>) (onMove: int -> 'T -> 'T) : Map<CellAddress, 'T> =
+            let moving, staying =
+                items |> Map.partition (fun addr _ -> addr.Row >= dataStart && addr.Row <= lastRow)
+            moving
+            |> Map.fold (fun acc addr value ->
+                let row = Map.find addr.Row target
+                Map.add { addr with Row = row } (onMove (row - addr.Row) value) acc) staying
+        let cells =
+            moveMap model.Cells (fun delta cellData ->
+                match cellData.Value with
+                | Formula (formula, cached) when delta <> 0 ->
+                    { cellData with Value = Formula (shiftFormulaReferences delta 0 formula, cached) }
+                | _ -> cellData)
+        { sorted with
+            Cells = cells
+            RichRuns = moveMap model.RichRuns (fun _ runs -> runs) }
         |> refreshFilterProjection
 
 /// Get unique values in a column (as strings for display)

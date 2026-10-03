@@ -383,6 +383,21 @@ type Spreadsheet(container: Element) =
         }
         model <- pushCommand command model
 
+    /// Sort the active sheet by a column as one undoable step, then
+    /// recalculate: rows moved, so every formula reading them is stale.
+    let sortActiveSheet (col: int) (ascending: bool) (description: string) =
+        let oldCells = model.Cells
+        let oldRichRuns = model.RichRuns
+        let oldSortState = model.SortState
+        model <- sortByColumn col ascending model
+        recalculateFormulas()
+        let command = {
+            Undo = fun m -> { restoreCellMap oldCells m with RichRuns = oldRichRuns; SortState = oldSortState }
+            Redo = fun m -> sortByColumn col ascending m
+            Description = description
+        }
+        model <- pushCommand command model
+
     let recalculateSingleCellEdit (addr: CellAddress) (cellData: CellData) =
         let wb = currentWorkbookSnapshot()
         let sheetCell = { Sheet = wb.ActiveSheet; Cell = addr }
@@ -873,19 +888,7 @@ type Spreadsheet(container: Element) =
                 | Some sortState when sortState.Column = col -> not sortState.Ascending
                 | _ -> true
 
-            // Capture old cells for undo
-            let oldCells = model.Cells
-            let oldSortState = model.SortState
-
-            model <- sortByColumn col ascending model
-
-            // Create undo command
-            let command = {
-                Undo = fun m -> { restoreCellMap oldCells m with SortState = oldSortState }
-                Redo = fun m -> sortByColumn col ascending m
-                Description = sprintf "Sort by column %s" (columnToLetter col)
-            }
-            model <- pushCommand command model
+            sortActiveSheet col ascending (sprintf "Sort by column %s" (columnToLetter col))
 
             render()
         )
@@ -3150,53 +3153,15 @@ type Spreadsheet(container: Element) =
 
     /// Sort current column ascending
     member _.SortCurrentColumnAsc() =
-        invalidateCalcEngine()
-        match model.Selection with
-        | SingleCell (_, col) ->
-            let oldCells = model.Cells
-            model <- sortByColumn col true model
-            let command = {
-                Undo = fun m -> restoreCellMap oldCells m
-                Redo = fun m -> sortByColumn col true m
-                Description = sprintf "Sort %s ascending" (columnToLetter col)
-            }
-            model <- pushCommand command model
-            render()
-        | Range (_, startCol, _, _) ->
-            let oldCells = model.Cells
-            model <- sortByColumn startCol true model
-            let command = {
-                Undo = fun m -> restoreCellMap oldCells m
-                Redo = fun m -> sortByColumn startCol true m
-                Description = sprintf "Sort %s ascending" (columnToLetter startCol)
-            }
-            model <- pushCommand command model
-            render()
+        let col = match model.Selection with SingleCell (_, col) -> col | Range (_, startCol, _, _) -> startCol
+        sortActiveSheet col true (sprintf "Sort %s ascending" (columnToLetter col))
+        render()
 
     /// Sort current column descending
     member _.SortCurrentColumnDesc() =
-        invalidateCalcEngine()
-        match model.Selection with
-        | SingleCell (_, col) ->
-            let oldCells = model.Cells
-            model <- sortByColumn col false model
-            let command = {
-                Undo = fun m -> restoreCellMap oldCells m
-                Redo = fun m -> sortByColumn col false m
-                Description = sprintf "Sort %s descending" (columnToLetter col)
-            }
-            model <- pushCommand command model
-            render()
-        | Range (_, startCol, _, _) ->
-            let oldCells = model.Cells
-            model <- sortByColumn startCol false model
-            let command = {
-                Undo = fun m -> restoreCellMap oldCells m
-                Redo = fun m -> sortByColumn startCol false m
-                Description = sprintf "Sort %s descending" (columnToLetter startCol)
-            }
-            model <- pushCommand command model
-            render()
+        let col = match model.Selection with SingleCell (_, col) -> col | Range (_, startCol, _, _) -> startCol
+        sortActiveSheet col false (sprintf "Sort %s descending" (columnToLetter col))
+        render()
 
     /// Cut selection to clipboard
     member _.Cut() =
