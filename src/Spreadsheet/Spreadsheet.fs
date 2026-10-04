@@ -101,6 +101,12 @@ let private canvasLine (ctx: obj) (x1: float) (y1: float) (x2: float) (y2: float
 [<Emit("(function(text,fontSize,fontName,bold,italic){const c=globalThis.__rbSpreadsheetMeasureCanvas||(globalThis.__rbSpreadsheetMeasureCanvas=document.createElement('canvas'));const ctx=c.getContext('2d');const family=fontName||'Arial';ctx.font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px '+family+', sans-serif';return ctx.measureText(text).width;})($0,$1,$2,$3,$4)")>]
 let private browserTextWidth (text: string) (fontSize: float) (fontName: string) (bold: bool) (italic: bool): float = jsNative
 
+// The width of a cell's text in the grid's own font (Arial at the cell's
+// size). Widths are remembered: the cells of a sheet repeat their texts, and
+// setting a canvas font costs more than measuring with it.
+[<Emit("(function(text,fontSize,bold,italic){const g=globalThis.__rbSpreadsheetCellMeasure||(globalThis.__rbSpreadsheetCellMeasure={ctx:document.createElement('canvas').getContext('2d'),font:'',widths:new Map()});const font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px Arial, sans-serif';const key=font+'|'+text;let width=g.widths.get(key);if(width===undefined){if(g.font!==font){g.ctx.font=font;g.font=font;}width=g.ctx.measureText(text).width;if(g.widths.size>20000)g.widths.clear();g.widths.set(key,width);}return width;})($0,$1,$2,$3)")>]
+let private cellTextWidth (text: string) (fontSize: float) (bold: bool) (italic: bool): float = jsNative
+
 [<Emit("$0.fillStyle = $5; $0.font = ($6 ? 'bold ' : '') + ($7 ? 'italic ' : '') + $4 + 'px ' + $9 + ', sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = $8; $0.fillText($1, $2, $3)")>]
 let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize: float) (color: string) (bold: bool) (italic: bool) (align: string) (fontName: string): unit = jsNative
 
@@ -1939,7 +1945,7 @@ type Spreadsheet(container: Element) =
         let fontPx = match cellData with Some data -> float (defaultArg data.Format.FontSize 11) | None -> 11.0
         let measureText (text: string) =
             match cellData with
-            | Some data -> browserTextWidth text fontPx "Arial" data.Format.Bold data.Format.Italic
+            | Some data -> cellTextWidth text fontPx data.Format.Bold data.Format.Italic
             | None -> 0.0
         let displayText =
             match cellData with
