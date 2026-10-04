@@ -3633,6 +3633,47 @@ let arithmeticArrayNonBlankCount model workbook e =
             (match rangeShape right with ValueSome shape -> ValueSome shape | ValueNone -> scalarShape right)
     | _ -> ValueNone
 
+/// Take a root that an iteration accepted (|f| small) the rest of the way:
+/// Newton steps until the rate stops moving. IRR accepted a rate as soon as
+/// the net present value was below 1e-8, which leaves the rate itself off in
+/// its 13th digit; Excel's result is the converged one.
+let private polishRoot (f: float -> float) (start: float) : float =
+    let mutable r = start
+    let mutable best = abs (f start)
+    let mutable i = 0
+    let mutable moving = true
+    while moving && i < 40 do
+        let h = 1e-6 * max 1.0 (abs r)
+        let value = f r
+        let slope = (f (r + h) - f (r - h)) / (2.0 * h)
+        if slope = 0.0 || Double.IsNaN slope || Double.IsNaN value then moving <- false
+        else
+            let next = r - value / slope
+            if Double.IsNaN next || Double.IsInfinity next then moving <- false
+            else
+                let residual = abs (f next)
+                // Stop when the step no longer changes the rate, or no longer improves the residual.
+                if abs (next - r) <= 1e-16 * max 1.0 (abs next) then
+                    (if residual <= best then r <- next)
+                    moving <- false
+                elif residual > best then moving <- false
+                else
+                    best <- residual
+                    r <- next
+        i <- i + 1
+    r
+
+/// (1 + rate) ^ periods for the time-value-of-money functions. For a whole
+/// number of periods Excel compounds period by period (repeated
+/// multiplication), which differs from pow() in the last digit.
+let private compound (rate: float) (periods: float) : float =
+    if periods >= 0.0 && periods <= 1200.0 && periods = Math.Floor periods then
+        let mutable factor = 1.0
+        for _ in 1 .. int periods do
+            factor <- factor * (1.0 + rate)
+        factor
+    else (1.0 + rate) ** periods
+
 /// Apply a prefix/postfix unary operator to one value (shared by scalar eval
 /// and element-wise array broadcasting).
 let applyUnary (op: string) (v: CellValue) : CellValue =
@@ -9785,7 +9826,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     let mutable i = 0
                     while result.IsNone && i < 80 do
                         let f = npv r
-                        if abs f < 1e-8 then result <- Some r
+                        if abs f < 1e-8 then result <- Some (polishRoot npv r)
                         else
                             let d = (npv (r + 1e-6) - f) / 1e-6
                             if abs d < 1e-14 then i <- 80 else r <- r - f / d
@@ -11306,7 +11347,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let pv = if nargs >= 4 then (match argNum 3 with Ok v -> v | _ -> 0.0) else 0.0
             let ty = if nargs >= 5 then (match argNum 4 with Ok v -> v | _ -> 0.0) else 0.0
             if r = 0.0 then CellValue.Number (-(pv + pmt * np))
-            else (let p = (1.0 + r) ** np in CellValue.Number (-(pv * p + pmt * (1.0 + r * ty) * (p - 1.0) / r)))
+            else (let p = compound r np in CellValue.Number (-(pv * p + pmt * (1.0 + r * ty) * ((p - 1.0) / r))))
     | "PV" ->
         if nargs < 3 then err Err.value else
         match argNum 0, argNum 1, argNum 2 with
@@ -11379,7 +11420,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 let mutable i = 0
                 while result.IsNone && i < 80 do
                     let f = npv r
-                    if abs f < 1e-8 then result <- Some r
+                    if abs f < 1e-8 then result <- Some (polishRoot npv r)
                     else
                         let d = (npv (r + 1e-6) - f) / 1e-6
                         if abs d < 1e-14 then i <- 80 else r <- r - f / d

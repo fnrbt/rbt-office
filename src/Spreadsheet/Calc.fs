@@ -30,6 +30,20 @@ type CalcMetadata = {
     ParsedFormula: Expr option
 }
 
+/// What in a workbook the incremental engine cannot calculate by itself:
+/// formulas that spill (dynamic arrays, legacy array formulas), which need the
+/// spill pass, and formulas whose precedents the dependency graph does not
+/// know (3-D references, references to a spill range `A1#`).
+type PipelineNeeds = {
+    /// A formula spills, or a sheet holds spilled cells.
+    Spills: bool
+    /// A formula reads through a 3-D reference or a spill-range reference, or
+    /// a spilling formula has not been calculated yet.
+    UntrackedPrecedents: bool
+    /// A formula has no value yet (a workbook that was never calculated).
+    Uncalculated: bool
+}
+
 /// Calculation engine state.
 type CalcEngine = {
     /// Metadata for each formula cell, across every sheet.
@@ -40,6 +54,9 @@ type CalcEngine = {
     CalcChain: SheetCell list
     /// Cells marked dirty (need recalculation).
     DirtySet: Set<SheetCell>
+    /// What `trySingleCellEdit` found the workbook to need, remembered across
+    /// incremental edits (which cannot change it); None until first asked.
+    Needs: PipelineNeeds option
 }
 
 /// Result of a guarded incremental single-cell recalculation attempt.
@@ -60,6 +77,7 @@ let emptyEngine = {
     VolatileCells = Set.empty
     CalcChain = []
     DirtySet = Set.empty
+    Needs = None
 }
 
 let private exprUsesSpillRef (expr: Expr) =
@@ -369,25 +387,6 @@ let buildEngine (workbook: Workbook): CalcEngine =
             | _ -> ()))
     rebuildCalcChain workbook engine
 
-let private workbookHasSpillOrArrayFormula (workbook: Workbook) =
-    let mutable found = false
-    let formulaNeedsFullPipeline formula =
-        match parseFormula formula with
-        | Ok expr -> exprSpillsStatically expr || exprUsesSpillRef expr || containsThreeDReference expr
-        | Result.Error _ -> false
-    for KeyValue(_, sheet) in workbook.Sheets do
-        if not found then
-            if not (Map.isEmpty sheet.Model.Spill) then
-                found <- true
-            else
-                for KeyValue(_, cell) in sheet.Model.Cells do
-                    if not found then
-                        match cell.Value with
-                        | CellValue.Formula (formula, _) when formulaNeedsFullPipeline formula ->
-                            found <- true
-                        | _ -> ()
-    found
-
 let private cellDataNeedsFullPipeline (cellData: CellData) =
     match cellData.Value with
     | CellValue.Formula (formula, _) ->
@@ -585,15 +584,63 @@ let updateCell (cell: SheetCell) (value: CellValue) (cellData: CellData)
             else dirtyEngine
         (newWorkbook, finalEngine)
 
+let private pipelineNeeds (workbook: Workbook) : PipelineNeeds =
+    let mutable spills = false
+    let mutable untracked = false
+    let mutable uncalculated = false
+    for KeyValue(_, sheet) in workbook.Sheets do
+        if not (Map.isEmpty sheet.Model.Spill) then spills <- true
+        if not untracked then
+            for KeyValue(_, cell) in sheet.Model.Cells do
+                if not untracked then
+                    match cell.Value with
+                    | CellValue.Formula (formula, cached) ->
+                        if cached = CellValue.Empty then uncalculated <- true
+                        match parseFormula formula with
+                        | Ok expr ->
+                            if exprSpillsStatically expr then
+                                spills <- true
+                                // A spilling formula that was never calculated has no
+                                // spill range yet: the full pipeline has to run first.
+                                (match cell.Value with
+                                 | CellValue.Formula (_, CellValue.Empty) -> untracked <- true
+                                 | _ -> ())
+                            if exprUsesSpillRef expr || containsThreeDReference expr then
+                                spills <- true
+                                untracked <- true
+                        | Result.Error _ -> ()
+                    | _ -> ()
+    { Spills = spills; UntrackedPrecedents = untracked; Uncalculated = uncalculated }
+
 /// Safely apply a plain single-cell edit through the incremental engine.
-/// Workbooks that require the dynamic-array/spill pipeline, produce a circular
-/// calculation chain, or hit any engine exception are rejected so callers can
-/// use the existing full recalculation path.
+/// An edit is rejected - so that the caller runs the full recalculation -
+/// when it produces a circular calculation chain, hits an engine exception,
+/// or needs the dynamic-array / spill pipeline: the entered formula spills,
+/// the workbook has formulas whose precedents the graph does not track, or
+/// the edit touches a spill range or reaches a spilling formula through its
+/// dependents. A workbook that merely contains a spilling or array formula
+/// somewhere else is edited incrementally.
 let trySingleCellEdit (cell: SheetCell) (cellData: CellData)
                       (workbook: Workbook) (engine: CalcEngine option): IncrementalRecalcResult =
     try
-        if workbookHasSpillOrArrayFormula workbook || cellDataNeedsFullPipeline cellData then
-            IncrementalFallback "spill or array formula present"
+        // Scanning every formula is done once per engine: incremental edits
+        // cannot add a spilling formula (that is a fallback) or change a spill range.
+        let needs =
+            match engine with
+            | Some { Needs = Some known } -> known
+            | _ -> pipelineNeeds workbook
+        let isGhost (target: SheetCell) =
+            match sheetModel target.Sheet workbook with
+            | Some model -> Map.containsKey target.Cell model.Spill
+            | None -> false
+        let clearsCell = (match cellData.Value with CellValue.Empty -> true | _ -> false)
+        if cellDataNeedsFullPipeline cellData then
+            IncrementalFallback "spill or array formula entered"
+        elif needs.UntrackedPrecedents then
+            IncrementalFallback "3-D or spill-range references, or an uncalculated array formula, present"
+        elif needs.Spills && (isGhost cell || clearsCell) then
+            // Typing over a spilled cell blocks the spill; emptying a cell may unblock one.
+            IncrementalFallback "edit inside a spill range"
         else
             let engine =
                 match engine with
@@ -611,12 +658,32 @@ let trySingleCellEdit (cell: SheetCell) (cellData: CellData)
                         | CellValue.Formula _ -> formulaCells <- formulaCells + 1
                         | _ -> ()))
                 formulaCells > 0 && List.isEmpty updatedEngine.CalcChain
-            if hasCircularRef then
+            // The cells this edit makes stale (and the volatile ones, which are
+            // recalculated on every pass): none of them may be a spilling formula.
+            let reachesSpill () =
+                let spillsAt (target: SheetCell) =
+                    isGhost target
+                    || (match Map.tryFind target updatedEngine.Metadata with
+                        | Some metadata ->
+                            (match metadata.ParsedFormula with
+                             | Some expr -> exprSpillsStatically expr
+                             | None -> false)
+                        | None -> false)
+                Set.exists spillsAt updatedEngine.DirtySet || Set.exists spillsAt updatedEngine.VolatileCells
+            // Nothing reads the edited cell: there is nothing to recalculate,
+            // whatever else the workbook holds (a circular chain included).
+            let nothingDependsOnIt =
+                Set.forall (fun dirty -> dirty = cell) updatedEngine.DirtySet && Set.isEmpty updatedEngine.VolatileCells
+            if hasCircularRef && nothingDependsOnIt && not needs.Uncalculated then
+                IncrementalApplied (updatedWorkbook, { updatedEngine with DirtySet = Set.empty; Needs = Some needs })
+            elif hasCircularRef then
                 IncrementalFallback "circular reference"
+            elif needs.Spills && reachesSpill () then
+                IncrementalFallback "edit reaches a spill or array formula"
             else
                 let recalculatedWorkbook, recalculatedEngine =
                     smartRecalculate updatedWorkbook updatedEngine
-                IncrementalApplied (recalculatedWorkbook, recalculatedEngine)
+                IncrementalApplied (recalculatedWorkbook, { recalculatedEngine with Needs = Some needs })
     with ex ->
         IncrementalFallback ex.Message
 

@@ -255,6 +255,50 @@ let spillFallback =
         (oneSheetWb spillInitial)
 ok "incremental-spill-fallback" spillFallback "array formula should force full recalc"
 
+// A workbook that has a calculated spilling formula is still edited
+// incrementally, as long as the edit cannot reach the spill: the edited cell
+// is not one the formula reads, not inside its spill range, and not emptied.
+let spillCalculated =
+    // A1 = SEQUENCE(3,1) spilling A1:A3 from C1; D1 = C1*2; E5 = SUM(A1:A3); B1..B3 plain.
+    { createEmpty 20 8 with
+        Cells =
+            Map.ofList
+                [ { Row = 0; Col = 0 }, cform "=SEQUENCE(3,1,C1)"
+                  { Row = 0; Col = 2 }, cnum 1.0
+                  { Row = 0; Col = 3 }, cform "=C1*2"
+                  { Row = 4; Col = 4 }, cform "=SUM(A1:A3)"
+                  { Row = 0; Col = 6 }, cnum 5.0
+                  { Row = 1; Col = 6 }, cform "=G1+1" ] }
+    |> recalcAndSpill None None
+ok "spill-calculated-precondition" (spillCalculated.Spill.Count = 2 && getCellValue { Row = 2; Col = 0 } spillCalculated = CellValue.Number 3.0)
+   (sprintf "spill=%A" spillCalculated.Spill)
+let editOutcome (addr: CellAddress) (cd: CellData) =
+    match trySingleCellEdit { Sheet = "s1"; Cell = addr } cd (oneSheetWb spillCalculated) None with
+    | IncrementalApplied _ -> "incremental"
+    | IncrementalFallback reason -> "fallback: " + reason
+ok "incremental-unrelated-edit-with-spill-present" (editOutcome { Row = 0; Col = 6 } (cnum 9.0) = "incremental") (editOutcome { Row = 0; Col = 6 } (cnum 9.0))
+ok "incremental-new-cell-with-spill-present" (editOutcome { Row = 10; Col = 5 } (cell (CellValue.String "note")) = "incremental") (editOutcome { Row = 10; Col = 5 } (cell (CellValue.String "note")))
+ok "incremental-plain-formula-with-spill-present" (editOutcome { Row = 10; Col = 5 } (cform "=G1*3") = "incremental") (editOutcome { Row = 10; Col = 5 } (cform "=G1*3"))
+ok "fallback-edit-feeds-spill" ((editOutcome { Row = 0; Col = 2 } (cnum 4.0)).StartsWith "fallback") (editOutcome { Row = 0; Col = 2 } (cnum 4.0))
+ok "fallback-edit-inside-spill-range" ((editOutcome { Row = 1; Col = 0 } (cnum 4.0)).StartsWith "fallback") (editOutcome { Row = 1; Col = 0 } (cnum 4.0))
+ok "fallback-emptying-a-cell" ((editOutcome { Row = 0; Col = 6 } (cell CellValue.Empty)).StartsWith "fallback") (editOutcome { Row = 0; Col = 6 } (cell CellValue.Empty))
+ok "fallback-entering-a-spill-formula" ((editOutcome { Row = 10; Col = 5 } (cform "=SEQUENCE(2)")).StartsWith "fallback") (editOutcome { Row = 10; Col = 5 } (cform "=SEQUENCE(2)"))
+// The incremental results equal the full pipeline's, edit after edit.
+let spillEquivalent =
+    assertEquivalent "incremental-equiv-with-spill-present"
+        [ { Row = 0; Col = 6 }, cnum 9.0
+          { Row = 10; Col = 5 }, cform "=G2*3"
+          { Row = 0; Col = 6 }, cnum 11.0 ]
+        (oneSheetWb spillCalculated)
+ok "incremental-with-spill-no-fallback" (not spillEquivalent) "edits away from the spill should stay incremental"
+// And one that does reach the spill falls back and still agrees.
+let spillReached =
+    assertEquivalent "incremental-equiv-edit-feeds-spill"
+        [ { Row = 0; Col = 6 }, cnum 9.0
+          { Row = 0; Col = 2 }, cnum 4.0 ]
+        (oneSheetWb spillCalculated)
+ok "incremental-feeding-spill-falls-back" spillReached "an edit read by the spill formula must use the full pipeline"
+
 let circularInitial =
     { createEmpty 20 5 with
         Cells =
@@ -315,6 +359,23 @@ let plusIncremental, _ = smartRecalculate plusEdited plusEngine1
 ok "unary-plus-text-incremental" (readWb plusA1 plusIncremental = CellValue.String "Suites:") (sprintf "A1 = %A" (readWb plusA1 plusIncremental))
 ok "unary-plus-text-xsheet-incremental" (readWb plusOther plusIncremental = CellValue.String "Suites:") (sprintf "Other!A1 = %A" (readWb plusOther plusIncremental))
 ok "unary-minus-text-incremental" (readWb plusA3 plusIncremental = CellValue.Error "VALUE!") (sprintf "A3 = %A" (readWb plusA3 plusIncremental))
+
+// In a workbook with a circular chain, an edit nothing reads needs no
+// recalculation; one that feeds the cycle still takes the full path.
+let cyclicWb =
+    oneSheetWb
+        { createEmpty 20 8 with
+            Cells =
+                Map.ofList
+                    [ { Row = 0; Col = 0 }, cell (CellValue.Formula ("=B1+C1", CellValue.Number 0.0))
+                      { Row = 0; Col = 1 }, cell (CellValue.Formula ("=A1", CellValue.Number 0.0))
+                      { Row = 0; Col = 2 }, cnum 1.0 ] }
+let cyclicOutcome (addr: CellAddress) (cd: CellData) =
+    match trySingleCellEdit { Sheet = "s1"; Cell = addr } cd cyclicWb None with
+    | IncrementalApplied (wb, _) -> "incremental", (activeModelOf wb).Cells |> Map.tryFind addr |> Option.map (fun c -> c.Value)
+    | IncrementalFallback reason -> "fallback: " + reason, None
+ok "cyclic-unread-edit-is-incremental" (cyclicOutcome { Row = 5; Col = 5 } (cnum 7.0) = ("incremental", Some (CellValue.Number 7.0))) (sprintf "%A" (cyclicOutcome { Row = 5; Col = 5 } (cnum 7.0)))
+ok "cyclic-edit-feeding-the-cycle-falls-back" ((fst (cyclicOutcome { Row = 0; Col = 2 } (cnum 2.0))).StartsWith "fallback") (sprintf "%A" (cyclicOutcome { Row = 0; Col = 2 } (cnum 2.0)))
 
 printfn ""
 printfn "Stage 5 calc-engine tests: %d passed, %d failed" pass fail

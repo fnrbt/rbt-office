@@ -426,3 +426,42 @@ checks['drawings-in-grid'] = async () => {
     }
     return lines;
 };
+
+// An edit nothing depends on recalculates nothing: every cached value of the file is
+// exported as it was (the incremental engine handles it, also in a workbook that has
+// an array formula).
+checks['edit-without-dependents'] = async () => {
+    const { lines, check, note } = makeLog();
+    for (const file of ['tests/real-world/milk-street-office.xlsx', 'tests/real-world/saopaulo-condos.xlsx']) {
+        const short = file.split('/').pop();
+        const { grid, close } = mountGrid();
+        try {
+            const original = await bytesOf(file);
+            await grid.ImportXlsx(original.slice());
+            const before = describeWorkbook(await excel.load(original.slice()));
+            const active = grid.GetActiveSheetIndex();
+            const freeCol = Math.max(0, ...before[active].cells.map((c) => c[1])) + 3;
+            const started = performance.now();
+            grid.SetCell(0, freeCol, 'a note'); grid.SetCell(1, freeCol, '42'); grid.SetCell(2, freeCol, '=1+1');
+            const elapsed = performance.now() - started;
+            const after = describeWorkbook(await excel.load((await grid.ExportXlsx()).slice()));
+            let formulas = 0;
+            const changed = [];
+            // Volatile formulas are recalculated on every pass, whatever was edited.
+            const volatile = /\b(TODAY|NOW|RAND|RANDBETWEEN|OFFSET|INDIRECT|CELL|INFO)\(/i;
+            before.forEach((sheet, index) => {
+                const saved = new Map(after[index].cells.map((c) => [c[0] + ':' + c[1], c]));
+                for (const c of sheet.cells) {
+                    if (c[3] == null || volatile.test(c[3])) continue;
+                    formulas++;
+                    const now = saved.get(c[0] + ':' + c[1]);
+                    if (!now || !Object.is(now[2], c[2]) || now[4] !== c[4]) changed.push(`${sheet.name}!${c[0]},${c[1]} ${c[3].slice(0, 60)}: ${c[2]} -> ${now && now[2]}`);
+                }
+            });
+            check(`${short}: none of ${formulas} cached formula values changed`, changed.slice(0, 3), []);
+            note(`${short}: three edits took ${Math.round(elapsed)} ms`);
+        } catch (e) { lines.push(`FAIL ${short} threw ` + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+        close();
+    }
+    return lines;
+};

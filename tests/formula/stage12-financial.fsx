@@ -33,6 +33,34 @@ approx  "sln"   "=SLN(10000,1000,5)"       1800.0
 // round-trip: PV of the payment stream recovers the principal (positive)
 approxT "pmt-roundtrip" "=PV(0.1/12,60,PMT(0.1/12,60,10000))" 10000.0 1e-4
 
+// Last-digit agreement with Excel (values Excel cached in
+// tests/real-world/milk-street-office.xlsx).
+let exact label f (expected: float) =
+    match ev f with
+    | CellValue.Number g when g = expected -> pass <- pass + 1
+    | got -> fail <- fail + 1; printfn "FAIL %-20s %-50s expected %s got %s" label f (expected.ToString "R") (match got with CellValue.Number g -> g.ToString "R" | other -> sprintf "%A" other)
+// FV compounds a whole number of periods by multiplication and divides (factor - 1) by the rate first.
+exact "fv-excel-digits"   "=-0.03*FV(0.025,5,-730662.5893421534)*0.6" -69130.84686587189
+exact "fv-whole-periods"  "=FV(0.025,5,-730662.5893421534)" 3840602.60365955
+approx "fv-fraction-periods" "=FV(0.05,2.5,-100)" ((1.05 ** 2.5 - 1.0) / 0.05 * 100.0)
+approx "fv-zero-rate"     "=FV(0,10,-100,-50)" 1050.0
+approx "fv-with-pv-type"  "=FV(0.06/12,10,-200,-500,1)" 2581.4033740601
+// IRR converges on the rate itself, not merely on a small net present value:
+// with small cash flows the old test (|NPV| < 1e-8) stopped far from the root.
+let irrModel =
+    { createEmpty 100 26 with
+        Cells = [ -0.001; 0.0012; -100.0; 50.0; 60.0; -632835.0; 0.0; 0.0; -33539.42392; 3222649.874 ] |> List.mapi (fun i v -> { Row = i; Col = 1 }, cell (CellValue.Number v)) |> Map.ofList }
+let irrOf f = match evaluateFormula f irrModel None with CellValue.Number g -> g | other -> failwithf "%s -> %A" f other
+let near label (got: float) (expected: float) (tol: float) =
+    if abs (got - expected) <= tol then pass <- pass + 1
+    else fail <- fail + 1; printfn "FAIL %-20s expected %s got %s" label (expected.ToString "R") (got.ToString "R")
+near "irr-small-cash-flows" (irrOf "=IRR(B1:B2)") 0.2 1e-14
+near "irr-three-flows"      (irrOf "=IRR(B3:B5)") 0.06394102980498537 1e-14
+let rate = irrOf "=IRR(B6:B10)"
+let residual = [ -632835.0; 0.0; 0.0; -33539.42392; 3222649.874 ] |> List.mapi (fun i v -> v / ((1.0 + rate) ** float i)) |> List.sum
+near "irr-converged-residual" residual 0.0 1e-8
+near "irr-five-flows" rate 0.4963271306250475 1e-13
+
 printfn ""
 printfn "Stage 12 financial tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

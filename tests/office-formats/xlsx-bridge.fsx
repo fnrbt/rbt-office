@@ -244,6 +244,43 @@ let picturedBack = reread (Bridge.Export.toWorkbookOut { Sheets = [| pictured |]
 eq "fresh: picture and thread written" (picturedBack.Sheets.[0].Extras.Images |> List.map (fun image -> image.Data.Length, image.Anchor.FromRow), picturedBack.Sheets.[0].Extras.ThreadedComments |> List.map (fun thread -> thread.Author, thread.Text))
     ([ 8, 2 ], [ Some "New Author", "typed here" ])
 
+// ---- recalculation of an Excel-calculated workbook ---------------------------
+// (milk-street-office.xlsx: 13,337 formulas, one legacy array formula.)
+module Calc = Rbt.Spreadsheet.Calc
+let cachedValues (workbook: Wb.Workbook) =
+    [ for KeyValue(id, sheet) in workbook.Sheets do
+        for KeyValue(address, data) in sheet.Model.Cells do
+            match data.Value with
+            | CellValue.Formula (_, cached) -> yield (id, address), cached
+            | _ -> () ]
+    |> Map.ofList
+let cachedBefore = cachedValues imported.Context
+// An edit nothing depends on is applied incrementally and changes no other value.
+let freeCell : Wb.SheetCell = { Sheet = imported.Context.ActiveSheet; Cell = addr 0 60 }
+match Calc.trySingleCellEdit freeCell { Value = CellValue.String "x"; Format = defaultFormat; Comment = None } imported.Context None with
+| Calc.IncrementalFallback reason -> ok "an edit without dependents is incremental" false reason
+| Calc.IncrementalApplied (edited, _) ->
+    ok "an edit without dependents is incremental" true ""
+    eq "and changes no cached value" (cachedValues edited |> Map.filter (fun key value -> Map.tryFind key cachedBefore <> Some value) |> Map.count) 0
+// A full recalculation agrees with Excel's cached values to the last digits.
+let recalculated = cachedValues (Rbt.Spreadsheet.Formula.recalculateWorkbook imported.Context)
+let differing =
+    cachedBefore
+    |> Map.toList
+    |> List.choose (fun (key, before) -> match Map.tryFind key recalculated with | Some after when after <> before -> Some (key, before, after) | _ -> None)
+let relative (a: CellValue) (b: CellValue) = match a, b with | CellValue.Number x, CellValue.Number y when x <> 0.0 -> abs ((x - y) / x) | _ -> infinity
+eq "full recalculation: nothing differs beyond the 13th digit" (differing |> List.filter (fun (_, a, b) -> not (relative a b < 1e-12)) |> List.map (fun ((sheet, cell), a, b) -> sheet, cell.Row, cell.Col, a, b) |> List.truncate 3) []
+ok "full recalculation: at most 40 of 13,337 values differ in their last digits" (differing.Length <= 40) (sprintf "%d differ" differing.Length)
+// The legacy array formula {=TRANSPOSE(C71:C73)} in F94:H94 is recalculated, not blocked by its own cells.
+let arrayAnchor = imported.Sheets.[0].Model.Cells |> Map.tryPick (fun address data -> match data.Value with CellValue.Formula (text, _) when text.StartsWith "TRANSPOSE" -> Some address | _ -> None)
+match arrayAnchor with
+| None -> ok "array formula found" false "no TRANSPOSE formula on the first sheet"
+| Some anchor ->
+    let sheetId = Bridge.sheetIdOfIndex 0
+    eq "array formula: its other cells belong to it" (imported.Sheets.[0].Model.Spill |> Map.toList |> List.filter (fun (_, owner) -> owner = anchor) |> List.map (fun (ghost, _) -> ghost.Row - anchor.Row, ghost.Col - anchor.Col)) [ 0, 1; 0, 2 ]
+    eq "array formula: same values after a full recalculation" ([ 0; 1; 2 ] |> List.map (fun offset -> Map.tryFind (sheetId, addr anchor.Row (anchor.Col + offset)) recalculated |> Option.orElse (getCell (addr anchor.Row (anchor.Col + offset)) (Rbt.Spreadsheet.Formula.recalculateWorkbook imported.Context).Sheets.[sheetId].Model |> Option.map (fun data -> data.Value))) |> List.map (function Some (CellValue.Error e) -> "error " + e | Some _ -> "value" | None -> "missing")) [ "value"; "value"; "value" ]
+    eq "array formula: anchor keeps Excel's value" (Map.tryFind (sheetId, anchor) recalculated) (Map.tryFind (sheetId, anchor) cachedBefore)
+
 // ---- import options ----------------------------------------------------------
 let roomy = Bridge.Import.importWorkbookWith Bridge.editorImportOptions wb
 ok "editor options leave room to grow" (roomy.Sheets.[0].Model.RowCount >= imported.Sheets.[0].Model.RowCount + 100 && roomy.Sheets.[0].Model.ColCount >= imported.Sheets.[0].Model.ColCount + 20) "model is not larger"

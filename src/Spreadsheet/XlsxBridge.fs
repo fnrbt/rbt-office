@@ -663,11 +663,24 @@ module Import =
 
         let mutable cellMap = Map.empty<CellAddress, CellData>
         let mutable richRuns = Map.empty<CellAddress, (string * RunOverride) list>
+        // The other cells of a legacy array formula (<f t="array" ref="F94:H94">)
+        // hold results the anchor's formula spilled there: they belong to the
+        // anchor, so a recalculation spills over them again instead of finding
+        // them in its way (#SPILL!).
+        let mutable spill = Map.empty<CellAddress, CellAddress>
         for row in sheet.Rows do
             for cell in row.Cells do
                 let r = cell.Reference.Row - 1
                 let c = columnIndexOfLetters cell.Reference.Column
                 if r >= 0 && c >= 0 then
+                    match cell.Formula, cell.ArrayRef |> Option.bind parsePlainRange with
+                    | Some _, Some (sr, sc, er, ec) when (er > sr || ec > sc) && (er - sr + 1) * (ec - sc + 1) <= 100000 ->
+                        let anchor : CellAddress = { Row = r; Col = c }
+                        for ghostRow in sr .. er do
+                            for ghostCol in sc .. ec do
+                                if ghostRow <> r || ghostCol <> c then
+                                    spill <- Map.add { Row = ghostRow; Col = ghostCol } anchor spill
+                    | _ -> ()
                     let value = cellValue wb cell
                     let baseFormat = styleFormat cell
                     let hasComment = commentCells.Contains((r, c))
@@ -802,7 +815,8 @@ module Import =
                 ConditionalFormats = conditionalFormats wb sheet
                 PageSetup = pageSetup sheet
                 Drawings = drawingsOfExtras sheet.Extras
-                Threads = threads }
+                Threads = threads
+                Spill = spill }
         { Model = model
           PendingLists = pendingLists
           TableColumns = tableColumns
