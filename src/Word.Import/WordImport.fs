@@ -894,11 +894,19 @@ let private pageSetup (doc: DocxReader.WordDocument) =
             SectionStart = setup.SectionStart
         }
 
-let private headerFooterPart resolver images styleMap comments notes (item: DocxReader.HeaderFooter) =
+/// A header / footer part with its blocks in order. It used to be built from
+/// HeaderFooter.Content, the part's paragraphs with every table flattened, so
+/// a header laid out with a table (logo left, address right) came out as a
+/// column of loose paragraphs.
+let private headerFooterPart resolver images styleMap tableStyleMap comments notes (item: DocxReader.HeaderFooter) =
     {
         Kind = item.Type
         RelationshipId = item.RelationshipId
-        Blocks = item.Content |> List.map (mkPara resolver images styleMap comments notes true false >> Paragraph)
+        Blocks =
+            item.Blocks
+            |> List.map (function
+                | DocxReader.Para para -> Paragraph (mkPara resolver images styleMap comments notes true false para)
+                | DocxReader.Tbl table -> Table (tableBlock resolver images styleMap tableStyleMap comments notes table))
     }
 
 let importDoc (doc: DocxReader.WordDocument) =
@@ -1010,8 +1018,8 @@ let importDoc (doc: DocxReader.WordDocument) =
             | Table table -> table.Rows |> List.tryPick (fun row -> row.Cells |> List.tryPick (fun cell -> cell.Content |> List.tryHead))
             | TextBox textBox -> textBox.Content |> List.tryHead)
 
-    let headerParts = doc.Headers |> List.map (headerFooterPart resolver doc.Images styleMap comments notes)
-    let footerParts = doc.Footers |> List.map (headerFooterPart resolver doc.Images styleMap comments notes)
+    let headerParts = doc.Headers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes)
+    let footerParts = doc.Footers |> List.map (headerFooterPart resolver doc.Images styleMap tableStyleMap comments notes)
 
     {
         Blocks = blocks

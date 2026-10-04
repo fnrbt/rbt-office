@@ -269,5 +269,25 @@ check "native comment body"
     (notesNativeDoc.Package.Comments |> List.map (fun comment -> comment.Id, comment.Author, comment.Initials, comment.Text, comment.Blocks |> List.map blockKind))
     [ "5", Some "Ann", Some "A", "remark", [ "Paragraph" ] ]
 
+// ----- header / footer tables stay tables ----------------------------------
+let headerTableDoc =
+    importPackage
+        """<w:p><w:r><w:t>body</w:t></w:r></w:p><w:sectPr><w:headerReference w:type="default" r:id="rId7"/><w:footerReference w:type="default" r:id="rId8"/></w:sectPr>"""
+        [ "word/_rels/document.xml.rels",
+          """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId7" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rId8" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>"""
+          "word/header1.xml",
+          sprintf """<w:hdr %s><w:p><w:r><w:t>above</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>logo</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>address</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:t>below</w:t></w:r></w:p></w:hdr>""" wNsAll
+          "word/footer1.xml",
+          sprintf """<w:ftr %s><w:tbl><w:tr><w:tc><w:p><w:r><w:t>page</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p/></w:ftr>""" wNsAll ]
+check "native header keeps its table" (headerTableDoc.HeaderParts |> List.map (fun part -> part.Kind, part.Blocks |> List.map blockKind)) [ "default", [ "Paragraph"; "Table"; "Paragraph" ] ]
+check "native footer keeps its table" (headerTableDoc.FooterParts |> List.map (fun part -> part.Blocks |> List.map blockKind)) [ [ "Table"; "Paragraph" ] ]
+check "native header table cells"
+    (headerTableDoc.HeaderParts
+     |> List.collect (fun part -> part.Blocks)
+     |> List.collect (function Table table -> table.Rows |> List.collect (fun row -> row.Cells |> List.map (fun cell -> cell.Content |> List.map textOfPara)) | _ -> []))
+    [ [ "logo" ]; [ "address" ] ]
+// Document.Headers stays the paragraph-only view of the first part.
+check "native header paragraph view" (headerTableDoc.Headers |> List.map textOfPara) [ "above"; "below" ]
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
