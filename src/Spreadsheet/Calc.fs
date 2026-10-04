@@ -373,7 +373,7 @@ let private workbookHasSpillOrArrayFormula (workbook: Workbook) =
     let mutable found = false
     let formulaNeedsFullPipeline formula =
         match parseFormula formula with
-        | Ok expr -> containsArrayFunction expr || exprUsesSpillRef expr
+        | Ok expr -> exprSpillsStatically expr || exprUsesSpillRef expr || containsThreeDReference expr
         | Result.Error _ -> false
     for KeyValue(_, sheet) in workbook.Sheets do
         if not found then
@@ -392,7 +392,7 @@ let private cellDataNeedsFullPipeline (cellData: CellData) =
     match cellData.Value with
     | CellValue.Formula (formula, _) ->
         match parseFormula formula with
-        | Ok expr -> containsArrayFunction expr || exprUsesSpillRef expr
+        | Ok expr -> exprSpillsStatically expr || exprUsesSpillRef expr || containsThreeDReference expr
         | Result.Error _ -> false
     | _ -> false
 

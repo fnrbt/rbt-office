@@ -217,6 +217,11 @@ type Token =
     /// suffix in `A1#`.
     | THash
     | TComma | TColon | TBang
+    /// `@` — the implicit-intersection operator (`=@A1:A9`).
+    | TAt
+    /// Whitespace standing between two operands: Excel's reference
+    /// intersection operator (`A1:C3 B2:D4`). Any other whitespace is dropped.
+    | TSpace
     | TEnd
 
 let private futureFunctionPrefixes = [ "_xlfn."; "_xlws."; "_xlpm." ]
@@ -228,7 +233,16 @@ let private tokenizeFrom (input: string) startIndex : Token array =
     while i < n do
         let c = input.[i]
         if Char.IsWhiteSpace c then
-            i <- i + 1
+            while i < n && Char.IsWhiteSpace input.[i] do i <- i + 1
+            // Whitespace between the end of one operand and the start of the
+            // next is the intersection operator; everywhere else it is layout.
+            if i < n && tokens.Count > 0 then
+                let next = input.[i]
+                let startsOperand = next = '$' || next = '\'' || next = '_' || Char.IsLetter next
+                match tokens.[tokens.Count - 1] with
+                | TIdent _ | THash when startsOperand -> tokens.Add TSpace
+                | TRParen when startsOperand || next = '(' -> tokens.Add TSpace
+                | _ -> ()
         elif Char.IsDigit c || (c = '.' && i + 1 < n && Char.IsDigit input.[i + 1]) then
             // Number, with optional fraction and scientific exponent.
             let start = i
@@ -281,6 +295,7 @@ let private tokenizeFrom (input: string) startIndex : Token array =
                 else
                     sb.Append(input.[i]) |> ignore
                     i <- i + 1
+            if not closed then failwith "Unterminated sheet name"
             tokens.Add(TSheet (sb.ToString()))
         elif c = '#' then
             // Error literal: longest match against the known set.
@@ -347,6 +362,7 @@ let private tokenizeFrom (input: string) startIndex : Token array =
                         | '[' -> depth <- depth + 1; j <- j + 1
                         | ']' -> depth <- depth - 1; (if depth > 0 then j <- j + 1)
                         | _ -> j <- j + 1
+                    if depth > 0 then failwith "Unterminated structured reference"
                     let inner = input.Substring(start, (min j n) - start)
                     tokens.Add(TTableSpec inner)
                     i <- (if j < n then j + 1 else n)
@@ -357,7 +373,10 @@ let private tokenizeFrom (input: string) startIndex : Token array =
                 | ',' -> tokens.Add(TComma); i <- i + 1
                 | ':' -> tokens.Add(TColon); i <- i + 1
                 | '!' -> tokens.Add(TBang); i <- i + 1
-                | _ -> i <- i + 1  // skip unknown
+                | '@' -> tokens.Add(TAt); i <- i + 1
+                // Anything else is not formula syntax. Dropping it would make
+                // a different formula out of the text, so the parse fails.
+                | other -> failwithf "Unexpected character '%c'" other
     tokens.Add(TEnd)
     tokens.ToArray()
 
@@ -526,6 +545,20 @@ let private wholeRowsRef (sheet: string option) (r1: int, abs1: bool) (r2: int, 
 let private rowOfNumber (n: float) : int option =
     if n >= 1.0 && n <= float (lastSheetRow + 1) && n = Math.Floor n then Some (int n - 1) else None
 
+/// Reference operators are carried in the tree as calls with names no
+/// function can have, so every generic tree walk (shifting, re-pointing after
+/// a row/column edit, dependency extraction) covers them without a new case.
+/// ` ` intersects two references, `,` unites references, `:` spans two
+/// references that are not both plain cells, `@` is implicit intersection.
+[<Literal>]
+let intersectionOperatorName = " "
+[<Literal>]
+let unionOperatorName = ","
+[<Literal>]
+let rangeOperatorName = ":"
+[<Literal>]
+let implicitIntersectionName = "SINGLE"
+
 type private Parser = {
     Tokens: Token[]
     mutable Pos: int
@@ -555,11 +588,23 @@ let rec private parsePrimary (p: Parser) : Expr =
         | TError e -> p.Pos <- p.Pos + 1; ErrorLit e
         | TMinus -> p.Pos <- p.Pos + 1; UnaryOp("-", parseUnary p)
         | TPlus -> p.Pos <- p.Pos + 1; UnaryOp("+", parseUnary p)
+        | TAt -> p.Pos <- p.Pos + 1; Function(implicitIntersectionName, [ parseRange p ])
         | TLParen ->
             p.Pos <- p.Pos + 1
             let e = parseComparison p
-            expectP p TRParen
-            e
+            // `(A1:A2,C1:C2)` — a comma inside plain parentheses is the
+            // reference union operator.
+            if peekP p = TComma then
+                let parts = ResizeArray<Expr>()
+                parts.Add e
+                while peekP p = TComma do
+                    p.Pos <- p.Pos + 1
+                    parts.Add(parseComparison p)
+                expectP p TRParen
+                Function(unionOperatorName, resizeArrayToList parts)
+            else
+                expectP p TRParen
+                e
         | TSheet sheetName ->
             p.Pos <- p.Pos + 1
             expectP p TBang
@@ -583,7 +628,12 @@ let rec private parsePrimary (p: Parser) : Expr =
                 // Direct LAMBDA application (IIFE): LAMBDA(p1,…,pn, body)(a1,…,an).
                 // Desugar to LET(p1,a1,…,pn,an, body) — same beta-reduction, no new
                 // node. (LET inlines each value into the body, left to right.)
-                if equalsOrdinalIgnoreCase ident "LAMBDA" && peekP p = TLParen then
+                let appliedDirectly =
+                    equalsOrdinalIgnoreCase ident "LAMBDA"
+                    && (peekP p = TLParen
+                        || (peekP p = TSpace && p.Pos + 1 < p.Tokens.Length && p.Tokens.[p.Pos + 1] = TLParen))
+                if appliedDirectly then
+                    if peekP p = TSpace then p.Pos <- p.Pos + 1
                     p.Pos <- p.Pos + 1
                     let callArgs = parseArgs p
                     expectP p TRParen
@@ -759,19 +809,51 @@ and private parseRange (p: Parser) : Expr =
             | Some r1, TIdent last -> parseAbsoluteRowToken last |> Option.map (fun r2 -> wholeRowsRef None (r1, false) (r2, true))
             | _ -> None
         | _ -> None
-    match whole with
-    | Some range ->
-        p.Pos <- p.Pos + 3
-        range
-    | None ->
-    let left = parsePrimary p
-    match peekP p, left with
-    | TColon, CellRef a ->
-        p.Pos <- p.Pos + 1
-        match parsePrimary p with
-        | CellRef b -> RangeRef(a, b)
-        | _ -> failwith "Expected cell reference after ':'"
-    | _ -> left
+    // `Sheet1:Sheet3!A1` — a 3-D reference. The sheet span travels in the
+    // qualifier (a colon cannot occur in a sheet name) and is expanded to one
+    // reference per sheet when the formula is evaluated.
+    let threeD =
+        match peekP p, next () with
+        | TIdent first, TColon when p.Pos + 3 < p.Tokens.Length ->
+            match p.Tokens.[p.Pos + 2], p.Tokens.[p.Pos + 3] with
+            | TIdent last, TBang -> Some (first + ":" + last)
+            | _ -> None
+        | _ -> None
+    let operand () =
+        match threeD with
+        | Some span ->
+            p.Pos <- p.Pos + 4
+            parseSheetQualified p (Some span)
+        | None ->
+        match whole with
+        | Some range ->
+            p.Pos <- p.Pos + 3
+            range
+        | None ->
+            // The range operator joins any two references: `A1:B2`, but also
+            // `A1:INDEX(A:A,3)` and `Start:End` between names.
+            let isReference e =
+                match e with
+                | CellRef _ | RangeRef _ | NameRef _ | SpillRef _ | TableRef _ | Function _ -> true
+                | _ -> false
+            let mutable left = parsePrimary p
+            while peekP p = TColon && isReference left do
+                p.Pos <- p.Pos + 1
+                let right = parsePrimary p
+                left <-
+                    match left, right with
+                    | CellRef a, CellRef b -> RangeRef(a, b)
+                    | _ when isReference right -> Function(rangeOperatorName, [ left; right ])
+                    | _ -> failwith "Expected a reference after ':'"
+            left
+    let first = operand ()
+    if peekP p <> TSpace then first
+    else
+        let mutable e = first
+        while peekP p = TSpace do
+            p.Pos <- p.Pos + 1
+            e <- Function(intersectionOperatorName, [ e; parseRange p ])
+        e
 
 and private parseUnary (p: Parser) : Expr =
     match peekP p with
@@ -1423,6 +1505,19 @@ let rec private appendExpr (sb: Text.StringBuilder) (minPrecedence: int) (expr: 
                 sb.Append(refCellText a).Append(':').Append(refCellText b) |> ignore
     | TableRef sel -> sb.Append(tableSelText sel) |> ignore
     | ArrayLit rows -> sb.Append(arrayLiteralText rows) |> ignore
+    | Function (name, [ left; right ]) when name = intersectionOperatorName || name = rangeOperatorName ->
+        appendExpr sb 8 left
+        sb.Append(name) |> ignore
+        appendExpr sb 8 right
+    | Function (name, parts) when name = unionOperatorName ->
+        sb.Append('(') |> ignore
+        parts |> List.iteri (fun i part ->
+            if i > 0 then sb.Append(',') |> ignore
+            appendExpr sb 1 part)
+        sb.Append(')') |> ignore
+    | Function (name, [ operand ]) when name = implicitIntersectionName ->
+        sb.Append('@') |> ignore
+        appendExpr sb 8 operand
     | Function (name, args) ->
         sb.Append(name).Append('(') |> ignore
         let mutable first = true
@@ -1815,6 +1910,16 @@ let spillRangeOf (anchor: RefAst) (model: SpreadsheetModel) : RefAst * RefAst =
             if cell.Row > r1 then r1 <- cell.Row
             if cell.Col > c1 then c1 <- cell.Col)
     { anchor with Row = r0; Col = c0 }, { anchor with Row = r1; Col = c1 }
+
+/// `spillRangeOf` for an anchor that may sit on another sheet (`Sheet2!A1#`).
+let spillRangeIn (anchor: RefAst) (model: SpreadsheetModel)
+                 (workbook: Rbt.Spreadsheet.Workbook.Workbook option) : RefAst * RefAst =
+    match anchor.Sheet with
+    | None -> spillRangeOf anchor model
+    | Some _ ->
+        match resolveModel anchor.Sheet model workbook with
+        | Some target -> spillRangeOf anchor target
+        | None -> anchor, anchor
 
 /// Expand a RangeRef to the flat list of unwrapped cell values, row-major.
 /// The sheet qualifier on the start ref selects the target sheet.
@@ -2427,6 +2532,9 @@ let inline both (a: Fold<'T, 'SA, 'RA>) (b: Fold<'T, 'SB, 'RB>) : Fold<'T, struc
 [<Struct>]
 type RangeAccess = { M: SpreadsheetModel; SR: int; SC: int; W: int; Count: int }
 
+let mutable private scratchArray : obj = null
+let mutable private scratchModel : SpreadsheetModel = createEmpty 1 1
+
 /// Resolve a range-shaped expression (RangeRef or single CellRef) to a
 /// `RangeAccess`, honoring a sheet qualifier. None for non-range expressions.
 let rangeAccessOf (model: SpreadsheetModel) (workbook: Rbt.Spreadsheet.Workbook.Workbook option) (e: Expr) : RangeAccess option =
@@ -2437,6 +2545,24 @@ let rangeAccessOf (model: SpreadsheetModel) (workbook: Rbt.Spreadsheet.Workbook.
     match e with
     | RangeRef (a, b) -> let sr, sc, er, ec = normalizeRange a b in mk a.Sheet sr sc er ec
     | CellRef r -> mk r.Sheet r.Row r.Col r.Row r.Col
+    | ArrayLit rows when rows.Length > 0 && rows.[0].Length > 0 ->
+        // An array stands in for a range by being laid out on a scratch sheet,
+        // so every positional reader (MATCH, VLOOKUP, XLOOKUP…) works on it
+        // unchanged. The last array is remembered: one call reads it many times.
+        let scratch =
+            if obj.ReferenceEquals(scratchArray, rows) then scratchModel
+            else
+                let mutable cells = Map.empty
+                for r in 0 .. rows.Length - 1 do
+                    for c in 0 .. rows.[r].Length - 1 do
+                        match unwrapValue rows.[r].[c] with
+                        | CellValue.Empty -> ()
+                        | value -> cells <- Map.add { Row = r; Col = c } { Value = value; Format = defaultFormat; Comment = None } cells
+                let built = { createEmpty rows.Length rows.[0].Length with Cells = cells }
+                scratchArray <- box rows
+                scratchModel <- built
+                built
+        Some { M = scratch; SR = 0; SC = 0; W = rows.[0].Length; Count = rows.Length * rows.[0].Length }
     | _ -> None
 
 /// Read the k-th cell of a range (row-major, 0-based), unwrapped.
@@ -3294,22 +3420,150 @@ let private formulaTextMayContainArrayFunctionName (formula: string) =
             index <- index + 1
         found
 
-/// Scalar functions that are applied element by element when one of their
-/// arguments is an array: `SUM(IF(C1:C5>3,C1:C5,0))`, `SUMPRODUCT(LEN(A1:A9))`.
-let private liftableFunctionNames =
-    [| "IF"; "IFERROR"; "IFNA"; "NOT"; "N"; "VALUE"; "TEXT"
-       "ABS"; "SIGN"; "INT"; "ROUND"; "ROUNDUP"; "ROUNDDOWN"; "TRUNC"; "MOD"; "SQRT"; "EXP"; "LN"; "LOG"; "LOG10"; "POWER"
-       "LEN"; "LEFT"; "RIGHT"; "MID"; "UPPER"; "LOWER"; "TRIM"; "EXACT"; "FIND"; "SEARCH"; "SUBSTITUTE"
-       "ISNUMBER"; "ISTEXT"; "ISBLANK"; "ISERROR"; "ISERR"; "ISNA"; "ISLOGICAL"; "ISNONTEXT"; "ISEVEN"; "ISODD"
-       "YEAR"; "MONTH"; "DAY"; "WEEKDAY"; "HOUR"; "MINUTE"; "SECOND" |]
+/// How a function takes one of its arguments.
+type ParamKind =
+    /// One value. A range or array given here makes the whole call an array
+    /// formula: the function is applied element by element (Excel's lifting).
+    | ScalarParam
+    /// A reference or array consumed whole — an aggregate's operands, a
+    /// criteria range, a reference whose shape is asked about.
+    | RangeParam
+    /// A table that is read by position and may be a reference *or* any
+    /// expression yielding an array (`VLOOKUP(2,{1,"a";2,"b"},2,0)`): a
+    /// non-reference argument is evaluated to an array before the call.
+    | ArrayParam
 
-let private isLiftableFunction (name: string) =
-    liftableFunctionNames |> Array.exists (equalsOrdinalIgnoreCase name)
+/// A function's parameter kinds: `Fixed` for the leading arguments, then
+/// `Repeat` cycled for the rest (`SUMIFS(sum, range, criteria, …)` is
+/// Fixed = [Range], Repeat = [Range; Scalar]).
+type FunctionSignature = { Fixed: ParamKind[]; Repeat: ParamKind[] }
 
-/// Does this expression evaluate to an array (a spill)? An array function, or
-/// an operator whose operand is itself an array (`SEQUENCE(5)*2`, `A1:A8>2`).
-/// Aggregates consume such an argument over its whole array, not its top-left.
-let isArrayExpr (e: Expr) : bool =
+/// The signature of every scalar-valued function the engine implements, as
+/// "fixed|repeat" with S = scalar, R = range, A = array-or-range. A function
+/// missing here (LET, LAMBDA, the dynamic-array functions, user-defined
+/// lambdas) is never lifted: it receives its arguments exactly as written.
+let private functionSignatureSpecs : (string * string) list =
+    [
+       "ABS", "|S"; "ACOS", "|S"; "ACOSH", "|S"; "ADDRESS", "|S"; "AGGREGATE", "SS|R"; "AND", "|R"
+       "AREAS", "|R"; "ASIN", "|S"; "ASINH", "|S"; "ATAN", "|S"; "ATAN2", "|S"; "ATANH", "|S"
+       "AVEDEV", "|R"; "AVERAGE", "|R"; "AVERAGEA", "|R"; "AVERAGEIF", "RSR"; "AVERAGEIFS", "R|RS"; "BIN2DEC", "|S"
+       "BITAND", "|S"; "BITOR", "|S"; "BITXOR", "|S"; "CEILING", "|S"; "CHAR", "|S"; "CHOOSE", "S|R"
+       "CLEAN", "|S"; "CODE", "|S"; "COLUMN", "|R"; "COLUMNS", "|R"; "COMBIN", "|S"; "CONCAT", "|R"
+       "CONCATENATE", "|R"; "CORREL", "|R"; "COS", "|S"; "COSH", "|S"; "COT", "|S"; "COUNT", "|R"
+       "COUNTA", "|R"; "COUNTBLANK", "|R"; "COUNTIF", "RS"; "COUNTIFS", "|RS"; "COVAR", "|R"; "COVARIANCE.P", "|R"
+       "COVARIANCE.S", "|R"; "DATE", "|S"; "DATEDIF", "|S"; "DATEVALUE", "|S"; "DAVERAGE", "RSR"; "DAY", "|S"
+       "DAYS", "|S"; "DAYS360", "|S"; "DCOUNT", "RSR"; "DCOUNTA", "RSR"; "DEC2BIN", "|S"; "DEC2HEX", "|S"
+       "DEC2OCT", "|S"; "DEGREES", "|S"; "DEVSQ", "|R"; "DGET", "RSR"; "DMAX", "RSR"; "DMIN", "RSR"
+       "DPRODUCT", "RSR"; "DSUM", "RSR"; "EDATE", "|S"; "EOMONTH", "|S"; "ERROR.TYPE", "|S"; "EVEN", "|S"
+       "EXACT", "|S"; "EXP", "|S"; "FACT", "|S"; "FALSE", "|S"; "FIND", "|S"; "FIXED", "|S"
+       "FLOOR", "|S"; "FORECAST", "SRR"; "FORECAST.LINEAR", "SRR"; "FV", "|S"; "GCD", "|R"; "GEOMEAN", "|R"
+       "HARMEAN", "|R"; "HEX2DEC", "|S"; "HLOOKUP", "SASS"; "HOUR", "|S"; "HYPERLINK", "|S"; "IF", "|S"
+       "IFERROR", "|S"; "IFNA", "|S"; "IFS", "|S"; "INDEX", "RSS"; "INT", "|S"; "INTERCEPT", "|R"
+       "IRR", "RS"; "ISBLANK", "|S"; "ISERR", "|S"; "ISERROR", "|S"; "ISEVEN", "|S"; "ISFORMULA", "|R"
+       "ISLOGICAL", "|S"; "ISNA", "|S"; "ISNONTEXT", "|S"; "ISNUMBER", "|S"; "ISODD", "|S"; "ISOWEEKNUM", "|S"
+       "ISREF", "|R"; "ISTEXT", "|S"; "LARGE", "RS"; "LCM", "|R"; "LEFT", "|S"; "LEN", "|S"
+       "LN", "|S"; "LOG", "|S"; "LOG10", "|S"; "LOOKUP", "SAA"; "LOWER", "|S"; "MATCH", "SAS"
+       "MAX", "|R"; "MAXA", "|R"; "MAXIFS", "R|RS"; "MDETERM", "|R"; "MEDIAN", "|R"; "MID", "|S"
+       "MIN", "|R"; "MINA", "|R"; "MINIFS", "R|RS"; "MINUTE", "|S"; "MOD", "|S"; "MODE", "|R"
+       "MODE.SNGL", "|R"; "MONTH", "|S"; "MROUND", "|S"; "NA", "|S"; "NETWORKDAYS", "SSR"; "NETWORKDAYS.INTL", "SSSR"
+       "NORM.DIST", "|S"; "NORM.INV", "|S"; "NORM.S.DIST", "|S"; "NORM.S.INV", "|S"; "NORMDIST", "|S"; "NORMINV", "|S"
+       "NORMSDIST", "|S"; "NORMSINV", "|S"; "NOT", "|S"; "NOW", "|S"; "NPER", "|S"; "NPV", "S|R"
+       "NUMBERVALUE", "|S"; "OCT2DEC", "|S"; "ODD", "|S"; "OR", "|R"; "PEARSON", "|R"; "PERCENTILE", "RS"
+       "PERCENTILE.INC", "RS"; "PERCENTRANK", "RSS"; "PERCENTRANK.INC", "RSS"; "PI", "|S"; "PMT", "|S"; "POWER", "|S"
+       "PRODUCT", "|R"; "PROPER", "|S"; "PV", "|S"; "QUARTILE", "RS"; "QUARTILE.INC", "RS"; "QUOTIENT", "|S"
+       "RADIANS", "|S"; "RAND", "|S"; "RANDBETWEEN", "|S"; "RANK", "SRS"; "RANK.AVG", "SRS"; "RANK.EQ", "SRS"
+       "RATE", "|S"; "REPLACE", "|S"; "REPT", "|S"; "RIGHT", "|S"; "ROUND", "|S"; "ROUNDDOWN", "|S"
+       "ROUNDUP", "|S"; "ROW", "|R"; "ROWS", "|R"; "RSQ", "|R"; "SEARCH", "|S"; "SECOND", "|S"
+       "SIGN", "|S"; "SIN", "|S"; "SINGLE", "|R"; "SINH", "|S"; "SLN", "|S"; "SLOPE", "|R"
+       "SMALL", "RS"; "SQRT", "|S"; "STDEV", "|R"; "STDEV.P", "|R"; "STDEV.S", "|R"; "STDEVP", "|R"
+       "STEYX", "|R"; "SUBSTITUTE", "|S"; "SUBTOTAL", "S|R"; "SUM", "|R"; "SUMIF", "RSR"; "SUMIFS", "R|RS"
+       "SUMPRODUCT", "|R"; "SUMSQ", "|R"; "SWITCH", "|S"; "TAN", "|S"; "TANH", "|S"; "TEXT", "|S"
+       "TEXTAFTER", "|S"; "TEXTBEFORE", "|S"; "TEXTJOIN", "SS|R"; "TIME", "|S"; "TIMEVALUE", "|S"; "TODAY", "|S"
+       "TRIM", "|S"; "TRUE", "|S"; "TRUNC", "|S"; "TYPE", "|R"; "UNICHAR", "|S"; "UNICODE", "|S"
+       "UPPER", "|S"; "VALUE", "|S"; "VAR", "|R"; "VAR.P", "|R"; "VAR.S", "|R"; "VARP", "|R"
+       "VLOOKUP", "SASS"; "WEEKDAY", "|S"; "WEEKNUM", "|S"; "WORKDAY", "SSR"; "WORKDAY.INTL", "SSSR"; "XLOOKUP", "SAASSS"
+       "XMATCH", "SASS"; "XOR", "|R"; "YEAR", "|S"; "YEARFRAC", "|S"
+    ]
+
+let private parseSignature (spec: string) : FunctionSignature =
+    let kinds (text: string) =
+        text.ToCharArray()
+        |> Array.map (fun ch -> match ch with 'R' -> RangeParam | 'A' -> ArrayParam | _ -> ScalarParam)
+    match spec.Split('|') with
+    | [| fixedPart; repeat |] -> { Fixed = kinds fixedPart; Repeat = (if repeat = "" then [| ScalarParam |] else kinds repeat) }
+    | _ -> { Fixed = kinds spec; Repeat = [| ScalarParam |] }
+
+let private functionSignatures : Dictionary<string, FunctionSignature> =
+    let table = Dictionary<string, FunctionSignature>()
+    for (name, spec) in functionSignatureSpecs do
+        table.[name] <- parseSignature spec
+    table
+
+/// The registered signature of a function (name matched case-insensitively).
+let functionSignature (name: string) : FunctionSignature voption =
+    match functionSignatures.TryGetValue name with
+    | true, signature -> ValueSome signature
+    | false, _ ->
+        // Formula text usually carries upper-case names; fold case only on a miss.
+        let upper = name.ToUpperInvariant()
+        if obj.ReferenceEquals(upper, name) || upper = name then ValueNone
+        else
+            match functionSignatures.TryGetValue upper with
+            | true, signature -> ValueSome signature
+            | false, _ -> ValueNone
+
+let paramKindAt (signature: FunctionSignature) (index: int) : ParamKind =
+    if index < signature.Fixed.Length then signature.Fixed.[index]
+    else signature.Repeat.[(index - signature.Fixed.Length) % signature.Repeat.Length]
+
+/// Does any parameter of this function accept an array in place of a range?
+let private takesArrayParam (name: string) =
+    name.Length >= 5 && name.Length <= 7
+    && (match functionSignature name with
+        | ValueSome signature -> signature.Fixed |> Array.exists (fun kind -> kind = ArrayParam)
+        | ValueNone -> false)
+
+/// OFFSET and INDIRECT return a reference, not a value; so do the range
+/// (`A1:INDEX(…)`) and intersection (`A1:C3 B2:D4`) operators.
+let private isReferenceFunction (name: string) =
+    (name.Length = 6 && equalsOrdinalIgnoreCase name "OFFSET")
+    || (name.Length = 8 && equalsOrdinalIgnoreCase name "INDIRECT")
+    || (name.Length = 1 && (name = rangeOperatorName || name = intersectionOperatorName))
+
+let private isIndexFunction (name: string) =
+    name.Length = 5 && equalsOrdinalIgnoreCase name "INDEX"
+
+/// A 3-D reference's qualifier (`Sheet1:Sheet3`) — a colon cannot occur in a
+/// real sheet name.
+let private isThreeDSheet (sheet: string option) =
+    match sheet with
+    | Some name -> name.IndexOf ':' >= 0
+    | None -> false
+
+/// Can this INDEX call select more than one cell? Only when a row or column
+/// number is omitted or literally 0 (the whole line), or a lone index walks
+/// something that is not visibly a single row or column.
+let private indexMaySelectArea (args: Expr list) =
+    let wholeLine e = match e with MissingArg | Number 0.0 -> true | _ -> false
+    match args with
+    | [ source; _ ] ->
+        (match source with
+         | RangeRef (a, b) -> a.Row <> b.Row && a.Col <> b.Col
+         | CellRef _ -> false
+         | _ -> true)
+    | [ _; row ] when wholeLine row -> true
+    | [ _; row; col ] -> wholeLine row || wholeLine col
+    | _ -> false
+
+/// Does this expression evaluate to an array (a spill)? An array function, a
+/// range or array constant standing where one value is expected, or an
+/// operator / scalar function one of whose operands is itself an array
+/// (`SEQUENCE(5)*2`, `A1:A8>2`, `LEN(A1:A9)`). Aggregates consume such an
+/// argument over its whole array, not its top-left. `openRanges` says whether
+/// a whole-column / whole-row reference counts: it does for an aggregate's
+/// operand, but not for deciding what a cell spills — there `A:A` in a scalar
+/// position is implicit intersection, as in every pre-dynamic-array workbook.
+let private isArrayExprCore (openRanges: bool) (dynamicReferences: bool) (e: Expr) : bool =
     let stack = ResizeArray<Expr>()
     stack.Add e
     let mutable found = false
@@ -3319,27 +3573,49 @@ let isArrayExpr (e: Expr) : bool =
         stack.RemoveAt last
         match expr with
         | Function (name, _) when isArrayFunction name -> found <- true
-        // OFFSET/INDIRECT may return a multi-cell range.
-        | Function (name, _)
-            when (name.Length = 6 && equalsOrdinalIgnoreCase name "OFFSET")
-                 || (name.Length = 8 && equalsOrdinalIgnoreCase name "INDIRECT") -> found <- true
+        // OFFSET/INDIRECT and the reference operators may yield a multi-cell range.
+        | Function (name, _) when name = unionOperatorName -> found <- true
+        | Function (name, args) when isReferenceFunction name ->
+            // What OFFSET/INDIRECT return is only known when evaluated.
+            if dynamicReferences then found <- true
+            elif name = rangeOperatorName || name = intersectionOperatorName then
+                for arg in args do stack.Add arg
+        | Function (name, args) when isIndexFunction name ->
+            if indexMaySelectArea args then found <- true
+            else
+                // A single element: an array only when an index is one.
+                match args with
+                | _ :: indexes -> for index in indexes do stack.Add index
+                | [] -> ()
         // ROW(A1:A5) / COLUMN(A1:C1) number every row / column of the range.
         | Function (name, [ RangeRef _ ])
             when equalsOrdinalIgnoreCase name "ROW" || equalsOrdinalIgnoreCase name "COLUMN" -> found <- true
-        // A liftable scalar function is an array when any argument is.
-        | Function (name, args) when isLiftableFunction name ->
-            for arg in args do
-                stack.Add arg
+        // A scalar function is an array when an argument in a scalar slot is.
+        | Function (name, args) ->
+            match functionSignature name with
+            | ValueSome signature ->
+                let mutable index = 0
+                for arg in args do
+                    if paramKindAt signature index = ScalarParam then stack.Add arg
+                    index <- index + 1
+            | ValueNone -> ()
         // A range/table inside an operator broadcasts element-wise (`A1:A8+B1:B8`).
         // A *bare* range arg never reaches this test — aggregates match RangeRef
         // first and stream it — so this only fires inside Unary/BinOp/array funcs.
-        | RangeRef _ | TableRef _ | ArrayLit _ | SpillRef _ -> found <- true
+        | RangeRef (a, b) ->
+            if openRanges || not (isWholeColumnRange a b || isWholeRowRange a b) then found <- true
+        | CellRef r -> if isThreeDSheet r.Sheet then found <- true
+        // `[@Amount]` is one cell of the current row.
+        | TableRef sel when sel.Item = TblThisRow && sel.ColEnd.IsNone -> ()
+        | TableRef _ | ArrayLit _ | SpillRef _ -> found <- true
         | UnaryOp (_, inner) -> stack.Add inner
         | BinOp (left, _, right) ->
             stack.Add left
             stack.Add right
         | _ -> ()
     found
+
+let isArrayExpr (e: Expr) : bool = isArrayExprCore true true e
 
 let arithmeticArrayNonBlankCount model workbook e =
     let rangeShape expr =
@@ -3350,10 +3626,8 @@ let arithmeticArrayNonBlankCount model workbook e =
         if isArrayExpr expr then ValueNone else ValueSome (1, 1)
     let broadcastShape left right =
         match left, right with
-        | ValueSome (lr, lc), ValueSome (rr, rc)
-            when (lr = 1 || rr = 1 || lr = rr) && (lc = 1 || rc = 1 || lc = rc) ->
-            ValueSome (max lr rr * max lc rc)
-        | ValueSome _, ValueSome _ -> ValueSome 1
+        // Mismatched extents pad with #N/A, which is not blank either.
+        | ValueSome (lr, lc), ValueSome (rr, rc) -> ValueSome (max lr rr * max lc rc)
         | _ -> ValueNone
     match e with
     | UnaryOp (op, source) when op = "+" || op = "-" || op = "%" ->
@@ -3408,6 +3682,73 @@ let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
                 | "/" -> if b = 0.0 then err Err.div0 else finite (a / b)
                 | "^" -> (let p = a ** b in if Double.IsNaN p || Double.IsInfinity p then err Err.num else CellValue.Number p)
                 | _ -> err Err.value)
+
+/// Parse R1C1-style reference text (`R2C3`, `R[-1]C`, `R1C1:R3C2`, `C2`, `R5`,
+/// optionally `Sheet!`-qualified) — what INDIRECT accepts when its second
+/// argument is FALSE. Bracketed offsets are relative to `current`.
+let parseR1C1Reference (text: string) (current: CellAddress option) : Expr option =
+    let text = text.Trim()
+    let sheet, body =
+        let bang = text.LastIndexOf '!'
+        if bang < 0 then None, text
+        else
+            let rawName = text.Substring(0, bang)
+            let sheetName =
+                if rawName.Length >= 2 && rawName.[0] = '\'' && rawName.[rawName.Length - 1] = '\'' then
+                    rawName.Substring(1, rawName.Length - 2).Replace("''", "'")
+                else rawName
+            Some sheetName, text.Substring(bang + 1)
+    let here = defaultArg current { Row = 0; Col = 0 }
+    /// One `R…C…` corner: (row, col) with None for an axis left out.
+    let corner (part: string) : (int option * int option) option =
+        let n = part.Length
+        let mutable i = 0
+        let mutable ok = true
+        /// After the axis letter: nothing (same row/col), `[d]`, or a 1-based number.
+        let axis (origin: int) : int =
+            if i < n && part.[i] = '[' then
+                let close = part.IndexOf(']', i)
+                if close < 0 then (ok <- false; 0)
+                else
+                    let inner = part.Substring(i + 1, close - i - 1)
+                    i <- close + 1
+                    match Int32.TryParse(inner, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture) with
+                    | true, delta -> origin + delta
+                    | _ -> ok <- false; 0
+            else
+                let start = i
+                while i < n && Char.IsDigit part.[i] do i <- i + 1
+                if i = start then origin
+                else
+                    match Int32.TryParse(part.Substring(start, i - start), NumberStyles.None, CultureInfo.InvariantCulture) with
+                    | true, value -> value - 1
+                    | _ -> ok <- false; 0
+        let mutable row = None
+        let mutable col = None
+        if i < n && (part.[i] = 'R' || part.[i] = 'r') then
+            i <- i + 1
+            row <- Some (axis here.Row)
+        if i < n && (part.[i] = 'C' || part.[i] = 'c') then
+            i <- i + 1
+            col <- Some (axis here.Col)
+        if ok && i = n && (row.IsSome || col.IsSome) then Some (row, col) else None
+    let refAt row col = { Sheet = sheet; Row = row; Col = col; RowAbs = false; ColAbs = false }
+    let inBounds row col = row >= 0 && row <= lastSheetRow && col >= 0 && col <= lastSheetCol
+    let parts = body.Split(':')
+    let corners = parts |> Array.map corner
+    if parts.Length = 0 || parts.Length > 2 || corners |> Array.exists Option.isNone then None
+    else
+        let firstRow, firstCol = corners.[0].Value
+        let lastRow, lastCol = corners.[corners.Length - 1].Value
+        match firstRow, firstCol, lastRow, lastCol with
+        | Some r0, Some c0, Some r1, Some c1 when inBounds r0 c0 && inBounds r1 c1 ->
+            if r0 = r1 && c0 = c1 then Some (CellRef (refAt r0 c0)) else Some (RangeRef (refAt r0 c0, refAt r1 c1))
+        // `R5` / `R2:R4`: whole rows. `C2` / `C1:C3`: whole columns.
+        | Some r0, None, Some r1, None when inBounds r0 0 && inBounds r1 0 ->
+            Some (RangeRef ({ refAt r0 0 with ColAbs = true }, { refAt r1 lastSheetCol with ColAbs = true }))
+        | None, Some c0, None, Some c1 when inBounds 0 c0 && inBounds 0 c1 ->
+            Some (RangeRef ({ refAt 0 c0 with RowAbs = true }, { refAt lastSheetRow c1 with RowAbs = true }))
+        | _ -> None
 
 /// Everything an evaluation needs beyond the expression itself: the sheet
 /// model being evaluated, the workbook (for cross-sheet refs and defined
@@ -3467,17 +3808,13 @@ let private clampOpenRange (m: SpreadsheetModel) (a: RefAst) (b: RefAst) : RefAs
 let private keepsOpenRanges (name: string) =
     equalsOrdinalIgnoreCase name "ROWS" || equalsOrdinalIgnoreCase name "COLUMNS"
     || equalsOrdinalIgnoreCase name "ROW" || equalsOrdinalIgnoreCase name "COLUMN"
-    || equalsOrdinalIgnoreCase name "ISREF"
-
-/// OFFSET and INDIRECT return a reference, not a value.
-let private isReferenceFunction (name: string) =
-    (name.Length = 6 && equalsOrdinalIgnoreCase name "OFFSET")
-    || (name.Length = 8 && equalsOrdinalIgnoreCase name "INDIRECT")
+    || equalsOrdinalIgnoreCase name "ISREF" || equalsOrdinalIgnoreCase name implicitIntersectionName
 
 /// True if the expression calls OFFSET or INDIRECT anywhere: its precedents
 /// are only known once it is evaluated.
 let containsDynamicReference (expr: Expr) : bool =
     containsFunctionNamed "OFFSET" expr || containsFunctionNamed "INDIRECT" expr
+    || containsFunctionNamed rangeOperatorName expr || containsFunctionNamed intersectionOperatorName expr
 
 /// Defined-name lookup for evaluation: like `resolveNameExpr`, with a
 /// whole-column / whole-row target bounded by its sheet's used range.
@@ -3494,6 +3831,12 @@ let private resolveNameForEval (name: string) (currentSheet: Rbt.Spreadsheet.Wor
         | None -> Some (ErrorLit Err.ref)
     | other -> other
 
+/// Defined names whose refers-to formula is being evaluated right now, in
+/// evaluation order. A name met again while it is still on this list refers
+/// to itself through other names (`A = B+1`, `B = A+1`): that is a circular
+/// reference, reported as an error instead of recursing until the stack ends.
+let private namesBeingEvaluated = ResizeArray<string>()
+
 /// Evaluate an expression to a scalar CellValue.
 let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
     let model = ctx.Model
@@ -3508,9 +3851,25 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
         | None -> err Err.name
         | Some wb ->
             match resolveNameForEval name ctx.Sheet wb with
-            | Some e -> eval e ctx
+            | Some e ->
+                let key = name.ToUpperInvariant()
+                if namesBeingEvaluated.Contains key then err Err.cycle
+                else
+                    namesBeingEvaluated.Add key
+                    try eval e ctx
+                    finally namesBeingEvaluated.RemoveAt(namesBeingEvaluated.Count - 1)
             | None -> err Err.name
     | CellRef r -> readCell r model workbook
+    | RangeRef (a, b) when isOpenRange a b && ctx.CurrentCell.IsSome ->
+        // `A:A` where one value is expected is implicit intersection: the
+        // cell of that column on the formula's own row (of that row in the
+        // formula's own column), which is how workbooks written before
+        // dynamic arrays read `=VLOOKUP(A:A,…)` on every row.
+        let cell = ctx.CurrentCell.Value
+        let sr, sc, er, ec = normalizeRange a b
+        if sc = ec && isWholeColumnRange a b then readCell { a with Row = cell.Row; Col = sc } model workbook
+        elif sr = er && isWholeRowRange a b then readCell { a with Row = sr; Col = cell.Col } model workbook
+        else firstRangeRefValue a b model workbook
     | RangeRef (a, b) ->
         // A bare range in scalar context yields its first cell (Excel's
         // implicit-intersection collapse is close enough for our use).
@@ -3519,14 +3878,17 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
     | ArrayLit a -> if a.Length > 0 && a.[0].Length > 0 then a.[0].[0] else err Err.value
     // Excel reads an omitted argument as 0 (`IF(TRUE,,2)` is 0).
     | MissingArg -> CellValue.Number 0.0
-    | SpillRef anchor -> let a, b = spillRangeOf anchor model in eval (RangeRef (a, b)) ctx
+    | SpillRef anchor -> let a, b = spillRangeIn anchor model workbook in eval (RangeRef (a, b)) ctx
     | UnaryOp (op, operand) -> applyUnary op (eval operand ctx)
     | BinOp _ -> evalBinOpChain expr ctx
     | Function (name, args) ->
         // An array-producing function in scalar context collapses to its
         // top-left element (implicit intersection; spill placement is Step 2).
-        let args = if argsNeedPreparing args then prepareArgs (keepsOpenRanges name) args ctx else args
-        if isArrayFunction name then
+        let args = if argsNeedPreparing name args then prepareArgs name (keepsOpenRanges name) args ctx else args
+        if name = unionOperatorName then
+            // A union has no single value; in a scalar context it is its first area.
+            (match args with first :: _ -> eval first ctx | [] -> err Err.value)
+        elif isArrayFunction name then
             match tryEvalArrayTopLeft name args ctx with
             | ValueSome value -> value
             | ValueNone ->
@@ -3540,31 +3902,207 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
 /// Do any of a call's arguments need rewriting before the function sees
 /// them? Functions recognise ranges by their syntax (`RangeRef`), so an
 /// argument that only *evaluates* to a range has to be turned into one.
-and argsNeedPreparing (args: Expr list) : bool =
+and argsNeedPreparing (name: string) (args: Expr list) : bool =
     let mutable found = false
     let mutable remaining = args
     while not found && not remaining.IsEmpty do
         match remaining.Head with
-        | RangeRef (a, b) when isOpenRange a b -> found <- true
-        | Function (name, _) when isReferenceFunction name -> found <- true
+        | RangeRef (a, b) when isOpenRange a b || isThreeDSheet a.Sheet -> found <- true
+        | CellRef r when isThreeDSheet r.Sheet -> found <- true
+        | Function (inner, _) when isReferenceFunction inner || isIndexFunction inner -> found <- true
         | _ -> ()
         remaining <- remaining.Tail
+    if not found && takesArrayParam name then
+        // A lookup table given as anything but a plain range has to be
+        // turned into something the function can index.
+        for arg in args do
+            match arg with
+            | RangeRef _ | CellRef _ | Number _ | Str _ | Bool _ | MissingArg | ErrorLit _ -> ()
+            | _ -> found <- true
     found
 
 /// Rewrite the arguments that stand for a range: whole-column/row references
-/// are bounded by the used range, and OFFSET/INDIRECT calls are replaced by
-/// the reference they return, so `SUM(OFFSET(A1,0,0,2,1))` sums two cells.
-and prepareArgs (keepOpenRanges: bool) (args: Expr list) (ctx: EvalContext) : Expr list =
+/// are bounded by the used range, OFFSET/INDIRECT/INDEX calls and reference
+/// operators are replaced by the reference they return (so
+/// `SUM(OFFSET(A1,0,0,2,1))` sums two cells), a 3-D reference becomes the
+/// union of its sheets, and an array handed to an array-or-range parameter is
+/// evaluated so the function can read it by position.
+and prepareArgs (name: string) (keepOpenRanges: bool) (args: Expr list) (ctx: EvalContext) : Expr list =
+    let signature = if takesArrayParam name then functionSignature name else ValueNone
     args
-    |> List.map (fun arg ->
-        match arg with
-        | RangeRef _ when keepOpenRanges -> arg
-        | RangeRef (a, b) when isOpenRange a b ->
-            match resolveModel a.Sheet ctx.Model ctx.Workbook with
-            | Some m -> RangeRef (clampOpenRange m a b)
-            | None -> ErrorLit Err.ref
-        | Function (name, inner) when isReferenceFunction name -> resolveReferenceFunction name inner ctx
-        | _ -> arg)
+    |> List.mapi (fun index arg ->
+        let prepared =
+            match arg with
+            | RangeRef (a, _) when isThreeDSheet a.Sheet -> expandThreeD arg ctx
+            | CellRef r when isThreeDSheet r.Sheet -> expandThreeD arg ctx
+            | RangeRef _ when keepOpenRanges -> arg
+            | RangeRef (a, b) when isOpenRange a b ->
+                match resolveModel a.Sheet ctx.Model ctx.Workbook with
+                | Some m -> RangeRef (clampOpenRange m a b)
+                | None -> ErrorLit Err.ref
+            | Function (inner, innerArgs) when isReferenceFunction inner -> resolveReferenceFunction inner innerArgs ctx
+            | Function (inner, innerArgs) when isIndexFunction inner ->
+                (match indexAsReference innerArgs ctx with
+                 | Some reference -> reference
+                 | None -> arg)
+            | _ -> arg
+        match signature with
+        | ValueSome fnSignature when paramKindAt fnSignature index = ArrayParam ->
+            match prepared with
+            | RangeRef _ | CellRef _ | ArrayLit _ | MissingArg | ErrorLit _ -> prepared
+            | SpillRef anchor -> RangeRef (spillRangeIn anchor ctx.Model ctx.Workbook)
+            | NameRef n ->
+                (match ctx.Workbook |> Option.bind (resolveNameForEval n ctx.Sheet) with
+                 | Some (RangeRef _ as range) -> range
+                 | Some (CellRef _ as cell) -> cell
+                 | Some resolved when isArrayExpr resolved -> ArrayLit (evalArray resolved ctx)
+                 | _ -> prepared)
+            | _ when isArrayExpr prepared -> ArrayLit (evalArray prepared ctx)
+            | _ -> prepared
+        | _ -> prepared)
+
+/// A 3-D reference (`Sheet1:Sheet3!A1:B2`) as the union of the same range on
+/// every sheet from the first to the last, in tab order.
+and expandThreeD (reference: Expr) (ctx: EvalContext) : Expr =
+    let span =
+        match reference with
+        | CellRef r -> r.Sheet
+        | RangeRef (a, _) -> a.Sheet
+        | _ -> None
+    match span, ctx.Workbook with
+    | Some names, Some wb ->
+        let cut = names.IndexOf ':'
+        let first = names.Substring(0, cut)
+        let last = names.Substring(cut + 1)
+        let position (sheetName: string) =
+            Rbt.Spreadsheet.Workbook.resolveSheetName sheetName wb
+            |> Option.bind (fun id -> wb.SheetOrder |> List.tryFindIndex (fun other -> other = id))
+        match position first, position last with
+        | Some i, Some j ->
+            let onSheet (r: RefAst) (sheetName: string) = { r with Sheet = Some sheetName }
+            let parts =
+                [ for index in min i j .. max i j do
+                    match Map.tryFind (List.item index wb.SheetOrder) wb.Sheets with
+                    | Some sheet ->
+                        match reference with
+                        | CellRef r -> yield CellRef (onSheet r sheet.Name)
+                        | RangeRef (a, b) ->
+                            let a = onSheet a sheet.Name
+                            let b = onSheet b sheet.Name
+                            yield (if isOpenRange a b then RangeRef (clampOpenRange sheet.Model a b) else RangeRef (a, b))
+                        | _ -> ()
+                    | None -> () ]
+            Function (unionOperatorName, parts)
+        | _ -> ErrorLit Err.ref
+    | _ -> ErrorLit Err.ref
+
+/// The rectangle a reference expression denotes: (sheet, top, left, bottom,
+/// right), or the error it evaluates to.
+and referenceRect (reference: Expr) (ctx: EvalContext) : Result<string option * int * int * int * int, string> =
+    match reference with
+    | CellRef r -> Ok (r.Sheet, r.Row, r.Col, r.Row, r.Col)
+    | RangeRef (a, b) ->
+        let sr, sc, er, ec = normalizeRange a b
+        Ok (a.Sheet, sr, sc, er, ec)
+    | TableRef sel ->
+        (match tableSelArea sel ctx.Workbook ctx.Sheet ctx.CurrentCell with
+         | Ok (r0, c0, r1, c1) when r0 <= r1 -> Ok (None, r0, c0, r1, c1)
+         | Ok _ -> Result.Error Err.ref
+         | Result.Error e -> Result.Error e)
+    | ErrorLit e -> Result.Error e
+    | _ -> Result.Error Err.ref
+
+/// Is this argument written as a reference (so that INDEX of it is one too)?
+and isReferenceSyntax (e: Expr) : bool =
+    match e with
+    | CellRef _ | RangeRef _ | SpillRef _ | TableRef _ | NameRef _ -> true
+    | Function (name, _) -> isReferenceFunction name || isIndexFunction name
+    | _ -> false
+
+/// INDEX(reference, row, [col]) as the reference it selects — a cell, or a
+/// whole row / column of the reference when the other index is 0 or omitted.
+/// None when the first argument is not a reference (INDEX of an array is a
+/// value, handled by `evalArray`).
+and indexAsReference (args: Expr list) (ctx: EvalContext) : Expr option =
+    match args with
+    | source :: indexes when isReferenceSyntax source && not indexes.IsEmpty && indexes.Length <= 2 ->
+        let reference =
+            match source with
+            | Function (inner, innerArgs) when isIndexFunction inner ->
+                (match indexAsReference innerArgs ctx with Some r -> r | None -> ErrorLit Err.ref)
+            | _ -> resolveReferenceFunction "" [ source ] ctx
+        match referenceRect reference ctx with
+        | Result.Error e -> Some (ErrorLit e)
+        | Ok (sheet, top, left, bottom, right) ->
+            let rows = bottom - top + 1
+            let cols = right - left + 1
+            let numberOf (e: Expr) =
+                match e with
+                | MissingArg -> Ok 0
+                | _ -> (match coerceNumber (eval e ctx) with Ok n -> Ok (int (Math.Truncate n)) | Result.Error code -> Result.Error code)
+            let picked =
+                match indexes with
+                | [ only ] ->
+                    (match numberOf only with
+                     | Result.Error e -> Result.Error e
+                     // A lone index walks a single row or column; on a block it selects a row.
+                     | Ok n -> if rows = 1 && cols > 1 then Ok (1, n) elif cols = 1 then Ok (n, 1) else Ok (n, 0))
+                | [ rowIndex; colIndex ] ->
+                    (match numberOf rowIndex, numberOf colIndex with
+                     | Result.Error e, _ | _, Result.Error e -> Result.Error e
+                     | Ok r, Ok c -> Ok (r, c))
+                | _ -> Result.Error Err.value
+            match picked with
+            | Result.Error e -> Some (ErrorLit e)
+            | Ok (r, c) ->
+                if r < 0 || c < 0 then Some (ErrorLit Err.value)
+                elif r > rows || c > cols then Some (ErrorLit Err.ref)
+                else
+                    let r0, r1 = if r = 0 then top, bottom else top + r - 1, top + r - 1
+                    let c0, c1 = if c = 0 then left, right else left + c - 1, left + c - 1
+                    let corner row col = { Sheet = sheet; Row = row; Col = col; RowAbs = false; ColAbs = false }
+                    if r0 = r1 && c0 = c1 then Some (CellRef (corner r0 c0))
+                    else Some (RangeRef (corner r0 c0, corner r1 c1))
+    | _ -> None
+
+/// INDEX in an array context: a reference when its source is one, otherwise
+/// the selected element, row or column of the source array.
+and evalIndexArray (args: Expr list) (ctx: EvalContext) : ArrVal =
+    let scalar v : ArrVal = [| [| v |] |]
+    match indexAsReference args ctx with
+    | Some (ErrorLit e) -> scalar (err e)
+    | Some reference -> evalArray reference ctx
+    | None ->
+        match args with
+        | source :: indexes when not indexes.IsEmpty && indexes.Length <= 2 ->
+            let arr = evalArray source ctx
+            let rows = arr.Length
+            let cols = if rows > 0 then arr.[0].Length else 0
+            let numberOf (e: Expr) =
+                match e with
+                | MissingArg -> Ok 0
+                | _ -> (match coerceNumber (eval e ctx) with Ok n -> Ok (int (Math.Truncate n)) | Result.Error code -> Result.Error code)
+            let picked =
+                match indexes with
+                | [ only ] ->
+                    (match numberOf only with
+                     | Result.Error e -> Result.Error e
+                     | Ok n -> if rows = 1 && cols > 1 then Ok (1, n) elif cols = 1 then Ok (n, 1) else Ok (n, 0))
+                | [ rowIndex; colIndex ] ->
+                    (match numberOf rowIndex, numberOf colIndex with
+                     | Result.Error e, _ | _, Result.Error e -> Result.Error e
+                     | Ok r, Ok c -> Ok (r, c))
+                | _ -> Result.Error Err.value
+            match picked with
+            | Result.Error e -> scalar (err e)
+            | Ok (r, c) ->
+                if rows = 0 || cols = 0 || r < 0 || c < 0 then scalar (err Err.value)
+                elif r > rows || c > cols then scalar (err Err.ref)
+                else
+                    let r0, r1 = if r = 0 then 0, rows - 1 else r - 1, r - 1
+                    let c0, c1 = if c = 0 then 0, cols - 1 else c - 1, c - 1
+                    [| for row in r0 .. r1 -> [| for col in c0 .. c1 -> arr.[row].[col] |] |]
+        | _ -> scalar (err Err.value)
 
 /// Evaluate OFFSET / INDIRECT to the reference it denotes: a `CellRef`, a
 /// `RangeRef` (already bounded), a `TableRef`, or an error literal.
@@ -3581,15 +4119,45 @@ and resolveReferenceFunction (name: string) (args: Expr list) (ctx: EvalContext)
         match e with
         | CellRef _ | TableRef _ -> e
         | RangeRef _ -> bounded e
-        | SpillRef anchor -> RangeRef (spillRangeOf anchor ctx.Model)
+        | SpillRef anchor -> RangeRef (spillRangeIn anchor ctx.Model ctx.Workbook)
         | NameRef n ->
             match ctx.Workbook |> Option.bind (resolveNameForEval n ctx.Sheet) with
             | Some resolved -> asReference resolved
             | None -> ErrorLit Err.name
         | Function (inner, innerArgs) when isReferenceFunction inner -> resolveReferenceFunction inner innerArgs ctx
+        | Function (inner, innerArgs) when isIndexFunction inner ->
+            (match indexAsReference innerArgs ctx with
+             | Some reference -> reference
+             | None -> ErrorLit Err.ref)
         | ErrorLit _ -> e
         | _ -> ErrorLit Err.ref
-    if equalsOrdinalIgnoreCase name "INDIRECT" then
+    if name = "" then
+        // Not a call: just the reference an expression stands for.
+        if args.Length = 1 then asReference args.[0] else ErrorLit Err.ref
+    elif name = rangeOperatorName || name = intersectionOperatorName then
+        if args.Length <> 2 then ErrorLit Err.value
+        else
+            match referenceRect (asReference args.[0]) ctx, referenceRect (asReference args.[1]) ctx with
+            | Result.Error e, _ | _, Result.Error e -> ErrorLit e
+            | Ok (sheetA, topA, leftA, bottomA, rightA), Ok (sheetB, topB, leftB, bottomB, rightB) ->
+                // The right operand inherits the left one's sheet (`S!A1:B2`).
+                let sameSheet =
+                    match sheetA, sheetB with
+                    | _, None -> true
+                    | Some a, Some b -> equalsOrdinalIgnoreCase a b
+                    | None, Some _ -> false
+                if not sameSheet then ErrorLit Err.value
+                else
+                    let corner row col = { Sheet = sheetA; Row = row; Col = col; RowAbs = false; ColAbs = false }
+                    let top, left, bottom, right =
+                        if name = rangeOperatorName then
+                            min topA topB, min leftA leftB, max bottomA bottomB, max rightA rightB
+                        else
+                            max topA topB, max leftA leftB, min bottomA bottomB, min rightA rightB
+                    if top > bottom || left > right then ErrorLit Err.nul
+                    elif top = bottom && left = right then CellRef (corner top left)
+                    else RangeRef (corner top left, corner bottom right)
+    elif equalsOrdinalIgnoreCase name "INDIRECT" then
         if args.Length < 1 then ErrorLit Err.value
         else
             let a1Style =
@@ -3600,10 +4168,14 @@ and resolveReferenceFunction (name: string) (args: Expr list) (ctx: EvalContext)
                     | style -> (match coerceBool (eval style ctx) with Ok flag -> flag | _ -> true)
             match coerceText (eval args.[0] ctx) with
             | Result.Error e -> ErrorLit e
-            | Ok _ when not a1Style -> ErrorLit Err.ref   // R1C1 text is not supported
+            | Ok refText when not a1Style ->
+                (match parseR1C1Reference refText ctx.CurrentCell with
+                 | Some target -> asReference target
+                 | None -> ErrorLit Err.ref)
             | Ok refText ->
                 match parseFormulaShared ("=" + refText) with
-                | Ok (CellRef _ as target) | Ok (RangeRef _ as target) | Ok (TableRef _ as target) | Ok (NameRef _ as target) ->
+                | Ok (CellRef _ as target) | Ok (RangeRef _ as target) | Ok (TableRef _ as target) | Ok (NameRef _ as target)
+                | Ok (SpillRef _ as target) ->
                     (match asReference target with
                      | ErrorLit _ -> ErrorLit Err.ref
                      | reference -> reference)
@@ -4050,7 +4622,7 @@ and iterFlattenedArg (arg: Expr) (ctx: EvalContext) (emit: CellValue -> unit) : 
     | RangeRef (a, b) ->
         iterRangeRef a b model workbook emit
     | SpillRef anchor ->
-        let a, b = spillRangeOf anchor model
+        let a, b = spillRangeIn anchor model workbook
         iterRangeRef a b model workbook emit
     | TableRef sel ->
         iterTableSel sel workbook ctx.Sheet ctx.CurrentCell model emit
@@ -4096,7 +4668,7 @@ and iterFlattenedArgIgnoringMissingCells (arg: Expr) (ctx: EvalContext) (emit: C
         | None -> emit (err Err.ref)
     match arg with
     | RangeRef (a, b) -> iterRange a b
-    | SpillRef anchor -> let a, b = spillRangeOf anchor model in iterRange a b
+    | SpillRef anchor -> let a, b = spillRangeIn anchor model workbook in iterRange a b
     | TableRef sel ->
         iterTableSel sel workbook ctx.Sheet ctx.CurrentCell model (fun value ->
             match value with
@@ -4136,23 +4708,40 @@ and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
     let scalar v : ArrVal = [| [| v |] |]
     match expr with
     | Function (name, args) when isArrayFunction name ->
-        let args = if argsNeedPreparing args then prepareArgs false args ctx else args
+        let args = if argsNeedPreparing name args then prepareArgs name false args ctx else args
         evalArrayFunction (name.ToUpperInvariant()) args ctx
     | Function (name, args) when isReferenceFunction name ->
         match resolveReferenceFunction name args ctx with
         | ErrorLit e -> scalar (err e)
         | reference -> evalArray reference ctx
+    | Function (name, parts) when name = unionOperatorName ->
+        // A union is several areas; as a value it is all their cells, one
+        // after another, which is what every aggregate wants from it.
+        let values = ResizeArray<CellValue[]>()
+        for part in parts do
+            for row in evalArray part ctx do
+                for value in row do
+                    values.Add [| value |]
+        if values.Count = 0 then scalar (err Err.value) else values.ToArray()
+    | Function (name, args) when isIndexFunction name -> evalIndexArray args ctx
     | Function (name, [ RangeRef _ ])
         when equalsOrdinalIgnoreCase name "ROW" || equalsOrdinalIgnoreCase name "COLUMN" ->
         // Deliberately not bounded: ROW(A:A) is rarely meant, and shape matters here.
         (match expr with
          | Function (_, args) -> evalExtendedArrayFunction (name.ToUpperInvariant()) args ctx
          | _ -> scalar (eval expr ctx))
-    | Function (name, args) when isLiftableFunction name && isArrayExpr expr ->
-        // Apply a scalar function element by element over its array arguments;
-        // scalar arguments stay unevaluated so IF remains lazy per element.
-        let args = (if argsNeedPreparing args then prepareArgs false args ctx else args) |> List.toArray
-        let arrays = args |> Array.map (fun arg -> if isArrayExpr arg then Some (evalArray arg ctx) else None)
+    | Function (name, args) when isArrayExpr expr ->
+        match functionSignature name with
+        | ValueNone -> scalar (eval expr ctx)
+        | ValueSome signature ->
+        // Lifting: a scalar function applied element by element over the
+        // arrays given in its scalar slots, broadcast to a common shape.
+        // Other arguments stay unevaluated, so IF remains lazy per element
+        // and range parameters are still handed over whole.
+        let args = (if argsNeedPreparing name args then prepareArgs name false args ctx else args) |> List.toArray
+        let arrays =
+            args |> Array.mapi (fun i arg ->
+                if paramKindAt signature i = ScalarParam && isArrayExpr arg then Some (evalArray arg ctx) else None)
         let mutable rows = 1
         let mutable cols = 1
         for arr in arrays do
@@ -4161,6 +4750,8 @@ and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
                 rows <- max rows a.Length
                 cols <- max cols (if a.Length > 0 then a.[0].Length else 0)
             | None -> ()
+        // Broadcasting: a single row or column repeats along the other axis,
+        // a 1×1 everywhere; a position an array does not cover is #N/A.
         let element (a: ArrVal) r c =
             let ar = a.Length
             let ac = if ar > 0 then a.[0].Length else 0
@@ -4175,6 +4766,8 @@ and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
                         | Some a -> ArrayLit [| [| element a r c |] |]
                         | None -> args.[i] ]
                 evalFunction name elementArgs ctx))
+    | CellRef r when isThreeDSheet r.Sheet -> evalArray (expandThreeD expr ctx) ctx
+    | RangeRef (a, _) when isThreeDSheet a.Sheet -> evalArray (expandThreeD expr ctx) ctx
     | CellRef _ -> scalar (eval expr ctx)
     | RangeRef (a, b) ->
         match resolveModel a.Sheet ctx.Model ctx.Workbook with
@@ -4185,31 +4778,45 @@ and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
         | None -> scalar (err Err.ref)
     | TableRef sel -> [| for v in expandTableSel sel ctx.Workbook ctx.Sheet ctx.CurrentCell ctx.Model -> [| v |] |]
     | ArrayLit a -> a
-    | SpillRef anchor -> let a, b = spillRangeOf anchor ctx.Model in evalArray (RangeRef (a, b)) ctx
+    | SpillRef anchor -> let a, b = spillRangeIn anchor ctx.Model ctx.Workbook in evalArray (RangeRef (a, b)) ctx
     | NameRef name ->
         match ctx.Workbook |> Option.bind (resolveNameForEval name ctx.Sheet) with
         | Some (RangeRef (a, b)) -> evalArray (RangeRef (a, b)) ctx
         | Some (TableRef sel) -> evalArray (TableRef sel) ctx
+        | Some e when isArrayExpr e ->
+            let key = name.ToUpperInvariant()
+            if namesBeingEvaluated.Contains key then scalar (err Err.cycle)
+            else
+                namesBeingEvaluated.Add key
+                try evalArray e ctx
+                finally namesBeingEvaluated.RemoveAt(namesBeingEvaluated.Count - 1)
         | Some e -> scalar (eval e ctx)
         | None -> scalar (err Err.name)
     | UnaryOp (op, inner) -> evalArray inner ctx |> Array.map (Array.map (applyUnary op))
     | BinOp (l, op, r) -> broadcastArr op (evalArray l ctx) (evalArray r ctx)
     | _ -> scalar (eval expr ctx)
 
-/// Element-wise binary op with Excel-style broadcasting: a 1×1 operand is
-/// reused for every element; equal shapes pair up; otherwise → #N/A.
+/// Element-wise binary op with Excel's broadcasting: a 1×1 operand is reused
+/// for every element, a single row or column repeats along the other axis,
+/// and the result takes the larger extent on each axis — a position one of
+/// the operands does not cover is #N/A.
 and broadcastArr (op: string) (la: ArrVal) (ra: ArrVal) : ArrVal =
     let lr = la.Length
     let lc = if lr > 0 then la.[0].Length else 0
     let rr = ra.Length
     let rc = if rr > 0 then ra.[0].Length else 0
-    if (lr <> 1 && rr <> 1 && lr <> rr) || (lc <> 1 && rc <> 1 && lc <> rc) then [| [| err Err.na |] |]
+    if lr = 0 || lc = 0 || rr = 0 || rc = 0 then [| [| err Err.value |] |]
     else
         let nr = max lr rr
         let nc = max lc rc
-        let getL r c = la.[(if lr = 1 then 0 else r)].[(if lc = 1 then 0 else c)]
-        let getR r c = ra.[(if rr = 1 then 0 else r)].[(if rc = 1 then 0 else c)]
-        [| for r in 0 .. nr - 1 -> [| for c in 0 .. nc - 1 -> applyBin op (getL r c) (getR r c) |] |]
+        let pick (a: ArrVal) rows cols r c =
+            if (rows <> 1 && r >= rows) || (cols <> 1 && c >= cols) then ValueNone
+            else ValueSome a.[(if rows = 1 then 0 else r)].[(if cols = 1 then 0 else c)]
+        [| for r in 0 .. nr - 1 ->
+            [| for c in 0 .. nc - 1 ->
+                match pick la lr lc r c, pick ra rr rc r c with
+                | ValueSome l, ValueSome v -> applyBin op l v
+                | _ -> err Err.na |] |]
 
 /// The dynamic-array (spilling) functions. Operate row-wise by default;
 /// `by_col` variants and multi-key SORTBY beyond the first key are deferred.
@@ -5251,7 +5858,7 @@ and foldArgs (f: Fold<CellValue, 'S, 'R>) (args: Expr list) (ctx: EvalContext) :
     for arg in args do
         match arg with
         | RangeRef (a, b) -> iterRange a b
-        | SpillRef anchor -> let a, b = spillRangeOf anchor model in iterRange a b
+        | SpillRef anchor -> let a, b = spillRangeIn anchor model workbook in iterRange a b
         | TableRef sel -> iterTableSel sel workbook ctx.Sheet ctx.CurrentCell model (fun v -> s <- f.Step s v)
         | _ when isArrayExpr arg ->
             for row in evalArray arg ctx do
@@ -5305,7 +5912,7 @@ and foldArgsIgnoringMissingCellsWith (direct: CellValue -> CellValue) (f: Fold<C
     for arg in args do
         match arg with
         | RangeRef (a, b) -> iterRange a b
-        | SpillRef anchor -> let a, b = spillRangeOf anchor model in iterRange a b
+        | SpillRef anchor -> let a, b = spillRangeIn anchor model workbook in iterRange a b
         | TableRef sel -> iterTableSel sel workbook ctx.Sheet ctx.CurrentCell model (fun v -> s <- f.Step s v)
         | _ when isArrayExpr arg ->
             for row in evalArray arg ctx do
@@ -5353,7 +5960,7 @@ and countBlankArgs (args: Expr list) (ctx: EvalContext) : CellValue =
     for arg in args do
         match arg with
         | RangeRef (a, b) -> iterRange a b
-        | SpillRef anchor -> let a, b = spillRangeOf anchor model in iterRange a b
+        | SpillRef anchor -> let a, b = spillRangeIn anchor model workbook in iterRange a b
         | TableRef sel -> iterTableSel sel workbook ctx.Sheet ctx.CurrentCell model addValue
         | _ when ValueOption.isSome (arithmeticArrayNonBlankCount model workbook arg) -> ()
         | _ when isArrayExpr arg ->
@@ -11334,7 +11941,7 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
         match e with
         | CellRef r -> Some (r.Sheet, r.Row, r.Col, r.Row, r.Col)
         | RangeRef (a, b) -> let sr, sc, er, ec = normalizeRange a b in Some (a.Sheet, sr, sc, er, ec)
-        | SpillRef anchor -> let a, b = spillRangeOf anchor ctx.Model in referenceBounds (RangeRef (a, b))
+        | SpillRef anchor -> let a, b = spillRangeIn anchor ctx.Model ctx.Workbook in referenceBounds (RangeRef (a, b))
         | TableRef sel ->
             match tableSelArea sel ctx.Workbook ctx.Sheet ctx.CurrentCell with
             | Ok (r0, c0, r1, c1) when r0 <= r1 -> Some (None, r0, c0, r1, c1)
@@ -11654,6 +12261,24 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
             match unwrapValue (argRaw 0) with
             | CellValue.Error code -> CellValue.Boolean (code <> Err.na)
             | _ -> CellValue.Boolean false
+    | "SINGLE" ->
+        // `@reference`: the one cell of a row/column range that shares the
+        // formula's row/column; the top-left value of anything else.
+        if nargs <> 1 then err Err.value
+        else
+            match argsArray.[0], ctx.CurrentCell with
+            | RangeRef (a, b), Some cell ->
+                let sr, sc, er, ec = normalizeRange a b
+                if sr = er && sc = ec then eval (CellRef a) ctx
+                elif sc = ec && cell.Row >= sr && cell.Row <= er then eval (CellRef { a with Row = cell.Row; Col = sc }) ctx
+                elif sr = er && cell.Col >= sc && cell.Col <= ec then eval (CellRef { a with Row = sr; Col = cell.Col }) ctx
+                else err Err.value
+            | RangeRef (a, b), None -> firstRangeRefValue a b ctx.Model ctx.Workbook
+            | other, _ ->
+                if isArrayExpr other then
+                    let arr = evalArray other ctx
+                    if arr.Length > 0 && arr.[0].Length > 0 then arr.[0].[0] else err Err.value
+                else eval other ctx
     | "ISREF" ->
         if nargs <> 1 then err Err.value
         else CellValue.Boolean (referenceBounds argsArray.[0]).IsSome
@@ -12476,6 +13101,55 @@ let containsArrayFunction (e: Expr) : bool =
         | _ -> ()
     found
 
+/// Does a formula written in a cell produce an array that spills into its
+/// neighbours? It does when it uses a dynamic-array function, or when its
+/// value is otherwise an array: a multi-cell reference (`=A1:A3`,
+/// `=OFFSET(A1,0,0,3,1)`, `=INDEX(A1:C3,0,2)`), an operator or scalar
+/// function applied to one (`=A1:A3*2`, `=LEN(A1:A3)`), an array constant.
+/// A whole-column / whole-row reference in a scalar position does not count —
+/// that is implicit intersection, see `eval`.
+let exprSpills (e: Expr) : bool =
+    containsArrayFunction e || isArrayExprCore false true e
+
+/// `exprSpills` without the benefit of the doubt for OFFSET / INDIRECT: true
+/// only when the formula's text alone shows it yields an array. The
+/// incremental engine uses it — a single-cell OFFSET is ordinary there, and
+/// one that did spill has left its mark in the sheet's spill map.
+let exprSpillsStatically (e: Expr) : bool =
+    containsArrayFunction e || isArrayExprCore false false e
+
+/// True if the expression holds a 3-D reference (`Sheet1:Sheet3!A1`). Its
+/// precedents span several sheets and are only known with the workbook's tab
+/// order, so the incremental engine leaves such workbooks to the full pass.
+let containsThreeDReference (e: Expr) : bool =
+    let stack = ResizeArray<Expr>()
+    stack.Add e
+    let mutable found = false
+    while not found && stack.Count > 0 do
+        let last = stack.Count - 1
+        let expr = stack.[last]
+        stack.RemoveAt last
+        match expr with
+        | CellRef r | SpillRef r -> if isThreeDSheet r.Sheet then found <- true
+        | RangeRef (a, _) -> if isThreeDSheet a.Sheet then found <- true
+        | Function (_, args) -> for arg in args do stack.Add arg
+        | UnaryOp (_, inner) -> stack.Add inner
+        | BinOp (left, _, right) ->
+            stack.Add left
+            stack.Add right
+        | _ -> ()
+    found
+
+/// Cheap text test: can this formula possibly spill? Saves parsing the ones
+/// that plainly cannot.
+let private formulaTextMaySpill (formula: string) =
+    if isNull formula then false
+    else
+        formula.IndexOf ':' >= 0 || formula.IndexOf '{' >= 0 || formula.IndexOf '#' >= 0 || formula.IndexOf '[' >= 0
+        || indexOfOrdinalIgnoreCase "OFFSET" formula 0 >= 0 || indexOfOrdinalIgnoreCase "INDIRECT" formula 0 >= 0
+        || indexOfOrdinalIgnoreCase "INDEX" formula 0 >= 0
+        || formulaTextMayContainArrayFunctionName formula
+
 /// Materialize dynamic-array spills for rendering. For each formula whose
 /// formula uses a spilling function (SEQUENCE/UNIQUE/SORT/FILTER/…), evaluate
 /// the array and write its values into the anchor + neighbouring cells
@@ -12492,11 +13166,11 @@ let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
     let mutable blocked = Set.empty
     let anchors = ResizeArray<CellAddress * CellData * string * Expr>()
     let arrayFormulaExpr formula =
-        if not (formulaTextMayContainArrayFunctionName formula) then
+        if not (formulaTextMaySpill formula) then
             None
         else
             match parseFormulaShared formula with
-            | Ok expr when containsArrayFunction expr -> Some expr
+            | Ok expr when exprSpills expr -> Some expr
             | _ -> None
     model.Cells
     |> Map.iter (fun addr cell ->

@@ -40,6 +40,7 @@ stages=(
     stage22-semantics
     stage23-functions
     stage24-moves
+    stage25-arrays3
     numbertext
 )
 
