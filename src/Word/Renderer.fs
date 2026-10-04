@@ -1195,7 +1195,15 @@ let caretRect (ctx: RenderContext) (doc: Document) : (float * float * float) opt
                     found <- Some layout
         match found |> Option.orElse fallback with
         | None -> None
-        | Some layout when layout.Lines.IsEmpty -> Some (settings.PaddingLeft, layout.Y, ctx.LineHeight)
+        | Some layout when layout.Lines.IsEmpty ->
+            // An empty paragraph: where its text would start (its indent - for
+            // a paragraph of a table cell that is the cell's place - and its alignment).
+            let aligned =
+                match layout.Metadata.Alignment with
+                | Center -> layout.AvailableWidth / 2.0
+                | Right -> layout.AvailableWidth
+                | _ -> 0.0
+            Some (settings.PaddingLeft + layout.Indent + aligned, layout.Y, (if layout.Height > 0.0 then min layout.Height (max ctx.LineHeight 1.0) else ctx.LineHeight))
         | Some layout ->
             let line = lineForOffset layout offset
             let x = xForOffsetWithRange (measureRangeWithContext ctx) line offset

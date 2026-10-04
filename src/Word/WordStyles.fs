@@ -623,6 +623,11 @@ module FormatValue =
         | Uniform existing when existing = value -> current
         | _ -> Mixed
 
+/// Whether a style id names an internal entry of the style list rather than
+/// a style of the document ("__docDefaults": the document defaults).
+let isInternalStyleId (styleId: string) =
+    not (isNull styleId) && styleId.StartsWith "__"
+
 /// The formatting a toolbar shows for the selection: what is displayed
 /// (styles resolved), not just what the runs state themselves.
 [<RequireQualifiedAccess>]
@@ -648,6 +653,15 @@ type SelectionFormat = {
     IndentLeft: FormatValue<float>
     IndentRight: FormatValue<float>
     FirstLineIndent: FormatValue<float>
+    /// Line spacing as the paragraph or its style states it: a multiple of
+    /// single spacing for the rule "auto" (None), layout pixels for "exact" /
+    /// "atLeast". None: not stated anywhere (single spacing).
+    ParagraphLineSpacing: FormatValue<float option>
+    /// "auto" | "exact" | "atLeast"; None when not stated.
+    ParagraphLineSpacingRule: FormatValue<string option>
+    /// Space before / after the paragraph, in layout pixels (0 when none is stated).
+    ParagraphSpacingBefore: FormatValue<float>
+    ParagraphSpacingAfter: FormatValue<float>
 }
 
 /// Effective character and paragraph formatting of the selection. With a
@@ -660,6 +674,7 @@ let selectionFormat (doc: Document) : SelectionFormat =
         FontFamily = NoValue; FontSize = NoValue; Color = NoValue; Highlight = NoValue
         StyleId = NoValue; HeadingLevel = NoValue; Alignment = NoValue
         ListKind = NoValue; ListLevel = NoValue; IndentLeft = NoValue; IndentRight = NoValue; FirstLineIndent = NoValue
+        ParagraphLineSpacing = NoValue; ParagraphLineSpacingRule = NoValue; ParagraphSpacingBefore = NoValue; ParagraphSpacingAfter = NoValue
     }
     match doc.Selection with
     | None -> format
@@ -696,9 +711,23 @@ let selectionFormat (doc: Document) : SelectionFormat =
                     match paragraphStyle.OutlineLevel with
                     | Some level when level >= 1 && level <= 9 -> level
                     | _ -> 0
+            // The style a user sees: an internal entry (the document defaults,
+            // "__docDefaults", which table-cell paragraphs are imported with)
+            // is no style - the paragraph has the default one.
+            let visibleStyle =
+                para.Metadata.Style
+                |> Option.filter (fun styleId ->
+                    not (isInternalStyleId styleId)
+                    && (match Map.tryFind ("paragraph", styleId) context.Styles with
+                        | Some style -> style.StyleType <> "defaults"
+                        | None -> true))
             format <-
                 { format with
-                    StyleId = FormatValue.add para.Metadata.Style format.StyleId
+                    ParagraphLineSpacing = FormatValue.add (metadata.LineSpacing |> Option.orElse paragraphStyle.LineSpacing) format.ParagraphLineSpacing
+                    ParagraphLineSpacingRule = FormatValue.add (metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule) format.ParagraphLineSpacingRule
+                    ParagraphSpacingBefore = FormatValue.add (metadata.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore |> Option.defaultValue 0.0) format.ParagraphSpacingBefore
+                    ParagraphSpacingAfter = FormatValue.add (metadata.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter |> Option.defaultValue 0.0) format.ParagraphSpacingAfter
+                    StyleId = FormatValue.add visibleStyle format.StyleId
                     HeadingLevel = FormatValue.add headingLevel format.HeadingLevel
                     Alignment = FormatValue.add metadata.Alignment format.Alignment
                     ListKind = FormatValue.add metadata.ListStyle format.ListKind

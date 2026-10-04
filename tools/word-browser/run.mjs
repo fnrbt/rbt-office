@@ -28,6 +28,7 @@
 //   painter-frames   a plain-function text path painter / measurers: the paint frame is built when one is installed or cleared, never while scrolling
 //   viewer-entry     word/WordViewer.js imports no editor module (import graph of the Fable output) and is the whole viewer
 //   keystroke-long   the time of a keystroke in a 75-page and a 600-page document (see also perf.mjs)
+//   table-tools      insertTable (borders, caret rectangle, Tab / Shift+Tab between cells), getCaretContext, no internal style ids, spacing in the selection format, markSaved(revision)
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
 // Exit code is non-zero when any check fails.
@@ -45,7 +46,7 @@ const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefine
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
 const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format',
-    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long'];
+    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));

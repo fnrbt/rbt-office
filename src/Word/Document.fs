@@ -2057,6 +2057,43 @@ let private selectedTableCells doc =
             Some (anchorTable, min anchorRow focusRow, min anchorCol focusCol, max anchorRow focusRow, max anchorCol focusCol)
         | _ -> None
 
+/// Tab / Shift+Tab in a table: the caret goes to the next / previous cell
+/// (row by row), and Tab in the last cell adds a row and goes to its first
+/// cell, as in Word. None when the caret is not in a table (or, for
+/// Shift+Tab, is in the first cell).
+let moveToAdjacentTableCell (forward: bool) (doc: Document) : Document option =
+    match currentTableCell doc with
+    | None -> None
+    | Some (tableId, rowIndex, colIndex) ->
+        let tableOf (current: Document) = current.Blocks |> List.tryPick (function Table table when table.Id = tableId -> Some table | _ -> None)
+        let cursorIn (current: Document) (row: int) (col: int) =
+            tableOf current
+            |> Option.bind (fun table -> List.tryItem row table.Rows)
+            |> Option.bind (fun tableRow -> List.tryItem col tableRow.Cells)
+            |> Option.bind (fun cell -> List.tryHead cell.Content)
+            |> Option.map (fun para -> setCursor para.Id 0 current)
+        match tableOf doc with
+        | None -> None
+        | Some table ->
+            let cellsIn (row: int) = match List.tryItem row table.Rows with Some tableRow -> tableRow.Cells.Length | None -> 0
+            // (Cells that continue a vertical merge hold nothing to type into: passed over.)
+            let continues (row: int) (col: int) =
+                match List.tryItem row table.Rows |> Option.bind (fun tableRow -> List.tryItem col tableRow.Cells) with
+                | Some cell -> cell.VerticalMerge = Some ContinueMerge
+                | None -> false
+            let rec step (row: int) (col: int) =
+                let nextRow, nextCol =
+                    if forward then (if col + 1 < cellsIn row then row, col + 1 else row + 1, 0)
+                    else (if col > 0 then row, col - 1 else row - 1, max 0 (cellsIn (row - 1) - 1))
+                if nextRow < 0 then None
+                elif nextRow >= table.Rows.Length then
+                    // Past the last cell: a new row like the last one.
+                    let extended = insertTableRowAfterSelection (match cursorIn doc (table.Rows.Length - 1) 0 with Some at -> at | None -> doc)
+                    cursorIn extended table.Rows.Length 0
+                elif continues nextRow nextCol then step nextRow nextCol
+                else cursorIn doc nextRow nextCol
+            step rowIndex colIndex
+
 /// Whether the selection spans more than one cell of a table (so that
 /// `mergeSelectedTableCells` has something to merge).
 let canMergeSelectedTableCells doc =
@@ -2199,6 +2236,17 @@ let deleteSelectedTableColumn doc =
 let insertTable rows columns doc =
     let rowCount = max 1 rows
     let columnCount = max 1 columns
+    // (One layout pixel - three quarters of a point: a thinner line is
+    // painted as a faint grey one at 100%.)
+    let thin : TableBorder option = Some { Style = Some "single"; Color = Some "#000000"; Width = Some 1.0 }
+    // The table refers to the document's table style for new tables: its
+    // "Table Grid" when it has one, else its default table style.
+    let defaultTableStyleId =
+        let tableStyles = doc.Styles |> List.filter (fun style -> style.StyleType = "table")
+        tableStyles
+        |> List.tryFind (fun style -> style.Id = "TableGrid")
+        |> Option.orElse (tableStyles |> List.tryFind (fun style -> style.IsDefault))
+        |> Option.map (fun style -> style.Id)
     let table = {
         Id = nextBlockId ()
         Rows = [ for _ in 1 .. rowCount -> { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None } ]
@@ -2206,7 +2254,10 @@ let insertTable rows columns doc =
         Alignment = None
         LayoutMode = None
         GridColumns = []
-        Borders = None
+        // A table that was just inserted is seen: single thin borders around
+        // every cell (what Word's "Table Grid" gives), stated on the table so
+        // that they are there whatever the document's table styles say.
+        Borders = Some { Top = thin; Right = thin; Bottom = thin; Left = thin; InsideH = thin; InsideV = thin }
         BackgroundColor = None
         Shading = None
         CellSpacing = None
@@ -2215,7 +2266,7 @@ let insertTable rows columns doc =
         PaddingBottom = None
         PaddingLeft = None
         Floating = false
-        StyleId = None
+        StyleId = defaultTableStyleId
         Look = None
     }
     let firstCellPara = table.Rows.Head.Cells.Head.Content.Head
@@ -3848,6 +3899,73 @@ let hyperlinkAt (para: ParagraphBlock) (offset: int) : (string * int * int) opti
         let mutable last = probe + 1
         while last < length && targetAt last = Some target do last <- last + 1
         Some (target, first, last)
+
+
+/// What the caret is in, for a host's contextual tools. Read off the document
+/// alone (no layout).
+type CaretContext = {
+    InTable: bool
+    /// 0-based row and column of the cell the caret is in (-1 outside a table).
+    Row: int
+    Column: int
+    RowCount: int
+    ColumnCount: int
+    /// The selection spans several cells of one table.
+    CanMergeCells: bool
+    /// The caret's cell is a merged one.
+    CanSplitCell: bool
+    InHyperlink: bool
+    InList: bool
+    /// Always false: headers and footers are not edited in place.
+    InHeaderFooter: bool
+    /// The selection is one picture.
+    ImageSelected: bool
+}
+
+let caretContext (doc: Document) : CaretContext =
+    let outside =
+        { InTable = false; Row = -1; Column = -1; RowCount = 0; ColumnCount = 0; CanMergeCells = false; CanSplitCell = false
+          InHyperlink = false; InList = false; InHeaderFooter = false; ImageSelected = false }
+    match doc.Selection with
+    | None -> outside
+    | Some selection ->
+        let focus = selection.Focus
+        let sameBlock = selection.Anchor.BlockId = focus.BlockId
+        let first = if sameBlock then min selection.Anchor.Offset focus.Offset else focus.Offset
+        let last = if sameBlock then max selection.Anchor.Offset focus.Offset else focus.Offset
+        let paragraph = findParagraph doc focus.BlockId
+        let inText =
+            match paragraph with
+            | None -> outside
+            | Some para ->
+                { outside with
+                    InHyperlink = (hyperlinkAt para first).IsSome
+                    InList = para.Metadata.ListStyle <> NoList
+                    ImageSelected =
+                        sameBlock && last - first = 1
+                        && (para.Buffer.Runs |> List.exists (function Image image -> image.Start = first | _ -> false)) }
+        match tryFindTableCellByParagraph doc focus.BlockId with
+        | None -> inText
+        | Some (tableId, rowIndex, colIndex) ->
+            let table = doc.Blocks |> List.tryPick (function Table table when table.Id = tableId -> Some table | _ -> None)
+            match table with
+            | None -> inText
+            | Some table ->
+                let cell = List.tryItem rowIndex table.Rows |> Option.bind (fun row -> List.tryItem colIndex row.Cells)
+                { inText with
+                    InTable = true
+                    Row = rowIndex
+                    Column = colIndex
+                    RowCount = table.Rows.Length
+                    ColumnCount = table.Rows |> List.fold (fun widest row -> max widest (row.Cells |> List.sumBy (fun cell -> max 1 cell.ColSpan))) 0
+                    CanMergeCells =
+                        (match selectedTableCells doc with
+                         | Some (_, firstRow, firstCol, lastRow, lastCol) -> firstRow <> lastRow || firstCol <> lastCol
+                         | None -> false)
+                    CanSplitCell =
+                        (match cell with
+                         | Some cell -> cell.ColSpan > 1 || cell.VerticalMerge = Some RestartMerge
+                         | None -> false) }
 
 /// Change the target of the hyperlink the caret is in (the whole link, not
 /// just the selected part); None removes the link and keeps its text. With a

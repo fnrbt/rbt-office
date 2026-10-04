@@ -150,6 +150,59 @@ check "link: the caret is after it" (inserted.Selection |> Option.map (fun s -> 
 let bare = plain |> caret "p" 0 |> Doc.insertHyperlink "https://example.com/d" ""
 check "link: without a text the target is the text" ((textOf (paraOf bare)).StartsWith "https://example.com/dVisit", Doc.hyperlinkAt (paraOf bare) 3 |> Option.map (fun (target, first, last) -> target, first, last)) (true, Some ("https://example.com/d", 0, 21))
 
+// ---- a table that was just inserted; what the caret is in --------------------------
+module Styles = Rbt.Word.WordStyles
+let newWithTable = docOf [ paragraph "before" "Before" ] |> Doc.setCursor "before" 3 |> Doc.insertTable 3 3
+let newInsertedTable = newWithTable.Blocks |> List.pick (function Doc.Table table -> Some table | _ -> None)
+let newCellParagraph row col = newInsertedTable.Rows.[row].Cells.[col].Content.Head
+let newSide (border: Doc.TableBorder option) = border |> Option.map (fun b -> b.Style, b.Color, b.Width)
+check "new table: single borders on every edge"
+    (newInsertedTable.Borders |> Option.map (fun b -> [ newSide b.Top; newSide b.Right; newSide b.Bottom; newSide b.Left; newSide b.InsideH; newSide b.InsideV ] |> List.distinct))
+    (Some [ Some (Some "single", Some "#000000", Some 1.0) ])
+check "new table: no table style in a document without one" newInsertedTable.StyleId None
+check "new table: the caret is in its first cell" (newWithTable.Selection |> Option.map (fun sel -> sel.Focus.BlockId, sel.Focus.Offset, sel.IsCollapsed)) (Some ((newCellParagraph 0 0).Id, 0, true))
+let newContextOf (doc: Doc.Document) = let c = Doc.caretContext doc in c.InTable, c.Row, c.Column, c.RowCount, c.ColumnCount
+check "caret context: the first cell" (newContextOf newWithTable) (true, 0, 0, 3, 3)
+check "caret context: outside a table" (newContextOf (newWithTable |> Doc.setCursor "before" 1)) (false, -1, -1, 0, 0)
+let tab (doc: Doc.Document) = Doc.moveToAdjacentTableCell true doc |> Option.get
+let backTab (doc: Doc.Document) = Doc.moveToAdjacentTableCell false doc
+check "Tab: the next cell" (newContextOf (tab newWithTable)) (true, 0, 1, 3, 3)
+check "Tab at the end of a row: the next row" (newContextOf (newWithTable |> tab |> tab |> tab)) (true, 1, 0, 3, 3)
+check "Shift+Tab: the cell before" (newWithTable |> tab |> tab |> tab |> backTab |> Option.map newContextOf) (Some (true, 0, 2, 3, 3))
+check "Shift+Tab in the first cell: nowhere" (backTab newWithTable |> Option.isSome) false
+check "Tab outside a table: not a cell move" (Doc.moveToAdjacentTableCell true (newWithTable |> Doc.setCursor "before" 1) |> Option.isSome) false
+let newAtLast = [ 1 .. 8 ] |> List.fold (fun doc _ -> tab doc) newWithTable
+check "eight Tabs: the last cell" (newContextOf newAtLast) (true, 2, 2, 3, 3)
+check "Tab in the last cell: a new row, its first cell" (newContextOf (tab newAtLast)) (true, 3, 0, 4, 3)
+// The layout has a place for the empty paragraph of every cell (the caret is drawn there).
+let newTableLayouts = layoutDocumentWithRange settings measureText measureRange newWithTable
+check "layout: every empty cell paragraph has a place"
+    ([ for row in 0 .. 2 do for col in 0 .. 2 -> newTableLayouts |> List.exists (fun layout -> layout.BlockId = (newCellParagraph row col).Id) ] |> List.forall id) true
+let newCellLayout row col = newTableLayouts |> List.find (fun layout -> layout.BlockId = (newCellParagraph row col).Id)
+check "layout: cells of a row newSide by newSide, rows below each other"
+    ((newCellLayout 0 1).Indent > (newCellLayout 0 0).Indent + 50.0, (newCellLayout 0 2).Indent > (newCellLayout 0 1).Indent + 50.0, (newCellLayout 1 0).Y > (newCellLayout 0 0).Y + 10.0, (newCellLayout 0 1).Y = (newCellLayout 0 0).Y)
+    (true, true, true, true)
+// Merge / split and what the context says of them.
+let newOverTwo = newWithTable |> Doc.setSelection { BlockId = (newCellParagraph 0 0).Id; Offset = 0 } { BlockId = (newCellParagraph 0 1).Id; Offset = 0 }
+check "caret context: a selection over two cells can be merged" (let c = Doc.caretContext newOverTwo in c.CanMergeCells, c.CanSplitCell) (true, false)
+let newMergedCells = Doc.mergeSelectedTableCells newOverTwo
+let newMergedTable = newMergedCells.Blocks |> List.pick (function Doc.Table table -> Some table | _ -> None)
+let newInMerged = newMergedCells |> Doc.setCursor newMergedTable.Rows.Head.Cells.Head.Content.Head.Id 0
+check "caret context: a merged cell can be split" (let c = Doc.caretContext newInMerged in c.InTable, c.CanSplitCell, c.ColumnCount) (true, true, 3)
+// Lists, links.
+let newListed = docOf [ { paragraph "li" "item" with Metadata = { Doc.defaultMetadata with ListStyle = Doc.Bullet } } ] |> Doc.setCursor "li" 2
+check "caret context: in a list" (let c = Doc.caretContext newListed in c.InList, c.InTable, c.InHyperlink, c.InHeaderFooter, c.ImageSelected) (true, false, false, false, false)
+check "caret context: in a hyperlink" ((Doc.caretContext (bare |> Doc.setCursor "p" 3)).InHyperlink) true
+// The selection format: an internal style entry is not a style; spacing is reported.
+let internalStyled = docOf [ { paragraph "cellp" "text" with Metadata = { Doc.defaultMetadata with Style = Some "__docDefaults" } } ] |> Doc.setCursor "cellp" 1
+check "selection format: an internal style id is no style" (Styles.selectionFormat internalStyled).StyleId (Styles.Uniform None)
+check "internal style ids" (Styles.isInternalStyleId "__docDefaults", Styles.isInternalStyleId "Heading1", Styles.isInternalStyleId null) (true, false, false)
+let newSpaced = docOf [ paragraph "sp" "text" ] |> Doc.setCursor "sp" 1 |> Doc.setLineSpacing (Some 1.5) |> Doc.setSpacingBefore (Some 8.0) |> Doc.setSpacingAfter (Some 16.0)
+let spacedFormat = Styles.selectionFormat newSpaced
+check "selection format: line spacing and the space before / after"
+    (spacedFormat.ParagraphLineSpacing, spacedFormat.ParagraphSpacingBefore, spacedFormat.ParagraphSpacingAfter)
+    (Styles.Uniform (Some 1.5), Styles.Uniform 8.0, Styles.Uniform 16.0)
+
 printfn ""
 printfn "Word command tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

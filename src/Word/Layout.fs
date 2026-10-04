@@ -4298,6 +4298,12 @@ let private layoutDocumentWithRangeAndInitial
                                     Lines = shiftLinesY offset layout.Lines }
                             addBodyLayout adjustedLayout
                             footnotesByPage <- addLayoutFootnotes settings footnotesByPage adjustedLayout
+                        else
+                            // An empty paragraph of a cell has no line, but it is
+                            // where the caret is in a cell nothing was typed into
+                            // (every cell of a table that was just inserted): its
+                            // place is part of the layout like any paragraph's.
+                            addBodyLayout { layout with Y = layout.Y + offset; VAlignOffset = layout.VAlignOffset + queryVAlignOffset }
 
                 let addHeaderLayoutsAt headerY =
                     let mutable headerRowY = headerY

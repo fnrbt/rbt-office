@@ -713,12 +713,17 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             newDoc <- if commandKey then moveToDocumentEdge handler.Document true shift else moveToLineEdge handler.Document true shift
             e.preventDefault()
         | "Tab" ->
-            if ke.shiftKey then
-                // Shift+Tab: Decrease indent
-                newDoc <- Doc.decreaseIndent handler.Document
-            else
-                // Tab: Increase indent
-                newDoc <- Doc.increaseIndent handler.Document
+            // In a table Tab and Shift+Tab go from cell to cell (Tab in the
+            // last cell adds a row), as in Word; elsewhere they indent.
+            match Doc.moveToAdjacentTableCell (not ke.shiftKey) handler.Document with
+            | Some moved -> newDoc <- moved
+            | None ->
+                if ke.shiftKey then
+                    // Shift+Tab: Decrease indent (in the first cell of a table: nothing)
+                    if not (Doc.caretContext handler.Document).InTable then newDoc <- Doc.decreaseIndent handler.Document
+                else
+                    // Tab: Increase indent
+                    newDoc <- Doc.increaseIndent handler.Document
             e.preventDefault()
         | "Enter" ->
             // Check if we're on an empty list item - if so, exit list

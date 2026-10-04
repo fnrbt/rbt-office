@@ -171,8 +171,19 @@ module API =
     /// Remember the current content as the saved one: isModified is false
     /// until the content differs from it (and false again after undoing or
     /// redoing back to it).
-    let markSaved (editor: Editor) : unit =
-        editor.SavedRevision <- editor.Revision
+    ///
+    /// With a revision it is that revision that counts as saved - the one a
+    /// save wrote, read before the save began:
+    ///   const r = Word.getRevision(editor);
+    ///   const bytes = await exportDocx(editor); await upload(bytes);
+    ///   Word.markSaved(editor, r);
+    /// What the user typed while the upload ran then stays unsaved
+    /// (isModified is true), and undoing it gives the saved state. Without a
+    /// revision (or with null) the current content is the saved one.
+    let markSaved (editor: Editor) (revision: obj) : unit =
+        editor.SavedRevision <-
+            if isNull revision || jsTypeof revision <> "number" || System.Double.IsNaN (unbox<float> revision) then editor.Revision
+            else int (unbox<float> revision)
 
     /// Whether the content differs from what was last loaded or marked saved.
     let isModified (editor: Editor) : bool =
@@ -199,9 +210,14 @@ module API =
     ///     size box shows: 11, 12, 14 ...; the unit of setFontSizePt)
     ///   Hyperlink: the target of the link the caret / selection is in (null: none)
     ///   Color: "#RRGGBB" (null: automatic), Highlight: colour name / value (null: none)
-    ///   Paragraph: { StyleId (null: default style), HeadingLevel (0: body text),
+    ///   Paragraph: { StyleId (null: default style; never an internal entry such as "__docDefaults"),
+    ///     HeadingLevel (0: body text),
     ///     Alignment "left" | "center" | "right" | "justify",
-    ///     ListKind "none" | "bullet" | "numbered", ListLevel, IndentLeft, IndentRight, FirstLineIndent }
+    ///     ListKind "none" | "bullet" | "numbered", ListLevel, IndentLeft, IndentRight, FirstLineIndent,
+    ///     LineSpacing (a multiple of single spacing - what setLineSpacing takes - for the rule
+    ///       "auto"; layout pixels for "exact" / "atLeast"; null: not stated, single spacing),
+    ///     LineSpacingRule "auto" | "exact" | "atLeast" | null,
+    ///     SpaceBefore, SpaceAfter (points, what setSpacingBefore / setSpacingAfter take) }
     ///   HasSelection, IsCollapsed, CanUndo, CanRedo: boolean
     let getSelectionFormat (editor: Editor) =
         let format = WordStyles.selectionFormat editor.Doc
@@ -243,6 +259,10 @@ module API =
                 "IndentLeft" ==> number format.IndentLeft
                 "IndentRight" ==> number format.IndentRight
                 "FirstLineIndent" ==> number format.FirstLineIndent
+                "LineSpacing" ==> formatValueToJs (fun (spacing: float option) -> match spacing with Some value -> box value | None -> null) format.ParagraphLineSpacing
+                "LineSpacingRule" ==> text format.ParagraphLineSpacingRule
+                "SpaceBefore" ==> formatValueToJs (fun (pixels: float) -> box (System.Math.Round (pixels * 72.0 / 96.0 * 100.0) / 100.0)) format.ParagraphSpacingBefore
+                "SpaceAfter" ==> formatValueToJs (fun (pixels: float) -> box (System.Math.Round (pixels * 72.0 / 96.0 * 100.0) / 100.0)) format.ParagraphSpacingAfter
             ]
             "HasSelection" ==> editor.Doc.Selection.IsSome
             "IsCollapsed" ==> (match editor.Doc.Selection with Some selection -> selection.IsCollapsed | None -> true)
@@ -1757,8 +1777,9 @@ module API =
                 | Some level when level >= 0 && level <= 8 && style.StyleType = "paragraph" -> level + 1
                 | _ -> 0
         editor.Doc.Styles
-        // (The document defaults are kept among the styles; they are not one.)
-        |> List.filter (fun style -> style.StyleType <> "defaults")
+        // (The document defaults are kept among the styles - as "__docDefaults",
+        // whatever type the file's reader gave the entry; they are not a style.)
+        |> List.filter (fun style -> style.StyleType <> "defaults" && not (WordStyles.isInternalStyleId style.Id))
         |> List.map (fun style ->
             createObj [
                 "Id" ==> style.Id
@@ -1904,9 +1925,47 @@ module API =
         let newDoc = Doc.deleteSelectedTableColumn editor.Doc
         commitDocumentUpdate editor newDoc
 
+    /// Insert a table of `rows` x `columns` after the block the caret is in.
+    /// It has single thin borders (and refers to the document's "Table Grid"
+    /// or default table style when it has one), and the caret is in its first
+    /// cell: getCaretRect, getSelectionInformation and getCaretContext answer
+    /// at once, and Tab / Shift+Tab go from cell to cell.
     let insertTable (editor: Editor) (rows: int) (columns: int) =
         let newDoc = Doc.insertTable rows columns editor.Doc
         commitDocumentUpdate editor newDoc
+
+    /// What the caret is in, read off the document alone (no layout pass: a
+    /// few microseconds whatever the document's length, where
+    /// getSelectionInformation lays the caret's surroundings out):
+    /// { InTable, Row, Column (0-based; -1 outside a table), RowCount,
+    ///   ColumnCount, CanMergeCells (the selection spans several cells),
+    ///   CanSplitCell (the caret's cell is a merged one), InHyperlink, InList,
+    ///   InHeaderFooter (always false: headers and footers are not edited in
+    ///   place), ImageSelected (the selection is one picture) }.
+    let getCaretContext (editor: Editor) : obj =
+        let context = Doc.caretContext editor.Doc
+        createObj [
+            "InTable" ==> context.InTable
+            "Row" ==> context.Row
+            "Column" ==> context.Column
+            "RowCount" ==> context.RowCount
+            "ColumnCount" ==> context.ColumnCount
+            "CanMergeCells" ==> context.CanMergeCells
+            "CanSplitCell" ==> context.CanSplitCell
+            "InHyperlink" ==> context.InHyperlink
+            "InList" ==> context.InList
+            "InHeaderFooter" ==> context.InHeaderFooter
+            "ImageSelected" ==> context.ImageSelected
+        ]
+
+    /// Tab (forward) / Shift+Tab in a table, for a host's own keys or
+    /// buttons: true when the caret moved to another cell.
+    let moveToAdjacentTableCell (editor: Editor) (forward: bool) : bool =
+        match Doc.moveToAdjacentTableCell forward editor.Doc with
+        | Some moved ->
+            commitDocumentUpdate editor moved
+            true
+        | None -> false
 
     let insertTextBox (editor: Editor) (text: string) =
         let newDoc = Doc.insertTextBox text editor.Doc
@@ -2428,6 +2487,8 @@ module API =
             "clearTextPathPainter" ==> clearTextPathPainter
             "clearTextMeasurer" ==> clearTextMeasurer
             "getRenderStats" ==> getRenderStats
+            "getCaretContext" ==> getCaretContext
+            "moveToAdjacentTableCell" ==> moveToAdjacentTableCell
             "toggleTrackChanges" ==> toggleTrackChanges
             "getCommentAnchors" ==> getCommentAnchors
             "getRevisionInfos" ==> getRevisionInfos
