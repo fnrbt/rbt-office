@@ -81,5 +81,41 @@ eq "wrapped text is not let out"
 let merged = createEmpty 50 12 |> setCell (at 1 1) (text long) |> addMergedCell 1 1 1 2
 eq "a merged cell's text stays in the merged cell" (clipOf merged long |> Option.bind id |> Option.map snd) (Some 200.0)
 
+// ---- the grid lines the text crosses ------------------------------------------
+// Text that runs over the cells beside its own hides the vertical grid lines
+// it crosses (not the lines above and below the row, not a border, not the
+// line at the cell that stops it); wrapped and rotated text crosses none.
+let verticalGridLines (model: SpreadsheetModel) (row: int) =
+    let top, bottom = 30.0 + Layout.rowTop model row, 30.0 + Layout.rowTop model (row + 1)
+    Paint.buildPaintItems model (Layout.defaultViewport 1200.0 400.0)
+    |> List.choose (function
+        | Paint.GridLine (x1, y1, x2, y2, color, _) when x1 = x2 && color = "#a6a6a6" && y1 >= top - 0.5 && y2 <= bottom + 0.5 -> Some (int (x1 - 50.0) / 100)
+        | _ -> None)
+    |> List.distinct |> List.sort
+let horizontalGridLines (model: SpreadsheetModel) (row: int) =
+    let y = 30.0 + Layout.rowTop model row
+    Paint.buildPaintItems model (Layout.defaultViewport 1200.0 400.0)
+    |> List.filter (function Paint.GridLine (x1, y1, x2, y2, color, _) when y1 = y2 && y1 = y && color = "#a6a6a6" -> true | _ -> false)
+    |> List.length
+let lines = "Text that is wider than one cell, and than three of them too"
+let plain = createEmpty 30 12
+let across = plain |> setCell (at 2 1) (text lines)
+eq "an empty row: a grid line at every column edge" (verticalGridLines plain 2 |> List.truncate 6) [ 0; 1; 2; 3; 4; 5 ]
+let crossedBy (model: SpreadsheetModel) row = [ 0 .. 8 ] |> List.filter (fun edge -> not (List.contains edge (verticalGridLines model row)))
+let widthNeeded = crossedBy across 2
+eq "text running right: the lines it crosses are not drawn" (widthNeeded.Length >= 2 && widthNeeded.Head = 2 && widthNeeded = [ 2 .. 1 + widthNeeded.Length ]) true
+eq "the lines above and below its row are whole" (horizontalGridLines across 2, horizontalGridLines across 3) (horizontalGridLines plain 2, horizontalGridLines plain 3)
+eq "the rows around it keep every line" (crossedBy across 1, crossedBy across 3) ([], [])
+eq "stopped by a cell: only the lines before it" (crossedBy (across |> setCell (at 2 3) (text "stop")) 2) [ 2 ]
+eq "right-aligned: the lines to its left" (crossedBy (plain |> setCell (at 2 6) (aligned "right" lines)) 2 |> List.forall (fun edge -> edge <= 6), (crossedBy (plain |> setCell (at 2 6) (aligned "right" lines)) 2).Length >= 2) (true, true)
+eq "centred: lines on both sides" (let crossed = crossedBy (plain |> setCell (at 2 5) (aligned "center" lines)) 2 in List.contains 5 crossed && List.contains 6 crossed) true
+eq "wrapped text crosses none" (crossedBy (plain |> setCell (at 2 1) { text lines with Format = { defaultFormat with WrapText = true } }) 2) []
+eq "rotated text crosses none" (crossedBy (plain |> setCell (at 2 1) { text lines with Format = { defaultFormat with TextRotation = 45 } }) 2) []
+eq "a number crosses none" (crossedBy (plain |> setCell (at 2 1) { Value = CellValue.Number 123456789012345.0; Format = defaultFormat; Comment = None }) 2) []
+// A border on a crossed edge is a border still.
+let bordered = across |> setCell (at 2 3) { Value = CellValue.Empty; Format = { defaultFormat with BorderLeft = Some { Style = "thin"; Color = Some "#ff0000" } }; Comment = None }
+eq "a border the text crosses is drawn"
+    (Paint.buildPaintItems bordered (Layout.defaultViewport 1200.0 400.0) |> List.filter (function Paint.GridLine (_, _, _, _, color, _) -> color = "#ff0000" | _ -> false) |> List.length) 1
+
 printfn "stage30-overflow: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

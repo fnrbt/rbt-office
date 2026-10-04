@@ -307,6 +307,9 @@ let private borderStrokeWidth (style: string) : float =
     | "slantdashdot" -> 1.5
     | _ -> 1.0
 
+/// The colour of the painter's grid lines.
+let private gridLineColor = "#a6a6a6"
+
 let private borderColor (side: BorderStyle) : string =
     side.Color |> Option.defaultValue "#000000"
 
@@ -346,7 +349,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
 
     let states = cells |> List.map cellState
 
-    [
+    let items = [
         // Pass 1: all backgrounds. Adjacent cells share an edge, so when a
         // cell with a non-default fill is followed by another cell, the
         // second cell's fill would overdraw the first cell's right/bottom
@@ -504,7 +507,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
             elif model.ShowGridLines then
                 let bordered (mine: BorderStyle option) nr nc nside =
                     mine.IsSome || (neighborSide nr nc nside).IsSome
-                let g = "#a6a6a6"
+                let g = gridLineColor
                 if not (bordered format.BorderTop (r - 1) c (fun f -> f.BorderBottom)) then
                     yield zone, GridLine (rect.X, rect.Y, rect.X + rect.Width, rect.Y, g, 1.0)
                 if not (bordered format.BorderBottom (r + 1) c (fun f -> f.BorderTop)) then
@@ -978,6 +981,24 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 yield zone, FillRect ({ X = iconX; Y = iconY; Width = sz; Height = sz }, color)
             | _ -> ()
     ]
+    // Text that runs over the cells beside its own (its clip is that run of
+    // cells) hides the grid lines it crosses, as in Excel: the vertical grid
+    // lines inside such a clip, within its row, are not drawn. Borders stay.
+    let overflows = ResizeArray<Rect>()
+    for _, item in items do
+        match item with
+        | DrawText { Clip = Some clip; Rect = rect } when clip.X < rect.X - 6.0 || clip.X + clip.Width > rect.X + rect.Width + 6.0 -> overflows.Add clip
+        | _ -> ()
+    if overflows.Count = 0 then items
+    else
+        items |> List.filter (fun (_, item) ->
+            match item with
+            | GridLine (x1, y1, x2, y2, color, width) when x1 = x2 && width = 1.0 && color = gridLineColor ->
+                let mutable crossed = false
+                for clip in overflows do
+                    if x1 > clip.X + 0.5 && x1 < clip.X + clip.Width - 0.5 && y1 >= clip.Y - 0.5 && y2 <= clip.Y + clip.Height + 0.5 then crossed <- true
+                not crossed
+            | _ -> true)
 
 /// Freeze-divider strokes drawn on top of the cell layer. Excel renders
 /// this as a single ~1 px line slightly darker than the regular gridline,

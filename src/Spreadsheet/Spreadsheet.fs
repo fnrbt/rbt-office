@@ -2172,7 +2172,7 @@ type Spreadsheet(container: Element) =
         // holds something. The node keeps its place; its text is let out of
         // its box and clipped at the run of cells it may cover.
         let mutable wide = false
-        let mutable crossed : float list = []
+        let mutable crossed : (float * int) list = []
         match cellData with
         | Some data when displayText <> "" && endRow = row && endCol = col && icon.IsNone ->
             match SpreadsheetLayout.textOverflowSides data.Format data.Value with
@@ -2185,6 +2185,10 @@ type Spreadsheet(container: Element) =
                     let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - 3.0 else 0.0
                     let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - 3.0 else 0.0
                     let first, last = SpreadsheetLayout.textOverflowSpan model row col needLeft needRight
+                    // Text of a frozen column runs on into the columns beside the frozen
+                    // ones only while they are there: scrolled away, it is cut at the frozen edge.
+                    let last = if col < model.FrozenCols && scrollLeft > 0.5 then min last (model.FrozenCols - 1) else last
+                    let first = if col >= model.FrozenCols then max first model.FrozenCols else first
                     if first <> col || last <> col then
                         let own = SpreadsheetLayout.columnLeft model col
                         let extraLeft = own - SpreadsheetLayout.columnLeft model first
@@ -2197,20 +2201,22 @@ type Spreadsheet(container: Element) =
                         if toLeft then
                             add "display" "flex"
                             add "justify-content" (if toRight then "center" else "flex-end")
-                        // The grid lines the text crosses are not shown (unless
-                        // a cell there has a border or a fill of its own).
-                        if model.ShowGridLines then
-                            let plain (c: int) =
-                                match getCell { Row = row; Col = c } model with
-                                | Some other ->
-                                    other.Format.BgColor.IsNone && other.Format.BorderLeft.IsNone && other.Format.BorderRight.IsNone
-                                | None -> true
-                            crossed <-
-                                [ for c in first .. last - 1 do
-                                    let edge = SpreadsheetLayout.columnLeft model (c + 1)
-                                    if edge > SpreadsheetLayout.columnLeft model c && plain c && plain (c + 1)
-                                       && (c <> col || data.Format.BgColor.IsNone) && (c + 1 <> col || data.Format.BgColor.IsNone) then
-                                        yield edge - own ]
+                        // The grid lines the text crosses are not shown: each is the
+                        // left grid line of the cell on its right (see the edges above).
+                        // Borders stay, and so do the lines above and below the row.
+                        crossed <-
+                            [ for c in first .. last - 1 do
+                                // (A hidden column has no line of its own.)
+                                if SpreadsheetLayout.columnLeft model (c + 2) > SpreadsheetLayout.columnLeft model (c + 1) then
+                                    match SpreadsheetLayout.edgeLeft model row (c + 1) with
+                                    | SpreadsheetLayout.EdgeGrid true ->
+                                        let topLine =
+                                            match SpreadsheetLayout.edgeAbove model row (c + 1) with
+                                            | SpreadsheetLayout.EdgeBorder border -> (match borderCssParts border.Style with Some (width, _) -> width | None -> 0)
+                                            | SpreadsheetLayout.EdgeGrid true -> 1
+                                            | _ -> 0
+                                        yield SpreadsheetLayout.columnLeft model (c + 1) - own, topLine
+                                    | _ -> () ]
             | _ -> ()
         | _ -> ()
         node.Wide <- wide
@@ -2227,11 +2233,13 @@ type Spreadsheet(container: Element) =
                 setClassName line "spreadsheet-edge"
                 setCssText line style
                 appendChild cell line
-        for edge in crossed do
+        for edge, topLine in crossed do
+            // One pixel wide, where that grid line is, from below the line above the row:
+            // under the text and over the cell the line belongs to. (A grid line is only
+            // there between two cells without a fill: what shows instead is their white.)
             let strip = createElement "div"
             setClassName strip "spreadsheet-overflow-gap"
-            // (Children are placed from the padding box: inside the 1px border.)
-            setCssText strip ("position:absolute;left:" + string (int (edge + 0.5) - 2) + "px;top:0;width:2px;height:100%;background:white;z-index:-1;pointer-events:none")
+            setCssText strip ("position:absolute;left:" + string (int (floor (edge + 0.5))) + "px;top:" + string topLine + "px;bottom:0;width:1px;background:white;z-index:-1;pointer-events:none")
             appendChild cell strip
         match icon with
         | Some (index, count) ->
@@ -2364,7 +2372,9 @@ type Spreadsheet(container: Element) =
             let styleInputs : obj array =
                 [| box model.ConditionalFormats; box model.Threads; box model.MergedCells; box model.ShowGridLines
                    box (match workbook with Some wb -> box wb.Tables | None -> null); box activeSheetIndex; box readOnly
-                   (if model.ConditionalFormats.IsEmpty then null else box model.Cells) |]
+                   (if model.ConditionalFormats.IsEmpty then null else box model.Cells)
+                   // (Text of a frozen column is cut at the frozen edge once the columns beside it are scrolled away.)
+                   box (model.FrozenCols > 0 && scrollLeft > 0.5) |]
             // (Compared by identity: each is a value the model replaces when it changes.)
             let sameInputs =
                 styleInputs.Length = renderedStyleInputs.Length

@@ -472,6 +472,75 @@ checks['text-overflow'] = async () => {
         grid.SetCell(10, 1, title);
         grid.MergeCells(10, 1, 10, 2);
         check('a merged cell keeps its text inside', let_out(10, 1), [0, 0]);
+        // ---- what is on screen (pixels) ----
+        {
+            host.style.display = 'none';   // (the grid of the checks above is in the same place)
+            const pixelGrid = mountGrid();
+            const g = pixelGrid.grid, h = pixelGrid.host;
+            const layout = await import('/spreadsheet/Layout.js');
+            const { setCell: put, getCell: get, CellAddress: Addr, setColumnWidth: widen } = await import('/spreadsheet/Model.js');
+            const shoot = async () => {
+                await frame();
+                const box = h.getBoundingClientRect();
+                const shot = await screenPixels(box.left, box.top, Math.min(1090, box.width), Math.min(590, box.height));
+                const first = cellNode(h, g.GetModel().FrozenRows > 0 || g.GetModel().FrozenCols > 0 ? 0 : 0, 0).getBoundingClientRect();
+                return { shot, probe: edgeProbe(shot, { x: first.left - box.left, y: first.top - box.top }, g.GetModel(), layout) };
+            };
+            // The colours down the column of pixels of a vertical grid line (between a row's top line and the next row's), and of the row's top line over some columns.
+            const edgeColumn = (view, row, col) => { const out = []; for (let y = Math.round(view.probe.top(row)) + 1; y < Math.round(view.probe.top(row + 1)); y++) out.push(view.shot.at(Math.round(view.probe.left(col)), y)); return out; };
+            const lineOver = (view, row, fromCol, toCol) => view.probe.solidRow(view.probe.top(row), view.probe.left(fromCol) + 1, view.probe.left(toCol), GRID);
+            // (A grid line is grey all the way down; the soft edge of a glyph is grey in a few places.)
+            const noGrid = (pixels) => pixels.filter((pixel) => near(pixel, GRID)).length < pixels.length / 2;
+            const INK = (pixel) => pixel[0] < 110 && pixel[1] < 110 && pixel[2] < 110;
+            const inkIn = (view, row, col) => { let n = 0; for (let y = Math.round(view.probe.top(row)) + 2; y < Math.round(view.probe.top(row + 1)) - 1; y++) for (let x = Math.round(view.probe.left(col)) + 2; x < Math.round(view.probe.left(col + 1)) - 1; x++) if (INK(view.shot.at(x, y))) n++; return n; };
+            const long = 'Overflowing text that is a good deal wider than one cell';
+            g.SetCell(1, 1, long);                                         // left-aligned, to the right
+            g.SetCell(3, 6, long); g.SelectCell(3, 6); g.ApplyFormat('alignRight');   // to the left
+            g.SetCell(5, 4, long); g.SelectCell(5, 4); g.ApplyFormat('alignCenter');  // both ways
+            g.SetCell(7, 1, long); g.SetCell(7, 3, 'stop');                // stopped by a cell
+            g.SetCell(9, 1, long); g.SelectCell(9, 1); g.ApplyBgColor('#ffeeaa');        // a filled cell's text
+            g.SetCell(11, 1, long); g.SelectRange(11, 2, 11, 3); g.ApplyBgColor('#cce5ff'); // over filled empty cells
+            g.SelectCell(14, 9);
+            let view = await shoot();
+            check('pixels: the text runs over the cells to its right', [inkIn(view, 1, 2) > 20, inkIn(view, 1, 3) > 20], [true, true]);
+            check('pixels: the grid lines it crosses are not drawn (between B|C and C|D), the one past its end is', [noGrid(edgeColumn(view, 1, 2)), noGrid(edgeColumn(view, 1, 3)), edgeColumn(view, 1, 6).every((pixel) => near(pixel, GRID))], [true, true, true]);
+            check('pixels: the lines above and below the row are whole where it crosses', [lineOver(view, 1, 1, 6), lineOver(view, 2, 1, 6)], [true, true]);
+            check('pixels: right-aligned text runs to the left, its crossed lines gone, the lines above and below whole', [inkIn(view, 3, 5) > 20, inkIn(view, 3, 7), noGrid(edgeColumn(view, 3, 6)), noGrid(edgeColumn(view, 3, 5)), lineOver(view, 3, 2, 7), lineOver(view, 4, 2, 7)], [true, 0, true, true, true, true]);
+            check('pixels: centred text runs both ways', [inkIn(view, 5, 3) > 20, inkIn(view, 5, 5) > 20, noGrid(edgeColumn(view, 5, 4)), noGrid(edgeColumn(view, 5, 5)), lineOver(view, 5, 2, 7), lineOver(view, 6, 2, 7)], [true, true, true, true, true, true]);
+            check('pixels: text stops at the first cell that holds something (its line stays, nothing drawn past it)', [inkIn(view, 7, 2) > 20, noGrid(edgeColumn(view, 7, 2)), edgeColumn(view, 7, 3).every((pixel) => near(pixel, GRID) || INK(pixel) === false && near(pixel, GRID)), inkIn(view, 7, 4)], [true, true, true, 0]);
+            const FILL = [255, 238, 170], BLUE = [204, 229, 255];
+            check('pixels: a filled cell: its fill stays in its cell, the text runs on over white', [near(view.shot.at(Math.round(view.probe.left(1)) + 3, Math.round(view.probe.top(9)) + 2), FILL), near(view.shot.at(Math.round(view.probe.left(2)) + 3, Math.round(view.probe.top(9)) + 2), WHITE), inkIn(view, 9, 2) > 20, noGrid(edgeColumn(view, 9, 2)), noGrid(edgeColumn(view, 9, 3))], [true, true, true, true, true]);
+            check('pixels: over filled cells the text is on their fill - no white strip at the edge between them', [inkIn(view, 11, 2) > 20, near(view.shot.at(Math.round(view.probe.left(2)) + 3, Math.round(view.probe.top(11)) + 2), BLUE), edgeColumn(view, 11, 3).filter((pixel) => near(pixel, WHITE)).length, edgeColumn(view, 11, 3).filter((pixel) => near(pixel, BLUE)).length > 5], [true, true, 0, true]);
+            // Wrapped and rotated text stays in its cell.
+            const model = g.GetModel();
+            const withFormat = (m, row, col, change) => { const cell = get(new Addr(row, col), m); return put(new Addr(row, col), Object.assign(Object.create(Object.getPrototypeOf(cell)), cell, { Format: Object.assign(Object.create(Object.getPrototypeOf(cell.Format)), cell.Format, change) }), m); };
+            g.SetCell(13, 1, long); g.SetCell(15, 1, long);
+            g.SetWorkbook([withFormat(withFormat(g.GetModel(), 13, 1, { WrapText: true }), 15, 1, { TextRotation: 45 })], ['Sheet1'], 0);
+            g.SelectCell(18, 9);
+            view = await shoot();
+            check('pixels: wrapped text does not run over', [inkIn(view, 13, 2), edgeColumn(view, 13, 2).every((pixel) => near(pixel, GRID))], [0, true]);
+            check('pixels: rotated text does not run over', [inkIn(view, 15, 2), edgeColumn(view, 15, 2).every((pixel) => near(pixel, GRID))], [0, true]);
+            // Frozen columns: text of a frozen cell runs on into the columns beside it while they are
+            // there, and is cut at the frozen edge once they are scrolled away; text of a scrolled
+            // cell does not show through the frozen columns.
+            g.SetWorkbook([Object.assign(Object.create(Object.getPrototypeOf(g.GetModel())), g.GetModel(), { FrozenCols: 2 })], ['Sheet1'], 0);
+            g.SelectCell(18, 9);
+            view = await shoot();
+            check('pixels: frozen columns, not scrolled: the text of a frozen cell runs on', inkIn(view, 1, 2) > 20, true);
+            const scroller = parts(h).scroller;
+            scroller.scrollLeft = 250; scroller.dispatchEvent(new Event('scroll'));
+            view = await shoot();
+            // On screen now: columns A, B frozen, then the scrolled columns from 250 px on. The 100 px right of the frozen edge show columns D/E.
+            const frozenEdge = Math.round(view.probe.left(2));
+            let inkPastEdge = 0;
+            for (let y = Math.round(view.probe.top(1)) + 2; y < Math.round(view.probe.top(2)) - 1; y++) for (let x = frozenEdge + 2; x < frozenEdge + 60; x++) if (INK(view.shot.at(x, y))) inkPastEdge++;
+            let inkInFrozen = 0;
+            for (let y = Math.round(view.probe.top(3)) + 2; y < Math.round(view.probe.top(4)) - 1; y++) for (let x = Math.round(view.probe.left(0)) + 2; x < frozenEdge - 1; x++) if (INK(view.shot.at(x, y))) inkInFrozen++;
+            check('pixels: scrolled: the frozen cell B2 is cut at the frozen edge (the cells it ran over are not there)', inkPastEdge, 0);
+            check('pixels: scrolled: text of a scrolled cell (row 4, running left) does not show in the frozen columns', inkInFrozen, 0);
+            pixelGrid.close();
+            host.style.display = '';
+        }
         // The workbook the hosts reported: B2 of the first sheet shows its long title.
         await grid.ImportXlsx(await bytesOf('tests/real-world/milk-street-office.xlsx'));
         await frame();
