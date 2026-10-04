@@ -134,6 +134,15 @@ let private observeResize (el: Element) (callback: unit -> unit): unit -> unit =
 [<Emit("($0.parentNode ? $0.parentNode.removeChild($0) : undefined)")>]
 let private detach (el: Element): unit = jsNative
 
+[<Emit("$0.addEventListener($1, $2)")>]
+let private addListenerRaw (target: Element) (eventName: string) (handler: obj): unit = jsNative
+
+[<Emit("$0.removeEventListener($1, $2)")>]
+let private removeListenerRaw (target: Element) (eventName: string) (handler: obj): unit = jsNative
+
+[<Emit("(!!$1 && typeof $0.contains === 'function' && typeof $1.nodeType === 'number' && $0.contains($1))")>]
+let private nodeContains (root: Element) (node: obj): bool = jsNative
+
 let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
 
 /// What the package writer resolves to (a Blob in the browser) as bytes.
@@ -381,6 +390,32 @@ type Spreadsheet(container: Element) =
     /// listeners, observers, overlays appended to <body>).
     let cleanups = ResizeArray<unit -> unit>()
     let mutable disposed = false
+    /// Every DOM listener the component registered: (target, event, handler).
+    /// Dispose removes them all, also those on nodes that are no longer in
+    /// the page, so that nothing the component made holds on to it.
+    let listeners = ResizeArray<obj * string * obj>()
+    /// Register a listener (the same function object is kept for removal).
+    let listen (target: Element) (eventName: string) (handler: obj -> unit) =
+        let boxed = box handler
+        addListenerRaw target eventName boxed
+        listeners.Add((box target, eventName, boxed))
+    let unlisten (target: Element) (eventName: string) (handler: obj -> unit) =
+        // The handler registered under this name on this target (a function
+        // value handed over twice need not be the same object).
+        for index = listeners.Count - 1 downto 0 do
+            let known, name, boxed = listeners.[index]
+            if obj.ReferenceEquals(known, target) && name = eventName
+               && (obj.ReferenceEquals(boxed, box handler) || listeners |> Seq.filter (fun (t, n, _) -> obj.ReferenceEquals(t, target) && n = eventName) |> Seq.length = 1) then
+                removeListenerRaw target eventName boxed
+                listeners.RemoveAt index
+    /// Take a dialog or dropdown out of the page and drop the listeners on its nodes.
+    let closePopup (popup: Element) =
+        detach popup
+        for index = listeners.Count - 1 downto 0 do
+            let known, name, boxed = listeners.[index]
+            if nodeContains popup known then
+                removeListenerRaw (unbox known) name boxed
+                listeners.RemoveAt index
     let mutable workbook: Workbook option = None  // Optional workbook for table references
     /// The XLSX file the current workbook was imported from, for ExportXlsx:
     /// what the editor does not model is carried over from it.
@@ -2489,7 +2524,7 @@ type Spreadsheet(container: Element) =
         // Remove any existing filter dropdown
         let existingDropdown = getElementById "filter-dropdown"
         if not (isNull existingDropdown) then
-            removeChild (getBody()) existingDropdown
+            closePopup existingDropdown
 
         // Get unique values in column
         let uniqueValues = getColumnUniqueValues col model
@@ -2547,7 +2582,7 @@ type Spreadsheet(container: Element) =
             "font-size", "11px"
             "cursor", "pointer"
         ]
-        addEventListener selectAllBtn "click" (fun _ ->
+        listen selectAllBtn "click" (fun _ ->
             // Check all checkboxes
             let checkboxes = querySelectorAll dropdown "input[type=checkbox]"
             let length: int = getProp checkboxes "length" |> unbox
@@ -2564,7 +2599,7 @@ type Spreadsheet(container: Element) =
             "font-size", "11px"
             "cursor", "pointer"
         ]
-        addEventListener clearAllBtn "click" (fun _ ->
+        listen clearAllBtn "click" (fun _ ->
             // Uncheck all checkboxes
             let checkboxes = querySelectorAll dropdown "input[type=checkbox]"
             let length: int = getProp checkboxes "length" |> unbox
@@ -2594,10 +2629,10 @@ type Spreadsheet(container: Element) =
                 "cursor", "pointer"
                 "user-select", "none"
             ]
-            addEventListener valueRow "mouseenter" (fun _ ->
+            listen valueRow "mouseenter" (fun _ ->
                 setStyles valueRow ["background", "#f0f0f0"]
             )
-            addEventListener valueRow "mouseleave" (fun _ ->
+            listen valueRow "mouseleave" (fun _ ->
                 setStyles valueRow ["background", "transparent"]
             )
 
@@ -2638,7 +2673,7 @@ type Spreadsheet(container: Element) =
             "cursor", "pointer"
             "font-size", "12px"
         ]
-        addEventListener applyBtn "click" (fun _ ->
+        listen applyBtn "click" (fun _ ->
             // Collect checked values
             let checkboxes = querySelectorAll dropdown "input[type=checkbox]"
             let length: int = getProp checkboxes "length" |> unbox
@@ -2659,7 +2694,7 @@ type Spreadsheet(container: Element) =
                 model <- applyFilter col checkedValues model
 
             // Remove dropdown
-            removeChild (getBody()) dropdown
+            closePopup dropdown
             render()
         )
 
@@ -2675,9 +2710,9 @@ type Spreadsheet(container: Element) =
             "cursor", "pointer"
             "font-size", "12px"
         ]
-        addEventListener cancelBtn "click" (fun _ ->
+        listen cancelBtn "click" (fun _ ->
             // Remove dropdown
-            removeChild (getBody()) dropdown
+            closePopup dropdown
         )
 
         appendChild actionRow applyBtn
@@ -2691,15 +2726,15 @@ type Spreadsheet(container: Element) =
         let rec closeDropdown = fun (e: obj) ->
             let target = getEventTarget e
             if not (contains dropdown target) then
-                removeChild (getBody()) dropdown
-                removeEventListener (getDocument()) "click" closeDropdown
+                closePopup dropdown
+                unlisten (getDocument()) "click" closeDropdown
 
         // Delay adding the click listener to avoid immediate closure
         JS.setTimeout (fun () ->
-            if not disposed then addEventListener (getDocument()) "click" closeDropdown
+            if not disposed then listen (getDocument()) "click" closeDropdown
         ) 100 |> ignore
         cleanups.Add(fun () ->
-            removeEventListener (getDocument()) "click" closeDropdown
+            unlisten (getDocument()) "click" closeDropdown
             detach dropdown)
 
 
@@ -2708,7 +2743,7 @@ type Spreadsheet(container: Element) =
         // Remove any existing dialog
         let existingDialog = getElementById "find-replace-dialog"
         if not (isNull existingDialog) then
-            removeChild (getBody()) existingDialog
+            closePopup existingDialog
 
         // Create modal overlay
         let overlay = createElement "div"
@@ -2851,7 +2886,7 @@ type Spreadsheet(container: Element) =
             "cursor", "pointer"
             "font-size", "13px"
         ]
-        addEventListener findNextBtn "click" (fun _ ->
+        listen findNextBtn "click" (fun _ ->
             let query = getValue findInput
             if not (System.String.IsNullOrWhiteSpace(query)) then
                 let caseSensitive = getChecked caseSensitiveCheckbox
@@ -2886,7 +2921,7 @@ type Spreadsheet(container: Element) =
             "cursor", "pointer"
             "font-size", "13px"
         ]
-        addEventListener replaceBtn "click" (fun _ ->
+        listen replaceBtn "click" (fun _ ->
             let findText = getValue findInput
             let replaceText = getValue replaceInput
             let caseSensitive = getChecked caseSensitiveCheckbox
@@ -2921,7 +2956,7 @@ type Spreadsheet(container: Element) =
             "cursor", "pointer"
             "font-size", "13px"
         ]
-        addEventListener replaceAllBtn "click" (fun _ ->
+        listen replaceAllBtn "click" (fun _ ->
             let findText = getValue findInput
             let replaceText = getValue replaceInput
             let caseSensitive = getChecked caseSensitiveCheckbox
@@ -2950,8 +2985,8 @@ type Spreadsheet(container: Element) =
             "cursor", "pointer"
             "font-size", "13px"
         ]
-        addEventListener closeBtn "click" (fun _ ->
-            removeChild (getBody()) overlay
+        listen closeBtn "click" (fun _ ->
+            closePopup overlay
         )
         appendChild buttonRow closeBtn
 
@@ -2969,12 +3004,12 @@ type Spreadsheet(container: Element) =
         let rec handleEscape = fun (e: obj) ->
             let key = getEventKey e
             if key = "Escape" then
-                removeChild (getBody()) overlay
-                removeEventListener (getDocument()) "keydown" handleEscape
+                closePopup overlay
+                unlisten (getDocument()) "keydown" handleEscape
 
-        addEventListener (getDocument()) "keydown" handleEscape
+        listen (getDocument()) "keydown" handleEscape
         cleanups.Add(fun () ->
-            removeEventListener (getDocument()) "keydown" handleEscape
+            unlisten (getDocument()) "keydown" handleEscape
             detach overlay)
 
         ()
@@ -2985,7 +3020,7 @@ type Spreadsheet(container: Element) =
         // Remove any existing dialog
         let existingDialog = getElementById "conditional-format-dialog"
         if not (isNull existingDialog) then
-            removeChild (getBody()) existingDialog
+            closePopup existingDialog
 
         // Get current selection
         let targetAddr =
@@ -3138,7 +3173,7 @@ type Spreadsheet(container: Element) =
                 else
                     setTextContent value1Label "Value:"
 
-            addEventListener ruleSelect "change" (fun _ -> updateInputVisibility())
+            listen ruleSelect "change" (fun _ -> updateInputVisibility())
 
             // Format section
             let formatTitle = createElement "h4"
@@ -3244,7 +3279,7 @@ type Spreadsheet(container: Element) =
                 "cursor", "pointer"
                 "font-size", "13px"
             ]
-            addEventListener applyBtn "click" (fun _ ->
+            listen applyBtn "click" (fun _ ->
                 let ruleType = getValue ruleSelect
                 let value1 = getValue value1Input
 
@@ -3296,7 +3331,7 @@ type Spreadsheet(container: Element) =
                         model <- addConditionalFormat addr conditionalFormat model
 
                         // Close dialog
-                        removeChild (getBody()) overlay
+                        closePopup overlay
                         render()
                     | None ->
                         let _ : obj = emitJsExpr "Invalid value(s) for selected rule type" "alert($0)"
@@ -3317,9 +3352,9 @@ type Spreadsheet(container: Element) =
                 "cursor", "pointer"
                 "font-size", "13px"
             ]
-            addEventListener clearBtn "click" (fun _ ->
+            listen clearBtn "click" (fun _ ->
                 model <- removeConditionalFormats addr model
-                removeChild (getBody()) overlay
+                closePopup overlay
                 render()
             )
             appendChild buttonRow clearBtn
@@ -3337,8 +3372,8 @@ type Spreadsheet(container: Element) =
                 "cursor", "pointer"
                 "font-size", "13px"
             ]
-            addEventListener closeBtn "click" (fun _ ->
-                removeChild (getBody()) overlay
+            listen closeBtn "click" (fun _ ->
+                closePopup overlay
             )
             appendChild buttonRow closeBtn
 
@@ -3350,12 +3385,12 @@ type Spreadsheet(container: Element) =
             let rec handleEscape = fun (e: obj) ->
                 let key = getEventKey e
                 if key = "Escape" then
-                    removeChild (getBody()) overlay
-                    removeEventListener (getDocument()) "keydown" handleEscape
+                    closePopup overlay
+                    unlisten (getDocument()) "keydown" handleEscape
 
-            addEventListener (getDocument()) "keydown" handleEscape
+            listen (getDocument()) "keydown" handleEscape
             cleanups.Add(fun () ->
-                removeEventListener (getDocument()) "keydown" handleEscape
+                unlisten (getDocument()) "keydown" handleEscape
                 detach overlay)
 
             ()
@@ -3473,7 +3508,7 @@ type Spreadsheet(container: Element) =
         setAttribute editBox "spellcheck" "false"
         setStyle editBox "display" "none"
         appendChild content editBox
-        addEventListener editBox "input" handleInput
+        listen editBox "input" handleInput
         layers <-
             Some { Panes = panes
                    ColHeaders = colHeaderStrip
@@ -3487,8 +3522,8 @@ type Spreadsheet(container: Element) =
                    InputMessage = overlay "spreadsheet-input-message" content }
 
         // Add event listeners
-        addEventListener gridDiv "scroll" handleScroll
-        addEventListener content "keydown" handleKeyDown
+        listen gridDiv "scroll" handleScroll
+        listen content "keydown" handleKeyDown
 
         // One listener each for the whole grid: which cell or header a
         // pointer event is for is worked out from where it happened.
@@ -3500,7 +3535,7 @@ type Spreadsheet(container: Element) =
                 | true, index -> Some index
                 | _ -> None
         let within (target: Element) (selector: string) = not (isNull (box (closest target selector)))
-        addEventListener content "mousedown" (fun e ->
+        listen content "mousedown" (fun e ->
             let target = getEventTarget e
             if within target ".spreadsheet-edit-input" then ()   // placing the caret in the edit box
             elif within target ".spreadsheet-fill-handle" then
@@ -3545,13 +3580,13 @@ type Spreadsheet(container: Element) =
                         selectCellAddress hitAddr
                     render()
                 | _ -> ())
-        addEventListener content "dblclick" (fun e ->
+        listen content "dblclick" (fun e ->
             let target = getEventTarget e
             if not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle") then
                 match hitTestEvent e with
                 | SpreadsheetLayout.Cell hitAddr -> startEditing hitAddr.Row hitAddr.Col
                 | _ -> ())
-        addEventListener content "click" (fun e ->
+        listen content "click" (fun e ->
             let target = getEventTarget e
             if readOnly then ()
             elif within target ".col-filter-btn" then
@@ -3584,9 +3619,9 @@ type Spreadsheet(container: Element) =
                 clipboardEventSet e "text/html" html |> ignore
                 preventDefault e
                 if isCut && not readOnly then render()
-        addEventListener content "copy" (onCopy false)
-        addEventListener content "cut" (onCopy true)
-        addEventListener content "paste" (fun e ->
+        listen content "copy" (onCopy false)
+        listen content "cut" (onCopy true)
+        listen content "paste" (fun e ->
             if model.EditingCell.IsNone then
                 clipboardEvents <- clipboardEvents + 1
                 preventDefault e
@@ -3689,11 +3724,11 @@ type Spreadsheet(container: Element) =
                 render()  // Final render to ensure clean state
         )
 
-        addEventListener doc "mousemove" onDocumentMouseMove
-        addEventListener doc "mouseup" onDocumentMouseUp
+        listen doc "mousemove" onDocumentMouseMove
+        listen doc "mouseup" onDocumentMouseUp
         cleanups.Add(fun () ->
-            removeEventListener doc "mousemove" onDocumentMouseMove
-            removeEventListener doc "mouseup" onDocumentMouseUp)
+            unlisten doc "mousemove" onDocumentMouseMove
+            unlisten doc "mouseup" onDocumentMouseUp)
 
         // Focus content to receive keyboard events
         setAttribute content "tabindex" "0"
@@ -3728,9 +3763,11 @@ type Spreadsheet(container: Element) =
         focus content
 
     /// Take the spreadsheet out of the page: removes every listener it
-    /// registered outside its own nodes (document-level mouse handlers, the
-    /// resize observer, open dialogs and dropdowns) and every DOM node it
-    /// created, and drops all subscriptions. The instance can be mounted again.
+    /// registered - on the document, on its own nodes and on the nodes of its
+    /// dialogs and dropdowns - the resize observer and every DOM node it
+    /// created, and drops all subscriptions and what it held outside itself,
+    /// so that a disposed instance can be collected. The workbook stays: the
+    /// instance can be mounted again.
     member _.Dispose() =
         disposed <- true
         for cleanup in cleanups.ToArray() do
@@ -3747,12 +3784,33 @@ type Spreadsheet(container: Element) =
                 match drawing.Content with
                 | Picture (_, _, data) -> releasePicture data
                 | KeptObject _ -> ()
+        // Every listener, also on the grid's own nodes: a detached node with
+        // a listener keeps the component (and its workbook) reachable from
+        // anything that still holds the node.
+        for target, eventName, handler in listeners.ToArray() do
+            try removeListenerRaw (unbox target) eventName handler with _ -> ()
+        listeners.Clear()
         match gridContainer with
         | Some gridDiv -> detach gridDiv
         | None -> ()
         gridContainer <- None
         contentElement <- None
         layers <- None
+        // What is held outside the component on its behalf: the evaluator
+        // of conditional-format formulas (a closure over this workbook).
+        Rbt.Spreadsheet.ConditionalFormatting.resetFormulaEvaluator ()
+        ruleWorkbook <- None
+        calcEngine <- None
+        overflowSources.Clear()
+        overflowCells <- null
+        notifiedSheets <- [||]
+        notifiedSelection <- None
+        validationListeners.Clear()
+        isDragging <- false
+        dragStartCell <- None
+        isFilling <- false
+        isResizingColumn <- false
+        isResizingRow <- false
         cellNodes.Clear()
         freeCellNodes.Clear()
         colHeaderNodes.Clear()

@@ -399,6 +399,15 @@ let mutable private cachedRules : obj = null
 let mutable private cachedEvaluator : obj = null
 let mutable private cachedContext : Context option = None
 
+/// Back to the default evaluator, and forget the sheet the last context was
+/// made for: a host that goes away must not stay reachable from here.
+let resetFormulaEvaluator () : unit =
+    currentEvaluator <- { Run = evaluateFormulaAt }
+    cachedCells <- null
+    cachedRules <- null
+    cachedEvaluator <- null
+    cachedContext <- None
+
 /// The evaluation context for a sheet (remembered for the latest sheet state).
 let contextFor (model: SpreadsheetModel) : Context =
     match cachedContext with

@@ -146,6 +146,8 @@ try {
         if (componentLoadError) throw new Error('component page failed to load modules: ' + componentLoadError);
         const debuggerSession = await componentTab.context().newCDPSession(componentTab);
         await debuggerSession.send('Debugger.enable');
+        // For the checks that a disposed grid can be collected: a full garbage collection on request.
+        await componentTab.exposeFunction('collectGarbage', async () => { await debuggerSession.send('HeapProfiler.enable'); await debuggerSession.send('HeapProfiler.collectGarbage'); });
         for (const name of await componentTab.evaluate('Object.keys(window.componentChecks)')) {
             if (only && !only.split(',').includes(name)) continue;
             componentChecks++;

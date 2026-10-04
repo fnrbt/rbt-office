@@ -370,3 +370,73 @@ checks['text-overflow'] = async () => {
     close();
     return lines;
 };
+
+// Dispose removes every listener the grid registered - also those on its own (now detached)
+// nodes and on the nodes of its dialogs - and a disposed grid is collected.
+checks['dispose-releases'] = async () => {
+    const { lines, check } = makeLog();
+    // Every listener registered anywhere while this runs and not removed since.
+    const live = new Map();   // target -> Map(type -> Set(handler))
+    const add = EventTarget.prototype.addEventListener, remove = EventTarget.prototype.removeEventListener;
+    EventTarget.prototype.addEventListener = function (type, handler, options) {
+        if (!live.has(this)) live.set(this, new Map());
+        const types = live.get(this);
+        if (!types.has(type)) types.set(type, new Set());
+        types.get(type).add(handler);
+        return add.call(this, type, handler, options);
+    };
+    EventTarget.prototype.removeEventListener = function (type, handler, options) {
+        live.get(this)?.get(type)?.delete(handler);
+        return remove.call(this, type, handler, options);
+    };
+    const count = (where) => [...live].reduce((n, [target, types]) => n + (where(target) ? [...types.values()].reduce((m, set) => m + set.size, 0) : 0), 0);
+    const describe = () => [...live].flatMap(([target, types]) => [...types].filter(([, set]) => set.size > 0).map(([type, set]) => `${target === document ? 'document' : target === window ? 'window' : (target.className || target.nodeName)}:${type}x${set.size}`));
+    try {
+        const run = async () => {
+            const host = container('position:absolute;left:0;top:0;width:1100px;height:600px');
+            const grid = createSpreadsheet(host);
+            grid.Mount();
+            await grid.ImportXlsx(await bytesOf('tests/real-world/milk-street-office.xlsx'));
+            grid.OnChange(() => {}); grid.OnSelectionChange(() => {}); grid.OnEditStateChange(() => {}); grid.OnValidationNotice(() => {});
+            grid.SelectRange(2, 1, 6, 4); grid.EnterText(3, 1, 'x'); grid.StartEdit('abc'); grid.CancelEdit();
+            // Dialogs and a dropdown: one closed again, the others left open.
+            grid.ShowFindReplaceDialog();
+            [...document.querySelectorAll('button')].find((button) => button.textContent === 'Close')?.click();
+            grid.ShowFindReplaceDialog();
+            grid.ShowConditionalFormattingDialog();
+            host.querySelector('.col-filter-btn')?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            const registered = count(() => true);
+            const onGrid = count((target) => target instanceof Node && host.contains(target));
+            const nodes = [...host.querySelectorAll('*')];
+            const bodyChildren = document.body.children.length;
+            grid.Dispose();
+            return { registered, onGrid, weak: new WeakRef(grid), model: new WeakRef(grid.GetModel()), hostNode: host, nodes: nodes.length };
+        };
+        const result = await run();
+        check('the grid had listeners on the document and on its own nodes', [result.registered > 10, result.onGrid > 5], [true, true]);
+        check('after Dispose none is left anywhere', describe(), []);
+        check('its nodes are out of the page', [result.hostNode.querySelector('.spreadsheet-container'), document.querySelectorAll('.spreadsheet-container').length], [null, 0]);
+        result.hostNode.remove();
+        delete result.hostNode;
+        // A disposed grid nobody holds is collected, with its workbook.
+        let collected = false;
+        for (let attempt = 0; attempt < 5 && !collected; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            await window.collectGarbage();
+            collected = result.weak.deref() === undefined && result.model.deref() === undefined;
+        }
+        check('a disposed grid and its workbook are collected', [result.weak.deref() === undefined, result.model.deref() === undefined], [true, true]);
+        // A disposed grid can be mounted again and works.
+        const host = container('position:absolute;left:0;top:0;width:900px;height:400px');
+        const grid = createSpreadsheet(host);
+        grid.Mount(); grid.SetCell(0, 0, 'kept'); grid.Dispose();
+        check('disposed: no listeners', describe(), []);
+        grid.Mount();
+        check('mounted again: the workbook is still there and drawn', [cellNode(host, 0, 0)?.textContent, count(() => true) > 5], ['kept', true]);
+        grid.Dispose(); host.remove();
+        check('and disposed again: no listeners', describe(), []);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    EventTarget.prototype.addEventListener = add; EventTarget.prototype.removeEventListener = remove;
+    return lines;
+};
