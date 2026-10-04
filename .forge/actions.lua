@@ -10,6 +10,11 @@ return {
             output = "package",
             base = ".forge/publish-npm",
             packages = {
+                -- Restores the sibling libraries (Rbt.Vb, Rbt.Text.*, Rbt.Pdf)
+                -- through the sandbox's credentialed gateway.
+                read = {
+                    { registry = "41021897", ecosystem = "nuget" },
+                },
                 publish = {
                     { registry = "41021897", ecosystem = "npm", mode = "explicit", prefix = "@rbt/office" },
                 },

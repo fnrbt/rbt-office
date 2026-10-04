@@ -1,0 +1,13 @@
+<Project>
+  <!-- Sibling libraries (rbt-vb, rbt-text, rbt-pdf) are compiled from the
+       neighbouring checkouts during development. A Forge build sandbox has
+       only this repository, so there (ForgePublish=true) they come from the
+       package registry instead; those packages carry their F# sources under
+       fable/, which is what Fable compiles. -->
+  <PropertyGroup>
+    <UseSiblingPackages Condition="'$(UseSiblingPackages)' == '' and '$(ForgePublish)' == 'true'">true</UseSiblingPackages>
+    <RbtVbPackageVersion Condition="'$(RbtVbPackageVersion)' == ''">0.1.2</RbtVbPackageVersion>
+    <RbtTextPackageVersion Condition="'$(RbtTextPackageVersion)' == ''">0.1.3</RbtTextPackageVersion>
+    <RbtPdfPackageVersion Condition="'$(RbtPdfPackageVersion)' == ''">0.1.4</RbtPdfPackageVersion>
+  </PropertyGroup>
+</Project>

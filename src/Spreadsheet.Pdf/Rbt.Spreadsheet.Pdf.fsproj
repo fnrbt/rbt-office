@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../Spreadsheet/Rbt.Spreadsheet.fsproj" />
-    <ProjectReference Include="../../../rbt-pdf/Rbt.Pdf/Rbt.Pdf.fsproj" />
+    <ProjectReference Condition="'$(UseSiblingPackages)' != 'true'" Include="../../../rbt-pdf/Rbt.Pdf/Rbt.Pdf.fsproj" />
+    <PackageReference Condition="'$(UseSiblingPackages)' == 'true'" Include="Rbt.Pdf" Version="$(RbtPdfPackageVersion)" />
   </ItemGroup>
 </Project>
