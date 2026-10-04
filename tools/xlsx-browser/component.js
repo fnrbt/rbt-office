@@ -1126,3 +1126,86 @@ checks['grid-scroll-frames'] = async () => {
     close();
     return lines;
 };
+
+// A browser that raises no copy / cut / paste event on the grid (it is not an editable
+// element): only the keys arrive. The grid then goes through the asynchronous clipboard.
+// navigator.clipboard is replaced by a recorder, and no ClipboardEvent is dispatched.
+checks['grid-clipboard-without-events'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard') ?? Object.getOwnPropertyDescriptor(Navigator.prototype, 'clipboard');
+    try {
+        const held = { text: '', html: '', writes: 0, reads: 0 };
+        const stub = {
+            write: async (items) => { held.writes++; held.text = ''; held.html = ''; for (const item of items) { if (item.types.includes('text/plain')) held.text = await (await item.getType('text/plain')).text(); if (item.types.includes('text/html')) held.html = await (await item.getType('text/html')).text(); } },
+            writeText: async (text) => { held.writes++; held.text = text; held.html = ''; },
+            read: async () => { held.reads++; const flavours = { 'text/plain': new Blob([held.text], { type: 'text/plain' }) }; if (held.html) flavours['text/html'] = new Blob([held.html], { type: 'text/html' }); return [new ClipboardItem(flavours)]; },
+            readText: async () => { held.reads++; return held.text; },
+        };
+        Object.defineProperty(navigator, 'clipboard', { value: stub, configurable: true });
+        const settle = async () => { await new Promise((resolve) => setTimeout(resolve, 30)); await frame(); };
+        grid.SetCell(0, 0, 'Name'); grid.SetCell(0, 1, 'Qty'); grid.SetCell(1, 0, 'Apples'); grid.SetCell(1, 1, '=6*2');
+        grid.SelectRange(0, 0, 1, 1);
+        press(host, 'c', { ctrlKey: true }); await settle();
+        check('Ctrl+C with no copy event: the cells are on the system clipboard', [held.writes, held.text, /<table>.*Apples.*<\/table>/.test(held.html)], [1, 'Name\tQty\nApples\t12', true]);
+        grid.SelectCell(4, 0);
+        press(host, 'v', { ctrlKey: true }); await settle();
+        const { editText } = await import('/spreadsheet/Input.js');
+        const { getCell, CellAddress } = await import('/spreadsheet/Model.js');
+        check('Ctrl+V with no paste event: pasted from the system clipboard (the grid\'s own copy, with its formula)', [held.reads, await valueAt(grid, 4, 0), await valueAt(grid, 5, 1), editText(getCell(new CellAddress(5, 1), grid.GetModel()))], [1, 'Name', '12', '=6*2']);
+        grid.Undo();
+        check('as one undo step', await valueAt(grid, 4, 0), '');
+        // Something another application put there.
+        held.text = 'x\ty\r\n1\t2'; held.html = '';
+        grid.SelectCell(8, 2);
+        press(host, 'v', { ctrlKey: true }); await settle();
+        check('Ctrl+V of another application\'s cells', [await valueAt(grid, 8, 2), await valueAt(grid, 9, 3)], ['x', '2']);
+        // Cut.
+        grid.SelectRange(0, 0, 0, 1);
+        const writesBefore = held.writes;
+        press(host, 'x', { ctrlKey: true }); await settle();
+        check('Ctrl+X with no cut event: on the clipboard, and cleared', [held.writes - writesBefore, held.text, await valueAt(grid, 0, 0), await valueAt(grid, 0, 1)], [1, 'Name\tQty', '', '']);
+        grid.Undo();
+        check('the cut is one undo step', await valueAt(grid, 0, 1), 'Qty');
+        // When the browser does raise the event, the event is the only path: nothing is written or read twice.
+        const { content } = parts(host);
+        grid.SelectRange(1, 0, 1, 1);
+        const before = { writes: held.writes, reads: held.reads };
+        press(host, 'c', { ctrlKey: true });
+        const transfer = new DataTransfer();
+        content.dispatchEvent(new ClipboardEvent('copy', { clipboardData: transfer, bubbles: true, cancelable: true }));
+        await settle();
+        check('with a copy event the asynchronous clipboard is not used', [held.writes - before.writes, transfer.getData('text/plain')], [0, 'Apples\t12']);
+        grid.SelectCell(12, 0);
+        press(host, 'v', { ctrlKey: true });
+        const incoming = new DataTransfer(); incoming.setData('text/plain', 'from the event');
+        content.dispatchEvent(new ClipboardEvent('paste', { clipboardData: incoming, bubbles: true, cancelable: true }));
+        await settle();
+        check('with a paste event it is pasted once, from the event', [held.reads - before.reads, await valueAt(grid, 12, 0), grid.CanUndo() && (grid.Undo(), await valueAt(grid, 12, 0))], [0, 'from the event', '']);
+        // Read-only: copy works, cut copies, paste does nothing.
+        grid.SetReadOnly(true);
+        grid.SelectRange(1, 0, 1, 1);
+        const cells = grid.GetModel().Cells;
+        press(host, 'x', { ctrlKey: true }); await settle();
+        grid.SelectCell(20, 0); held.text = 'nope';
+        press(host, 'v', { ctrlKey: true }); await settle();
+        check('read-only: a cut copies, a paste is ignored', [grid.GetModel().Cells === cells, await valueAt(grid, 20, 0)], [true, '']);
+        // While a cell is edited the keys belong to the edit box.
+        grid.SetReadOnly(false);
+        grid.SelectCell(1, 0); press(host, 'F2');
+        const writes = held.writes;
+        press(host, 'c', { ctrlKey: true }); await settle();
+        check('while editing the grid does not touch the clipboard', held.writes - writes, 0);
+        grid.CancelEdit();
+        // A browser without any clipboard access: the grid's own clipboard still works.
+        Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+        grid.SelectRange(1, 0, 1, 1);
+        press(host, 'c', { ctrlKey: true }); await settle();
+        grid.SelectCell(22, 0);
+        press(host, 'v', { ctrlKey: true }); await settle();
+        check('without navigator.clipboard: copy and paste within the grid', [await valueAt(grid, 22, 0), await valueAt(grid, 22, 1)], ['Apples', '12']);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    if (original) Object.defineProperty(navigator, 'clipboard', original); else delete navigator.clipboard;
+    close();
+    return lines;
+};
