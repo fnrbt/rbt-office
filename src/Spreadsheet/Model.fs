@@ -2757,10 +2757,59 @@ let isInMergedRange (addr: CellAddress) (merge: MergedCell): bool =
     addr.Row >= merge.StartRow && addr.Row <= merge.EndRow &&
     addr.Col >= merge.StartCol && addr.Col <= merge.EndCol
 
-/// Find merged cell containing this address (if any)
+/// Merges by the rows they cover, for one list of merges (the list a model
+/// holds; a change of the merges gives the model another list).
+type private MergeIndex = {
+    Source: MergedCell list
+    /// Row -> the merges covering it, in list order.
+    ByRow: System.Collections.Generic.Dictionary<int, MergedCell list>
+    /// Merges too tall to list row by row (a merged column): looked at one by one.
+    Tall: MergedCell list
+}
+
+let mutable private mergeIndexCache : MergeIndex list = []
+
+let private buildMergeIndex (merges: MergedCell list) : MergeIndex =
+    let byRow = System.Collections.Generic.Dictionary<int, MergedCell list>()
+    let tall = ResizeArray<MergedCell>()
+    // Back to front, so that each row's list ends up in list order.
+    for merge in List.rev merges do
+        if merge.EndRow - merge.StartRow > 4096 then tall.Insert(0, merge)
+        else
+            for row in merge.StartRow .. merge.EndRow do
+                match byRow.TryGetValue row with
+                | true, existing -> byRow.[row] <- merge :: existing
+                | false, _ -> byRow.[row] <- [ merge ]
+    { Source = merges; ByRow = byRow; Tall = List.ofSeq tall }
+
+let private mergeIndexOf (merges: MergedCell list) : MergeIndex =
+    let cached = mergeIndexCache
+    match cached |> List.tryFind (fun index -> obj.ReferenceEquals(index.Source, merges)) with
+    | Some index -> index
+    | None ->
+        let index = buildMergeIndex merges
+        mergeIndexCache <- index :: List.truncate 7 cached
+        index
+
+/// Find merged cell containing this address (if any). The first merge of the
+/// model's list that covers the cell, found through an index by row.
 let findMergedCell (addr: CellAddress) (model: SpreadsheetModel): MergedCell option =
-    model.MergedCells
-    |> List.tryFind (fun merge -> isInMergedRange addr merge)
+    match model.MergedCells with
+    | [] -> None
+    | merges ->
+        let index = mergeIndexOf merges
+        let inRow =
+            match index.ByRow.TryGetValue addr.Row with
+            | true, candidates -> candidates |> List.tryFind (fun merge -> addr.Col >= merge.StartCol && addr.Col <= merge.EndCol)
+            | false, _ -> None
+        match inRow, index.Tall with
+        | found, [] -> found
+        | None, tall -> tall |> List.tryFind (fun merge -> isInMergedRange addr merge)
+        | Some found, tall ->
+            // Overlapping merges (a broken file): the one that comes first in the list.
+            match tall |> List.tryFind (fun merge -> isInMergedRange addr merge) with
+            | Some other when (merges |> List.findIndex (fun m -> obj.ReferenceEquals(m, other))) < (merges |> List.findIndex (fun m -> obj.ReferenceEquals(m, found))) -> Some other
+            | _ -> Some found
 
 /// Get primary cell address (top-left) of a merge
 let getPrimaryCell (merge: MergedCell): CellAddress =

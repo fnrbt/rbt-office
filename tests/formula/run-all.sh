@@ -43,6 +43,7 @@ stages=(
     stage25-arrays3
     stage26-rules
     stage27-input
+    stage28-layout
     numbertext
 )
 

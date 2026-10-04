@@ -98,7 +98,9 @@ let private buildPrefixSizeCache count sizeAt =
         prefix.[i + 1] <- prefix.[i] + max 0.0 (sizeAt i)
     prefix
 
-let private indexAtOffset (prefix: float array) count offset =
+/// The index whose span holds `offset` in a prefix-sum array (see
+/// `SheetMetrics`), clamped to the first / last index.
+let indexAtOffset (prefix: float array) count offset =
     let target = max 0.0 offset
     let mutable lo = 0
     let mutable hi = count
@@ -116,11 +118,87 @@ let prefixSizeUncached sizeAt index =
         total <- total + max 0.0 (sizeAt i)
     total
 
+/// Row and column offsets of a sheet: `RowPrefix.[r]` is the top of row `r`
+/// (the sum of the heights of the rows above it), `ColPrefix.[c]` the left
+/// edge of column `c`; both arrays have one entry more than the sheet has
+/// rows / columns (the far edge). Offsets are in sheet pixels, from the
+/// top-left corner of A1.
+type SheetMetrics = {
+    RowPrefix: float array
+    ColPrefix: float array
+    RowCount: int
+    ColCount: int
+    /// What the metrics were computed from: the same maps (by identity) and
+    /// counts give the same offsets.
+    RowHeights: Map<int, float>
+    ColumnWidths: Map<int, float>
+    FilterHiddenRows: int array
+    Filtered: bool
+}
+
+/// The metrics computed last, for a few sheets (a workbook is drawn sheet by
+/// sheet; hit tests and paints of one sheet come in runs).
+let mutable private metricsCache : SheetMetrics list = []
+
+let private metricsMatch (model: SpreadsheetModel) (metrics: SheetMetrics) =
+    metrics.RowCount = model.RowCount
+    && metrics.ColCount = model.ColCount
+    && obj.ReferenceEquals(metrics.RowHeights, model.RowHeights)
+    && obj.ReferenceEquals(metrics.ColumnWidths, model.ColumnWidths)
+    && metrics.Filtered = not (Map.isEmpty model.Filters)
+    && obj.ReferenceEquals(metrics.FilterHiddenRows, model.FilterHiddenRows)
+
+let private computeMetrics (model: SpreadsheetModel) : SheetMetrics =
+    // Defaults filled in first, then the rows / columns that have a size of
+    // their own: one pass over the maps instead of a lookup per index.
+    let rowSizes = Array.create (max 0 model.RowCount) 25.0
+    for KeyValue(row, height) in model.RowHeights do
+        if row >= 0 && row < rowSizes.Length then rowSizes.[row] <- max 0.0 height
+    let filtered = not (Map.isEmpty model.Filters)
+    if filtered then
+        for row in model.FilterHiddenRows do
+            if row >= 0 && row < rowSizes.Length then rowSizes.[row] <- 0.0
+    let colSizes = Array.create (max 0 model.ColCount) 100.0
+    for KeyValue(col, width) in model.ColumnWidths do
+        if col >= 0 && col < colSizes.Length then colSizes.[col] <- max 0.0 width
+    let prefixOf (sizes: float array) =
+        let prefix = Array.zeroCreate<float> (sizes.Length + 1)
+        for i = 0 to sizes.Length - 1 do
+            prefix.[i + 1] <- prefix.[i] + sizes.[i]
+        prefix
+    { RowPrefix = prefixOf rowSizes
+      ColPrefix = prefixOf colSizes
+      RowCount = max 0 model.RowCount
+      ColCount = max 0 model.ColCount
+      RowHeights = model.RowHeights
+      ColumnWidths = model.ColumnWidths
+      FilterHiddenRows = model.FilterHiddenRows
+      Filtered = filtered }
+
+/// The row / column offsets of a sheet. They are computed once and reused
+/// until a row height, a column width, the filter or the size of the sheet
+/// changes (any of which gives the model a different map or count).
+let metricsOf (model: SpreadsheetModel) : SheetMetrics =
+    let cached = metricsCache
+    match cached |> List.tryFind (metricsMatch model) with
+    | Some metrics -> metrics
+    | None ->
+        let metrics = computeMetrics model
+        metricsCache <- metrics :: List.truncate 7 cached
+        metrics
+
 let rowTop (model: SpreadsheetModel) (row: int): float =
-    prefixSizeUncached (fun r -> getRowHeight r model) row
+    let metrics = metricsOf model
+    if row <= 0 then 0.0
+    elif row <= metrics.RowCount then metrics.RowPrefix.[row]
+    // Past the end of the sheet: the rows there have their own or the default height.
+    else metrics.RowPrefix.[metrics.RowCount] + prefixSizeUncached (fun r -> getRowHeight (metrics.RowCount + r) model) (row - metrics.RowCount)
 
 let columnLeft (model: SpreadsheetModel) (col: int): float =
-    prefixSizeUncached (fun c -> getColumnWidth c model) col
+    let metrics = metricsOf model
+    if col <= 0 then 0.0
+    elif col <= metrics.ColCount then metrics.ColPrefix.[col]
+    else metrics.ColPrefix.[metrics.ColCount] + prefixSizeUncached (fun c -> getColumnWidth (metrics.ColCount + c) model) (col - metrics.ColCount)
 
 /// Where a drawing object sits on the sheet, in sheet pixels (origin at the
 /// top-left corner of A1, headers not included).
@@ -161,8 +239,9 @@ let rowY (model: SpreadsheetModel) (viewport: Viewport) (row: int): float =
     viewport.HeaderHeight + rowTop model row
 
 let visibleRange (model: SpreadsheetModel) (viewport: Viewport): VisibleRange =
-    let colPrefix = buildPrefixSizeCache model.ColCount (fun c -> getColumnWidth c model)
-    let rowPrefix = buildPrefixSizeCache model.RowCount (fun r -> getRowHeight r model)
+    let metrics = metricsOf model
+    let colPrefix = metrics.ColPrefix
+    let rowPrefix = metrics.RowPrefix
 
     let startColOffset = max 0.0 (viewport.ScrollX - viewport.RowHeaderWidth)
     let endColOffset = max 0.0 (viewport.ScrollX + viewport.Width - viewport.RowHeaderWidth)
@@ -386,16 +465,23 @@ let intersectRect (a: Rect) (b: Rect): Rect option =
 let private columnAtOffset (model: SpreadsheetModel) offset =
     if offset < 0.0 || model.ColCount <= 0 then None
     else
-        let prefix = buildPrefixSizeCache model.ColCount (fun c -> getColumnWidth c model)
+        let prefix = (metricsOf model).ColPrefix
         let col = indexAtOffset prefix model.ColCount offset
         if col >= 0 && col < model.ColCount && prefix.[col] <= offset && offset < prefix.[col + 1] then Some col else None
 
 let private rowAtOffset (model: SpreadsheetModel) offset =
     if offset < 0.0 || model.RowCount <= 0 then None
     else
-        let prefix = buildPrefixSizeCache model.RowCount (fun r -> getRowHeight r model)
+        let prefix = (metricsOf model).RowPrefix
         let row = indexAtOffset prefix model.RowCount offset
         if row >= 0 && row < model.RowCount && prefix.[row] <= offset && offset < prefix.[row + 1] then Some row else None
+
+/// The column whose span holds the sheet offset `offset` (pixels from the
+/// left edge of column A), when there is one.
+let columnAt (model: SpreadsheetModel) (offset: float) : int option = columnAtOffset model offset
+
+/// The row whose span holds the sheet offset `offset` (pixels from the top of row 1).
+let rowAt (model: SpreadsheetModel) (offset: float) : int option = rowAtOffset model offset
 
 let private primaryAddressFor row col model =
     match findMergedCell { Row = row; Col = col } model with
