@@ -4,7 +4,7 @@
 // reading the written file again, and frame times while scrolling a sheet.
 //
 // Usage:
-//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll] [--sheet NAME] [--frames N] [--no-scroll] [--no-jump] [file.xlsx ...]
+//   node tools/xlsx-browser/perf.mjs --dist $DIST [--profile load|export|reread|scroll] [--sheet NAME] [--frames N] [--steps 120,0] [--no-scroll] [--no-jump] [file.xlsx ...]
 // (--no-jump leaves out the jumps to the far end: 0.1.4 took minutes for one frame there.)
 // With no files: tests/real-world/dashboard-sales-analysis.xlsx and milk-street-office.xlsx.
 // --profile prints the functions with the most self time in that phase (CPU profile).
@@ -23,6 +23,8 @@ const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const profile = opt('--profile');
 const sheetName = opt('--sheet');
 const frames = Number(opt('--frames') ?? 120);
+// Scroll steps to measure, in pixels per frame (0 = a screenful): a mouse wheel notch is about 100 px.
+const steps = (opt('--steps') ?? '120,0').split(',').map(Number);
 const noJump = (() => { const i = args.indexOf('--no-jump'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const noScroll = (() => { const i = args.indexOf('--no-scroll'); if (i < 0) return false; args.splice(i, 1); return true; })();
 const port = Number(process.env.PORT ?? 16101);
@@ -61,7 +63,7 @@ try {
         sheets() { return grid.GetSheetNames().map((name, index) => ({ name, index, cells: grid.GetSheets()[index].Cells.size ?? 0, rows: grid.GetSheets()[index].RowCount })); },
         // Scroll the sheet a screenful at a time, one step per frame; the time of a
         // frame is from one requestAnimationFrame callback to the next.
-        async scroll(index, frames, jump) {
+        async scroll(index, frames, jump, stepSize) {
             if (grid.GetActiveSheetIndex() !== index) grid.SwitchSheet(index);
             const scroller = host.querySelector('.spreadsheet-container');
             const content = host.querySelector('.spreadsheet-content');
@@ -73,8 +75,9 @@ try {
             const next = () => new Promise((resolve) => requestAnimationFrame(resolve));
             scroller.scrollTop = 0; await next(); await next();
             const times = [];
-            // A screenful per frame from the top (what holding PageDown does) ...
-            const step = Math.max(40, scroller.clientHeight - 30);
+            // stepSize pixels per frame from the top; 0 is a screenful per frame
+            // (every cell on screen is new in every frame) ...
+            const step = stepSize > 0 ? stepSize : Math.max(40, scroller.clientHeight - 30);
             let last = await next();
             for (let i = 0; i < frames; i++) {
                 scroller.scrollTop = Math.min(scroller.scrollHeight, (i + 1) * step);
@@ -146,8 +149,10 @@ try {
         const sheets = await tab.evaluate(() => window.perf.sheets());
         const target = sheetName ? sheets.find((s) => s.name === sheetName) : sheets.slice().sort((a, b) => b.rows - a.rows)[0];
         if (target && !noScroll) {
-            const s = await phase('scroll', () => tab.evaluate(([index, n, jump]) => window.perf.scroll(index, n, jump), [target.index, frames, !noJump]));
-            console.log(`  scroll "${target.name}" (${target.rows} rows): ${s.frames} frames, mean ${s.mean.toFixed(1)} ms, median ${s.median.toFixed(1)} ms, p95 ${s.p95.toFixed(1)} ms, max ${s.max.toFixed(1)} ms, ${s.over33} over 33 ms; ${s.jumps.length ? `jump to the end ${s.jumps[0].toFixed(0)} ms, to the middle ${s.jumps[1].toFixed(0)} ms` : 'no jumps'}  (${s.rendered} nodes)`);
+          for (const stepSize of steps) {
+            const s = await phase('scroll', () => tab.evaluate(([index, n, jump, stepSize]) => window.perf.scroll(index, n, jump, stepSize), [target.index, frames, !noJump && stepSize === 0, stepSize]));
+            console.log(`  scroll "${target.name}" (${target.rows} rows) ${stepSize > 0 ? stepSize + ' px' : 'a screenful'} per frame: ${s.frames} frames, mean ${s.mean.toFixed(1)} ms, median ${s.median.toFixed(1)} ms, p95 ${s.p95.toFixed(1)} ms, max ${s.max.toFixed(1)} ms, ${s.over33} over 33 ms; ${s.jumps.length ? `jump to the end ${s.jumps[0].toFixed(0)} ms, to the middle ${s.jumps[1].toFixed(0)} ms` : 'no jumps'}  (${s.rendered} nodes)`);
+          }
         }
         await tab.close();
     }

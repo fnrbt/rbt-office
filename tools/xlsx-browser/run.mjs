@@ -163,8 +163,7 @@ try {
             }
             lines.push(...pageErrors.splice(0).map((message) => 'FAIL page error: ' + message));
             const bad = lines.filter((line) => !line.startsWith('ok'));
-            const heap = await Promise.race([componentTab.evaluate(() => (performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1e6) : -1)), new Promise((resolve) => setTimeout(() => resolve(-1), 3000))]).catch(() => -1);
-            console.log(`${bad.length === 0 ? 'ok  ' : 'FAIL'} ${name}  (${lines.length - bad.length} passed, ${bad.length} failed${heap >= 0 ? `, JS heap ${heap} MB` : ''})`);
+            console.log(`${bad.length === 0 ? 'ok  ' : 'FAIL'} ${name}  (${lines.length - bad.length} passed, ${bad.length} failed)`);
             for (const line of (verbose ? lines : bad)) console.log('     ' + line);
             if (bad.length) failed++;
         }

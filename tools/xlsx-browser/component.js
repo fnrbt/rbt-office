@@ -636,3 +636,493 @@ checks['edit-without-dependents'] = async () => {
     }
     return lines;
 };
+
+// ---- the grid itself: scrolling, selection, keyboard, clipboard, formatting, read-only ----
+
+const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+const parts = (host) => ({ scroller: host.querySelector('.spreadsheet-container'), content: host.querySelector('.spreadsheet-content') });
+const press = (host, key, options = {}) => parts(host).content.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options }));
+// The cell node at a point of the host (CSS pixels from its top-left corner), as [row, col], or what else is there.
+const cellAtPoint = (host, x, y) => {
+    const box = host.getBoundingClientRect();
+    const node = document.elementFromPoint(box.left + x, box.top + y);
+    const cell = node && node.closest('.spreadsheet-cell');
+    if (cell) return [Number(cell.getAttribute('data-row')), Number(cell.getAttribute('data-col'))];
+    for (const name of ['spreadsheet-corner', 'spreadsheet-col-header', 'spreadsheet-row-header', 'spreadsheet-edit-input']) if (node && node.closest('.' + name)) return name;
+    return node ? node.className : null;
+};
+// Where a cell is on screen (centre), from the grid's own geometry.
+const pointOfCell = async (grid, host, row, col) => {
+    const { columnLeft, rowTop } = await import('/spreadsheet/Layout.js');
+    const model = grid.GetModel(), { scroller } = parts(host);
+    const x = 50 + (columnLeft(model, col) + columnLeft(model, col + 1)) / 2 - (col < model.FrozenCols ? 0 : scroller.scrollLeft);
+    const y = 30 + (rowTop(model, row) + rowTop(model, row + 1)) / 2 - (row < model.FrozenRows ? 0 : scroller.scrollTop);
+    return [x, y];
+};
+const mouse = async (grid, host, type, row, col, options = {}) => {
+    const [x, y] = await pointOfCell(grid, host, row, col), box = host.getBoundingClientRect();
+    const target = type === 'mousemove' || type === 'mouseup' ? document : (document.elementFromPoint(box.left + x, box.top + y) ?? parts(host).content);
+    target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: box.left + x, clientY: box.top + y, button: 0, ...options }));
+};
+const withFields = (record, fields) => Object.assign(Object.create(Object.getPrototypeOf(record)), record, fields);
+const valueAt = async (grid, row, col) => {
+    const { getCellValue, CellAddress, displayValue } = await import('/spreadsheet/Model.js');
+    return displayValue(getCellValue(new CellAddress(row, col), grid.GetModel()));
+};
+const formatAt = async (grid, row, col) => {
+    const { getCell, CellAddress, defaultFormat } = await import('/spreadsheet/Model.js');
+    return getCell(new CellAddress(row, col), grid.GetModel())?.Format ?? defaultFormat;
+};
+const active = (grid) => { const cell = grid.GetActiveCell(); return [cell.Row, cell.Col]; };
+
+// The scrolled extent follows the sheet; a sheet switch starts at the top-left with cells on
+// screen; the selection is scrolled into view; typing into a cell that is off screen works;
+// headers and frozen panes stay above the scrolled cells.
+checks['grid-extent-scroll-and-stacking'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        const { scroller, content } = parts(host);
+        check('a new grid can be scrolled over its 1000 rows', [content.getBoundingClientRect().height, content.getBoundingClientRect().width], [30 + 1000 * 25, 50 + 26 * 100]);
+        grid.InstallWorkbook([createEmpty(3000, 60), createEmpty(40, 8)], ['Big', 'Small'], 0, undefined);
+        check('the extent is the installed sheet\'s (3000 x 60)', [content.getBoundingClientRect().height, content.getBoundingClientRect().width], [30 + 3000 * 25, 50 + 60 * 100]);
+        grid.SetCell(2900, 3, 'deep');
+        scroller.scrollTop = 2890 * 25; await frame();
+        check('rows past 1000 can be scrolled to and are drawn', [scroller.scrollTop, cellAtPoint(host, 400, 300)?.[0] > 2890], [2890 * 25, true]);
+        grid.InsertRow(0);
+        check('an inserted row grows the extent', content.getBoundingClientRect().height, 30 + 3001 * 25);
+        grid.Undo();
+        check('and undo shrinks it', content.getBoundingClientRect().height, 30 + 3000 * 25);
+        scroller.scrollLeft = 3000; await frame();
+        check('columns past Z too', cellAtPoint(host, 400, 300)?.[1] > 26, true);
+
+        // Another sheet: at its top-left corner at once, without waiting for a scroll event.
+        grid.SwitchSheet(1);
+        check('a sheet switch puts the container at the top-left', [scroller.scrollTop, scroller.scrollLeft], [0, 0]);
+        check('and the sheet\'s cells are on screen straight away', [cellAtPoint(host, 60, 40), cellAtPoint(host, 400, 300)], [[0, 0], [10, 3]]);
+        check('with the extent of that sheet', [content.getBoundingClientRect().height, content.getBoundingClientRect().width], [30 + 40 * 25, 50 + 8 * 100]);
+        grid.SwitchSheet(0);
+        check('and back', [scroller.scrollTop, cellAtPoint(host, 60, 40), content.getBoundingClientRect().height], [0, [0, 0], 30 + 3000 * 25]);
+
+        // The selection is kept in view.
+        grid.SelectCell(0, 0);
+        for (let i = 0; i < 100; i++) press(host, 'ArrowDown');
+        const visibleRows = () => [Math.ceil(scroller.scrollTop / 25), Math.floor((scroller.scrollTop + scroller.clientHeight - 30) / 25) - 1];
+        check('arrow keys scroll the selection into view (down)', [active(grid), visibleRows()[0] <= 100 && 100 <= visibleRows()[1]], [[100, 0], true]);
+        for (let i = 0; i < 30; i++) press(host, 'ArrowRight');
+        check('(right)', [active(grid), scroller.scrollLeft > 0, scroller.scrollLeft + scroller.clientWidth - 50 >= 31 * 100], [[100, 30], true, true]);
+        for (let i = 0; i < 100; i++) press(host, 'ArrowUp');
+        for (let i = 0; i < 30; i++) press(host, 'ArrowLeft');
+        check('(and back to A1)', [active(grid), scroller.scrollTop, scroller.scrollLeft], [[0, 0], 0, 0]);
+        grid.SelectCell(2500, 50);
+        check('a cell selected by the host is scrolled to', [cellAtPoint(host, ...(await pointOfCell(grid, host, 2500, 50)))], [[2500, 50]]);
+
+        // Typing into a cell that is not on screen: it is scrolled to and the whole entry is kept.
+        grid.SelectCell(5, 2);
+        scroller.scrollTop = 40000; await frame();
+        press(host, 'h');
+        const input = host.querySelector('.spreadsheet-edit-input');
+        check('typing scrolls the cell back into view and opens its edit box', [grid.IsEditing(), scroller.scrollTop < 200, document.activeElement === input, input.value], [true, true, true, 'h']);
+        const inputBox = input.getBoundingClientRect(), hostBox = host.getBoundingClientRect();
+        check('the edit box sits on the cell', [Math.round(inputBox.left - hostBox.left + scroller.scrollLeft), Math.round(inputBox.top - hostBox.top + scroller.scrollTop)], [50 + 200 + 1, 30 + 5 * 25 + 1]);
+        input.value = 'hello'; input.dispatchEvent(new Event('input', { bubbles: true }));
+        press(host, 'Enter');
+        check('the whole entry is committed', [await valueAt(grid, 5, 2), grid.IsEditing(), active(grid)], ['hello', false, [6, 2]]);
+
+        // Headers stay on top of the scrolled cells; the corner on top of both.
+        scroller.scrollTop = 5000; scroller.scrollLeft = 730; await frame();
+        check('column headers, row headers and the corner cover the scrolled cells', [cellAtPoint(host, 400, 12), cellAtPoint(host, 20, 300), cellAtPoint(host, 20, 12)], ['spreadsheet-col-header', 'spreadsheet-row-header', 'spreadsheet-corner']);
+        const header = document.elementFromPoint(hostBox.left + 400, hostBox.top + 12).closest('.spreadsheet-col-header');
+        check('the header over a column is that column\'s', Number(header.getAttribute('data-col')), cellAtPoint(host, 400, 300)[1]);
+        check('headers do not move with a vertical scroll', Math.round(header.getBoundingClientRect().top - scroller.getBoundingClientRect().top), 1);
+
+        // Frozen panes: two rows and one column stay; the scrolled cells pass under them.
+        grid.InstallWorkbook([withFields(createEmpty(3000, 60), { FrozenRows: 2, FrozenCols: 1 })], ['Frozen'], 0, undefined);
+        scroller.scrollTop = 5000; scroller.scrollLeft = 730; await frame();
+        const body = cellAtPoint(host, 500, 300);
+        check('frozen rows stay at the top, above the scrolled cells', [cellAtPoint(host, 500, 30 + 12)[0], cellAtPoint(host, 500, 30 + 37)[0], body[0] > 190], [0, 1, true]);
+        check('they scroll sideways with their columns', cellAtPoint(host, 500, 30 + 12)[1], body[1]);
+        check('frozen columns stay at the left', [cellAtPoint(host, 50 + 50, 300)[1], cellAtPoint(host, 50 + 50, 300)[0]], [0, body[0]]);
+        check('the frozen corner is above both', cellAtPoint(host, 50 + 50, 30 + 12), [0, 0]);
+        check('headers above everything', [cellAtPoint(host, 500, 12), cellAtPoint(host, 20, 300), cellAtPoint(host, 20, 12), cellAtPoint(host, 50 + 50, 12), cellAtPoint(host, 20, 30 + 12)], ['spreadsheet-col-header', 'spreadsheet-row-header', 'spreadsheet-corner', 'spreadsheet-col-header', 'spreadsheet-row-header']);
+        const frozenHeader = document.elementFromPoint(hostBox.left + 100, hostBox.top + 12).closest('.spreadsheet-col-header');
+        check('the header of the frozen column is column A', frozenHeader.getAttribute('data-col'), '0');
+        grid.SelectCell(300, 40);
+        const at = await pointOfCell(grid, host, 300, 40);
+        check('a selected cell is revealed clear of the frozen panes', [cellAtPoint(host, ...at), at[0] > 150, at[1] > 80], [[300, 40], true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Selection with the keyboard and the mouse, the active cell, and the editing API.
+checks['grid-selection-and-keyboard'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        grid.InstallWorkbook([createEmpty(400, 30)], ['Keys'], 0, undefined);
+        // A block of data B3:D8, a gap, and more in column B further down.
+        for (let row = 2; row <= 7; row++) for (let col = 1; col <= 3; col++) grid.SetCell(row, col, String(row * 10 + col));
+        grid.SetCell(20, 1, 'x'); grid.SetCell(21, 1, 'y');
+        const selections = [];
+        const off = grid.OnSelectionChange((change) => selections.push(change));
+        grid.SelectCell(2, 1);
+        check('the selection event names the active cell', [selections.at(-1).Selection, selections.at(-1).ActiveCell, selections.at(-1).ActiveRow, selections.at(-1).ActiveCol], ['B3', 'B3', 2, 1]);
+        press(host, 'ArrowDown', { shiftKey: true }); press(host, 'ArrowRight', { shiftKey: true }); press(host, 'ArrowDown', { shiftKey: true });
+        check('Shift+arrow extends from the active cell', [grid.GetSelectionRef(), active(grid)], ['B3:C5', [2, 1]]);
+        press(host, 'ArrowUp', { shiftKey: true });
+        check('and shrinks again', grid.GetSelectionRef(), 'B3:C4');
+        grid.SelectCell(5, 3);
+        press(host, 'ArrowUp', { shiftKey: true }); press(host, 'ArrowLeft', { shiftKey: true });
+        check('extending up and left keeps the active cell at the bottom-right', [grid.GetSelectionRef(), active(grid)], ['C5:D6', [5, 3]]);
+        press(host, 'ArrowLeft');
+        check('a plain arrow collapses to the active cell and moves', [grid.GetSelectionRef(), active(grid)], ['C6', [5, 2]]);
+
+        // Mouse: click, Shift+click, drag (the cell the drag started at stays the active cell).
+        await mouse(grid, host, 'mousedown', 3, 1); await mouse(grid, host, 'mouseup', 3, 1);
+        await mouse(grid, host, 'mousedown', 6, 3, { shiftKey: true }); await mouse(grid, host, 'mouseup', 6, 3);
+        check('Shift+click extends from the active cell', [grid.GetSelectionRef(), active(grid)], ['B4:D7', [3, 1]]);
+        await mouse(grid, host, 'mousedown', 7, 3); await mouse(grid, host, 'mousemove', 5, 2); await mouse(grid, host, 'mousemove', 2, 1); await mouse(grid, host, 'mouseup', 2, 1);
+        check('a drag up and to the left keeps its starting cell active', [grid.GetSelectionRef(), active(grid)], ['B3:D8', [7, 3]]);
+        await mouse(grid, host, 'mousemove', 12, 5);
+        check('the drag ended with the button', grid.GetSelectionRef(), 'B3:D8');
+
+        // Ctrl+arrow: the edges of the data.
+        grid.SelectCell(2, 1);
+        press(host, 'ArrowDown', { ctrlKey: true });
+        check('Ctrl+Down: the last cell of the block', active(grid), [7, 1]);
+        press(host, 'ArrowDown', { ctrlKey: true });
+        check('again: the next cell with data', active(grid), [20, 1]);
+        press(host, 'ArrowDown', { ctrlKey: true }); press(host, 'ArrowDown', { ctrlKey: true });
+        check('then the end of that run, then the last row', active(grid), [399, 1]);
+        press(host, 'ArrowUp', { ctrlKey: true });
+        check('Ctrl+Up comes back to the data', active(grid), [21, 1]);
+        grid.SelectCell(2, 1);
+        press(host, 'ArrowRight', { ctrlKey: true, shiftKey: true }); press(host, 'ArrowDown', { ctrlKey: true, shiftKey: true });
+        check('Ctrl+Shift+arrows select the block', [grid.GetSelectionRef(), active(grid)], ['B3:D8', [2, 1]]);
+        press(host, 'ArrowRight', { ctrlKey: true });
+        check('Ctrl+Right from the active cell', active(grid), [2, 3]);
+        press(host, 'ArrowRight', { ctrlKey: true });
+        check('with nothing further: the last column', active(grid), [2, 29]);
+
+        // Home / End / Ctrl+Home / Ctrl+End / PageDown / PageUp.
+        grid.SelectCell(4, 2);
+        press(host, 'Home'); check('Home: the first column of the row', active(grid), [4, 0]);
+        press(host, 'End'); check('End: the last cell with data in the row', active(grid), [4, 3]);
+        press(host, 'End', { ctrlKey: true }); check('Ctrl+End: the last cell of the used range', active(grid), [21, 3]);
+        press(host, 'Home', { ctrlKey: true }); check('Ctrl+Home: the first cell', active(grid), [0, 0]);
+        const pageRows = Math.floor((parts(host).scroller.clientHeight - 30) / 25);
+        press(host, 'PageDown');
+        check('PageDown moves a screenful', [Math.abs(active(grid)[0] - pageRows) <= 1, active(grid)[1]], [true, 0]);
+        const afterOne = active(grid)[0];
+        press(host, 'PageDown'); press(host, 'PageUp');
+        check('PageUp comes back', active(grid), [afterOne, 0]);
+        press(host, 'PageUp'); press(host, 'PageUp');
+        check('and stops at the top', active(grid), [0, 0]);
+        press(host, 'PageDown', { shiftKey: true });
+        check('Shift+PageDown selects', [grid.GetSelectionRef(), active(grid)], [`A1:A${afterOne + 1}`, [0, 0]]);
+        press(host, 'a', { ctrlKey: true });
+        check('Ctrl+A selects the sheet, the active cell stays', [grid.GetSelectionRef(), active(grid)], ['A1:AD400', [0, 0]]);
+
+        // Enter / Tab walk through a selection; with one cell selected they move it (Enter edits).
+        grid.SelectRange(2, 1, 3, 2);
+        const walk = (key, options, n) => { const seen = []; for (let i = 0; i < n; i++) { press(host, key, options); seen.push(active(grid).join(',')); } return seen; };
+        check('Tab walks the selection row by row', [walk('Tab', {}, 4), grid.GetSelectionRef()], [['2,2', '3,1', '3,2', '2,1'], 'B3:C4']);
+        check('Shift+Tab walks back', walk('Tab', { shiftKey: true }, 2), ['3,2', '3,1']);
+        grid.SelectRange(2, 1, 3, 2);
+        check('Enter walks it column by column', walk('Enter', {}, 4), ['3,1', '2,2', '3,2', '2,1']);
+        check('Shift+Enter walks back', walk('Enter', { shiftKey: true }, 2), ['3,2', '2,2']);
+        // Typing into the active cell of a selection keeps the selection; Enter goes on to the next cell.
+        grid.SelectRange(10, 5, 11, 5);
+        press(host, '7');
+        const input = host.querySelector('.spreadsheet-edit-input');
+        input.value = '77'; input.dispatchEvent(new Event('input', { bubbles: true }));
+        press(host, 'Enter');
+        press(host, '8'); press(host, 'Enter');
+        check('entries typed down a selected column', [await valueAt(grid, 10, 5), await valueAt(grid, 11, 5), grid.GetSelectionRef(), active(grid)], ['77', '8', 'F11:F12', [10, 5]]);
+        grid.SelectCell(12, 5);
+        press(host, 'Tab'); check('Tab with one cell selected moves right', active(grid), [12, 6]);
+        press(host, 'Tab', { shiftKey: true }); check('Shift+Tab moves left', active(grid), [12, 5]);
+        press(host, 'Enter');
+        check('Enter on a single cell starts editing it', grid.IsEditing(), true);
+
+        // The editing API.
+        const edits = [];
+        const offEdit = grid.OnEditStateChange((state) => edits.push([state.Editing, state.Row, state.Col, state.Text]));
+        grid.CancelEdit();
+        check('CancelEdit drops the entry', [grid.IsEditing(), edits], [false, [[false, -1, -1, '']]]);
+        edits.length = 0;
+        grid.SelectCell(14, 0);
+        press(host, 'a');
+        input.value = 'abc'; input.dispatchEvent(new Event('input', { bubbles: true }));
+        check('OnEditStateChange: start and text', edits, [[true, 14, 0, 'a'], [true, 14, 0, 'abc']]);
+        const undoBefore = grid.CanUndo();
+        check('CommitEdit commits where Enter would, without moving', [grid.CommitEdit(), grid.IsEditing(), await valueAt(grid, 14, 0), active(grid), edits.at(-1)], [true, false, 'abc', [14, 0], [false, -1, -1, '']]);
+        check('CanUndo / CanRedo', [undoBefore, grid.CanUndo(), grid.CanRedo()], [true, true, false]);
+        grid.Undo();
+        check('after an undo', [await valueAt(grid, 14, 0), grid.CanRedo()], ['', true]);
+        offEdit(); edits.length = 0;
+        grid.StartEdit('zz'); grid.SetEditText('typed in a formula bar');
+        check('StartEdit / SetEditText / CommitEdit from a formula bar', [input.value, grid.CommitEdit(), await valueAt(grid, 14, 0), edits.length], ['typed in a formula bar', true, 'typed in a formula bar', 0]);
+        // A fresh grid has nothing to undo.
+        const other = mountGrid();
+        check('a new grid has nothing to undo or redo', [other.grid.CanUndo(), other.grid.CanRedo()], [false, false]);
+        other.close();
+        // OnValidationNotice returns its unsubscribe.
+        const notices = [];
+        const offNotice = grid.OnValidationNotice((style) => notices.push(style));
+        check('OnValidationNotice returns an unsubscribe function', typeof offNotice, 'function');
+        offNotice(); off();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Copy, cut and paste through the system clipboard: tab-separated text and an HTML table.
+checks['grid-clipboard'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { content } = parts(host);
+        const clipboard = (type, data = {}) => {
+            const transfer = new DataTransfer();
+            for (const [flavour, text] of Object.entries(data)) transfer.setData(flavour, text);
+            const event = new ClipboardEvent(type, { clipboardData: transfer, bubbles: true, cancelable: true });
+            content.dispatchEvent(event);
+            return { text: transfer.getData('text/plain'), html: transfer.getData('text/html'), handled: event.defaultPrevented };
+        };
+        grid.SetCell(0, 0, 'Name'); grid.SetCell(0, 1, 'Qty'); grid.SetCell(0, 2, 'Note');
+        grid.SetCell(1, 0, 'Apples'); grid.SetCell(1, 1, '12'); grid.SetCell(1, 2, 'tab\there');
+        grid.SetCell(2, 0, 'Pears'); grid.SetCell(2, 1, '=B2*2'); grid.SetCell(2, 2, 'say "hi"');
+        grid.SelectCell(1, 1); grid.ApplyFormat('bold');
+        grid.SelectRange(0, 0, 2, 2);
+        const copied = clipboard('copy');
+        check('copy puts tab-separated text on the clipboard', [copied.handled, copied.text], [true, 'Name\tQty\tNote\nApples\t12\t"tab\there"\nPears\t24\t"say ""hi"""']);
+        const table = new DOMParser().parseFromString(copied.html, 'text/html').querySelector('table');
+        check('and an HTML table', [table.rows.length, table.rows[0].cells.length, table.rows[2].cells[1].textContent, /bold/.test(table.rows[1].cells[1].getAttribute('style') ?? '')], [3, 3, '24', true]);
+        check('GetSelectionText / GetSelectionHtml give the same', [grid.GetSelectionText() === copied.text, grid.GetSelectionHtml() === copied.html], [true, true]);
+
+        // The grid's own cells pasted back: formulas move, formats come along.
+        grid.SelectCell(5, 0);
+        const own = clipboard('paste', { 'text/plain': copied.text, 'text/html': copied.html });
+        const { editText } = await import('/spreadsheet/Input.js');
+        const { getCell, CellAddress } = await import('/spreadsheet/Model.js');
+        check('pasting the grid\'s own copy keeps formulas and formats', [own.handled, await valueAt(grid, 7, 1), editText(getCell(new CellAddress(7, 1), grid.GetModel())), (await formatAt(grid, 6, 1)).Bold, grid.GetSelectionRef()], [true, '24', '=B7*2', true, 'A6:C8']);
+        const changes = [];
+        grid.OnChange((change) => changes.push(change));
+        grid.Undo();
+        check('the paste is one undo step', [await valueAt(grid, 5, 0), await valueAt(grid, 7, 2), changes.length], ['', '', 1]);
+
+        // Cells from another application: tab-separated text (as Excel writes it) ...
+        grid.SelectCell(10, 1);
+        clipboard('paste', { 'text/plain': 'Region\tSales\r\nNorth\t1,250.50\r\n"multi\nline"\t=1+2\r\n' });
+        check('pasting tab-separated text: values are read like typed entries', [await valueAt(grid, 10, 1), await valueAt(grid, 11, 2), await valueAt(grid, 12, 1), await valueAt(grid, 12, 2), grid.GetSelectionRef()], ['Region', '1250.5', 'multi\nline', '3', 'B11:C13']);
+        grid.Undo();
+        check('one undo step', [await valueAt(grid, 10, 1), await valueAt(grid, 12, 2)], ['', '']);
+        // ... or an HTML table (as Excel and Sheets also write).
+        grid.SelectCell(10, 1);
+        clipboard('paste', { 'text/plain': 'ignored when there is a table', 'text/html': '<html><body><!--StartFragment--><table><tr><td>Q1</td><td style="font-weight:bold">42</td></tr><tr><td>Q2</td><td>58%</td></tr></table><!--EndFragment--></body></html>' });
+        check('pasting an HTML table', [await valueAt(grid, 10, 1), await valueAt(grid, 10, 2), await valueAt(grid, 11, 1), (await import('/spreadsheet/Model.js')).getCellValue(new CellAddress(11, 2), grid.GetModel()).fields[0]], ['Q1', '42', 'Q2', 0.58]);
+        // One copied value fills the whole selection.
+        grid.SelectRange(15, 0, 16, 2);
+        clipboard('paste', { 'text/plain': '9' });
+        check('a single value fills the selection', [await valueAt(grid, 15, 0), await valueAt(grid, 16, 2), await valueAt(grid, 17, 0)], ['9', '9', '']);
+        check('PasteText does the same for a host', [(grid.SelectCell(20, 0), grid.PasteText('a\tb', '')), await valueAt(grid, 20, 1)], [true, 'b']);
+
+        // Cut: on the clipboard, and gone from the sheet in one step.
+        grid.SelectRange(0, 0, 0, 2);
+        const cut = clipboard('cut');
+        check('cut copies and clears', [cut.text, await valueAt(grid, 0, 0), await valueAt(grid, 0, 2)], ['Name\tQty\tNote', '', '']);
+        grid.Undo();
+        check('and is undone in one step', await valueAt(grid, 0, 1), 'Qty');
+        // While a cell is being edited the clipboard belongs to the edit box.
+        grid.SelectCell(1, 0); press(host, 'F2');
+        check('copy while editing is left to the edit box', clipboard('copy').handled, false);
+        grid.CancelEdit();
+        // The programmatic calls resolve even when the browser refuses the system clipboard.
+        grid.SelectRange(1, 0, 1, 1);
+        const copyResult = await grid.Copy();
+        check('Copy() resolves to whether the system clipboard took it', typeof copyResult, 'boolean');
+        grid.SelectCell(25, 0);
+        const pasted = await grid.Paste();
+        check('Paste() pastes (the grid\'s own cells when the system clipboard cannot be read)', [pasted, await valueAt(grid, 25, 0), await valueAt(grid, 25, 1)], [true, 'Apples', '12']);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Formatting and structure commands act on the whole selection: one change, one undo step.
+checks['grid-selection-formatting'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        for (let row = 1; row <= 3; row++) for (let col = 1; col <= 3; col++) grid.SetCell(row, col, String(row + col));
+        const changes = [];
+        grid.OnChange((change) => changes.push(change));
+        const all = async (pick) => { const seen = []; for (let row = 1; row <= 3; row++) for (let col = 1; col <= 3; col++) seen.push(pick(await formatAt(grid, row, col))); return [...new Set(seen.map((v) => JSON.stringify(v ?? null)))].map((v) => JSON.parse(v)); };
+        const outside = async (pick) => [pick(await formatAt(grid, 0, 1)), pick(await formatAt(grid, 4, 3)), pick(await formatAt(grid, 2, 4))];
+        const step = async (label, apply, pick, wanted, plain) => {
+            changes.length = 0;
+            apply();
+            check(`${label}: every cell of the selection`, [await all(pick), await outside(pick), changes.length], [[wanted], [plain, plain, plain], 1]);
+            grid.Undo();
+            check(`${label}: one undo step`, [await all(pick), grid.CanRedo()], [[plain], true]);
+            grid.Redo();
+            check(`${label}: and one redo`, await all(pick), [wanted]);
+        };
+        grid.SelectRange(1, 1, 3, 3);
+        await step('bold', () => grid.ApplyFormat('bold'), (f) => f.Bold, true, false);
+        await step('italic', () => grid.ApplyFormat('italic'), (f) => f.Italic, true, false);
+        await step('text colour', () => grid.ApplyTextColor('#C00000'), (f) => f.TextColor ?? null, '#C00000', null);
+        await step('fill colour', () => grid.ApplyBgColor('#FFF2CC'), (f) => f.BgColor ?? null, '#FFF2CC', null);
+        await step('number format', () => grid.ApplyNumberFormat('0.00'), (f) => f.NumberFormat ?? null, '0.00', null);
+        await step('alignment', () => grid.ApplyFormat('alignCenter'), (f) => f.HorizontalAlign ?? null, 'center', null);
+        await step('border', () => grid.ApplyBorder('all', 'thin', '#000000'), (f) => [f.BorderTop?.Style ?? null, f.BorderRight?.Style ?? null], ['thin', 'thin'], [null, null]);
+        // A toggle goes by the active cell: bold is on everywhere, so it goes off everywhere.
+        changes.length = 0;
+        grid.ApplyFormat('bold');
+        check('bold again turns it off for the whole selection', [await all((f) => f.Bold), changes.length], [[false], 1]);
+        // Mixed: the active cell decides. One cell is made bold; with a plain active cell all become bold ...
+        grid.SelectCell(2, 2); grid.ApplyFormat('bold');
+        grid.SelectRange(1, 1, 3, 3);
+        check('a mixed selection', (await all((f) => f.Bold)).sort(), [false, true]);
+        grid.ApplyFormat('bold');
+        check('with a plain active cell a mixed selection becomes bold', await all((f) => f.Bold), [true]);
+        // ... and with a bold active cell all become plain.
+        grid.Undo();
+        grid.SelectRange(2, 2, 1, 1);
+        grid.ApplyFormat('bold');
+        check('with a bold active cell it becomes plain', [await all((f) => f.Bold), active(grid)], [[false], [2, 2]]);
+        check('the values are untouched', [await valueAt(grid, 1, 1), await valueAt(grid, 3, 3)], ['2', '6']);
+        // Empty cells of the selection take the format too.
+        grid.SelectRange(6, 0, 7, 1); grid.ApplyBgColor('#DDEBF7');
+        check('empty cells are formatted too', [(await formatAt(grid, 6, 0)).BgColor, (await formatAt(grid, 7, 1)).BgColor], ['#DDEBF7', '#DDEBF7']);
+        // A whole-sheet selection formats the cells that exist, at once.
+        grid.SelectAll();
+        const started = performance.now();
+        grid.ApplyFormat('italic');
+        check('a whole-sheet selection is formatted in one step, quickly', [(await formatAt(grid, 1, 1)).Italic, (await formatAt(grid, 6, 0)).Italic, performance.now() - started < 500], [true, true, true]);
+        grid.Undo();
+        check('and undone in one', [(await formatAt(grid, 1, 1)).Italic, (await formatAt(grid, 6, 0)).Italic], [true, false]);
+
+        // Merge and unmerge are undoable.
+        const { findMergedCell, CellAddress } = await import('/spreadsheet/Model.js');
+        const merged = () => findMergedCell(new CellAddress(10, 1), grid.GetModel()) != null;
+        const undoable = grid.CanUndo();
+        changes.length = 0;
+        grid.MergeCells(10, 0, 11, 2);
+        check('merge', [merged(), changes.length], [true, 1]);
+        grid.Undo(); check('undo of a merge', merged(), false);
+        grid.Redo(); check('redo of a merge', merged(), true);
+        grid.UnmergeCells(10, 1); check('unmerge', merged(), false);
+        grid.Undo(); check('undo of an unmerge', merged(), true);
+        void undoable;
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Read-only mode is a viewer: nothing can be changed and nothing invites it, while
+// selecting, copying, switching sheets and moving with the keyboard work.
+checks['grid-read-only'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { scroller, content } = parts(host);
+        await grid.ImportXlsx((await bytesOf('tests/real-world/milk-street-office.xlsx')).slice());
+        const shown = (selector) => [...host.querySelectorAll(selector)].filter((node) => getComputedStyle(node).display !== 'none').length;
+        check('an editor shows a fill handle, filter buttons and resize handles', [shown('.spreadsheet-fill-handle') > 0, shown('.col-filter-btn') > 0, shown('.col-resize-handle') > 0, shown('.row-resize-handle') > 0], [true, true, true, true]);
+        grid.SetReadOnly(true);
+        check('a viewer shows none of them', [shown('.spreadsheet-fill-handle'), shown('.col-filter-btn'), shown('.col-resize-handle'), shown('.row-resize-handle'), grid.IsReadOnly()], [0, 0, 0, 0, true]);
+        const changes = [];
+        grid.OnChange((change) => changes.push(change));
+        const before = grid.GetModel();
+        // Selecting with the mouse and the keyboard.
+        await mouse(grid, host, 'mousedown', 4, 2); await mouse(grid, host, 'mouseup', 4, 2);
+        check('a click selects', [grid.GetSelectionRef(), active(grid)], ['C5', [4, 2]]);
+        press(host, 'ArrowDown'); press(host, 'ArrowRight', { shiftKey: true });
+        check('the keyboard moves and extends', grid.GetSelectionRef(), 'C6:D6');
+        for (let i = 0; i < 60; i++) press(host, 'ArrowDown');
+        check('and scrolls', [active(grid)[0], scroller.scrollTop > 0], [65, true]);
+        press(host, 'Home', { ctrlKey: true });
+        // Nothing edits.
+        press(host, 'x'); press(host, 'F2'); press(host, 'Delete'); press(host, 'Enter');
+        await mouse(grid, host, 'dblclick', 6, 1);
+        check('typing, F2, Delete, Enter and a double click do not edit', [grid.IsEditing(), shown('.spreadsheet-edit-input')], [false, 0]);
+        const header = host.querySelector('.col-header-text');
+        header.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        const transfer = new DataTransfer(); transfer.setData('text/plain', 'pasted');
+        content.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
+        press(host, 'z', { ctrlKey: true }); press(host, 'd', { ctrlKey: true });
+        check('a header click does not sort, a paste does not paste', [grid.GetModel().Cells === before.Cells, grid.GetModel().SortState == null, changes.length], [true, true, 0]);
+        // Copy works; cut copies without clearing.
+        grid.SelectRange(1, 1, 3, 4);
+        const out = new DataTransfer();
+        content.dispatchEvent(new ClipboardEvent('copy', { clipboardData: out, bubbles: true, cancelable: true }));
+        check('copy works', out.getData('text/plain') === grid.GetSelectionText() && out.getData('text/html').startsWith('<table>'), true);
+        const cutOut = new DataTransfer();
+        content.dispatchEvent(new ClipboardEvent('cut', { clipboardData: cutOut, bubbles: true, cancelable: true }));
+        check('a cut copies and leaves the cells', [cutOut.getData('text/plain') === out.getData('text/plain'), grid.GetModel().Cells === before.Cells], [true, true]);
+        // Sheets.
+        const visible = grid.SheetVisibility(), other = grid.GetSheetNames().findIndex((_, index) => index !== grid.GetActiveSheetIndex() && visible[index]);
+        grid.SwitchSheet(other);
+        check('sheets can be switched', [grid.GetActiveSheetIndex(), scroller.scrollTop, cellAtPoint(host, 60, 40)], [other, 0, [0, 0]]);
+        check('still no change was reported', changes.length, 0);
+        // Back to an editor.
+        grid.SetReadOnly(false);
+        check('an editor again', [shown('.spreadsheet-fill-handle') > 0, shown('.col-resize-handle') > 0], [true, true]);
+        grid.SelectCell(2, 30); press(host, 'q');
+        check('typing edits again', grid.IsEditing(), true);
+        grid.SetReadOnly(true);
+        check('going read-only drops an entry in progress', [grid.IsEditing(), await valueAt(grid, 2, 30)], [false, '']);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Scrolling a large sheet: frames stay short, nodes are reused, and a selection move draws no cell.
+checks['grid-scroll-frames'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { scroller, content } = parts(host);
+        await grid.ImportXlsx((await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx')).slice());
+        grid.SetReadOnly(true);
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('Data'));
+        const rows = grid.GetModel().RowCount;
+        check('the sheet can be scrolled to its end', [rows > 70000, scroller.scrollHeight >= content.getBoundingClientRect().height - 1], [true, true]);
+        const next = () => new Promise((resolve) => requestAnimationFrame(resolve));
+        await next(); await next();
+        // A mouse wheel's worth per frame, then a screenful per frame.
+        const run = async (step, frames) => {
+            scroller.scrollTop = 0; await next(); await next();
+            const times = [];
+            let last = await next();
+            for (let i = 0; i < frames; i++) { scroller.scrollTop = (i + 1) * step; const now = await next(); times.push(now - last); last = now; }
+            return times;
+        };
+        const wheel = await run(120, 90), pages = await run(scroller.clientHeight - 30, 60);
+        const stats = (times) => `mean ${(times.reduce((a, b) => a + b, 0) / times.length).toFixed(1)} ms, max ${Math.max(...times).toFixed(1)} ms`;
+        note(`120 px per frame: ${stats(wheel)}; a screenful per frame: ${stats(pages)}`);
+        check('no frame over 33 ms at 120 px per frame', wheel.filter((t) => t > 33).map((t) => Math.round(t)), []);
+        // (Every cell on screen is new in each of these frames; one long frame - a garbage collection - is allowed.)
+        check('a screenful per frame stays within two refresh intervals', pages.filter((t) => t > 34).length <= 1, true);
+        scroller.scrollTop = scroller.scrollHeight; await next(); await next();
+        check('the last row is reached', cellAtPoint(host, 300, scroller.clientHeight - 30)?.[0] >= rows - 3, true);
+        // Nodes are reused rather than made for every cell that scrolls by.
+        const nodes = host.querySelectorAll('.spreadsheet-cell').length, visible = [...host.querySelectorAll('.spreadsheet-cell')].filter((node) => node.style.display !== 'none').length;
+        check(`cell nodes are pooled (${visible} on display, ${nodes} in all)`, [nodes < 3 * visible + 700, visible > 100], [true, true]);
+        // A selection move draws no cell.
+        let drawn = 0;
+        const observer = new MutationObserver((records) => { for (const record of records) if (record.target.closest && record.target.closest('.spreadsheet-cell')) drawn++; });
+        observer.observe(content, { subtree: true, childList: true, attributes: true, characterData: true });
+        grid.SelectCell(rows - 5, 2); press(host, 'ArrowUp'); press(host, 'ArrowRight', { shiftKey: true });
+        await next();
+        observer.disconnect();
+        check('moving the selection touches no cell node', [drawn, grid.GetSelectionRef()], [0, `C${rows - 5}:D${rows - 5}`]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

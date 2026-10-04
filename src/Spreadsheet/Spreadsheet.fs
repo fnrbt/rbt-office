@@ -173,6 +173,165 @@ let private threadText (thread: CommentThread) =
     line thread :: (thread.Replies |> List.map (fun reply -> "\u21B3 " + line reply))
     |> String.concat "\n\n"
 
+[<Emit("$0.closest($1)")>]
+let private closest (el: Element) (selector: string): Element = jsNative
+
+[<Emit("$0.scrollLeft = $1")>]
+let private setScrollLeft (el: Element) (value: float): unit = jsNative
+
+[<Emit("$0.removeAttribute($1)")>]
+let private removeAttribute (el: Element) (name: string): unit = jsNative
+
+[<Emit("$0.parentNode === $1")>]
+let private isChildOf (el: Element) (parent: Element): bool = jsNative
+
+[<Emit("$0.getBoundingClientRect().right + window.scrollX")>]
+let private pageRight (el: Element): float = jsNative
+
+[<Emit("$0.getBoundingClientRect().bottom + window.scrollY")>]
+let private pageBottom (el: Element): float = jsNative
+
+[<Emit("($0.button || 0)")>]
+let private mouseButton (e: obj): int = jsNative
+
+[<Emit("!!$0[$1]")>]
+let private eventFlag (e: obj) (name: string): bool = jsNative
+
+[<Emit("document.activeElement === $0")>]
+let private isActiveElement (el: Element): bool = jsNative
+
+// ---- system clipboard ----
+
+[<Emit("($0.clipboardData ? ($0.clipboardData.getData($1) || '') : '')")>]
+let private clipboardEventGet (e: obj) (flavour: string): string = jsNative
+
+[<Emit("($0.clipboardData ? ($0.clipboardData.setData($1, $2), true) : false)")>]
+let private clipboardEventSet (e: obj) (flavour: string) (data: string): bool = jsNative
+
+/// Put text and an HTML table on the system clipboard (outside a copy event).
+/// Resolves to false when the browser does not allow it.
+[<Emit("(function (text, html) { try { if (typeof navigator !== 'undefined' && navigator.clipboard && typeof ClipboardItem !== 'undefined') return navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob([text], { type: 'text/plain' }), 'text/html': new Blob([html], { type: 'text/html' }) })]).then(function () { return true; }, function () { return false; }); if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; }); } catch (e) { } return Promise.resolve(false); })($0, $1)")>]
+let private writeSystemClipboard (text: string) (html: string): JS.Promise<bool> = jsNative
+
+/// Read the system clipboard: [| text; html |] ("" for a missing flavour), or
+/// null when the browser does not allow it.
+[<Emit("(function () { var none = function () { return null; }; try { var c = typeof navigator !== 'undefined' ? navigator.clipboard : null; if (c && c.read) return c.read().then(function (items) { var jobs = []; var out = ['', '']; items.forEach(function (item) { if (item.types.indexOf('text/plain') >= 0) jobs.push(item.getType('text/plain').then(function (b) { return b.text(); }).then(function (t) { out[0] = t; })); if (item.types.indexOf('text/html') >= 0) jobs.push(item.getType('text/html').then(function (b) { return b.text(); }).then(function (t) { out[1] = t; })); }); return Promise.all(jobs).then(function () { return out; }); }).catch(function () { return c.readText ? c.readText().then(function (t) { return [t, '']; }, none) : null; }); if (c && c.readText) return c.readText().then(function (t) { return [t, '']; }, none); } catch (e) { } return Promise.resolve(null); })()")>]
+let private readSystemClipboard (): JS.Promise<string array> = jsNative
+
+/// The cells of the first table of an HTML fragment (what Excel and Sheets
+/// put on the clipboard), row by row, or null when it has no table.
+[<Emit("(function (html) { if (!html || html.indexOf('<t') < 0) return null; var doc = new DOMParser().parseFromString(html, 'text/html'); var table = doc.querySelector('table'); if (!table) return null; return Array.prototype.map.call(table.rows, function (row) { return Array.prototype.map.call(row.cells, function (cell) { var lines = []; var walk = function (node) { if (node.nodeType === 3) lines.push(node.nodeValue.replace(/\\s+/g, ' ')); else if (node.nodeName === 'BR') lines.push('\\n'); else for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]); }; walk(cell); return lines.join('').replace(/\\u00a0/g, ' ').replace(/ *\\n */g, '\\n').trim(); }); }); })($0)")>]
+let private htmlTableCells (html: string): string array array = jsNative
+
+[<Emit("$0.then($1)")>]
+let private promiseThen (promise: JS.Promise<'T>) (next: 'T -> 'U): JS.Promise<'U> = jsNative
+
+[<Emit("Promise.resolve($0)")>]
+let private promiseOf (value: 'T): JS.Promise<'T> = jsNative
+
+/// Selection as text for the clipboard: cells separated by tabs, rows by line
+/// feeds; a cell holding a tab, a line break or a quote is quoted, the way
+/// Excel and Sheets write and read it.
+let private tsvOfRows (rows: string array array) : string =
+    let field (text: string) =
+        if text.IndexOf '\t' >= 0 || text.IndexOf '\n' >= 0 || text.IndexOf '\r' >= 0 || text.IndexOf '"' >= 0 then
+            "\"" + text.Replace("\"", "\"\"") + "\""
+        else text
+    rows |> Array.map (fun row -> row |> Array.map field |> String.concat "\t") |> String.concat "\n"
+
+/// The inverse of `tsvOfRows`.
+let private rowsOfTsv (text: string) : string array array =
+    let rows = ResizeArray<string array>()
+    let row = ResizeArray<string>()
+    let field = System.Text.StringBuilder()
+    let mutable quoted = false
+    let mutable atFieldStart = true
+    let mutable i = 0
+    let endField () =
+        row.Add (field.ToString())
+        field.Clear() |> ignore
+        atFieldStart <- true
+    let endRow () =
+        endField ()
+        rows.Add (row.ToArray())
+        row.Clear()
+    while i < text.Length do
+        let ch = text.[i]
+        if quoted then
+            if ch = '"' then
+                if i + 1 < text.Length && text.[i + 1] = '"' then
+                    field.Append '"' |> ignore
+                    i <- i + 1
+                else quoted <- false
+            else field.Append ch |> ignore
+        elif ch = '"' && atFieldStart then
+            quoted <- true
+            atFieldStart <- false
+        elif ch = '\t' then endField ()
+        elif ch = '\r' then
+            if i + 1 < text.Length && text.[i + 1] = '\n' then i <- i + 1
+            endRow ()
+        elif ch = '\n' then endRow ()
+        else
+            field.Append ch |> ignore
+            atFieldStart <- false
+        i <- i + 1
+    // A trailing line end does not start another row.
+    if field.Length > 0 || row.Count > 0 then endRow ()
+    rows.ToArray()
+
+let private htmlEscape (text: string) =
+    text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;")
+
+/// The node of a cell on display, and what it was last drawn from.
+type private CellNode = {
+    Element: Element
+    mutable Key: float
+    /// 0 body, 1 frozen rows, 2 frozen columns, 3 frozen corner.
+    mutable Pane: int
+    /// The cell's data (the CellData record itself, or null).
+    mutable Data: obj
+    mutable X: float
+    mutable Y: float
+    mutable W: float
+    mutable H: float
+    /// The style epoch the node was drawn in (see `render`).
+    mutable Epoch: int
+    /// The render pass that last wanted the node.
+    mutable Seen: int
+    mutable HasTitle: bool
+}
+
+/// The node of a row or column header on display.
+type private HeaderNode = {
+    Element: Element
+    Label: Element
+    /// The filter button (column headers) and the resize handle.
+    Button: Element option
+    Handle: Element
+    mutable Index: int
+    mutable Signature: string
+    mutable Seen: int
+}
+
+/// The fixed nodes of the grid (see `Mount`).
+type private GridLayers = {
+    /// Where cells go, by pane: the scrolled content, and the three sticky
+    /// wrappers of the frozen panes.
+    Panes: Element array
+    ColHeaders: Element
+    RowHeaders: Element
+    /// Pinned on both axes: the corner, and the headers of frozen rows / columns.
+    FrozenHeaders: Element
+    /// The selection rectangle and the active-cell box, one per pane.
+    Selections: Element array
+    Actives: Element array
+    FillHandle: Element
+    EditInput: Element
+    Notice: Element
+    InputMessage: Element
+}
+
 /// Spreadsheet component — interactively edits a Workbook (a collection
 /// of sheets sharing strings, styles, theme, defined names). The class
 /// renders one sheet at a time; chrome layers a tab strip on top via
@@ -199,7 +358,7 @@ type Spreadsheet(container: Element) =
     /// and the selection of the active sheet.
     let mutable notifiedSheets: SpreadsheetModel array = [||]
     let mutable notifiedNames: string array = [||]
-    let mutable notifiedSelection: (int * Selection) option = None
+    let mutable notifiedSelection: (int * Selection * CellAddress) option = None
     /// Undo what Mount set up outside the grid's own nodes (document-level
     /// listeners, observers, overlays appended to <body>).
     let cleanups = ResizeArray<unit -> unit>()
@@ -223,9 +382,41 @@ type Spreadsheet(container: Element) =
 
     let mutable gridContainer: Element option = None
     let mutable contentElement: Element option = None
-    let cellPool = System.Collections.Generic.Dictionary<string, Element>()
-    let chromeNodes = ResizeArray<Element>()
-    let mutable lastRenderedModel: SpreadsheetModel option = None
+    // --- what is on display ---------------------------------------------------
+    // Cell and header nodes are kept between renders and reused: a render
+    // draws the cells that came into view or whose data changed, and leaves
+    // the rest alone.
+    let mutable layers: GridLayers option = None
+    let cellNodes = System.Collections.Generic.Dictionary<float, CellNode>()
+    let freeCellNodes = ResizeArray<CellNode>()
+    let colHeaderNodes = System.Collections.Generic.Dictionary<int, HeaderNode>()
+    let rowHeaderNodes = System.Collections.Generic.Dictionary<int, HeaderNode>()
+    let freeColHeaders = ResizeArray<HeaderNode>()
+    let freeRowHeaders = ResizeArray<HeaderNode>()
+    let drawingNodes = ResizeArray<Element>()
+    let mutable renderGeneration = 0
+    /// Bumped when everything on display has to be drawn again (another sheet,
+    /// conditional formats, tables, read-only mode ...).
+    let mutable styleEpoch = 0
+    /// What the last render drew from.
+    let mutable renderedCells: obj = null
+    let mutable renderedStyleInputs: obj array = [||]
+    let mutable renderedDrawings: obj = null
+    let mutable renderedMetrics: obj = null
+    let mutable extentWidth = -1.0
+    let mutable extentHeight = -1.0
+    /// The active cell: where typing goes, and the cell a Shift+arrow or a
+    /// Shift+click extends the selection from. The model's Selection is the
+    /// rectangle; this is the cell it was started at.
+    let mutable anchorCell : CellAddress = { Row = 0; Col = 0 }
+    /// The active cell of each sheet (parallel to `sheets`), kept across sheet switches.
+    let mutable sheetAnchors : CellAddress array = [| { Row = 0; Col = 0 } |]
+    let editStateListeners = ResizeArray<obj -> unit>()
+    /// The edit state the listeners were last told (cell and text).
+    let mutable notifiedEdit : (CellAddress * string) option = None
+    /// What Copy / Cut last put on the system clipboard: a paste of the same
+    /// text is a paste of the grid's own cells (formulas, formats).
+    let mutable copiedText : string = ""
 
     let currentViewport (): SpreadsheetLayout.Viewport = {
         ScrollX = scrollLeft
@@ -666,17 +857,65 @@ type Spreadsheet(container: Element) =
         match gridContainer with
         | None -> SpreadsheetLayout.Empty
         | Some grid ->
+            // Where the grid is scrolled to now (the scroll event may not have arrived yet).
+            scrollTop <- getScrollTop grid
+            scrollLeft <- getScrollLeft grid
             let x = getClientX e - getBoundingLeft grid
             let y = getClientY e - getBoundingTop grid
             SpreadsheetLayout.hitTest model (currentViewport()) x y
 
-    let selectCellAddress (addr: CellAddress) =
-        let selection =
-            match findMergedCell addr model with
-            | Some merge -> Range (merge.StartRow, merge.StartCol, merge.EndRow, merge.EndCol)
-            | None -> SingleCell (addr.Row, addr.Col)
+    /// The cell under the pointer, or the nearest one when the pointer is over
+    /// a header or outside the grid (a drag that runs past the edge).
+    let hitCellNear (e: obj) : CellAddress option =
+        match gridContainer with
+        | None -> None
+        | Some grid ->
+            scrollTop <- getScrollTop grid
+            scrollLeft <- getScrollLeft grid
+            let width = getClientWidth grid
+            let height = getClientHeight grid
+            let x = getClientX e - getBoundingLeft grid |> max (rowHeaderWidth + 1.0) |> min (width - 1.0)
+            let y = getClientY e - getBoundingTop grid |> max (headerHeight + 1.0) |> min (height - 1.0)
+            match SpreadsheetLayout.hitTest model (currentViewport()) x y with
+            | SpreadsheetLayout.Cell addr -> Some addr
+            | _ ->
+                // Past the last row / column: the last one.
+                let metrics = SpreadsheetLayout.metricsOf model
+                if metrics.RowCount = 0 || metrics.ColCount = 0 then None
+                else
+                    let frozenW = metrics.ColPrefix.[max 0 (min metrics.ColCount model.FrozenCols)]
+                    let frozenH = metrics.RowPrefix.[max 0 (min metrics.RowCount model.FrozenRows)]
+                    let sheetX = if x - rowHeaderWidth < frozenW then x - rowHeaderWidth else x - rowHeaderWidth + scrollLeft
+                    let sheetY = if y - headerHeight < frozenH then y - headerHeight else y - headerHeight + scrollTop
+                    Some { Row = SpreadsheetLayout.indexAtOffset metrics.RowPrefix metrics.RowCount sheetY
+                           Col = SpreadsheetLayout.indexAtOffset metrics.ColPrefix metrics.ColCount sheetX }
 
-        model <- { model with Selection = selection }
+    /// Grow a rectangle of cells until it holds every merged cell it touches.
+    let expandToMerges (top: int) (left: int) (bottom: int) (right: int) : int * int * int * int =
+        if model.MergedCells.IsEmpty then top, left, bottom, right
+        else
+            let mutable t, l, b, r = top, left, bottom, right
+            let mutable grew = true
+            while grew do
+                grew <- false
+                for merge in mergedCellsIntersectingRange t (b + 1) l (r + 1) model do
+                    if merge.StartRow < t then (t <- merge.StartRow; grew <- true)
+                    if merge.StartCol < l then (l <- merge.StartCol; grew <- true)
+                    if merge.EndRow > b then (b <- merge.EndRow; grew <- true)
+                    if merge.EndCol > r then (r <- merge.EndCol; grew <- true)
+            t, l, b, r
+
+    /// Select the cells from the active cell `anchor` to `extent`. The model
+    /// holds the rectangle (top-left to bottom-right); the anchor stays the
+    /// active cell.
+    let selectFromTo (anchor: CellAddress) (extent: CellAddress) =
+        anchorCell <- anchor
+        let top, left, bottom, right =
+            expandToMerges (min anchor.Row extent.Row) (min anchor.Col extent.Col) (max anchor.Row extent.Row) (max anchor.Col extent.Col)
+        model <- { model with Selection = (if top = bottom && left = right then SingleCell (top, left) else Range (top, left, bottom, right)) }
+
+    let selectCellAddress (addr: CellAddress) =
+        selectFromTo addr addr
 
     // Drag selection state
     let mutable isDragging = false
@@ -692,99 +931,6 @@ type Spreadsheet(container: Element) =
     let mutable resizeRenderScheduled = false
     let mutable scrollRenderScheduled = false
 
-    /// Check if cell is in a table and get table info
-    let getCellTable (row: int) (col: int): (Rbt.Spreadsheet.Workbook.Table * bool * bool) option =
-        match workbook with
-        | None -> None
-        | Some wb ->
-            wb.Tables
-            |> Map.tryPick (fun _ table ->
-                if row >= table.StartRow && row <= table.EndRow &&
-                   col >= table.StartCol && col <= table.EndCol then
-                    let isHeader = table.HasHeaders && row = table.StartRow
-                    let isEvenRow = (row - table.StartRow - (if table.HasHeaders then 1 else 0)) % 2 = 0
-                    Some (table, isHeader, isEvenRow)
-                else
-                    None
-            )
-
-    /// Get column X position (cumulative width of all columns before it)
-    let getColumnX (col: int): float =
-        if useSharedLayoutGeometry then
-            SpreadsheetLayout.columnX model (currentViewport()) col
-        else
-            let mutable x = rowHeaderWidth
-            for c = 0 to col - 1 do
-                x <- x + getColumnWidth c model
-            x
-
-    /// Get row Y position (cumulative height of all rows before it)
-    let getRowY (row: int): float =
-        if useSharedLayoutGeometry then
-            SpreadsheetLayout.rowY model (currentViewport()) row
-        else
-            let mutable y = headerHeight
-            for r = 0 to row - 1 do
-                y <- y + getRowHeight r model
-            y
-
-    /// Calculate visible range
-    let calculateVisibleRange (): (int * int * int * int) =
-        if useSharedLayoutGeometry then
-            let range =
-                SpreadsheetLayout.visibleRange model (currentViewport())
-            (range.StartRow, range.EndRowExclusive, range.StartCol, range.EndColExclusive)
-        else
-            // For columns, find which ones are visible based on cumulative widths
-            let mutable startCol = 0
-            let mutable x = rowHeaderWidth
-            while startCol < model.ColCount && x < scrollLeft do
-                x <- x + getColumnWidth startCol model
-                if x < scrollLeft then
-                    startCol <- startCol + 1
-
-            let mutable endCol = startCol
-            let mutable xEnd = x
-            while endCol < model.ColCount && xEnd < (scrollLeft + containerWidth) do
-                xEnd <- xEnd + getColumnWidth endCol model
-                endCol <- endCol + 1
-
-            // For rows, find which ones are visible based on cumulative heights
-            let mutable startRow = 0
-            let mutable y = headerHeight
-            while startRow < model.RowCount && y < scrollTop do
-                y <- y + getRowHeight startRow model
-                if y < scrollTop then
-                    startRow <- startRow + 1
-
-            let mutable endRow = startRow
-            let mutable yEnd = y
-            while endRow < model.RowCount && yEnd < (scrollTop + containerHeight) do
-                yEnd <- yEnd + getRowHeight endRow model
-                endRow <- endRow + 1
-
-            (startRow, endRow, startCol, endCol)
-
-    let cellKey (row: int) (col: int) = sprintf "%d:%d" row col
-
-    let isFrozenBodyCell (row: int) (col: int) =
-        (model.FrozenRows > 0 && row < model.FrozenRows) ||
-        (model.FrozenCols > 0 && col < model.FrozenCols)
-
-    let isRenderableCell (row: int) (col: int) =
-        let addr = { Row = row; Col = col }
-        match findMergedCell addr model with
-        | Some merge when addr.Row <> merge.StartRow || addr.Col <> merge.StartCol -> false
-        | _ -> true
-
-    /// Check if row is visible (not filtered out)
-    let isRowVisible (row: int): bool =
-        if Map.isEmpty model.Filters then
-            true
-        else
-            let visibleRows = getVisibleRows model
-            Set.contains row visibleRows
-
     // --- Validation notices ---------------------------------------------------
     // Excel answers an invalid entry with a modal alert. Here the answer never
     // blocks: a "stop" rule refuses the entry (the cell keeps its old content
@@ -794,9 +940,6 @@ type Spreadsheet(container: Element) =
     let mutable validationNotice: (string * string * string * CellAddress) option = None   // style, title, message, cell
     let mutable noticeTimer: int option = None
     let validationListeners = System.Collections.Generic.List<string -> string -> string -> unit>()
-
-    /// The edit box of the cell being edited, as rendered last.
-    let mutable editInput: Element option = None
 
     /// When true the edit box places the caret after the seeded text instead
     /// of selecting it (typing a character over a cell starts the entry).
@@ -812,11 +955,228 @@ type Spreadsheet(container: Element) =
         | SingleCell (row, col) -> row, col, row, col
         | Range (sr, sc, er, ec) -> min sr er, min sc ec, max sr er, max sc ec
 
-    /// The cell an edit applies to: the selected cell, or the top-left of a
-    /// selected range.
+    /// The cell an edit applies to: the active cell of the selection (the
+    /// cell it was started at; of a merged cell, its first cell). When the
+    /// selection was set without one - by the host, an undo, a structure
+    /// edit - it is the top-left cell.
     let activeCellAddress () =
-        let top, left, _, _ = selectionBounds()
-        { Row = top; Col = left }
+        let top, left, bottom, right = selectionBounds()
+        let inside = anchorCell.Row >= top && anchorCell.Row <= bottom && anchorCell.Col >= left && anchorCell.Col <= right
+        let cell = if inside then anchorCell else { Row = top; Col = left }
+        match findMergedCell cell model with
+        | Some merge -> { Row = merge.StartRow; Col = merge.StartCol }
+        | None -> cell
+
+    /// The corner of the selection opposite the active cell: what Shift+arrow moves.
+    let selectionExtent () =
+        let top, left, bottom, right = selectionBounds()
+        let active = activeCellAddress()
+        { Row = (if active.Row = top then bottom else top); Col = (if active.Col = left then right else left) }
+
+    /// Whether more than one cell is selected (one merged cell is one cell).
+    let selectionIsRange () =
+        let top, left, bottom, right = selectionBounds()
+        if top = bottom && left = right then false
+        else
+            match findMergedCell { Row = top; Col = left } model with
+            | Some merge -> not (merge.StartRow = top && merge.StartCol = left && merge.EndRow = bottom && merge.EndCol = right)
+            | None -> true
+
+    /// Give the scrolled content the extent of the active sheet, so that
+    /// every row and column can be scrolled to. Done whenever the sheet's
+    /// size or the size of a row / column changes.
+    let syncExtent () =
+        match contentElement, gridContainer with
+        | Some content, Some grid ->
+            let metrics = SpreadsheetLayout.metricsOf model
+            let width = rowHeaderWidth + metrics.ColPrefix.[metrics.ColCount]
+            let height = headerHeight + metrics.RowPrefix.[metrics.RowCount]
+            if width <> extentWidth || height <> extentHeight then
+                extentWidth <- width
+                extentHeight <- height
+                setStyle content "width" (string (System.Math.Round width) + "px")
+                setStyle content "height" (string (System.Math.Round height) + "px")
+                // A smaller sheet may have pulled the scroll position back.
+                scrollTop <- getScrollTop grid
+                scrollLeft <- getScrollLeft grid
+        | _ -> ()
+
+    /// Scroll the grid so that a cell is in view (frozen rows and columns
+    /// stay put and cover the start of the scrolled area).
+    let revealCell (row: int) (col: int) =
+        match gridContainer with
+        | None -> ()
+        | Some grid ->
+            syncExtent()
+            let metrics = SpreadsheetLayout.metricsOf model
+            if metrics.RowCount > 0 && metrics.ColCount > 0 then
+                let row = max 0 (min (metrics.RowCount - 1) row)
+                let col = max 0 (min (metrics.ColCount - 1) col)
+                if col >= model.FrozenCols then
+                    let frozen = metrics.ColPrefix.[max 0 (min metrics.ColCount model.FrozenCols)]
+                    let left = metrics.ColPrefix.[col]
+                    let right = metrics.ColPrefix.[col + 1]
+                    let width = getClientWidth grid - rowHeaderWidth
+                    let current = getScrollLeft grid
+                    let wanted =
+                        if left < current + frozen then left - frozen
+                        elif right > current + width then min (left - frozen) (right - width)
+                        else current
+                    if wanted <> current then setScrollLeft grid (max 0.0 wanted)
+                if row >= model.FrozenRows then
+                    let frozen = metrics.RowPrefix.[max 0 (min metrics.RowCount model.FrozenRows)]
+                    let top = metrics.RowPrefix.[row]
+                    let bottom = metrics.RowPrefix.[row + 1]
+                    let height = getClientHeight grid - headerHeight
+                    let current = getScrollTop grid
+                    let wanted =
+                        if top < current + frozen then top - frozen
+                        elif bottom > current + height then min (top - frozen) (bottom - height)
+                        else current
+                    if wanted <> current then setScrollTop grid (max 0.0 wanted)
+                scrollTop <- getScrollTop grid
+                scrollLeft <- getScrollLeft grid
+
+    // --- keyboard movement ------------------------------------------------------
+
+    /// The cell `deltaRow` / `deltaCol` away from `from`, leaving a merged
+    /// cell by its edge and stepping over hidden rows and columns.
+    let stepFrom (from: CellAddress) (deltaRow: int) (deltaCol: int) : CellAddress =
+        let metrics = SpreadsheetLayout.metricsOf model
+        let merge = findMergedCell from model
+        let startRow =
+            match merge with
+            | Some m when deltaRow > 0 -> m.EndRow
+            | Some m when deltaRow < 0 -> m.StartRow
+            | _ -> from.Row
+        let startCol =
+            match merge with
+            | Some m when deltaCol > 0 -> m.EndCol
+            | Some m when deltaCol < 0 -> m.StartCol
+            | _ -> from.Col
+        let visibleRow r = r >= metrics.RowCount || metrics.RowPrefix.[r + 1] > metrics.RowPrefix.[r]
+        let visibleCol c = c >= metrics.ColCount || metrics.ColPrefix.[c + 1] > metrics.ColPrefix.[c]
+        let mutable row = startRow
+        let mutable col = startCol
+        if deltaRow <> 0 then
+            let step = sign deltaRow
+            let mutable remaining = abs deltaRow
+            let mutable next = row + step
+            while remaining > 0 && next >= 0 && next < model.RowCount do
+                if visibleRow next then
+                    row <- next
+                    remaining <- remaining - 1
+                next <- next + step
+        if deltaCol <> 0 then
+            let step = sign deltaCol
+            let mutable remaining = abs deltaCol
+            let mutable next = col + step
+            while remaining > 0 && next >= 0 && next < model.ColCount do
+                if visibleCol next then
+                    col <- next
+                    remaining <- remaining - 1
+                next <- next + step
+        { Row = max 0 (min (model.RowCount - 1) row); Col = max 0 (min (model.ColCount - 1) col) }
+
+    /// Ctrl+arrow: the edge of the block of data in a direction - the last
+    /// filled cell of the run the cell is in, else the next filled cell, else
+    /// the edge of the sheet.
+    let dataEdge (from: CellAddress) (deltaRow: int) (deltaCol: int) : CellAddress =
+        // Filled positions along the line of travel, in order.
+        let filled = ResizeArray<int>()
+        let hasValue (data: CellData) = match data.Value with CellValue.Empty -> false | CellValue.String "" -> false | _ -> true
+        if deltaRow <> 0 then
+            for KeyValue(addr, data) in model.Cells do
+                if addr.Col = from.Col && hasValue data then filled.Add addr.Row
+        else
+            for col in 0 .. model.ColCount - 1 do
+                match getCell { Row = from.Row; Col = col } model with
+                | Some data when hasValue data -> filled.Add col
+                | _ -> ()
+        let occupied = System.Collections.Generic.HashSet<int>(filled)
+        let step = if deltaRow <> 0 then sign deltaRow else sign deltaCol
+        let limit = (if deltaRow <> 0 then model.RowCount else model.ColCount) - 1
+        let start = if deltaRow <> 0 then from.Row else from.Col
+        let target =
+            if occupied.Contains start && occupied.Contains (start + step) then
+                let mutable at = start
+                while occupied.Contains (at + step) do at <- at + step
+                at
+            else
+                let ahead = filled |> Seq.filter (fun index -> if step > 0 then index > start else index < start)
+                if Seq.isEmpty ahead then (if step > 0 then limit else 0)
+                elif step > 0 then Seq.min ahead
+                else Seq.max ahead
+        let target = max 0 (min limit target)
+        if deltaRow <> 0 then { from with Row = target } else { from with Col = target }
+
+    /// How many rows fit in the scrolled part of the grid (a page).
+    let pageRows () =
+        let metrics = SpreadsheetLayout.metricsOf model
+        let frozen = metrics.RowPrefix.[max 0 (min metrics.RowCount model.FrozenRows)]
+        let visible = containerHeight - headerHeight - frozen
+        let active = activeCellAddress()
+        let top = metrics.RowPrefix.[max 0 (min metrics.RowCount active.Row)]
+        let last = SpreadsheetLayout.indexAtOffset metrics.RowPrefix metrics.RowCount (top + max 25.0 visible - 1.0)
+        max 1 (last - active.Row)
+
+    // --- clipboard text -----------------------------------------------------------
+
+    /// The selection clipped to the cells that hold something, as rows of
+    /// (address, cell) - a selected column is not a million rows of text.
+    let selectionCellRows () : (CellAddress * CellData option) array array =
+        let top, left, bottom, right = selectionBounds()
+        let bottom, right =
+            match usedBounds model with
+            | Some (usedRow, usedCol) -> min bottom (max top usedRow), min right (max left usedCol)
+            | None -> top, left
+        [| for row in top .. bottom ->
+            [| for col in left .. right ->
+                let addr = { Row = row; Col = col }
+                addr, getCell addr model |] |]
+
+    let cellText (data: CellData option) : string =
+        match data with
+        | Some data -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
+        | None -> ""
+
+    /// The selection as tab-separated text (what the cells show).
+    let selectionText () : string =
+        selectionCellRows () |> Array.map (Array.map (fun (_, data) -> cellText data)) |> tsvOfRows
+
+    /// The selection as an HTML table, with the formatting other spreadsheets read.
+    let selectionHtml () : string =
+        let sb = System.Text.StringBuilder()
+        sb.Append("<table>") |> ignore
+        for row in selectionCellRows () do
+            sb.Append("<tr>") |> ignore
+            for addr, data in row do
+                // The other cells of a merged cell are part of its first cell.
+                let merge = findMergedCell addr model
+                match merge with
+                | Some m when m.StartRow <> addr.Row || m.StartCol <> addr.Col -> ()
+                | _ ->
+                    sb.Append("<td") |> ignore
+                    match merge with
+                    | Some m ->
+                        if m.EndCol > m.StartCol then sb.Append(" colspan=\"").Append(string (m.EndCol - m.StartCol + 1)).Append('"') |> ignore
+                        if m.EndRow > m.StartRow then sb.Append(" rowspan=\"").Append(string (m.EndRow - m.StartRow + 1)).Append('"') |> ignore
+                    | None -> ()
+                    match data with
+                    | Some data ->
+                        let format = data.Format
+                        let styles =
+                            [ if format.Bold then yield "font-weight:bold"
+                              if format.Italic then yield "font-style:italic"
+                              if format.Underline then yield "text-decoration:underline"
+                              match format.TextColor with Some color -> yield "color:" + color | None -> ()
+                              match format.BgColor with Some color -> yield "background-color:" + color | None -> ()
+                              match format.HorizontalAlign with Some align -> yield "text-align:" + align | None -> () ]
+                        if not styles.IsEmpty then sb.Append(" style=\"").Append(htmlEscape (String.concat ";" styles)).Append('"') |> ignore
+                    | None -> ()
+                    sb.Append('>').Append((htmlEscape (cellText data)).Replace("\n", "<br>")).Append("</td>") |> ignore
+            sb.Append("</tr>") |> ignore
+        sb.Append("</table>").ToString()
 
     /// Commit typed text to a cell: parse it the way Excel reads input, check
     /// it against the cell's validation, store it and recalculate, as one
@@ -921,11 +1281,127 @@ type Spreadsheet(container: Element) =
                                    Redo = (fun m -> clearSelectionCells selection m)
                                    Description = "Delete" } model
 
+    /// Paste text from outside the grid (another spreadsheet, a text editor)
+    /// at the active cell, as one undoable step: `rows` are the cells, each
+    /// read like a typed entry. One copied cell fills the whole selection.
+    let pasteExternalRows (rows: string array array) : bool =
+        let rows = rows |> Array.filter (fun row -> row.Length > 0)
+        if readOnly || rows.Length = 0 then false
+        else
+            let top, left, bottom, right = selectionBounds()
+            let height = rows.Length
+            let width = rows |> Array.map Array.length |> Array.max
+            // A single value is repeated over the selection, as Excel does.
+            let repeat = height = 1 && width = 1 && selectionIsRange ()
+            let lastRow = if repeat then bottom else min (model.RowCount - 1) (top + height - 1)
+            let lastCol = if repeat then right else min (model.ColCount - 1) (left + width - 1)
+            let targets =
+                [ for row in top .. lastRow do
+                    for col in left .. lastCol do
+                        let source = if repeat then rows.[0] else rows.[row - top]
+                        let text = if repeat then source.[0] elif col - left < source.Length then source.[col - left] else ""
+                        yield { Row = row; Col = col }, text ]
+            let year = currentYear()
+            let oldCells = targets |> List.map (fun (addr, _) -> addr, getCell addr model)
+            for addr, text in targets do
+                // Only the first cell of a merged cell takes a value.
+                match findMergedCell addr model with
+                | Some merge when merge.StartRow <> addr.Row || merge.StartCol <> addr.Col -> ()
+                | _ ->
+                    let existing = getCell addr model
+                    if System.String.IsNullOrEmpty text then
+                        match existing with
+                        | Some cell when cell.Value <> CellValue.Empty -> model <- setCell addr { cell with Value = CellValue.Empty } model
+                        | _ -> ()
+                    else
+                        model <- setCell addr (SpreadsheetInput.cellFromInput year existing text) model
+            recalculateFormulas()
+            let newCells = targets |> List.map (fun (addr, _) -> addr, getCell addr model)
+            selectFromTo { Row = top; Col = left } { Row = lastRow; Col = lastCol }
+            model <- pushCommand { Undo = restoreCellOptions oldCells
+                                   Redo = restoreCellOptions newCells
+                                   Description = "Paste" } model
+            true
+
+    /// Paste what a clipboard holds: the grid's own cells when the text is
+    /// what the grid copied last (formulas and formats come along), else the
+    /// cells of an HTML table, else tab-separated text.
+    let pasteFlavours (text: string) (html: string) : bool =
+        if readOnly then false
+        else
+            let normalised (value: string) = if isNull value then "" else value.Replace("\r\n", "\n").TrimEnd('\n')
+            if model.Clipboard.IsSome && copiedText <> "" && normalised text = normalised copiedText then
+                pasteClipboardAtSelection()
+                true
+            else
+                let fromHtml = if System.String.IsNullOrEmpty html then null else htmlTableCells html
+                if not (isNull (box fromHtml)) && fromHtml.Length > 0 then pasteExternalRows fromHtml
+                elif not (System.String.IsNullOrEmpty text) then pasteExternalRows (rowsOfTsv text)
+                else false
+
+    /// Apply `update` to the format of every cell of the selection as one
+    /// undoable step. A selection too large to give every cell a format of
+    /// its own (whole rows or columns) changes the cells that exist.
+    let formatSelection (description: string) (update: CellFormat -> CellFormat) : bool =
+        let top, left, bottom, right = selectionBounds()
+        let bottom = min bottom (model.RowCount - 1)
+        let right = min right (model.ColCount - 1)
+        let area = float (bottom - top + 1) * float (right - left + 1)
+        let oldCells = model.Cells
+        let apply (m: SpreadsheetModel) : SpreadsheetModel =
+            let mutable cells = m.Cells
+            let change (addr: CellAddress) (existing: CellData option) =
+                let data = existing |> Option.defaultValue { Value = CellValue.Empty; Format = defaultFormat; Comment = None }
+                let format = update data.Format
+                if not (obj.ReferenceEquals(format, data.Format)) && format <> data.Format then
+                    cells <- Map.add addr { data with Format = format } cells
+            if area <= 20000.0 then
+                for row in top .. bottom do
+                    for col in left .. right do
+                        let addr = { Row = row; Col = col }
+                        change addr (Map.tryFind addr m.Cells)
+            else
+                for KeyValue(addr, data) in m.Cells do
+                    if addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right then change addr (Some data)
+            if obj.ReferenceEquals(cells, m.Cells) then m else { m with Cells = cells } |> invalidateFilterProjection
+        let updated = apply model
+        if obj.ReferenceEquals(updated, model) then false
+        else
+            model <- updated
+            model <- pushCommand { Undo = (fun m -> restoreCellMap oldCells m)
+                                   Redo = apply
+                                   Description = description } model
+            true
+
+    /// The format a toggle (bold, italic ...) goes by: the active cell's.
+    let activeFormat () : CellFormat =
+        match getCell (activeCellAddress()) model with
+        | Some data -> data.Format
+        | None -> defaultFormat
+
+    /// Tell the OnEditStateChange subscribers when the entry in progress
+    /// (which cell, what text) is not what they were last told.
+    let notifyEditState () =
+        let current = model.EditingCell |> Option.map (fun addr -> addr, model.EditBuffer)
+        if current <> notifiedEdit then
+            notifiedEdit <- current
+            if editStateListeners.Count > 0 then
+                let state =
+                    match current with
+                    | Some (addr, text) -> createObj [ "Editing" ==> true; "Row" ==> addr.Row; "Col" ==> addr.Col; "Text" ==> text; "SheetIndex" ==> activeSheetIndex ]
+                    | None -> createObj [ "Editing" ==> false; "Row" ==> -1; "Col" ==> -1; "Text" ==> ""; "SheetIndex" ==> activeSheetIndex ]
+                for listener in editStateListeners.ToArray() do
+                    if editStateListeners.Contains listener then (try listener state with _ -> ())
+
     /// Start editing a cell. `seed` replaces the cell's content in the edit
     /// box — the character typed over the cell — instead of loading it.
     let rec startEditingWith (row: int) (col: int) (seed: string option) =
         if not readOnly then
-            let addr = { Row = row; Col = col }
+            // The first cell of a merged cell is the one that holds its content.
+            let addr =
+                match findMergedCell { Row = row; Col = col } model with
+                | Some merge -> { Row = merge.StartRow; Col = merge.StartCol }
+                | None -> { Row = row; Col = col }
             // Edit the formula itself, not its cached result, and a date as
             // a date: what is shown must give the same cell when committed.
             let currentValue =
@@ -936,13 +1412,22 @@ type Spreadsheet(container: Element) =
             validationNotice <- None
             (match noticeTimer with Some id -> clearTimeoutId id | None -> ())
             noticeTimer <- None
-            model <- {
-                model with
-                    Selection = SingleCell (row, col)
-                    EditingCell = Some addr
-                    EditBuffer = currentValue
-            }
+            // Typing into a cell of the selected range keeps the range (Enter
+            // and Tab then walk through it); any other cell becomes the selection.
+            let top, left, bottom, right = selectionBounds()
+            if selectionIsRange () && addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right then anchorCell <- addr
+            else selectCellAddress addr
+            model <- { model with EditingCell = Some addr; EditBuffer = currentValue }
+            // The edit box sits on the cell: the cell has to be on screen.
+            revealCell addr.Row addr.Col
             render()
+            match layers with
+            | Some layer ->
+                setValue layer.EditInput currentValue
+                focus layer.EditInput
+                if editCaretAtEnd then caretToEnd layer.EditInput else select layer.EditInput
+            | None -> ()
+            notifyEditState ()
 
     and startEditing (row: int) (col: int) = startEditingWith row col None
 
@@ -957,7 +1442,12 @@ type Spreadsheet(container: Element) =
             model <- { model with EditingCell = None; EditBuffer = "" }
             let accepted = if save then commitInput addr buffer true true else true
             scheduleNoticeDismiss()
+            // The keyboard goes back to the grid.
+            match layers, contentElement with
+            | Some layer, Some content when isActiveElement layer.EditInput -> focusQuietly content
+            | _ -> ()
             render()
+            notifyEditState ()
             accepted
 
     /// A validation notice goes away by itself after a few seconds.
@@ -969,763 +1459,574 @@ type Spreadsheet(container: Element) =
                 Some (setTimeoutMs (fun () ->
                         noticeTimer <- None
                         validationNotice <- None
-                        // Never redraw under an entry in progress.
-                        if model.EditingCell.IsNone then render()) 6000)
+                        render()) 6000)
+
+    /// Select one cell and bring it into view.
+    and goToCell (addr: CellAddress) =
+        selectCellAddress addr
+        revealCell addr.Row addr.Col
+        render()
+
+    /// Keep the active cell and move the other corner of the selection.
+    and extendSelectionTo (extent: CellAddress) =
+        selectFromTo (activeCellAddress()) extent
+        revealCell extent.Row extent.Col
+        render()
 
     /// Move selection
     and moveSelection (deltaRow: int) (deltaCol: int) =
-        // A range collapses to its active (top-left) cell, then moves.
-        let active = activeCellAddress()
-        let newRow = (active.Row + deltaRow) |> max 0 |> min (model.RowCount - 1)
-        let newCol = (active.Col + deltaCol) |> max 0 |> min (model.ColCount - 1)
-        model <- { model with Selection = SingleCell (newRow, newCol) }
-        render()
+        // A range collapses to its active cell, then moves.
+        goToCell (stepFrom (activeCellAddress()) deltaRow deltaCol)
+
+    /// Enter / Tab: with several cells selected the active cell moves through
+    /// them (down the columns for Enter, along the rows for Tab) and the
+    /// selection stays; with one cell selected the selection moves.
+    and moveWithinSelection (deltaRow: int) (deltaCol: int) =
+        if not (selectionIsRange ()) then moveSelection deltaRow deltaCol
+        else
+            let top, left, bottom, right = selectionBounds()
+            let rows = bottom - top + 1
+            let cols = right - left + 1
+            let mutable cell = activeCellAddress()
+            // The next cell that is not swallowed by a merged cell (at most once round).
+            let mutable steps = 0
+            let mutable found = false
+            while not found && steps < rows * cols do
+                steps <- steps + 1
+                let row, col =
+                    if deltaCol <> 0 then
+                        let col = cell.Col + sign deltaCol
+                        if col > right then (if cell.Row >= bottom then top else cell.Row + 1), left
+                        elif col < left then (if cell.Row <= top then bottom else cell.Row - 1), right
+                        else cell.Row, col
+                    else
+                        let row = cell.Row + sign deltaRow
+                        if row > bottom then top, (if cell.Col >= right then left else cell.Col + 1)
+                        elif row < top then bottom, (if cell.Col <= left then right else cell.Col - 1)
+                        else row, cell.Col
+                cell <- { Row = row; Col = col }
+                found <-
+                    (getRowHeight row model > 0.0 && getColumnWidth col model > 0.0)
+                    && (match findMergedCell cell model with
+                        | Some merge -> merge.StartRow = row && merge.StartCol = col
+                        | None -> true)
+            anchorCell <- cell
+            revealCell cell.Row cell.Col
+            render()
+
+    /// Copy the selection: the grid's own clipboard (formulas, formats) and
+    /// the text of what is shown.
+    and copySelection (isCut: bool) : string * string =
+        let text = selectionText ()
+        let html = selectionHtml ()
+        copiedText <- text
+        if isCut && not readOnly then
+            cutSelection()
+        else
+            model <- { model with Clipboard = Some (serializeSelection model.Selection model false) }
+        text, html
 
     /// Handle keyboard events
     and handleKeyDown (e: obj) =
         let key = getEventKey e
-        let ctrlKey = getProp e "ctrlKey"
-        let metaKey = getProp e "metaKey"
-        let isModifier = (ctrlKey = box true) || (metaKey = box true)
-        let mutatingShortcut = isModifier && (key = "x" || key = "v" || key = "z" || key = "y" || key = "d" || key = "r")
-        let mutatingKey = key = "Delete" || key = "Backspace" || key = "Enter" || key = "F2" || (key.Length = 1 && not isModifier)
+        let isModifier = eventFlag e "ctrlKey" || eventFlag e "metaKey"
+        let shift = eventFlag e "shiftKey"
+        let lower = if key.Length = 1 then key.ToLowerInvariant() else key
 
-        if readOnly && (mutatingShortcut || mutatingKey) then
-            preventDefault e
-        else
-
-          match model.EditingCell with
-          | Some addr ->
-            // Editing mode
+        match model.EditingCell with
+        | Some _ ->
+            // Editing mode: the edit box has the keys, but for these.
             match key with
             | "Enter" ->
                 preventDefault e
                 // A refused entry leaves the selection on its cell.
-                if finishEditing true then moveSelection 1 0  // Move down
+                if finishEditing true then moveWithinSelection (if shift then -1 else 1) 0
             | "Escape" ->
                 preventDefault e
                 finishEditing false |> ignore
             | "Tab" ->
                 preventDefault e
-                if finishEditing true then moveSelection 0 1  // Move right
+                if finishEditing true then moveWithinSelection 0 (if shift then -1 else 1)
             | _ -> ()
 
-          | None ->
+        | None ->
             // Navigation mode
-            if isModifier then
-                // Handle Ctrl/Cmd shortcuts
-                match key with
-                | "c" ->
-                    // Copy
+            let active = activeCellAddress()
+            let extent = selectionExtent()
+            // Move the active cell, or with Shift the other corner of the selection.
+            let travel (target: CellAddress -> CellAddress) =
+                preventDefault e
+                if shift then extendSelectionTo (target extent) else goToCell (target active)
+            if isModifier && (lower = "c" || lower = "x" || lower = "v") then
+                // Copy / cut / paste: the browser raises the clipboard event
+                // (see Mount), which is where the system clipboard is.
+                ()
+            elif isModifier then
+                match lower with
+                | "z" when not readOnly ->
                     preventDefault e
-                    let clipboardData = serializeSelection model.Selection model false
-                    model <- { model with Clipboard = Some clipboardData }
-
-                | "x" ->
-                    // Cut
+                    undoStep ()
+                | "y" when not readOnly ->
                     preventDefault e
-                    cutSelection()
-                    render()
-
-                | "v" ->
-                    // Paste
-                    preventDefault e
-                    pasteClipboardAtSelection()
-                    render()
-
-                | "z" ->
-                    // Undo
-                    preventDefault e
-                    match undo model with
-                    | Some undoneModel ->
-                        model <- undoneModel
-                        recalculateFormulas()
-                        render()
-                    | None -> ()
-
-                | "y" ->
-                    // Redo
-                    preventDefault e
-                    match redo model with
-                    | Some redoneModel ->
-                        model <- redoneModel
-                        recalculateFormulas()
-                        render()
-                    | None -> ()
-
+                    redoStep ()
                 | "f" ->
                     // Find/Replace dialog
                     preventDefault e
                     showFindReplaceDialog()
-
-                | "d" ->
-                    // Fill down
+                | "d" when not readOnly ->
                     preventDefault e
                     fillSelection true
                     render()
-
-                | "r" ->
-                    // Fill right
+                | "r" when not readOnly ->
                     preventDefault e
                     fillSelection false
                     render()
-
+                | "a" ->
+                    // Everything, with the active cell where it is.
+                    preventDefault e
+                    anchorCell <- active
+                    model <- { model with Selection = Range (0, 0, max 0 (model.RowCount - 1), max 0 (model.ColCount - 1)) }
+                    render()
+                | "ArrowUp" -> travel (fun from -> dataEdge from -1 0)
+                | "ArrowDown" -> travel (fun from -> dataEdge from 1 0)
+                | "ArrowLeft" -> travel (fun from -> dataEdge from 0 -1)
+                | "ArrowRight" -> travel (fun from -> dataEdge from 0 1)
+                | "Home" ->
+                    // The first cell of the scrolled area (A1 without frozen panes).
+                    travel (fun _ -> { Row = max 0 (min (model.RowCount - 1) model.FrozenRows); Col = max 0 (min (model.ColCount - 1) model.FrozenCols) })
+                | "End" ->
+                    // The last cell that holds anything.
+                    travel (fun from ->
+                        match usedBounds model with
+                        | Some (row, col) -> { Row = min (model.RowCount - 1) row; Col = min (model.ColCount - 1) col }
+                        | None -> from)
                 | _ -> ()
             else
-                // Regular navigation keys
                 match key with
-                | "ArrowUp" ->
+                | "ArrowUp" -> travel (fun from -> stepFrom from -1 0)
+                | "ArrowDown" -> travel (fun from -> stepFrom from 1 0)
+                | "ArrowLeft" -> travel (fun from -> stepFrom from 0 -1)
+                | "ArrowRight" -> travel (fun from -> stepFrom from 0 1)
+                | "Home" -> travel (fun from -> { from with Col = 0 })
+                | "End" ->
+                    travel (fun from ->
+                        match lastUsedColumnInRow from.Row model with
+                        | Some col -> { from with Col = min (model.ColCount - 1) col }
+                        | None -> from)
+                | "PageDown" -> travel (fun from -> stepFrom from (pageRows ()) 0)
+                | "PageUp" -> travel (fun from -> stepFrom from (-(pageRows ())) 0)
+                | "Enter" ->
                     preventDefault e
-                    moveSelection -1 0
-                | "ArrowDown" ->
+                    if selectionIsRange () || readOnly then moveWithinSelection (if shift then -1 else 1) 0
+                    else startEditing active.Row active.Col
+                | "F2" ->
                     preventDefault e
-                    moveSelection 1 0
-                | "ArrowLeft" ->
-                    preventDefault e
-                    moveSelection 0 -1
-                | "ArrowRight" ->
-                    preventDefault e
-                    moveSelection 0 1
-                | "Enter" | "F2" ->
-                    preventDefault e
-                    let active = activeCellAddress()
                     startEditing active.Row active.Col
                 | "Delete" | "Backspace" ->
                     preventDefault e
-                    clearSelection()
-                    render()
+                    if not readOnly then
+                        clearSelection()
+                        render()
                 | "Tab" ->
                     preventDefault e
-                    moveSelection 0 1
+                    moveWithinSelection 0 (if shift then -1 else 1)
+                | "Escape" ->
+                    // Back to the active cell alone.
+                    if selectionIsRange () then
+                        preventDefault e
+                        goToCell active
                 | _ ->
                     // Type-to-edit: a printable character starts an entry
                     // that replaces the cell's content, beginning with it.
-                    let altKey = getProp e "altKey"
-                    if key.Length = 1 && not (altKey = box true) then
+                    if key.Length = 1 && not (eventFlag e "altKey") then
                         preventDefault e
-                        let active = activeCellAddress()
-                        startEditingWith active.Row active.Col (Some key)
+                        if not readOnly then startEditingWith active.Row active.Col (Some key)
+
+    and undoStep () =
+        match undo model with
+        | Some undoneModel ->
+            model <- undoneModel
+            recalculateFormulas()
+            render()
+        | None -> ()
+
+    and redoStep () =
+        match redo model with
+        | Some redoneModel ->
+            model <- redoneModel
+            recalculateFormulas()
+            render()
+        | None -> ()
 
     /// Handle input change (while editing)
     and handleInput (e: obj) =
         let target = getEventTarget e
         let value = getValue target
         model <- { model with EditBuffer = value }
+        notifyEditState ()
 
-    and renderColumnHeader (col: int): Element =
-        let colX = getColumnX col
-        let colW = getColumnWidth col model
+    /// Draw a cell into its node: position, look and text. Selection is not
+    /// drawn here (it is an overlay), so moving it draws no cell.
+    and drawCell (layer: GridLayers) (node: CellNode) (row: int) (col: int) (x: float) (y: float) (w: float) (h: float) (pane: int)
+                 (cellData: CellData option) (tables: Rbt.Spreadsheet.Workbook.Table list) =
+        let cell = node.Element
+        if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
+        let addr = { Row = row; Col = col }
+        // What every cell has in common is in the grid's style sheet (see
+        // Mount); the node's own style is its place and what its format adds.
+        let css = System.Text.StringBuilder()
+        let px (value: float) = string (int (value + 0.5)) + "px"
+        let add (name: string) (value: string) = css.Append(name).Append(':').Append(value).Append(';') |> ignore
+        add "left" (px x)
+        add "top" (px y)
+        add "width" (px w)
+        add "height" (px h)
+        add "line-height" (px (h - 4.0))
+        if not model.ShowGridLines then add "border-color" "transparent"
+        // Table styling first (base styles).
+        let tableInfo =
+            tables
+            |> List.tryPick (fun table ->
+                if row >= table.StartRow && row <= table.EndRow && col >= table.StartCol && col <= table.EndCol then
+                    Some (table.HasHeaders && row = table.StartRow, (row - table.StartRow - (if table.HasHeaders then 1 else 0)) % 2 = 0)
+                else None)
+        match tableInfo with
+        | Some (true, _) ->
+            add "background" "linear-gradient(180deg, #4472C4 0%, #2E5AA8 100%)"
+            add "color" "white"
+            add "font-weight" "bold"
+            add "text-align" "center"
+            add "border" "1px solid #2E5AA8"
+        | Some (false, isEvenRow) ->
+            add "background-color" (if isEvenRow then "#FFFFFF" else "#EDF2FA")
+            add "border" "1px solid #D0D8E4"
+        | None -> ()
+        // The cell's own format (over the table's).
+        match cellData with
+        | Some data ->
+            let format = data.Format
+            if format.Bold then add "font-weight" "bold"
+            if format.Italic then add "font-style" "italic"
+            if format.Underline then add "text-decoration" "underline"
+            match format.TextColor with Some color -> add "color" color | None -> ()
+            match format.BgColor with Some color -> add "background-color" color | None -> ()
+            match format.FontSize with Some size -> add "font-size" (string size + "px") | None -> ()
+            match format.HorizontalAlign with Some align -> add "text-align" align | None -> ()
+            match format.VerticalAlign with
+            | Some "top" -> add "vertical-align" "top"
+            | Some "bottom" -> add "vertical-align" "bottom"
+            | Some "middle" | Some "center" -> add "vertical-align" "middle"
+            | _ -> ()
+            if format.WrapText then
+                add "white-space" "normal"
+                add "word-wrap" "break-word"
+            let side (name: string) (border: BorderStyle option) =
+                match border with
+                | Some border -> add name (border.Style + " " + defaultArg border.Color "#000000")
+                | None -> ()
+            side "border-top" format.BorderTop
+            side "border-bottom" format.BorderBottom
+            side "border-left" format.BorderLeft
+            side "border-right" format.BorderRight
+        | None -> ()
+        // Conditional formatting (highest priority): the merged effect of
+        // every matching rule that covers the cell.
+        let mutable icon : (int * int) option = None
+        let mutable bar = -1
+        if not model.ConditionalFormats.IsEmpty then
+            match Rbt.Spreadsheet.ConditionalFormatting.effectAt (Rbt.Spreadsheet.ConditionalFormatting.contextFor model) addr with
+            | Some effect ->
+                if effect.Bold = Some true then add "font-weight" "bold"
+                if effect.Italic = Some true then add "font-style" "italic"
+                let decorations =
+                    [ if effect.Underline = Some true then yield "underline"
+                      if effect.Strikethrough = Some true then yield "line-through" ]
+                if not decorations.IsEmpty then add "text-decoration" (String.concat " " decorations)
+                match effect.TextColor with Some color -> add "color" color | None -> ()
+                match effect.BgColor with Some color -> add "background-color" color | None -> ()
+                match effect.DataBar with
+                | Some (fraction, color) ->
+                    // A bar from the left edge, behind the text.
+                    let percent = int (System.Math.Round (fraction * 100.0))
+                    add "background-image" ("linear-gradient(to right, " + color + " " + string percent + "%, transparent " + string percent + "%)")
+                    bar <- percent
+                | None -> ()
+                match effect.IconSet with
+                | Some (index, count) when count > 1 -> icon <- Some (index, count)
+                | _ -> ()
+            | None -> ()
+        setCssText cell (css.ToString())
+        setAttribute cell "data-row" (string row)
+        setAttribute cell "data-col" (string col)
+        if bar >= 0 then setAttribute cell "data-cf-bar" (string bar) else removeAttribute cell "data-cf-bar"
+        // The text (this also drops the icon and comment marker of the node's previous cell).
+        let displayText =
+            match cellData with
+            // Unbounded width: the cell's CSS clips, so only the number
+            // format is wanted here, not ##### overflow.
+            | Some data -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format data.Value
+            | None -> ""
+        setTextContent cell displayText
+        match icon with
+        | Some (index, count) ->
+            // Same low → high signal the canvas painter draws: red, amber, green.
+            let t = float index / float (count - 1)
+            let color = if t < 0.34 then "#E53935" elif t < 0.67 then "#F9A825" else "#43A047"
+            let mark = createElement "span"
+            setTextContent mark "●"
+            setCssText mark ("color:" + color + ";margin-right:3px;font-size:10px")
+            setAttribute mark "data-cf-icon" (string index)
+            prependChild cell mark
+        | None -> ()
+        // A marker and a tooltip for a comment or a comment thread.
+        let thread = if Map.isEmpty model.Threads then None else Map.tryFind addr model.Threads
+        let marker (color: string) (tooltip: string) =
+            let indicator = createElement "div"
+            setCssText indicator ("position:absolute;top:0;right:0;width:0;height:0;border-style:solid;border-width:0 6px 6px 0;border-color:transparent " + color + " transparent transparent;pointer-events:none")
+            appendChild cell indicator
+            setAttribute cell "title" tooltip
+            node.HasTitle <- true
+        match thread, cellData with
+        | Some thread, _ -> marker "#7b61ff" (threadText thread)
+        | None, Some { Comment = Some comment } ->
+            marker "#ff0000" (match comment.Author with
+                              | Some author -> author + ":\n" + comment.Text
+                              | None -> comment.Text)
+        | _ ->
+            if node.HasTitle then
+                removeAttribute cell "title"
+                node.HasTitle <- false
+        node.Pane <- pane
+        node.Data <- (match cellData with Some data -> box data | None -> null)
+        node.X <- x
+        node.Y <- y
+        node.W <- w
+        node.H <- h
+        node.Epoch <- styleEpoch
 
+    /// A new column header node: label (click sorts), filter button, resize handle.
+    and newColumnHeader () : HeaderNode =
         let header = createElement "div"
         setClassName header "spreadsheet-col-header"
-        setAttribute header "data-col" (string col)
-        setStyles header [
-            "position", "absolute"
-            "top", sprintf "%.0fpx" (if useSharedLayoutGeometry then scrollTop else 0.0)
-            "left", sprintf "%.0fpx" colX
-            "width", sprintf "%.0fpx" colW
-            "height", sprintf "%.0fpx" headerHeight
-            "border-right", "1px solid #d0d0d0"
-            "border-bottom", "1px solid #a6a6a6"
-            "background", "linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%)"
-            "display", "flex"
-            "align-items", "center"
-            "justify-content", "space-between"
-            "padding", "0 4px"
-            "box-sizing", "border-box"
-            "font-weight", "normal"
-            "font-size", "11px"
-            "font-family", "Arial, sans-serif"
-            "color", "#444"
-            "user-select", "none"
-        ]
+        let label = createElement "div"
+        setClassName label "col-header-text"
+        setCssText label "cursor:pointer"
+        let button = createElement "div"
+        setClassName button "col-filter-btn"
+        setTextContent button "▼"
+        setAttribute button "title" "Filter"
+        let handle = createElement "div"
+        setClassName handle "col-resize-handle"
+        setClassName handle "col-resize-handle"
+        appendChild header label
+        appendChild header button
+        appendChild header handle
+        { Element = header; Label = label; Button = Some button; Handle = handle; Index = -1; Signature = ""; Seen = 0 }
 
-        // Header text with sort indicator
-        let headerTextDiv = createElement "div"
-        setStyles headerTextDiv [
-            "flex", "1"
-            "text-align", "center"
-            "cursor", "pointer"
-        ]
-
-        let headerText =
-            match model.SortState with
-            | Some sortState when sortState.Column = col ->
-                let arrow = if sortState.Ascending then " ▲" else " ▼"
-                (columnToLetter col) + arrow
-            | _ ->
-                columnToLetter col
-
-        setTextContent headerTextDiv headerText
-
-        // Add click handler for sorting on header text
-        addEventListener headerTextDiv "click" (fun _ ->
-            invalidateCalcEngine()
-            // Toggle sort direction if clicking same column, otherwise ascending
-            let ascending =
-                match model.SortState with
-                | Some sortState when sortState.Column = col -> not sortState.Ascending
-                | _ -> true
-
-            sortActiveSheet col ascending (sprintf "Sort by column %s" (columnToLetter col))
-
-            render()
-        )
-
-        appendChild header headerTextDiv
-
-        // Filter icon button
-        let filterBtn = createElement "div"
-        setStyles filterBtn [
-            "width", "16px"
-            "height", "16px"
-            "display", "flex"
-            "align-items", "center"
-            "justify-content", "center"
-            "cursor", "pointer"
-            "font-size", "10px"
-            "opacity", (if Map.containsKey col model.Filters then "1.0" else "0.5")
-            "border-radius", "2px"
-        ]
-        setTextContent filterBtn "▼"
-        setAttribute filterBtn "title" "Filter"
-
-        // Filter button hover effect
-        addEventListener filterBtn "mouseenter" (fun _ ->
-            setStyles filterBtn [
-                "background", "#d0d0d0"
-                "opacity", "1.0"
-            ]
-        )
-        addEventListener filterBtn "mouseleave" (fun _ ->
-            setStyles filterBtn [
-                "background", "transparent"
-                "opacity", (if Map.containsKey col model.Filters then "1.0" else "0.5")
-            ]
-        )
-
-        // Filter button click - show dropdown
-        addEventListener filterBtn "click" (fun e ->
-            preventDefault e
-            stopPropagation e
-            showFilterDropdown col (colX + colW) headerHeight
-        )
-
-        appendChild header filterBtn
-
-        // Add resize handle to the right edge
-        let resizeHandle = createElement "div"
-        setClassName resizeHandle "col-resize-handle"
-        setStyles resizeHandle [
-            "position", "absolute"
-            "top", "0"
-            "right", "0"
-            "width", "4px"
-            "height", "100%"
-            "cursor", "col-resize"
-            "z-index", "10"
-        ]
-
-        // Resize handle mousedown
-        addEventListener resizeHandle "mousedown" (fun e ->
-            preventDefault e
-            stopPropagation e  // Prevent sort click from firing
-            isResizingColumn <- true
-            resizeColumnIndex <- Some col
-            resizeStartPos <- getProp e "clientX" |> unbox<float>
-            resizeStartSize <- colW
-        )
-
-        appendChild header resizeHandle
-        header
-
-    /// Render row header
-    and renderRowHeader (row: int): Element =
-        let rowY = getRowY row
-        let rowH = getRowHeight row model
-
+    and newRowHeader () : HeaderNode =
         let header = createElement "div"
         setClassName header "spreadsheet-row-header"
-        setAttribute header "data-row" (string row)
-        setStyles header [
-            "position", "absolute"
-            "top", sprintf "%.0fpx" rowY
-            "left", sprintf "%.0fpx" (if useSharedLayoutGeometry then scrollLeft else 0.0)
-            "width", sprintf "%.0fpx" rowHeaderWidth
-            "height", sprintf "%.0fpx" rowH
-            "border-right", "1px solid #a6a6a6"
-            "border-bottom", "1px solid #d0d0d0"
-            "background", "linear-gradient(90deg, #f8f8f8 0%, #e8e8e8 100%)"
-            "display", "flex"
-            "align-items", "center"
-            "justify-content", "center"
-            "box-sizing", "border-box"
-            "font-weight", "normal"
-            "font-size", "11px"
-            "font-family", "Arial, sans-serif"
-            "color", "#444"
-            "user-select", "none"
-            "cursor", "default"
-        ]
-        setTextContent header (string (row + 1))
+        let label = createElement "span"
+        let handle = createElement "div"
+        setClassName handle "row-resize-handle"
+        setClassName handle "row-resize-handle"
+        appendChild header label
+        appendChild header handle
+        { Element = header; Label = label; Button = None; Handle = handle; Index = -1; Signature = ""; Seen = 0 }
 
-        // Add resize handle to the bottom edge
-        let resizeHandle = createElement "div"
-        setClassName resizeHandle "row-resize-handle"
-        setStyles resizeHandle [
-            "position", "absolute"
-            "bottom", "0"
-            "left", "0"
-            "width", "100%"
-            "height", "4px"
-            "cursor", "row-resize"
-            "z-index", "10"
-        ]
+    and drawColumnHeader (node: HeaderNode) (col: int) (x: float) (w: float) =
+        let sort =
+            match model.SortState with
+            | Some state when state.Column = col -> if state.Ascending then " ▲" else " ▼"
+            | _ -> ""
+        let filtered = Map.containsKey col model.Filters
+        let signature = string col + "|" + string x + "|" + string w + "|" + sort + "|" + string filtered + "|" + string readOnly
+        if node.Signature <> signature then
+            node.Signature <- signature
+            node.Index <- col
+            setAttribute node.Element "data-col" (string col)
+            setCssText node.Element ("left:" + string (int (x + 0.5)) + "px;width:" + string (int (w + 0.5)) + "px")
+            setTextContent node.Label (columnToLetter col + sort)
+            setStyle node.Label "cursor" (if readOnly then "default" else "pointer")
+            match node.Button with
+            | Some button ->
+                setCssText button ("opacity:" + (if filtered then "1.0" else "0.5") + ";display:" + (if readOnly then "none" else "flex"))
+            | None -> ()
+            setStyle node.Handle "display" (if readOnly then "none" else "block")
 
-        // Resize handle mousedown
-        addEventListener resizeHandle "mousedown" (fun e ->
-            preventDefault e
-            isResizingRow <- true
-            resizeRowIndex <- Some row
-            resizeStartPos <- getProp e "clientY" |> unbox<float>
-            resizeStartSize <- rowH
-        )
+    and drawRowHeader (node: HeaderNode) (row: int) (y: float) (h: float) =
+        let signature = string row + "|" + string y + "|" + string h + "|" + string readOnly
+        if node.Signature <> signature then
+            node.Signature <- signature
+            node.Index <- row
+            setAttribute node.Element "data-row" (string row)
+            setCssText node.Element ("top:" + string (int (y + 0.5)) + "px;height:" + string (int (h + 0.5)) + "px")
+            setTextContent node.Label (string (row + 1))
+            setStyle node.Handle "display" (if readOnly then "none" else "block")
 
-        appendChild header resizeHandle
-        header
-
-    /// Render a cell (returns None for non-primary cells in merged ranges)
-    and renderCell (row: int) (col: int): Element option =
-        let addr = { Row = row; Col = col }
-
-        // Determine if cell is part of selection and if it's the primary cell
-        let isInSelection, isPrimaryCell =
-            match model.Selection with
-            | SingleCell (r, c) -> (r = row && c = col), true
-            | Range (sr, sc, er, ec) ->
-                let inRange = row >= sr && row <= er && col >= sc && col <= ec
-                let isPrimary = row = sr && col = sc  // Top-left corner is primary
-                inRange, isPrimary
-
-        let isEditing = model.EditingCell = Some addr
-
-        // Check if cell is in a merged range
-        let mergedCell = findMergedCell addr model
-        match mergedCell with
-        | Some merge when not (addr.Row = merge.StartRow && addr.Col = merge.StartCol) ->
-            // This cell is part of a merge but not the primary cell - don't render it
-            None
-        | _ ->
-            // Either not merged, or this is the primary cell of a merge
-            let cell = createElement "div"
-            setClassName cell "spreadsheet-cell"
-            setAttribute cell "data-row" (string row)
-            setAttribute cell "data-col" (string col)
-
-            // Border: green for primary/single cell, light green for range cells
-            let borderStyle =
-                if isPrimaryCell && isInSelection then "2px solid #217346"
-                elif isInSelection then "1px solid #8BC34A"
-                else "1px solid #e0e0e0"
-
-            // Background: light green tint for selected range cells
-            let bgColor =
-                if isInSelection && not isPrimaryCell then "#E8F5E9"
-                else "white"
-
-            // Calculate cell position and size (accounting for merges)
-            let cellX = getColumnX col
-            let cellY = getRowY row
-            let cellW, cellH =
-                match mergedCell with
-                | Some merge ->
-                    // Calculate span size
-                    let spanW = [merge.StartCol .. merge.EndCol] |> List.sumBy (fun c -> getColumnWidth c model)
-                    let spanH = [merge.StartRow .. merge.EndRow] |> List.sumBy (fun r -> getRowHeight r model)
-                    spanW, spanH
-                | None ->
-                    getColumnWidth col model, getRowHeight row model
-
-            // Frozen-pane compensation. The DOM cell sits inside `content`,
-            // which scrolls natively under `gridDiv`. To make a frozen cell
-            // appear pinned, offset its absolute top/left by the current
-            // scroll position so the browser's scroll cancels out. Same
-            // trick the corner header at line 1030 uses for itself.
-            let inFrozenRow = model.FrozenRows > 0 && row < model.FrozenRows
-            let inFrozenCol = model.FrozenCols > 0 && col < model.FrozenCols
-            let topOffset = if inFrozenRow then scrollTop else 0.0
-            let leftOffset = if inFrozenCol then scrollLeft else 0.0
-            // Z-index stacks frozen cells over body cells; frozen corner
-            // over both single-axis frozen zones.
-            let zIndex =
-                match inFrozenRow, inFrozenCol with
-                | true, true -> 7    // corner — above both single-axis bands
-                | true, false -> 6
-                | false, true -> 6
-                | false, false -> 1
-
-            setStyles cell [
-                "position", "absolute"
-                "top", sprintf "%.0fpx" (cellY + topOffset)
-                "left", sprintf "%.0fpx" (cellX + leftOffset)
-                "width", sprintf "%.0fpx" cellW
-                "height", sprintf "%.0fpx" cellH
-                "border", borderStyle
-                "padding", "2px 4px"
-                "overflow", "hidden"
-                "white-space", "nowrap"
-                "text-overflow", "ellipsis"
-                "background", bgColor
-                "box-sizing", "border-box"
-                "font-family", "Arial, sans-serif"
-                "font-size", "11px"
-                "line-height", sprintf "%.0fpx" (cellH - 4.0)
-                "cursor", "default"
-                "z-index", string zIndex
-            ]
-
-            if isEditing then
-                // Render input
-                let input = createElement "input"
-                setType input "text"
-                setValue input model.EditBuffer
-                setStyles input [
-                    "width", "100%"
-                    "height", "100%"
-                    "border", "none"
-                    "outline", "none"
-                    "padding", "0"
-                    "font-family", "Arial, sans-serif"
-                    "font-size", "11px"
-                    "background", "transparent"
-                    "box-sizing", "border-box"
-                ]
-                addEventListener input "input" handleInput
-                appendChild cell input
-                // Focused once the cell is in the document (see `render`).
-                editInput <- Some input
-                Some cell
-            else
-                // Render value
-                let cellData = getCell addr model
-                let value = getCellValue addr model
-                let displayText =
-                    match cellData with
-                    // Unbounded width: the cell's CSS clips, so only the
-                    // number format is wanted here, not ##### overflow.
-                    | Some data -> SpreadsheetCellText.cellDisplayText None 1.0e6 data.Format value
-                    | None -> displayValue value
-                setTextContent cell displayText
-
-                // Check if cell is in a table
-                let tableInfo = getCellTable row col
-
-                // Apply table styling first (base styles)
-                match tableInfo with
-                | Some (table, isHeader, isEvenRow) ->
-                    if isHeader then
-                        // Excel-style table header
-                        setStyle cell "background" "linear-gradient(180deg, #4472C4 0%, #2E5AA8 100%)"
-                        setStyle cell "color" "white"
-                        setStyle cell "font-weight" "bold"
-                        setStyle cell "text-align" "center"
-                        setStyle cell "border" "1px solid #2E5AA8"
-                    else
-                        // Excel-style alternating rows
-                        let bgColor = if isEvenRow then "#FFFFFF" else "#EDF2FA"
-                        setStyle cell "background-color" bgColor
-                        setStyle cell "border" "1px solid #D0D8E4"
-                | None -> ()
-
-                // Apply cell formatting (overrides table styles)
-                match cellData with
-                | Some data ->
-                    if data.Format.Bold then
-                        setStyle cell "font-weight" "bold"
-                    if data.Format.Italic then
-                        setStyle cell "font-style" "italic"
-                    if data.Format.Underline then
-                        setStyle cell "text-decoration" "underline"
-                    match data.Format.TextColor with
-                    | Some color -> setStyle cell "color" color
-                    | None -> ()
-                    match data.Format.BgColor with
-                    | Some color -> setStyle cell "background-color" color
-                    | None -> ()
-                    match data.Format.FontSize with
-                    | Some size -> setStyle cell "font-size" (sprintf "%dpx" size)
-                    | None -> ()
-                    match data.Format.HorizontalAlign with
-                    | Some align -> setStyle cell "text-align" align
-                    | None -> ()
-                    match data.Format.VerticalAlign with
-                    | Some "top" -> setStyle cell "vertical-align" "top"
-                    | Some "bottom" -> setStyle cell "vertical-align" "bottom"
-                    | Some "middle" | Some "center" -> setStyle cell "vertical-align" "middle"
-                    | _ -> ()
-                    if data.Format.WrapText then
-                        setStyle cell "white-space" "normal"
-                        setStyle cell "word-wrap" "break-word"
-                    // else: default is nowrap (set in base styles)
-
-                    // Apply borders
-                    match data.Format.BorderTop with
-                    | Some border ->
-                        let borderStyle = sprintf "%s %s" border.Style (defaultArg border.Color "#000000")
-                        setStyle cell "border-top" borderStyle
-                    | None -> ()
-                    match data.Format.BorderBottom with
-                    | Some border ->
-                        let borderStyle = sprintf "%s %s" border.Style (defaultArg border.Color "#000000")
-                        setStyle cell "border-bottom" borderStyle
-                    | None -> ()
-                    match data.Format.BorderLeft with
-                    | Some border ->
-                        let borderStyle = sprintf "%s %s" border.Style (defaultArg border.Color "#000000")
-                        setStyle cell "border-left" borderStyle
-                    | None -> ()
-                    match data.Format.BorderRight with
-                    | Some border ->
-                        let borderStyle = sprintf "%s %s" border.Style (defaultArg border.Color "#000000")
-                        setStyle cell "border-right" borderStyle
-                    | None -> ()
-                | None -> ()
-
-                // Apply conditional formatting (highest priority): the merged
-                // effect of every matching rule that covers the cell.
-                if not model.ConditionalFormats.IsEmpty then
-                    match Rbt.Spreadsheet.ConditionalFormatting.effectAt (Rbt.Spreadsheet.ConditionalFormatting.contextFor model) addr with
-                    | Some effect ->
-                        if effect.Bold = Some true then setStyle cell "font-weight" "bold"
-                        if effect.Italic = Some true then setStyle cell "font-style" "italic"
-                        let decorations =
-                            [ if effect.Underline = Some true then yield "underline"
-                              if effect.Strikethrough = Some true then yield "line-through" ]
-                        if not decorations.IsEmpty then setStyle cell "text-decoration" (String.concat " " decorations)
-                        match effect.TextColor with
-                        | Some color -> setStyle cell "color" color
-                        | None -> ()
-                        match effect.BgColor with
-                        | Some color -> setStyle cell "background-color" color
-                        | None -> ()
-                        match effect.DataBar with
-                        | Some (fraction, color) ->
-                            // A bar from the left edge, behind the text.
-                            let percent = int (System.Math.Round (fraction * 100.0))
-                            setStyle cell "background-image" (sprintf "linear-gradient(to right, %s %d%%, transparent %d%%)" color percent percent)
-                            setAttribute cell "data-cf-bar" (string percent)
-                        | None -> ()
-                        match effect.IconSet with
-                        | Some (index, count) when count > 1 ->
-                            // Same low → high signal the canvas painter draws:
-                            // red, amber, green.
-                            let t = float index / float (count - 1)
-                            let color = if t < 0.34 then "#E53935" elif t < 0.67 then "#F9A825" else "#43A047"
-                            let icon = createElement "span"
-                            setTextContent icon "\u25CF"
-                            setStyles icon [ "color", color; "margin-right", "3px"; "font-size", "10px" ]
-                            setAttribute icon "data-cf-icon" (string index)
-                            prependChild cell icon
-                        | _ -> ()
-                    | None -> ()
-
-                // Reapply selection styling (highest priority - overrides all other backgrounds)
-                if isInSelection && not isPrimaryCell then
-                    setStyle cell "background-color" "#E8F5E9"
-                if isInSelection then
-                    let borderStyle =
-                        if isPrimaryCell then "2px solid #217346"
-                        else "1px solid #8BC34A"
-                    setStyle cell "border" borderStyle
-
-                // Add comment indicator if cell has a comment or a comment thread
-                let thread = if Map.isEmpty model.Threads then None else Map.tryFind { Row = row; Col = col } model.Threads
-                match cellData with
-                | _ when thread.IsSome ->
-                    let indicator = createElement "div"
-                    setStyles indicator [
-                        "position", "absolute"
-                        "top", "0"
-                        "right", "0"
-                        "width", "0"
-                        "height", "0"
-                        "border-style", "solid"
-                        "border-width", "0 6px 6px 0"
-                        "border-color", "transparent #7b61ff transparent transparent"
-                        "pointer-events", "none"
-                    ]
-                    appendChild cell indicator
-                    setAttribute cell "title" (threadText thread.Value)
-                | Some data when data.Comment.IsSome ->
-                    let indicator = createElement "div"
-                    setStyles indicator [
-                        "position", "absolute"
-                        "top", "0"
-                        "right", "0"
-                        "width", "0"
-                        "height", "0"
-                        "border-style", "solid"
-                        "border-width", "0 6px 6px 0"
-                        "border-color", "transparent #ff0000 transparent transparent"
-                        "pointer-events", "none"
-                    ]
-                    appendChild cell indicator
-
-                    // Add tooltip on hover
-                    let comment = data.Comment.Value
-                    let tooltipText =
-                        match comment.Author with
-                        | Some author -> sprintf "%s:\n%s" author comment.Text
-                        | None -> comment.Text
-                    setAttribute cell "title" tooltipText
-                | _ -> ()
-
-                // Mouse down to start drag selection
-                addEventListener cell "mousedown" (fun e ->
-                    preventDefault e  // Prevent text selection
-                    match hitTestEvent e with
-                    | SpreadsheetLayout.Cell hitAddr ->
-                        // Clicking another cell commits the entry in progress.
-                        if model.EditingCell.IsSome then finishEditing true |> ignore
-                        isDragging <- true
-                        dragStartCell <- Some hitAddr
-                        selectCellAddress hitAddr
-                        render()
-                    | _ -> ()
-                )
-
-                // Mouse enter to expand selection while dragging
-                addEventListener cell "mouseenter" (fun e ->
-                    if isFilling then
-                        match fillSource, hitTestEvent e with
-                        | Some source, SpreadsheetLayout.Cell hitAddr ->
-                            let target = SpreadsheetInput.fillTowards source hitAddr.Row hitAddr.Col
-                            if target <> fillTarget then
-                                fillTarget <- target
-                                // Preview: the selection grows over the cells
-                                // the release will fill.
-                                let top, left, bottom, right = source
-                                let preview =
-                                    match target with
-                                    | Some (SpreadsheetInput.FillDown, n) -> Range (top, left, bottom + n, right)
-                                    | Some (SpreadsheetInput.FillUp, n) -> Range (top - n, left, bottom, right)
-                                    | Some (SpreadsheetInput.FillRight, n) -> Range (top, left, bottom, right + n)
-                                    | Some (SpreadsheetInput.FillLeft, n) -> Range (top, left - n, bottom, right)
-                                    | None -> if top = bottom && left = right then SingleCell (top, left) else Range (top, left, bottom, right)
-                                model <- { model with Selection = preview }
-                                render()
-                        | _ -> ()
-                    elif isDragging then
-                        match dragStartCell with
-                        | Some start ->
-                            match hitTestEvent e with
-                            | SpreadsheetLayout.Cell hitAddr when start.Row <> hitAddr.Row || start.Col <> hitAddr.Col ->
-                                let startRow = min start.Row hitAddr.Row
-                                let endRow = max start.Row hitAddr.Row
-                                let startCol = min start.Col hitAddr.Col
-                                let endCol = max start.Col hitAddr.Col
-                                model <- { model with Selection = Range (startRow, startCol, endRow, endCol) }
-                                render()
-                            | _ -> ()
-                        | None -> ()
-                )
-
-                addEventListener cell "dblclick" (fun e ->
-                    match hitTestEvent e with
-                    | SpreadsheetLayout.Cell hitAddr -> startEditing hitAddr.Row hitAddr.Col
-                    | _ -> ()
-                )
-
-                Some cell
-
-    and renderCornerHeader (): Element =
-        // Render corner cell (top-left where headers meet)
-        let corner = createElement "div"
-        setClassName corner "spreadsheet-corner"
-        setStyles corner [
-            "position", "absolute"
-            "top", sprintf "%.0fpx" (if useSharedLayoutGeometry then scrollTop else 0.0)
-            "left", sprintf "%.0fpx" (if useSharedLayoutGeometry then scrollLeft else 0.0)
-            "width", sprintf "%.0fpx" rowHeaderWidth
-            "height", sprintf "%.0fpx" headerHeight
-            "border-right", "1px solid #a6a6a6"
-            "border-bottom", "1px solid #a6a6a6"
-            "background", "linear-gradient(135deg, #f8f8f8 0%, #e0e0e0 100%)"
-            "z-index", "10"
-        ]
-        corner
-
-    /// Render the grid
+    /// Render the grid: bring what is on display in line with the model and
+    /// the scroll position. Nodes of cells that stay in view and whose data
+    /// did not change are left alone; nodes of cells that left the view are
+    /// reused for the ones that came in.
     and render () =
-        match contentElement with
-        | None -> ()
-        | Some content ->
-            // The edit box (and with it the keyboard focus) is rebuilt below;
-            // when the grid had the focus it keeps it.
-            let hadFocus = holdsFocus content
-            // Clear content
-            setInnerHTML content ""
-            editInput <- None
-            cellPool.Clear()
-            chromeNodes.Clear()
+        match contentElement, layers with
+        | Some content, Some layer ->
             if not model.ConditionalFormats.IsEmpty then refreshRuleWorkbook()
+            syncExtent()
+            let metrics = SpreadsheetLayout.metricsOf model
+            let rowPrefix = metrics.RowPrefix
+            let colPrefix = metrics.ColPrefix
+            let rowCount = metrics.RowCount
+            let colCount = metrics.ColCount
+            let frozenRows = max 0 (min rowCount model.FrozenRows)
+            let frozenCols = max 0 (min colCount model.FrozenCols)
+            let frozenH = rowPrefix.[frozenRows]
+            let frozenW = colPrefix.[frozenCols]
 
-            // Get visible range
-            let startRow, endRow, startCol, endCol = calculateVisibleRange()
+            // Everything is drawn again when what the look of a cell depends
+            // on, besides its own data, changed. With conditional formats a
+            // cell's look depends on other cells.
+            let activeSheetId = sheetIdForIndex activeSheetIndex
+            let tables =
+                match workbook with
+                | Some wb -> wb.Tables |> Map.toList |> List.map snd |> List.filter (fun table -> table.SheetId = activeSheetId)
+                | None -> []
+            let styleInputs : obj array =
+                [| box model.ConditionalFormats; box model.Threads; box model.MergedCells; box model.ShowGridLines
+                   box (match workbook with Some wb -> box wb.Tables | None -> null); box activeSheetIndex; box readOnly
+                   (if model.ConditionalFormats.IsEmpty then null else box model.Cells) |]
+            // (Compared by identity: each is a value the model replaces when it changes.)
+            let sameInputs =
+                styleInputs.Length = renderedStyleInputs.Length
+                && Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b)) styleInputs renderedStyleInputs
+            if not sameInputs then
+                styleEpoch <- styleEpoch + 1
+                renderedStyleInputs <- styleInputs
+            let sameCells = obj.ReferenceEquals(renderedCells, model.Cells)
+            renderedCells <- box model.Cells
 
-            let appendChrome (node: Element) =
-                appendChild content node
-                chromeNodes.Add node
+            renderGeneration <- renderGeneration + 1
+            let generation = renderGeneration
+            let hasMerges = not model.MergedCells.IsEmpty
 
-            let appendBodyCell (row: int) (col: int) (cell: Element) =
-                appendChild content cell
-                if isFrozenBodyCell row col then
-                    chromeNodes.Add cell
-                else
-                    cellPool.[cellKey row col] <- cell
+            // The rows and columns in view, and one more on each side.
+            let viewTop = scrollTop + frozenH
+            let viewBottom = scrollTop + containerHeight - headerHeight
+            let viewLeft = scrollLeft + frozenW
+            let viewRight = scrollLeft + containerWidth - rowHeaderWidth
+            let firstRow = if rowCount = 0 then 0 else max frozenRows (SpreadsheetLayout.indexAtOffset rowPrefix rowCount viewTop - 1)
+            let lastRow = if rowCount = 0 then -1 else min (rowCount - 1) (SpreadsheetLayout.indexAtOffset rowPrefix rowCount viewBottom + 1)
+            let firstCol = if colCount = 0 then 0 else max frozenCols (SpreadsheetLayout.indexAtOffset colPrefix colCount viewLeft - 1)
+            let lastCol = if colCount = 0 then -1 else min (colCount - 1) (SpreadsheetLayout.indexAtOffset colPrefix colCount viewRight + 1)
 
-            if useSharedLayoutGeometry then
-                for headerGeometry in SpreadsheetLayout.headers model (currentViewport()) do
-                    match headerGeometry with
-                    | SpreadsheetLayout.CornerHeader _ -> appendChrome (renderCornerHeader())
-                    | SpreadsheetLayout.ColumnHeader (col, _) -> appendChrome (renderColumnHeader col)
-                    | SpreadsheetLayout.RowHeader (row, _) -> appendChrome (renderRowHeader row)
-            else
-                appendChrome (renderCornerHeader())
-
-                // Render column headers
-                for col = startCol to endCol - 1 do
-                    appendChrome (renderColumnHeader col)
-
-                // Render row headers
-                for row = startRow to endRow - 1 do
-                    appendChrome (renderRowHeader row)
-
-            // Render cells from the shared visibility model so partially visible
-            // merged cells are emitted even when their primary cell starts offscreen.
-            if useSharedLayoutGeometry then
-                for cellGeometry in SpreadsheetLayout.visibleCells model (currentViewport()) do
-                    let addr = cellGeometry.Address
-                    match renderCell addr.Row addr.Col with
-                    | Some cell -> appendBodyCell addr.Row addr.Col cell
+            let visit (row: int) (col: int) =
+                let mutable r = row
+                let mutable c = col
+                let mutable w = colPrefix.[col + 1] - colPrefix.[col]
+                let mutable h = rowPrefix.[row + 1] - rowPrefix.[row]
+                if hasMerges then
+                    match findMergedCell { Row = row; Col = col } model with
+                    | Some merge ->
+                        // A merged cell is drawn once, as its first cell, over its whole span.
+                        r <- max 0 (min (rowCount - 1) merge.StartRow)
+                        c <- max 0 (min (colCount - 1) merge.StartCol)
+                        w <- colPrefix.[min colCount (merge.EndCol + 1)] - colPrefix.[c]
+                        h <- rowPrefix.[min rowCount (merge.EndRow + 1)] - rowPrefix.[r]
                     | None -> ()
-            else
-                for row = startRow to endRow - 1 do
-                    for col = startCol to endCol - 1 do
-                        match renderCell row col with
-                        | Some cell -> appendBodyCell row col cell
-                        | None -> ()  // Skip non-primary merged cells
+                if w > 0.0 && h > 0.0 then
+                    let key = float r * 16384.0 + float c
+                    let x = rowHeaderWidth + colPrefix.[c]
+                    let y = headerHeight + rowPrefix.[r]
+                    let pane = (if r < frozenRows then 1 else 0) + (if c < frozenCols then 2 else 0)
+                    match cellNodes.TryGetValue key with
+                    | true, node ->
+                        if node.Seen <> generation then
+                            node.Seen <- generation
+                            let placed = node.Epoch = styleEpoch && node.X = x && node.Y = y && node.W = w && node.H = h && node.Pane = pane
+                            if not (placed && sameCells) then
+                                let data = getCell { Row = r; Col = c } model
+                                let dataRef = match data with Some data -> box data | None -> null
+                                if not placed || not (obj.ReferenceEquals(node.Data, dataRef)) then
+                                    drawCell layer node r c x y w h pane data tables
+                    | false, _ ->
+                        let node =
+                            if freeCellNodes.Count > 0 then
+                                let last = freeCellNodes.[freeCellNodes.Count - 1]
+                                freeCellNodes.RemoveAt (freeCellNodes.Count - 1)
+                                last
+                            else
+                                let element = createElement "div"
+                                setClassName element "spreadsheet-cell"
+                                { Element = element; Key = key; Pane = -1; Data = null; X = 0.0; Y = 0.0; W = 0.0; H = 0.0; Epoch = -1; Seen = 0; HasTitle = false }
+                        node.Key <- key
+                        node.Seen <- generation
+                        cellNodes.[key] <- node
+                        drawCell layer node r c x y w h pane (getCell { Row = r; Col = c } model) tables
+            let visitBlock (r0: int) (r1: int) (c0: int) (c1: int) =
+                for row = r0 to r1 do
+                    if rowPrefix.[row + 1] > rowPrefix.[row] then
+                        for col = c0 to c1 do
+                            if colPrefix.[col + 1] > colPrefix.[col] then visit row col
+            visitBlock firstRow lastRow firstCol lastCol
+            if frozenRows > 0 then visitBlock 0 (frozenRows - 1) firstCol lastCol
+            if frozenCols > 0 then visitBlock firstRow lastRow 0 (frozenCols - 1)
+            if frozenRows > 0 && frozenCols > 0 then visitBlock 0 (frozenRows - 1) 0 (frozenCols - 1)
 
-            renderDrawings content
-            renderOverlays content
-            match editInput with
-            | Some input when model.EditingCell.IsSome ->
-                // An element takes the focus only once it is attached.
-                focus input
-                if editCaretAtEnd then caretToEnd input else select input
-            | _ -> if hadFocus then focusQuietly content
-            lastRenderedModel <- Some model
+            // Nodes of cells that are no longer wanted go back to the pool.
+            let stale = ResizeArray<CellNode>()
+            for entry in cellNodes do
+                if entry.Value.Seen <> generation then stale.Add entry.Value
+            for node in stale do
+                cellNodes.Remove node.Key |> ignore
+                if freeCellNodes.Count < 600 then
+                    setStyle node.Element "display" "none"
+                    node.Epoch <- -1
+                    freeCellNodes.Add node
+                else detach node.Element
+
+            // Headers: the columns and rows in view (frozen ones always).
+            // (Frozen ones sit in the wrapper that is pinned on both axes.)
+            let placeHeaders (nodes: System.Collections.Generic.Dictionary<int, HeaderNode>) (free: ResizeArray<HeaderNode>) (parent: Element)
+                             (create: unit -> HeaderNode) (draw: HeaderNode -> int -> unit) (frozen: int) (first: int) (last: int) (prefix: float array) =
+                let place (index: int) =
+                    if prefix.[index + 1] > prefix.[index] then
+                        let node =
+                            match nodes.TryGetValue index with
+                            | true, node -> node
+                            | false, _ ->
+                                let node =
+                                    if free.Count > 0 then
+                                        let last = free.[free.Count - 1]
+                                        free.RemoveAt (free.Count - 1)
+                                        last
+                                    else create ()
+                                nodes.[index] <- node
+                                node
+                        let wanted = if index < frozen then layer.FrozenHeaders else parent
+                        if not (isChildOf node.Element wanted) then appendChild wanted node.Element
+                        node.Seen <- generation
+                        draw node index
+                for index = 0 to frozen - 1 do place index
+                for index = first to last do place index
+                let stale = ResizeArray<int>()
+                for entry in nodes do
+                    if entry.Value.Seen <> generation then stale.Add entry.Key
+                for index in stale do
+                    let node = nodes.[index]
+                    nodes.Remove index |> ignore
+                    setStyle node.Element "display" "none"
+                    node.Signature <- ""
+                    free.Add node
+            placeHeaders colHeaderNodes freeColHeaders layer.ColHeaders newColumnHeader
+                (fun node col -> drawColumnHeader node col (rowHeaderWidth + colPrefix.[col]) (colPrefix.[col + 1] - colPrefix.[col]))
+                frozenCols firstCol lastCol colPrefix
+            placeHeaders rowHeaderNodes freeRowHeaders layer.RowHeaders newRowHeader
+                (fun node row -> drawRowHeader node row (headerHeight + rowPrefix.[row]) (rowPrefix.[row + 1] - rowPrefix.[row]))
+                frozenRows firstRow lastRow rowPrefix
+            renderDrawings content metrics
+            renderOverlays layer metrics frozenRows frozenCols
             notifyChanges ()
+        | _ -> ()
 
     /// Tell OnChange / OnSelectionChange subscribers what changed since they
     /// were last told. Every change to the workbook ends in a render, so this
@@ -1738,7 +2039,7 @@ type Spreadsheet(container: Element) =
             let changedSheets =
                 [| for i in 0 .. current.Length - 1 do
                     if i >= notifiedSheets.Length || not (sameSheetContent current.[i] notifiedSheets.[i]) then yield i |]
-            let selection = Some (activeSheetIndex, model.Selection)
+            let selection = Some (activeSheetIndex, model.Selection, activeCellAddress())
             let selectionChanged = selection <> notifiedSelection
             notifiedSheets <- current
             notifiedNames <- Array.copy sheetNames
@@ -1753,10 +2054,14 @@ type Spreadsheet(container: Element) =
                 for listener in changeListeners.ToArray() do
                     if changeListeners.Contains listener then (try listener change with _ -> ())
             if selectionChanged then
+                let active = activeCellAddress()
                 let change =
                     createObj [
                         "SheetIndex" ==> activeSheetIndex
                         "Selection" ==> selectionRefText ()
+                        "ActiveCell" ==> (columnToLetter active.Col + string (active.Row + 1))
+                        "ActiveRow" ==> active.Row
+                        "ActiveCol" ==> active.Col
                     ]
                 for listener in selectionListeners.ToArray() do
                     if selectionListeners.Contains listener then (try listener change with _ -> ())
@@ -1771,213 +2076,170 @@ type Spreadsheet(container: Element) =
     /// Pictures, and labelled frames for charts and other kept objects, over
     /// the cells at their anchors. They are part of the scrolled content, so
     /// they move with the sheet; clicks go through to the cells under them.
-    and renderDrawings (content: Element) =
-        for drawing in model.Drawings do
-            let rect = SpreadsheetLayout.drawingRect model drawing
-            if rect.Width >= 1.0 && rect.Height >= 1.0 then
-                let label = SpreadsheetLayout.drawingLabel drawing
-                let node =
-                    match drawing.Content with
-                    | Picture (contentType, _, data) ->
-                        let image = createElement "img"
-                        setAttribute image "src" (pictureUrl data contentType)
-                        setAttribute image "alt" (drawing.Description |> Option.defaultValue label)
-                        setAttribute image "draggable" "false"
-                        setClassName image "spreadsheet-drawing spreadsheet-picture"
-                        image
-                    | KeptObject (kind, _) ->
-                        let frame = createElement "div"
-                        setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind)
-                        setTextContent frame label
-                        setStyles frame [
-                            "display", "flex"
-                            "align-items", "center"
-                            "justify-content", "center"
-                            "box-sizing", "border-box"
-                            "background", "#f6f8fa"
-                            "border", "1px solid #8a94a6"
-                            "color", "#4a5568"
-                            "font", "12px Arial, sans-serif"
-                            "overflow", "hidden"
-                        ]
-                        frame
-                setAttribute node "title" label
-                setStyles node [
-                    "position", "absolute"
-                    "left", sprintf "%.1fpx" (rowHeaderWidth + rect.X)
-                    "top", sprintf "%.1fpx" (headerHeight + rect.Y)
-                    "width", sprintf "%.1fpx" rect.Width
-                    "height", sprintf "%.1fpx" rect.Height
-                    "z-index", "3"
-                    "pointer-events", "none"
-                ]
-                appendChild content node
-                chromeNodes.Add node
+    /// Rebuilt only when the drawings or the sizes of rows / columns change.
+    and renderDrawings (content: Element) (metrics: SpreadsheetLayout.SheetMetrics) =
+        if not (obj.ReferenceEquals(renderedDrawings, model.Drawings)) || not (obj.ReferenceEquals(renderedMetrics, metrics)) then
+            renderedDrawings <- box model.Drawings
+            renderedMetrics <- box metrics
+            for node in drawingNodes do detach node
+            drawingNodes.Clear()
+            for drawing in model.Drawings do
+                let rect = SpreadsheetLayout.drawingRect model drawing
+                if rect.Width >= 1.0 && rect.Height >= 1.0 then
+                    let label = SpreadsheetLayout.drawingLabel drawing
+                    let node =
+                        match drawing.Content with
+                        | Picture (contentType, _, data) ->
+                            let image = createElement "img"
+                            setAttribute image "src" (pictureUrl data contentType)
+                            setAttribute image "alt" (drawing.Description |> Option.defaultValue label)
+                            setAttribute image "draggable" "false"
+                            setClassName image "spreadsheet-drawing spreadsheet-picture"
+                            image
+                        | KeptObject (kind, _) ->
+                            let frame = createElement "div"
+                            setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind)
+                            setTextContent frame label
+                            setStyles frame [
+                                "display", "flex"
+                                "align-items", "center"
+                                "justify-content", "center"
+                                "box-sizing", "border-box"
+                                "background", "#f6f8fa"
+                                "border", "1px solid #8a94a6"
+                                "color", "#4a5568"
+                                "font", "12px Arial, sans-serif"
+                                "overflow", "hidden"
+                            ]
+                            frame
+                    setAttribute node "title" label
+                    setStyles node [
+                        "position", "absolute"
+                        "left", sprintf "%.1fpx" (rowHeaderWidth + rect.X)
+                        "top", sprintf "%.1fpx" (headerHeight + rect.Y)
+                        "width", sprintf "%.1fpx" rect.Width
+                        "height", sprintf "%.1fpx" rect.Height
+                        "z-index", "3"
+                        "pointer-events", "none"
+                    ]
+                    appendChild content node
+                    drawingNodes.Add node
 
-    /// What sits on top of the cells: the selection's fill handle, the input
-    /// message of the selected cell's validation, and the validation notice.
-    and renderOverlays (content: Element) =
+    /// What sits on top of the cells: the selection, the active cell, the
+    /// edit box, the selection's fill handle, the input message of the
+    /// selected cell's validation, and the validation notice.
+    and renderOverlays (layer: GridLayers) (metrics: SpreadsheetLayout.SheetMetrics) (frozenRows: int) (frozenCols: int) =
+        let rowPrefix = metrics.RowPrefix
+        let colPrefix = metrics.ColPrefix
+        let rowCount = metrics.RowCount
+        let colCount = metrics.ColCount
+        let px (value: float) = string (System.Math.Round value) + "px"
+        let hide (element: Element) = setStyle element "display" "none"
+        // A rectangle of cells, clipped to the rows / columns of a pane.
+        let paneRect (pane: int) (top: int) (left: int) (bottom: int) (right: int) : (float * float * float * float) option =
+            let rowFrom, rowTo = if pane = 1 || pane = 3 then 0, frozenRows - 1 else frozenRows, rowCount - 1
+            let colFrom, colTo = if pane >= 2 then 0, frozenCols - 1 else frozenCols, colCount - 1
+            let top, bottom = max top rowFrom, min bottom rowTo
+            let left, right = max left colFrom, min right colTo
+            if top > bottom || left > right then None
+            else
+                Some (rowHeaderWidth + colPrefix.[left], headerHeight + rowPrefix.[top],
+                      colPrefix.[right + 1] - colPrefix.[left], rowPrefix.[bottom + 1] - rowPrefix.[top])
+        let paneOf (row: int) (col: int) = (if row < frozenRows then 1 else 0) + (if col < frozenCols then 2 else 0)
+        let place (element: Element) (pane: int) =
+            if not (isChildOf element layer.Panes.[pane]) then appendChild layer.Panes.[pane] element
         let top, left, bottom, right = selectionBounds()
-        let cornerX = getColumnX right + getColumnWidth right model
-        let cornerY = getRowY bottom + getRowHeight bottom model
-        if not readOnly && model.EditingCell.IsNone then
-            let handle = createElement "div"
-            setClassName handle "spreadsheet-fill-handle"
-            setStyles handle [
-                "position", "absolute"
-                "left", sprintf "%.0fpx" (cornerX - 4.0)
-                "top", sprintf "%.0fpx" (cornerY - 4.0)
-                "width", "7px"
-                "height", "7px"
-                "background", "#217346"
-                "border", "1px solid white"
-                "box-sizing", "border-box"
-                "cursor", "crosshair"
-                "z-index", "9"
-            ]
-            addEventListener handle "mousedown" (fun e ->
-                preventDefault e
-                stopPropagation e
-                isFilling <- true
-                fillSource <- Some (selectionBounds())
-                fillTarget <- None)
-            appendChild content handle
-            chromeNodes.Add handle
-        let note (className: string) (title: string) (message: string) (x: float) (y: float) (background: string) (border: string) =
-            let box = createElement "div"
-            setClassName box className
-            setStyles box [
-                "position", "absolute"
-                "left", sprintf "%.0fpx" x
-                "top", sprintf "%.0fpx" y
-                "max-width", "260px"
-                "padding", "4px 8px"
-                "background", background
-                "border", "1px solid " + border
-                "box-shadow", "0 2px 6px rgba(0,0,0,0.2)"
-                "font-family", "Arial, sans-serif"
-                "font-size", "11px"
-                "white-space", "pre-wrap"
-                "pointer-events", "none"
-                "z-index", "12"
-            ]
+        let top, bottom = max 0 top, min (rowCount - 1) bottom
+        let left, right = max 0 left, min (colCount - 1) right
+        let isRange = selectionIsRange ()
+        // The selected range, tinted.
+        for pane in 0 .. 3 do
+            match (if isRange then paneRect pane top left bottom right else None) with
+            | Some (x, y, w, h) when w > 0.0 && h > 0.0 ->
+                setCssText layer.Selections.[pane]
+                    ("position:absolute;left:" + px x + ";top:" + px y + ";width:" + px w + ";height:" + px h
+                     + ";box-sizing:border-box;border:1px solid #217346;background:rgba(33,115,70,0.12);pointer-events:none;z-index:4")
+            | _ -> hide layer.Selections.[pane]
+        // The active cell, boxed.
+        let active = activeCellAddress()
+        let activeTop, activeLeft, activeBottom, activeRight =
+            match findMergedCell active model with
+            | Some merge -> merge.StartRow, merge.StartCol, merge.EndRow, merge.EndCol
+            | None -> active.Row, active.Col, active.Row, active.Col
+        let activePane = paneOf active.Row active.Col
+        for pane in 0 .. 3 do
+            match (if pane = activePane && rowCount > 0 && colCount > 0 then paneRect pane activeTop activeLeft (min (rowCount - 1) activeBottom) (min (colCount - 1) activeRight) else None) with
+            | Some (x, y, w, h) when w > 0.0 && h > 0.0 ->
+                setCssText layer.Actives.[pane]
+                    ("position:absolute;left:" + px x + ";top:" + px y + ";width:" + px w + ";height:" + px h
+                     + ";box-sizing:border-box;border:2px solid #217346;pointer-events:none;z-index:5")
+            | _ -> hide layer.Actives.[pane]
+        // The edit box, on the cell being edited.
+        match model.EditingCell with
+        | Some addr when addr.Row < rowCount && addr.Col < colCount ->
+            let editBottom, editRight =
+                match findMergedCell addr model with
+                | Some merge -> min (rowCount - 1) merge.EndRow, min (colCount - 1) merge.EndCol
+                | None -> addr.Row, addr.Col
+            let pane = paneOf addr.Row addr.Col
+            place layer.EditInput pane
+            let x = rowHeaderWidth + colPrefix.[addr.Col]
+            let y = headerHeight + rowPrefix.[addr.Row]
+            let w = colPrefix.[editRight + 1] - colPrefix.[addr.Col]
+            let h = rowPrefix.[editBottom + 1] - rowPrefix.[addr.Row]
+            setCssText layer.EditInput
+                ("position:absolute;left:" + px x + ";top:" + px y + ";width:" + px (max 40.0 w) + ";height:" + px (max 18.0 h)
+                 + ";border:2px solid #217346;outline:none;padding:0 3px;margin:0;font-family:Arial, sans-serif;font-size:11px;background:white;box-sizing:border-box;z-index:11")
+            if getValue layer.EditInput <> model.EditBuffer && not (isActiveElement layer.EditInput) then setValue layer.EditInput model.EditBuffer
+        | _ -> hide layer.EditInput
+        // The fill handle, at the bottom-right corner of the selection.
+        if readOnly || model.EditingCell.IsSome || rowCount = 0 || colCount = 0 || bottom < 0 || right < 0 then hide layer.FillHandle
+        else
+            place layer.FillHandle (paneOf bottom right)
+            let cornerX = rowHeaderWidth + colPrefix.[right + 1]
+            let cornerY = headerHeight + rowPrefix.[bottom + 1]
+            setCssText layer.FillHandle
+                ("position:absolute;left:" + px (cornerX - 4.0) + ";top:" + px (cornerY - 4.0)
+                 + ";width:7px;height:7px;background:#217346;border:1px solid white;box-sizing:border-box;cursor:crosshair;z-index:9")
+        // Notes: the validation notice, else the input message of the selected cell.
+        let note (target: Element) (title: string) (message: string) (x: float) (y: float) (background: string) (border: string) =
+            setCssText target
+                ("position:absolute;left:" + px x + ";top:" + px y + ";max-width:260px;padding:4px 8px;background:" + background + ";border:1px solid " + border
+                 + ";box-shadow:0 2px 6px rgba(0,0,0,0.2);font-family:Arial, sans-serif;font-size:11px;white-space:pre-wrap;pointer-events:none;z-index:30")
+            setInnerHTML target ""
             if title <> "" then
                 let heading = createElement "div"
                 setTextContent heading title
                 setStyle heading "font-weight" "bold"
-                appendChild box heading
+                appendChild target heading
             let body = createElement "div"
             setTextContent body message
-            appendChild box body
-            appendChild content box
-            chromeNodes.Add box
+            appendChild target body
+        let below (row: int) = headerHeight + rowPrefix.[min rowCount (max 0 row + 1)] + 3.0
+        let leftOf (col: int) = rowHeaderWidth + colPrefix.[min colCount (max 0 col)]
         match validationNotice with
         | Some (style, title, message, cell) ->
-            let left, cornerY = cell.Col, getRowY cell.Row + getRowHeight cell.Row model
             let background, border =
                 match style with
                 | "stop" -> "#FDECEA", "#D93025"
                 | "warning" -> "#FFF4E5", "#F29900"
                 | _ -> "#E8F0FE", "#1A73E8"
-            setAttributeOnNote (fun box -> setAttribute box "data-style" style) (fun () ->
-                note "spreadsheet-validation-notice" title message (getColumnX left) (cornerY + 3.0) background border)
+            note layer.Notice title message (leftOf cell.Col) (below cell.Row) background border
+            setAttribute layer.Notice "data-style" style
+            hide layer.InputMessage
         | None ->
+            hide layer.Notice
             // Excel's input message: shown while the cell is selected.
             match model.Selection with
             | SingleCell (row, col) ->
                 match getValidation { Row = row; Col = col } model with
                 | Some dv when dv.InputMessage.IsSome || dv.InputTitle.IsSome ->
-                    note "spreadsheet-input-message" (defaultArg dv.InputTitle "") (defaultArg dv.InputMessage "")
-                         (getColumnX left) (cornerY + 3.0) "#FFFFE1" "#B0B0B0"
-                | _ -> ()
-            | _ -> ()
+                    note layer.InputMessage (defaultArg dv.InputTitle "") (defaultArg dv.InputMessage "") (leftOf left) (below bottom) "#FFFFE1" "#B0B0B0"
+                | _ -> hide layer.InputMessage
+            | _ -> hide layer.InputMessage
 
-    and setAttributeOnNote (tag: Element -> unit) (build: unit -> unit) =
-        let before = chromeNodes.Count
-        build()
-        if chromeNodes.Count > before then tag chromeNodes.[chromeNodes.Count - 1]
-
-    and renderScroll () =
-        match contentElement with
-        | None -> ()
-        | Some content ->
-            match lastRenderedModel with
-            | Some renderedModel when obj.ReferenceEquals(renderedModel, model) ->
-                let desiredKeys = System.Collections.Generic.HashSet<string>()
-                let desiredCells = ResizeArray<int * int>()
-
-                let addDesiredCell row col =
-                    if isRenderableCell row col then
-                        let key = cellKey row col
-                        if desiredKeys.Add key then
-                            desiredCells.Add(row, col)
-
-                let appendChrome (node: Element) =
-                    appendChild content node
-                    chromeNodes.Add node
-
-                if useSharedLayoutGeometry then
-                    for cellGeometry in SpreadsheetLayout.visibleCells model (currentViewport()) do
-                        let addr = cellGeometry.Address
-                        addDesiredCell addr.Row addr.Col
-                else
-                    let startRow, endRow, startCol, endCol = calculateVisibleRange()
-                    for row = startRow to endRow - 1 do
-                        for col = startCol to endCol - 1 do
-                            addDesiredCell row col
-
-                // Non-frozen body cells are scroll-independent absolute nodes.
-                let staleKeys = ResizeArray<string>()
-                for kvp in cellPool do
-                    if not (desiredKeys.Contains kvp.Key) then
-                        staleKeys.Add kvp.Key
-                for key in staleKeys do
-                    removeChild content cellPool.[key]
-                    cellPool.Remove key |> ignore
-
-                // Chrome is pinned by scroll offsets, so rebuild it every frame.
-                for node in chromeNodes do
-                    removeChild content node
-                chromeNodes.Clear()
-
-                if useSharedLayoutGeometry then
-                    for headerGeometry in SpreadsheetLayout.headers model (currentViewport()) do
-                        match headerGeometry with
-                        | SpreadsheetLayout.CornerHeader _ -> appendChrome (renderCornerHeader())
-                        | SpreadsheetLayout.ColumnHeader (col, _) -> appendChrome (renderColumnHeader col)
-                        | SpreadsheetLayout.RowHeader (row, _) -> appendChrome (renderRowHeader row)
-                else
-                    let startRow, endRow, startCol, endCol = calculateVisibleRange()
-                    appendChrome (renderCornerHeader())
-                    for col = startCol to endCol - 1 do
-                        appendChrome (renderColumnHeader col)
-                    for row = startRow to endRow - 1 do
-                        appendChrome (renderRowHeader row)
-
-                for row, col in desiredCells do
-                    let key = cellKey row col
-                    if isFrozenBodyCell row col then
-                        match cellPool.TryGetValue key with
-                        | true, pooled ->
-                            removeChild content pooled
-                            cellPool.Remove key |> ignore
-                        | false, _ -> ()
-                        match renderCell row col with
-                        | Some cell ->
-                            appendChild content cell
-                            chromeNodes.Add cell
-                        | None -> ()
-                    else
-                        if not (cellPool.ContainsKey key) then
-                            match renderCell row col with
-                            | Some cell ->
-                                appendChild content cell
-                                cellPool.[key] <- cell
-                            | None -> ()
-
-                lastRenderedModel <- Some model
-            | _ ->
-                render()
+    /// A scroll draws the rows / columns that came into view.
+    and renderScroll () = render ()
 
     /// Show filter dropdown for column
     and showFilterDropdown (col: int) (x: float) (y: float) =
@@ -2855,6 +3117,18 @@ type Spreadsheet(container: Element) =
 
             ()
 
+    /// Put the grid at the top-left corner of the sheet (after another sheet
+    /// or workbook became the one on display).
+    let resetScroll () =
+        match gridContainer with
+        | Some grid ->
+            syncExtent()
+            setScrollTop grid 0.0
+            setScrollLeft grid 0.0
+        | None -> ()
+        scrollTop <- 0.0
+        scrollLeft <- 0.0
+
     /// Handle scroll
     let handleScroll (e: obj) =
         let target = getCurrentTarget e
@@ -2864,7 +3138,7 @@ type Spreadsheet(container: Element) =
             scrollRenderScheduled <- true
             requestAnimationFrame (fun () ->
                 scrollRenderScheduled <- false
-                renderScroll()
+                if not disposed then renderScroll()
             )
 
     /// Mount the spreadsheet
@@ -2887,29 +3161,199 @@ type Spreadsheet(container: Element) =
             "background", "white"
         ]
 
-        // Create content (sized for all rows/cols)
+        // What all cells, and all headers, have in common. (Only a node's
+        // place and what its format adds is set on the node itself.) Cells
+        // are boxes of a given size that nothing outside depends on:
+        // `contain` lets the browser lay out and paint each on its own.
+        let sheetStyle = createElement "style"
+        setTextContent sheetStyle
+            (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:2px 4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;box-sizing:border-box;"
+             + "font-family:Arial, sans-serif;font-size:11px;cursor:default;background:white;border:1px solid #e0e0e0;contain:strict}"
+             + ".spreadsheet-container .spreadsheet-col-header{position:absolute;top:0;height:" + string headerHeight + "px;border-right:1px solid #d0d0d0;border-bottom:1px solid #a6a6a6;"
+             + "background:linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:space-between;padding:0 4px;box-sizing:border-box;"
+             + "font-weight:normal;font-size:11px;font-family:Arial, sans-serif;color:#444;user-select:none}"
+             + ".spreadsheet-container .spreadsheet-row-header{position:absolute;left:0;width:" + string rowHeaderWidth + "px;border-right:1px solid #a6a6a6;border-bottom:1px solid #d0d0d0;"
+             + "background:linear-gradient(90deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:center;box-sizing:border-box;"
+             + "font-weight:normal;font-size:11px;font-family:Arial, sans-serif;color:#444;user-select:none;cursor:default}"
+             + ".spreadsheet-container .col-header-text{flex:1;text-align:center}"
+             + ".spreadsheet-container .col-filter-btn{width:16px;height:16px;align-items:center;justify-content:center;cursor:pointer;font-size:10px;border-radius:2px}"
+             + ".spreadsheet-container .col-filter-btn:hover{background:#d0d0d0;opacity:1 !important}"
+             + ".spreadsheet-container .col-resize-handle{position:absolute;top:0;right:0;width:4px;height:100%;cursor:col-resize;z-index:10}"
+             + ".spreadsheet-container .row-resize-handle{position:absolute;bottom:0;left:0;width:100%;height:4px;cursor:row-resize;z-index:10}")
+        appendChild gridDiv sheetStyle
+
+        // The scrolled content, as large as the sheet (see `syncExtent`). Body
+        // cells sit in it at their sheet position and scroll with it.
         let content = createElement "div"
         setClassName content "spreadsheet-content"
-
-        // Calculate total dimensions based on custom row heights and column widths
-        let totalHeight = headerHeight + SpreadsheetLayout.rowTop model model.RowCount
-        let totalWidth = rowHeaderWidth + SpreadsheetLayout.columnLeft model model.ColCount
-
         setStyles content [
-            "width", sprintf "%.0fpx" totalWidth
-            "height", sprintf "%.0fpx" totalHeight
             "position", "relative"
             "background", "white"
+            "outline", "none"
         ]
+
+        // What stays in place while the content scrolls sits in zero-size
+        // sticky wrappers at the content's origin, stacked above the body
+        // cells: frozen rows (pinned vertically), frozen columns (pinned
+        // horizontally), the frozen corner, the header strips above those,
+        // and the corner with the headers of frozen rows / columns on top.
+        let wrapper (className: string) (pinTop: bool) (pinLeft: bool) (zIndex: int) =
+            let element = createElement "div"
+            setClassName element className
+            setCssText element
+                ("position:sticky;width:0;height:0;" + (if pinTop then "top:0;" else "") + (if pinLeft then "left:0;" else "") + "z-index:" + string zIndex)
+            appendChild content element
+            element
+        let frozenRowsPane = wrapper "spreadsheet-frozen-rows" true false 20
+        let frozenColsPane = wrapper "spreadsheet-frozen-cols" false true 20
+        let frozenCornerPane = wrapper "spreadsheet-frozen-corner" true true 21
+        let colHeaderStrip = wrapper "spreadsheet-col-headers" true false 22
+        let rowHeaderStrip = wrapper "spreadsheet-row-headers" false true 22
+        let frozenHeaders = wrapper "spreadsheet-frozen-headers" true true 23
+        let corner = createElement "div"
+        setClassName corner "spreadsheet-corner"
+        setCssText corner
+            ("position:absolute;top:0;left:0;width:" + string rowHeaderWidth + "px;height:" + string headerHeight
+             + "px;border-right:1px solid #a6a6a6;border-bottom:1px solid #a6a6a6;background:linear-gradient(135deg, #f8f8f8 0%, #e0e0e0 100%);box-sizing:border-box;z-index:3")
+        appendChild frozenHeaders corner
+        let panes = [| content; frozenRowsPane; frozenColsPane; frozenCornerPane |]
+        let overlay (className: string) (pane: Element) =
+            let element = createElement "div"
+            setClassName element className
+            setStyle element "display" "none"
+            appendChild pane element
+            element
+        let editBox = createElement "input"
+        setType editBox "text"
+        setClassName editBox "spreadsheet-edit-input"
+        setAttribute editBox "autocomplete" "off"
+        setAttribute editBox "spellcheck" "false"
+        setStyle editBox "display" "none"
+        appendChild content editBox
+        addEventListener editBox "input" handleInput
+        layers <-
+            Some { Panes = panes
+                   ColHeaders = colHeaderStrip
+                   RowHeaders = rowHeaderStrip
+                   FrozenHeaders = frozenHeaders
+                   Selections = panes |> Array.map (overlay "spreadsheet-selection")
+                   Actives = panes |> Array.map (overlay "spreadsheet-active-cell")
+                   FillHandle = overlay "spreadsheet-fill-handle" content
+                   EditInput = editBox
+                   Notice = overlay "spreadsheet-validation-notice" content
+                   InputMessage = overlay "spreadsheet-input-message" content }
 
         // Add event listeners
         addEventListener gridDiv "scroll" handleScroll
         addEventListener content "keydown" handleKeyDown
 
+        // One listener each for the whole grid: which cell or header a
+        // pointer event is for is worked out from where it happened.
+        let headerIndex (target: Element) (selector: string) (attribute: string) : int option =
+            let header = closest target selector
+            if isNull (box header) then None
+            else
+                match System.Int32.TryParse (getAttribute header attribute) with
+                | true, index -> Some index
+                | _ -> None
+        let within (target: Element) (selector: string) = not (isNull (box (closest target selector)))
+        addEventListener content "mousedown" (fun e ->
+            let target = getEventTarget e
+            if within target ".spreadsheet-edit-input" then ()   // placing the caret in the edit box
+            elif within target ".spreadsheet-fill-handle" then
+                preventDefault e
+                if not readOnly then
+                    isFilling <- true
+                    fillSource <- Some (selectionBounds())
+                    fillTarget <- None
+            elif within target ".col-resize-handle" then
+                preventDefault e
+                match headerIndex target ".spreadsheet-col-header" "data-col" with
+                | Some col when not readOnly ->
+                    isResizingColumn <- true
+                    resizeColumnIndex <- Some col
+                    resizeStartPos <- getClientX e
+                    resizeStartSize <- getColumnWidth col model
+                | _ -> ()
+            elif within target ".row-resize-handle" then
+                preventDefault e
+                match headerIndex target ".spreadsheet-row-header" "data-row" with
+                | Some row when not readOnly ->
+                    isResizingRow <- true
+                    resizeRowIndex <- Some row
+                    resizeStartPos <- getClientY e
+                    resizeStartSize <- getRowHeight row model
+                | _ -> ()
+            elif within target ".spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner" then
+                preventDefault e   // no text selection; a click on a column header sorts (see below)
+            elif mouseButton e = 0 then
+                preventDefault e  // Prevent text selection
+                match hitTestEvent e with
+                | SpreadsheetLayout.Cell hitAddr ->
+                    // Clicking another cell commits the entry in progress.
+                    if model.EditingCell.IsSome then finishEditing true |> ignore
+                    if not (holdsFocus content) then focusQuietly content
+                    if eventFlag e "shiftKey" then
+                        // Shift+click: from the active cell to here.
+                        selectFromTo (activeCellAddress()) hitAddr
+                    else
+                        isDragging <- true
+                        dragStartCell <- Some hitAddr
+                        selectCellAddress hitAddr
+                    render()
+                | _ -> ())
+        addEventListener content "dblclick" (fun e ->
+            let target = getEventTarget e
+            if not (within target ".spreadsheet-edit-input, .spreadsheet-col-header, .spreadsheet-row-header, .spreadsheet-corner, .spreadsheet-fill-handle") then
+                match hitTestEvent e with
+                | SpreadsheetLayout.Cell hitAddr -> startEditing hitAddr.Row hitAddr.Col
+                | _ -> ())
+        addEventListener content "click" (fun e ->
+            let target = getEventTarget e
+            if readOnly then ()
+            elif within target ".col-filter-btn" then
+                preventDefault e
+                match headerIndex target ".spreadsheet-col-header" "data-col" with
+                | Some col ->
+                    let button = closest target ".col-filter-btn"
+                    showFilterDropdown col (pageRight button) (pageBottom button)
+                | None -> ()
+            elif within target ".col-header-text" then
+                match headerIndex target ".spreadsheet-col-header" "data-col" with
+                | Some col ->
+                    invalidateCalcEngine()
+                    // Toggle sort direction if clicking same column, otherwise ascending
+                    let ascending =
+                        match model.SortState with
+                        | Some sortState when sortState.Column = col -> not sortState.Ascending
+                        | _ -> true
+                    sortActiveSheet col ascending (sprintf "Sort by column %s" (columnToLetter col))
+                    render()
+                | None -> ())
+
+        // The system clipboard: the browser raises these on Ctrl+C / X / V
+        // (and from its Edit menu) while the grid has the focus.
+        let onCopy (isCut: bool) (e: obj) =
+            if model.EditingCell.IsNone then
+                let text, html = copySelection isCut
+                clipboardEventSet e "text/plain" text |> ignore
+                clipboardEventSet e "text/html" html |> ignore
+                preventDefault e
+                if isCut && not readOnly then render()
+        addEventListener content "copy" (onCopy false)
+        addEventListener content "cut" (onCopy true)
+        addEventListener content "paste" (fun e ->
+            if model.EditingCell.IsNone then
+                preventDefault e
+                if pasteFlavours (clipboardEventGet e "text/plain") (clipboardEventGet e "text/html") then
+                    let active = activeCellAddress()
+                    revealCell active.Row active.Col
+                    render())
+
         // Drag/resize handlers - attach to document to catch events anywhere
         let doc = getDocument()
 
-        // Mouse move for resizing (throttled with requestAnimationFrame)
+        // Mouse move for dragging and resizing (throttled with requestAnimationFrame)
         let onDocumentMouseMove = (fun (e: obj) ->
             if isResizingColumn then
                 match resizeColumnIndex with
@@ -2943,6 +3387,35 @@ type Spreadsheet(container: Element) =
                             resizeRenderScheduled <- false
                         )
                 | None -> ()
+            elif isFilling then
+                match fillSource, hitCellNear e with
+                | Some source, Some hitAddr ->
+                    let target = SpreadsheetInput.fillTowards source hitAddr.Row hitAddr.Col
+                    if target <> fillTarget then
+                        fillTarget <- target
+                        // Preview: the selection grows over the cells
+                        // the release will fill.
+                        let top, left, bottom, right = source
+                        let preview =
+                            match target with
+                            | Some (SpreadsheetInput.FillDown, n) -> Range (top, left, bottom + n, right)
+                            | Some (SpreadsheetInput.FillUp, n) -> Range (top - n, left, bottom, right)
+                            | Some (SpreadsheetInput.FillRight, n) -> Range (top, left, bottom, right + n)
+                            | Some (SpreadsheetInput.FillLeft, n) -> Range (top, left - n, bottom, right)
+                            | None -> if top = bottom && left = right then SingleCell (top, left) else Range (top, left, bottom, right)
+                        model <- { model with Selection = preview }
+                        render()
+                | _ -> ()
+            elif isDragging then
+                match dragStartCell, hitCellNear e with
+                | Some start, Some hitAddr ->
+                    // The cell the drag started at stays the active cell.
+                    let before = model.Selection
+                    selectFromTo start hitAddr
+                    if model.Selection <> before then
+                        revealCell hitAddr.Row hitAddr.Col
+                        render()
+                | _ -> ()
         )
 
         // Mouse up for both drag selection and resize
@@ -2986,6 +3459,8 @@ type Spreadsheet(container: Element) =
         gridContainer <- Some gridDiv
         contentElement <- Some content
         disposed <- false
+        extentWidth <- -1.0
+        extentHeight <- -1.0
 
         // Initial render
         containerHeight <- getClientHeight gridDiv
@@ -3032,10 +3507,20 @@ type Spreadsheet(container: Element) =
         | None -> ()
         gridContainer <- None
         contentElement <- None
-        editInput <- None
-        cellPool.Clear()
-        chromeNodes.Clear()
-        lastRenderedModel <- None
+        layers <- None
+        cellNodes.Clear()
+        freeCellNodes.Clear()
+        colHeaderNodes.Clear()
+        rowHeaderNodes.Clear()
+        freeColHeaders.Clear()
+        freeRowHeaders.Clear()
+        drawingNodes.Clear()
+        renderedCells <- null
+        renderedStyleInputs <- [||]
+        renderedDrawings <- null
+        renderedMetrics <- null
+        editStateListeners.Clear()
+        notifiedEdit <- None
         changeListeners.Clear()
         selectionListeners.Clear()
         sheetChangedListeners.Clear()
@@ -3054,7 +3539,7 @@ type Spreadsheet(container: Element) =
             // Changes are reported from here on, not since the last subscriber left.
             notifiedSheets <- Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
             notifiedNames <- Array.copy sheetNames
-            notifiedSelection <- Some (activeSheetIndex, model.Selection)
+            notifiedSelection <- Some (activeSheetIndex, model.Selection, activeCellAddress())
         changeListeners.Add listener
         System.Action(fun () -> changeListeners.Remove listener |> ignore)
 
@@ -3066,7 +3551,7 @@ type Spreadsheet(container: Element) =
         if changeListeners.Count = 0 && selectionListeners.Count = 0 then
             notifiedSheets <- Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
             notifiedNames <- Array.copy sheetNames
-            notifiedSelection <- Some (activeSheetIndex, model.Selection)
+            notifiedSelection <- Some (activeSheetIndex, model.Selection, activeCellAddress())
         selectionListeners.Add listener
         System.Action(fun () -> selectionListeners.Remove listener |> ignore)
 
@@ -3085,12 +3570,22 @@ type Spreadsheet(container: Element) =
     /// Get model (for debugging)
     member _.GetModel() = model
 
-    /// Enable or disable viewer mode. Read-only mode preserves navigation and copy.
+    /// Enable or disable viewer mode. A read-only grid is a viewer: cells
+    /// cannot be edited, filled, cut, pasted into, sorted or resized, and
+    /// nothing that invites it is shown (no fill handle, filter buttons or
+    /// resize handles). Selecting with the mouse and the keyboard, copying,
+    /// switching sheets and scrolling work as in the editor. An entry in
+    /// progress is dropped. (The host's own calls - SetCell, Apply... - are
+    /// not blocked.)
     member _.SetReadOnly(value: bool) =
-        readOnly <- value
-        if readOnly && model.EditingCell.IsSome then
-            model <- { model with EditingCell = None; EditBuffer = "" }
-            render()
+        if readOnly <> value then
+            readOnly <- value
+            if readOnly && model.EditingCell.IsSome then
+                finishEditing false |> ignore
+            else render()
+
+    /// Whether the grid is in viewer mode.
+    member _.IsReadOnly() : bool = readOnly
 
     member _.Render() = render()
 
@@ -3117,15 +3612,19 @@ type Spreadsheet(container: Element) =
     member _.SwitchSheet(index: int) =
         if index >= 0 && index < sheets.Length && index <> activeSheetIndex then
             invalidateCalcEngine()
+            // An entry in progress belongs to the sheet being left.
+            if model.EditingCell.IsSome then finishEditing true |> ignore
             // Persist current sheet's mutable state into the array.
             sheets.[activeSheetIndex] <- model
+            if activeSheetIndex < sheetAnchors.Length then sheetAnchors.[activeSheetIndex] <- anchorCell
             activeSheetIndex <- index
             model <- sheets.[index]
-            // Scroll lives outside the SpreadsheetModel; reset to that
-            // sheet's saved scroll origin (we don't persist scroll yet —
-            // reset-to-zero matches Excel's behavior on workbook reload).
-            scrollTop <- 0.0
-            scrollLeft <- 0.0
+            anchorCell <- (if index < sheetAnchors.Length then sheetAnchors.[index] else { Row = 0; Col = 0 })
+            // Scroll lives outside the SpreadsheetModel; a sheet starts at
+            // its top-left corner (we don't persist scroll yet — reset-to-zero
+            // matches Excel's behavior on workbook reload). The container is
+            // put there too: the content is drawn for where it is scrolled to.
+            resetScroll ()
             render()
             for listener in sheetChangedListeners do
                 try listener index with _ -> ()
@@ -3175,8 +3674,9 @@ type Spreadsheet(container: Element) =
                 Some { wb with ActiveSheet = List.item safeIndex wb.SheetOrder }
             | _ ->
                 Some (buildWorkbookContext sheets sheetNames (Array.create sheets.Length true) Map.empty Map.empty safeIndex)
-        scrollTop <- 0.0
-        scrollLeft <- 0.0
+        sheetAnchors <- Array.create sheets.Length { Row = 0; Col = 0 }
+        anchorCell <- { Row = 0; Col = 0 }
+        resetScroll ()
         render()
         for listener in sheetChangedListeners do
             try listener safeIndex with _ -> ()
@@ -3456,8 +3956,65 @@ type Spreadsheet(container: Element) =
         | None -> null
 
     /// Called with (style, title, message) whenever an entry fails validation.
-    member _.OnValidationNotice(listener: System.Action<string, string, string>) =
-        validationListeners.Add(fun style title message -> listener.Invoke(style, title, message))
+    /// Returns a function that removes the subscription.
+    member _.OnValidationNotice(listener: System.Action<string, string, string>) : System.Action =
+        let wrapped = fun style title message -> listener.Invoke(style, title, message)
+        validationListeners.Add wrapped
+        System.Action(fun () -> validationListeners.Remove wrapped |> ignore)
+
+    /// Whether a cell is being edited in the grid.
+    member _.IsEditing() : bool = model.EditingCell.IsSome
+
+    /// Commit the entry in progress, as Enter does (the selection stays).
+    /// False when the cell's validation refused it: the cell is unchanged,
+    /// the entry is dropped and a notice says why. True when there was
+    /// nothing to commit.
+    member _.CommitEdit() : bool = finishEditing true
+
+    /// Drop the entry in progress, as Escape does.
+    member _.CancelEdit() : unit = finishEditing false |> ignore
+
+    /// Start editing the active cell (F2), or with `text` start an entry
+    /// that replaces its content, as typing does. Not in read-only mode.
+    member _.StartEdit(text: string option) : unit =
+        let active = activeCellAddress()
+        startEditingWith active.Row active.Col text
+
+    /// The text of the entry in progress, set from outside the grid (a
+    /// formula bar): the edit box shows it and CommitEdit enters it.
+    member _.SetEditText(text: string) : unit =
+        if model.EditingCell.IsSome then
+            model <- { model with EditBuffer = text }
+            match layers with
+            | Some layer -> setValue layer.EditInput text
+            | None -> ()
+            notifyEditState ()
+
+    /// Call `callback` when an entry starts, when its text changes and when
+    /// it ends (committed or cancelled), with
+    /// { Editing: boolean, Row, Col, Text, SheetIndex } (Row and Col are -1
+    /// and Text is "" once it has ended). Returns a function that removes
+    /// the subscription.
+    member _.OnEditStateChange(callback: System.Action<obj>) : System.Action =
+        let listener = callback.Invoke
+        if editStateListeners.Count = 0 then notifiedEdit <- model.EditingCell |> Option.map (fun addr -> addr, model.EditBuffer)
+        editStateListeners.Add listener
+        System.Action(fun () -> editStateListeners.Remove listener |> ignore)
+
+    /// Whether Undo() / Redo() have a step to take on the active sheet.
+    member _.CanUndo() : bool = not model.History.Past.IsEmpty
+    member _.CanRedo() : bool = not model.History.Future.IsEmpty
+
+    /// The active cell { Row, Col } (0-based): the cell of the selection that
+    /// typing goes to, where the selection was started.
+    member _.GetActiveCell() : obj =
+        let active = activeCellAddress()
+        createObj [ "Row" ==> active.Row; "Col" ==> active.Col ]
+
+    /// Scroll so that a cell is in view.
+    member _.ScrollToCell(row: int, col: int) : unit =
+        revealCell row col
+        render()
 
     /// Fill the selection down / right from its first row / column (Ctrl+D /
     /// Ctrl+R).
@@ -3478,149 +4035,97 @@ type Spreadsheet(container: Element) =
         | None -> ()
         render()
 
-    /// Select a range programmatically.
+    /// Select a range programmatically. (startRow, startCol) becomes the
+    /// active cell; the selection is the rectangle between the two cells.
     member _.SelectRange(startRow: int, startCol: int, endRow: int, endCol: int) =
-        model <- { model with Selection = (if startRow = endRow && startCol = endCol then SingleCell (startRow, startCol) else Range (min startRow endRow, min startCol endCol, max startRow endRow, max startCol endCol)) }
+        selectFromTo { Row = startRow; Col = startCol } { Row = endRow; Col = endCol }
+        revealCell startRow startCol
         render()
 
-    /// Select a specific cell programmatically
+    /// Select a specific cell programmatically (it is scrolled into view).
     member _.SelectCell(row: int, col: int) =
-        model <- { model with Selection = SingleCell (row, col) }
+        selectCellAddress { Row = row; Col = col }
+        revealCell row col
         render()
 
-    /// Apply format to selected cell
+    /// Select every cell of the sheet (Ctrl+A); the active cell stays.
+    member _.SelectAll() =
+        anchorCell <- activeCellAddress()
+        model <- { model with Selection = Range (0, 0, max 0 (model.RowCount - 1), max 0 (model.ColCount - 1)) }
+        render()
+
+    /// Apply a format command to every cell of the selection, as one change
+    /// and one undo step: "bold" | "italic" | "underline" (toggled by the
+    /// active cell: on for all when it is off there, off for all otherwise),
+    /// "fontIncrease" | "fontDecrease", "alignLeft" | "alignCenter" | "alignRight".
     member _.ApplyFormat(formatType: string) =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            let addr = { Row = row; Col = col }
-            match getCell addr model with
-            | Some cellData ->
-                let newFormat =
-                    match formatType with
-                    | "bold" -> { cellData.Format with Bold = not cellData.Format.Bold }
-                    | "italic" -> { cellData.Format with Italic = not cellData.Format.Italic }
-                    | "underline" -> { cellData.Format with Underline = not cellData.Format.Underline }
-                    | "fontIncrease" ->
-                        let currentSize = defaultArg cellData.Format.FontSize 11
-                        { cellData.Format with FontSize = Some (currentSize + 2) }
-                    | "fontDecrease" ->
-                        let currentSize = defaultArg cellData.Format.FontSize 11
-                        { cellData.Format with FontSize = Some (max 8 (currentSize - 2)) }
-                    | "alignLeft" -> { cellData.Format with HorizontalAlign = Some "left" }
-                    | "alignCenter" -> { cellData.Format with HorizontalAlign = Some "center" }
-                    | "alignRight" -> { cellData.Format with HorizontalAlign = Some "right" }
-                    | _ -> cellData.Format
+        let active = activeFormat ()
+        let changed =
+            match formatType with
+            | "bold" -> let on = not active.Bold in formatSelection "Bold" (fun format -> if format.Bold = on then format else { format with Bold = on })
+            | "italic" -> let on = not active.Italic in formatSelection "Italic" (fun format -> if format.Italic = on then format else { format with Italic = on })
+            | "underline" -> let on = not active.Underline in formatSelection "Underline" (fun format -> if format.Underline = on then format else { format with Underline = on })
+            | "fontIncrease" -> formatSelection "Font size" (fun format -> { format with FontSize = Some (defaultArg format.FontSize 11 + 2) })
+            | "fontDecrease" -> formatSelection "Font size" (fun format -> { format with FontSize = Some (max 8 (defaultArg format.FontSize 11 - 2)) })
+            | "alignLeft" -> formatSelection "Align left" (fun format -> { format with HorizontalAlign = Some "left" })
+            | "alignCenter" -> formatSelection "Align center" (fun format -> { format with HorizontalAlign = Some "center" })
+            | "alignRight" -> formatSelection "Align right" (fun format -> { format with HorizontalAlign = Some "right" })
+            | _ -> false
+        if changed then render()
 
-                let newCellData = { cellData with Format = newFormat }
-                model <- setCell addr newCellData model
-                render()
-            | None ->
-                // Create cell with format
-                let newFormat =
-                    match formatType with
-                    | "bold" -> { defaultFormat with Bold = true }
-                    | "italic" -> { defaultFormat with Italic = true }
-                    | "underline" -> { defaultFormat with Underline = true }
-                    | "alignLeft" -> { defaultFormat with HorizontalAlign = Some "left" }
-                    | "alignCenter" -> { defaultFormat with HorizontalAlign = Some "center" }
-                    | "alignRight" -> { defaultFormat with HorizontalAlign = Some "right" }
-                    | _ -> defaultFormat
-
-                let cellData = {
-                    Value = CellValue.Empty
-                    Format = newFormat
-                    Comment = None
-                }
-                model <- setCell addr cellData model
-                render()
-        | _ -> ()
-
-    /// Apply text color to selected cell
+    /// Apply text color to every cell of the selection (one undo step).
     member _.ApplyTextColor(color: string) =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            let addr = { Row = row; Col = col }
-            let cellData = getCell addr model |> Option.defaultValue {
-                Value = CellValue.Empty
-                Format = defaultFormat
-                Comment = None
-            }
-            let newFormat = { cellData.Format with TextColor = Some color }
-            let newCellData = { cellData with Format = newFormat }
-            model <- setCell addr newCellData model
-            render()
-        | _ -> ()
+        if formatSelection "Text color" (fun format -> { format with TextColor = Some color }) then render()
 
-    /// Apply background color to selected cell
+    /// Apply background color to every cell of the selection (one undo step).
     member _.ApplyBgColor(color: string) =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            let addr = { Row = row; Col = col }
-            let cellData = getCell addr model |> Option.defaultValue {
-                Value = CellValue.Empty
-                Format = defaultFormat
-                Comment = None
-            }
-            let newFormat = { cellData.Format with BgColor = Some color }
-            let newCellData = { cellData with Format = newFormat }
-            model <- setCell addr newCellData model
-            render()
-        | _ -> ()
+        if formatSelection "Fill color" (fun format -> { format with BgColor = Some color }) then render()
 
-    /// Apply number format to selected cell
+    /// Apply a number format to every cell of the selection (one undo step).
     member _.ApplyNumberFormat(format: string) =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            let addr = { Row = row; Col = col }
-            let cellData = getCell addr model |> Option.defaultValue {
-                Value = CellValue.Empty
-                Format = defaultFormat
-                Comment = None
-            }
-            let newFormat = { cellData.Format with NumberFormat = Some format }
-            let newCellData = { cellData with Format = newFormat }
-            model <- setCell addr newCellData model
+        if formatSelection "Number format" (fun existing -> { existing with NumberFormat = Some format }) then
             render()
-        | _ -> ()
 
-    /// Apply border to selected cell
+    /// Apply a border to every cell of the selection (one undo step):
+    /// side is "top" | "bottom" | "left" | "right" | "all".
     member _.ApplyBorder(side: string, style: string, color: string) =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            let addr = { Row = row; Col = col }
-            let cellData = getCell addr model |> Option.defaultValue {
-                Value = CellValue.Empty
-                Format = defaultFormat
-                Comment = None
-            }
-            let border = { Style = style; Color = Some color }
-            let newFormat =
-                match side with
-                | "top" -> { cellData.Format with BorderTop = Some border }
-                | "bottom" -> { cellData.Format with BorderBottom = Some border }
-                | "left" -> { cellData.Format with BorderLeft = Some border }
-                | "right" -> { cellData.Format with BorderRight = Some border }
-                | "all" ->
-                    { cellData.Format with
-                        BorderTop = Some border
-                        BorderBottom = Some border
-                        BorderLeft = Some border
-                        BorderRight = Some border }
-                | _ -> cellData.Format
-            let newCellData = { cellData with Format = newFormat }
-            model <- setCell addr newCellData model
-            render()
-        | _ -> ()
+        let border = { Style = style; Color = Some color }
+        let update (format: CellFormat) =
+            match side with
+            | "top" -> { format with BorderTop = Some border }
+            | "bottom" -> { format with BorderBottom = Some border }
+            | "left" -> { format with BorderLeft = Some border }
+            | "right" -> { format with BorderRight = Some border }
+            | "all" ->
+                { format with
+                    BorderTop = Some border
+                    BorderBottom = Some border
+                    BorderLeft = Some border
+                    BorderRight = Some border }
+            | _ -> format
+        if formatSelection "Border" update then render()
 
-    /// Merge cells in a range
+    /// Merge cells in a range (one undo step).
     member _.MergeCells(startRow: int, startCol: int, endRow: int, endCol: int) =
+        let before = model.MergedCells
         model <- addMergedCell startRow startCol endRow endCol model
+        let after = model.MergedCells
+        if not (obj.ReferenceEquals(before, after)) then
+            model <- pushCommand { Undo = (fun m -> { m with MergedCells = before })
+                                   Redo = (fun m -> { m with MergedCells = after })
+                                   Description = "Merge cells" } model
         render()
 
-    /// Unmerge cells at address
+    /// Unmerge cells at address (one undo step).
     member _.UnmergeCells(row: int, col: int) =
         let addr = { Row = row; Col = col }
+        let before = model.MergedCells
         model <- removeMergedCell addr model
+        let after = model.MergedCells
+        if before.Length <> after.Length then
+            model <- pushCommand { Undo = (fun m -> { m with MergedCells = before })
+                                   Redo = (fun m -> { m with MergedCells = after })
+                                   Description = "Unmerge cells" } model
         render()
 
     /// Add or update comment on a cell
@@ -3847,41 +4352,24 @@ type Spreadsheet(container: Element) =
                 (columnToLetter startCol) (startRow + 1)
                 (columnToLetter endCol) (endRow + 1)
 
-    /// Get the formula or value of the currently selected cell
+    /// The formula or value of the active cell, as it would be typed.
     member _.GetCurrentCellFormula(): string =
-        match model.Selection with
-        | SingleCell (row, col) -> SpreadsheetInput.editText (getCell { Row = row; Col = col } model)
-        | Range _ -> ""  // Can't edit range
+        SpreadsheetInput.editText (getCell (activeCellAddress()) model)
 
-    /// Set the value of the currently selected cell from formula bar. The
-    /// text is read like any typed entry and checked against the cell's
-    /// validation; false when the entry was refused.
+    /// Set the value of the active cell from a formula bar. The text is read
+    /// like any typed entry and checked against the cell's validation; false
+    /// when the entry was refused.
     member _.SetCurrentCellFromFormula(input: string) : bool =
-        match model.Selection with
-        | SingleCell (row, col) ->
-            let accepted = commitInput { Row = row; Col = col } input true true
-            scheduleNoticeDismiss()
-            render()
-            accepted
-        | Range _ -> false  // Can't edit range
+        let accepted = commitInput (activeCellAddress()) input true true
+        scheduleNoticeDismiss()
+        render()
+        accepted
 
     /// Undo last operation
-    member _.Undo() =
-        match undo model with
-        | Some newModel ->
-            model <- newModel
-            recalculateFormulas()
-            render()
-        | None -> ()
+    member _.Undo() = undoStep ()
 
     /// Redo last undone operation
-    member _.Redo() =
-        match redo model with
-        | Some newModel ->
-            model <- newModel
-            recalculateFormulas()
-            render()
-        | None -> ()
+    member _.Redo() = redoStep ()
 
     /// Sort current column ascending
     member _.SortCurrentColumnAsc() =
@@ -3895,20 +4383,58 @@ type Spreadsheet(container: Element) =
         sortActiveSheet col false (sprintf "Sort %s descending" (columnToLetter col))
         render()
 
-    /// Cut selection to clipboard
-    member _.Cut() =
-        cutSelection()
-        render()
+    /// The selection as tab-separated text (what the cells show), the way
+    /// spreadsheets exchange cells through the clipboard.
+    member _.GetSelectionText() : string = selectionText ()
 
-    /// Copy selection to clipboard
-    member _.Copy() =
-        let clipboardData = serializeSelection model.Selection model false
-        model <- { model with Clipboard = Some clipboardData }
+    /// The selection as an HTML table.
+    member _.GetSelectionHtml() : string = selectionHtml ()
 
-    /// Paste from clipboard
-    member _.Paste() =
-        pasteClipboardAtSelection()
+    /// Cut the selection: as Copy, and the cells are cleared (one undo step).
+    /// In read-only mode this copies. Resolves to whether the system
+    /// clipboard took the cells.
+    member _.Cut() : JS.Promise<bool> =
+        let text, html = copySelection true
         render()
+        writeSystemClipboard text html
+
+    /// Copy the selection to the grid's own clipboard (formulas and formats
+    /// are kept for a paste within the grid) and to the system clipboard as
+    /// tab-separated text and an HTML table, for other applications.
+    /// Resolves to whether the system clipboard took the cells (a browser
+    /// may refuse outside a user gesture; Ctrl+C in the grid always works).
+    member _.Copy() : JS.Promise<bool> =
+        let text, html = copySelection false
+        writeSystemClipboard text html
+
+    /// Paste at the selection: what the system clipboard holds when the
+    /// browser lets the page read it (cells copied in Excel or Sheets, or
+    /// the grid's own), else the grid's own clipboard. Resolves to whether
+    /// anything was pasted. (Ctrl+V in the grid always reads the system
+    /// clipboard.)
+    member _.Paste() : JS.Promise<bool> =
+        if readOnly then promiseOf false
+        else
+            let pasteOwn () =
+                if model.Clipboard.IsSome then
+                    pasteClipboardAtSelection()
+                    render()
+                    true
+                else false
+            promiseThen (readSystemClipboard ()) (fun flavours ->
+                if isNull (box flavours) || (flavours.[0] = "" && flavours.[1] = "") then pasteOwn ()
+                elif pasteFlavours flavours.[0] flavours.[1] then
+                    render()
+                    true
+                else false)
+
+    /// Paste clipboard content the host has in hand (from its own paste
+    /// handler): `text` is the text/plain flavour, `html` the text/html one
+    /// ("" when missing). One undo step; false when nothing was pasted.
+    member _.PasteText(text: string, html: string) : bool =
+        let pasted = pasteFlavours text (if isNull html then "" else html)
+        if pasted then render()
+        pasted
 
 /// Export for JavaScript
 [<ExportDefault>]
