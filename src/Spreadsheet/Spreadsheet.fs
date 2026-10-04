@@ -417,6 +417,8 @@ type Spreadsheet(container: Element) =
     /// What Copy / Cut last put on the system clipboard: a paste of the same
     /// text is a paste of the grid's own cells (formulas, formats).
     let mutable copiedText : string = ""
+    /// Counts the clipboard events the grid handled (see handleKeyDown).
+    let mutable clipboardEvents = 0
 
     let currentViewport (): SpreadsheetLayout.Viewport = {
         ScrollX = scrollLeft
@@ -1559,8 +1561,18 @@ type Spreadsheet(container: Element) =
                 if shift then extendSelectionTo (target extent) else goToCell (target active)
             if isModifier && (lower = "c" || lower = "x" || lower = "v") then
                 // Copy / cut / paste: the browser raises the clipboard event
-                // (see Mount), which is where the system clipboard is.
-                ()
+                // (see Mount), which is where the system clipboard is. Where
+                // a browser raises none for an element that is not editable,
+                // the same is done through the asynchronous clipboard.
+                let seen = clipboardEvents
+                setTimeoutMs (fun () ->
+                    if clipboardEvents = seen && not disposed && model.EditingCell.IsNone then
+                        match lower with
+                        | "v" -> pasteFromSystemClipboard () |> ignore
+                        | _ ->
+                            let text, html = copySelection (lower = "x")
+                            if lower = "x" && not readOnly then render()
+                            writeSystemClipboard text html |> ignore) 0 |> ignore
             elif isModifier then
                 match lower with
                 | "z" when not readOnly ->
@@ -1641,6 +1653,24 @@ type Spreadsheet(container: Element) =
                     if key.Length = 1 && not (eventFlag e "altKey") then
                         preventDefault e
                         if not readOnly then startEditingWith active.Row active.Col (Some key)
+
+    /// Paste what the system clipboard holds when the page may read it, else
+    /// the grid's own clipboard. Resolves to whether anything was pasted.
+    and pasteFromSystemClipboard () : JS.Promise<bool> =
+        if readOnly then promiseOf false
+        else
+            let pasteOwn () =
+                if model.Clipboard.IsSome then
+                    pasteClipboardAtSelection()
+                    render()
+                    true
+                else false
+            promiseThen (readSystemClipboard ()) (fun flavours ->
+                if isNull (box flavours) || (flavours.[0] = "" && flavours.[1] = "") then pasteOwn ()
+                elif pasteFlavours flavours.[0] flavours.[1] then
+                    render()
+                    true
+                else false)
 
     and undoStep () =
         match undo model with
@@ -3335,6 +3365,7 @@ type Spreadsheet(container: Element) =
         // (and from its Edit menu) while the grid has the focus.
         let onCopy (isCut: bool) (e: obj) =
             if model.EditingCell.IsNone then
+                clipboardEvents <- clipboardEvents + 1
                 let text, html = copySelection isCut
                 clipboardEventSet e "text/plain" text |> ignore
                 clipboardEventSet e "text/html" html |> ignore
@@ -3344,6 +3375,7 @@ type Spreadsheet(container: Element) =
         addEventListener content "cut" (onCopy true)
         addEventListener content "paste" (fun e ->
             if model.EditingCell.IsNone then
+                clipboardEvents <- clipboardEvents + 1
                 preventDefault e
                 if pasteFlavours (clipboardEventGet e "text/plain") (clipboardEventGet e "text/html") then
                     let active = activeCellAddress()
@@ -4412,21 +4444,7 @@ type Spreadsheet(container: Element) =
     /// the grid's own), else the grid's own clipboard. Resolves to whether
     /// anything was pasted. (Ctrl+V in the grid always reads the system
     /// clipboard.)
-    member _.Paste() : JS.Promise<bool> =
-        if readOnly then promiseOf false
-        else
-            let pasteOwn () =
-                if model.Clipboard.IsSome then
-                    pasteClipboardAtSelection()
-                    render()
-                    true
-                else false
-            promiseThen (readSystemClipboard ()) (fun flavours ->
-                if isNull (box flavours) || (flavours.[0] = "" && flavours.[1] = "") then pasteOwn ()
-                elif pasteFlavours flavours.[0] flavours.[1] then
-                    render()
-                    true
-                else false)
+    member _.Paste() : JS.Promise<bool> = pasteFromSystemClipboard ()
 
     /// Paste clipboard content the host has in hand (from its own paste
     /// handler): `text` is the text/plain flavour, `html` the text/html one
