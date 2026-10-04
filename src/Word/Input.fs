@@ -36,6 +36,8 @@ open Rbt.Word.Commands
 open Rbt.Word.Document
 
 module Doc = Rbt.Word.Document
+module Layout = Rbt.Word.Layout
+module TextBuffer = Rbt.Word.TextBuffer
 module Cmd = Rbt.Word.Commands
 module Clipboard = Rbt.Word.Clipboard
 
@@ -120,6 +122,9 @@ type InputHandler = {
     mutable SyncInputProxy: Doc.Document -> unit
     /// Removes listeners registered outside the canvas (set by `create`).
     mutable Dispose: unit -> unit
+    /// The column Up / Down / PageUp / PageDown keep to (layout x of the
+    /// caret when the run of vertical moves started).
+    mutable GoalX: float option
 }
 
 [<Emit("$0.focus({ preventScroll: true })")>]
@@ -199,7 +204,262 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         Composition = None
         SyncInputProxy = ignore
         Dispose = ignore
+        GoalX = None
     }
+
+    // ---- caret movement over the layout that is on screen -------------------
+    // Lines are visual lines: a paragraph wraps into several, and Up / Down /
+    // Home / End / PageUp / PageDown move by them, keeping the column.
+
+    let measureRange = measureRangeWithContext ctx
+
+    /// The visual lines of the document's editable text, in layout order.
+    let visualLines (doc: Doc.Document) : (Layout.BlockLayout * Layout.MeasuredLine) array =
+        [| for layout in layoutDocument ctx doc do
+            if not (layout.BlockId.StartsWith Layout.footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith Layout.endnoteBlockIdPrefix) then
+                for line in layout.Lines -> layout, line |]
+
+    /// Layout x of an offset on a line.
+    let lineX (doc: Doc.Document) (layout: Layout.BlockLayout) (line: Layout.MeasuredLine) (offset: int) =
+        (layoutSettings ctx doc).PaddingLeft + Layout.xForOffsetWithRange measureRange line offset + Layout.alignmentOffset layout line
+
+    /// The visual line the position is on (index into `lines`).
+    let lineIndexOf (lines: (Layout.BlockLayout * Layout.MeasuredLine) array) (position: Doc.Position) : int option =
+        // A paragraph continued in another column or on another page has one layout per fragment.
+        let mutable found = -1
+        let mutable fallback = -1
+        for i in 0 .. lines.Length - 1 do
+            let layout, line = lines.[i]
+            if found < 0 && layout.BlockId = position.BlockId then
+                if fallback < 0 then fallback <- i
+                if line.StartOffset <= position.Offset && position.Offset <= line.EndOffset
+                   && obj.ReferenceEquals(Layout.lineForOffset layout position.Offset, line) then
+                    found <- i
+        if found >= 0 then Some found elif fallback >= 0 then Some fallback else None
+
+    /// The last offset the caret can have and still be drawn on the line: a
+    /// wrapped line ends where the next one starts, and that offset belongs
+    /// to the next line.
+    let lastOffsetOnLine (layout: Layout.BlockLayout) (line: Layout.MeasuredLine) =
+        let continues = layout.Lines |> List.exists (fun other -> other.StartOffset = line.EndOffset && not (obj.ReferenceEquals(other, line)))
+        if continues && line.EndOffset > line.StartOffset then line.EndOffset - 1 else line.EndOffset
+
+    /// The position on a line nearest to a layout x.
+    let positionOnLine (doc: Doc.Document) (layout: Layout.BlockLayout) (line: Layout.MeasuredLine) (x: float) : Doc.Position =
+        let offset =
+            match Layout.hitTestLayoutsWithRange measureRange (layoutSettings ctx doc).PaddingLeft [ layout ] x (line.Y + line.Height / 2.0) with
+            | Some (_, offset) -> offset
+            | None -> line.StartOffset
+        { BlockId = layout.BlockId; Offset = max line.StartOffset (min (lastOffsetOnLine layout line) offset) }
+
+    /// Horizontal distance from x to a line (0 when x is over it).
+    let distanceToLine (doc: Doc.Document) (layout: Layout.BlockLayout) (line: Layout.MeasuredLine) (x: float) =
+        let left = lineX doc layout line line.StartOffset
+        let right = lineX doc layout line line.EndOffset
+        let left, right = min left right, max left right
+        if x < left then left - x elif x > right then x - right else 0.0
+
+    /// The line a vertical move from `current` lands on: the nearest line
+    /// above / below it and, among lines side by side (table cells), the one
+    /// under the goal column.
+    let lineInDirection (doc: Doc.Document) (lines: (Layout.BlockLayout * Layout.MeasuredLine) array) (current: int) (down: bool) (goalX: float) : int option =
+        let _, from = lines.[current]
+        let mutable best = -1
+        let mutable bestGap = System.Double.MaxValue
+        let mutable bestDistance = System.Double.MaxValue
+        for i in 0 .. lines.Length - 1 do
+            if i <> current then
+                let layout, line = lines.[i]
+                let gap = if down then line.Y - (from.Y + from.Height) else from.Y - (line.Y + line.Height)
+                // A line counts as above / below when it does not overlap the current one vertically.
+                if gap > -0.5 then
+                    let distance = distanceToLine doc layout line goalX
+                    let nearer = gap < bestGap - 2.0 || (abs (gap - bestGap) <= 2.0 && distance < bestDistance)
+                    if best < 0 || nearer then
+                        best <- i
+                        bestGap <- min gap bestGap
+                        bestDistance <- distance
+        if best >= 0 then Some best else None
+
+    /// The line at (or nearest to) a layout y, under the goal column.
+    let lineAtY (doc: Doc.Document) (lines: (Layout.BlockLayout * Layout.MeasuredLine) array) (y: float) (goalX: float) : int option =
+        let mutable best = -1
+        let mutable bestGap = System.Double.MaxValue
+        let mutable bestDistance = System.Double.MaxValue
+        for i in 0 .. lines.Length - 1 do
+            let layout, line = lines.[i]
+            let gap = if y < line.Y then line.Y - y elif y > line.Y + line.Height then y - (line.Y + line.Height) else 0.0
+            let distance = distanceToLine doc layout line goalX
+            if best < 0 || gap < bestGap - 0.5 || (abs (gap - bestGap) <= 0.5 && distance < bestDistance) then
+                best <- i
+                bestGap <- gap
+                bestDistance <- distance
+        if best >= 0 then Some best else None
+
+    /// The caret (the selection's focus) and the layout x it is drawn at.
+    let caretLine (doc: Doc.Document) =
+        match doc.Selection with
+        | None -> None
+        | Some selection ->
+            let lines = visualLines doc
+            lineIndexOf lines selection.Focus
+            |> Option.map (fun index ->
+                let layout, line = lines.[index]
+                lines, index, lineX doc layout line (max line.StartOffset (min line.EndOffset selection.Focus.Offset)))
+
+    /// Put the focus at `position`: the whole selection with it, or with
+    /// `extend` (Shift) only the focus, the anchor staying where it is.
+    let withFocus (doc: Doc.Document) (extend: bool) (position: Doc.Position) : Doc.Document =
+        match doc.Selection with
+        | Some selection when extend -> { doc with Selection = Some { selection with Focus = position } }
+        | _ -> { doc with Selection = Some { Anchor = position; Focus = position } }
+
+    /// Up / Down by `count` visual lines, keeping the column.
+    let moveVertically (doc: Doc.Document) (down: bool) (extend: bool) : Doc.Document =
+        match caretLine doc with
+        | None -> doc
+        | Some (lines, index, x) ->
+            let goalX = handler.GoalX |> Option.defaultValue x
+            handler.GoalX <- Some goalX
+            match lineInDirection doc lines index down goalX with
+            | Some target ->
+                let layout, line = lines.[target]
+                withFocus doc extend (positionOnLine doc layout line goalX)
+            | None ->
+                // No line further on: the start / end of the text, as Word does.
+                let layout, line = lines.[index]
+                withFocus doc extend { BlockId = layout.BlockId; Offset = (if down then line.EndOffset else line.StartOffset) }
+
+    /// PageUp / PageDown: a screenful (the visible height) up or down, keeping the column.
+    let movePage (doc: Doc.Document) (down: bool) (extend: bool) : Doc.Document =
+        match caretLine doc with
+        | None -> doc
+        | Some (lines, index, x) ->
+            let goalX = handler.GoalX |> Option.defaultValue x
+            handler.GoalX <- Some goalX
+            let page =
+                match ctx.Viewport with
+                | Some vp -> max 40.0 (vp.Height / vp.Scale - 40.0)
+                | None -> max 40.0 ((layoutSettings ctx doc).PageHeight - 80.0)
+            let _, from = lines.[index]
+            let targetY = from.Y + from.Height / 2.0 + (if down then page else -page)
+            match lineAtY doc lines targetY goalX with
+            | Some target when target <> index ->
+                let layout, line = lines.[target]
+                withFocus doc extend (positionOnLine doc layout line goalX)
+            | _ ->
+                let layout, line = lines.[index]
+                withFocus doc extend { BlockId = layout.BlockId; Offset = (if down then line.EndOffset else line.StartOffset) }
+
+    /// Home / End: the start / end of the visual line.
+    let moveToLineEdge (doc: Doc.Document) (toEnd: bool) (extend: bool) : Doc.Document =
+        match doc.Selection with
+        | None -> doc
+        | Some selection ->
+            let lines = visualLines doc
+            match lineIndexOf lines selection.Focus with
+            | Some index ->
+                let layout, line = lines.[index]
+                withFocus doc extend { BlockId = layout.BlockId; Offset = (if toEnd then lastOffsetOnLine layout line else line.StartOffset) }
+            | None ->
+                // Text that has no layout (yet): the paragraph's ends.
+                let moved = if toEnd then Doc.moveCursorToLineEnd doc else Doc.moveCursorToLineStart doc
+                match moved.Selection with
+                | Some target -> withFocus doc extend target.Focus
+                | None -> doc
+
+    /// Ctrl+Home / Ctrl+End: the start / end of the document.
+    let moveToDocumentEdge (doc: Doc.Document) (toEnd: bool) (extend: bool) : Doc.Document =
+        match (Doc.selectAll doc).Selection with
+        | Some whole -> withFocus doc extend (if toEnd then whole.Focus else whole.Anchor)
+        | None -> doc
+
+    let isWordChar (ch: char) = System.Char.IsLetterOrDigit ch || ch = '_' || ch = '\'' || ch = '\u2019'
+
+    /// The start of the word at or after `offset` going right, or before it going left.
+    let wordBoundary (text: string) (offset: int) (forward: bool) : int =
+        let mutable i = max 0 (min text.Length offset)
+        if forward then
+            // Over the rest of this word (or run of punctuation), then the space after it.
+            if i < text.Length then
+                if isWordChar text.[i] then
+                    while i < text.Length && isWordChar text.[i] do i <- i + 1
+                elif not (System.Char.IsWhiteSpace text.[i]) then
+                    while i < text.Length && not (isWordChar text.[i]) && not (System.Char.IsWhiteSpace text.[i]) do i <- i + 1
+            while i < text.Length && System.Char.IsWhiteSpace text.[i] do i <- i + 1
+        else
+            while i > 0 && System.Char.IsWhiteSpace text.[i - 1] do i <- i - 1
+            if i > 0 then
+                if isWordChar text.[i - 1] then
+                    while i > 0 && isWordChar text.[i - 1] do i <- i - 1
+                else
+                    while i > 0 && not (isWordChar text.[i - 1]) && not (System.Char.IsWhiteSpace text.[i - 1]) do i <- i - 1
+        i
+
+    /// Ctrl+Left / Ctrl+Right: by words, across paragraph boundaries.
+    let moveByWord (doc: Doc.Document) (forward: bool) (extend: bool) : Doc.Document =
+        match doc.Selection with
+        | None -> doc
+        | Some selection ->
+            match Doc.findParagraph doc selection.Focus.BlockId with
+            | None -> doc
+            | Some para ->
+                let text = TextBuffer.toString para.Buffer
+                let atEdge = if forward then selection.Focus.Offset >= text.Length else selection.Focus.Offset <= 0
+                if atEdge then
+                    // Into the next / previous paragraph, as a plain arrow does.
+                    let collapsed = { doc with Selection = Some { Anchor = selection.Focus; Focus = selection.Focus } }
+                    let moved = if forward then Doc.moveCursorRight collapsed else Doc.moveCursorLeft collapsed
+                    match moved.Selection with
+                    | Some target -> withFocus doc extend target.Focus
+                    | None -> doc
+                else
+                    withFocus doc extend { selection.Focus with Offset = wordBoundary text selection.Focus.Offset forward }
+
+    /// Ctrl+Up / Ctrl+Down: the start of this paragraph (then the previous one) / of the next one.
+    let moveByParagraph (doc: Doc.Document) (forward: bool) (extend: bool) : Doc.Document =
+        match doc.Selection with
+        | None -> doc
+        | Some selection ->
+            if not forward && selection.Focus.Offset > 0 then withFocus doc extend { selection.Focus with Offset = 0 }
+            else
+                let collapsed =
+                    match Doc.findParagraph doc selection.Focus.BlockId with
+                    | Some para when forward -> { doc with Selection = Some { Anchor = { selection.Focus with Offset = TextBuffer.length para.Buffer }; Focus = { selection.Focus with Offset = TextBuffer.length para.Buffer } } }
+                    | _ -> { doc with Selection = Some { Anchor = selection.Focus; Focus = selection.Focus } }
+                let moved = if forward then Doc.moveCursorRight collapsed else Doc.moveCursorLeft collapsed
+                match moved.Selection with
+                | Some target when target.Focus.BlockId <> selection.Focus.BlockId -> withFocus doc extend { target.Focus with Offset = 0 }
+                | Some target when forward -> withFocus doc extend target.Focus
+                | _ -> doc
+
+    /// The word at a position (a double click selects it).
+    let wordAt (doc: Doc.Document) (position: Doc.Position) : Doc.Document =
+        match Doc.findParagraph doc position.BlockId with
+        | None -> doc
+        | Some para ->
+            let text = TextBuffer.toString para.Buffer
+            let at = max 0 (min text.Length position.Offset)
+            // The character clicked on: the one after the caret position, or the last one.
+            let probe = if at < text.Length then at elif at > 0 then at - 1 else 0
+            if text.Length = 0 then Doc.setSelection position position doc
+            else
+                let sameKind (a: char) (b: char) =
+                    (isWordChar a && isWordChar b)
+                    || (System.Char.IsWhiteSpace a && System.Char.IsWhiteSpace b)
+                    || (not (isWordChar a) && not (isWordChar b) && not (System.Char.IsWhiteSpace a) && not (System.Char.IsWhiteSpace b))
+                let kind = text.[probe]
+                let mutable first = probe
+                while first > 0 && sameKind text.[first - 1] kind do first <- first - 1
+                let mutable last = probe + 1
+                while last < text.Length && sameKind text.[last] kind do last <- last + 1
+                Doc.setSelection { position with Offset = first } { position with Offset = last } doc
+
+    /// The whole paragraph at a position (a triple click selects it).
+    let paragraphAt (doc: Doc.Document) (position: Doc.Position) : Doc.Document =
+        match Doc.findParagraph doc position.BlockId with
+        | None -> doc
+        | Some para -> Doc.setSelection { position with Offset = 0 } { position with Offset = TextBuffer.length para.Buffer } doc
 
     let insertTextForMode text doc =
         if handler.TrackChanges then Doc.insertTrackedText handler.TrackChangesAuthor handler.TrackChangesDate text doc else Doc.insertText text doc
@@ -248,6 +508,10 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let mutable newDoc = handler.Document
         let mutable newHistory = handler.History
         let mutable useCommand = false
+        // Up / Down / PageUp / PageDown keep their column from one to the next.
+        let goalBefore = handler.GoalX
+        let mutable keepGoal = false
+        let shift = ke.shiftKey
 
         let commandKey = ke.ctrlKey || ke.metaKey
         // While an IME or a dead key is composing, keys belong to it (Enter
@@ -409,28 +673,44 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 useCommand <- true
             e.preventDefault()
         | "ArrowLeft" ->
-            if ke.shiftKey then
-                newDoc <- Doc.extendSelectionLeft handler.Document
-            else
-                newDoc <- Doc.moveCursorLeft handler.Document
+            if ke.metaKey then newDoc <- moveToLineEdge handler.Document false shift
+            elif ke.ctrlKey || ke.altKey then newDoc <- moveByWord handler.Document false shift
+            elif shift then newDoc <- Doc.extendSelectionLeft handler.Document
+            else newDoc <- Doc.moveCursorLeft handler.Document
             e.preventDefault()
         | "ArrowRight" ->
-            if ke.shiftKey then
-                newDoc <- Doc.extendSelectionRight handler.Document
-            else
-                newDoc <- Doc.moveCursorRight handler.Document
+            if ke.metaKey then newDoc <- moveToLineEdge handler.Document true shift
+            elif ke.ctrlKey || ke.altKey then newDoc <- moveByWord handler.Document true shift
+            elif shift then newDoc <- Doc.extendSelectionRight handler.Document
+            else newDoc <- Doc.moveCursorRight handler.Document
             e.preventDefault()
         | "ArrowUp" ->
-            newDoc <- Doc.moveCursorUp handler.Document
+            if ke.metaKey then newDoc <- moveToDocumentEdge handler.Document false shift
+            elif ke.ctrlKey || ke.altKey then newDoc <- moveByParagraph handler.Document false shift
+            else
+                newDoc <- moveVertically handler.Document false shift
+                keepGoal <- true
             e.preventDefault()
         | "ArrowDown" ->
-            newDoc <- Doc.moveCursorDown handler.Document
+            if ke.metaKey then newDoc <- moveToDocumentEdge handler.Document true shift
+            elif ke.ctrlKey || ke.altKey then newDoc <- moveByParagraph handler.Document true shift
+            else
+                newDoc <- moveVertically handler.Document true shift
+                keepGoal <- true
+            e.preventDefault()
+        | "PageUp" ->
+            newDoc <- movePage handler.Document false shift
+            keepGoal <- true
+            e.preventDefault()
+        | "PageDown" ->
+            newDoc <- movePage handler.Document true shift
+            keepGoal <- true
             e.preventDefault()
         | "Home" ->
-            newDoc <- Doc.moveCursorToLineStart handler.Document
+            newDoc <- if commandKey then moveToDocumentEdge handler.Document false shift else moveToLineEdge handler.Document false shift
             e.preventDefault()
         | "End" ->
-            newDoc <- Doc.moveCursorToLineEnd handler.Document
+            newDoc <- if commandKey then moveToDocumentEdge handler.Document true shift else moveToLineEdge handler.Document true shift
             e.preventDefault()
         | "Tab" ->
             if ke.shiftKey then
@@ -482,6 +762,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | _ -> ()
 
+        // Any other key ends a run of vertical moves: the next one starts from where the caret then is.
+        if not keepGoal && not composing && ke.key <> "Shift" && ke.key <> "Control" && ke.key <> "Alt" && ke.key <> "Meta" then handler.GoalX <- None
+        ignore goalBefore
         if useCommand then
             // Also when the document compares equal (undoing a no-op step
             // must still pop it).
@@ -658,13 +941,29 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             canvas.focus()
         | None ->
             // Regular text selection
+            handler.GoalX <- None
             match hitTest handler.RenderContext handler.Document x y with
             | None -> ()
             | Some (blockId, offset) ->
-                handler.IsMouseDown <- true
-                handler.SelectionAnchor <- Some { BlockId = blockId; Offset = offset }
-                let newDoc = Doc.setCursor blockId offset handler.Document
-                applyPointerDocumentChange newDoc
+                let position : Doc.Position = { BlockId = blockId; Offset = offset }
+                let clicks = int me.detail
+                if clicks >= 3 then
+                    // Third click: the paragraph. (No drag selection follows from it.)
+                    applyPointerDocumentChange (paragraphAt handler.Document position)
+                elif clicks = 2 then
+                    // Double click: the word.
+                    applyPointerDocumentChange (wordAt handler.Document position)
+                elif me.shiftKey && handler.Document.Selection.IsSome then
+                    // Shift+click: from where the selection started to here.
+                    let anchor = handler.Document.Selection.Value.Anchor
+                    handler.IsMouseDown <- true
+                    handler.SelectionAnchor <- Some anchor
+                    applyPointerDocumentChange (Doc.setSelection anchor position handler.Document)
+                else
+                    handler.IsMouseDown <- true
+                    handler.SelectionAnchor <- Some position
+                    let newDoc = Doc.setCursor blockId offset handler.Document
+                    applyPointerDocumentChange newDoc
                 canvas.focus()
     )
 
