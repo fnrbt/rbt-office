@@ -521,8 +521,6 @@ type Spreadsheet(container: Element) =
                 sheets.[index] <- loaded
                 if index < revisionSheets.Length && revisionSheets.[index].Deferred.IsSome then revisionSheets.[index] <- loaded
                 if index < notifiedSheets.Length && notifiedSheets.[index].Deferred.IsSome then notifiedSheets.[index] <- loaded
-                // An engine built before a sheet with formulas was converted does not know them.
-                if recalcEngine.IsSome && cellsHaveFormulaCells loaded.Cells then recalcEngine <- None
             | None -> ()
 
     /// Sheets a formula converted while it was evaluated take their place.
@@ -838,7 +836,6 @@ type Spreadsheet(container: Element) =
     /// it reaches a spill or a cycle, and before there is a calculated state
     /// to start from.
     let recalculateAfterEdit (hint: (SheetId * CellAddress) list option) =
-        convertFormulaSheets ()
         let edited = currentWorkbookSnapshot()
         let incremental =
             match (if incrementalRecalculation then ensureRecalcEngine () else None) with
@@ -860,6 +857,9 @@ type Spreadsheet(container: Element) =
             calculatedWorkbook <- Some recalculated
         | None ->
             lastRecalculation <- "full"
+            // Every sheet with formulas is recalculated: those not converted yet are now.
+            convertFormulaSheets ()
+            let edited = currentWorkbookSnapshot()
             let recalculated = recalculateWorkbook edited
             installWorkbookSnapshot recalculated
             // The engine goes on from the result, or is built again at the next edit.
@@ -1059,7 +1059,6 @@ type Spreadsheet(container: Element) =
         count
 
     let recalculateSingleCellEdit (addr: CellAddress) (cellData: CellData) =
-        convertFormulaSheets ()
         // (The engine is built from the workbook as it is before the entry.)
         if calculatedWorkbook.IsNone && recalcEngine.IsNone then calculatedWorkbook <- Some (currentWorkbookSnapshot())
         if incrementalRecalculation then ensureRecalcEngine () |> ignore
@@ -4168,14 +4167,14 @@ type Spreadsheet(container: Element) =
         render()
         // The workbook as it is installed is the calculated state edits start
         // from (a file's formulas come with their values). Its dependency
-        // graph is built a moment later, unless a sheet with formulas still
-        // waits to be converted - then at the first edit, which converts it.
+        // graph is built a moment later (or at the first edit, when that comes
+        // first); the formulas of a sheet that is not converted are read off
+        // the file, and the sheet stays as it is.
         calculatedWorkbook <- Some (currentWorkbookSnapshot())
         let generation = engineGeneration
-        if formulaSheetsConverted then
-            setTimeoutMs (fun () ->
-                if not disposed && incrementalRecalculation && generation = engineGeneration && recalcEngine.IsNone then
-                    ensureRecalcEngine () |> ignore) 250 |> ignore
+        setTimeoutMs (fun () ->
+            if not disposed && incrementalRecalculation && generation = engineGeneration && recalcEngine.IsNone then
+                ensureRecalcEngine () |> ignore) 250 |> ignore
         for listener in sheetChangedListeners do
             try listener safeIndex with _ -> ()
 

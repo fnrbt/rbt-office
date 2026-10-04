@@ -444,6 +444,21 @@ checks['dispose-releases'] = async () => {
 // ImportXlsx converts sheets to models when they are needed: opening a workbook with a large
 // data sheet does not pay for that sheet until it is shown or read. Formulas into a sheet that
 // is not converted, recalculation, export and the revision behave as with every sheet converted.
+// Number of formula cells per sheet of a workbook file, in workbook order.
+const sheetFormulas = async (bytes) => {
+    const zip = await window.JSZip.loadAsync(bytes.slice());
+    const workbook = await zip.file('xl/workbook.xml').async('string');
+    const rels = await zip.file('xl/_rels/workbook.xml.rels').async('string');
+    const target = new Map([...rels.matchAll(/<Relationship\b[^>]*>/g)].map((m) => [/Id="([^"]+)"/.exec(m[0])[1], /Target="([^"]+)"/.exec(m[0])[1]]));
+    const out = [];
+    for (const m of workbook.matchAll(/<sheet\b[^>]*>/g)) {
+        const part = target.get(/r:id="([^"]+)"/.exec(m[0])[1]);
+        const file = zip.file(part.startsWith('/') ? part.slice(1) : 'xl/' + part);
+        out.push(file ? ((await file.async('string')).match(/<f[\s>]/g) ?? []).length : 0);
+    }
+    return out;
+};
+
 checks['lazy-sheets'] = async () => {
     const { lines, check, note } = makeLog();
     const { grid, close } = mountGrid();
@@ -465,6 +480,21 @@ checks['lazy-sheets'] = async () => {
         const names = grid.GetSheetNames(), data = names.indexOf('Data'), shownIndex = grid.GetActiveSheetIndex();
         check('only the sheet on display is converted', names.map((_, i) => grid.IsSheetLoaded(i)), names.map((_, i) => i === shownIndex));
         check('an opened workbook is unmodified', grid.IsModified(), false);
+        // An edit converts the sheets that hold formulas (they are recalculated) and the sheets
+        // the formulas that are evaluated read - no other.
+        {
+            const probe = mountGrid();
+            await probe.grid.ImportXlsx(dashboard.slice());
+            const formulas = await sheetFormulas(dashboard);
+            probe.grid.EnterText(60, 30, 'x');
+            const loaded = names.map((_, i) => probe.grid.IsSheetLoaded(i));
+            note('sheets: ' + names.map((name, i) => `${i} ${name}${formulas[i] ? ' (' + formulas[i] + ' formulas)' : ''}${loaded[i] ? ' [loaded]' : ''}`).join(', '));
+            check('a text typed where nothing reads it converts no sheet (the dependency graph reads the formulas of unconverted sheets off the file)',
+                names.filter((_, i) => loaded[i] && i !== shownIndex), []);
+            check('and it was recalculated incrementally, with the formulas of every sheet in the graph',
+                [probe.grid.GetRecalcStats().Kind, probe.grid.GetRecalcStats().Formulas], ['incremental', formulas.reduce((a, b) => a + b, 0)]);
+            probe.close();
+        }
         const revision = grid.GetRevision();
         const changes = [];
         grid.OnChange((change) => changes.push(change.Sheets.join(',')));

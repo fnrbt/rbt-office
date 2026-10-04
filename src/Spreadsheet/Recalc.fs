@@ -329,10 +329,17 @@ let build (workbook: Workbook) : Engine =
         state.Name <- sheet.Name
     for KeyValue (sheetId, sheet) in workbook.Sheets do
         let state = sheetState engine sheetId
-        for KeyValue (addr, cell) in loadedCells sheet.Model do
-            match cell.Value with
-            | CellValue.Formula (formula, _) -> wire engine workbook state addr.Row addr.Col formula |> ignore
-            | _ -> ()
+        match sheet.Model.Deferred with
+        | Some deferred when deferred.Loaded.IsNone ->
+            // A sheet nothing has asked for yet: its formulas are read off the
+            // file. It is converted when one of them has to be evaluated.
+            for addr, formula in deferred.Formulas () do
+                wire engine workbook state addr.Row addr.Col formula |> ignore
+        | _ ->
+            for KeyValue (addr, cell) in loadedCells sheet.Model do
+                match cell.Value with
+                | CellValue.Formula (formula, _) -> wire engine workbook state addr.Row addr.Col formula |> ignore
+                | _ -> ()
     engine
 
 /// Number of formula cells in the graph.

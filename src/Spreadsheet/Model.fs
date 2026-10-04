@@ -882,6 +882,10 @@ and DeferredSheet = {
     /// The sheet has formulas, conditional formats or validations: what it
     /// shows can depend on other sheets, and their edits on it.
     HasFormulas: bool
+    /// The sheet's formula cells (address, formula text as the converted
+    /// sheet holds it), read off the file without converting the sheet: what
+    /// the dependency graph needs of a sheet nothing has asked for yet.
+    Formulas: unit -> (CellAddress * string) array
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)

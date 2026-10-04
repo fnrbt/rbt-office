@@ -1044,6 +1044,19 @@ module Import =
 
     let private readerCellIsFormula (cell: XlsxReader.Cell) =
         cell.Formula.IsSome || (match cell.Value with XlsxReader.Formula _ -> true | _ -> false)
+    /// The formula cells of a reader sheet, as `importSheet` makes them (see `cellValue`).
+    let private readerSheetFormulas (sheet: XlsxReader.Worksheet) : (CellAddress * string) array =
+        let formulas = ResizeArray<CellAddress * string>()
+        for row in sheet.Rows do
+            for cell in row.Cells do
+                let r = cell.Reference.Row - 1
+                let c = columnIndexOfLetters cell.Reference.Column
+                if r >= 0 && c >= 0 then
+                    match cell.Formula, cell.Value with
+                    | Some formula, _ when not (String.IsNullOrWhiteSpace formula) -> formulas.Add ({ Row = r; Col = c }, formula)
+                    | None, XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> formulas.Add ({ Row = r; Col = c }, formula)
+                    | _ -> ()
+        formulas.ToArray()
     let private readerCellIsUncached (cell: XlsxReader.Cell) =
         match cell.Value with XlsxReader.Formula _ -> true | _ -> false
 
@@ -1109,7 +1122,11 @@ module Import =
                         { createEmpty options.MinRows options.MinCols with
                             Tables = sheetTables
                             SourceSheet = Some { Book = sourceId; Sheet = index }
-                            Deferred = Some { Loaded = None; Load = (fun () -> convert index); HasFormulas = hasFormulas } }
+                            Deferred =
+                                Some { Loaded = None
+                                       Load = (fun () -> convert index)
+                                       HasFormulas = hasFormulas
+                                       Formulas = (fun () -> readerSheetFormulas sheet) } }
                     baseline.[index] <- standIns.[index]
                     columns)
                 |> Array.fold (fun acc columns -> Map.fold (fun m k v -> Map.add k v m) acc columns) Map.empty

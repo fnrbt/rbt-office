@@ -126,5 +126,58 @@ do
     ok "uncached formulas: every sheet converted" (imported.Sheets |> Array.forall (fun s -> not (isDeferredSheet s.Model))) ""
     eq "and calculated" (getCellValue (addr 0 0) imported.Sheets.[0].Model |> unwrapFormulaValue) (CellValue.Number 42.0)
 
+// The dependency graph of a workbook whose sheets are stand-ins: the formulas
+// of a sheet that is not converted are read off the file, and an edit converts
+// the sheets the formulas it makes stale are on or read - by their place in
+// the workbook, a hidden sheet between them included - and no other.
+do
+    let number value = { Value = CellValue.Number value; Format = defaultFormat; Comment = None }
+    let formula text cached = { Value = CellValue.Formula (text, CellValue.Number cached); Format = defaultFormat; Comment = None }
+    let sheetOf (cells: (int * int * CellData) list) =
+        cells |> List.fold (fun model (row, col, data) -> setCell (addr row col) data model) (createEmpty 50 10)
+    let models =
+        [| sheetOf [ 0, 0, number 1.0; 0, 1, formula "Second!A1+Fourth!A1+A1" 6.0; 0, 2, number 10.0; 5, 5, number 0.0 ]   // Main
+           sheetOf [ 0, 0, number 2.0 ]                                                                                 // Second
+           sheetOf [ 0, 0, formula "Main!C1*2" 20.0; 1, 0, formula "A1+1" 21.0 ]                                        // Hidden (not visible)
+           sheetOf [ 0, 0, number 3.0 ]                                                                                 // Fourth
+           sheetOf [ 0, 0, number 4.0; 0, 1, formula "A1*5" 20.0 ] |]                                                   // Other
+    let names = [| "Main"; "Second"; "Hidden"; "Fourth"; "Other" |]
+    let input : Bridge.ExportInput =
+        { Sheets = models; Names = names; Visible = [| true; true; false; true; true |]; ActiveSheetIndex = 0
+          DefinedNames = Map.empty; Source = None; Macros = None }
+    let bytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+    let book = Bridge.Import.importWorkbookLazy (fun index -> index = 0) (loadBytes bytes)
+    let standIns = book.Sheets |> Array.map (fun sheet -> sheet.Model)
+    let converted () = standIns |> Array.map (fun model -> not (isDeferredSheet model))
+    eq "opened: the first sheet is converted, the hidden one is not visible" (converted (), book.Sheets |> Array.map (fun sheet -> sheet.Visible)) ([| true; false; false; false; false |], [| true; true; false; true; true |])
+    let ids = List.toArray book.Context.SheetOrder
+    let engine = Rbt.Spreadsheet.Recalc.build book.Context
+    eq "the graph holds the formulas of every sheet" (Rbt.Spreadsheet.Recalc.formulaCount engine) 4
+    eq "building it converts no sheet" (converted ()) [| true; false; false; false; false |]
+    let edit (cell: CellAddress) (data: CellData) (wb: Wb.Workbook) =
+        let edited = Wb.updateSheetModel ids.[0] (setCell cell data (resolveSheet wb.Sheets.[ids.[0]].Model)) wb
+        match Rbt.Spreadsheet.Recalc.recalculate engine edited (Some [ ids.[0], cell ]) with
+        | Some recalculated -> recalculated
+        | None -> failwith "declined"
+    let valueOf (wb: Wb.Workbook) index row col = getCellValue (addr row col) (resolveSheet wb.Sheets.[ids.[index]].Model) |> unwrapFormulaValue
+    let typed = edit (addr 5 5) { Value = CellValue.String "x"; Format = defaultFormat; Comment = None } book.Context
+    eq "a text nothing reads: no sheet converted" (converted ()) [| true; false; false; false; false |]
+    let main = edit (addr 0 0) (number 100.0) typed
+    eq "a cell the first sheet's formula reads: the sheets that formula reads (the second and the fourth), not the hidden one between them"
+        (converted ()) [| true; true; false; true; false |]
+    eq "and its value" (valueOf main 0 0 1) (CellValue.Number 105.0)
+    let hidden = edit (addr 0 2) (number 50.0) main
+    eq "a cell the hidden sheet's formula reads: the hidden sheet" (converted ()) [| true; true; true; true; false |]
+    eq "its formulas follow" (valueOf hidden 2 0 0, valueOf hidden 2 1 0) (CellValue.Number 100.0, CellValue.Number 101.0)
+    eq "the last sheet was never needed" (isDeferredSheet standIns.[4]) true
+    // The same edits with every sheet converted up front: the same values.
+    let eager = Bridge.Import.importWorkbook (loadBytes bytes)
+    let eagerEdited =
+        [ addr 5 5, { Value = CellValue.String "x"; Format = defaultFormat; Comment = None }; addr 0 0, number 100.0; addr 0 2, number 50.0 ]
+        |> List.fold (fun wb (cell, data) -> Wb.updateSheetModel ids.[0] (setCell cell data wb.Sheets.[ids.[0]].Model) wb) eager.Context
+        |> Formula.recalculateWorkbook
+    for index in 0 .. 4 do
+        eq (sprintf "sheet %d: the cells of a full recalculation of the converted workbook" index) (resolveSheet hidden.Sheets.[ids.[index]].Model).Cells eagerEdited.Sheets.[ids.[index]].Model.Cells
+
 printfn "xlsx-lazy: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
