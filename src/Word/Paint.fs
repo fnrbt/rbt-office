@@ -772,13 +772,7 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
     | Some _ -> commands.AddRange(paragraphBorderCommands settings layout)
     | None -> ()
 
-    match layout.Metadata.ContentControlId with
-    | Some _ ->
-        let blockX = settings.PaddingLeft + layout.Indent
-        let blockWidth = max 1.0 layout.AvailableWidth
-        commands.Add(StrokeRect ("#2563EB", 1.0, blockX, layout.Y, blockWidth, layout.Height))
-        commands.Add(FillRect ("#2563EB", blockX, layout.Y, min 32.0 blockWidth, min 3.0 layout.Height))
-    | None -> ()
+    // (A content control's frame is not part of the page: see markupMarkerCommands.)
 
     if layout.Prefix <> "" && not layout.Lines.IsEmpty then
         let firstLine = layout.Lines.Head
@@ -903,9 +897,23 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
                     | Some text when width > 0.0 && height > 0.0 ->
                         commands.Add(FillRect ("#F3F4F6", imageX, imageY, width, height))
                         commands.Add(StrokeRect ("#9CA3AF", 1.0, imageX, imageY, width, height))
-                        let labelStyle = styleFromTextStyle { TextBuffer.defaultStyle with FontSize = 13.0; Color = Some "#4B5563" }
-                        if height >= 20.0 then
-                            commands.Add(DrawText (text, labelStyle, imageX + 8.0, imageY + 18.0, max 0.0 (width - 16.0)))
+                        // The label at its natural size, in the middle of the frame. (The
+                        // width given to DrawText is the width the text is fitted to: it is
+                        // the label's own width, not the frame's.) A frame too narrow for
+                        // the label shows as much of it as fits, with an ellipsis.
+                        let labelTextStyle = { TextBuffer.defaultStyle with FontSize = 13.0; Color = Some "#4B5563" }
+                        let labelStyle = styleFromTextStyle labelTextStyle
+                        let room = width - 12.0
+                        let fitted =
+                            if measureText text labelTextStyle <= room then text
+                            else
+                                let mutable shown = text.Length - 1
+                                while shown > 0 && measureText (text.Substring(0, shown) + "\u2026") labelTextStyle > room do
+                                    shown <- shown - 1
+                                if shown > 0 then text.Substring(0, shown) + "\u2026" else ""
+                        if height >= 20.0 && fitted <> "" then
+                            let labelWidth = measureText fitted labelTextStyle
+                            commands.Add(DrawText (fitted, labelStyle, imageX + (width - labelWidth) / 2.0, imageY + height / 2.0 + 13.0 * 0.35, labelWidth))
                     | _ -> ()
                 else
                     commands.Add(DrawImage (src, imageX, imageY, width, height, cropLeft, cropTop, cropRight, cropBottom))
@@ -960,17 +968,35 @@ let private tableAlignmentOffset (alignment: string option) availableWidth table
     elif optionEqualsIgnoreCase "right" alignment then max 0.0 (availableWidth - tableWidth)
     else 0.0
 
-let markupMarkerCommands (settings: LayoutSettings) (layouts: BlockLayout list) =
-    let commands = ResizeArray<PaintCommand>()
-    for layout in layouts do
-        match layout.Metadata.ContentControlId with
-        | Some _ ->
-            let blockX = settings.PaddingLeft + layout.Indent
-            let blockWidth = max 1.0 layout.AvailableWidth
-            commands.Add(StrokeRect ("#2563EB", 1.0, blockX, layout.Y, blockWidth, layout.Height))
-            commands.Add(FillRect ("#2563EB", blockX, layout.Y, min 32.0 blockWidth, min 3.0 layout.Height))
-        | None -> ()
-    resizeArrayToList commands
+/// The content controls the selection is in: the controls of the paragraphs
+/// its two ends are in.
+let private selectedContentControls (doc: Document) : string list =
+    match doc.Selection with
+    | None -> []
+    | Some selection ->
+        [ selection.Anchor.BlockId; selection.Focus.BlockId ]
+        |> List.distinct
+        |> List.choose (fun blockId -> findParagraph doc blockId |> Option.bind (fun para -> para.Metadata.ContentControlId))
+        |> List.distinct
+
+/// The frame of a content control, as an editing aid: drawn around the
+/// paragraphs of the control the caret or the selection is in, as Word does,
+/// and nowhere else. It is an overlay: a document without a selection (a
+/// viewer, a page rendered for print or preview) has none.
+let markupMarkerCommands (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) =
+    match selectedContentControls doc with
+    | [] -> []
+    | controls ->
+        let commands = ResizeArray<PaintCommand>()
+        for layout in layouts do
+            match layout.Metadata.ContentControlId with
+            | Some controlId when List.contains controlId controls ->
+                let blockX = settings.PaddingLeft + layout.Indent
+                let blockWidth = max 1.0 layout.AvailableWidth
+                commands.Add(StrokeRect ("#2563EB", 1.0, blockX, layout.Y, blockWidth, layout.Height))
+                commands.Add(FillRect ("#2563EB", blockX, layout.Y, min 32.0 blockWidth, min 3.0 layout.Height))
+            | _ -> ()
+        resizeArrayToList commands
 
 let private maxNestedTablePaintDepth = 512
 
