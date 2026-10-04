@@ -16,6 +16,7 @@
     <Compile Include="ConditionalFormatting.fs" />
     <Compile Include="Layout.fs" />
     <Compile Include="Paint.fs" />
+    <Compile Include="XlsxBridge.fs" />
     <Compile Include="XlsxImporter.fs" />
     <Compile Include="Tabs.fs" />
     <Compile Include="Spreadsheet.fs" />
@@ -27,6 +28,7 @@
   <ItemGroup>
     <ProjectReference Include="../Grid/Rbt.Grid.fsproj" />
     <ProjectReference Include="../OfficeUi/Rbt.OfficeUi.fsproj" />
+    <ProjectReference Include="../Office.Formats/Rbt.OfficeFormat.fsproj" />
     <ProjectReference Condition="'$(UseSiblingPackages)' != 'true'" Include="../../../rbt-vb/Rbt.Vb.fsproj" />
     <PackageReference Condition="'$(UseSiblingPackages)' == 'true'" Include="Rbt.Vb" Version="$(RbtVbPackageVersion)" />
   </ItemGroup>

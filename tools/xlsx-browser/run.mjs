@@ -15,9 +15,9 @@
 //   dotnet fable src/Spreadsheet    --outDir $DIST/spreadsheet    --lang JavaScript --noCache
 //   node tools/xlsx-browser/run.mjs --dist $DIST [--only NAME] [file.xlsx ...]
 // (--only runs a single component check, or "roundtrip" for the reader / writer part.)
-// Fable resolves XlsxImporter's import of the Office.Formats bundle relative to
-// the repository's dist/; when $DIST is elsewhere this runner serves that path
-// from $DIST/office-formats.
+// The Spreadsheet bundle carries its own compiled copy of the XLSX reader and
+// writer (Office.Formats is a project reference of it); the checks read the
+// exported bytes back with the Office.Formats bundle.
 // With no files it takes every workbook under tests/real-world and
 // tests/test-documents-excel that has a part under xl/media, xl/charts or
 // xl/drawings. Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16023).
@@ -103,9 +103,7 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/component') return send(200, 'text/html', componentPage);
     if (url.pathname === '/component.js') return send(200, 'text/javascript', fs.readFileSync(path.join(here, 'component.js')));
     if (url.pathname === '/fixture') { const name = url.searchParams.get('name'); const data = fixtures.get(name) ?? componentFixture(name); return data ? send(200, 'application/octet-stream', data) : send(404, 'text/plain', 'no fixture'); }
-    // XlsxImporter's import of the sibling bundle, as Fable wrote it for an out-of-tree $DIST.
-    const sibling = url.pathname.indexOf('/dist/office-formats/');
-    const file = sibling >= 0 ? path.join(dist, 'office-formats', url.pathname.slice(sibling + '/dist/office-formats/'.length)) : path.join(dist, path.normalize(url.pathname));
+    const file = path.join(dist, path.normalize(url.pathname));
     if (file.startsWith(dist) && fs.existsSync(file) && fs.statSync(file).isFile()) return send(200, 'text/javascript', fs.readFileSync(file));
     send(404, 'text/plain', 'not found');
 });

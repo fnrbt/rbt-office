@@ -119,6 +119,10 @@ let private detach (el: Element): unit = jsNative
 
 let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
 
+/// What the package writer resolves to (a Blob in the browser) as bytes.
+[<Emit("$0.then((written) => (written instanceof Uint8Array ? written : (written && typeof written.arrayBuffer === 'function' ? written.arrayBuffer().then((buffer) => new Uint8Array(buffer)) : new Uint8Array(written))))")>]
+let private packageBytes (written: JS.Promise<obj>): JS.Promise<byte[]> = jsNative
+
 /// Whether two models of a sheet hold the same document content: everything
 /// that is part of the workbook, as opposed to view and editing state
 /// (selection, edit buffer, clipboard, search, undo history).
@@ -173,6 +177,9 @@ type Spreadsheet(container: Element) =
     let cleanups = ResizeArray<unit -> unit>()
     let mutable disposed = false
     let mutable workbook: Workbook option = None  // Optional workbook for table references
+    /// The XLSX file the current workbook was imported from, for ExportXlsx:
+    /// what the editor does not model is carried over from it.
+    let mutable xlsxSource: Rbt.Spreadsheet.XlsxBridge.XlsxSource option = None
     let mutable calcEngine: SpreadsheetCalc.CalcEngine option = None
     let mutable readOnly = false
     let mutable scrollTop = 0.0
@@ -3041,6 +3048,9 @@ type Spreadsheet(container: Element) =
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         if newSheets.Length = 0 then () else
         invalidateCalcEngine()
+        // A different workbook: nothing of the file the previous one came from
+        // belongs to it (InstallImportedWorkbook / ImportXlsx set the new source).
+        xlsxSource <- None
         sheets <- newSheets
         sheetNames <-
             if names.Length = newSheets.Length then Array.copy names
@@ -3059,6 +3069,61 @@ type Spreadsheet(container: Element) =
         render()
         for listener in sheetChangedListeners do
             try listener safeIndex with _ -> ()
+
+    /// Install a workbook imported from XLSX (`XlsxImporter.importWorkbook`
+    /// / `importWorkbookPromise`), remembering the file it came from so that
+    /// `ExportXlsx` can carry over what the editor does not model. A negative
+    /// `activeIndex` shows the first visible sheet.
+    member this.InstallImportedWorkbook(imported: ImportedWorkbook, activeIndex: int) =
+        let names = imported.Sheets |> Array.map (fun sheet -> sheet.Name)
+        let models = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
+        let active =
+            if activeIndex >= 0 && activeIndex < models.Length then activeIndex
+            else imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Visible) |> Option.defaultValue 0
+        this.InstallWorkbook(models, names, active, Some imported.Context)
+        if models.Length > 0 then xlsxSource <- Some imported.Source
+
+    /// Open an XLSX file: every sheet is loaded and the first visible one
+    /// shown. `data` is an ArrayBuffer, Uint8Array or Blob. The promise
+    /// rejects when the file cannot be read; the current workbook is then
+    /// left untouched.
+    member this.ImportXlsx(data: obj): JS.Promise<unit> =
+        (loadReaderWorkbook data None).``then``(fun readerWorkbook ->
+            this.InstallImportedWorkbook(Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook readerWorkbook, -1))
+
+    /// Whether the workbook came from an XLSX file whose unmodelled content
+    /// (drawings, named styles, theme, kept parts) ExportXlsx will carry over.
+    member _.HasXlsxSource() : bool = xlsxSource.IsSome
+
+    /// The editor's workbook in the XLSX writer's shape (what ExportXlsx writes).
+    member _.ToXlsxWorkbook() : XlsxWriter.XlsxWorkbookOut =
+        let current = Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
+        Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOut
+            { Sheets = current
+              Names = Array.copy sheetNames
+              Visible =
+                Array.init sheets.Length (fun i ->
+                    match workbook |> Option.bind (fun wb -> Map.tryFind (sheetIdForIndex i) wb.Sheets) with
+                    | Some sheet -> sheet.Visible
+                    | None -> true)
+              ActiveSheetIndex = activeSheetIndex
+              DefinedNames = (match workbook with Some wb -> wb.Names | None -> Map.empty)
+              Source = xlsxSource
+              // A VBA project of the opened file is one of its kept parts.
+              Macros = None }
+
+    /// Write the editor's current workbook as XLSX: every sheet with its
+    /// values, formulas and their cached values, formats, column widths and
+    /// row heights (hidden ones too), merges, freeze panes, sheet visibility,
+    /// defined names, tables, conditional formats, validations, comments and
+    /// page setup. For a workbook that was opened from a file, everything the
+    /// editor does not model - hyperlinks, pictures, charts and other drawing
+    /// objects, threaded comments, named cell styles, the theme and other
+    /// kept parts - is carried over from that file, and cells, tables,
+    /// validations and conditional formats the user did not touch are written
+    /// exactly as the file had them. Resolves to the file's bytes (Uint8Array).
+    member this.ExportXlsx() : JS.Promise<byte[]> =
+        packageBytes (XlsxWriter.writeWorkbookPackage (this.ToXlsxWorkbook()))
 
     /// Render the current model through the shared portable paint command path.
     member _.RenderPortableCanvas(canvas: Element) = renderPortablePaintToCanvas canvas
@@ -3600,21 +3665,14 @@ type Spreadsheet(container: Element) =
         // The promise rejects when the file cannot be read; the current
         // workbook is left untouched in that case.
         (importWorkbookPromise buffer).``then``(fun imported ->
-            let names = imported.Sheets |> Array.map (fun sheet -> sheet.Name)
-            let models = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
             // Land on the requested sheet, else the first one Excel shows.
-            let firstVisible =
-                imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Visible) |> Option.defaultValue 0
             let active =
                 match sheetName with
-                | Some n ->
-                    names
-                    |> Array.tryFindIndex (fun s -> s = n)
-                    |> Option.defaultValue firstVisible
-                | None -> firstVisible
+                | Some n -> imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Name = n) |> Option.defaultValue -1
+                | None -> -1
             // The imported context (defined names, tables, hidden sheets) is
             // what lets later recalculation resolve cross-sheet references.
-            this.InstallWorkbook(models, names, active, Some imported.Context))
+            this.InstallImportedWorkbook(imported, active))
 
     /// Get list of sheet names from XLSX buffer (returns Promise). Hidden
     /// sheets are included; see GetXlsxSheetInfos.

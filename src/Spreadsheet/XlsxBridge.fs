@@ -1,0 +1,1212 @@
+/// XLSX <-> editor model, for every host: the browser component (Fable) and
+/// the native editors (.NET) share this one conversion in both directions.
+///
+///   Import.importWorkbook   reader workbook (XlsxReader.Workbook) -> sheet models + workbook context
+///   Export.toWorkbookOut    sheet models (+ the workbook they were imported from) -> XlsxWriter.XlsxWorkbookOut
+///
+/// The export writes the editor's current state. What the editor does not
+/// model is carried over from the workbook the sheets were imported from:
+/// pictures, charts and other drawing objects, threaded comments, named cell
+/// styles, the theme and the other kept parts; and a cell, table, validation
+/// or conditional format the user did not touch is written as the file had it.
+module Rbt.Spreadsheet.XlsxBridge
+
+open System
+open Rbt.Spreadsheet.Model
+
+module CF = Rbt.Spreadsheet.ConditionalFormatting
+module Wb = Rbt.Spreadsheet.Workbook
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+/// Zero-based column index of column letters ("A" -> 0, "AA" -> 26).
+let columnIndexOfLetters (letters: string) =
+    let mutable acc = 0
+    for ch in letters do
+        let c = Char.ToUpperInvariant ch
+        if c >= 'A' && c <= 'Z' then acc <- acc * 26 + (int c - int 'A' + 1)
+    acc - 1
+
+/// "#RRGGBB" for an rgb / argb colour as the file has it; None when malformed.
+let private hexColor (value: string) =
+    let trimmed = value.TrimStart('#')
+    let cleaned = if trimmed.Length = 8 then trimmed.Substring(2) else trimmed
+    if cleaned.Length = 6 then Some ("#" + cleaned) else None
+
+/// One corner of a range ("$B$7", "B", "7") as (row0, col0); a part that is
+/// absent (whole column / whole row) is None.
+let private parseCorner (text: string) : (int option * int option) option =
+    let mutable col = 0
+    let mutable row = 0
+    let mutable hasCol = false
+    let mutable hasRow = false
+    let mutable valid = text <> ""
+    for c in text do
+        if c = '$' then ()
+        elif Char.IsLetter c && not hasRow && col < 20000 then
+            hasCol <- true
+            col <- col * 26 + (int (Char.ToUpperInvariant c) - int 'A' + 1)
+        elif Char.IsDigit c && row < 10000000 then
+            hasRow <- true
+            row <- row * 10 + (int c - int '0')
+        else
+            valid <- false
+    if not valid || (not hasCol && not hasRow) || (hasRow && row = 0) then None
+    else Some ((if hasRow then Some (row - 1) else None), (if hasCol then Some (col - 1) else None))
+
+/// "A1", "$A$1:$C$9", "A:C" or "2:5" as 0-based inclusive bounds, clipped
+/// to `maxRow` / `maxCol`. None when malformed or wholly outside the clip.
+let parseRangeClipped (maxRow: int) (maxCol: int) (range: string) : (int * int * int * int) option =
+    let parts = range.Trim().Split(':')
+    let corners =
+        match parts.Length with
+        | 1 -> parseCorner parts.[0] |> Option.map (fun c -> c, c)
+        | 2 ->
+            match parseCorner parts.[0], parseCorner parts.[1] with
+            | Some a, Some b -> Some (a, b)
+            | _ -> None
+        | _ -> None
+    corners
+    |> Option.bind (fun ((r1, c1), (r2, c2)) ->
+        let sr = r1 |> Option.defaultValue 0
+        let sc = c1 |> Option.defaultValue 0
+        let er = r2 |> Option.defaultValue maxRow
+        let ec = c2 |> Option.defaultValue maxCol
+        let sr, er = min sr er, max sr er
+        let sc, ec = min sc ec, max sc ec
+        if sr > maxRow || sc > maxCol then None
+        else Some (sr, sc, min er maxRow, min ec maxCol))
+
+/// The ranges of an sqref ("A1:A9 C3"), clipped.
+let private parseSqref (maxRow: int) (maxCol: int) (sqref: string) =
+    sqref.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries)
+    |> Array.choose (parseRangeClipped maxRow maxCol)
+
+/// A plain cell reference without `$` ("B7") as (row0, col0).
+let private parsePlainRef (text: string) : (int * int) option =
+    let mutable col = 0
+    let mutable row = 0
+    let mutable hasCol = false
+    let mutable hasRow = false
+    let mutable valid = text <> ""
+    for c in text do
+        if Char.IsDigit c then
+            hasRow <- true
+            if row < 100000000 then row <- row * 10 + (int c - int '0')
+        elif Char.IsLetter c && not hasRow then
+            hasCol <- true
+            if col < 100000 then col <- col * 26 + (int (Char.ToUpperInvariant c) - int 'A' + 1)
+        else
+            valid <- false
+    if valid && hasCol && hasRow && row > 0 && col > 0 then Some (row - 1, col - 1) else None
+
+let private parsePlainRange (range: string) : (int * int * int * int) option =
+    let parts = range.Split(':')
+    match parts.Length with
+    | 1 -> parsePlainRef parts.[0] |> Option.map (fun (r, c) -> r, c, r, c)
+    | 2 ->
+        match parsePlainRef parts.[0], parsePlainRef parts.[1] with
+        | Some (r1, c1), Some (r2, c2) -> Some (min r1 r2, min c1 c2, max r1 r2, max c1 c2)
+        | _ -> None
+    | _ -> None
+
+/// Sheet id of the sheet at `index`. Must agree with the ids the Spreadsheet
+/// component assigns (`sheetN`, 1-based).
+let sheetIdOfIndex (index: int) : string =
+    sprintf "sheet%d" (index + 1)
+
+let sheetStateText (state: XlsxReader.SheetState) =
+    match state with
+    | XlsxReader.SheetVisible -> "visible"
+    | XlsxReader.SheetHidden -> "hidden"
+    | XlsxReader.SheetVeryHidden -> "veryHidden"
+
+// ---------------------------------------------------------------------------
+// Import: reader workbook -> models
+// ---------------------------------------------------------------------------
+
+/// One sheet of an imported workbook. `State` is "visible", "hidden" or
+/// "veryHidden"; hidden sheets are imported (formulas refer to them) but a
+/// host should not offer a tab for them.
+type ImportedSheet = {
+    Name: string
+    Model: SpreadsheetModel
+    State: string
+    Visible: bool
+}
+
+/// What an export needs of the workbook the sheets were imported from: the
+/// reader's workbook, and each sheet's model exactly as it was installed (so
+/// that "the user did not touch this" can be told from "this changed").
+type XlsxSource = {
+    Workbook: XlsxReader.Workbook
+    /// Parallel to `Workbook.Sheets`.
+    Baseline: SpreadsheetModel array
+    /// The defined names as imported (the context's `Names`).
+    BaselineNames: Map<Wb.SheetId option * string, string>
+}
+
+/// A whole imported workbook: every sheet in file order, and the workbook
+/// context (sheets, structured-reference tables, defined names) the formula
+/// engine needs to evaluate anything that looks outside its own sheet.
+type ImportedWorkbook = {
+    Sheets: ImportedSheet array
+    Context: Wb.Workbook
+    /// The file used the 1904 date system. Date serials have already been
+    /// converted to the 1900 system the engine uses.
+    Date1904: bool
+    /// For `Export.toWorkbookOut`.
+    Source: XlsxSource
+}
+
+/// How large the models are made around the used range.
+type ImportOptions = {
+    MinRows: int
+    MinCols: int
+    /// Empty rows / columns added beyond the used range.
+    ExtraRows: int
+    ExtraCols: int
+}
+
+/// A grid as large as its content (at least 100 x 26): the web component.
+let defaultImportOptions = { MinRows = 100; MinCols = 26; ExtraRows = 0; ExtraCols = 0 }
+
+/// Room to keep typing below and to the right of the content: the native editors.
+let editorImportOptions = { MinRows = 200; MinCols = 40; ExtraRows = 200; ExtraCols = 50 }
+
+/// Workbook context for a set of sheet models: every table on every sheet is
+/// registered for structured references. `tableColumns` supplies declared
+/// column names by table name; a table without them reads its header row.
+let buildWorkbookContext (models: SpreadsheetModel array) (names: string array) (visible: bool array)
+                         (tableColumns: Map<string, string list>)
+                         (definedNames: Map<Wb.SheetId option * string, string>)
+                         (activeIndex: int) : Wb.Workbook =
+    let sheetEntries =
+        [ for i in 0 .. models.Length - 1 ->
+            let id = sheetIdOfIndex i
+            id, ({ Id = id
+                   Name = (if i < names.Length then names.[i] else sprintf "Sheet%d" (i + 1))
+                   Model = models.[i]
+                   Visible = (if i < visible.Length then visible.[i] else true) } : Wb.Sheet) ]
+    let tables =
+        [ for i in 0 .. models.Length - 1 do
+            for t in models.[i].Tables do
+                if t.Name <> "" then
+                    let columns = Map.tryFind t.Name tableColumns |> Option.defaultValue []
+                    yield t.Name,
+                          Wb.makeTableFromRegion (sheetIdOfIndex i) t.Name t.StartRow t.StartCol t.EndRow t.EndCol
+                              t.HeaderRowCount (if t.HasTotals then 1 else 0) columns models.[i] ]
+    { Sheets = Map.ofList sheetEntries
+      SheetOrder = sheetEntries |> List.map fst
+      ActiveSheet = sheetIdOfIndex (max 0 (min (models.Length - 1) activeIndex))
+      Tables = Map.ofList tables
+      Names = definedNames }
+
+module Import =
+
+    /// A list validation whose source is a range or a defined name rather than
+    /// a literal; it can only be resolved once the sheets it may point at exist.
+    type private PendingList = {
+        Bounds: (int * int * int * int) array
+        Source: string
+        /// The validation without its values (alert texts, style).
+        Template: DataValidation
+    }
+
+    type private SheetImport = {
+        Model: SpreadsheetModel
+        PendingLists: PendingList list
+        /// `<tableColumn>` names per table, for structured references.
+        TableColumns: Map<string, string list>
+        State: string
+    }
+
+    let private border (side: XlsxReader.CellBorderSide option) : BorderStyle option =
+        side
+        |> Option.bind (fun b ->
+            if String.IsNullOrWhiteSpace b.Style then None
+            else Some { Style = b.Style; Color = b.Color |> Option.bind hexColor })
+
+    let private format (s: XlsxReader.CellStyle) : CellFormat =
+        { defaultFormat with
+            Bold = s.Bold
+            Italic = s.Italic
+            Underline = s.Underline
+            UnderlineDouble = s.UnderlineDouble
+            Strikethrough = s.Strikethrough
+            FontName = s.FontName
+            TextColor = s.FontColor |> Option.bind hexColor
+            BgColor = s.FillColor |> Option.bind hexColor
+            FontSize = s.FontSize |> Option.map int
+            NumberFormat = s.NumberFormat
+            HorizontalAlign = s.HorizontalAlign
+            VerticalAlign = s.VerticalAlign
+            WrapText = s.WrapText
+            Indent = s.Indent
+            ShrinkToFit = s.ShrinkToFit
+            TextRotation = s.TextRotation
+            BorderTop = border s.BorderTop
+            BorderBottom = border s.BorderBottom
+            BorderLeft = border s.BorderLeft
+            BorderRight = border s.BorderRight
+            BorderDiagonal = border s.BorderDiagonal
+            DiagonalUp = s.DiagonalUp
+            DiagonalDown = s.DiagonalDown }
+
+    /// A run of rich text. Only what the run turns on is recorded; the rest
+    /// follows the cell's own format.
+    let private runOverride (props: XlsxReader.RunProps) : RunOverride =
+        let onlyTrue value = if value then Some true else None
+        { Bold = onlyTrue props.Bold
+          Italic = onlyTrue props.Italic
+          Underline = onlyTrue props.Underline
+          UnderlineDouble = onlyTrue props.UnderlineDouble
+          Strikethrough = onlyTrue props.Strikethrough
+          Color = props.Color |> Option.bind hexColor
+          FontName = props.FontName
+          FontSize = props.FontSize
+          VertAlign =
+            match props.VertAlign with
+            | XlsxReader.VertAlignSuperscript -> Some VertAlignSuperscript
+            | XlsxReader.VertAlignSubscript -> Some VertAlignSubscript
+            | XlsxReader.VertAlignBaseline -> None }
+
+    /// Value of a non-formula cell, or the result a formula cell cached in the file.
+    let private storedValue (wb: XlsxReader.Workbook) (value: XlsxReader.CellValue) : CellValue =
+        match value with
+        | XlsxReader.Error e -> CellValue.Error (e.TrimStart '#')
+        | _ ->
+            match XlsxReader.resolveValue wb value with
+            | XlsxReader.Number n -> CellValue.Number n
+            | XlsxReader.String s -> CellValue.String s
+            | XlsxReader.Boolean b -> CellValue.Boolean b
+            | XlsxReader.Date d -> CellValue.String d
+            | _ -> CellValue.Empty
+
+    /// A formula cell keeps the result the file cached for it: that is what
+    /// Excel shows on open, and it stays correct where our engine lacks a
+    /// function. Only a formula the file has no result for is left with an
+    /// Empty value, for the workbook-level pass to compute.
+    let private cellValue (wb: XlsxReader.Workbook) (cell: XlsxReader.Cell) : CellValue =
+        match cell.Formula, cell.Value with
+        | Some formula, XlsxReader.Formula _ when not (String.IsNullOrWhiteSpace formula) -> CellValue.Formula (formula, CellValue.Empty)
+        | Some formula, value when not (String.IsNullOrWhiteSpace formula) -> CellValue.Formula (formula, storedValue wb value)
+        | None, XlsxReader.Formula formula when not (String.IsNullOrWhiteSpace formula) -> CellValue.Formula (formula, CellValue.Empty)
+        | _, value ->
+            match storedValue wb value with
+            | CellValue.String "" -> CellValue.Empty
+            | other -> other
+
+    let private tableFills (workbook: XlsxReader.Workbook) (styleName: string) : string * string =
+        // Excel's TableStyle{Light,Medium,Dark}N cycle through black and the six accents (N mod 7).
+        let mutable n = 0
+        let mutable any = false
+        for ch in styleName do
+            if Char.IsDigit ch && n < 100000 then
+                any <- true
+                n <- n * 10 + (int ch - int '0')
+        let n = if any then n else 2
+        let slot = (max 1 n - 1) % 7
+        let accent =
+            if slot = 0 || slot - 1 >= workbook.ThemeAccents.Length then "000000"
+            else workbook.ThemeAccents.[slot - 1]
+        "#" + accent, "#" + XlsxReader.Xlsx.applyColorTint accent 0.8
+
+    let private tables (workbook: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : Table list * Map<string, string list> =
+        let mutable columns = Map.empty<string, string list>
+        let converted =
+            sheet.Tables
+            |> List.map (fun t ->
+                columns <- Map.add t.Name t.Columns columns
+                let style =
+                    t.Style
+                    |> Option.map (fun s ->
+                        // HeaderFill / StripeFill make `applyTableStyles` paint the
+                        // table at render time; nothing is baked into the cells.
+                        let headerFill, stripeFill = tableFills workbook s.Name
+                        ({ Name = s.Name
+                           ShowFirstColumn = s.ShowFirstColumn
+                           ShowLastColumn = s.ShowLastColumn
+                           ShowRowStripes = s.ShowRowStripes
+                           ShowColumnStripes = s.ShowColumnStripes
+                           HeaderFill = Some headerFill
+                           StripeFill = Some stripeFill } : TableStyle))
+                ({ Name = t.Name
+                   StartRow = t.StartRow
+                   StartCol = t.StartCol
+                   EndRow = t.EndRow
+                   EndCol = t.EndCol
+                   HeaderRowCount = t.HeaderRowCount
+                   Style = style
+                   AutoFilter = t.AutoFilter
+                   HasTotals = t.TotalsRowCount > 0 } : Table))
+        converted, columns
+
+    /// The sheet's conditional formatting as model rules, kept by range (a
+    /// whole-column rule stays one).
+    let private conditionalFormats (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : ConditionalFormatRange list =
+        sheet.ConditionalFormats
+        |> List.map (fun cf ->
+            ({ Sqref = cf.Range
+               Rules =
+                cf.Rules
+                |> List.map (fun rule ->
+                    let dxf =
+                        rule.DxfId
+                        |> Option.bind (fun id -> if id >= 0 && id < wb.Dxfs.Length then Some wb.Dxfs.[id] else None)
+                    ({ Type = rule.Type
+                       Operator = rule.Operator
+                       Formulas = rule.Formulas
+                       Text = rule.Text
+                       Rank = rule.Rank
+                       Percent = rule.Percent
+                       Bottom = rule.Bottom
+                       AboveAverage = rule.AboveAverage
+                       EqualAverage = rule.EqualAverage
+                       StdDev = rule.StdDev
+                       ColorScale = rule.ColorScale |> List.map (fun stop -> stop.CfvoType, stop.CfvoValue, stop.Color)
+                       DataBarColor = rule.DataBarColor
+                       DataBarCfvo = rule.DataBarCfvo
+                       IconSet = rule.IconSet
+                       IconSetCfvo = rule.IconSetCfvo
+                       IconSetReverse = rule.IconSetReverse
+                       Priority = rule.Priority
+                       StopIfTrue = rule.StopIfTrue
+                       Style =
+                        dxf |> Option.map (fun d ->
+                            ({ FontColor = d.FontColor |> Option.bind hexColor
+                               FillColor = d.FillColor |> Option.bind hexColor
+                               Bold = (d.Bold = Some true)
+                               Italic = (d.Italic = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
+        |> CF.ofOoxml
+
+    let private validationOoxml (dv: XlsxReader.DataValidation) : CF.OoxmlValidation =
+        { Type = dv.ValidationType
+          Operator = dv.Operator
+          Formula1 = dv.Formula1
+          Formula2 = dv.Formula2
+          AllowBlank = dv.AllowBlank
+          ShowErrorMessage = dv.ShowErrorMessage
+          ShowInputMessage = dv.ShowInputMessage
+          ErrorStyle = dv.ErrorStyle
+          ErrorTitle = dv.ErrorTitle
+          Error = dv.ErrorMessage
+          PromptTitle = dv.PromptTitle
+          Prompt = dv.Prompt }
+
+    /// Validations with a literal definition become rules now; list validations
+    /// that point at a range or a name are returned as pending.
+    let private validations (maxRow: int) (maxCol: int) (sheet: XlsxReader.Worksheet) : Map<CellAddress, DataValidation> * PendingList list =
+        let mutable rules = Map.empty<CellAddress, DataValidation>
+        let pending = ResizeArray<PendingList>()
+        for dv in sheet.DataValidations do
+            let bounds = parseSqref maxRow maxCol dv.Range
+            let anchor : CellAddress =
+                if bounds.Length > 0 then (let (sr, sc, _, _) = bounds.[0] in { Row = sr; Col = sc })
+                else { Row = 0; Col = 0 }
+            let ooxml = validationOoxml dv
+            match CF.validationRuleOfOoxml ooxml with
+            | Some rule ->
+                let validation = CF.validationWithOoxml anchor ooxml rule
+                for (sr, sc, er, ec) in bounds do
+                    for r in sr .. er do
+                        for c in sc .. ec do
+                            rules <- Map.add { Row = r; Col = c } validation rules
+            | None ->
+                match ooxml.Type, ooxml.Formula1 with
+                | "list", Some source ->
+                    // The alert settings travel with the pending list; its
+                    // values are filled in once the source can be read.
+                    pending.Add { Bounds = bounds; Source = source.Trim()
+                                  Template = CF.validationWithOoxml anchor ooxml (ListValues []) }
+                | _ -> ()
+        rules, List.ofSeq pending
+
+    let private pageSetup (sheet: XlsxReader.Worksheet) : PageSetup =
+        let setup =
+            match sheet.PageSetup with
+            | None -> defaultPageSetup
+            | Some p ->
+                let w, h =
+                    p.PaperSize
+                    |> Option.map paperSizePoints
+                    |> Option.defaultValue (defaultPageSetup.PageWidth, defaultPageSetup.PageHeight)
+                { defaultPageSetup with
+                    PageWidth = w
+                    PageHeight = h
+                    Orientation = (match p.Orientation with XlsxReader.OrientationLandscape -> LandscapeOrientation | _ -> PortraitOrientation)
+                    FitToPage = p.FitToPage
+                    FitToWidth = p.FitToWidth
+                    FitToHeight = p.FitToHeight
+                    Scale = p.Scale
+                    FirstPageNumber = p.FirstPageNumber
+                    UseFirstPageNumber = p.UseFirstPageNumber
+                    PageOrder = (match p.PageOrder with XlsxReader.OverThenDown -> OverThenDown | _ -> DownThenOver)
+                    BlackAndWhite = p.BlackAndWhite
+                    CellComments =
+                        match p.CellComments with
+                        | XlsxReader.CellCommentsAsDisplayed -> CellCommentsAsDisplayed
+                        | XlsxReader.CellCommentsAtEnd -> CellCommentsAtEnd
+                        | _ -> CellCommentsNone }
+        let margins =
+            sheet.PageMargins
+            |> Option.map (fun m -> ({ Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right; Header = m.Header; Footer = m.Footer } : PageMargins))
+            |> Option.defaultValue defaultPageMargins
+        let wholeSheet = parseRangeClipped 1048575 16383
+        { setup with
+            Margins = margins
+            Options =
+                { GridLines = sheet.PrintOptions.GridLines
+                  Headings = sheet.PrintOptions.Headings
+                  HorizontalCentered = sheet.PrintOptions.HorizontalCentered
+                  VerticalCentered = sheet.PrintOptions.VerticalCentered }
+            HeaderFooter =
+                { OddHeader = sheet.HeaderFooter.OddHeader
+                  OddFooter = sheet.HeaderFooter.OddFooter
+                  EvenHeader = sheet.HeaderFooter.EvenHeader
+                  EvenFooter = sheet.HeaderFooter.EvenFooter
+                  FirstHeader = sheet.HeaderFooter.FirstHeader
+                  FirstFooter = sheet.HeaderFooter.FirstFooter
+                  DifferentOddEven = sheet.HeaderFooter.DifferentOddEven
+                  DifferentFirst = sheet.HeaderFooter.DifferentFirst
+                  ScaleWithDoc = sheet.HeaderFooter.ScaleWithDoc }
+            ManualRowBreaks = sheet.RowBreaks
+            ManualColBreaks = sheet.ColBreaks
+            PrintArea =
+                sheet.PrintArea
+                |> Option.bind wholeSheet
+                |> Option.map (fun (sr, sc, er, ec) -> ({ From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } } : CellRange))
+            RepeatRows = sheet.PrintTitleRows |> Option.bind wholeSheet |> Option.map (fun (sr, _, er, _) -> sr, er)
+            RepeatCols = sheet.PrintTitleCols |> Option.bind wholeSheet |> Option.map (fun (_, sc, _, ec) -> sc, ec) }
+
+    let private importSheet (options: ImportOptions) (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : SheetImport =
+        // Used range, one-based counts: every <row> counts, with or without cells.
+        let mutable rowCount = 0
+        let mutable colCount = 0
+        for row in sheet.Rows do
+            if row.Index > rowCount then rowCount <- row.Index
+            for cell in row.Cells do
+                let col = columnIndexOfLetters cell.Reference.Column + 1
+                if col > colCount then colCount <- col
+
+        let comments = Collections.Generic.Dictionary<int * int, CellComment>()
+        let commentCells = Collections.Generic.HashSet<int * int>()
+        for c in sheet.Comments do
+            let r = c.CellRef.Row - 1
+            let col = columnIndexOfLetters c.CellRef.Column
+            if r >= 0 && col >= 0 then
+                commentCells.Add((r, col)) |> ignore
+                // The first comment of a cell is the one shown.
+                if not (comments.ContainsKey((r, col))) && not (String.IsNullOrWhiteSpace c.Text) then
+                    comments.[(r, col)] <- { Text = c.Text; Author = c.Author }
+        let dropdownRanges =
+            [| for dv in sheet.DataValidations do
+                if dv.ValidationType = "list" then
+                    for range in dv.Range.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries) do
+                        match parsePlainRange range with
+                        | Some bounds -> yield bounds
+                        | None -> () |]
+        let hasListDropdown row col =
+            dropdownRanges |> Array.exists (fun (sr, sc, er, ec) -> row >= sr && row <= er && col >= sc && col <= ec)
+
+        // One CellFormat per style of the workbook, shared by every cell that uses it.
+        let styleCache = Collections.Generic.Dictionary<int, CellFormat>()
+        let styleFormat (cell: XlsxReader.Cell) =
+            let index =
+                match cell.StyleIndex with
+                | Some idx when idx >= 0 && idx < wb.Styles.Length -> idx
+                | None when wb.Styles.Length > 0 && cell.Style.IsSome -> 0
+                | _ -> -1
+            if index < 0 then defaultFormat
+            else
+                match styleCache.TryGetValue index with
+                | true, cached -> cached
+                | false, _ ->
+                    let converted = format wb.Styles.[index]
+                    styleCache.[index] <- converted
+                    converted
+
+        let mutable cellMap = Map.empty<CellAddress, CellData>
+        let mutable richRuns = Map.empty<CellAddress, (string * RunOverride) list>
+        for row in sheet.Rows do
+            for cell in row.Cells do
+                let r = cell.Reference.Row - 1
+                let c = columnIndexOfLetters cell.Reference.Column
+                if r >= 0 && c >= 0 then
+                    let value = cellValue wb cell
+                    let baseFormat = styleFormat cell
+                    let hasComment = commentCells.Contains((r, c))
+                    let hasDropdown = hasListDropdown r c
+                    let comment =
+                        match comments.TryGetValue((r, c)) with
+                        | true, found -> Some found
+                        | false, _ -> None
+                    let cellFormat =
+                        if (hasComment || comment.IsSome) <> baseFormat.HasComment || hasDropdown <> baseFormat.HasListDropdown then
+                            { baseFormat with
+                                HasComment = baseFormat.HasComment || hasComment || comment.IsSome
+                                HasListDropdown = baseFormat.HasListDropdown || hasDropdown }
+                        else baseFormat
+                    // Keep style-only cells: Excel renders fills, borders, comment
+                    // markers and validation dropdowns even when the cell has no value.
+                    if value <> CellValue.Empty || cellFormat <> defaultFormat || comment.IsSome then
+                        let addr : CellAddress = { Row = r; Col = c }
+                        cellMap <- Map.add addr { Value = value; Format = cellFormat; Comment = comment } cellMap
+                        let runs =
+                            if not (List.isEmpty cell.InlineRuns) then cell.InlineRuns
+                            else
+                                match cell.Value with
+                                | XlsxReader.SharedString idx when idx >= 0 && idx < wb.SharedStringRuns.Length -> wb.SharedStringRuns.[idx]
+                                | _ -> []
+                        match runs with
+                        | _ :: _ :: _ -> richRuns <- Map.add addr (runs |> List.map (fun (text, props) -> text, runOverride props)) richRuns
+                        | _ -> ()
+
+        // Column widths: file units are characters, the model's are pixels (~7 px per character).
+        let defaultColWidth =
+            match sheet.Format.DefaultColWidth with
+            | Some width -> width
+            | None ->
+                match sheet.Format.BaseColWidth with
+                | Some width -> width + 1.0
+                | None -> 8.43
+        let mutable columnWidths = Map.empty<int, float>
+        if colCount > 0 then
+            let widths = Array.create colCount defaultColWidth
+            for column in sheet.Columns do
+                let first = max 0 (column.Index - 1)
+                let last = min (colCount - 1) (column.MaxIndex - 1)
+                if first <= last then
+                    let width = if column.Hidden then 0.0 else column.Width |> Option.defaultValue 0.0
+                    for col = first to last do
+                        widths.[col] <- width
+            for col in 0 .. colCount - 1 do
+                if widths.[col] > 0.0 then columnWidths <- Map.add col (widths.[col] * 7.0) columnWidths
+        // Row heights: points in the file, pixels in the model.
+        let defaultRowHeight = sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
+        let mutable rowHeights = Map.empty<int, float>
+        if rowCount > 0 then
+            let heights = Array.create rowCount defaultRowHeight
+            for row in sheet.Rows do
+                let index = row.Index - 1
+                if index >= 0 && index < rowCount then
+                    heights.[index] <- row.Height |> Option.defaultValue defaultRowHeight
+            for row in 0 .. rowCount - 1 do
+                if heights.[row] > 0.0 then rowHeights <- Map.add row (heights.[row] * 1.333) rowHeights
+        // A size of 0 is how the model marks a hidden row / column.
+        for row in sheet.Rows do
+            if row.Hidden then rowHeights <- Map.add (row.Index - 1) 0.0 rowHeights
+        for column in sheet.Columns do
+            // A hidden range can run to the last column (16384); only the ones near the data matter.
+            if column.Hidden then
+                for idx in column.Index .. min column.MaxIndex (column.Index + 1023) do
+                    columnWidths <- Map.add (idx - 1) 0.0 columnWidths
+
+        let merged =
+            sheet.MergedCells
+            |> List.choose (fun m ->
+                let sr = m.StartRef.Row - 1
+                let sc = columnIndexOfLetters m.StartRef.Column
+                let er = m.EndRef.Row - 1
+                let ec = columnIndexOfLetters m.EndRef.Column
+                if sr >= 0 && sc >= 0 && er >= 0 && ec >= 0 then Some ({ StartRow = sr; StartCol = sc; EndRow = er; EndCol = ec } : MergedCell) else None)
+
+        let modelRows = max (rowCount + options.ExtraRows) options.MinRows
+        let modelCols = max (colCount + options.ExtraCols) options.MinCols
+
+        // Rules over whole columns / rows are stored per cell, so they are
+        // clipped to the used range plus room to grow.
+        let ruleRows = max rowCount 100 + 200 - 1
+        let ruleCols = max colCount 26 + 50 - 1
+        let rules, pendingLists = validations ruleRows ruleCols sheet
+        let sheetTables, tableColumns = tables wb sheet
+
+        // Link cells are shown the way Excel styles them.
+        for link in sheet.Hyperlinks do
+            match parseRangeClipped (modelRows - 1) (modelCols - 1) link.Range with
+            | Some (sr, sc, er, ec) when (er - sr + 1) * (ec - sc + 1) <= 4096 ->
+                for r in sr .. er do
+                    for c in sc .. ec do
+                        let addr : CellAddress = { Row = r; Col = c }
+                        match Map.tryFind addr cellMap with
+                        | Some data ->
+                            let linkFormat =
+                                { data.Format with
+                                    TextColor = data.Format.TextColor |> Option.orElse (Some "#0563C1")
+                                    Underline = true }
+                            cellMap <- Map.add addr { data with Format = linkFormat } cellMap
+                        | None -> ()
+            | _ -> ()
+
+        let model =
+            { createEmpty modelRows modelCols with
+                Cells = cellMap
+                RichRuns = richRuns
+                MergedCells = merged
+                RowHeights = rowHeights
+                ColumnWidths = columnWidths
+                Tables = sheetTables
+                FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
+                FrozenCols = sheet.FrozenPane |> Option.map (fun p -> p.XSplit) |> Option.defaultValue 0
+                ShowGridLines = sheet.ShowGridLines
+                Validations = rules
+                ConditionalFormats = conditionalFormats wb sheet
+                PageSetup = pageSetup sheet }
+        { Model = model
+          PendingLists = pendingLists
+          TableColumns = tableColumns
+          State = sheetStateText sheet.State }
+
+    /// Values of a list validation's source range. `lookupSheet None` is the
+    /// sheet that owns the validation.
+    let private resolveListSource (lookupSheet: string option -> SpreadsheetModel option) (lookupName: string -> string option) (source: string) : string list option =
+        let rec resolve (depth: int) (text: string) =
+            let text = (if text.StartsWith "=" then text.Substring 1 else text).Trim()
+            let sheetName, rangeText =
+                match text.LastIndexOf '!' with
+                | -1 -> None, text
+                | idx ->
+                    let raw = text.Substring(0, idx)
+                    let name =
+                        if raw.Length >= 2 && raw.StartsWith "'" && raw.EndsWith "'" then raw.Substring(1, raw.Length - 2).Replace("''", "'")
+                        else raw
+                    Some name, text.Substring(idx + 1)
+            match lookupSheet sheetName with
+            | None -> None
+            | Some model ->
+                match parseRangeClipped (model.RowCount - 1) (model.ColCount - 1) rangeText with
+                | Some (sr, sc, er, ec) ->
+                    [ for r in sr .. er do
+                        for c in sc .. ec do
+                            let shown = displayValue (getCellValue { Row = r; Col = c } model)
+                            if shown <> "" then yield shown ]
+                    |> Some
+                | None ->
+                    // Not a range: a defined name whose refers-to is one.
+                    if depth > 0 || sheetName.IsSome then None
+                    else lookupName text |> Option.bind (resolve (depth + 1))
+        resolve 0 source
+
+    let private applyPendingLists (lookupSheet: string option -> SpreadsheetModel option) (lookupName: string -> string option) (pending: PendingList list) (model: SpreadsheetModel) : SpreadsheetModel =
+        let mutable rules = model.Validations
+        let mutable changed = false
+        for item in pending do
+            match resolveListSource lookupSheet lookupName item.Source with
+            | Some values when not (List.isEmpty values) ->
+                let validation = { item.Template with Rule = ListValues values }
+                for (sr, sc, er, ec) in item.Bounds do
+                    for r in sr .. er do
+                        for c in sc .. ec do
+                            rules <- Map.add { Row = r; Col = c } validation rules
+                            changed <- true
+            | _ -> ()
+        if changed then { model with Validations = rules } else model
+
+    let private isUncached (cell: CellData) =
+        match cell.Value with
+        | CellValue.Formula (_, CellValue.Empty) -> true
+        | _ -> false
+
+    /// Compute the formulas the file carries no result for (workbooks written by
+    /// libraries rather than by Excel). The calculation runs over the WHOLE
+    /// workbook - a sheet recalculated on its own turns every cross-sheet
+    /// reference into #REF! and every defined name into #NAME? - and afterwards
+    /// every formula that did have a cached result gets it back, so values Excel
+    /// computed are never replaced by ours.
+    let private computeUncachedFormulas (context: Wb.Workbook) : Wb.Workbook =
+        let needsWork =
+            context.Sheets |> Map.exists (fun _ sheet -> sheet.Model.Cells |> Map.exists (fun _ cell -> isUncached cell))
+        if not needsWork then context
+        else
+            let recalculated = Rbt.Spreadsheet.Formula.recalculateWorkbook context
+            let sheets =
+                recalculated.Sheets
+                |> Map.map (fun id sheet ->
+                    match Map.tryFind id context.Sheets with
+                    | None -> sheet
+                    | Some original ->
+                        let mutable cells = sheet.Model.Cells
+                        for KeyValue(addr, cell) in original.Model.Cells do
+                            match cell.Value with
+                            | CellValue.Formula (_, cached) when cached <> CellValue.Empty ->
+                                cells <- Map.add addr cell cells
+                            | _ -> ()
+                        { sheet with Model = { sheet.Model with Cells = cells } })
+            { recalculated with Sheets = sheets }
+
+    /// Defined names of a reader workbook, keyed as the workbook context keys them.
+    let private definedNames (wb: XlsxReader.Workbook) =
+        wb.NamedRanges
+        |> List.map (fun entry ->
+            let scope =
+                entry.Scope
+                |> Option.bind (fun text ->
+                    match Int32.TryParse text with
+                    | true, index -> Some (sheetIdOfIndex index)
+                    | _ -> None)
+            scope, entry.Name, entry.RefersTo)
+        |> Wb.namesOfTriples
+
+    /// Convert a loaded workbook: every sheet, plus the workbook context.
+    /// Throws when the workbook has no sheets.
+    let importWorkbookWith (options: ImportOptions) (wb: XlsxReader.Workbook) : ImportedWorkbook =
+        let readerSheets = List.toArray wb.Sheets
+        if readerSheets.Length = 0 then failwith "XLSX workbook has no worksheets"
+        let names = readerSheets |> Array.map (fun sheet -> sheet.Name)
+        let imports = readerSheets |> Array.map (importSheet options wb)
+        let names' = definedNames wb
+
+        // List validations that point at a range or a name, now that every sheet exists.
+        let lookupName (index: int) (name: string) =
+            let key = name.ToUpperInvariant()
+            Map.tryFind (Some (sheetIdOfIndex index), key) names'
+            |> Option.orElse (Map.tryFind (None, key) names')
+        let models =
+            imports
+            |> Array.mapi (fun index import ->
+                let lookupSheet (name: string option) =
+                    match name with
+                    | None -> Some import.Model
+                    | Some name ->
+                        names
+                        |> Array.tryFindIndex (fun n -> String.Equals(n, name, StringComparison.OrdinalIgnoreCase))
+                        |> Option.map (fun i -> imports.[i].Model)
+                applyPendingLists lookupSheet (lookupName index) import.PendingLists import.Model)
+
+        let visible = imports |> Array.map (fun import -> import.State = "visible")
+        let tableColumns =
+            imports |> Array.fold (fun acc import -> Map.fold (fun m k v -> Map.add k v m) acc import.TableColumns) Map.empty
+        let firstVisible = visible |> Array.tryFindIndex id |> Option.defaultValue 0
+        let context =
+            buildWorkbookContext models names visible tableColumns names' firstVisible
+            |> computeUncachedFormulas
+        let finalModels =
+            Array.init names.Length (fun index ->
+                match Map.tryFind (sheetIdOfIndex index) context.Sheets with
+                | Some sheet -> sheet.Model
+                | None -> models.[index])
+        { Sheets =
+            names
+            |> Array.mapi (fun index name ->
+                ({ Name = name
+                   Model = finalModels.[index]
+                   State = imports.[index].State
+                   Visible = visible.[index] } : ImportedSheet))
+          Context = context
+          Date1904 = wb.Date1904
+          Source = { Workbook = wb; Baseline = finalModels; BaselineNames = context.Names } }
+
+    let importWorkbook (wb: XlsxReader.Workbook) : ImportedWorkbook =
+        importWorkbookWith defaultImportOptions wb
+
+    /// One sheet, with only that sheet as the context of its formulas - use
+    /// `importWorkbook` when other sheets or defined names matter.
+    let importSheetWith (options: ImportOptions) (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : SpreadsheetModel =
+        let import = importSheet options wb sheet
+        let model =
+            applyPendingLists (fun name -> if name.IsNone then Some import.Model else None) (fun _ -> None) import.PendingLists import.Model
+        let context =
+            buildWorkbookContext [| model |] [| sheet.Name |] [| true |] import.TableColumns Map.empty 0
+            |> computeUncachedFormulas
+        match Map.tryFind (sheetIdOfIndex 0) context.Sheets with
+        | Some entry -> entry.Model
+        | None -> model
+
+// ---------------------------------------------------------------------------
+// Export: models -> writer workbook
+// ---------------------------------------------------------------------------
+
+/// What `Export.toWorkbookOut` writes.
+type ExportInput = {
+    /// Every sheet's current model, in sheet order.
+    Sheets: SpreadsheetModel array
+    Names: string array
+    /// Parallel to `Sheets`; a missing entry counts as visible.
+    Visible: bool array
+    ActiveSheetIndex: int
+    /// Defined names as the workbook context keys them: (scope sheet id, UPPER name) -> refers-to.
+    DefinedNames: Map<Wb.SheetId option * string, string>
+    /// The workbook the sheets came from, when they came from a file.
+    Source: XlsxSource option
+    /// VBA module source to write as the workbook's VBA project (native hosts).
+    Macros: string option
+}
+
+module Export =
+
+    let private border (b: BorderStyle option) =
+        b |> Option.map (fun side -> ({ Style = side.Style; Color = side.Color } : XlsxWriter.XlsxBorderSide))
+
+    let private format (f: CellFormat) : XlsxWriter.XlsxCellFormat =
+        { XlsxWriter.defaultXlsxCellFormat with
+            Bold = f.Bold
+            Italic = f.Italic
+            Underline = f.Underline
+            UnderlineDouble = f.UnderlineDouble
+            Strikethrough = f.Strikethrough
+            FontName = f.FontName
+            TextColor = f.TextColor
+            FillColor = f.BgColor
+            FontSize = f.FontSize |> Option.map float
+            NumberFormat = f.NumberFormat
+            HorizontalAlign = f.HorizontalAlign
+            VerticalAlign = f.VerticalAlign
+            WrapText = f.WrapText
+            Indent = f.Indent
+            ShrinkToFit = f.ShrinkToFit
+            TextRotation = f.TextRotation
+            BorderTop = border f.BorderTop
+            BorderBottom = border f.BorderBottom
+            BorderLeft = border f.BorderLeft
+            BorderRight = border f.BorderRight
+            BorderDiagonal = border f.BorderDiagonal
+            DiagonalUp = f.DiagonalUp
+            DiagonalDown = f.DiagonalDown }
+
+    let private richRun (text: string, r: RunOverride) : XlsxWriter.XlsxRichRun =
+        { Text = text
+          Bold = r.Bold
+          Italic = r.Italic
+          Underline = r.Underline
+          UnderlineDouble = r.UnderlineDouble
+          Strikethrough = r.Strikethrough
+          Color = r.Color
+          FontName = r.FontName
+          FontSize = r.FontSize
+          VertAlign =
+            match r.VertAlign with
+            | Some VertAlignSuperscript -> Some XlsxWriter.XlsxSuperscript
+            | Some VertAlignSubscript -> Some XlsxWriter.XlsxSubscript
+            | Some VertAlignBaseline -> Some XlsxWriter.XlsxBaseline
+            | None -> None }
+
+    /// A formula is written without its leading "=", with the value the editor holds for it.
+    let rec private value (richRuns: XlsxWriter.XlsxRichRun list) (v: CellValue) : XlsxWriter.XlsxCellValue =
+        match v with
+        | CellValue.Empty -> XlsxWriter.XlsxBlank
+        | CellValue.Number n -> XlsxWriter.XlsxNumber n
+        | CellValue.String s -> XlsxWriter.XlsxText (s, richRuns)
+        | CellValue.Boolean b -> XlsxWriter.XlsxBoolean b
+        | CellValue.Error e -> XlsxWriter.XlsxError (if e.StartsWith "#" then e else "#" + e)
+        | CellValue.Formula (expr, cached) ->
+            let text = if expr.StartsWith "=" then expr.Substring 1 else expr
+            match value [] cached with
+            | XlsxWriter.XlsxBlank -> XlsxWriter.XlsxFormula (text, None)
+            | result -> XlsxWriter.XlsxFormula (text, Some result)
+
+    /// The sheet's validations, grouped back into ranges.
+    let private validations (model: SpreadsheetModel) : XlsxWriter.XlsxDataValidation list =
+        CF.validationsToOoxml model.Validations
+        |> List.map (fun (sqref, dv) ->
+            ({ Sqref = sqref
+               ValidationType = dv.Type
+               Operator = dv.Operator
+               Formula1 = dv.Formula1
+               Formula2 = dv.Formula2
+               AllowBlank = dv.AllowBlank
+               ShowDropDown = true
+               ErrorMessage = dv.Error
+               InputMessage = dv.Prompt
+               ErrorTitle = dv.ErrorTitle
+               PromptTitle = dv.PromptTitle
+               ErrorStyle = dv.ErrorStyle
+               ShowErrorMessage = dv.ShowErrorMessage
+               ShowInputMessage = dv.ShowInputMessage } : XlsxWriter.XlsxDataValidation))
+
+    /// The sheet's conditional formats in the writer's shape. Each rule's
+    /// style becomes a `<dxf>`; `dxfIndex` hands out its index in the
+    /// workbook-wide table.
+    let private conditionalFormats (dxfIndex: XlsxReader.Dxf -> int) (model: SpreadsheetModel) : XlsxReader.ConditionalFormat list =
+        CF.toOoxml model.ConditionalFormats
+        |> List.map (fun cf ->
+            ({ Range = cf.Sqref
+               Rules =
+                cf.Rules
+                |> List.map (fun rule ->
+                    ({ Type = rule.Type
+                       Operator = rule.Operator
+                       Formulas = rule.Formulas
+                       DxfId =
+                        rule.Style |> Option.map (fun style ->
+                            dxfIndex { FontColor = style.FontColor |> Option.map (fun c -> c.TrimStart '#')
+                                       FillColor = style.FillColor |> Option.map (fun c -> c.TrimStart '#')
+                                       Bold = (if style.Bold then Some true else None)
+                                       Italic = (if style.Italic then Some true else None) })
+                       ColorScale = rule.ColorScale |> List.map (fun (kind, stopValue, color) -> ({ CfvoType = kind; CfvoValue = stopValue; Color = color } : XlsxReader.CfColorStop))
+                       DataBarColor = rule.DataBarColor
+                       DataBarCfvo = rule.DataBarCfvo
+                       Text = rule.Text
+                       IconSet = rule.IconSet
+                       IconSetCfvo = rule.IconSetCfvo
+                       IconSetReverse = rule.IconSetReverse
+                       Rank = rule.Rank
+                       Percent = rule.Percent
+                       Bottom = rule.Bottom
+                       AboveAverage = rule.AboveAverage
+                       EqualAverage = rule.EqualAverage
+                       StdDev = rule.StdDev
+                       Priority = rule.Priority
+                       StopIfTrue = rule.StopIfTrue } : XlsxReader.ConditionalFormatRule)) } : XlsxReader.ConditionalFormat))
+
+    let private textAt row col (model: SpreadsheetModel) =
+        let addr : CellAddress = { Row = row; Col = col }
+        match Map.tryFind addr model.Cells with
+        | Some data when displayValue data.Value <> "" -> displayValue data.Value
+        | _ -> sprintf "Column%d" (col + 1)
+
+    let private table (model: SpreadsheetModel) (t: Table) : XlsxWriter.XlsxTableOut =
+        { Name = t.Name
+          StartRow = t.StartRow
+          StartCol = t.StartCol
+          EndRow = t.EndRow
+          EndCol = t.EndCol
+          Columns = [ for c in t.StartCol - 1 .. t.EndCol - 1 -> textAt (t.StartRow - 1) c model ]
+          HeaderRowCount = t.HeaderRowCount
+          TotalsRowCount = if t.HasTotals then 1 else 0
+          AutoFilter = t.AutoFilter
+          Style =
+            t.Style |> Option.map (fun s ->
+                ({ Name = s.Name
+                   ShowFirstColumn = s.ShowFirstColumn
+                   ShowLastColumn = s.ShowLastColumn
+                   ShowRowStripes = s.ShowRowStripes
+                   ShowColumnStripes = s.ShowColumnStripes } : XlsxWriter.XlsxTableStyle)) }
+
+    let private margins (m: PageMargins) : XlsxWriter.XlsxPageMargins =
+        { Top = m.Top; Bottom = m.Bottom; Left = m.Left; Right = m.Right; Header = m.Header; Footer = m.Footer }
+
+    let private pageSetup (paperSize: int option) (p: PageSetup) : XlsxWriter.XlsxPageSetup =
+        { Orientation = Some (match p.Orientation with LandscapeOrientation -> "landscape" | PortraitOrientation -> "portrait")
+          FitToPage = p.FitToPage
+          FitToWidth = p.FitToWidth
+          FitToHeight = p.FitToHeight
+          Scale = p.Scale
+          PaperSize = paperSize
+          FirstPageNumber = p.FirstPageNumber
+          UseFirstPageNumber = p.UseFirstPageNumber
+          PageOrder = Some (match p.PageOrder with OverThenDown -> "overThenDown" | DownThenOver -> "downThenOver")
+          BlackAndWhite = p.BlackAndWhite
+          CellComments =
+            match p.CellComments with
+            | CellCommentsAsDisplayed -> Some "asDisplayed"
+            | CellCommentsAtEnd -> Some "atEnd"
+            | CellCommentsNone -> None }
+
+    let private printOptions (p: PrintOptions) : XlsxWriter.XlsxPrintOptions =
+        { GridLines = p.GridLines; Headings = p.Headings; HorizontalCentered = p.HorizontalCentered; VerticalCentered = p.VerticalCentered }
+
+    let private headerFooter (h: HeaderFooter) : XlsxWriter.XlsxHeaderFooter =
+        { OddHeader = h.OddHeader; OddFooter = h.OddFooter; EvenHeader = h.EvenHeader; EvenFooter = h.EvenFooter
+          FirstHeader = h.FirstHeader; FirstFooter = h.FirstFooter; DifferentOddEven = h.DifferentOddEven
+          DifferentFirst = h.DifferentFirst; ScaleWithDoc = h.ScaleWithDoc }
+
+    let private rangeRef (r: CellRange) =
+        sprintf "$%s$%d:$%s$%d" (columnToLetter r.From.Col) (r.From.Row + 1) (columnToLetter r.To.Col) (r.To.Row + 1)
+
+    let private cellOut (model: SpreadsheetModel) (addr: CellAddress) (data: CellData) : XlsxWriter.XlsxCellOut =
+        let runs = model.RichRuns |> Map.tryFind addr |> Option.map (List.map richRun) |> Option.defaultValue []
+        { Row = addr.Row
+          Col = addr.Col
+          Value = value runs data.Value
+          Format = format data.Format
+          Comment = data.Comment |> Option.map (fun c -> c.Text, c.Author) }
+
+    /// A sheet written from its model alone.
+    let private modelSheet (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
+        { Name = name
+          State = state
+          Cells = model.Cells |> Map.toList |> List.map (fun (addr, data) -> cellOut model addr data)
+          MergedCells = model.MergedCells |> List.map (fun m -> ({ StartRow = m.StartRow; StartCol = m.StartCol; EndRow = m.EndRow; EndCol = m.EndCol } : XlsxWriter.MergedCellRange))
+          ColumnWidths = model.ColumnWidths |> Map.toList |> List.map (fun (c, px) -> c, px / 7.0)
+          RowHeights = model.RowHeights |> Map.toList |> List.map (fun (r, px) -> r, px / 1.333)
+          FrozenRows = model.FrozenRows
+          FrozenCols = model.FrozenCols
+          ShowGridLines = model.ShowGridLines
+          Tables = model.Tables |> List.map (table model)
+          DataValidations = validations model
+          ConditionalFormats = conditionalFormats dxfIndex model
+          Hyperlinks = []
+          PageMargins = Some (margins model.PageSetup.Margins)
+          PageSetup = Some (pageSetup None model.PageSetup)
+          PrintOptions = Some (printOptions model.PageSetup.Options)
+          HeaderFooter = Some (headerFooter model.PageSetup.HeaderFooter)
+          RowBreaks = model.PageSetup.ManualRowBreaks
+          ColBreaks = model.PageSetup.ManualColBreaks
+          PrintArea = model.PageSetup.PrintArea |> Option.map rangeRef
+          PrintTitleRows = model.PageSetup.RepeatRows |> Option.map (fun (a, b) -> sprintf "$%d:$%d" (a + 1) (b + 1))
+          PrintTitleCols = model.PageSetup.RepeatCols |> Option.map (fun (a, b) -> sprintf "$%s:$%s" (columnToLetter a) (columnToLetter b))
+          Extras = XlsxReader.emptySheetExtras }
+
+    let private sameRef (a: 'T) (b: 'T) = obj.ReferenceEquals(a, b)
+
+    /// The same formula, its value now an error where the file had a result:
+    /// a function this engine lacks. The file's value stands.
+    let private onlyBecameError (before: CellData) (after: CellData) =
+        match before.Value, after.Value with
+        | CellValue.Formula (formulaBefore, cachedBefore), CellValue.Formula (formulaAfter, CellValue.Error _) ->
+            formulaBefore = formulaAfter
+            && (match cachedBefore with CellValue.Error _ -> false | _ -> true)
+            && before.Format = after.Format
+            && before.Comment = after.Comment
+        | _ -> false
+
+    /// Sizes for the file: what the file had, with every index whose size the
+    /// user changed since the import replaced by the model's size.
+    let private patchSizes (original: (int * float) list) (before: Map<int, float>) (after: Map<int, float>) (pixelsPerUnit: float) (defaultPixels: float) =
+        if sameRef before after then original
+        else
+            let mutable sizes = Map.ofList original
+            for KeyValue(index, pixels) in after do
+                match Map.tryFind index before with
+                | Some previous when previous = pixels -> ()
+                | _ -> sizes <- Map.add index (pixels / pixelsPerUnit) sizes
+            for KeyValue(index, _) in before do
+                if not (Map.containsKey index after) then
+                    // Back to the model's default size.
+                    sizes <- Map.add index (defaultPixels / pixelsPerUnit) sizes
+            Map.toList sizes
+
+    /// A sheet that came from a file: the model's current state, with
+    /// everything the user left alone written as the file had it.
+    let private sourcedSheet (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState)
+                             (original: XlsxWriter.XlsxSheetOut) (readerSheet: XlsxReader.Worksheet)
+                             (before: SpreadsheetModel) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
+        let fromModel = modelSheet dxfIndex name state model
+        let cells =
+                let originals = Collections.Generic.Dictionary<int * int, XlsxWriter.XlsxCellOut>()
+                for cell in original.Cells do originals.[(cell.Row, cell.Col)] <- cell
+                model.Cells
+                |> Map.toList
+                |> List.map (fun (addr, data) ->
+                    let untouched =
+                        match Map.tryFind addr before.Cells with
+                        | Some previous ->
+                            (sameRef previous data || previous = data || onlyBecameError previous data)
+                            && Map.tryFind addr before.RichRuns = Map.tryFind addr model.RichRuns
+                        | None -> false
+                    match untouched, originals.TryGetValue((addr.Row, addr.Col)) with
+                    | true, (true, kept) -> kept
+                    | _ -> cellOut model addr data)
+        let unchanged (pick: SpreadsheetModel -> 'T) = sameRef (pick before) (pick model) || pick before = pick model
+        { fromModel with
+            Cells = cells
+            ColumnWidths = patchSizes original.ColumnWidths before.ColumnWidths model.ColumnWidths 7.0 100.0
+            RowHeights = patchSizes original.RowHeights before.RowHeights model.RowHeights 1.333 25.0
+            Tables = if unchanged (fun m -> m.Tables) then original.Tables else fromModel.Tables
+            // A list validation whose values come from a range is expanded on
+            // import; unchanged validations go back as the file states them.
+            DataValidations = if sameRef before.Validations model.Validations then original.DataValidations else fromModel.DataValidations
+            ConditionalFormats = if sameRef before.ConditionalFormats model.ConditionalFormats then original.ConditionalFormats else fromModel.ConditionalFormats
+            Hyperlinks = original.Hyperlinks
+            PageMargins = if before.PageSetup.Margins = model.PageSetup.Margins then original.PageMargins else fromModel.PageMargins
+            PageSetup =
+                if unchanged (fun m -> m.PageSetup) then original.PageSetup
+                else Some (pageSetup (readerSheet.PageSetup |> Option.bind (fun p -> p.PaperSize)) model.PageSetup)
+            PrintOptions = if before.PageSetup.Options = model.PageSetup.Options then original.PrintOptions else fromModel.PrintOptions
+            HeaderFooter = if before.PageSetup.HeaderFooter = model.PageSetup.HeaderFooter then original.HeaderFooter else fromModel.HeaderFooter
+            PrintArea = if before.PageSetup.PrintArea = model.PageSetup.PrintArea then original.PrintArea else fromModel.PrintArea
+            PrintTitleRows = if before.PageSetup.RepeatRows = model.PageSetup.RepeatRows then original.PrintTitleRows else fromModel.PrintTitleRows
+            PrintTitleCols = if before.PageSetup.RepeatCols = model.PageSetup.RepeatCols then original.PrintTitleCols else fromModel.PrintTitleCols
+            Extras = original.Extras }
+
+    /// The defined names to write. Names that still read as imported are
+    /// written as the file had them (their spelling and order); otherwise
+    /// from the workbook context, with the file's spelling where it has one.
+    let private definedNamesOut (input: ExportInput) : XlsxWriter.XlsxDefinedName list =
+        let sheetIndexOfId (id: Wb.SheetId) =
+            let mutable found = None
+            for i in 0 .. input.Sheets.Length - 1 do
+                if found.IsNone && sheetIdOfIndex i = id then found <- Some i
+            found
+        let fromSource (source: XlsxSource) =
+            source.Workbook.NamedRanges
+            |> List.map (fun n ->
+                ({ Name = n.Name
+                   RefersTo = n.RefersTo
+                   LocalSheetIndex = n.Scope |> Option.bind (fun s -> match Int32.TryParse s with | true, v -> Some v | _ -> None) } : XlsxWriter.XlsxDefinedName))
+        match input.Source with
+        | Some source when sameRef source.BaselineNames input.DefinedNames || source.BaselineNames = input.DefinedNames -> fromSource source
+        | _ ->
+            let spelling =
+                match input.Source with
+                | Some source -> source.Workbook.NamedRanges |> List.map (fun n -> n.Name.ToUpperInvariant(), n.Name) |> Map.ofList
+                | None -> Map.empty
+            // Print areas and titles are written from each sheet's page setup.
+            let isPrintName (name: string) = name.StartsWith "_XLNM.PRINT_"
+            input.DefinedNames
+            |> Map.toList
+            |> List.choose (fun ((scope, upperName), refersTo) ->
+                if isPrintName upperName then None
+                else
+                    let local = scope |> Option.bind sheetIndexOfId
+                    if scope.IsSome && local.IsNone then None
+                    else
+                        Some ({ Name = Map.tryFind upperName spelling |> Option.defaultValue upperName
+                                RefersTo = (if refersTo.StartsWith "=" then refersTo.Substring 1 else refersTo)
+                                LocalSheetIndex = local } : XlsxWriter.XlsxDefinedName))
+
+    /// The editor's workbook in the writer's shape (see the module comment).
+    let toWorkbookOut (input: ExportInput) : XlsxWriter.XlsxWorkbookOut =
+        let original = input.Source |> Option.map (fun source -> XlsxWriter.packageFromReaderWorkbook source.Workbook)
+        // Rules kept from the file refer to the file's dxfs by index, so those
+        // keep their places; styles of new rules are added behind them.
+        let dxfs = ResizeArray<XlsxReader.Dxf>()
+        match original with
+        | Some package -> dxfs.AddRange package.Dxfs
+        | None -> ()
+        let dxfIndex (dxf: XlsxReader.Dxf) =
+            match dxfs.IndexOf dxf with
+            | -1 -> dxfs.Add dxf; dxfs.Count - 1
+            | index -> index
+        let nameOf index = if index < input.Names.Length then input.Names.[index] else sprintf "Sheet%d" (index + 1)
+        let visibleAt index = index >= input.Visible.Length || input.Visible.[index]
+        // A sheet of the source is found by name; sheets cannot be reordered
+        // without also being renamed apart, so the name is the identity.
+        let sourceSheets =
+            match input.Source, original with
+            | Some source, Some package ->
+                let readerSheets = List.toArray source.Workbook.Sheets
+                let outSheets = List.toArray package.Sheets
+                [ for i in 0 .. readerSheets.Length - 1 do
+                    if i < outSheets.Length && i < source.Baseline.Length then
+                        yield readerSheets.[i].Name.ToUpperInvariant(), (readerSheets.[i], outSheets.[i], source.Baseline.[i]) ]
+                |> Map.ofList
+            | _ -> Map.empty
+        // A renamed sheet is still the file's sheet at its position, as long
+        // as no sheet was added or removed.
+        let sourceByIndex =
+            match input.Source, original with
+            | Some source, Some package when source.Workbook.Sheets.Length = input.Sheets.Length ->
+                let readerSheets = List.toArray source.Workbook.Sheets
+                let outSheets = List.toArray package.Sheets
+                fun index ->
+                    if index < outSheets.Length && index < source.Baseline.Length then Some (readerSheets.[index], outSheets.[index], source.Baseline.[index])
+                    else None
+            | _ -> fun _ -> None
+        let sheets =
+            input.Sheets
+            |> Array.mapi (fun index model ->
+                let name = nameOf index
+                match Map.tryFind (name.ToUpperInvariant()) sourceSheets |> Option.orElse (sourceByIndex index) with
+                | Some (readerSheet, outSheet, before) ->
+                    // Hidden and very hidden are both "no tab" to the editor.
+                    let state =
+                        match visibleAt index, readerSheet.State with
+                        | true, _ -> XlsxReader.SheetVisible
+                        | false, XlsxReader.SheetVisible -> XlsxReader.SheetHidden
+                        | false, hidden -> hidden
+                    sourcedSheet dxfIndex name state outSheet readerSheet before model
+                | None ->
+                    modelSheet dxfIndex name (if visibleAt index then XlsxReader.SheetVisible else XlsxReader.SheetHidden) model)
+            |> Array.toList
+        { Sheets = sheets
+          ActiveSheetIndex = max 0 (min (input.Sheets.Length - 1) input.ActiveSheetIndex)
+          DefinedNames = definedNamesOut input
+          VbaProjectSource = input.Macros |> Option.bind (fun source -> if String.IsNullOrWhiteSpace source then None else Some source)
+          Dxfs = List.ofSeq dxfs
+          Preserved =
+            match input.Source with
+            | Some source -> source.Workbook.Preserved
+            | None -> XlsxReader.emptyWorkbookPreservation }

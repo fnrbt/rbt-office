@@ -594,9 +594,16 @@ type SheetExtras = {
     /// Relationships of the sheet's drawing part that the objects refer to
     /// (id, type, absolute target or external URL, external).
     DrawingRelationships: (string * string * string * bool) list
+    /// The sheet's `<sheetFormatPr>` (default column width and row height),
+    /// for the writer: None writes Excel's defaults. `XlsxWriter.
+    /// packageFromReaderWorkbook` fills it in from `Worksheet.Format`.
+    Format: SheetFormat option
+    /// The sheet's `<col>` definitions as the file has them (ranges, default
+    /// cell style), likewise filled in by `packageFromReaderWorkbook`.
+    Columns: ColumnInfo list
 }
 
-let emptySheetExtras = { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = [] }
+let emptySheetExtras = { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = [] }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -4017,7 +4024,7 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
                 let threads =
                     partsOfType "/threadedComment"
                     |> List.collect (fun threadXml -> try readThreadedComments persons threadXml with _ -> [])
-                let extras = { Images = images; Objects = objects; ThreadedComments = threads; DrawingRelationships = drawingRels }
+                let extras = { emptySheetExtras with Images = images; Objects = objects; ThreadedComments = threads; DrawingRelationships = drawingRels }
                 // A fresh context per sheet: shared-formula groups are sheet-local.
                 let ctx = Xlsx.newSheetContext (Some styles) header.Date1904
                 let viaDom () =

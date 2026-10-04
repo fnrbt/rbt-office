@@ -1164,8 +1164,10 @@ let private pagePartsXml (sheet: XlsxSheetOut) =
                 yield sprintf "scale=\"%d\"" p.Scale
                 yield sprintf "fitToWidth=\"%d\"" p.FitToWidth
                 yield sprintf "fitToHeight=\"%d\"" p.FitToHeight
-                if p.UseFirstPageNumber then
+                // The number is stated whenever it is not the default, used or not.
+                if p.UseFirstPageNumber || p.FirstPageNumber <> 1 then
                     yield sprintf "firstPageNumber=\"%d\"" p.FirstPageNumber
+                if p.UseFirstPageNumber then
                     yield "useFirstPageNumber=\"1\""
                 match p.PageOrder with Some po -> yield attr "pageOrder" po | None -> ()
                 if p.BlackAndWhite then yield "blackAndWhite=\"1\""
@@ -1310,6 +1312,20 @@ let private personsXml (persons: (string * string * string * string) list) =
         |> String.concat ""
     sprintf "%s\n<personList xmlns=\"%s\" xmlns:x=\"%s\">%s</personList>" declaration threadedCommentsNamespace Namespaces.spreadsheet body
 
+/// `<sheetFormatPr>`: the file's default column width and row height when the
+/// sheet came from a file, Excel's defaults otherwise.
+let private sheetFormatXml (sheet: XlsxSheetOut) =
+    match sheet.Extras.Format with
+    | None -> "<sheetFormatPr defaultRowHeight=\"15\"/>"
+    | Some format ->
+        let attrs = [
+            match format.BaseColWidth with Some width -> yield sprintf "baseColWidth=\"%s\"" (invariant width) | None -> ()
+            match format.DefaultColWidth with Some width -> yield sprintf "defaultColWidth=\"%s\"" (invariant width) | None -> ()
+            yield sprintf "defaultRowHeight=\"%s\"" (invariant (format.DefaultRowHeight |> Option.defaultValue 15.0))
+            if format.CustomDefaultHeight then yield "customHeight=\"1\""
+        ]
+        sprintf "<sheetFormatPr %s/>" (String.concat " " attrs)
+
 let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (sheet: XlsxSheetOut) =
     let hasFitToPage = sheet.PageSetup |> Option.exists (fun p -> p.FitToPage)
     let sheetPr = if hasFitToPage then "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>" else ""
@@ -1318,7 +1334,7 @@ let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (shee
     + sheetPr
     + sprintf "<dimension ref=\"%s\"/>" (sheetDimension sheet)
     + sheetViewsXml sheet active
-    + "<sheetFormatPr defaultRowHeight=\"15\"/>"
+    + sheetFormatXml sheet
     + colsXml sheet
     + ("<sheetData>" + rowsXml styles sharedIndex sheet + "</sheetData>")
     // Child order is fixed by CT_Worksheet; Excel refuses a part that
@@ -1869,7 +1885,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
               PrintArea = sheet.PrintArea
               PrintTitleRows = sheet.PrintTitleRows
               PrintTitleCols = sheet.PrintTitleCols
-              Extras = sheet.Extras })
+              Extras = { sheet.Extras with Format = Some sheet.Format; Columns = sheet.Columns } })
       ActiveSheetIndex = 0
       DefinedNames = workbook.NamedRanges |> List.map (fun n -> { Name = n.Name; RefersTo = n.RefersTo; LocalSheetIndex = n.Scope |> Option.bind (fun s -> match System.Int32.TryParse s with true, v -> Some v | _ -> None) })
       VbaProjectSource = None
