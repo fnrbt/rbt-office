@@ -3806,6 +3806,43 @@ let private noteMark (noteType: string) (id: string) =
         | _ -> id
     else id
 
+/// What was set at run level, next to the effective values the run object
+/// carries: null = inherited from the styles, true/false (or a size) = set.
+/// The editor needs the difference to let a run switch a style's formatting
+/// off, and the writer to leave inherited formatting out of the file.
+///
+/// "Run level" is the run's own w:rPr plus the paragraph's w:pPr/w:rPr, which
+/// resolvedRunProperties applies to the paragraph's runs (it is also how a table
+/// style's run formatting reaches the cell text): neither comes from a named
+/// style the editor could resolve again, so both are direct formatting to it.
+let private explicitRunFields (styleMap: Map<string, StyleDefinition>) (paraProps: ParagraphProperties) (run: Run) =
+    let props =
+        match run.Content with
+        | Link link -> link.Properties
+        | _ -> run.Properties
+    let mark = paraProps.ParagraphRunProperties |> Option.defaultValue emptyRunProperties
+    let effective = lazy (resolvedRunProperties styleMap paraProps props)
+    let onOff (pick: RunProperties -> bool option) =
+        match pick props with
+        | Some value -> Some value
+        | None when (pick mark).IsSome -> Some (effectiveOnOff (pick effective.Value))
+        | None -> None
+    [
+        "HasExplicit" ==> true
+        "ExplicitBold" ==> onOff (fun p -> p.Bold)
+        "ExplicitItalic" ==> onOff (fun p -> p.Italic)
+        "ExplicitUnderline" ==> onOff (fun p -> p.Underline)
+        "ExplicitAllCaps" ==> onOff (fun p -> p.AllCaps)
+        "ExplicitSmallCaps" ==> onOff (fun p -> p.SmallCaps)
+        "ExplicitStrike" ==> onOff (fun p -> p.Strike)
+        "ExplicitDoubleStrike" ==> onOff (fun p -> p.DoubleStrike)
+        "ExplicitHidden" ==> onOff (fun p -> p.Hidden)
+        "ExplicitFontSize" ==>
+            (if props.FontSize.IsSome then Some (wordFontSizeToPoints props.FontSize)
+             elif mark.FontSize.IsSome then Some (wordFontSizeToPoints effective.Value.FontSize)
+             else None)
+    ]
+
 let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
     let styleMap = buildStyleMap styles
     let _, documentDefaultParagraphProperties = resolveStyle styleMap (Some Styles.defaultStyleId)
@@ -3832,7 +3869,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 para.Runs
                 |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
                 || effectiveParaProps.SectionBreak = Some "nextPage"
-            let bookmarkRunProps (run: Run) = [
+            let bookmarkRunProps (run: Run) = explicitRunFields styleMap effectiveParaProps run @ [
                 "BookmarkStartId" ==> (run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id))
                 "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
                 "BookmarkEndId" ==> run.BookmarkEnd
@@ -4093,6 +4130,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 "StyleWidowControl" ==> effectiveParaProps.WidowControl
                 "StyleContextualSpacing" ==> effectiveParaProps.ContextualSpacing
                 "Alignment" ==> (effectiveParaProps.Alignment |> Option.defaultValue "left")
+                "HasExplicit" ==> true
+                "ExplicitAlignment" ==> para.Properties.Alignment
                 "ListStyle" ==> listStyle
                 "ListLevel" ==> listLevel
                 "ListId" ==> (effectiveParaProps.ListInfo |> Option.map (fun info -> info.ListId))
@@ -4114,7 +4153,7 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                     para.Runs
                     |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
                     || effectiveParaProps.SectionBreak = Some "nextPage"
-                let bookmarkRunProps (run: Run) = [
+                let bookmarkRunProps (run: Run) = explicitRunFields styleMap effectiveParaProps run @ [
                     "BookmarkStartId" ==> (run.BookmarkStart |> Option.map (fun bookmark -> bookmark.Id))
                     "BookmarkName" ==> (run.BookmarkStart |> Option.bind (fun bookmark -> bookmark.Name))
                     "BookmarkEndId" ==> run.BookmarkEnd
@@ -4360,6 +4399,8 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                     "StyleWidowControl" ==> effectiveParaProps.WidowControl
                     "StyleContextualSpacing" ==> effectiveParaProps.ContextualSpacing
                     "Alignment" ==> (effectiveParaProps.Alignment |> Option.defaultValue "left")
+                    "HasExplicit" ==> true
+                    "ExplicitAlignment" ==> para.Properties.Alignment
                     "ListStyle" ==>
                         (match effectiveListInfo effectiveParaProps with
                          | Some info -> match info.NumberFormat with | Some "bullet" -> "bullet" | _ -> "numbered"

@@ -146,6 +146,29 @@ const docs = [
         ],
     },
     {
+        // Direct formatting that switches a style's formatting off must be written
+        // (w:val="0", the 11pt size, w:jc left); formatting a run merely inherits must not.
+        name: 'synthetic/explicit-off',
+        body:
+            `<w:p><w:pPr><w:pStyle w:val="Loud"/></w:pPr><w:r><w:t xml:space="preserve">inherits </w:t></w:r><w:r><w:rPr><w:b w:val="0"/><w:sz w:val="22"/></w:rPr><w:t>quiet</w:t></w:r></w:p>` +
+            p('left under centred', '<w:pStyle w:val="Loud"/><w:jc w:val="left"/>') + p('plain'),
+        extra: {
+            'word/styles.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles ${W}><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Loud"><w:name w:val="Loud"/><w:basedOn w:val="Normal"/><w:pPr><w:jc w:val="center"/></w:pPr><w:rPr><w:b/><w:i/><w:sz w:val="40"/></w:rPr></w:style></w:styles>`,
+        },
+        expect: [
+            { part: 'word/document.xml', has: '<w:b w:val="0"/>[^>]*(<[^t][^>]*>)*<w:sz w:val="22"/>' },
+            { part: 'word/document.xml', has: '<w:jc w:val="left"/>' },
+            { part: 'word/document.xml', lacks: '<w:i( w:val="0")?/>' }, { part: 'word/document.xml', lacks: '<w:b/>' },
+            { part: 'word/document.xml', lacks: '<w:sz w:val="40"/>' }, { part: 'word/document.xml', lacks: '<w:jc w:val="center"/>' },
+            { part: 'word/document.xml', lacks: '<w:u ' }, { part: 'word/document.xml', lacks: '<w:caps' },
+            { part: 'word/styles.xml', has: '<w:b/><w:i/>' }, { part: 'word/styles.xml', has: '<w:jc w:val="center"/>' },
+            { read: 'pkg.Paragraphs.0.Runs.1.ExplicitBold', equals: null }, { read: 'pkg.Paragraphs.0.Runs.1.Bold', equals: null },
+            { read: 'pkg.Paragraphs.0.Runs.0.Bold', equals: true }, { read: 'pkg.Paragraphs.0.Runs.0.FontSize', equals: 26.667 },
+            { read: 'pkg.Paragraphs.0.Runs.1.FontSize', equals: 14.667 }, { read: 'pkg.Paragraphs.0.Alignment', equals: 'center' },
+            { read: 'pkg.Paragraphs.1.Alignment', equals: 'left' },
+        ],
+    },
+    {
         name: 'synthetic/reader-structure',
         body:
             `<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>` +

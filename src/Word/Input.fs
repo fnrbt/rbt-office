@@ -230,7 +230,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && keyEquals 'b' key ->
             let beforeDoc = handler.Document
-            let afterDoc = Doc.toggleBold handler.Document
+            let afterDoc = WordStyles.toggleBold handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "bold") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -240,7 +240,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && keyEquals 'i' key ->
             let beforeDoc = handler.Document
-            let afterDoc = Doc.toggleItalic handler.Document
+            let afterDoc = WordStyles.toggleItalic handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "italic") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
@@ -250,7 +250,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && keyEquals 'u' key ->
             let beforeDoc = handler.Document
-            let afterDoc = Doc.toggleUnderline handler.Document
+            let afterDoc = WordStyles.toggleUnderline handler.Document
             if not (documentsEqualForChange afterDoc beforeDoc) then
                 let cmd = FormatTextCommand(beforeDoc, afterDoc, "underline") :> ICommand
                 let (doc', hist') = Cmd.execute cmd beforeDoc handler.History

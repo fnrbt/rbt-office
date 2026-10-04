@@ -1821,7 +1821,9 @@ let boldFlags buffer = buffer.Runs |> List.choose (function Text tr -> Some (tr.
 let mixedBold = ofString "Hello World" |> applyStyle 0 5 (fun style -> { style with Bold = true })
 check "toggle bold on mixed range sets all" (boldFlags (toggleBold 0 11 mixedBold)) [ 11, true ]
 check "toggle bold on all-bold range clears" (boldFlags (toggleBold 0 11 (toggleBold 0 11 mixedBold))) [ 11, false ]
-check "toggle bold on bold part clears it" (boldFlags (toggleBold 0 5 mixedBold)) [ 11, false ]
+// The cleared part is explicit non-bold (it must stay non-bold under a bold
+// style), the rest was never set, so they are distinct runs.
+check "toggle bold on bold part clears it" (boldFlags (toggleBold 0 5 mixedBold)) [ 5, false; 6, false ]
 check "toggle italic on mixed range sets all"
     ((ofString "abcd" |> applyStyle 2 2 (fun style -> { style with Italic = true }) |> toggleItalic 0 4).Runs
      |> List.choose (function Text tr -> Some (tr.Length, tr.Style.Italic) | Image _ -> None))
@@ -1896,8 +1898,14 @@ check "heading leaves unselected paragraph"
 check "clear heading across selection"
     ((Doc.clearHeading headedDoc).Blocks |> List.map (function Doc.Heading (level, _) -> level | Doc.Paragraph _ -> 0 | _ -> -1))
     [ 0; 0; -1; 0 ]
+// Align-left on a paragraph whose alignment was never set records explicit
+// left; repeating the command then changes nothing.
+let leftAlignedOnce = Doc.alignLeft paragraphCommandDoc
+check "align left is recorded as explicit"
+    (metadataOf leftAlignedOnce pcIds (fun m -> m.Alignment, m.ExplicitAlignment))
+    [ Some (Doc.Left, true); Some (Doc.Left, true); Some (Doc.Left, true); Some (Doc.Left, false) ]
 check "paragraph command without change keeps document"
-    (obj.ReferenceEquals(Doc.alignLeft paragraphCommandDoc, paragraphCommandDoc))
+    (obj.ReferenceEquals(Doc.alignLeft leftAlignedOnce, leftAlignedOnce))
     true
 
 // Left/Right continue into the neighbouring paragraph, table cells included.
@@ -1911,6 +1919,64 @@ check "arrow left at document start stays" (focusOf (Doc.moveCursorLeft (caretAt
 check "arrow right at document end stays" (focusOf (Doc.moveCursorRight (caretAt "pc4" 4))) (Some ("pc4", 4, "pc4", 4))
 check "shift right extends into next paragraph" (focusOf (Doc.extendSelectionRight (caretAt "pc1" 3))) (Some ("pc1", 3, "pc2", 0))
 check "shift left extends into previous paragraph" (focusOf (Doc.extendSelectionLeft (caretAt "pc2" 0))) (Some ("pc2", 0, "pc1", 3))
+
+// --- explicit vs unset formatting -------------------------------------------
+// A run must be able to switch off what its style switches on, to be 11 units
+// under a larger style, and a paragraph to be left-aligned under a centred style.
+module WS = Rbt.Word.WordStyles
+let loudStyle : Doc.NamedStyle =
+    { pageBreakNamedStyle "paragraph" "Loud" None with
+        Text = Some { defaultStyle with Bold = true; Italic = true; Underline = true; Strike = true; AllCaps = true; FontSize = 20.0 }
+        TextBold = Some true
+        TextItalic = Some true
+        Alignment = Some Doc.Center }
+let loudPara id buffer : Doc.ParagraphBlock = { para id buffer with Metadata = { Doc.defaultMetadata with Style = Some "Loud" } }
+let loudDoc buffer =
+    { Doc.empty with
+        Styles = [ loudStyle ]
+        Blocks = [ Doc.Paragraph (loudPara "loud" buffer) ]
+        Selection = Some { Anchor = pos "loud" 0; Focus = pos "loud" (length buffer) } }
+let loudEffective (doc: Doc.Document) =
+    let p = Doc.findParagraph doc "loud" |> Option.get
+    let style = WS.forBlockInDocument doc (Doc.Paragraph p)
+    (WS.effectiveBufferInDocument doc style p.Buffer).Runs
+    |> List.choose (function Text tr -> Some tr.Style | Image _ -> None)
+let unsetLoud = loudDoc (ofString "shout")
+check "unset run inherits style toggles"
+    (loudEffective unsetLoud |> List.map (fun s -> s.Bold, s.Italic, s.Underline, s.Strike, s.AllCaps, s.FontSize))
+    [ true, true, true, true, true, 20.0 ]
+let quietBuffer =
+    ofString "shout"
+    |> applyStyle 0 5 (withExplicitBold false >> withExplicitItalic false >> withExplicitUnderline false >> withExplicitStrike false >> withExplicitAllCaps false >> withExplicitFontSize defaultStyle.FontSize)
+check "explicit off and explicit default size override the style"
+    (loudEffective (loudDoc quietBuffer) |> List.map (fun s -> s.Bold, s.Italic, s.Underline, s.Strike, s.AllCaps, s.FontSize))
+    [ false, false, false, false, false, defaultStyle.FontSize ]
+check "legacy non-default run values still win"
+    (loudEffective (loudDoc (ofString "shout" |> applyStyle 0 5 (fun s -> { s with FontSize = 9.0 }))) |> List.map (fun s -> s.Bold, s.FontSize))
+    [ true, 9.0 ]
+// Toggling bold on text that is bold through its style turns it off, explicitly.
+let loudToggled = WS.toggleBold unsetLoud
+check "toggle bold off under bold style is explicit non-bold"
+    ((Doc.findParagraph loudToggled "loud" |> Option.get).Buffer.Runs
+     |> List.choose (function Text tr -> Some (tr.Style.Bold, ExplicitFormat.has ExplicitFormat.Bold tr.Style) | Image _ -> None))
+    [ false, true ]
+check "toggle bold off under bold style renders non-bold" (loudEffective loudToggled |> List.map (fun s -> s.Bold, s.Italic)) [ false, true ]
+check "toggle bold again restores bold" (loudEffective (WS.toggleBold loudToggled) |> List.map (fun s -> s.Bold)) [ true ]
+check "raw toggle sets the explicit flag"
+    ((toggleBold 0 5 (ofString "plain")).Runs |> List.choose (function Text tr -> Some (tr.Style.Bold, tr.Style.Explicit) | Image _ -> None))
+    [ true, ExplicitFormat.Bold ]
+check "set font size to the default size is explicit"
+    (loudEffective (Doc.setFontSize defaultStyle.FontSize unsetLoud) |> List.map (fun s -> s.FontSize))
+    [ defaultStyle.FontSize ]
+check "clear formatting returns to unset"
+    (loudEffective (Doc.clearFormatting (loudDoc quietBuffer)) |> List.map (fun s -> s.Bold, s.FontSize))
+    [ true, 20.0 ]
+let loudMeta (doc: Doc.Document) =
+    let p = Doc.findParagraph doc "loud" |> Option.get
+    (WS.effectiveMetadata (WS.forBlockInDocument doc (Doc.Paragraph p)) p.Metadata).Alignment
+check "unset alignment inherits centred style" (loudMeta unsetLoud) Doc.Center
+check "explicit left beats centred style" (loudMeta (Doc.alignLeft unsetLoud)) Doc.Left
+check "explicit right beats centred style" (loudMeta (Doc.alignRight unsetLoud)) Doc.Right
 
 // removed: command-history retention/budget tests targeted the deleted cache machinery (RetainedSourceTextCharCount, trimHistory)
 printfn ""

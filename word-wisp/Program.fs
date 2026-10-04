@@ -82,8 +82,8 @@ let main argv =
           ToggleBullet = (fun () -> EH.edit st toggleBulletList); ToggleNumbered = (fun () -> EH.edit st toggleNumberedList)
           ApplyNumberFormat = ignore
           IncreaseListIndent = (fun () -> EH.edit st increaseIndent); DecreaseListIndent = (fun () -> EH.edit st decreaseIndent)
-          ToggleBold = (fun () -> EH.edit st toggleBold); ToggleItalic = (fun () -> EH.edit st toggleItalic)
-          ToggleUnderline = (fun () -> EH.edit st toggleUnderline); ToggleAllCaps = ignore
+          ToggleBold = (fun () -> EH.edit st Rbt.Word.WordStyles.toggleBold); ToggleItalic = (fun () -> EH.edit st Rbt.Word.WordStyles.toggleItalic)
+          ToggleUnderline = (fun () -> EH.edit st Rbt.Word.WordStyles.toggleUnderline); ToggleAllCaps = ignore
           ToggleSmallCaps = ignore; ToggleStrike = ignore; ClearFormatting = ignore; ApplyVertAlign = ignore
           ApplyAlignment = (fun a -> EH.edit st (alignFn a)); ApplyFontFamily = ignore; ApplyFontSize = ignore
           ApplyTextColor = ignore; ApplyHighlight = ignore }

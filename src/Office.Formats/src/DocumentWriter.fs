@@ -254,18 +254,45 @@ type private RunExtras = {
     /// Baseline shift in points (reader: w:position half-points / 2).
     Position: float
     EmphasisMark: string option
+    /// The run object says which on/off properties and size were set directly
+    /// on the run (ExplicitX: null = inherited, true/false = set). Without it
+    /// (callers that only have effective formatting) everything is written.
+    HasExplicit: bool
+    ExplicitBold: bool option
+    ExplicitItalic: bool option
+    ExplicitUnderline: bool option
+    ExplicitAllCaps: bool option
+    ExplicitSmallCaps: bool option
+    ExplicitStrike: bool option
+    ExplicitDoubleStrike: bool option
+    ExplicitHidden: bool option
+    ExplicitFontSize: float option
 }
 
 let private noRunExtras =
     { StyleId = None; AllCaps = false; SmallCaps = false; DoubleStrike = false; Hidden = false
-      UnderlineStyle = None; UnderlineColor = None; Position = 0.0; EmphasisMark = None }
+      UnderlineStyle = None; UnderlineColor = None; Position = 0.0; EmphasisMark = None
+      HasExplicit = false; ExplicitBold = None; ExplicitItalic = None; ExplicitUnderline = None
+      ExplicitAllCaps = None; ExplicitSmallCaps = None; ExplicitStrike = None; ExplicitDoubleStrike = None
+      ExplicitHidden = None; ExplicitFontSize = None }
 
-/// The editor run carries *effective* formatting (style and document defaults
-/// already merged in by the reader), so "not bold" has to be written as an
-/// explicit w:val="0": leaving the element out would hand the property back to
-/// the paragraph style and e.g. make every run of a bold heading style bold.
+/// An on/off property written as direct formatting. "Off" has to be an
+/// explicit w:val="0": leaving the element out hands the property back to the
+/// paragraph style and e.g. makes a non-bold run of a bold heading style bold.
 let private toggle name (isOn: bool) =
     if isOn then selfClosing name [] else selfClosing name [("w:val", "0")]
+
+/// A run object that says what was set directly on the run (HasExplicit) gets
+/// exactly that written: on, w:val="0" for explicit off, nothing for a property
+/// it inherits. A run object with effective formatting only (style and
+/// document defaults already merged in, as the reader used to deliver alone)
+/// gets every property spelled out, since "not bold" may be an override there.
+let private runToggle (extras: RunExtras) name (explicitValue: bool option) (effective: bool) =
+    if extras.HasExplicit then
+        match explicitValue with
+        | Some isOn -> [toggle name isOn]
+        | None -> []
+    else [toggle name effective]
 
 /// Run properties in CT_RPr (EG_RPrBase) sequence order. Word rejects or
 /// silently repairs w:rPr whose children are out of order, so the order of the
@@ -277,13 +304,13 @@ let private orderedRunProps (extras: RunExtras) (run: EditorRun) : string list =
         | Some styleId when styleId <> "" -> yield selfClosing "w:rStyle" [("w:val", styleId)]
         | _ -> ()
         yield selfClosing "w:rFonts" [("w:ascii", run.FontFamily); ("w:hAnsi", run.FontFamily); ("w:cs", run.FontFamily)]
-        yield toggle "w:b" run.Bold
-        yield toggle "w:i" run.Italic
-        yield toggle "w:caps" extras.AllCaps
-        yield toggle "w:smallCaps" extras.SmallCaps
-        yield toggle "w:strike" run.Strike
-        yield toggle "w:dstrike" extras.DoubleStrike
-        yield toggle "w:vanish" extras.Hidden
+        yield! runToggle extras "w:b" extras.ExplicitBold run.Bold
+        yield! runToggle extras "w:i" extras.ExplicitItalic run.Italic
+        yield! runToggle extras "w:caps" extras.ExplicitAllCaps extras.AllCaps
+        yield! runToggle extras "w:smallCaps" extras.ExplicitSmallCaps extras.SmallCaps
+        yield! runToggle extras "w:strike" extras.ExplicitStrike run.Strike
+        yield! runToggle extras "w:dstrike" extras.ExplicitDoubleStrike extras.DoubleStrike
+        yield! runToggle extras "w:vanish" extras.ExplicitHidden extras.Hidden
         match InverseConversion.cssColorToWord run.Color with
         | Some color -> yield selfClosing "w:color" [("w:val", color)]
         | None -> ()
@@ -291,13 +318,17 @@ let private orderedRunProps (extras: RunExtras) (run: EditorRun) : string list =
             yield selfClosing "w:spacing" [("w:val", InverseConversion.pixelsToTwips run.CharacterSpacing)]
         if abs extras.Position >= 0.001 then
             yield selfClosing "w:position" [("w:val", InverseConversion.pointsToHalfPoints extras.Position)]
-        let sz = InverseConversion.pixelsToHalfPoints run.FontSize
-        yield selfClosing "w:sz" [("w:val", sz)]
-        yield selfClosing "w:szCs" [("w:val", sz)]
+        match (if extras.HasExplicit then extras.ExplicitFontSize else Some run.FontSize) with
+        | Some size ->
+            let sz = InverseConversion.pixelsToHalfPoints size
+            yield selfClosing "w:sz" [("w:val", sz)]
+            yield selfClosing "w:szCs" [("w:val", sz)]
+        | None -> ()
         match run.Highlight with
         | Some color -> yield selfClosing "w:highlight" [("w:val", color)]
         | None -> ()
-        if run.Underline then
+        let underline = if extras.HasExplicit then extras.ExplicitUnderline else Some run.Underline
+        if underline = Some true then
             let style =
                 match extras.UnderlineStyle with
                 | Some value when value <> "" && value <> "none" -> value
@@ -307,7 +338,7 @@ let private orderedRunProps (extras: RunExtras) (run: EditorRun) : string list =
                 | Some value when value <> "AUTO" -> [("w:color", value)]
                 | _ -> []
             yield selfClosing "w:u" (("w:val", style) :: color)
-        else
+        elif underline = Some false then
             yield selfClosing "w:u" [("w:val", "none")]
         match run.VertAlign with
         | Some value when value = "superscript" || value = "subscript" -> yield selfClosing "w:vertAlign" [("w:val", value)]
@@ -377,6 +408,16 @@ let private runExtrasFromObject (runObj: obj) = {
     UnderlineColor = optionalString (runObj?UnderlineColor)
     Position = floatOrDefault 0.0 (runObj?Position)
     EmphasisMark = optionalString (runObj?EmphasisMark)
+    HasExplicit = boolOrDefault false (runObj?HasExplicit)
+    ExplicitBold = optionalBool (runObj?ExplicitBold)
+    ExplicitItalic = optionalBool (runObj?ExplicitItalic)
+    ExplicitUnderline = optionalBool (runObj?ExplicitUnderline)
+    ExplicitAllCaps = optionalBool (runObj?ExplicitAllCaps)
+    ExplicitSmallCaps = optionalBool (runObj?ExplicitSmallCaps)
+    ExplicitStrike = optionalBool (runObj?ExplicitStrike)
+    ExplicitDoubleStrike = optionalBool (runObj?ExplicitDoubleStrike)
+    ExplicitHidden = optionalBool (runObj?ExplicitHidden)
+    ExplicitFontSize = optionalFloat (runObj?ExplicitFontSize)
 }
 
 let private isDeletedRun (runObj: obj) =
@@ -873,7 +914,13 @@ let private paragraphMarkRunProps (para: obj) =
 /// pageBreakBefore, widowControl, numPr, pBdr, shd, tabs, bidi, spacing, ind,
 /// contextualSpacing, jc, rPr, sectPr. Like w:rPr this is an xsd:sequence.
 let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: obj) : string =
-    let alignment = para?Alignment |> stringOrDefault "left" |> InverseConversion.alignmentToWord
+    // HasExplicit: the paragraph says whether its alignment is direct
+    // formatting (ExplicitAlignment) or inherited from the style (null).
+    let alignment =
+        if boolOrDefault false (para?HasExplicit) then
+            optionalString (para?ExplicitAlignment) |> Option.map InverseConversion.alignmentToWord
+        else
+            Some (para?Alignment |> stringOrDefault "left" |> InverseConversion.alignmentToWord)
     let spacingAttributes = [
         match optionalFloat (para?SpacingBefore) with
         | Some value -> yield ("w:before", InverseConversion.pointsToTwips value)
@@ -948,7 +995,9 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         if not spacingAttributes.IsEmpty then yield selfClosing "w:spacing" spacingAttributes
         if not indentAttributes.IsEmpty then yield selfClosing "w:ind" indentAttributes
         yield! onOff "w:contextualSpacing" (para?StyleContextualSpacing)
-        yield selfClosing "w:jc" [("w:val", alignment)]
+        match alignment with
+        | Some value -> yield selfClosing "w:jc" [("w:val", value)]
+        | None -> ()
         match paragraphMarkRunProps para with
         | Some rPr -> yield rPr
         | None -> ()

@@ -850,13 +850,13 @@ let private handleKey width height state (ev: KeyEvent) =
         | _ -> true
     | { Ctrl = true; Key = key } when key = "b" || key = "B" ->
         if hasCollapsedSelection state.Document.Value then togglePendingStyle (fun style -> { style with Bold = not style.Bold }) state
-        else applyDocumentChange state toggleBold
+        else applyDocumentChange state Rbt.Word.WordStyles.toggleBold
     | { Ctrl = true; Key = key } when key = "i" || key = "I" ->
         if hasCollapsedSelection state.Document.Value then togglePendingStyle (fun style -> { style with Italic = not style.Italic }) state
-        else applyDocumentChange state toggleItalic
+        else applyDocumentChange state Rbt.Word.WordStyles.toggleItalic
     | { Ctrl = true; Key = key } when key = "u" || key = "U" ->
         if hasCollapsedSelection state.Document.Value then togglePendingStyle (fun style -> { style with Underline = not style.Underline }) state
-        else applyDocumentChange state toggleUnderline
+        else applyDocumentChange state Rbt.Word.WordStyles.toggleUnderline
     | { Ctrl = true; Shift = true; Key = "8" } -> applyDocumentChange state toggleBulletList
     | { Ctrl = true; Shift = true; Key = "7" } -> applyDocumentChange state toggleNumberedList
     | { Ctrl = true; Shift = true; Key = key } when key = "l" || key = "L" -> applyDocumentChange state alignLeft

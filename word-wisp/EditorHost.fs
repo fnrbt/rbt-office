@@ -164,9 +164,9 @@ let handleKey (st: EditorState) (width: float) (ev: KeyEvent) : bool =
         elif isCtrl "c" then Clip.text <- getSelectionText st.Doc.Value; true
         elif isCtrl "x" then (let t = getSelectionText st.Doc.Value in if t <> "" then (Clip.text <- t; ch deleteSelection |> ignore)); true
         elif isCtrl "v" then (if Clip.text <> "" then ch (insertText Clip.text) |> ignore); true
-        elif isCtrl "b" then ch toggleBold
-        elif isCtrl "i" then ch toggleItalic
-        elif isCtrl "u" then ch toggleUnderline
+        elif isCtrl "b" then ch Rbt.Word.WordStyles.toggleBold
+        elif isCtrl "i" then ch Rbt.Word.WordStyles.toggleItalic
+        elif isCtrl "u" then ch Rbt.Word.WordStyles.toggleUnderline
         elif ev.Key = "ArrowLeft" then nh moveCursorLeft
         elif ev.Key = "ArrowRight" then nh moveCursorRight
         elif ev.Key = "Home" then nh (moveToDocumentBoundary documentStart)

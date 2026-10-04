@@ -114,6 +114,9 @@ type BlockMetadata = {
     ListLevelText: string option
     ListStart: int option
     Alignment: Alignment
+    /// True when Alignment was set directly on the paragraph. Left is also the
+    /// "unset" value, so explicit left under a centred style needs the flag.
+    ExplicitAlignment: bool
     IndentLeft: float option
     IndentRight: float option
     FirstLineIndent: float option
@@ -156,6 +159,7 @@ let defaultMetadata = {
     ListLevelText = None
     ListStart = None
     Alignment = Left
+    ExplicitAlignment = false
     IndentLeft = None
     IndentRight = None
     FirstLineIndent = None
@@ -2608,8 +2612,8 @@ let selectAll doc =
                 Focus = { BlockId = lastPara.Id; Offset = lastLen }
             } }
 
-/// Apply formatting to selection
-let applyFormattingToSelection formatFn doc =
+/// Apply formatting to selection; the formatter also gets the paragraph.
+let private applyFormattingToSelectionInParagraph (formatFn: ParagraphBlock -> int -> int -> TextBuffer.TextBuffer -> TextBuffer.TextBuffer) doc =
     match doc.Selection with
     | None -> doc
     | Some sel when sel.IsCollapsed -> doc  // No selection
@@ -2646,7 +2650,7 @@ let applyFormattingToSelection formatFn doc =
 
                     // Apply formatting
                     if formatLen > 0 then
-                        let newBuffer = formatFn formatStart formatLen para.Buffer
+                        let newBuffer = formatFn para formatStart formatLen para.Buffer
                         if sameReference newBuffer para.Buffer then para
                         else { para with Buffer = newBuffer }
                     else
@@ -2654,43 +2658,58 @@ let applyFormattingToSelection formatFn doc =
 
             mapEditableParagraphs formatParagraph doc
 
+/// Apply formatting to selection
+let applyFormattingToSelection formatFn doc =
+    applyFormattingToSelectionInParagraph (fun _ start len buffer -> formatFn start len buffer) doc
+
 /// Toggle an on/off character property over the whole selection, deciding
 /// once for all of it: clear when every selected run already has it, set
 /// otherwise. The decision spans paragraphs, so a selection covering a bold
 /// paragraph and a plain one becomes bold throughout.
-let private toggleOnSelection (isSet: TextBuffer.TextStyle -> bool) (apply: bool -> TextBuffer.TextStyle -> TextBuffer.TextStyle) doc =
+///
+/// `effective` resolves a run style against its paragraph's styles, so the
+/// decision is made on what the user sees: text that is bold only through its
+/// paragraph style counts as bold, and toggling it yields explicit non-bold.
+/// `apply` must record the value as explicit (TextBuffer.withExplicit*).
+let private toggleOnSelection (effective: ParagraphBlock -> TextBuffer.TextStyle -> TextBuffer.TextStyle) (isSet: TextBuffer.TextStyle -> bool) (apply: bool -> TextBuffer.TextStyle -> TextBuffer.TextStyle) doc =
     let mutable allSet = true
-    applyFormattingToSelection (fun start len buffer ->
-        if allSet && not (TextBuffer.rangeSatisfies start len isSet buffer) then
+    applyFormattingToSelectionInParagraph (fun para start len buffer ->
+        if allSet && not (TextBuffer.rangeSatisfies start len (fun style -> isSet (effective para style)) buffer) then
             allSet <- false
         buffer) doc
     |> ignore
     let turnOn = not allSet
     applyFormattingToSelection (fun start len buffer -> TextBuffer.applyStyle start len (apply turnOn) buffer) doc
 
-/// Toggle bold on selection
-let toggleBold doc =
-    toggleOnSelection (fun style -> style.Bold) (fun on style -> if style.Bold = on then style else { style with Bold = on }) doc
+let private rawStyle (_: ParagraphBlock) (style: TextBuffer.TextStyle) = style
+
+/// Style-aware toggles: `effective` maps a paragraph and a run style to the
+/// resolved style (see WordStyles.toggleBold and friends, which supply it).
+let toggleBoldWith effective doc = toggleOnSelection effective (fun style -> style.Bold) TextBuffer.withExplicitBold doc
+let toggleItalicWith effective doc = toggleOnSelection effective (fun style -> style.Italic) TextBuffer.withExplicitItalic doc
+let toggleUnderlineWith effective doc = toggleOnSelection effective (fun style -> style.Underline) TextBuffer.withExplicitUnderline doc
+let toggleAllCapsWith effective doc = toggleOnSelection effective (fun style -> style.AllCaps) TextBuffer.withExplicitAllCaps doc
+let toggleSmallCapsWith effective doc = toggleOnSelection effective (fun style -> style.SmallCaps) TextBuffer.withExplicitSmallCaps doc
+let toggleStrikeWith effective doc = toggleOnSelection effective (fun style -> style.Strike) TextBuffer.withExplicitStrike doc
+
+/// Toggle bold on selection (decided on the runs' own formatting; hosts with
+/// named styles should use WordStyles.toggleBold).
+let toggleBold doc = toggleBoldWith rawStyle doc
 
 /// Toggle italic on selection
-let toggleItalic doc =
-    toggleOnSelection (fun style -> style.Italic) (fun on style -> if style.Italic = on then style else { style with Italic = on }) doc
+let toggleItalic doc = toggleItalicWith rawStyle doc
 
 /// Toggle underline on selection
-let toggleUnderline doc =
-    toggleOnSelection (fun style -> style.Underline) (fun on style -> if style.Underline = on then style else { style with Underline = on }) doc
+let toggleUnderline doc = toggleUnderlineWith rawStyle doc
 
 /// Toggle all caps on selection
-let toggleAllCaps doc =
-    toggleOnSelection (fun style -> style.AllCaps) (fun on style -> { style with AllCaps = on; SmallCaps = false }) doc
+let toggleAllCaps doc = toggleAllCapsWith rawStyle doc
 
 /// Toggle small caps on selection
-let toggleSmallCaps doc =
-    toggleOnSelection (fun style -> style.SmallCaps) (fun on style -> { style with SmallCaps = on; AllCaps = false }) doc
+let toggleSmallCaps doc = toggleSmallCapsWith rawStyle doc
 
 /// Toggle strikethrough on selection
-let toggleStrike doc =
-    toggleOnSelection (fun style -> style.Strike) (fun on style -> if style.Strike = on then style else { style with Strike = on }) doc
+let toggleStrike doc = toggleStrikeWith rawStyle doc
 
 /// Clear direct character formatting on selection.
 let clearFormatting doc =
@@ -3179,7 +3198,7 @@ let decreaseIndent doc =
             metadata) doc
 
 let private setAlignment alignment doc =
-    mapSelectedMetadata (fun metadata -> { metadata with Alignment = alignment }) doc
+    mapSelectedMetadata (fun metadata -> { metadata with Alignment = alignment; ExplicitAlignment = true }) doc
 
 /// Set alignment to left
 let alignLeft doc =
@@ -3201,6 +3220,7 @@ let setCurrentParagraphStyle alignment indentLeft indentRight spacingBefore spac
     mapSelectedMetadata (fun metadata ->
         { metadata with
             Alignment = alignment
+            ExplicitAlignment = true
             IndentLeft = indentLeft
             IndentRight = indentRight
             SpacingBefore = spacingBefore

@@ -263,6 +263,45 @@ ok "default-run-size-is-11pt-in-px"
    (abs (DocumentProcessors.StyleResolution.defaultRunProps.FontSize - 11.0 * 96.0 / 72.0) < 1e-9)
    (string DocumentProcessors.StyleResolution.defaultRunProps.FontSize)
 
+// ----- explicit (direct) run and paragraph formatting for the editor ---------
+// The editor objects carry effective formatting; ExplicitX says what was set on
+// the run / paragraph itself (null = inherited), so "off" can override a style.
+let explicitStylesDoc =
+    docxWithParts
+        "<w:p><w:pPr><w:pStyle w:val=\"Loud\"/></w:pPr><w:r><w:t>inherits</w:t></w:r><w:r><w:rPr><w:b w:val=\"0\"/><w:i/><w:sz w:val=\"22\"/></w:rPr><w:t>overrides</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val=\"Loud\"/><w:jc w:val=\"left\"/></w:pPr><w:r><w:t>left</w:t></w:r></w:p>"
+        [ "word/styles.xml", sprintf "<w:styles %s><w:style w:type=\"paragraph\" w:styleId=\"Loud\"><w:name w:val=\"Loud\"/><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:rPr><w:b/><w:sz w:val=\"40\"/></w:rPr></w:style></w:styles>" wNs ]
+        []
+    |> DocxReader.loadBytesNative |> Option.get
+let explicitEditorItems =
+    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+        explicitStylesDoc.Theme explicitStylesDoc.Content explicitStylesDoc.Images explicitStylesDoc.Styles
+        explicitStylesDoc.NumberingDefinitions explicitStylesDoc.Footnotes explicitStylesDoc.Endnotes
+    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+let fieldOf (name: string) (item: System.Collections.Generic.Dictionary<string, obj>) =
+    match item.TryGetValue name with
+    | true, value -> value
+    | _ -> null
+let editorRunsOf (item: System.Collections.Generic.Dictionary<string, obj>) =
+    (fieldOf "Runs" item :?> obj array) |> Array.map (fun run -> run :?> System.Collections.Generic.Dictionary<string, obj>)
+let explicitSummary =
+    editorRunsOf explicitEditorItems.[0]
+    |> Array.map (fun run ->
+        unbox<bool> (fieldOf "Bold" run),
+        (fieldOf "ExplicitBold" run :?> bool option),
+        (fieldOf "ExplicitItalic" run :?> bool option),
+        (fieldOf "ExplicitFontSize" run :?> float option) |> Option.map (fun size -> Math.Round(size, 2)))
+    |> Array.toList
+ok "editor-run-explicit-fields"
+   (explicitSummary = [ (true, None, None, None); (false, Some false, Some true, Some 14.67) ])
+   (sprintf "%A" explicitSummary)
+let explicitAlignments =
+    explicitEditorItems
+    |> Array.map (fun item -> string (fieldOf "Alignment" item), (fieldOf "ExplicitAlignment" item :?> string option))
+    |> Array.toList
+ok "editor-paragraph-explicit-alignment"
+   (explicitAlignments = [ ("center", None); ("left", Some "left") ])
+   (sprintf "%A" explicitAlignments)
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

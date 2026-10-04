@@ -174,5 +174,44 @@ match unitParas with
     | other -> ok "native run props" false (sprintf "%d runs" other.Length)
 | other -> ok "native units paragraphs" false (sprintf "%d paragraphs" other.Length)
 
+// ---- explicit vs inherited formatting ---------------------------------------
+// w:b w:val="0", an explicit size and an explicit w:jc="left" must survive under
+// a style that is bold, large and centred.
+let syntheticDocxWithStyles (styles: string) (body: string) =
+    use stream = new IO.MemoryStream()
+    do
+        use archive = new IO.Compression.ZipArchive(stream, IO.Compression.ZipArchiveMode.Create, true)
+        let add (name: string) (text: string) =
+            use writer = new IO.StreamWriter(archive.CreateEntry(name).Open(), Text.UTF8Encoding(false))
+            writer.Write text
+        let w = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\""
+        add "[Content_Types].xml" """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"""
+        add "word/styles.xml" (sprintf "<w:styles %s>%s</w:styles>" w styles)
+        add "word/document.xml" (sprintf "<w:document %s><w:body>%s</w:body></w:document>" w body)
+    stream.ToArray()
+let loudStyleXml = """<w:style w:type="paragraph" w:styleId="Loud"><w:name w:val="Loud"/><w:pPr><w:keepNext/><w:jc w:val="center"/></w:pPr><w:rPr><w:b/><w:sz w:val="40"/></w:rPr></w:style>"""
+let explicitDoc =
+    syntheticDocxWithStyles loudStyleXml
+        ("""<w:p><w:pPr><w:pStyle w:val="Loud"/></w:pPr><w:r><w:t>inherits</w:t></w:r><w:r><w:rPr><w:b w:val="0"/><w:sz w:val="22"/></w:rPr><w:t>overrides</w:t></w:r></w:p>"""
+         + """<w:p><w:pPr><w:pStyle w:val="Loud"/><w:jc w:val="left"/></w:pPr><w:r><w:t>left</w:t></w:r></w:p>""")
+    |> DocxReader.loadBytesNative
+    |> Option.get
+    |> Rbt.Word.Import.importDoc
+let explicitParas = explicitDoc.Blocks |> List.choose (function Paragraph para | Heading (_, para) -> Some para | _ -> None)
+match explicitParas with
+| [ styled; left ] ->
+    let flags = Rbt.Word.TextBuffer.ExplicitFormat.Bold ||| Rbt.Word.TextBuffer.ExplicitFormat.FontSize
+    check "native explicit flags" (runStyles styled |> List.map (fun style -> style.Bold, style.Explicit)) [ true, 0; false, flags ]
+    let effective (para: ParagraphBlock) =
+        let style = Rbt.Word.WordStyles.forBlockInDocument explicitDoc (Paragraph para)
+        (Rbt.Word.WordStyles.effectiveBufferInDocument explicitDoc style para.Buffer).Runs
+        |> List.choose (function Rbt.Word.TextBuffer.Text run -> Some (run.Style.Bold, Math.Round(run.Style.FontSize, 2)) | _ -> None)
+    check "native explicit off overrides bold style" (effective styled) [ true, 26.67; false, 14.67 ]
+    let alignmentOf (para: ParagraphBlock) =
+        (Rbt.Word.WordStyles.effectiveMetadata (Rbt.Word.WordStyles.forBlockInDocument explicitDoc (Paragraph para)) para.Metadata).Alignment
+    check "native alignment flags" (styled.Metadata.ExplicitAlignment, left.Metadata.ExplicitAlignment) (false, true)
+    check "native explicit left overrides centred style" (alignmentOf styled, alignmentOf left) (Center, Left)
+| other -> ok "native explicit paragraphs" false (sprintf "%d paragraphs" other.Length)
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

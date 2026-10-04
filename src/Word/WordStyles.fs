@@ -45,22 +45,35 @@ type DocumentStyleContext = {
     DefaultParagraphStyleId: string option
 }
 
+/// An on/off property of `style` (the overriding run or style) against the
+/// value it would inherit. Set directly (TextStyle.Explicit) it wins either
+/// way, so a run can be non-bold under a bold style; otherwise "off" is the
+/// unset value and the inherited value shows through.
+let private inheritToggle (flag: int) (inherited: bool) (own: bool) (style: TextStyle) =
+    if ExplicitFormat.has flag style then own else inherited || own
+
+/// Font size likewise: the default size doubles as "unset" unless the run
+/// carries the explicit flag.
+let private inheritFontSize (inherited: float) (style: TextStyle) =
+    if ExplicitFormat.has ExplicitFormat.FontSize style || style.FontSize <> TextBuffer.defaultStyle.FontSize then style.FontSize
+    else inherited
+
 let private mergeTextStyle (baseStyle: TextStyle) (overrideStyle: TextStyle) =
     {
         overrideStyle with
-            Bold = baseStyle.Bold || overrideStyle.Bold
-            Italic = baseStyle.Italic || overrideStyle.Italic
-            Underline = baseStyle.Underline || overrideStyle.Underline
+            Bold = inheritToggle ExplicitFormat.Bold baseStyle.Bold overrideStyle.Bold overrideStyle
+            Italic = inheritToggle ExplicitFormat.Italic baseStyle.Italic overrideStyle.Italic overrideStyle
+            Underline = inheritToggle ExplicitFormat.Underline baseStyle.Underline overrideStyle.Underline overrideStyle
             UnderlineStyle = overrideStyle.UnderlineStyle |> Option.orElse baseStyle.UnderlineStyle
             UnderlineColor = overrideStyle.UnderlineColor |> Option.orElse baseStyle.UnderlineColor
-            AllCaps = baseStyle.AllCaps || overrideStyle.AllCaps
-            SmallCaps = baseStyle.SmallCaps || overrideStyle.SmallCaps
-            Strike = baseStyle.Strike || overrideStyle.Strike
-            DoubleStrike = baseStyle.DoubleStrike || overrideStyle.DoubleStrike
-            Hidden = baseStyle.Hidden || overrideStyle.Hidden
+            AllCaps = inheritToggle ExplicitFormat.AllCaps baseStyle.AllCaps overrideStyle.AllCaps overrideStyle
+            SmallCaps = inheritToggle ExplicitFormat.SmallCaps baseStyle.SmallCaps overrideStyle.SmallCaps overrideStyle
+            Strike = inheritToggle ExplicitFormat.Strike baseStyle.Strike overrideStyle.Strike overrideStyle
+            DoubleStrike = inheritToggle ExplicitFormat.DoubleStrike baseStyle.DoubleStrike overrideStyle.DoubleStrike overrideStyle
+            Hidden = inheritToggle ExplicitFormat.Hidden baseStyle.Hidden overrideStyle.Hidden overrideStyle
             Position = if abs overrideStyle.Position < 0.001 then baseStyle.Position else overrideStyle.Position
             EmphasisMark = overrideStyle.EmphasisMark |> Option.orElse baseStyle.EmphasisMark
-            FontSize = if overrideStyle.FontSize = TextBuffer.defaultStyle.FontSize then baseStyle.FontSize else overrideStyle.FontSize
+            FontSize = inheritFontSize baseStyle.FontSize overrideStyle
             CharacterSpacing = if abs overrideStyle.CharacterSpacing < 0.001 then baseStyle.CharacterSpacing else overrideStyle.CharacterSpacing
             FontFamily = overrideStyle.FontFamily |> Option.orElse baseStyle.FontFamily
             Color = overrideStyle.Color |> Option.orElse baseStyle.Color
@@ -371,12 +384,18 @@ let private inheritFontFamily baseStyle runStyle =
     | None -> baseStyle.FontFamily
 
 let effectiveTextStyle (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
-    let defaultStyle = TextBuffer.defaultStyle
+    let inherited = paragraphStyle.Text
     {
         runStyle with
-            Bold = paragraphStyle.Text.Bold || runStyle.Bold
-            Italic = paragraphStyle.Text.Italic || runStyle.Italic
-            FontSize = if runStyle.FontSize = defaultStyle.FontSize then paragraphStyle.Text.FontSize else runStyle.FontSize
+            Bold = inheritToggle ExplicitFormat.Bold inherited.Bold runStyle.Bold runStyle
+            Italic = inheritToggle ExplicitFormat.Italic inherited.Italic runStyle.Italic runStyle
+            Underline = inheritToggle ExplicitFormat.Underline inherited.Underline runStyle.Underline runStyle
+            AllCaps = inheritToggle ExplicitFormat.AllCaps inherited.AllCaps runStyle.AllCaps runStyle
+            SmallCaps = inheritToggle ExplicitFormat.SmallCaps inherited.SmallCaps runStyle.SmallCaps runStyle
+            Strike = inheritToggle ExplicitFormat.Strike inherited.Strike runStyle.Strike runStyle
+            DoubleStrike = inheritToggle ExplicitFormat.DoubleStrike inherited.DoubleStrike runStyle.DoubleStrike runStyle
+            Hidden = inheritToggle ExplicitFormat.Hidden inherited.Hidden runStyle.Hidden runStyle
+            FontSize = inheritFontSize inherited.FontSize runStyle
             CharacterSpacing = if abs runStyle.CharacterSpacing < 0.001 then paragraphStyle.Text.CharacterSpacing else runStyle.CharacterSpacing
             FontFamily = inheritFontFamily paragraphStyle.Text runStyle
             Color = runStyle.Color |> Option.orElse paragraphStyle.Text.Color
@@ -403,6 +422,32 @@ let effectiveTextStyleInDocument (doc: Document) (paragraphStyle: ParagraphStyle
 
 let effectiveTextStyleInContext (context: DocumentStyleContext) (paragraphStyle: ParagraphStyle) (runStyle: TextStyle) =
     effectiveTextStyleWithResolved context.ResolvedCharacterStyles paragraphStyle runStyle
+
+/// Resolves a run style of a paragraph of `doc` to what is displayed:
+/// paragraph style, character style and the run's own formatting.
+let effectiveRunStyleResolver (doc: Document) : ParagraphBlock -> TextStyle -> TextStyle =
+    let context = styleContext doc
+    let headingLevels =
+        doc.Blocks
+        |> List.choose (function
+            | Heading (level, para) -> Some (para.Id, level)
+            | _ -> None)
+        |> Map.ofList
+    fun para runStyle ->
+        let block =
+            match Map.tryFind para.Id headingLevels with
+            | Some level -> Heading (level, para)
+            | None -> Paragraph para
+        effectiveTextStyleWithResolved context.ResolvedCharacterStyles (forBlockInContext context block) runStyle
+
+/// Toggle commands decided on the effective formatting of the selection, so
+/// toggling text that is bold through its style produces explicit non-bold.
+let toggleBold (doc: Document) = Document.toggleBoldWith (effectiveRunStyleResolver doc) doc
+let toggleItalic (doc: Document) = Document.toggleItalicWith (effectiveRunStyleResolver doc) doc
+let toggleUnderline (doc: Document) = Document.toggleUnderlineWith (effectiveRunStyleResolver doc) doc
+let toggleAllCaps (doc: Document) = Document.toggleAllCapsWith (effectiveRunStyleResolver doc) doc
+let toggleSmallCaps (doc: Document) = Document.toggleSmallCapsWith (effectiveRunStyleResolver doc) doc
+let toggleStrike (doc: Document) = Document.toggleStrikeWith (effectiveRunStyleResolver doc) doc
 
 let effectiveBufferWith transformStyle (buffer: TextBuffer) =
     match buffer.Runs with
@@ -519,7 +564,11 @@ let contextualSpacingBetween (paragraphStyle: ParagraphStyle) (current: Paragrap
 
 let effectiveMetadata (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
     { metadata with
-        Alignment = if metadata.Alignment = Left then paragraphStyle.Alignment |> Option.defaultValue metadata.Alignment else metadata.Alignment
+        Alignment =
+            // Left is also the unset value; ExplicitAlignment tells direct left
+            // (which must beat a centred style) from "inherit".
+            if metadata.ExplicitAlignment || metadata.Alignment <> Left then metadata.Alignment
+            else paragraphStyle.Alignment |> Option.defaultValue metadata.Alignment
         IndentLeft = metadata.IndentLeft |> Option.orElse paragraphStyle.IndentLeft
         IndentRight = metadata.IndentRight |> Option.orElse paragraphStyle.IndentRight
         FirstLineIndent = metadata.FirstLineIndent |> Option.orElse paragraphStyle.FirstLineIndent

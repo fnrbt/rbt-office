@@ -50,7 +50,36 @@ type TextStyle = {
     RevisionAuthor: string option
     RevisionDate: string option
     VertAlign: string option
+    /// Bit set of ExplicitFormat flags: the on/off properties and the font size
+    /// that were set directly on this run. A flagged property overrides the
+    /// paragraph / character style even when its value equals the default
+    /// (non-bold under a bold style, an 11-unit run under a larger style). An
+    /// unflagged property at its default value is "unset" and inherits.
+    Explicit: int
 }
+
+/// Flags for TextStyle.Explicit.
+module ExplicitFormat =
+    [<Literal>]
+    let Bold = 1
+    [<Literal>]
+    let Italic = 2
+    [<Literal>]
+    let Underline = 4
+    [<Literal>]
+    let AllCaps = 8
+    [<Literal>]
+    let SmallCaps = 16
+    [<Literal>]
+    let Strike = 32
+    [<Literal>]
+    let DoubleStrike = 64
+    [<Literal>]
+    let Hidden = 128
+    [<Literal>]
+    let FontSize = 256
+
+    let has (flag: int) (style: TextStyle) = style.Explicit &&& flag <> 0
 
 /// Default text style
 let defaultStyle = {
@@ -92,7 +121,22 @@ let defaultStyle = {
     RevisionAuthor = None
     RevisionDate = None
     VertAlign = None
+    Explicit = 0
 }
+
+/// Set on/off character properties directly on a run: the value is recorded as
+/// explicit, so "off" survives under a style that turns the property on.
+let withExplicitBold on (style: TextStyle) = { style with Bold = on; Explicit = style.Explicit ||| ExplicitFormat.Bold }
+let withExplicitItalic on (style: TextStyle) = { style with Italic = on; Explicit = style.Explicit ||| ExplicitFormat.Italic }
+let withExplicitUnderline on (style: TextStyle) = { style with Underline = on; Explicit = style.Explicit ||| ExplicitFormat.Underline }
+let withExplicitAllCaps on (style: TextStyle) =
+    { style with AllCaps = on; SmallCaps = false; Explicit = style.Explicit ||| ExplicitFormat.AllCaps ||| ExplicitFormat.SmallCaps }
+let withExplicitSmallCaps on (style: TextStyle) =
+    { style with SmallCaps = on; AllCaps = false; Explicit = style.Explicit ||| ExplicitFormat.AllCaps ||| ExplicitFormat.SmallCaps }
+let withExplicitStrike on (style: TextStyle) = { style with Strike = on; Explicit = style.Explicit ||| ExplicitFormat.Strike }
+let withExplicitDoubleStrike on (style: TextStyle) = { style with DoubleStrike = on; Explicit = style.Explicit ||| ExplicitFormat.DoubleStrike }
+let withExplicitHidden on (style: TextStyle) = { style with Hidden = on; Explicit = style.Explicit ||| ExplicitFormat.Hidden }
+let withExplicitFontSize size (style: TextStyle) = { style with FontSize = size; Explicit = style.Explicit ||| ExplicitFormat.FontSize }
 
 let characterSpacingSlots (text: string) =
     if System.String.IsNullOrEmpty text then 0.0
@@ -1296,7 +1340,7 @@ let private textRunsInRangeHaveFontSize start len size buffer =
                 let runStart = tr.Start
                 let runEnd = tr.Start + tr.Length
                 if runEnd > start && runStart < rangeEnd then
-                    allMatch <- tr.Style.FontSize = size
+                    allMatch <- tr.Style.FontSize = size && ExplicitFormat.has ExplicitFormat.FontSize tr.Style
                 remaining <- tail
             | _ :: tail ->
                 remaining <- tail
@@ -1338,27 +1382,27 @@ let private toggleProperty start len (isSet: TextStyle -> bool) (apply: bool -> 
 
 /// Toggle bold for range
 let toggleBold start len buffer =
-    toggleProperty start len (fun style -> style.Bold) (fun on style -> if style.Bold = on then style else { style with Bold = on }) buffer
+    toggleProperty start len (fun style -> style.Bold) withExplicitBold buffer
 
 /// Toggle italic for range
 let toggleItalic start len buffer =
-    toggleProperty start len (fun style -> style.Italic) (fun on style -> if style.Italic = on then style else { style with Italic = on }) buffer
+    toggleProperty start len (fun style -> style.Italic) withExplicitItalic buffer
 
 /// Toggle underline for range
 let toggleUnderline start len buffer =
-    toggleProperty start len (fun style -> style.Underline) (fun on style -> if style.Underline = on then style else { style with Underline = on }) buffer
+    toggleProperty start len (fun style -> style.Underline) withExplicitUnderline buffer
 
 /// Toggle all caps for range
 let toggleAllCaps start len buffer =
-    toggleProperty start len (fun style -> style.AllCaps) (fun on style -> { style with AllCaps = on; SmallCaps = false }) buffer
+    toggleProperty start len (fun style -> style.AllCaps) withExplicitAllCaps buffer
 
 /// Toggle small caps for range
 let toggleSmallCaps start len buffer =
-    toggleProperty start len (fun style -> style.SmallCaps) (fun on style -> { style with SmallCaps = on; AllCaps = false }) buffer
+    toggleProperty start len (fun style -> style.SmallCaps) withExplicitSmallCaps buffer
 
 /// Toggle strikethrough for range
 let toggleStrike start len buffer =
-    toggleProperty start len (fun style -> style.Strike) (fun on style -> if style.Strike = on then style else { style with Strike = on }) buffer
+    toggleProperty start len (fun style -> style.Strike) withExplicitStrike buffer
 
 /// Set vertical alignment for range
 let setVertAlign start len align buffer =
@@ -1644,7 +1688,7 @@ let setFontSize start len size buffer =
     if textRunsInRangeHaveFontSize start len size buffer then
         buffer
     else
-        applyStyle start len (fun style -> { style with FontSize = size }) buffer
+        applyStyle start len (withExplicitFontSize size) buffer
 
 /// Set font family for range
 let setFontFamily start len family buffer =

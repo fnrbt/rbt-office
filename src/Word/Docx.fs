@@ -439,6 +439,7 @@ let private metadataFromEditor (item: obj) =
             ContentControlTag = contentControlTag
             ContentControlAlias = contentControlAlias
             Alignment = alignment
+            ExplicitAlignment = (optionalString (item?ExplicitAlignment)).IsSome
             ListStyle = listStyle
             ListLevel = if listStyle = NoList then 0 else max 1 listLevel
             ListId = listId
@@ -599,6 +600,29 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                 let revisionDate = optionalString (run?RevisionDate)
                 let vertAlign = optionalString (run?VertAlign)
                 let styleId = optionalString (run?Style)
+                // Set directly on the run (ExplicitX = true/false) as opposed to
+                // inherited (null): the value then overrides the styles.
+                let mutable explicitFlags = 0
+                let direct (value: obj) flag (effective: bool) =
+                    match optionalBool value with
+                    | Some value ->
+                        explicitFlags <- explicitFlags ||| flag
+                        value
+                    | None -> effective
+                let bold = direct (run?ExplicitBold) ExplicitFormat.Bold bold
+                let italic = direct (run?ExplicitItalic) ExplicitFormat.Italic italic
+                let underline = direct (run?ExplicitUnderline) ExplicitFormat.Underline underline
+                let allCaps = direct (run?ExplicitAllCaps) ExplicitFormat.AllCaps allCaps
+                let smallCaps = direct (run?ExplicitSmallCaps) ExplicitFormat.SmallCaps smallCaps
+                let strike = direct (run?ExplicitStrike) ExplicitFormat.Strike strike
+                let doubleStrike = direct (run?ExplicitDoubleStrike) ExplicitFormat.DoubleStrike doubleStrike
+                let hidden = direct (run?ExplicitHidden) ExplicitFormat.Hidden hidden
+                let fontSize =
+                    match optionalFloat (run?ExplicitFontSize) with
+                    | Some value ->
+                        explicitFlags <- explicitFlags ||| ExplicitFormat.FontSize
+                        value
+                    | None -> fontSize
 
                 let style = {
                     Style = styleId
@@ -639,6 +663,7 @@ let private editorRunsToBuffer (runs: obj array) : TextBuffer =
                     RevisionAuthor = revisionAuthor
                     RevisionDate = revisionDate
                     VertAlign = vertAlign
+                    Explicit = explicitFlags
                 }
 
                 textParts.Append(text) |> ignore
@@ -699,6 +724,7 @@ let private styleTextFromEditor (value: obj) =
                 EmphasisMark = optionalString (value?StyleEmphasisMark)
                 VertAlign = optionalString (value?StyleVertAlign)
                 FontSize = optionalFloat (value?StyleFontSize) |> Option.defaultValue TextBuffer.defaultStyle.FontSize
+                Explicit = (if isNullOrUndefined value?StyleFontSize then 0 else ExplicitFormat.FontSize)
                 CharacterSpacing = optionalFloat (value?StyleCharacterSpacing) |> Option.defaultValue TextBuffer.defaultStyle.CharacterSpacing
                 FontFamily = optionalString (value?StyleFontFamily)
                 Color = optionalString (value?StyleColor)
@@ -885,6 +911,14 @@ let private mergeCatalogAndInferredStyles (catalog: obj array) (inferred: NamedS
         addStyleIfNew styles seen style
     List.ofSeq styles
 
+/// A style states only what it sets. NamedStyle.Text holds plain values where
+/// "off" and the default size also mean "not set", so only "on" (or the
+/// TextX option, which records an explicit off) is exported: writing the unset
+/// values out made every style switch bold/italic/... off and pin 8.5pt, which
+/// overrode the style it is based on and the paragraph style of a character style.
+let private styleTextOn (style: NamedStyle) (pick: TextStyle -> bool) : bool option =
+    style.Text |> Option.bind (fun text -> if pick text then Some true else None)
+
 let private styleToEditor (style: NamedStyle) =
     createObj [
         "StyleId" ==> style.Id
@@ -899,14 +933,17 @@ let private styleToEditor (style: NamedStyle) =
         "StyleUiPriority" ==> style.UiPriority
         "StyleSemiHidden" ==> style.SemiHidden
         "StyleUnhideWhenUsed" ==> style.UnhideWhenUsed
-        "StyleBold" ==> (style.TextBold |> Option.orElse (style.Text |> Option.map (fun text -> text.Bold)))
-        "StyleItalic" ==> (style.TextItalic |> Option.orElse (style.Text |> Option.map (fun text -> text.Italic)))
-        "StyleUnderline" ==> (style.TextUnderline |> Option.orElse (style.Text |> Option.map (fun text -> text.Underline)))
-        "StyleAllCaps" ==> (style.TextAllCaps |> Option.orElse (style.Text |> Option.map (fun text -> text.AllCaps)))
-        "StyleSmallCaps" ==> (style.TextSmallCaps |> Option.orElse (style.Text |> Option.map (fun text -> text.SmallCaps)))
-        "StyleStrike" ==> (style.TextStrike |> Option.orElse (style.Text |> Option.map (fun text -> text.Strike)))
+        "StyleBold" ==> (style.TextBold |> Option.orElse (styleTextOn style (fun text -> text.Bold)))
+        "StyleItalic" ==> (style.TextItalic |> Option.orElse (styleTextOn style (fun text -> text.Italic)))
+        "StyleUnderline" ==> (style.TextUnderline |> Option.orElse (styleTextOn style (fun text -> text.Underline)))
+        "StyleAllCaps" ==> (style.TextAllCaps |> Option.orElse (styleTextOn style (fun text -> text.AllCaps)))
+        "StyleSmallCaps" ==> (style.TextSmallCaps |> Option.orElse (styleTextOn style (fun text -> text.SmallCaps)))
+        "StyleStrike" ==> (style.TextStrike |> Option.orElse (styleTextOn style (fun text -> text.Strike)))
         "StyleVertAlign" ==> (style.Text |> Option.bind (fun text -> text.VertAlign))
-        "StyleFontSize" ==> (style.Text |> Option.map (fun text -> text.FontSize))
+        "StyleFontSize" ==> (style.Text
+                            |> Option.bind (fun text ->
+                                if ExplicitFormat.has ExplicitFormat.FontSize text || text.FontSize <> TextBuffer.defaultStyle.FontSize then Some text.FontSize
+                                else None))
         "StyleCharacterSpacing" ==> (style.Text |> Option.map (fun text -> text.CharacterSpacing))
         "StyleFontFamily" ==> (style.Text |> Option.bind (fun text -> text.FontFamily))
         "StyleColor" ==> (style.Text |> Option.bind (fun text -> text.Color))
@@ -1177,16 +1214,83 @@ let importFromEditorPackage (package: obj) : Document =
     if isNullOrUndefined package?PageSetup then doc else { doc with PageSetup = pageSetupFromEditor package?PageSetup }
 
 /// Export Word document to EditorParagraphs for Office.Formats
-let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
+/// Reader px for a run with no size anywhere (11pt), which the model holds as
+/// the unset size TextBuffer.defaultStyle.FontSize.
+let private unsetFontSizePixels = 11.0 * 96.0 / 72.0
+
+/// `context` is the style context of the document being exported; with it,
+/// formatting a run merely inherits from its paragraph / character style is
+/// left out of the file (ExplicitX = null) instead of being written on every run.
+let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) itemType headingLevel (para: ParagraphBlock) =
     let buffer = para.Buffer
+    // The style the paragraph resolves to. An editor-made heading without a
+    // style id is styled by the built-in heading look, which the file's
+    // "HeadingN" style need not match, so nothing is treated as inherited there.
+    let paragraphStyle =
+        match context with
+        | Some ctx when not (itemType = "Heading" && para.Metadata.Style.IsNone) ->
+            let block = if itemType = "Heading" then Heading (headingLevel, para) else Paragraph para
+            Some (ctx, WordStyles.forBlockInContext ctx block)
+        | _ -> None
+    let inheritedStyle (runStyle: TextStyle) : TextStyle option =
+        paragraphStyle
+        |> Option.map (fun (ctx, style) -> WordStyles.effectiveTextStyleInContext ctx style { TextBuffer.defaultStyle with Style = runStyle.Style })
+    // What to write as direct formatting: a property set on the run (even
+    // "off"), or a value that the styles do not produce (formatting the reader
+    // resolved from something the model has no style for, e.g. a table style).
+    let explicitToggle flag (pick: TextStyle -> bool) (inherited: TextStyle option) (style: TextStyle) : bool option =
+        if ExplicitFormat.has flag style then Some (pick style)
+        elif pick style && not (inherited |> Option.exists pick) then Some true
+        else None
+    // With exact / at-least line spacing the writer pins the paragraph font
+    // size on the paragraph mark, and the reader hands the mark's size to runs
+    // without one; every run then states its size so it cannot pick that up.
+    let pinsMarkSize =
+        para.Metadata.LineSpacing.IsSome
+        && (para.Metadata.LineSpacingRule = Some "exact" || para.Metadata.LineSpacingRule = Some "atLeast")
+    let explicitFontSize (inherited: TextStyle option) (style: TextStyle) : float option =
+        if ExplicitFormat.has ExplicitFormat.FontSize style then Some style.FontSize
+        elif style.FontSize = TextBuffer.defaultStyle.FontSize then
+            if not pinsMarkSize then None
+            else
+                match inherited with
+                | Some inheritedStyle when inheritedStyle.FontSize <> TextBuffer.defaultStyle.FontSize -> Some inheritedStyle.FontSize
+                | _ -> Some unsetFontSizePixels
+        elif pinsMarkSize then Some style.FontSize
+        else
+            match inherited with
+            | Some inheritedStyle ->
+                let inheritedSize =
+                    if inheritedStyle.FontSize = TextBuffer.defaultStyle.FontSize then unsetFontSizePixels else inheritedStyle.FontSize
+                if abs (inheritedSize - style.FontSize) < 0.01 then None else Some style.FontSize
+            | None -> Some style.FontSize
+    let explicitAlignment =
+        let metadata = para.Metadata
+        if metadata.ExplicitAlignment then Some metadata.Alignment
+        elif metadata.Alignment = Left then None
+        else
+            match paragraphStyle with
+            | Some (_, style) when style.Alignment = Some metadata.Alignment -> None
+            | _ -> Some metadata.Alignment
 
     let runs =
         buffer.Runs
         |> List.choose (function
             | Text tr ->
                 let text = Rope.slice tr.Start tr.Length buffer.Rope
+                let inherited = inheritedStyle tr.Style
                 Some (createObj [
                     "Text" ==> text
+                    "HasExplicit" ==> true
+                    "ExplicitBold" ==> explicitToggle ExplicitFormat.Bold (fun style -> style.Bold) inherited tr.Style
+                    "ExplicitItalic" ==> explicitToggle ExplicitFormat.Italic (fun style -> style.Italic) inherited tr.Style
+                    "ExplicitUnderline" ==> explicitToggle ExplicitFormat.Underline (fun style -> style.Underline) inherited tr.Style
+                    "ExplicitAllCaps" ==> explicitToggle ExplicitFormat.AllCaps (fun style -> style.AllCaps) inherited tr.Style
+                    "ExplicitSmallCaps" ==> explicitToggle ExplicitFormat.SmallCaps (fun style -> style.SmallCaps) inherited tr.Style
+                    "ExplicitStrike" ==> explicitToggle ExplicitFormat.Strike (fun style -> style.Strike) inherited tr.Style
+                    "ExplicitDoubleStrike" ==> explicitToggle ExplicitFormat.DoubleStrike (fun style -> style.DoubleStrike) inherited tr.Style
+                    "ExplicitHidden" ==> explicitToggle ExplicitFormat.Hidden (fun style -> style.Hidden) inherited tr.Style
+                    "ExplicitFontSize" ==> explicitFontSize inherited tr.Style
                     "Style" ==> tr.Style.Style
                     "Bold" ==> tr.Style.Bold
                     "Italic" ==> tr.Style.Italic
@@ -1273,6 +1377,8 @@ let private paragraphToEditor itemType headingLevel (para: ParagraphBlock) =
         "ContentControlTag" ==> para.Metadata.ContentControlTag
         "ContentControlAlias" ==> para.Metadata.ContentControlAlias
         "Alignment" ==> alignmentToString para.Metadata.Alignment
+        "HasExplicit" ==> true
+        "ExplicitAlignment" ==> (explicitAlignment |> Option.map alignmentToString)
         "ListStyle" ==> listStyleToString para.Metadata.ListStyle
         "ListLevel" ==> para.Metadata.ListLevel
         // Without the list identity every numbered paragraph is saved into one shared decimal list.
@@ -1371,10 +1477,10 @@ let private gatherVerticalMergeContent (rows: TableRow list) : TableRow list =
                         cells.[rowIndex].[cellIndex] <- { cell with Content = cell.Content @ List.ofSeq gathered }
         rows |> List.mapi (fun rowIndex row -> { row with Cells = List.ofArray cells.[rowIndex] })
 
-let rec private blockToEditor block =
+let rec private blockToEditor (context: WordStyles.DocumentStyleContext option) block =
     match block with
-    | Paragraph para -> paragraphToEditor "Paragraph" 0 para
-    | Heading (level, para) -> paragraphToEditor "Heading" level para
+    | Paragraph para -> paragraphToEditor context "Paragraph" 0 para
+    | Heading (level, para) -> paragraphToEditor context "Heading" level para
     | TextBox textBox ->
         createObj [
             "Type" ==> "TextBox"
@@ -1391,7 +1497,7 @@ let rec private blockToEditor block =
             "BorderWidth" ==> textBox.BorderWidth
             "RelativeHeight" ==> textBox.RelativeHeight
             "TextBoxRelativeHeight" ==> textBox.RelativeHeight
-            "Paragraphs" ==> (textBox.Content |> List.map (paragraphToEditor "Paragraph" 0) |> List.toArray)
+            "Paragraphs" ==> (textBox.Content |> List.map (paragraphToEditor context "Paragraph" 0) |> List.toArray)
         ]
     | Table table ->
             let rows =
@@ -1401,8 +1507,8 @@ let rec private blockToEditor block =
                         row.Cells
                         |> List.map (fun cell ->
                             createObj [
-                                "Paragraphs" ==> (cell.Content |> List.map (paragraphToEditor "Paragraph" 0) |> List.toArray)
-                                "NestedTables" ==> (cell.NestedTables |> List.map (Table >> blockToEditor) |> List.toArray)
+                                "Paragraphs" ==> (cell.Content |> List.map (paragraphToEditor context "Paragraph" 0) |> List.toArray)
+                                "NestedTables" ==> (cell.NestedTables |> List.map (Table >> blockToEditor context) |> List.toArray)
                                 "NestedTableAnchors" ==> (cell.NestedTableAnchors |> List.toArray)
                                 "ColSpan" ==> cell.ColSpan
                                 "BackgroundColor" ==> cell.BackgroundColor
@@ -1455,21 +1561,27 @@ let rec private blockToEditor block =
             ]
 
 let exportToEditor (doc: Document) : obj array =
+    let context = Some (WordStyles.styleContext doc)
     doc.Blocks
-    |> List.map blockToEditor
+    |> List.map (blockToEditor context)
     |> List.toArray
 
-let exportHeaderFooterPartsToEditor (parts: HeaderFooterPart list) : obj array =
+let private headerFooterPartsToEditor context (parts: HeaderFooterPart list) : obj array =
     parts
     |> List.map (fun part ->
         createObj [
             "Type" ==> part.Kind
             "Kind" ==> part.Kind
             "RelationshipId" ==> part.RelationshipId
-            "Paragraphs" ==> (part.Blocks |> List.map blockToEditor |> List.toArray)
-            "Blocks" ==> (part.Blocks |> List.map blockToEditor |> List.toArray)
+            "Paragraphs" ==> (part.Blocks |> List.map (blockToEditor context) |> List.toArray)
+            "Blocks" ==> (part.Blocks |> List.map (blockToEditor context) |> List.toArray)
         ])
     |> List.toArray
+
+/// Header / footer parts without their document: nothing is known to be
+/// inherited from a style, so all formatting is written as direct formatting.
+let exportHeaderFooterPartsToEditor (parts: HeaderFooterPart list) : obj array =
+    headerFooterPartsToEditor None parts
 
 /// Page setup for the editor package, including the section columns and
 /// section start that the reader delivers (toEditorPageSetup) and
@@ -1502,6 +1614,6 @@ let exportDocumentPackage (doc: Document) : obj =
         "Paragraphs" ==> exportToEditor doc
         "PageSetup" ==> exportPageSetupToEditor doc.PageSetup
         "Styles" ==> exportStylesToEditor doc.Styles
-        "HeaderParts" ==> exportHeaderFooterPartsToEditor doc.HeaderParts
-        "FooterParts" ==> exportHeaderFooterPartsToEditor doc.FooterParts
+        "HeaderParts" ==> headerFooterPartsToEditor (Some (WordStyles.styleContext doc)) doc.HeaderParts
+        "FooterParts" ==> headerFooterPartsToEditor (Some (WordStyles.styleContext doc)) doc.FooterParts
     ]

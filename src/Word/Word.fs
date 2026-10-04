@@ -1173,27 +1173,27 @@ module API =
     
     /// Toggle bold on selection
     let toggleBold (editor: Editor) =
-        let newDoc = Doc.toggleBold editor.Doc
+        let newDoc = WordStyles.toggleBold editor.Doc
         commitDocumentUpdate editor newDoc
     
     /// Toggle italic on selection
     let toggleItalic (editor: Editor) =
-        let newDoc = Doc.toggleItalic editor.Doc
+        let newDoc = WordStyles.toggleItalic editor.Doc
         commitDocumentUpdate editor newDoc
     
     /// Toggle underline on selection
     let toggleUnderline (editor: Editor) =
-        let newDoc = Doc.toggleUnderline editor.Doc
+        let newDoc = WordStyles.toggleUnderline editor.Doc
         commitDocumentUpdate editor newDoc
 
     /// Toggle all caps on selection
     let toggleAllCaps (editor: Editor) =
-        let newDoc = Doc.toggleAllCaps editor.Doc
+        let newDoc = WordStyles.toggleAllCaps editor.Doc
         commitDocumentUpdate editor newDoc
 
     /// Toggle small caps on selection
     let toggleSmallCaps (editor: Editor) =
-        let newDoc = Doc.toggleSmallCaps editor.Doc
+        let newDoc = WordStyles.toggleSmallCaps editor.Doc
         commitDocumentUpdate editor newDoc
 
     /// Set numbered-list marker format on current block
@@ -1203,7 +1203,7 @@ module API =
 
     /// Toggle strikethrough on selection
     let toggleStrike (editor: Editor) =
-        let newDoc = Doc.toggleStrike editor.Doc
+        let newDoc = WordStyles.toggleStrike editor.Doc
         commitDocumentUpdate editor newDoc
 
     /// Clear direct character formatting on selection
@@ -1836,13 +1836,9 @@ module API =
         Docx.exportToEditor editor.Doc
 
     let exportDocumentPackage (editor: Editor) =
-        createObj [
-            "Paragraphs" ==> Docx.exportToEditor editor.Doc
-            "PageSetup" ==> Docx.exportPageSetupToEditor editor.Doc.PageSetup
-            "Styles" ==> Docx.exportStylesToEditor editor.Doc.Styles
-            "HeaderParts" ==> Docx.exportHeaderFooterPartsToEditor editor.Doc.HeaderParts
-            "FooterParts" ==> Docx.exportHeaderFooterPartsToEditor editor.Doc.FooterParts
-        ]
+        // One export for save and for callers: Docx.exportDocumentPackage knows the
+        // document's styles and so leaves inherited formatting out of header/footer runs too.
+        Docx.exportDocumentPackage editor.Doc
 
     /// Test rope operations
     let testRope () =

@@ -423,8 +423,29 @@ let private withSourceRunProps (paraProps: DocxReader.ParagraphProperties) (run:
         | DocxReader.Link link -> link.Properties
         | _ -> run.Properties
     let raw = effectiveRawRunProps paraProps sourceProps
+    // Properties set directly on the run override the styles even when the
+    // value is the default (w:b w:val="0" under a bold style, an explicit size).
+    // The paragraph mark's run properties count as run-level too: this importer
+    // applies them to the paragraph's runs (see effectiveRawRunProps), and they
+    // are not something a named style would produce again.
+    let mark = paraProps.ParagraphRunProperties |> Option.defaultValue emptyRawRunProps
+    let explicitFlags =
+        let flag (direct: 'a option) (fromMark: 'a option) (bit: int) = if direct.IsSome || fromMark.IsSome then bit else 0
+        flag sourceProps.Bold mark.Bold ExplicitFormat.Bold
+        ||| flag sourceProps.Italic mark.Italic ExplicitFormat.Italic
+        ||| flag sourceProps.Underline mark.Underline ExplicitFormat.Underline
+        ||| flag sourceProps.AllCaps mark.AllCaps ExplicitFormat.AllCaps
+        ||| flag sourceProps.SmallCaps mark.SmallCaps ExplicitFormat.SmallCaps
+        ||| flag sourceProps.Strike mark.Strike ExplicitFormat.Strike
+        ||| flag sourceProps.DoubleStrike mark.DoubleStrike ExplicitFormat.DoubleStrike
+        ||| flag sourceProps.Hidden mark.Hidden ExplicitFormat.Hidden
+        ||| flag sourceProps.FontSize mark.FontSize ExplicitFormat.FontSize
     { style with
         Style = sourceProps.Style
+        Explicit = explicitFlags
+        Bold = sourceProps.Bold |> Option.defaultValue style.Bold
+        Italic = sourceProps.Italic |> Option.defaultValue style.Italic
+        Strike = sourceProps.Strike |> Option.defaultValue style.Strike
         AllCaps = raw.AllCaps |> Option.defaultValue false
         SmallCaps = raw.SmallCaps |> Option.defaultValue false
         DoubleStrike = raw.DoubleStrike |> Option.defaultValue false
@@ -581,6 +602,7 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             ContentControlTag = props.ContentControlTag
             ContentControlAlias = props.ContentControlAlias
             Alignment = alignment editorPara.Alignment
+            ExplicitAlignment = props.Alignment.IsSome
             IndentLeft = pointsToPixels editorPara.IndentLeft |> Option.orElse numberingIndentLeft
             IndentRight = pointsToPixels editorPara.IndentRight
             FirstLineIndent =
