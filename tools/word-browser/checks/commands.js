@@ -1,7 +1,6 @@
 // The commands a toolbar needs: sizes in points, colours, fonts, styles,
 // paragraph spacing, clear formatting, page break, table rows / columns /
-// merge / split, hyperlinks, and resizing a picture by its handles as one
-// undo step.
+// merge / split and hyperlinks. (Picture handles: image-handles.js.)
 import { check, note, finish, fail, loadWord } from './common.js';
 try {
     const Word = await loadWord();
@@ -130,24 +129,7 @@ try {
     Word.setHyperlinkTarget(editor, '');
     check('an empty target removes the link and keeps the text', [Word.getHyperlink(editor), Word.getText(editor).split('\n')[0].includes('link text')], [null, true]);
 
-    // ---- a picture resized by its handle: one undo step ----
-    const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-    select(1, 0, 0);
-    Word.insertImage(editor, pixel, 120, 80, 'a picture');
-    // Where the picture is on the canvas: the segment's x is from the page's left margin.
-    const imageBox = () => { const segment = Word.getLayoutSegments(editor).find((item) => item.Kind === 'image'); const hit = segment && Word.getImageHitTest(editor, (Word.getPageSetup(editor).MarginLeft ?? 96) + segment.X + 5, segment.Y + 5); return hit && [hit.X, hit.Y, hit.Width, hit.Height]; };
-    const before = imageBox();
-    check('the picture is in the layout', before && [before[2], before[3]], [120, 80]);
-    const box = canvas.getBoundingClientRect();
-    window.finish = () => {
-        try {
-            const after = imageBox();
-            check('dragging the corner handle resizes the picture', [after[2] > 150, after[3] > 110], [true, true]);
-            check('as one undo step', [Word.undo(editor), imageBox().slice(2)], [true, [120, 80]]);
-            check('that can be redone', [Word.redo(editor), imageBox()[2] === after[2]], [true, true]);
-        } catch (e) { fail(e); }
-        finish();
-    };
-    void stepsBefore;
-    window.drive = [['down', box.left + before[0] + before[2] - 2, box.top + before[1] + before[3] - 2], ['move', box.left + before[0] + before[2] + 40, box.top + before[1] + before[3] + 40], ['up']];
-} catch (e) { fail(e); finish(); }
+    // (Resizing a picture by its handles: see image-handles.js, which finds the picture in the painted pixels.)
+    void canvas; void stepsBefore;
+} catch (e) { fail(e); }
+finish();

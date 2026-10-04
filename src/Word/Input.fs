@@ -1046,6 +1046,10 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                     | _ -> targetOffset
                 let newDoc = Doc.moveImage dragState.BlockId dragState.Offset targetBlockId effectiveOffset handler.Document
                 applyPointerDocumentChange newDoc
+            | Some dragState when handler.ResizingImage.IsNone ->
+                // A click on the picture (no drag): the picture is selected, as it is.
+                let first : Doc.Position = { BlockId = dragState.BlockId; Offset = dragState.Offset }
+                applyPointerDocumentChange (Doc.setSelection first { first with Offset = dragState.Offset + 1 } handler.Document)
             | _ -> ()
 
             // The whole resize or move is one undo step.

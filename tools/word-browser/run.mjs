@@ -23,7 +23,8 @@
 //   revision         getRevision / markSaved / isModified across edits, undo and redo
 //   viewer-measurers a viewer with the editor's measurers has the editor's pages; renderPage uses the text painter made for its canvas
 //   page-centering   narrower pages are centred through a viewport (X in getPageFrames, pixels, hit tests); nothing is painted between pages
-//   commands         point sizes, colours, fonts, styles, spacing, page break, table rows / columns / merge / split, hyperlinks, image resize by its handles
+//   image-handles    a picture found in the painted pixels is resized by its corner handle, selected by a click, in whole-canvas and viewport modes
+//   commands         point sizes, colours, fonts, styles, spacing, page break, table rows / columns / merge / split, hyperlinks
 //
 // Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
 // Exit code is non-zero when any check fails.
@@ -41,7 +42,7 @@ const opt = (name) => { const i = args.indexOf(name); if (i < 0) return undefine
 const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
 const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format',
-    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands'];
+    'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles'];
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -91,20 +92,26 @@ try {
         await tab.goto(`http://127.0.0.1:${port}/?check=${encodeURIComponent(check)}`);
         await tab.waitForFunction('window.result !== undefined || window.drive !== undefined', null, { timeout: 240000 });
         if (await tab.evaluate('window.drive !== undefined')) {
-            // The check wants real input: [["click" | "dblclick" | "tripleclick" | "shiftclick", x, y] | ["type", text] | ["press", key] | ["down", x, y] | ["move", x, y] | ["up"] | ["wheel", dx, dy] | ["eval", js]] ...
-            for (const [action, a, b] of await tab.evaluate('window.drive')) {
-                if (action === 'click') await tab.mouse.click(a, b);
-                else if (action === 'dblclick') await tab.mouse.dblclick(a, b);
-                else if (action === 'tripleclick') await tab.mouse.click(a, b, { clickCount: 3 });
-                else if (action === 'shiftclick') { await tab.keyboard.down('Shift'); await tab.mouse.click(a, b); await tab.keyboard.up('Shift'); }
-                else if (action === 'type') await tab.keyboard.type(a);
-                else if (action === 'press') await tab.keyboard.press(a);
-                else if (action === 'down') { await tab.mouse.move(a, b); await tab.mouse.down(); }
-                else if (action === 'move') await tab.mouse.move(a, b, { steps: 4 });
-                else if (action === 'up') await tab.mouse.up();
-                else if (action === 'wheel') await tab.mouse.wheel(a, b);
-                else if (action === 'eval') await tab.evaluate(a);
-            }
+            // The check wants real input: [["click" | "dblclick" | "tripleclick" | "shiftclick", x, y] | ["type", text] | ["press", key] | ["down", x, y] | ["move", x, y] | ["up"] | ["hover", x, y] | ["wheel", dx, dy] | ["eval", js] | ["then", js returning more actions]] ...
+            const perform = async (actions) => {
+                for (const [action, a, b] of actions) {
+                    if (action === 'click') await tab.mouse.click(a, b);
+                    else if (action === 'dblclick') await tab.mouse.dblclick(a, b);
+                    else if (action === 'tripleclick') await tab.mouse.click(a, b, { clickCount: 3 });
+                    else if (action === 'shiftclick') { await tab.keyboard.down('Shift'); await tab.mouse.click(a, b); await tab.keyboard.up('Shift'); }
+                    else if (action === 'type') await tab.keyboard.type(a);
+                    else if (action === 'press') await tab.keyboard.press(a);
+                    else if (action === 'down') { await tab.mouse.move(a, b); await tab.mouse.down(); }
+                    else if (action === 'move') await tab.mouse.move(a, b, { steps: 4 });
+                    else if (action === 'hover') await tab.mouse.move(a, b);
+                    else if (action === 'up') await tab.mouse.up();
+                    else if (action === 'wheel') await tab.mouse.wheel(a, b);
+                    else if (action === 'eval') await tab.evaluate(a);
+                    // The next actions depend on what the page shows by now: the expression returns them.
+                    else if (action === 'then') await perform(await tab.evaluate(a));
+                }
+            };
+            await perform(await tab.evaluate('window.drive'));
             await tab.evaluate('window.finish()');
             await tab.waitForFunction('window.result !== undefined', null, { timeout: 240000 });
         }
