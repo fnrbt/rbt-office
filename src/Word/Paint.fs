@@ -1000,7 +1000,12 @@ let markupMarkerCommands (settings: LayoutSettings) (doc: Document) (layouts: Bl
 
 let private maxNestedTablePaintDepth = 512
 
-let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: DocumentStyleContext option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) (availableWidth: float) (baseHorizontalOffset: float) =
+let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: DocumentStyleContext option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) (availableWidth: float) (baseHorizontalOffset: float) (rowTops: float array option) =
+    // `rowTops`: where the layout put each body row (None: rows follow each
+    // other from `y`, moved to the next page when they do not fit). A nested
+    // table is drawn from its rows' own layouts: the row of the outer table
+    // that holds it may be split across a page break, and then its rows are
+    // not where a table laid out on its own would have them.
     let mutable currentY = y
     let commands = ResizeArray<PaintCommand>()
 
@@ -1067,10 +1072,50 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
         for index = 0 to rowHeights.Count - 1 do
             rowHeightPrefix.[index + 1] <- rowHeightPrefix.[index] + rowHeights.[index]
 
+        // Where each body row starts. With `rowTops`, a row the layout put
+        // further down than it would follow here (on the next page) starts there.
+        let givenTop rowIndex =
+            match rowTops with
+            | Some tops when rowIndex < tops.Length && not (System.Double.IsNaN tops.[rowIndex]) -> Some tops.[rowIndex]
+            | _ -> None
+        let plannedTops =
+            let tops = Array.zeroCreate<float> rowHeights.Count
+            let mutable at = y
+            let mutable index = 0
+            for row in resolvedTable.BodyRows do
+                let paged = paginateTableRow settings row.Source at rowHeights.[index]
+                let top =
+                    match givenTop index with
+                    | Some given when given > paged + 0.5 -> given
+                    | _ -> paged
+                tops.[index] <- top
+                at <- top + rowHeights.[index]
+                index <- index + 1
+            tops
+        // The rows from `rowIndex` on, within a span, that follow each other
+        // without a break (a break: the next row is on another page).
+        let contiguousRows rowIndex rowSpan =
+            let last = min rowHeights.Count (rowIndex + max 1 rowSpan)
+            let mutable count = 1
+            if rowTops.IsSome then
+                let mutable index = rowIndex + 1
+                let mutable together = true
+                while together && index < last do
+                    if abs (plannedTops.[index] - (plannedTops.[index - 1] + rowHeights.[index - 1])) < 1.0 then
+                        count <- count + 1
+                        index <- index + 1
+                    else together <- false
+            else count <- max 1 (last - rowIndex)
+            count
+
         let rowSpanHeightAt rowIndex rowSpan fallback =
             let start = max 0 (min rowIndex rowHeights.Count)
-            let finish = min rowHeights.Count (start + max 1 rowSpan)
+            let finish = min rowHeights.Count (start + contiguousRows start rowSpan)
             max (rowHeightPrefix.[finish] - rowHeightPrefix.[start]) fallback
+
+        // Cells merged over rows that a page break separates: the part below
+        // the break (cell, x, width, the row it continues at, rows left).
+        let continuations = ResizeArray<WordLayout.Table.ResolvedCell * float * float * int * int>()
 
         let addRowCommands rowIndex (row: WordLayout.Table.ResolvedRow) currentY rowHeight =
             let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row.Source
@@ -1080,6 +1125,33 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
 
             let cellBuffer = ResizeArray<RedBat.BorderGrid.Cell>(row.Cells.Length)
             let mutable borderFragmentHeight = rowHeight
+            // The lower part of a cell merged from a row above the page break.
+            for (resolved, x, width, atRow, remaining) in continuations.ToArray() do
+                if atRow = rowIndex then
+                    continuations.Remove ((resolved, x, width, atRow, remaining)) |> ignore
+                    let together = contiguousRows rowIndex remaining
+                    let finish = min rowHeights.Count (rowIndex + together)
+                    let height = max rowHeight (rowHeightPrefix.[finish] - rowHeightPrefix.[rowIndex])
+                    if height > borderFragmentHeight then borderFragmentHeight <- height
+                    for fragmentY, fragmentHeight in rowFragments settings currentY height do
+                        commands.AddRange(tableFillCommands resolved.Cell.BackgroundColor resolved.Cell.Shading x fragmentY width fragmentHeight)
+                    if together < remaining then continuations.Add ((resolved, x, width, rowIndex + together, remaining - together))
+                    cellBuffer.Add({
+                        Row = 0
+                        Column = resolved.StartColumn
+                        RowSpan = remaining
+                        ColumnSpan = resolved.ColSpan
+                        X = x
+                        Y = currentY
+                        Width = width
+                        Height = height
+                        Edges = {
+                            Top = None
+                            Right = borderStroke 1 resolved.Borders.Right
+                            Bottom = (if together < remaining then None else borderStroke 1 resolved.Borders.Bottom)
+                            Left = borderStroke 1 resolved.Borders.Left
+                        }
+                    }: RedBat.BorderGrid.Cell)
             for resolved in row.Cells do
                 let cell = resolved.Cell
                 let x = columnX cellSpacing resolved.StartColumn
@@ -1112,7 +1184,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                     let nestedCellY = currentY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
                     let mutable nestedY = WordLayout.Table.cellContentStartY nestedCellY textPadding
                     for nestedTable in cell.NestedTables do
-                        let nestedCommands, nextNestedY = tableBorderCommandsCoreAt (nestedTablePaintDepth + 1) styleContext settings measureText measureRange nestedTable nestedY nestedAvailableWidth nestedX
+                        let nestedCommands, nextNestedY = tableBorderCommandsCoreAt (nestedTablePaintDepth + 1) styleContext settings measureText measureRange nestedTable nestedY nestedAvailableWidth nestedX None
                         commands.AddRange nestedCommands
                         nestedY <- nextNestedY
                 cellBuffer.Add({
@@ -1127,10 +1199,14 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                     Edges = {
                         Top = borderStroke 1 resolved.Borders.Top
                         Right = borderStroke 1 resolved.Borders.Right
-                        Bottom = borderStroke 1 resolved.Borders.Bottom
+                        // A merged cell cut by a page break is open at the break.
+                        Bottom = (if contiguousRows rowIndex resolved.RowSpan < resolved.RowSpan then None else borderStroke 1 resolved.Borders.Bottom)
                         Left = borderStroke 1 resolved.Borders.Left
                     }
                 }: RedBat.BorderGrid.Cell)
+                let together = contiguousRows rowIndex resolved.RowSpan
+                if together < resolved.RowSpan then
+                    continuations.Add ((resolved, x, width, rowIndex + together, resolved.RowSpan - together))
 
             let borderSegments = RedBat.BorderGrid.resolveResizeArray cellBuffer
             let joinIndex = tableBorderJoinIndex borderSegments
@@ -1186,6 +1262,10 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
         for row in rows do
             let rowHeight = rowHeights.[rowIndex]
             let pagedY = paginateTableRow settings row.Source currentY rowHeight
+            let pagedY =
+                match givenTop rowIndex with
+                | Some given when given > pagedY + 0.5 -> given
+                | _ -> pagedY
 
             if pagedY <> currentY && not row.IsHeader && not headerRows.IsEmpty then
                 currentY <- pagedY
@@ -1214,7 +1294,7 @@ let private tableBorderCommandsCore (styleContext: DocumentStyleContext option) 
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
     let tableLeftOffset = tableLeftOffsetForStyleContext styleContext
     let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
-    tableBorderCommandsCoreAt 0 styleContext settings measureText measureRange tableBlock y tableAvailableWidth tableLeftOffset
+    tableBorderCommandsCoreAt 0 styleContext settings measureText measureRange tableBlock y tableAvailableWidth tableLeftOffset None
 
 let tableBorderCommandsForDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (tableBlock: TableBlock) (y: float) =
     tableBorderCommandsCore (Some (WordStyles.styleContext doc)) settings measureText measureRange tableBlock y
@@ -1842,6 +1922,46 @@ let private addNestedTableBorders (styleContext: DocumentStyleContext option) (s
                             match index.ById.TryGetValue para.Id with
                             | true, layout -> addNestedLayout layout
                             | false, _ -> ()
+            // Where each row of the nested table really is: the first line of
+            // its cells. A cell's layout starts at its row's top, and its first
+            // line a fixed distance below that - unless the row was moved to
+            // the next page with the rest of the outer row, where the layout
+            // stays behind and the lines are on the next page.
+            let firstLineOffsets = ResizeArray<float>()
+            let rowFirstLines =
+                nestedTable.Rows
+                |> List.map (fun nestedRow ->
+                    let firstLines = ResizeArray<float>()
+                    for nestedCell in nestedRow.Cells do
+                        match nestedCell.Content with
+                        | para :: _ ->
+                            let consider (layout: BlockLayout) =
+                                match layout.Lines with
+                                | line :: _ ->
+                                    firstLines.Add line.Y
+                                    firstLineOffsets.Add (line.Y - layout.Y)
+                                | [] -> ()
+                            match index.ByBlock.TryGetValue para.Id with
+                            | true, paraLayouts -> (match paraLayouts |> Seq.tryHead with Some layout -> consider layout | None -> ())
+                            | false, _ ->
+                                match index.ById.TryGetValue para.Id with
+                                | true, layout -> consider layout
+                                | false, _ -> ()
+                        | [] -> ()
+                    minResizeArray firstLines)
+            let rowTops =
+                match minResizeArray firstLineOffsets with
+                | Some offset ->
+                    rowFirstLines
+                    |> List.map (fun firstLine ->
+                        match firstLine with
+                        | Some lineY ->
+                            // (At the top of a page there is no space above the first line.)
+                            let contentTop = WordLayout.Page.contentTop settings.PaddingTop (WordLayout.Page.pageTopForY (pageHeight settings) lineY)
+                            max (lineY - offset) (min lineY contentTop)
+                        | None -> System.Double.NaN)
+                    |> List.toArray
+                | None -> [||]
             match minResizeArray nestedTopYs, minResizeArray segXs with
             | Some topY, Some minX ->
                 let firstRow = nestedTable.Rows |> List.head
@@ -1849,7 +1969,10 @@ let private addNestedTableBorders (styleContext: DocumentStyleContext option) (s
                 let padLeft = (WordLayout.Table.cellPaddingForRow WordLayout.canvasScale nestedTable firstRow firstCell).Left
                 let baseHorizontalOffset = minX - padLeft
                 let availableWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-                let cmds, _ = tableBorderCommandsCoreAt 0 styleContext settings measureText measureRange nestedTable topY availableWidth baseHorizontalOffset
+                // (Header rows repeat on their own; the given tops are those of the body rows.)
+                let bodyTops = if nestedTable.Rows |> List.exists (fun row -> row.IsHeader) then None else Some rowTops
+                let topY = match bodyTops with Some tops when tops.Length > 0 && not (System.Double.IsNaN tops.[0]) && tops.[0] > topY + 0.5 -> tops.[0] | _ -> topY
+                let cmds, _ = tableBorderCommandsCoreAt 0 styleContext settings measureText measureRange nestedTable topY availableWidth baseHorizontalOffset bodyTops
                 commands.AddRange cmds
             | _ -> ()
             frames.Push(ScanNestedTable nestedTable)

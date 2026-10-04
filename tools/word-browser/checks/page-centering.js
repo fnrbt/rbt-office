@@ -63,6 +63,26 @@ try {
                     for (let p = 0; p < data.length; p += 4) if (!(data[p] === 238 && data[p + 1] === 240 && data[p + 2] === 243)) stray++;
                 }
                 check(`nothing is painted in the ${gaps} gaps between pages`, stray, 0);
+                // Whole-canvas mode clips nothing: there the same holds only because the borders
+                // themselves end with the page (the nested table of this document sits in a row
+                // that is split across the page break).
+                Word.setViewport(editor, null);
+                const size = Word.getDocumentSize(editor);
+                canvas.width = Math.ceil(size.Width) + 40; canvas.height = Math.ceil(size.Height);
+                canvas.style.width = canvas.width + 'px'; canvas.style.height = canvas.height + 'px';
+                Word.repaint(editor);
+                const whole = Word.getPageFrames(editor);
+                let strayWhole = 0, margins = 0;
+                for (let i = 0; i + 1 < whole.length; i++) {
+                    const gapTop = Math.ceil(whole[i].Top + whole[i].Height) + 1, gapBottom = Math.floor(whole[i + 1].Top) - 1;
+                    const data = ctx.getImageData(0, gapTop, canvas.width, gapBottom - gapTop).data;
+                    for (let p = 0; p < data.length; p += 4) if (!(data[p] === 238 && data[p + 1] === 240 && data[p + 2] === 243)) strayWhole++;
+                    // The bottom margin of the page above the gap (below the footer area): paper only, across the text width.
+                    const margin = ctx.getImageData(Math.round(whole[i].MarginLeft), Math.round(whole[i].Top + whole[i].Height - 30), Math.round(whole[i].Width - whole[i].MarginLeft - whole[i].MarginRight), 24).data;
+                    for (let p = 0; p < margin.length; p += 4) if (margin[p] < 200 && margin[p + 1] < 200 && margin[p + 2] < 200) margins++;
+                }
+                check('whole-canvas mode: no border crosses a gap between pages', strayWhole, 0);
+                check('whole-canvas mode: none runs down a page\'s bottom margin either', margins, 0);
             } catch (e) { fail(e); }
             finish();
         })();

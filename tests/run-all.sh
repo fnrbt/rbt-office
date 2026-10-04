@@ -49,7 +49,7 @@ for f in tests/office-formats/*.fsx; do
 done
 
 echo "=== word ==="
-for s in textbuffer layout incremental-layout pdf import-smoke commands; do
+for s in textbuffer layout incremental-layout pdf import-smoke commands nested-table-split; do
     run_suite "word-$s" "tests/word/$s.fsx"
 done
 

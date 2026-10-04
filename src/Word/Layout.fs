@@ -407,6 +407,25 @@ let private tableCellVerticalAlignmentHeightFromLookup rowSpanLookup rowHeightPr
     let rowSpan = resolvedCellRowSpanFromLookup rowSpanLookup rowIndex sourceCellIndex
     rowSpanHeightFromPrefix rowHeightPrefix rowIndex rowSpan fallback
 
+/// The height a cell is painted with (fill, borders) in one fragment of its
+/// row. A row that fits on its page has one fragment, and the cell is as
+/// high as the rows it spans. A row split across pages has a fragment per
+/// page: there the cell is as high as the fragment - the row's height runs
+/// from its top on one page to its bottom on another and includes the page
+/// break, so painting it would run the cell's sides through the bottom
+/// margin, the gap between the pages and on below the row. The rows a cell
+/// spans below a split row follow its last fragment.
+let private tableCellPaintHeightInFragment (rowSpanLookup: int array array) (rowHeightPrefix: float array) rowIndex sourceCellIndex (fragmentCount: int) (fragmentIndex: int) (fragmentHeight: float) =
+    if fragmentCount <= 1 then
+        tableCellVerticalAlignmentHeightFromLookup rowSpanLookup rowHeightPrefix rowIndex sourceCellIndex fragmentHeight
+    else
+        let rowSpan = resolvedCellRowSpanFromLookup rowSpanLookup rowIndex sourceCellIndex
+        if rowSpan > 1 && fragmentIndex = fragmentCount - 1 && rowHeightPrefix.Length > 1 then
+            let start = max 0 (min (rowIndex + 1) (rowHeightPrefix.Length - 1))
+            let finish = min (rowHeightPrefix.Length - 1) (rowIndex + rowSpan)
+            fragmentHeight + max 0.0 (rowHeightPrefix.[finish] - rowHeightPrefix.[start])
+        else fragmentHeight
+
 let tableCellVerticalAlignmentHeightResolverForPlan (plan: TableLayoutPlan) =
     let rowHeights = tablePlanRowHeights plan
     let rowHeightPrefix = rowHeightPrefix rowHeights
@@ -3337,7 +3356,10 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
             |> Option.map (fun row -> row.Cells |> List.toArray)
             |> Option.defaultValue [||]
         let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
+        let fragmentCount = planRow.Fragments.Length
+        let mutable fragmentIndex = -1
         for fragment in planRow.Fragments do
+            fragmentIndex <- fragmentIndex + 1
             let fragmentEnd = fragment.Y + fragment.Height
             let contentOriginDelta = fragment.RowContentY - fragment.RowPlanY
             let fragmentBlockIds = System.Collections.Generic.HashSet<BlockId>(fragment.BlockIds)
@@ -3403,7 +3425,7 @@ let tableCellFragmentPlans (plan: TableLayoutPlan) =
                         CellX = cellX
                         CellWidth = cellWidth
                         CellY = fragment.Y + WordLayout.Table.spacedCellPaintTopOffset cellSpacing - paintTopAdjustment
-                        CellHeight = WordLayout.Table.spacedCellPaintHeight cellFragmentHeight cellSpacing + paintTopAdjustment
+                        CellHeight = WordLayout.Table.spacedCellPaintHeight (tableCellPaintHeightInFragment rowSpanLookup rowHeightPrefix planRow.RowIndex resolvedCell.SourceCellIndex fragmentCount fragmentIndex fragment.Height) cellSpacing + paintTopAdjustment
                         CellSpacing = cellSpacing
                         CellBackgroundColor = positioned.Cell.BackgroundColor
                         CellShading = positioned.Cell.Shading
@@ -3439,7 +3461,10 @@ let tableCellPaintFragmentPlans (plan: TableLayoutPlan) =
             |> Option.map (fun row -> row.Cells |> List.toArray)
             |> Option.defaultValue [||]
         let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
+        let fragmentCount = planRow.Fragments.Length
+        let mutable fragmentIndex = -1
         for fragment in planRow.Fragments do
+            fragmentIndex <- fragmentIndex + 1
             for resolvedCell in resolvedCells do
                 match sourceCells |> Array.tryItem resolvedCell.SourceCellIndex, cellGroups |> Array.tryItem resolvedCell.SourceCellIndex with
                 | Some cell, Some group ->
@@ -3479,7 +3504,7 @@ let tableCellPaintFragmentPlans (plan: TableLayoutPlan) =
                         CellX = cellX
                         CellWidth = cellWidth
                         CellY = fragment.Y + WordLayout.Table.spacedCellPaintTopOffset cellSpacing - paintTopAdjustment
-                        CellHeight = WordLayout.Table.spacedCellPaintHeight cellFragmentHeight cellSpacing + paintTopAdjustment
+                        CellHeight = WordLayout.Table.spacedCellPaintHeight (tableCellPaintHeightInFragment rowSpanLookup rowHeightPrefix planRow.RowIndex resolvedCell.SourceCellIndex fragmentCount fragmentIndex fragment.Height) cellSpacing + paintTopAdjustment
                         CellSpacing = cellSpacing
                         CellBackgroundColor = cell.BackgroundColor
                         CellShading = cell.Shading
