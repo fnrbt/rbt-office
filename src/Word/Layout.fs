@@ -2379,7 +2379,80 @@ type ParagraphLayoutMemoEntry = {
     mutable MemoGeneration: int
 }
 
+/// The state of a block-by-block pass (the column flow, the single-column
+/// document pass) before a block: everything the blocks from there on are
+/// laid out from, apart from the blocks themselves and the pass's inputs.
+type PassCheckpoint = {
+    CheckCol: int
+    CheckPage: int
+    CheckY: float
+    CheckCounters: Map<string * int, int>
+    CheckFootnotes: Map<int, (string * string) list>
+    CheckPrevious: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option
+    CheckPreviousLayout: BlockLayout option
+    CheckObstacles: FloatingObstacle list
+    CheckPlacedBoxes: PlacedFloatingBox list
+}
+
+/// What a block-by-block pass was given and what it made, kept for the next
+/// pass over (nearly) the same blocks: the pass starts again at the first
+/// block that differs, from the state it had there, and stops as soon as its
+/// state before a block that did not change is what it was the last time -
+/// from there on the layouts of the last pass stand, the same objects.
+type PassRecord = {
+    PassSettings: LayoutSettings
+    PassColumns: SectionColumns option
+    PassStartPage: int
+    PassStartY: float
+    PassPageTop: float
+    PassNextPageTop: float
+    PassNonUniform: bool
+    PassBalanced: bool
+    PassInitial: PassCheckpoint
+    PassStyles: NamedStyle list
+    PassPageSetup: PageSetup
+    PassPackage: PackageData
+    PassBlocks: Block array
+    /// The state before each block, and after the last one (length + 1).
+    PassCheckpoints: PassCheckpoint array
+    /// Where each block's layouts start in PassResults (length + 1).
+    PassStarts: int array
+    PassResults: BlockLayout array
+    /// Whether any of the results refers to an endnote.
+    PassHasEndnotes: bool
+}
+
+/// The body layouts of the last pass block by block: the layouts of
+/// SliceBlocks.[i] are SliceLayouts.[SliceStarts.[i] .. SliceStarts.[i + 1] - 1].
+/// The layouts of blocks an edit did not touch or move are the same objects
+/// from pass to pass, which is what the painter keeps its commands by.
+type LayoutSlices = {
+    SliceBlocks: Block array
+    SliceStarts: int array
+    SliceLayouts: BlockLayout array
+    /// Footnote and endnote paragraphs, in the order of the layout list.
+    SliceNotes: BlockLayout list
+}
+
+/// One page's footnote paragraphs and what they were laid out from.
+type FootnoteAreaRecord = {
+    AreaSettings: LayoutSettings
+    AreaMaxWidth: float
+    AreaContentBottom: float
+    AreaNotes: (string * string) list
+    AreaLayouts: BlockLayout list
+}
+
 type ParagraphLayoutMemo = {
+    /// Block-by-block passes of the last layout, by the place they have in it.
+    MemoPasses: System.Collections.Generic.Dictionary<string, PassRecord>
+    MemoFootnoteAreas: System.Collections.Generic.Dictionary<string, FootnoteAreaRecord>
+    /// Set by a pass that kept layouts of the last one (see the sweep in layoutDocumentPagesIncremental).
+    mutable MemoKeptPass: bool
+    /// Blocks the recorded passes of the layout in hand laid out (the others kept their layouts).
+    mutable MemoBlocksLaidOut: int
+    /// The block slices of the pass in hand, when it has them.
+    mutable MemoSlices: LayoutSlices option
     MemoEntries: System.Collections.Generic.Dictionary<string, ParagraphLayoutMemoEntry>
     /// The rest of a paragraph that runs on in the next column or page, by
     /// paragraph id and the offset it starts at: the buffer it was cut from,
@@ -2393,6 +2466,11 @@ type ParagraphLayoutMemo = {
 }
 
 let private createParagraphLayoutMemo () = {
+    MemoPasses = System.Collections.Generic.Dictionary<string, PassRecord>()
+    MemoFootnoteAreas = System.Collections.Generic.Dictionary<string, FootnoteAreaRecord>()
+    MemoKeptPass = false
+    MemoBlocksLaidOut = 0
+    MemoSlices = None
     MemoEntries = System.Collections.Generic.Dictionary<string, ParagraphLayoutMemoEntry>()
     MemoContinuations = System.Collections.Generic.Dictionary<string, TextBuffer * int * ParagraphBlock>()
     Generation = 0
@@ -4074,7 +4152,89 @@ let private collapseParagraphSpacing (y: float) (previousPara: ParagraphBlock) (
         collapsed - previousBorderAfter - currentBorderBefore
     else collapsed
 
-let private layoutDocumentWithRangeAndInitial
+/// Whether two states of a block-by-block pass lead to the same layout of
+/// the same blocks. (Of the paragraph above, the spacing rules look at its
+/// style name, its resolved style and metadata and its spacing after.)
+let private samePassState (left: PassCheckpoint) (right: PassCheckpoint) =
+    left.CheckCol = right.CheckCol
+    && left.CheckPage = right.CheckPage
+    && left.CheckY = right.CheckY
+    && sameOrEqual left.CheckCounters right.CheckCounters
+    && sameOrEqual left.CheckFootnotes right.CheckFootnotes
+    && (match left.CheckPrevious, right.CheckPrevious with
+        | None, None -> true
+        | Some (leftPara, leftStyle, leftMetadata, leftAfter), Some (rightPara, rightStyle, rightMetadata, rightAfter) ->
+            leftAfter = rightAfter
+            && (obj.ReferenceEquals(leftPara, rightPara) || leftPara.Metadata.Style = rightPara.Metadata.Style)
+            && sameOrEqual leftStyle rightStyle
+            && sameOrEqual leftMetadata rightMetadata
+        | _ -> false)
+    && (match left.CheckPreviousLayout, right.CheckPreviousLayout with
+        | None, None -> true
+        | Some leftLayout, Some rightLayout -> obj.ReferenceEquals(leftLayout, rightLayout)
+        | _ -> false)
+    && sameOrEqual left.CheckObstacles right.CheckObstacles
+    && sameOrEqual left.CheckPlacedBoxes right.CheckPlacedBoxes
+
+/// How many blocks two block arrays have in common at the start and (of the
+/// rest) at the end: the same objects in the same order.
+let commonBlockEnds (before: Block array) (after: Block array) =
+    let limit = min before.Length after.Length
+    let mutable prefix = 0
+    while prefix < limit && obj.ReferenceEquals(before.[prefix], after.[prefix]) do
+        prefix <- prefix + 1
+    let mutable suffix = 0
+    while suffix < limit - prefix && obj.ReferenceEquals(before.[before.Length - 1 - suffix], after.[after.Length - 1 - suffix]) do
+        suffix <- suffix + 1
+    struct (prefix, suffix)
+
+/// The record of the last pass in this place, when it was given what this
+/// pass is given (the blocks apart).
+let private tryPassRecord (memo: ParagraphLayoutMemo option) (slot: string) (settings: LayoutSettings) (columns: SectionColumns option) startPage (startY: float) (pageTop: float) (nextPageTop: float) nonUniform balanced (initial: PassCheckpoint) (doc: Document) =
+    match memo with
+    | Some memo when slot <> "" ->
+        match memo.MemoPasses.TryGetValue slot with
+        | true, record
+            when record.PassStartPage = startPage
+                 && record.PassStartY = startY
+                 && record.PassPageTop = pageTop
+                 && record.PassNextPageTop = nextPageTop
+                 && record.PassNonUniform = nonUniform
+                 && record.PassBalanced = balanced
+                 && obj.ReferenceEquals(record.PassStyles, doc.Styles)
+                 && obj.ReferenceEquals(record.PassPackage, doc.Package)
+                 && sameOrEqual record.PassSettings settings
+                 && sameOrEqual record.PassColumns columns
+                 && sameOrEqual record.PassPageSetup doc.PageSetup
+                 && samePassState record.PassInitial initial -> Some record
+        | _ -> None
+    | _ -> None
+
+let private resultsHaveEndnotes (results: ResizeArray<BlockLayout>) first last =
+    let mutable found = false
+    let mutable index = first
+    while not found && index < last do
+        if layoutHasNoteType "endnote" results.[index] then found <- true
+        index <- index + 1
+    found
+
+/// `footnoteLayoutsForPage`, kept from pass to pass: a page whose notes, place
+/// and geometry are what they were has the paragraphs it had - the same objects.
+let private footnoteLayoutsForPageKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) maxWidth (pageIndex: int) pageContentBottom (notes: (string * string) list) : BlockLayout list =
+    let key = slot + ":" + string pageIndex
+    match memo with
+    | None -> footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex pageContentBottom notes
+    | Some memo ->
+        match memo.MemoFootnoteAreas.TryGetValue key with
+        | true, area when area.AreaMaxWidth = maxWidth && area.AreaContentBottom = pageContentBottom
+                          && sameOrEqual area.AreaNotes notes && sameOrEqual area.AreaSettings settings -> area.AreaLayouts
+        | _ ->
+            let layouts = footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex pageContentBottom notes
+            memo.MemoFootnoteAreas.[key] <- { AreaSettings = settings; AreaMaxWidth = maxWidth; AreaContentBottom = pageContentBottom; AreaNotes = notes; AreaLayouts = layouts }
+            layouts
+
+let private layoutDocumentPassKept
+        (slot: string)
         (memo: ParagraphLayoutMemo option)
         (settings: LayoutSettings)
         (measureText: TextMeasurer)
@@ -4097,6 +4257,21 @@ let private layoutDocumentWithRangeAndInitial
     let mutable previousParagraphLayout: BlockLayout option = None
     let mutable hasEndnoteRefs = false
     let blocks = doc.Blocks |> List.toArray
+    let currentState () = {
+        CheckCol = 0; CheckPage = 0; CheckY = y; CheckCounters = numberedCounters; CheckFootnotes = footnotesByPage
+        CheckPrevious = previousParagraphContext; CheckPreviousLayout = previousParagraphLayout
+        CheckObstacles = floatingObstacles; CheckPlacedBoxes = placedFloatingBoxes
+    }
+    let restoreState (state: PassCheckpoint) =
+        y <- state.CheckY
+        numberedCounters <- state.CheckCounters
+        footnotesByPage <- state.CheckFootnotes
+        previousParagraphContext <- state.CheckPrevious
+        previousParagraphLayout <- state.CheckPreviousLayout
+        floatingObstacles <- state.CheckObstacles
+        placedFloatingBoxes <- state.CheckPlacedBoxes
+    let initialState = currentState ()
+    let lastPass = tryPassRecord memo slot settings None 0 settings.PaddingTop 0.0 0.0 false false initialState doc
 
     let addBodyLayout layout =
         layouts.Add layout
@@ -4398,7 +4573,7 @@ let private layoutDocumentWithRangeAndInitial
             traceSlow (sprintf "table rows=%d" (List.length tableBlock.Rows)) tableStart
         result
 
-    for index in 0 .. blocks.Length - 1 do
+    let layoutBlock (index: int) =
         let block = blocks.[index]
         match block with
         | TextBox textBox ->
@@ -4575,6 +4750,123 @@ let private layoutDocumentWithRangeAndInitial
                 resetPreviousParagraph ()
             if traceTimingEnabled then traceSlow (sprintf "block[%d]:paragraph total lines=%d" index layout.Lines.Length) blockStart
 
+    let checkpoints = ResizeArray<PassCheckpoint>(blocks.Length + 1)
+    let starts = ResizeArray<int>(blocks.Length + 1)
+    let mutable blockIndex = 0
+    // The blocks of the last pass that stand as they are: those before the
+    // first block that differs - short of the blocks whose place depends on
+    // what follows them (paragraphs kept with the next, empty paragraphs,
+    // which look ahead to the next paragraph with text) - with the state the
+    // pass had there. A block looks back at the block before it (a table?),
+    // so the pass is the last one again from the second unchanged block on.
+    let mutable convergeFrom = System.Int32.MaxValue
+    let mutable indexShift = 0
+    let mutable unchanged = false
+    match lastPass with
+    | Some record ->
+        let struct (prefix, suffix) = commonBlockEnds record.PassBlocks blocks
+        if prefix = blocks.Length && record.PassBlocks.Length = blocks.Length then
+            unchanged <- true
+            layouts.AddRange record.PassResults
+            restoreState record.PassCheckpoints.[blocks.Length]
+            hasEndnoteRefs <- record.PassHasEndnotes
+            blockIndex <- blocks.Length
+        else
+            let isParagraph index = (tryGetParagraph blocks.[index]).IsSome
+            let isBlank index =
+                match tryGetParagraph blocks.[index] with
+                | Some para -> paragraphTextIsEmpty para
+                | None -> false
+            let keepsNext index =
+                match tryGetParagraph blocks.[index] with
+                | Some para -> WordStyles.keepNext (forBlockInContext styleContext blocks.[index]) para.Metadata
+                | None -> false
+            let mutable restart = prefix
+            let mutable moved = true
+            while moved do
+                moved <- false
+                while restart > 0 && keepsNext (restart - 1) do
+                    restart <- restart - 1
+                    moved <- true
+                let mutable probe = restart - 1
+                let mutable blank = -1
+                while probe >= 0 && (not (isParagraph probe) || isBlank probe) do
+                    if isBlank probe then blank <- probe
+                    probe <- probe - 1
+                if blank >= 0 then
+                    restart <- blank
+                    moved <- true
+            for index in 0 .. restart - 1 do
+                checkpoints.Add record.PassCheckpoints.[index]
+                starts.Add record.PassStarts.[index]
+            for index in 0 .. record.PassStarts.[restart] - 1 do
+                layouts.Add record.PassResults.[index]
+            restoreState record.PassCheckpoints.[restart]
+            hasEndnoteRefs <- record.PassHasEndnotes
+            blockIndex <- restart
+            convergeFrom <- blocks.Length - suffix + 1
+            indexShift <- record.PassBlocks.Length - blocks.Length
+    | None -> ()
+    let mutable keptLayouts = layouts.Count > 0
+    while blockIndex < blocks.Length do
+        let state = currentState ()
+        match lastPass with
+        | Some record when blockIndex >= convergeFrom
+                           && (layouts.Count > 0) = (record.PassStarts.[blockIndex + indexShift] > 0)
+                           && samePassState state record.PassCheckpoints.[blockIndex + indexShift] ->
+            // From here on this pass is the last one: its layouts stand.
+            let from = record.PassStarts.[blockIndex + indexShift]
+            let shift = layouts.Count - from
+            for index in blockIndex + indexShift .. record.PassBlocks.Length - 1 do
+                checkpoints.Add record.PassCheckpoints.[index]
+                starts.Add (record.PassStarts.[index] + shift)
+            for index in from .. record.PassResults.Length - 1 do
+                layouts.Add record.PassResults.[index]
+            if from < record.PassResults.Length then keptLayouts <- true
+            restoreState record.PassCheckpoints.[record.PassBlocks.Length]
+            blockIndex <- blocks.Length
+        | _ ->
+            checkpoints.Add state
+            starts.Add layouts.Count
+            layoutBlock blockIndex
+            blockIndex <- blockIndex + 1
+            match memo with
+            | Some memo when slot <> "" -> memo.MemoBlocksLaidOut <- memo.MemoBlocksLaidOut + 1
+            | _ -> ()
+    let bodyRecord =
+        match lastPass with
+        | Some record when unchanged -> record
+        | _ ->
+            checkpoints.Add (currentState ())
+            starts.Add layouts.Count
+            {
+                PassSettings = settings
+                PassColumns = None
+                PassStartPage = 0
+                PassStartY = settings.PaddingTop
+                PassPageTop = 0.0
+                PassNextPageTop = 0.0
+                PassNonUniform = false
+                PassBalanced = false
+                PassInitial = initialState
+                PassStyles = doc.Styles
+                PassPageSetup = doc.PageSetup
+                PassPackage = doc.Package
+                PassBlocks = blocks
+                PassCheckpoints = checkpoints.ToArray()
+                PassStarts = starts.ToArray()
+                PassResults = layouts.ToArray()
+                // (Kept layouts that refer to endnotes were found by the pass that made them. An edit that
+                // removes the last reference leaves the flag set: the endnote pass then looks, and finds none.)
+                PassHasEndnotes = hasEndnoteRefs
+            }
+    match memo with
+    | Some memo when slot <> "" ->
+        memo.MemoPasses.[slot] <- bodyRecord
+        if keptLayouts then memo.MemoKeptPass <- true
+    | _ -> ()
+    let bodyCount = layouts.Count
+
     // Lay out each page's footnotes in the reserved area at the bottom of the
     // page, at a smaller font, tagged with footnoteBlockIdPrefix so Paint can
     // render them and draw the separator. The note id doubles as Word's mark.
@@ -4584,7 +4876,9 @@ let private layoutDocumentWithRangeAndInitial
         if not notes.IsEmpty then
             let pageTop = float pageIndex * footnoteStride
             let pageContentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-            layouts.AddRange(footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex pageContentBottom notes)
+            layouts.AddRange(
+                if slot = "" then footnoteLayoutsForPage settings measureText measureRange maxWidth pageIndex pageContentBottom notes
+                else footnoteLayoutsForPageKept slot memo settings measureText measureRange maxWidth pageIndex pageContentBottom notes)
 
     // Endnotes: collect every endnote in document order and lay them out after
     // the body content (Word stacks endnotes at the end of the document), with a
@@ -4605,7 +4899,22 @@ let private layoutDocumentWithRangeAndInitial
                     WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride))
         layouts.AddRange(endnoteLayoutsAfterBody settings measureText measureRange maxWidth bodyLayouts bodyBottom pageAt)
 
-    resizeArrayToList layouts, placedFloatingBoxes
+    let notes = ResizeArray<BlockLayout>()
+    for index in bodyCount .. layouts.Count - 1 do
+        notes.Add layouts.[index]
+    resizeArrayToList layouts, placedFloatingBoxes, bodyRecord, resizeArrayToList notes
+
+let private layoutDocumentWithRangeAndInitial
+        (memo: ParagraphLayoutMemo option)
+        (settings: LayoutSettings)
+        (measureText: TextMeasurer)
+        (measureRange: TextRangeMeasurer)
+        (doc: Document)
+        (initialCounters: Map<string * int, int>)
+        (initialObstacles: FloatingObstacle list)
+        (initialPlacedBoxes: PlacedFloatingBox list) =
+    let layouts, placed, _, _ = layoutDocumentPassKept "" memo settings measureText measureRange doc initialCounters initialObstacles initialPlacedBoxes
+    layouts, placed
 
 // Walk a first-pass layout result and shift each placed float's obstacle top
 // up to the top of whichever line first sits "inside" the float's effective
@@ -4756,8 +5065,21 @@ let private shiftLayoutOffsets (delta: int) (layout: BlockLayout) =
                         EndOffset = line.EndOffset + delta
                         Segments = line.Segments |> List.map shiftSegment }) }
 
-let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
+let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
     let styleContext = styleContextForLayout memo doc
+    let blocks = List.toArray doc.Blocks
+    let initialState = {
+        CheckCol = 0; CheckPage = startPage; CheckY = startY; CheckCounters = Map.empty; CheckFootnotes = initialFootnotes
+        CheckPrevious = None; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []
+    }
+    let lastPass = tryPassRecord memo slot settings (Some columns) startPage startY (pageTopOf startPage) (pageTopOf (startPage + 1)) nonUniform balanced initialState doc
+    // The last pass over the very same blocks: it stands as a whole.
+    let unchangedPass =
+        match lastPass with
+        | Some record when record.PassBlocks.Length = blocks.Length ->
+            let struct (prefix, _) = commonBlockEnds record.PassBlocks blocks
+            if prefix = blocks.Length then Some record else None
+        | _ -> None
     let n = max 1 columns.Count
     let full = settings.Width - settings.PaddingLeft - settings.MarginRight
     let widthsArr =
@@ -4783,7 +5105,7 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
     // Balanced target height: lay the section out once at column width to get its
     // total height H, then each column targets H/n (on the start page).
     let balancedHeight =
-        if balanced then
+        if balanced && unchangedPass.IsNone then
             let w = columnWidth 0
             let sub, _ = layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + w + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange doc Map.empty [] []
             // The sub-pass adds its own footnote / endnote paragraphs; they are
@@ -4837,7 +5159,17 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
         y <- columnTop ()
         previousParagraph <- None
 
-    let blocks = List.toArray doc.Blocks
+    let currentState () = {
+        CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage
+        CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []
+    }
+    let restoreState (state: PassCheckpoint) =
+        col <- state.CheckCol
+        page <- state.CheckPage
+        y <- state.CheckY
+        counters <- state.CheckCounters
+        footnotesByPage <- state.CheckFootnotes
+        previousParagraph <- state.CheckPrevious
     // Keep-with-next, as in the single-column pass: a paragraph that keeps with
     // the next one moves to the next column together with the paragraphs it is
     // chained to when the group (those paragraphs and the first line of what
@@ -4877,7 +5209,7 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
                 | None -> probing <- false
             movable && probed && y + groupHeight > colBottom + 0.5 && groupHeight <= colBottom - columnTop ()
 
-    for blockIndex = 0 to blocks.Length - 1 do
+    let flowBlock (blockIndex: int) =
         let block = blocks.[blockIndex]
         match tryGetParagraph block with
         | Some para0 ->
@@ -5011,7 +5343,106 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
             match block with
             | Table tableBlock -> counters <- listCountersAfterTable counters tableBlock
             | _ -> ()
-    resizeArrayToList results, page, y, footnotesByPage
+
+    let checkpoints = ResizeArray<PassCheckpoint>(blocks.Length + 1)
+    let starts = ResizeArray<int>(blocks.Length + 1)
+    let mutable blockIndex = 0
+    // The blocks of the last pass that stand as they are: those before the
+    // first block that differs - short of the paragraphs kept with it, whose
+    // place depends on it - with the state the pass had there.
+    let mutable convergeFrom = System.Int32.MaxValue
+    let mutable indexShift = 0
+    let mutable keptEndnotes = false
+    match unchangedPass, lastPass with
+    | Some record, _ ->
+        restoreState record.PassCheckpoints.[blocks.Length]
+        blockIndex <- blocks.Length
+    | None, Some record when not balanced ->
+        let struct (prefix, suffix) = commonBlockEnds record.PassBlocks blocks
+        let mutable restart = prefix
+        let keepsNext index =
+            match tryGetParagraph blocks.[index] with
+            | Some para -> WordStyles.keepNext (forBlockInContext styleContext blocks.[index]) para.Metadata
+            | None -> false
+        while restart > 0 && keepsNext (restart - 1) do
+            restart <- restart - 1
+        for index in 0 .. restart - 1 do
+            checkpoints.Add record.PassCheckpoints.[index]
+            starts.Add record.PassStarts.[index]
+        for index in 0 .. record.PassStarts.[restart] - 1 do
+            results.Add record.PassResults.[index]
+        restoreState record.PassCheckpoints.[restart]
+        blockIndex <- restart
+        convergeFrom <- blocks.Length - suffix
+        indexShift <- record.PassBlocks.Length - blocks.Length
+        keptEndnotes <- record.PassHasEndnotes
+    | _ -> ()
+    let freshFrom = results.Count
+    let mutable freshTo = -1
+    while blockIndex < blocks.Length do
+        let state = currentState ()
+        match lastPass with
+        | Some record when blockIndex >= convergeFrom && samePassState state record.PassCheckpoints.[blockIndex + indexShift] ->
+            // From here on this pass is the last one: its layouts stand.
+            freshTo <- results.Count
+            let from = record.PassStarts.[blockIndex + indexShift]
+            let shift = results.Count - from
+            for index in blockIndex + indexShift .. record.PassBlocks.Length - 1 do
+                checkpoints.Add record.PassCheckpoints.[index]
+                starts.Add (record.PassStarts.[index] + shift)
+            for index in from .. record.PassResults.Length - 1 do
+                results.Add record.PassResults.[index]
+            restoreState record.PassCheckpoints.[record.PassBlocks.Length]
+            blockIndex <- blocks.Length
+        | _ ->
+            checkpoints.Add state
+            starts.Add results.Count
+            flowBlock blockIndex
+            blockIndex <- blockIndex + 1
+            match memo with
+            | Some memo when slot <> "" -> memo.MemoBlocksLaidOut <- memo.MemoBlocksLaidOut + 1
+            | _ -> ()
+    match unchangedPass with
+    | Some record ->
+        match memo with
+        | Some memo -> memo.MemoKeptPass <- true
+        | None -> ()
+        record, page, y, footnotesByPage
+    | None ->
+        if freshTo < 0 then freshTo <- results.Count
+        checkpoints.Add (currentState ())
+        starts.Add results.Count
+        // (Kept layouts that refer to endnotes were found by the pass that made them. An edit that
+        // removes the last reference leaves the flag set: the endnote pass then looks, and finds none.)
+        let record = {
+            PassSettings = settings
+            PassColumns = Some columns
+            PassStartPage = startPage
+            PassStartY = startY
+            PassPageTop = pageTopOf startPage
+            PassNextPageTop = pageTopOf (startPage + 1)
+            PassNonUniform = nonUniform
+            PassBalanced = balanced
+            PassInitial = initialState
+            PassStyles = doc.Styles
+            PassPageSetup = doc.PageSetup
+            PassPackage = doc.Package
+            PassBlocks = blocks
+            PassCheckpoints = checkpoints.ToArray()
+            PassStarts = starts.ToArray()
+            PassResults = results.ToArray()
+            PassHasEndnotes = keptEndnotes || resultsHaveEndnotes results freshFrom freshTo
+        }
+        match memo with
+        | Some memo when slot <> "" ->
+            memo.MemoPasses.[slot] <- record
+            if freshFrom > 0 || freshTo < results.Count then memo.MemoKeptPass <- true
+        | _ -> ()
+        record, page, y, footnotesByPage
+
+let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
+    let record, page, y, footnotes = flowColumnsKept "" memo settings measureText measureRange doc columns pageTopOf nonUniform startPage startY balanced initialFootnotes
+    List.ofArray record.PassResults, page, y, footnotes
 
 /// Absolute geometry of one rendered page. For single-section documents every
 /// page is identical (uniform), matching the legacy stride-based model; with
@@ -5086,6 +5517,9 @@ let uniformPageInfos (settings: LayoutSettings) (layouts: BlockLayout list) =
 /// Returns the layouts plus the per-page geometry.
 let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) sections =
     let results = ResizeArray<BlockLayout>()
+    // Where each block's layouts start in the results (see LayoutSlices).
+    let blockStarts = ResizeArray<int>()
+    let mutable hasEndnoteRefs = false
     let pageTops = ResizeArray<float>()    // absolute top of each page index
     let pageSettings = ResizeArray<LayoutSettings>()  // settings owning each page
     pageTops.Add 0.0
@@ -5126,20 +5560,27 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         let secColumns = columnsOrSingle columns
         let secDoc = { doc with Blocks = blocks; PageSetup = { doc.PageSetup with Columns = columns } }
         let balanced = (not isFinal) && secColumns.Count >= 2
-        let secLayouts, endPage, endY, secFootnotes = flowColumns memo secSettings measureText measureRange secDoc secColumns pageTopOf true currentPage currentY balanced footnotesByPage
+        let slot = match memo with Some _ -> "s" + string i | None -> ""
+        let record, endPage, endY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns pageTopOf true currentPage currentY balanced footnotesByPage
         footnotesByPage <- secFootnotes
-        results.AddRange secLayouts
+        for start in 0 .. record.PassBlocks.Length - 1 do
+            blockStarts.Add (results.Count + record.PassStarts.[start])
+        if record.PassHasEndnotes then hasEndnoteRefs <- true
+        results.AddRange record.PassResults
         // Record the geometry of every page this section used.
         for p in sectionBase .. endPage do recordPage p secSettings (pageTopOf p)
         currentPage <- endPage
         currentY <- endY)
     let maxPage = pageTops.Count - 1
     let bodyLayouts = results.ToArray()
+    blockStarts.Add bodyLayouts.Length
+    let noteLayouts = ResizeArray<BlockLayout>()
     for KeyValue (pageIndex, notes) in footnotesByPage do
         if not notes.IsEmpty && pageIndex <= maxPage && pageIndex < pageSettings.Count then
             let s = pageSettings.[pageIndex]
             let contentBottom = WordLayout.Page.contentBottom (pageHeight s) s.MarginBottom pageTops.[pageIndex]
-            results.AddRange(footnoteLayoutsForPage s measureText measureRange (s.Width - s.PaddingLeft - s.MarginRight) pageIndex contentBottom notes)
+            noteLayouts.AddRange(footnoteLayoutsForPageKept "s" memo s measureText measureRange (s.Width - s.PaddingLeft - s.MarginRight) pageIndex contentBottom notes)
+    results.AddRange noteLayouts
     let pages = [ for p in 0 .. maxPage -> pageInfoOf pageSettings.[p] pageTops.[p] ]
     // Endnotes go after the last section's text, in its page geometry; pages
     // they spill onto repeat the last page.
@@ -5159,12 +5600,20 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             struct (WordLayout.Page.contentTop lastSettings.PaddingTop top,
                     WordLayout.Page.contentBottom (pageHeight lastSettings) lastSettings.MarginBottom top,
                     WordLayout.Page.contentTop lastSettings.PaddingTop (top + lastStride))
-    let mutable bodyBottom = 0.0
-    for layout in bodyLayouts do
-        bodyBottom <- max bodyBottom (layout.Y + layout.Height)
     let endnotes =
-        endnoteLayoutsAfterBody lastSettings measureText measureRange (lastSettings.Width - lastSettings.PaddingLeft - lastSettings.MarginRight) bodyLayouts bodyBottom pageAt
+        // (No body layout refers to an endnote: there is nothing to collect, sort or place.)
+        if not hasEndnoteRefs then []
+        else
+            let mutable bodyBottom = 0.0
+            for layout in bodyLayouts do
+                bodyBottom <- max bodyBottom (layout.Y + layout.Height)
+            endnoteLayoutsAfterBody lastSettings measureText measureRange (lastSettings.Width - lastSettings.PaddingLeft - lastSettings.MarginRight) bodyLayouts bodyBottom pageAt
     results.AddRange endnotes
+    noteLayouts.AddRange endnotes
+    match memo with
+    | Some memo ->
+        memo.MemoSlices <- Some { SliceBlocks = List.toArray doc.Blocks; SliceStarts = blockStarts.ToArray(); SliceLayouts = bodyLayouts; SliceNotes = resizeArrayToList noteLayouts }
+    | None -> ()
     let pages =
         match endnotes with
         | [] -> pages
@@ -5199,15 +5648,25 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (sett
                             WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride))
                 r @ footnotes @ endnoteLayoutsAfterBody settings measureText measureRange maxWidth r bodyBottom pageAt
             | _ ->
-                let firstPass, placedAfterFirst =
-                    layoutDocumentWithRangeAndInitial memo settings measureText measureRange doc Map.empty [] []
+                let slot name = match memo with Some _ -> name | None -> ""
+                let keepSlices (record: PassRecord) notes =
+                    match memo with
+                    | Some memo -> memo.MemoSlices <- Some { SliceBlocks = record.PassBlocks; SliceStarts = record.PassStarts; SliceLayouts = record.PassResults; SliceNotes = notes }
+                    | None -> ()
+                let firstPass, placedAfterFirst, firstRecord, firstNotes =
+                    layoutDocumentPassKept (slot "d1") memo settings measureText measureRange doc Map.empty [] []
                 let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
                 let extendedObstacles, prePlacedBoxes =
-                    computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
-                if extendedObstacles.IsEmpty then firstPass
+                    // (No floating object was placed: none to extend.)
+                    if placedAfterFirst.IsEmpty then [], []
+                    else computeAnchorExtendedObstacles maxWidth firstPass placedAfterFirst
+                if extendedObstacles.IsEmpty then
+                    keepSlices firstRecord firstNotes
+                    firstPass
                 else
-                    let secondPass, _ =
-                        layoutDocumentWithRangeAndInitial memo settings measureText measureRange doc Map.empty extendedObstacles prePlacedBoxes
+                    let secondPass, _, secondRecord, secondNotes =
+                        layoutDocumentPassKept (slot "d2") memo settings measureText measureRange doc Map.empty extendedObstacles prePlacedBoxes
+                    keepSlices secondRecord secondNotes
                     secondPass
         layouts, uniformPageInfos settings layouts
     | sections ->
@@ -5248,6 +5707,8 @@ type IncrementalLayoutState = {
     mutable LastSettings: LayoutSettings option
     mutable LastLayouts: BlockLayout list option
     mutable LastPages: PageInfo list option
+    /// The body layouts of the last pass block by block, when the pass knows them.
+    mutable LastSlices: LayoutSlices option
     mutable MeasuredBlockCount: int
     mutable MemoSweepThreshold: int
     Memo: ParagraphLayoutMemo
@@ -5258,6 +5719,7 @@ let createIncrementalLayoutState () = {
     LastSettings = None
     LastLayouts = None
     LastPages = None
+    LastSlices = None
     MeasuredBlockCount = 0
     MemoSweepThreshold = 256
     Memo = createParagraphLayoutMemo ()
@@ -5271,13 +5733,22 @@ let resetIncrementalLayoutMeasurements (state: IncrementalLayoutState) =
 let incrementalLayoutMeasuredBlockCount (state: IncrementalLayoutState) =
     state.MeasuredBlockCount
 
+/// Number of top-level blocks the last layout pass laid out; the other
+/// blocks kept the layouts of the pass before.
+let incrementalLayoutBlocksLaidOut (state: IncrementalLayoutState) =
+    state.Memo.MemoBlocksLaidOut
+
 let clearIncrementalLayoutState (state: IncrementalLayoutState) =
     state.LastDocument <- None
     state.LastSettings <- None
     state.LastLayouts <- None
     state.LastPages <- None
+    state.LastSlices <- None
     state.MeasuredBlockCount <- 0
     state.MemoSweepThreshold <- 256
+    state.Memo.MemoPasses.Clear()
+    state.Memo.MemoFootnoteAreas.Clear()
+    state.Memo.MemoSlices <- None
     state.Memo.MemoEntries.Clear()
     state.Memo.MemoContinuations.Clear()
     state.Memo.MemoStyles <- []
@@ -5319,14 +5790,22 @@ let layoutDocumentPagesIncremental (state: IncrementalLayoutState) (settings: La
             if memo.MemoStyles <> doc.Styles then
                 memo.MemoEntries.Clear()
                 memo.MemoContinuations.Clear()
+                memo.MemoPasses.Clear()
+                memo.MemoFootnoteAreas.Clear()
             memo.MemoStyles <- doc.Styles
             memo.MemoStyleContext <- None
         memo.Generation <- memo.Generation + 1
         memo.LineBreakCount <- 0
+        memo.MemoKeptPass <- false
+        memo.MemoBlocksLaidOut <- 0
+        memo.MemoSlices <- None
         let layouts, pages = layoutDocumentPagesWithMemo (Some memo) settings measureText measureRange doc
         state.MeasuredBlockCount <- state.MeasuredBlockCount + memo.LineBreakCount
-        // Drop entries of paragraphs that no longer exist once they pile up.
-        if memo.MemoEntries.Count > state.MemoSweepThreshold then
+        state.LastSlices <- memo.MemoSlices
+        // Drop entries of paragraphs that no longer exist once they pile up. (A pass
+        // that kept layouts of the last one did not visit the paragraphs they belong
+        // to: which entries are stale is known after a pass over the whole document.)
+        if memo.MemoEntries.Count > state.MemoSweepThreshold && not memo.MemoKeptPass then
             let stale = ResizeArray<string>()
             for KeyValue (id, entry) in memo.MemoEntries do
                 if entry.MemoGeneration <> memo.Generation then stale.Add id

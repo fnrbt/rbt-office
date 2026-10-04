@@ -509,13 +509,20 @@ module API =
         Ren.render ctx editor.Doc
 
     /// Counters of the editor's renderer, for hosts and checks:
-    /// { FrameBuilds (times the paint commands of the whole document were
-    ///   collected), PainterVersion, MeasurerVersion (times a text path
-    ///   painter / the measurers were installed or cleared) }.
+    /// { FrameBuilds (times a paint frame was built: the document was laid
+    ///   out and its paint commands collected - a caret move builds none),
+    ///   LaidOutBlocks / CollectedBlocks (of the last frame built: the
+    ///   top-level blocks that were laid out / whose paint commands were
+    ///   collected again; the others kept what they had), Blocks (top-level
+    ///   blocks of the document), PainterVersion, MeasurerVersion (times a
+    ///   text path painter / the measurers were installed or cleared) }.
     let getRenderStats (editor: Editor) =
         let ctx = editor.Handler.RenderContext
         createObj [
             "FrameBuilds" ==> ctx.FrameBuilds
+            "LaidOutBlocks" ==> ctx.LastLaidOutBlocks
+            "CollectedBlocks" ==> ctx.LastCollectedBlocks
+            "Blocks" ==> List.length editor.Doc.Blocks
             "PainterVersion" ==> ctx.TextPathPainterVersion
             "MeasurerVersion" ==> ctx.TextMeasurerVersion
         ]

@@ -981,7 +981,9 @@ let private mapListSharing (mapper: 'T -> 'T) (items: 'T list) =
             result <- mappedItems.[i] :: result
         result
 
-let private mapEditableParagraphs (mapper: ParagraphBlock -> ParagraphBlock) (doc: Document) =
+/// Map the editable paragraphs of the document's blocks until `finished`
+/// says the rest can stay as it is (the blocks after that are not looked into).
+let private mapEditableParagraphsUntil (finished: unit -> bool) (mapper: ParagraphBlock -> ParagraphBlock) (doc: Document) =
     let mapCell (cell: TableCell) =
         let content = mapListSharing mapper cell.Content
         if sameReference content cell.Content then cell
@@ -993,6 +995,7 @@ let private mapEditableParagraphs (mapper: ParagraphBlock -> ParagraphBlock) (do
         else { row with Cells = cells }
 
     let mapBlock block =
+        if finished () then block else
         match block with
         | Paragraph para ->
             let mapped = mapper para
@@ -1013,6 +1016,9 @@ let private mapEditableParagraphs (mapper: ParagraphBlock -> ParagraphBlock) (do
     if sameReference blocks doc.Blocks then doc
     else { doc with Blocks = blocks }
 
+let private mapEditableParagraphs (mapper: ParagraphBlock -> ParagraphBlock) (doc: Document) =
+    mapEditableParagraphsUntil (fun () -> false) mapper doc
+
 /// Find an editable paragraph anywhere in the document, including table cells.
 let findParagraph doc paragraphId =
     doc.Blocks
@@ -1031,7 +1037,17 @@ let findParagraph doc paragraphId =
 
 /// Replace an editable paragraph anywhere in the document, preserving its container.
 let replaceParagraph (doc: Document) paragraphId newPara =
-    mapEditableParagraphs (fun para -> if para.Id = paragraphId then newPara else para) doc
+    // (Ids are unique: the first paragraph with this id is the one, and the
+    // blocks after its block are not looked into.)
+    let mutable replaced = false
+    mapEditableParagraphsUntil
+        (fun () -> replaced)
+        (fun para ->
+            if not replaced && para.Id = paragraphId then
+                replaced <- true
+                newPara
+            else para)
+        doc
 
 let private editableParagraphsInOrder doc =
     doc.Blocks

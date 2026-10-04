@@ -1562,7 +1562,7 @@ type private SectionReferenceIndex = {
 /// there apply to the pages up to that paragraph; the final section's come
 /// from the page setup. A section that names no reference of a kind uses the
 /// previous section's (Word's "link to previous").
-let private buildSectionReferenceIndex (pages: PageInfo array) (layouts: BlockLayout list) (finalReferences: (string * string) list) isHeader =
+let private buildSectionReferenceIndex (pages: PageInfo array) (layouts: BlockLayout seq) (finalReferences: (string * string) list) isHeader =
     let endPages = ResizeArray<int>()
     let references = ResizeArray<(string * string) list>()
     let mutable effective : (string * string) list = []
@@ -1663,10 +1663,48 @@ let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureT
         | TextBox _ -> ()
     resizeArrayToList commands
 
-let private headerFooterCommands (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) layouts (pages: PageInfo list) =
+/// The header and footer commands of one page, and what they were made from.
+type private HeaderFooterPageEntry = {
+    PageHeaders: Block list
+    PageFooters: Block list
+    PageHeaderY: float
+    PageFooterY: float
+    /// The page number and count the commands were made with; 0 when the
+    /// blocks hold no running field (PAGE, NUMPAGES), so neither matters.
+    PageNumber: int
+    PageCount: int
+    PageCommands: PaintCommand array
+}
+
+/// What is kept of the headers and footers from one paint to the next (see
+/// `PaintCache`): the commands of each page, the blocks made of a document's
+/// plain header / footer paragraphs, and which block lists hold running fields.
+type private HeaderFooterCache = {
+    HeaderFooterPages: Dictionary<int, HeaderFooterPageEntry>
+    mutable FallbackHeaderSource: ParagraphBlock list
+    mutable FallbackHeaderBlocks: Block list
+    mutable FallbackFooterSource: ParagraphBlock list
+    mutable FallbackFooterBlocks: Block list
+    /// Block lists (the few a document's pages use, by reference) and whether they hold running fields.
+    RunningFields: ResizeArray<struct (Block list * bool)>
+}
+
+let private createHeaderFooterCache () = {
+    HeaderFooterPages = Dictionary<int, HeaderFooterPageEntry>()
+    FallbackHeaderSource = []
+    FallbackHeaderBlocks = []
+    FallbackFooterSource = []
+    FallbackFooterBlocks = []
+    RunningFields = ResizeArray<struct (Block list * bool)>()
+}
+
+/// The header and footer commands page by page. With a cache, a page whose
+/// header and footer blocks, place and (where they show it) page number and
+/// page count are what they were keeps its commands - the same objects.
+let private headerFooterCommandsByPage (cache: HeaderFooterCache option) (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) (layouts: BlockLayout seq) (pages: PageInfo list) : PaintCommand array array =
     let pageCount = pages.Length
     if doc.Headers.IsEmpty && doc.Footers.IsEmpty && doc.HeaderParts.IsEmpty && doc.FooterParts.IsEmpty then
-        []
+        [||]
     else
         let mutable fallbackHeaders = ValueNone
         let mutable fallbackFooters = ValueNone
@@ -1674,14 +1712,34 @@ let private headerFooterCommands (settings: LayoutSettings) fontFamily measureTe
             match fallbackHeaders with
             | ValueSome blocks -> blocks
             | ValueNone ->
-                let blocks = doc.Headers |> List.map Paragraph
+                let blocks =
+                    match cache with
+                    | Some cache when obj.ReferenceEquals(cache.FallbackHeaderSource, doc.Headers) && not doc.Headers.IsEmpty -> cache.FallbackHeaderBlocks
+                    | _ ->
+                        let blocks = doc.Headers |> List.map Paragraph
+                        match cache with
+                        | Some cache ->
+                            cache.FallbackHeaderSource <- doc.Headers
+                            cache.FallbackHeaderBlocks <- blocks
+                        | None -> ()
+                        blocks
                 fallbackHeaders <- ValueSome blocks
                 blocks
         let fallbackFooterBlocks () =
             match fallbackFooters with
             | ValueSome blocks -> blocks
             | ValueNone ->
-                let blocks = doc.Footers |> List.map Paragraph
+                let blocks =
+                    match cache with
+                    | Some cache when obj.ReferenceEquals(cache.FallbackFooterSource, doc.Footers) && not doc.Footers.IsEmpty -> cache.FallbackFooterBlocks
+                    | _ ->
+                        let blocks = doc.Footers |> List.map Paragraph
+                        match cache with
+                        | Some cache ->
+                            cache.FallbackFooterSource <- doc.Footers
+                            cache.FallbackFooterBlocks <- blocks
+                        | None -> ()
+                        blocks
                 fallbackFooters <- ValueSome blocks
                 blocks
         let pagesArray = List.toArray pages
@@ -1693,37 +1751,96 @@ let private headerFooterCommands (settings: LayoutSettings) fontFamily measureTe
         let footerRefs =
             if doc.Footers.IsEmpty && doc.FooterParts.IsEmpty then { EndPages = [||]; References = [||]; Final = [] }
             else buildSectionReferenceIndex pagesArray layouts doc.PageSetup.FooterReferences false
-        let referenceListComparer =
-            { new IEqualityComparer<Block list> with
-                member _.Equals(left, right) = obj.ReferenceEquals(left, right)
-                member _.GetHashCode(value) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(value) }
-        let staticRepeatedCommands = Dictionary<Block list, PaintCommand list>(referenceListComparer)
+        // (Looked up by reference in short lists: a document's pages share a handful of block lists.)
+        let runningFields =
+            match cache with
+            | Some cache -> cache.RunningFields
+            | None -> ResizeArray<struct (Block list * bool)>()
+        let hasRunningFields (blocks: Block list) =
+            if blocks.IsEmpty then false
+            else
+                let mutable at = -1
+                let mutable i = 0
+                while at < 0 && i < runningFields.Count do
+                    let struct (known, _) = runningFields.[i]
+                    if obj.ReferenceEquals(known, blocks) then at <- i
+                    i <- i + 1
+                if at >= 0 then
+                    let struct (_, found) = runningFields.[at]
+                    found
+                else
+                    if runningFields.Count > 64 then runningFields.Clear()
+                    let found = blocksHaveRunningFields blocks
+                    runningFields.Add(struct (blocks, found))
+                    found
+        let staticRepeatedCommands = ResizeArray<struct (Block list * PaintCommand list)>()
         let repeatedCommands pageNumber startY blocks =
-            if blocksHaveRunningFields blocks then
+            if hasRunningFields blocks then
                 repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount startY blocks
             else
-                let mutable cached = Unchecked.defaultof<PaintCommand list>
-                let originCommands =
-                    if staticRepeatedCommands.TryGetValue(blocks, &cached) then
-                        cached
-                    else
-                        let computed = repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount 0.0 blocks
-                        staticRepeatedCommands.[blocks] <- computed
-                        computed
+                let mutable originCommands = Unchecked.defaultof<PaintCommand list>
+                let mutable found = false
+                let mutable i = 0
+                while not found && i < staticRepeatedCommands.Count do
+                    let struct (known, commands) = staticRepeatedCommands.[i]
+                    if obj.ReferenceEquals(known, blocks) then
+                        originCommands <- commands
+                        found <- true
+                    i <- i + 1
+                if not found then
+                    originCommands <- repeatedBlockCommands settings fontFamily measureText measureRange pageNumber pageCount 0.0 blocks
+                    staticRepeatedCommands.Add(struct (blocks, originCommands))
                 shiftCommandsY startY originCommands
-        let commands = ResizeArray<PaintCommand>()
+        let result = Array.zeroCreate<PaintCommand array> pagesArray.Length
         for pageIndex = 0 to pagesArray.Length - 1 do
             let info = pagesArray.[pageIndex]
             let pageNumber = pageIndex + 1
             let headers = blocksForPage settings doc.PageSetup pageIndex fallbackHeaderBlocks headerParts headerRefs
             let footers = blocksForPage settings doc.PageSetup pageIndex fallbackFooterBlocks footerParts footerRefs
-            if not headers.IsEmpty then
-                let headerY = info.Top + max 8.0 doc.PageSetup.HeaderDistance
-                commands.AddRange(repeatedCommands pageNumber headerY headers)
-            if not footers.IsEmpty then
-                let footerY = info.Top + info.Height - max 16.0 doc.PageSetup.FooterDistance - settings.LineHeight * 0.78
-                commands.AddRange(repeatedCommands pageNumber footerY footers)
-        resizeArrayToList commands
+            let headerY = info.Top + max 8.0 doc.PageSetup.HeaderDistance
+            let footerY = info.Top + info.Height - max 16.0 doc.PageSetup.FooterDistance - settings.LineHeight * 0.78
+            let running = hasRunningFields headers || hasRunningFields footers
+            let known =
+                match cache with
+                | Some cache ->
+                    match cache.HeaderFooterPages.TryGetValue pageIndex with
+                    | true, entry
+                        when obj.ReferenceEquals(entry.PageHeaders, headers) && obj.ReferenceEquals(entry.PageFooters, footers)
+                             && entry.PageHeaderY = headerY && entry.PageFooterY = footerY
+                             && entry.PageNumber = (if running then pageNumber else 0) && entry.PageCount = (if running then pageCount else 0) -> Some entry.PageCommands
+                    | _ -> None
+                | None -> None
+            match known with
+            | Some commands -> result.[pageIndex] <- commands
+            | None ->
+                let commands = ResizeArray<PaintCommand>()
+                if not headers.IsEmpty then commands.AddRange(repeatedCommands pageNumber headerY headers)
+                if not footers.IsEmpty then commands.AddRange(repeatedCommands pageNumber footerY footers)
+                let commands = commands.ToArray()
+                result.[pageIndex] <- commands
+                match cache with
+                | Some cache ->
+                    cache.HeaderFooterPages.[pageIndex] <- {
+                        PageHeaders = headers; PageFooters = footers; PageHeaderY = headerY; PageFooterY = footerY
+                        PageNumber = (if running then pageNumber else 0); PageCount = (if running then pageCount else 0); PageCommands = commands }
+                | None -> ()
+        match cache with
+        | Some cache ->
+            // Pages the document no longer has.
+            if cache.HeaderFooterPages.Count > pagesArray.Length then
+                let stale = ResizeArray<int>()
+                for KeyValue (pageIndex, _) in cache.HeaderFooterPages do
+                    if pageIndex >= pagesArray.Length then stale.Add pageIndex
+                for pageIndex in stale do
+                    cache.HeaderFooterPages.Remove pageIndex |> ignore
+        | None -> ()
+        result
+
+let private headerFooterCommands (settings: LayoutSettings) fontFamily measureText measureRange (doc: Document) layouts (pages: PageInfo list) =
+    let commands = ResizeArray<PaintCommand>()
+    for pageCommands in headerFooterCommandsByPage None settings fontFamily measureText measureRange doc layouts pages do
+        commands.AddRange pageCommands
+    resizeArrayToList commands
 
 let private textBoxCommands (settings: LayoutSettings) fontFamily measureText measureRange (textBox: TextBoxBlock) =
     let floatingBox = WordLayout.Floating.textBoxCanvasBox settings.PaddingLeft settings.PaddingTop textBox
@@ -2078,6 +2195,47 @@ let private addNestedTableBorders (styleContext: DocumentStyleContext option) (s
             | _ -> ()
             frames.Push(ScanNestedTable nestedTable)
 
+/// The footnote and endnote areas: the synthetic note paragraphs the layout
+/// appended, with their separator rules.
+let private addNoteAreaCommands (settings: LayoutSettings) fontFamily measureText measureRange (commands: ResizeArray<PaintCommand>) (footnotes: ResizeArray<BlockLayout>) (endnotes: ResizeArray<BlockLayout>) =
+    // Footnote area: paint the synthetic footnote paragraphs appended by layout
+    // at the bottom of each page, and a short separator rule above the topmost
+    // note on each page (Word draws ~2in).
+    for layout in footnotes do
+        addParagraphCommands settings fontFamily measureText measureRange commands layout
+    if footnotes.Count > 0 then
+        let footnoteTopByPage = Dictionary<int, float>()
+        for layout in footnotes do
+            let page = pageOfY settings layout.Y
+            match footnoteTopByPage.TryGetValue page with
+            | true, topY when topY <= layout.Y -> ()
+            | _ -> footnoteTopByPage.[page] <- layout.Y
+        for KeyValue(_, topY) in footnoteTopByPage do
+            let separatorX = settings.PaddingLeft
+            commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 6.0, separatorX + 192.0, topY - 6.0))
+
+    // Endnote area: paint the synthetic endnote paragraphs appended after the
+    // body content, with a single separator rule above the first endnote.
+    for layout in endnotes do
+        addParagraphCommands settings fontFamily measureText measureRange commands layout
+    if endnotes.Count > 0 then
+        // Short (~2in) separator above the first endnote; Word draws a full-width
+        // continuation separator on pages the endnotes spill onto.
+        let endnoteTopByPage = Dictionary<int, float>()
+        for layout in endnotes do
+            let page = pageOfY settings layout.Y
+            match endnoteTopByPage.TryGetValue page with
+            | true, topY when topY <= layout.Y -> ()
+            | _ -> endnoteTopByPage.[page] <- layout.Y
+        let mutable startPage = System.Int32.MaxValue
+        for KeyValue(page, _) in endnoteTopByPage do
+            if page < startPage then startPage <- page
+        let fullWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
+        for KeyValue(page, topY) in endnoteTopByPage do
+            let separatorX = settings.PaddingLeft
+            let width = if page = startPage then 192.0 else fullWidth
+            commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 8.0, separatorX + width, topY - 8.0))
+
 let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) (cachedPages: PageInfo list option) =
     let layouts, pages, layoutCount =
         match cachedLayouts, cachedPages with
@@ -2134,43 +2292,7 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
                     if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
                         currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
 
-    // Footnote area: paint the synthetic footnote paragraphs appended by layout
-    // at the bottom of each page, and a short separator rule above the topmost
-    // note on each page (Word draws ~2in).
-    for layout in index.Footnotes do
-        addParagraphCommands settings fontFamily measureText measureRange commands layout
-    if index.Footnotes.Count > 0 then
-        let footnoteTopByPage = Dictionary<int, float>()
-        for layout in index.Footnotes do
-            let page = pageOfY settings layout.Y
-            match footnoteTopByPage.TryGetValue page with
-            | true, topY when topY <= layout.Y -> ()
-            | _ -> footnoteTopByPage.[page] <- layout.Y
-        for KeyValue(_, topY) in footnoteTopByPage do
-            let separatorX = settings.PaddingLeft
-            commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 6.0, separatorX + 192.0, topY - 6.0))
-
-    // Endnote area: paint the synthetic endnote paragraphs appended after the
-    // body content, with a single separator rule above the first endnote.
-    for layout in index.Endnotes do
-        addParagraphCommands settings fontFamily measureText measureRange commands layout
-    if index.Endnotes.Count > 0 then
-        // Short (~2in) separator above the first endnote; Word draws a full-width
-        // continuation separator on pages the endnotes spill onto.
-        let endnoteTopByPage = Dictionary<int, float>()
-        for layout in index.Endnotes do
-            let page = pageOfY settings layout.Y
-            match endnoteTopByPage.TryGetValue page with
-            | true, topY when topY <= layout.Y -> ()
-            | _ -> endnoteTopByPage.[page] <- layout.Y
-        let mutable startPage = System.Int32.MaxValue
-        for KeyValue(page, _) in endnoteTopByPage do
-            if page < startPage then startPage <- page
-        let fullWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-        for KeyValue(page, topY) in endnoteTopByPage do
-            let separatorX = settings.PaddingLeft
-            let width = if page = startPage then 192.0 else fullWidth
-            commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 8.0, separatorX + width, topY - 8.0))
+    addNoteAreaCommands settings fontFamily measureText measureRange commands index.Footnotes index.Endnotes
 
     // Column separator rules (w:sep): a vertical line centred in each gap,
     // spanning the body content on each page.
@@ -2219,6 +2341,324 @@ let collectDocumentCommandsWithLayoutsAndPages (settings: LayoutSettings) fontFa
 
 let collectDocumentCommands settings fontFamily measureText measureRange doc =
     collectDocumentCommandsWithLayouts settings fontFamily measureText measureRange doc None
+
+// ---------------------------------------------------------------------------
+// Paint commands in chunks, kept from one paint to the next
+// ---------------------------------------------------------------------------
+// The layout pass hands over the body layouts block by block (LayoutSlices),
+// and the layouts of blocks an edit did not touch or move are the objects of
+// the pass before. A block's commands depend on the block, on its layouts and
+// on what the whole collection is made with (settings, font, styles, the
+// table plan scope); so a block with the same layouts keeps its commands, and
+// their vertical extents with them - an edit collects and indexes the commands
+// of what changed, not of the document.
+
+/// The paint commands of one part of the document (a block, the note areas, a
+/// page's header and footer) with their vertical extents.
+type PaintChunk = {
+    Commands: PaintCommand array
+    Tops: float array
+    Bottoms: float array
+    /// The extent of the whole chunk (infinite when a command's is unknown).
+    Top: float
+    Bottom: float
+    /// The extent of the chunk's pictures (Top > Bottom when it has none).
+    ImageTop: float
+    ImageBottom: float
+}
+
+let chunkOfCommands (commands: PaintCommand array) : PaintChunk =
+    let tops = Array.zeroCreate<float> commands.Length
+    let bottoms = Array.zeroCreate<float> commands.Length
+    let mutable top = System.Double.PositiveInfinity
+    let mutable bottom = System.Double.NegativeInfinity
+    let mutable imageTop = System.Double.PositiveInfinity
+    let mutable imageBottom = System.Double.NegativeInfinity
+    for i = 0 to commands.Length - 1 do
+        match commandYExtent commands.[i] with
+        | Some (commandTop, commandBottom) ->
+            tops.[i] <- commandTop
+            bottoms.[i] <- commandBottom
+            match commands.[i] with
+            | DrawImage _ ->
+                imageTop <- min imageTop commandTop
+                imageBottom <- max imageBottom commandBottom
+            | _ -> ()
+        | None ->
+            // No extent known: part of every band.
+            tops.[i] <- System.Double.NegativeInfinity
+            bottoms.[i] <- System.Double.PositiveInfinity
+        top <- min top tops.[i]
+        bottom <- max bottom bottoms.[i]
+    { Commands = commands; Tops = tops; Bottoms = bottoms; Top = top; Bottom = bottom; ImageTop = imageTop; ImageBottom = imageBottom }
+
+let private emptyChunk = chunkOfCommands [||]
+
+/// The commands of chunks, in order.
+let commandsOfChunks (chunks: PaintChunk array) : PaintCommand list =
+    let mutable result = []
+    for chunkIndex = chunks.Length - 1 downto 0 do
+        let commands = chunks.[chunkIndex].Commands
+        for i = commands.Length - 1 downto 0 do
+            result <- commands.[i] :: result
+    result
+
+/// The band (top, bottom) in which what two chunk arrays paint differs: None
+/// when they paint the same, Choice2Of2 when the band is not known (a command
+/// without an extent). Chunks that are the same objects are not looked into.
+let chunkDifferenceBand (before: PaintChunk array) (after: PaintChunk array) : Choice<(float * float) option, unit> =
+    let limit = min before.Length after.Length
+    let mutable prefix = 0
+    while prefix < limit && obj.ReferenceEquals(before.[prefix], after.[prefix]) do
+        prefix <- prefix + 1
+    let mutable suffix = 0
+    while suffix < limit - prefix && obj.ReferenceEquals(before.[before.Length - 1 - suffix], after.[after.Length - 1 - suffix]) do
+        suffix <- suffix + 1
+    let mutable top = System.Double.PositiveInfinity
+    let mutable bottom = System.Double.NegativeInfinity
+    let mutable unknown = false
+    let add (commandTop: float) (commandBottom: float) =
+        if System.Double.IsInfinity commandTop || System.Double.IsInfinity commandBottom then unknown <- true
+        else
+            top <- min top commandTop
+            bottom <- max bottom commandBottom
+    let addChunk (chunk: PaintChunk) =
+        if chunk.Commands.Length > 0 then add chunk.Top chunk.Bottom
+    let beforeCount = before.Length - prefix - suffix
+    let afterCount = after.Length - prefix - suffix
+    if beforeCount = afterCount && beforeCount <= 64 then
+        // The same parts, some with other commands: command by command.
+        for offset in 0 .. beforeCount - 1 do
+            let left = before.[prefix + offset]
+            let right = after.[prefix + offset]
+            if not (obj.ReferenceEquals(left, right)) then
+                let shared = min left.Commands.Length right.Commands.Length
+                for i in 0 .. shared - 1 do
+                    if not (obj.ReferenceEquals(left.Commands.[i], right.Commands.[i])) && left.Commands.[i] <> right.Commands.[i] then
+                        add left.Tops.[i] left.Bottoms.[i]
+                        add right.Tops.[i] right.Bottoms.[i]
+                for i in shared .. left.Commands.Length - 1 do
+                    add left.Tops.[i] left.Bottoms.[i]
+                for i in shared .. right.Commands.Length - 1 do
+                    add right.Tops.[i] right.Bottoms.[i]
+    else
+        for offset in 0 .. beforeCount - 1 do
+            addChunk before.[prefix + offset]
+        for offset in 0 .. afterCount - 1 do
+            addChunk after.[prefix + offset]
+    if unknown then Choice2Of2 ()
+    elif top > bottom then Choice1Of2 None
+    else Choice1Of2 (Some (top, bottom))
+
+type private BlockPaintEntry = {
+    EntryBlock: Block
+    /// The layouts the commands were collected from: EntryCount of EntryLayouts from EntryStart.
+    EntryLayouts: BlockLayout array
+    EntryStart: int
+    EntryCount: int
+    /// The running y the block was given and the one it handed on (a table
+    /// without layouts is drawn there; a block without layouts hands on what it was given).
+    EntryYIn: float
+    EntryYOut: float
+    EntryChunk: PaintChunk
+}
+
+/// What a paint keeps for the next one (one per render context).
+type PaintCache = private {
+    mutable CacheSettings: LayoutSettings option
+    mutable CacheFontFamily: string
+    mutable CacheStyles: NamedStyle list
+    mutable CachePageSetup: PageSetup option
+    mutable CacheScope: obj
+    mutable CacheMultiColumn: bool
+    mutable CacheBlocks: Block array
+    mutable CacheEntries: BlockPaintEntry array
+    mutable CacheNotes: BlockLayout list
+    mutable CacheNoteChunk: PaintChunk
+    mutable CacheHeaderFooter: HeaderFooterCache
+    mutable CacheHeaderFooterChunks: PaintChunk array
+    mutable CacheHeaderFooterCommands: PaintCommand array array
+    /// How many blocks' commands the last collection made anew.
+    mutable CollectedBlocks: int
+}
+
+let createPaintCache () : PaintCache = {
+    CacheSettings = None
+    CacheFontFamily = ""
+    CacheStyles = []
+    CachePageSetup = None
+    CacheScope = null
+    CacheMultiColumn = false
+    CacheBlocks = [||]
+    CacheEntries = [||]
+    CacheNotes = []
+    CacheNoteChunk = emptyChunk
+    CacheHeaderFooter = createHeaderFooterCache ()
+    CacheHeaderFooterChunks = [||]
+    CacheHeaderFooterCommands = [||]
+    CollectedBlocks = 0
+}
+
+let clearPaintCache (cache: PaintCache) =
+    cache.CacheSettings <- None
+    cache.CacheBlocks <- [||]
+    cache.CacheEntries <- [||]
+    cache.CacheNotes <- []
+    cache.CacheNoteChunk <- emptyChunk
+    cache.CacheHeaderFooter <- createHeaderFooterCache ()
+    cache.CacheHeaderFooterChunks <- [||]
+    cache.CacheHeaderFooterCommands <- [||]
+
+/// Blocks whose commands the last `collectDocumentChunks` made anew (the rest were kept).
+let paintCacheCollectedBlocks (cache: PaintCache) = cache.CollectedBlocks
+
+let private sameLayoutList (left: BlockLayout list) (right: BlockLayout list) =
+    let mutable a = left
+    let mutable b = right
+    let mutable same = true
+    while same && not a.IsEmpty && not b.IsEmpty do
+        if obj.ReferenceEquals(a.Head, b.Head) then
+            a <- a.Tail
+            b <- b.Tail
+        else same <- false
+    same && a.IsEmpty && b.IsEmpty
+
+/// The paint commands of a document in chunks - one per block, one for the
+/// note areas, one per page for its header and footer - in paint order, from
+/// the layouts of a pass that knows them block by block. The commands are
+/// those of `collectDocumentCommandsWithLayoutsAndPages`; with the cache of
+/// the paint before, the chunks of what did not change are the same objects.
+/// None when the document needs the whole-document collection (column
+/// separator rules, which follow every line of a page).
+let collectDocumentChunks (cache: PaintCache) (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (slices: LayoutSlices) (pages: PageInfo list) : PaintChunk array option =
+    let separators =
+        match doc.PageSetup.Columns with
+        | Some columns when columns.Count >= 2 && columns.Separator -> true
+        | _ -> false
+    if separators then None
+    else
+        let scope = currentTablePlanScope ()
+        let hasMultiColumnLayout = documentHasMultiColumnLayout doc
+        let usable =
+            (match cache.CacheSettings with
+             | Some known -> obj.ReferenceEquals(known, settings) || known = settings
+             | None -> false)
+            && cache.CacheFontFamily = fontFamily
+            && obj.ReferenceEquals(cache.CacheStyles, doc.Styles)
+            && (match cache.CachePageSetup with
+                | Some known -> obj.ReferenceEquals(known, doc.PageSetup) || known = doc.PageSetup
+                | None -> false)
+            && obj.ReferenceEquals(cache.CacheScope, scope)
+            && not (isNull scope)
+            && cache.CacheMultiColumn = hasMultiColumnLayout
+        if not usable then
+            clearPaintCache cache
+            cache.CacheSettings <- Some settings
+            cache.CacheFontFamily <- fontFamily
+            cache.CacheStyles <- doc.Styles
+            cache.CachePageSetup <- Some doc.PageSetup
+            cache.CacheScope <- scope
+            cache.CacheMultiColumn <- hasMultiColumnLayout
+        let blocks = slices.SliceBlocks
+        let layouts = slices.SliceLayouts
+        let struct (prefix, suffix) = commonBlockEnds cache.CacheBlocks blocks
+        let shift = cache.CacheBlocks.Length - blocks.Length
+        let styleContext = WordStyles.styleContext doc
+        let entries = Array.zeroCreate<BlockPaintEntry> blocks.Length
+        let chunks = ResizeArray<PaintChunk>(blocks.Length + 8)
+        let mutable currentY = doc.PageSetup.MarginTop
+        let mutable collected = 0
+        for blockIndex in 0 .. blocks.Length - 1 do
+            let block = blocks.[blockIndex]
+            let start = slices.SliceStarts.[blockIndex]
+            let count = slices.SliceStarts.[blockIndex + 1] - start
+            let isTable = match block with Table _ -> true | _ -> false
+            let known =
+                let candidate =
+                    if blockIndex < prefix then ValueSome cache.CacheEntries.[blockIndex]
+                    elif blockIndex >= blocks.Length - suffix then ValueSome cache.CacheEntries.[blockIndex + shift]
+                    else ValueNone
+                match candidate with
+                | ValueSome entry when entry.EntryCount = count && (not isTable || entry.EntryYIn = currentY) ->
+                    let mutable same = true
+                    let mutable offset = 0
+                    while same && offset < count do
+                        if not (obj.ReferenceEquals(entry.EntryLayouts.[entry.EntryStart + offset], layouts.[start + offset])) then same <- false
+                        offset <- offset + 1
+                    if same then ValueSome entry else ValueNone
+                | _ -> ValueNone
+            match known with
+            | ValueSome entry ->
+                let yOut = if count = 0 && not isTable then currentY else entry.EntryYOut
+                entries.[blockIndex] <-
+                    if obj.ReferenceEquals(entry.EntryLayouts, layouts) && entry.EntryStart = start && entry.EntryYIn = currentY then entry
+                    else { entry with EntryLayouts = layouts; EntryStart = start; EntryYIn = currentY; EntryYOut = yOut }
+                chunks.Add entry.EntryChunk
+                currentY <- yOut
+            | ValueNone ->
+                collected <- collected + 1
+                let commands = ResizeArray<PaintCommand>()
+                let yIn = currentY
+                match block with
+                | Table tableBlock ->
+                    let sliceLayouts = [ for offset in 0 .. count - 1 -> layouts.[start + offset] ]
+                    let index = buildLayoutIndex settings false count sliceLayouts
+                    let tableCommands, nextY =
+                        tableFragmentPaintCommandsForDocument settings measureText measureRange doc index hasMultiColumnLayout tableBlock
+                        |> Option.defaultWith (fun () -> tableBorderCommandsCore (Some styleContext) settings measureText measureRange tableBlock currentY)
+                    commands.AddRange(tableCommands)
+                    if not tableBlock.Floating then currentY <- nextY
+                    addTableTextCommands settings fontFamily measureText measureRange index commands tableBlock
+                    addNestedTableBorders (Some styleContext) settings measureText measureRange index commands tableBlock
+                | TextBox textBox -> commands.AddRange(textBoxCommands settings fontFamily measureText measureRange textBox)
+                | _ ->
+                    match Rbt.Word.Document.tryGetParagraph block with
+                    | None -> ()
+                    | Some para ->
+                        if count > 0 then
+                            for offset in 0 .. count - 1 do
+                                addParagraphCommandsKept settings fontFamily measureText measureRange commands layouts.[start + offset]
+                            let layout = layouts.[start]
+                            currentY <- layout.Y + layout.Height
+                            if para.Metadata.PageBreakAfter || para.Metadata.SectionBreak = Some "nextPage" then
+                                currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
+                let chunk = if commands.Count = 0 then emptyChunk else chunkOfCommands (commands.ToArray())
+                entries.[blockIndex] <- { EntryBlock = block; EntryLayouts = layouts; EntryStart = start; EntryCount = count; EntryYIn = yIn; EntryYOut = currentY; EntryChunk = chunk }
+                chunks.Add chunk
+        cache.CacheBlocks <- blocks
+        cache.CacheEntries <- entries
+        cache.CollectedBlocks <- collected
+
+        // The note areas.
+        if not (sameLayoutList cache.CacheNotes slices.SliceNotes) || (slices.SliceNotes.IsEmpty && cache.CacheNoteChunk.Commands.Length > 0) then
+            let footnotes = ResizeArray<BlockLayout>()
+            let endnotes = ResizeArray<BlockLayout>()
+            for layout in slices.SliceNotes do
+                if layout.BlockId.StartsWith footnoteBlockIdPrefix then footnotes.Add layout
+                elif layout.BlockId.StartsWith endnoteBlockIdPrefix then endnotes.Add layout
+            let commands = ResizeArray<PaintCommand>()
+            addNoteAreaCommands settings fontFamily measureText measureRange commands footnotes endnotes
+            cache.CacheNotes <- slices.SliceNotes
+            cache.CacheNoteChunk <- if commands.Count = 0 then emptyChunk else chunkOfCommands (commands.ToArray())
+        chunks.Add cache.CacheNoteChunk
+
+        // Headers and footers, page by page.
+        if not doc.Headers.IsEmpty || not doc.Footers.IsEmpty || not doc.HeaderParts.IsEmpty || not doc.FooterParts.IsEmpty then
+            // (Of the layouts, the headers and footers follow those that end a section.)
+            let sectionEnds = ResizeArray<BlockLayout>()
+            for layout in layouts do
+                if endsSection layout.Metadata then sectionEnds.Add layout
+            let byPage = headerFooterCommandsByPage (Some cache.CacheHeaderFooter) settings fontFamily measureText measureRange doc sectionEnds pages
+            let pageChunks = Array.zeroCreate<PaintChunk> byPage.Length
+            for pageIndex in 0 .. byPage.Length - 1 do
+                pageChunks.[pageIndex] <-
+                    if pageIndex < cache.CacheHeaderFooterCommands.Length && obj.ReferenceEquals(cache.CacheHeaderFooterCommands.[pageIndex], byPage.[pageIndex]) then cache.CacheHeaderFooterChunks.[pageIndex]
+                    elif byPage.[pageIndex].Length = 0 then emptyChunk
+                    else chunkOfCommands byPage.[pageIndex]
+            cache.CacheHeaderFooterCommands <- byPage
+            cache.CacheHeaderFooterChunks <- pageChunks
+            chunks.AddRange pageChunks
+        Some (chunks.ToArray())
 
 let private layoutListLookup (layouts: BlockLayout list) =
     fun blockId ->

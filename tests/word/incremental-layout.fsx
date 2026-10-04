@@ -533,5 +533,213 @@ for label, doc in [ "paragraphs broken over pages", brokenDoc; "tables", planDoc
     let edited = typeIn firstParagraph 2 "Z" doc
     check (label + ": after a keystroke") (paintOnce edited) (freshCommands edited)
 
+// ---------------------------------------------------------------------------
+// Long random edit sequences. A pass over an edited document starts at the
+// first block that differs, from the state the last pass had there, and stops
+// where its state is the last pass's again; the layouts before and after are
+// the last pass's. Whatever the edits - typing, Enter, a merge, blocks removed
+// and inserted, a list item, a page break, keep-with-next, a footnote, a
+// section break, in body text and in table cells - the result is the cold
+// layout's, and so are the paint commands collected from it.
+// ---------------------------------------------------------------------------
+let randomDocument (random: System.Random) (sections: bool) (twoColumns: bool) =
+    let blocks =
+        [ for i in 1 .. 90 ->
+            let id = sprintf "r%d" i
+            let length = 4 + random.Next 70
+            match random.Next 24 with
+            | 0 -> table (sprintf "rt%d" i) (2 + random.Next 14)
+            | 1 -> noted id "footnote" (sprintf "f%d" i) (words "noted" length + " x") (words "footnote" (5 + random.Next 30))
+            | 2 when i % 2 = 0 -> noted id "endnote" (sprintf "e%d" i) (words "ended" length + " x") (words "endnote" (5 + random.Next 20))
+            | 3 | 4 | 5 -> Doc.Paragraph (paraWith id (numbered (if i % 2 = 0 then "ra" else "rb") (1 + random.Next 2)) (words "item" (2 + random.Next 30)))
+            | 6 -> Doc.Paragraph (paraWith id { Doc.defaultMetadata with KeepNext = Some true } (words "heading" (2 + random.Next 6)))
+            | 7 -> Doc.Paragraph (paraWith id { Doc.defaultMetadata with PageBreakBefore = random.Next 3 = 0; SpacingBefore = Some 18.0; SpacingAfter = Some 4.0 } (words "spaced" length))
+            | 8 -> Doc.Paragraph (para id "")
+            | 9 when sections ->
+                let metadata =
+                    if random.Next 2 = 0 then { Doc.defaultMetadata with SectionBreak = Some "nextPage" }
+                    else { Doc.defaultMetadata with SectionBreak = Some "continuous"; SectionColumns = (if random.Next 2 = 0 then Some { columns with Separator = false } else None) }
+                Doc.Paragraph (paraWith id metadata (words "sectionend" (3 + random.Next 20)))
+            | 10 -> Doc.Paragraph (para id (words "long" (250 + random.Next 500)))
+            | _ -> Doc.Paragraph (para id (words (sprintf "w%d_" i) length)) ]
+    let doc = document blocks
+    if twoColumns then { doc with PageSetup = { pageSetup with Columns = Some { columns with Separator = false } } } else doc
+
+let paragraphIds (doc: Doc.Document) =
+    [ for block in doc.Blocks do
+        match block with
+        | Doc.Paragraph p | Doc.Heading (_, p) -> yield p.Id, Rbt.Word.TextBuffer.length p.Buffer, true
+        | Doc.Table t ->
+            for row in t.Rows do
+                for c in row.Cells do
+                    for p in c.Content -> p.Id, Rbt.Word.TextBuffer.length p.Buffer, false
+        | _ -> () ]
+
+let mutable freshId = 0
+let randomEdit (random: System.Random) (doc: Doc.Document) : string * Doc.Document =
+    let ids = paragraphIds doc
+    let id, length, topLevel = ids.[random.Next ids.Length]
+    let at = if length = 0 then 0 else random.Next (length + 1)
+    let mapParagraph (change: Doc.ParagraphBlock -> Doc.ParagraphBlock) =
+        doc |> mapBlocks (List.map (function
+            | Doc.Paragraph p when p.Id = id -> Doc.Paragraph (change p)
+            | other -> other))
+    match random.Next 16 with
+    | 0 | 1 | 2 | 3 -> "a character", typeIn id at "x" doc
+    | 4 | 5 -> "some words", typeIn id at (" " + words "typed" (1 + random.Next 40)) doc
+    | 6 -> "Enter", doc |> Doc.setCursor id at |> Doc.splitBlock
+    | 7 -> "Backspace at the start", doc |> Doc.setCursor id 0 |> Doc.deleteBackward
+    | 8 when topLevel && ids.Length > 30 -> "a block removed", removeBlock id doc
+    | 9 when topLevel ->
+        freshId <- freshId + 1
+        "a paragraph inserted", insertAfter id (Doc.Paragraph (para (sprintf "new%d" freshId) (words "new" (1 + random.Next 80)))) doc
+    | 10 when topLevel ->
+        freshId <- freshId + 1
+        "a table inserted", insertAfter id (table (sprintf "newt%d" freshId) (1 + random.Next 6)) doc
+    | 11 when topLevel -> "keep with next toggled", mapParagraph (fun p -> { p with Metadata = { p.Metadata with KeepNext = (if p.Metadata.KeepNext = Some true then None else Some true) } })
+    | 12 when topLevel -> "a list item toggled", mapParagraph (fun p -> { p with Metadata = (if p.Metadata.ListStyle = Doc.NoList then { p.Metadata with ListStyle = Doc.Numbered; ListLevel = 1; ListId = Some "ra" } else { p.Metadata with ListStyle = Doc.NoList; ListLevel = 0; ListId = None }) })
+    | 13 when topLevel -> "a page break toggled", mapParagraph (fun p -> { p with Metadata = { p.Metadata with PageBreakBefore = not p.Metadata.PageBreakBefore } })
+    | 14 when topLevel && length > 2 ->
+        freshId <- freshId + 1
+        "a footnote added", mapParagraph (fun p -> { p with Buffer = p.Buffer |> setNote (length - 1) 1 (Some (sprintf "nf%d" freshId)) (Some "footnote") (Some (words "late" (3 + random.Next 20))) })
+    | 15 when topLevel && length > 0 -> "text deleted", mapParagraph (fun p -> { p with Buffer = Rbt.Word.TextBuffer.delete 0 (max 1 (length / 2)) p.Buffer })
+    | _ -> "a character", typeIn id at "y" doc
+
+let paintScope = obj ()
+let mutable keptPasses = 0
+let mutable chunkedPaints = 0
+let mutable blocksPainted = 0
+let mutable blocksCollected = 0
+for seed, sections, twoColumns, steps in [ 11, false, false, 140; 12, true, false, 140; 13, true, false, 140; 14, false, true, 60; 15, false, false, 140; 16, true, false, 100 ] do
+    let random = System.Random seed
+    let state = Layout.createIncrementalLayoutState ()
+    let mutable doc = randomDocument random sections twoColumns
+    let mutable failed = false
+    let paintCache = Paint.createPaintCache ()
+    let mutable previousChunks : Paint.PaintChunk array option = None
+    let mutable previousCommands : Paint.PaintCommand list = []
+    let compareAll label =
+        if not failed then
+            let coldLayouts, coldPages = Layout.layoutDocumentPages settings measureText measureRange doc
+            let incLayouts, incPages = Layout.withTablePlanScope paintScope (fun () -> Layout.layoutDocumentPagesIncremental state settings measureText measureRange doc)
+            if incLayouts <> coldLayouts || incPages <> coldPages then
+                failed <- true
+                fail <- fail + 1
+                printfn "FAIL random %d %s: incremental differs from cold: %s" seed label (describeDifference incLayouts coldLayouts)
+            else
+                pass <- pass + 1
+                let coldCommands = commandsOf doc coldLayouts coldPages
+                let incCommands = Layout.withTablePlanScope paintScope (fun () -> commandsOf doc incLayouts incPages)
+                if incCommands <> coldCommands then
+                    failed <- true
+                    fail <- fail + 1
+                    printfn "FAIL random %d %s: paint commands differ" seed label
+                // The commands in chunks, the chunks of what did not change kept from the paint before.
+                match state.LastSlices with
+                | Some slices ->
+                    match Layout.withTablePlanScope paintScope (fun () -> Paint.collectDocumentChunks paintCache settings "Calibri" measureText measureRange doc slices incPages) with
+                    | Some chunks ->
+                        chunkedPaints <- chunkedPaints + 1
+                        blocksPainted <- blocksPainted + doc.Blocks.Length
+                        blocksCollected <- blocksCollected + Paint.paintCacheCollectedBlocks paintCache
+                        let chunkCommands = Paint.commandsOfChunks chunks
+                        if chunkCommands <> coldCommands then
+                            failed <- true
+                            fail <- fail + 1
+                            let at = List.zip (List.truncate (min chunkCommands.Length coldCommands.Length) chunkCommands) (List.truncate (min chunkCommands.Length coldCommands.Length) coldCommands) |> List.tryFindIndex (fun (a, b) -> a <> b)
+                            printfn "FAIL random %d %s: the commands in chunks differ (%d vs %d commands, first difference at %A)" seed label chunkCommands.Length coldCommands.Length at
+                        else
+                            pass <- pass + 1
+                            // What the chunks' extents say is where they differ from the paint before.
+                            match previousChunks with
+                            | Some before ->
+                                match Paint.chunkDifferenceBand before chunks with
+                                | Choice1Of2 None -> if previousCommands <> coldCommands then (failed <- true; fail <- fail + 1; printfn "FAIL random %d %s: no difference band although the commands differ" seed label)
+                                | Choice1Of2 (Some (top, bottom)) ->
+                                    let outside commands = commands |> List.filter (fun command -> match Paint.commandYExtent command with Some (t, b) -> b < top || t > bottom | None -> false)
+                                    if outside previousCommands <> outside coldCommands then
+                                        failed <- true
+                                        fail <- fail + 1
+                                        printfn "FAIL random %d %s: commands outside the difference band %.1f..%.1f differ" seed label top bottom
+                                | Choice2Of2 () -> ()
+                            | None -> ()
+                        previousChunks <- Some chunks
+                        previousCommands <- coldCommands
+                    | None -> previousChunks <- None
+                | None -> previousChunks <- None
+    compareAll "initial"
+    for step in 1 .. steps do
+        let name, edited = randomEdit random doc
+        doc <- edited
+        compareAll (sprintf "step %d (%s)" step name)
+        if state.Memo.MemoKeptPass then keptPasses <- keptPasses + 1
+checkTrue (sprintf "most passes of the random sequences kept layouts of the pass before (%d)" keptPasses) (keptPasses > 400)
+checkTrue (sprintf "the paints in chunks (%d) collected a fraction of the blocks anew (%d of %d)" chunkedPaints blocksCollected blocksPainted) (chunkedPaints > 400 && blocksCollected * 3 < blocksPainted)
+printfn "random sequences: %d passes kept layouts; %d paints in chunks collected %d of %d blocks" keptPasses chunkedPaints blocksCollected blocksPainted
+
+// What a block's place depends on apart from the state the pass reaches it
+// with: the blocks after it (a paragraph kept with the next, an empty
+// paragraph that looks for the next paragraph with text) and the block before
+// it (an empty paragraph after a table). An edit to those is an edit to it.
+let setMetadata id (change: Doc.BlockMetadata -> Doc.BlockMetadata) =
+    mapBlocks (List.map (function
+        | Doc.Paragraph p when p.Id = id -> Doc.Paragraph { p with Metadata = change p.Metadata }
+        | other -> other))
+let pageOfBlock id (layouts: Layout.BlockLayout list) =
+    layouts |> List.tryFind (fun layout -> layout.BlockId = id) |> Option.map (fun layout -> pageOf layout.Y)
+for sectioned in [ false; true ] do
+    let name = if sectioned then "sections" else "one section"
+    // A heading at the foot of a page is kept with the paragraph after it; when that paragraph
+    // is kept with the next one too, the group no longer fits and the heading moves.
+    let keepDoc k =
+        [ if sectioned then yield Doc.Paragraph (paraWith "k-sec" { Doc.defaultMetadata with SectionBreak = Some "continuous" } "a section ends here")
+          for i in 1 .. 40 ->
+            if i = k then Doc.Paragraph (paraWith "k-head" { Doc.defaultMetadata with KeepNext = Some true } "Heading")
+            elif i = k + 1 then Doc.Paragraph (para "k-next" (words "next" 45))
+            else Doc.Paragraph (para (sprintf "k%d" i) (words "body" 38)) ]
+        |> document
+    let toggle = setMetadata "k-next" (fun metadata -> { metadata with KeepNext = Some true })
+    let moving =
+        [ 3 .. 30 ] |> List.tryFind (fun k ->
+            let before = Layout.layoutDocumentPages settings measureText measureRange (keepDoc k) |> fst
+            let after = Layout.layoutDocumentPages settings measureText measureRange (toggle (keepDoc k)) |> fst
+            pageOfBlock "k-head" before <> pageOfBlock "k-head" after)
+    checkTrue (name + ": a heading that moves when the paragraph after it is kept with the next") moving.IsSome
+    match moving with
+    | Some k -> assertEquivalent (name + ": keep with next") (keepDoc k) [ "the next paragraph is kept too", toggle; "and not", setMetadata "k-next" (fun metadata -> { metadata with KeepNext = None }) ] |> ignore
+    | None -> ()
+
+let emptyTable id =
+    Doc.Table { templateTable with Id = id; Rows = [ for r in 1 .. 2 -> { templateRow with Cells = [ cell (sprintf "%s-r%d-a" id r) ""; cell (sprintf "%s-r%d-b" id r) "" ] } ] }
+let afterTableDoc =
+    [ yield Doc.Paragraph (para "at1" (words "before" 30))
+      yield emptyTable "at-table"
+      yield Doc.Paragraph (para "at-empty" "")
+      for i in 1 .. 20 -> Doc.Paragraph (para (sprintf "at-p%d" i) (words "after" 30)) ]
+    |> document
+let _, afterTableInitial, afterTableEdited =
+    assertEquivalent "an empty paragraph after a table" afterTableDoc
+        [ "text typed into the table", typeIn "at-table-r1-a" 0 "x"
+          "the table removed", mapBlocks (List.filter (function Doc.Table _ -> false | _ -> true)) ]
+let heightOf id (layouts: Layout.BlockLayout list) = (layouts |> List.find (fun layout -> layout.BlockId = id)).Height
+let coldLayoutsOf doc = Layout.layoutDocumentPages settings measureText measureRange doc |> fst
+checkTrue "the empty paragraph after an empty table is taller than after text or a table with text"
+    (heightOf "at-empty" afterTableInitial > heightOf "at-empty" (coldLayoutsOf afterTableEdited))
+
+let lookAheadDoc =
+    [ yield Doc.Paragraph (paraWith "la-toc" { Doc.defaultMetadata with Style = Some "TOC1" } "Contents entry")
+      yield Doc.Paragraph (paraWith "la-empty" { Doc.defaultMetadata with SpacingAfter = Some 12.0 } "")
+      yield table "la-table" 2
+      yield Doc.Paragraph (paraWith "la-web" { Doc.defaultMetadata with Style = Some "NormalWeb" } (words "web" 20))
+      for i in 1 .. 20 -> Doc.Paragraph (para (sprintf "la-p%d" i) (words "after" 30)) ]
+    |> document
+let _, lookAheadInitial, lookAheadEdited =
+    assertEquivalent "an empty paragraph that looks ahead" lookAheadDoc
+        [ "the paragraph it looks at changes style", setMetadata "la-web" (fun metadata -> { metadata with Style = None })
+          "and back", setMetadata "la-web" (fun metadata -> { metadata with Style = Some "NormalWeb" })
+          "a paragraph inserted between", insertAfter "la-empty" (Doc.Paragraph (para "la-between" "between")) ]
+checkTrue "the empty paragraph's height depends on the paragraph after the table"
+    (heightOf "la-empty" lookAheadInitial <> heightOf "la-empty" (coldLayoutsOf (setMetadata "la-web" (fun metadata -> { metadata with Style = None }) lookAheadDoc)))
+
 printfn "incremental-layout: %d passed, %d failed" pass fail
 if fail > 0 then failwithf "%d incremental layout checks failed" fail

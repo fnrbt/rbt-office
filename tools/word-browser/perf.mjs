@@ -11,7 +11,7 @@
 // Usage:
 //   node tools/word-browser/perf.mjs --dist $DIST [--repeat N] [--keys N] [--profile keys] [--callers FUNCTION] [--painter]
 // --profile keys prints the functions with the most self time while typing, and the time under each
-// function; --callers FUNCTION adds the time under that function by its chain of callers.
+// function (--profile enter: the time under each function while Enter and Backspace alternate); --callers FUNCTION adds the time under that function by its chain of callers.
 // --painter installs a (trivial) text path painter and measurers first.
 // Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16125).
 import http from 'node:http';
@@ -108,7 +108,8 @@ try {
                 input.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey: shift, bubbles: true, cancelable: true }));
                 times[k].push(performance.now() - t0);
             });
-            return { times: times.map(stats), builds: Word.getRenderStats(editor).FrameBuilds - builds };
+            const after = Word.getRenderStats(editor);
+            return { times: times.map(stats), builds: after.FrameBuilds - builds, laidOut: after.LaidOutBlocks, collected: after.CollectedBlocks, blocks: after.Blocks };
         },
         pastes(count, text) {
             const times = [];
@@ -206,9 +207,32 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         console.log(`  ArrowRight:  ${line(arrows.times[0])}; ArrowLeft: ${line(arrows.times[1])}; frame builds ${arrows.builds} in 40`);
         const shifted = await tab.evaluate(() => window.perf.pressed(['Shift+ArrowRight', 'Shift+ArrowLeft'], 20));
         console.log(`  Shift+ArrowRight:  ${line(shifted.times[0])}; frame builds ${shifted.builds} in 40`);
+        if (profile === 'enter') { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start'); }
         const split = await tab.evaluate(() => window.perf.pressed(['Enter', 'Backspace'], 15));
+        if (profile === 'enter') {
+            // Time under each function while Enter and Backspace alternate (30 key presses).
+            const { profile: cpu } = await cdp.send('Profiler.stop');
+            const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
+            const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
+            const selfById = new Map();
+            for (const id of cpu.samples) selfById.set(id, (selfById.get(id) ?? 0) + interval);
+            const total = new Map();
+            const walk = (node, open) => {
+                const frame = node.callFrame;
+                const key = `${frame.functionName || '(anonymous)'}  ${frame.url.split('/').slice(-2).join('/')}:${frame.lineNumber + 1}`;
+                let sum = selfById.get(node.id) ?? 0;
+                const inside = open.has(key);
+                if (!inside) open.add(key);
+                for (const child of node.children ?? []) sum += walk(byId.get(child), open);
+                if (!inside) { open.delete(key); total.set(key, (total.get(key) ?? 0) + sum); }
+                return sum;
+            };
+            walk(cpu.nodes[0], new Set());
+            console.log(`  -- time under a function per key press (Enter / Backspace) --`);
+            for (const [key, time] of [...total.entries()].filter(([key]) => /word\//.test(key)).sort((a, b) => b[1] - a[1]).slice(0, 60)) console.log(`  ${(time / 30).toFixed(2).padStart(7)} ms  ${key}`);
+        }
         console.log(`  Enter:  ${line(split.times[0])}`);
-        console.log(`  Backspace (merging the paragraphs again):  ${line(split.times[1])}`);
+        console.log(`  Backspace (merging the paragraphs again):  ${line(split.times[1])}; the last one laid out ${split.laidOut} and collected ${split.collected} of ${split.blocks} blocks`);
         const pasted = await tab.evaluate(() => window.perf.pastes(15, 'a short string '));
         console.log(`  a short string inserted (15 characters):  ${line(pasted)}`);
         const scrolled = await tab.evaluate(([n, top]) => window.perf.scroll(n, top), [60, loaded.top]);

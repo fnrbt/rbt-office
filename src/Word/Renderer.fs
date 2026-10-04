@@ -29,22 +29,17 @@ type Viewport = {
     OriginY: float
 }
 
-/// The paint commands of a frame as arrays with their vertical extents, so a
-/// band of the document (the visible viewport, one page) is found without
-/// walking lists or recomputing extents.
-type CommandIndex = {
-    Commands: PaintCommand array
-    Tops: float array
-    Bottoms: float array
-}
-
 type PaintFrame = {
     Document: Document
     Layouts: BlockLayout list
     /// Geometry of every page frame, as the layout pass produced it (sections
     /// can differ in size and orientation), extended over the note areas.
     Pages: PageInfo list
-    BodyCommands: PaintCommand list
+    /// The body's paint commands in chunks with their vertical extents (a
+    /// block, the note areas, a page's header and footer; see
+    /// `Paint.collectDocumentChunks`), in paint order. The chunks of what an
+    /// edit did not change are the chunks of the frame before.
+    Body: PaintChunk array
     /// Overlay that follows the document's content only (comment anchors):
     /// kept with the body commands when just the selection changes.
     StaticOverlay: PaintCommand list
@@ -67,8 +62,7 @@ type PaintFrame = {
     Hovered: (string * int) option
     /// The viewport the frame was painted through (None: whole-canvas mode).
     Viewport: Viewport option
-    mutable BodyIndex: CommandIndex option
-    mutable StaticOverlayIndex: CommandIndex option
+    mutable StaticOverlayIndex: PaintChunk option
     /// The first layout of each block, for the overlay of the next selection
     /// (made when a frame is first reused for another selection).
     mutable LayoutById: System.Collections.Generic.Dictionary<string, BlockLayout> option
@@ -107,11 +101,21 @@ type RenderContext = {
     /// How many paint frames were built (the commands of the whole document
     /// collected) - for hosts and checks that want to see frames reused.
     mutable FrameBuilds: int
+    /// Of the last frame built: the top-level blocks that were laid out, and
+    /// those whose paint commands were collected again (-1: all of them, the
+    /// document was collected as a whole).
+    mutable LastLaidOutBlocks: int
+    mutable LastCollectedBlocks: int
     /// Stands for the text measurers the context lays out with (a new object
     /// whenever they change): table plans are kept per scope, see
     /// `Layout.withTablePlanScope`.
     mutable PlanScope: obj
     LayoutState: IncrementalLayoutState
+    /// The paint commands of the last frame, block by block (see `Paint.PaintCache`).
+    PaintCache: PaintCache
+    /// Which blocks of the last frame's document hold comments (parallel arrays).
+    mutable CommentBlocks: Block array
+    mutable CommentFlags: bool array
     mutable LastPaint: PaintFrame option
     /// None: the canvas holds the whole document at layout scale and the host
     /// sizes it (from pageFrames). Some: the canvas is the visible viewport,
@@ -170,8 +174,13 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextPathPainterVersion = 0
     TextMeasurerVersion = 0
     FrameBuilds = 0
+    LastLaidOutBlocks = 0
+    LastCollectedBlocks = 0
     PlanScope = obj ()
     LayoutState = Rbt.Word.Layout.createIncrementalLayoutState ()
+    PaintCache = createPaintCache ()
+    CommentBlocks = [||]
+    CommentFlags = [||]
     LastPaint = None
     Viewport = None
     PageFrame = None
@@ -250,6 +259,7 @@ let cachedLayouts (ctx: RenderContext) (doc: Document) =
 let clearLayoutCache (ctx: RenderContext) =
     ctx.PlanScope <- obj ()
     Rbt.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
+    clearPaintCache ctx.PaintCache
     ctx.LastPaint <- None
     ctx.PageFrame <- None
 
@@ -291,9 +301,74 @@ let layoutLookupFor (ctx: RenderContext) (doc: Document) =
     fun blockId ->
         layouts |> List.tryFind (fun layout -> layout.BlockId = blockId)
 
+let private blockHasComments (block: Block) =
+    let inParagraph (para: ParagraphBlock) =
+        let mutable found = false
+        for run in para.Buffer.Runs do
+            match run with
+            | Text text when text.Style.CommentId.IsSome -> found <- true
+            | _ -> ()
+        found
+    match block with
+    | Paragraph para
+    | Heading (_, para) -> inParagraph para
+    | Table table ->
+        let mutable found = false
+        for row in table.Rows do
+            for cell in row.Cells do
+                for para in cell.Content do
+                    if not found && inParagraph para then found <- true
+        found
+    | TextBox textBox -> textBox.Content |> List.exists inParagraph
+
+/// The indexes of the blocks that hold comments. Which blocks do is kept
+/// from frame to frame (a block that is the same object has not changed), so
+/// an edit looks at the runs of the blocks it changed.
+let private commentBlockIndexes (ctx: RenderContext) (blocks: Block array) =
+    let struct (prefix, suffix) = Rbt.Word.Layout.commonBlockEnds ctx.CommentBlocks blocks
+    let shift = ctx.CommentBlocks.Length - blocks.Length
+    let flags = Array.zeroCreate<bool> blocks.Length
+    let indexes = ResizeArray<int>()
+    for index in 0 .. blocks.Length - 1 do
+        let flag =
+            if index < prefix then ctx.CommentFlags.[index]
+            elif index >= blocks.Length - suffix then ctx.CommentFlags.[index + shift]
+            else blockHasComments blocks.[index]
+        flags.[index] <- flag
+        if flag then indexes.Add index
+    ctx.CommentBlocks <- blocks
+    ctx.CommentFlags <- flags
+    indexes
+
 let private commentAnchorsForLayouts (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
+    // The layouts block by block, when they are the layout state's own.
+    let slices =
+        match ctx.LayoutState.LastSlices, ctx.LayoutState.LastLayouts with
+        | Some slices, Some known when obj.ReferenceEquals(known, layouts) -> Some slices
+        | _ -> None
+    let blocks =
+        match slices with
+        | Some slices -> slices.SliceBlocks
+        | None -> List.toArray doc.Blocks
+    let commented = commentBlockIndexes ctx blocks
+    if commented.Count = 0 then [] else
     let settings = layoutSettings ctx doc
-    let layoutById = layouts |> List.map (fun layout -> layout.BlockId, layout) |> Map.ofList
+    // (The last layout of a paragraph that has several.)
+    let layoutById = System.Collections.Generic.Dictionary<string, BlockLayout>()
+    match slices with
+    | Some slices ->
+        for index in commented do
+            for at in slices.SliceStarts.[index] .. slices.SliceStarts.[index + 1] - 1 do
+                layoutById.[slices.SliceLayouts.[at].BlockId] <- slices.SliceLayouts.[at]
+    | None ->
+        for layout in layouts do
+            layoutById.[layout.BlockId] <- layout
+    let tryLayout (blockId: string) =
+        match layoutById.TryGetValue blockId with
+        | true, layout -> Some layout
+        | false, _ -> None
+    // (Blocks without comments have no part in the list.)
+    let commentedDocument = { doc with Blocks = [ for index in commented -> blocks.[index] ] }
     let calloutX = max (settings.Width - settings.MarginRight + 12.0) (settings.PaddingLeft + 120.0)
 
     let isSelected blockId startOffset endOffset =
@@ -305,9 +380,9 @@ let private commentAnchorsForLayouts (ctx: RenderContext) (doc: Document) (layou
         | _ -> false
 
     let anchors =
-        commentInfos doc
+        commentInfos commentedDocument
         |> List.choose (fun info ->
-            match Map.tryFind info.BlockId layoutById with
+            match tryLayout info.BlockId with
             | None -> None
             | Some layout ->
                 let line = lineForOffset layout info.StartOffset
@@ -385,9 +460,10 @@ let private footnoteAnchorsForLayouts (settings: LayoutSettings) (layouts: Block
     |> List.distinctBy (fun anchor -> anchor.PageIndex, anchor.Id)
 
 let private bodyBottom (settings: LayoutSettings) (layouts: BlockLayout list) =
-    layouts
-    |> List.map (fun layout -> layout.Y + layout.Height)
-    |> List.fold max settings.PaddingTop
+    let mutable bottom = settings.PaddingTop
+    for layout in layouts do
+        bottom <- max bottom (layout.Y + layout.Height)
+    bottom
 
 let private endnoteStartY (settings: LayoutSettings) (layouts: BlockLayout list) =
     let bottom = bodyBottom settings layouts
@@ -680,10 +756,7 @@ let private rangeForCommand command =
     |> Option.map (fun (top, bottom) -> { Top = top; Bottom = bottom })
 
 let private layoutSame (oldLayout: BlockLayout) (newLayout: BlockLayout) =
-    oldLayout.BlockId = newLayout.BlockId
-    && obj.ReferenceEquals(oldLayout, newLayout)
-    && abs (oldLayout.Y - newLayout.Y) < 0.001
-    && abs (oldLayout.Height - newLayout.Height) < 0.001
+    obj.ReferenceEquals(oldLayout, newLayout)
 
 let private allRemainingLayoutsSame (oldTail: BlockLayout list) (newTail: BlockLayout list) =
     let rec loop (left: BlockLayout list) (right: BlockLayout list) =
@@ -714,27 +787,6 @@ let private firstLayoutRange (oldLayouts: BlockLayout list) (newLayouts: BlockLa
                 else Some { Top = changedBand.Top; Bottom = canvasBottom }
     loop oldLayouts newLayouts
 
-let private commandDiffRange oldCommands newCommands =
-    let rec loop oldRemaining newRemaining current =
-        match oldRemaining, newRemaining with
-        | [], [] -> Choice1Of2 current
-        | oldCommand :: oldTail, newCommand :: newTail when oldCommand = newCommand ->
-            loop oldTail newTail current
-        | oldCommand :: oldTail, newCommand :: newTail ->
-            match rangeForCommand oldCommand, rangeForCommand newCommand with
-            | Some oldRange, Some newRange ->
-                loop oldTail newTail (current |> unionRange (Some oldRange) |> unionRange (Some newRange))
-            | _ -> Choice2Of2 ()
-        | oldCommand :: oldTail, [] ->
-            match rangeForCommand oldCommand with
-            | Some oldRange -> loop oldTail [] (unionRange (Some oldRange) current)
-            | None -> Choice2Of2 ()
-        | [], newCommand :: newTail ->
-            match rangeForCommand newCommand with
-            | Some newRange -> loop [] newTail (unionRange (Some newRange) current)
-            | None -> Choice2Of2 ()
-    loop oldCommands newCommands None
-
 let private commandListRange commands =
     let rec loop remaining current =
         match remaining with
@@ -745,26 +797,18 @@ let private commandListRange commands =
             | None -> Choice2Of2 ()
     loop commands None
 
-let private imageCommandRange commands =
-    let rec loop remaining current =
-        match remaining with
-        | [] -> Choice1Of2 current
-        | (DrawImage _ as command) :: rest ->
-            match rangeForCommand command with
-            | Some range -> loop rest (unionRange (Some range) current)
-            | None -> Choice2Of2 ()
-        | _ :: rest -> loop rest current
-    loop commands None
-
 let private imageBandOf (frame: PaintFrame) =
     let band =
         match frame.ImageBand with
         | Some band -> band
         | None ->
-            let band =
-                match imageCommandRange frame.BodyCommands with
-                | Choice1Of2 range -> Choice1Of2 (range |> Option.map (fun range -> range.Top, range.Bottom))
-                | Choice2Of2 () -> Choice2Of2 ()
+            let mutable top = System.Double.PositiveInfinity
+            let mutable bottom = System.Double.NegativeInfinity
+            for chunk in frame.Body do
+                if chunk.ImageTop <= chunk.ImageBottom then
+                    top <- min top chunk.ImageTop
+                    bottom <- max bottom chunk.ImageBottom
+            let band : Choice<(float * float) option, unit> = Choice1Of2 (if top <= bottom then Some (top, bottom) else None)
             frame.ImageBand <- Some band
             band
     match band with
@@ -775,9 +819,15 @@ let private computeDirtyRange (previous: PaintFrame) (nextFrame: PaintFrame) (ca
     // A frame made from the previous one for another selection has the
     // previous one's body commands and layouts - the same objects: nothing of
     // the body is compared, and its pictures are painted already.
-    let sameBody = obj.ReferenceEquals(previous.BodyCommands, nextFrame.BodyCommands)
+    let sameBody = obj.ReferenceEquals(previous.Body, nextFrame.Body)
     let sameDocument = obj.ReferenceEquals(previous.Document, nextFrame.Document)
-    let bodyDiff = if sameBody then Choice1Of2 None else commandDiffRange previous.BodyCommands nextFrame.BodyCommands
+    // The chunks of what an edit did not change are the same objects: only the others are compared.
+    let bodyDiff =
+        if sameBody then Choice1Of2 None
+        else
+            match chunkDifferenceBand previous.Body nextFrame.Body with
+            | Choice1Of2 band -> Choice1Of2 (band |> Option.map (fun (top, bottom) -> { Top = top; Bottom = bottom }))
+            | Choice2Of2 () -> Choice2Of2 ()
     let staticDiff =
         if obj.ReferenceEquals(previous.StaticOverlay, nextFrame.StaticOverlay) then Choice1Of2 None
         else
@@ -828,6 +878,20 @@ let private commandIntersectsBand band command =
 let private renderCommandList ctx commands =
     commands |> List.iter (renderPaintCommand ctx)
 
+let private renderChunks ctx (chunks: PaintChunk array) =
+    for chunk in chunks do
+        for command in chunk.Commands do
+            renderPaintCommand ctx command
+
+/// The commands of the chunks that reach into a band (top .. bottom).
+let private renderChunksInBand ctx (chunks: PaintChunk array) (top: float) (bottom: float) =
+    for chunk in chunks do
+        if chunk.Bottom >= top && chunk.Top <= bottom then
+            let commands = chunk.Commands
+            for i = 0 to commands.Length - 1 do
+                if chunk.Bottoms.[i] >= top && chunk.Tops.[i] <= bottom then
+                    renderPaintCommand ctx commands.[i]
+
 let private renderCommandListInBand ctx band commands =
     commands
     |> List.iter (fun command ->
@@ -840,7 +904,7 @@ let private renderFullFrame ctx doc frame =
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
     renderPages ctx frame.Pages
-    renderCommandList ctx frame.BodyCommands
+    renderChunks ctx frame.Body
     renderCommandList ctx frame.StaticOverlay
     renderCommandList ctx frame.OverlayCommands
 
@@ -858,7 +922,7 @@ let private renderPartialFrame ctx doc frame band =
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
     renderPages ctx frame.Pages
-    renderCommandListInBand ctx band frame.BodyCommands
+    renderChunksInBand ctx frame.Body band.Top band.Bottom
     renderCommandListInBand ctx band frame.StaticOverlay
     renderCommandListInBand ctx band frame.OverlayCommands
 
@@ -885,14 +949,25 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     ctx.FrameBuilds <- ctx.FrameBuilds + 1
     let settings = layoutSettings ctx doc
     let layouts, pages = layoutDocumentWithPages ctx doc
-    let layouts, bodyCommands, _ =
+    let body =
         Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
-            collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages)
+            let chunked =
+                match ctx.LayoutState.LastSlices with
+                | Some slices -> collectDocumentChunks ctx.PaintCache settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc slices pages
+                | None -> None
+            ctx.LastLaidOutBlocks <- Rbt.Word.Layout.incrementalLayoutBlocksLaidOut ctx.LayoutState
+            ctx.LastCollectedBlocks <- (match chunked with Some _ -> paintCacheCollectedBlocks ctx.PaintCache | None -> -1)
+            match chunked with
+            | Some chunks -> chunks
+            | None ->
+                // The whole document's commands at once, as one chunk.
+                let _, commands, _ = collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages
+                [| chunkOfCommands (List.toArray commands) |])
     {
         Document = doc
         Layouts = layouts
         Pages = pageFramesForLayouts settings doc layouts pages
-        BodyCommands = bodyCommands
+        Body = body
         StaticOverlay = commentAnchorCommands ctx doc layouts
         OverlayCommands = selectionOverlay ctx settings doc layouts None hoveredImage
         CanvasWidth = canvasWidth ctx
@@ -906,7 +981,6 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
         MeasurerVersion = ctx.TextMeasurerVersion
         Hovered = hoveredImage
         Viewport = ctx.Viewport
-        BodyIndex = None
         StaticOverlayIndex = None
         LayoutById = None
         ImageBand = None
@@ -953,41 +1027,13 @@ let private setTransform (_ctx: CanvasRenderingContext2D) (_a: float) (_b: float
 [<Emit("$0.style.width = $1 + 'px'; $0.style.height = $2 + 'px'")>]
 let private setCanvasCssSize (_canvas: HTMLCanvasElement) (_width: float) (_height: float) : unit = jsNative
 
-let private indexCommands (commands: PaintCommand list) =
-    let items = List.toArray commands
-    let tops = Array.zeroCreate<float> items.Length
-    let bottoms = Array.zeroCreate<float> items.Length
-    for i = 0 to items.Length - 1 do
-        match commandYExtent items.[i] with
-        | Some (top, bottom) ->
-            tops.[i] <- top
-            bottoms.[i] <- bottom
-        | None ->
-            // No extent known: part of every band.
-            tops.[i] <- System.Double.NegativeInfinity
-            bottoms.[i] <- System.Double.PositiveInfinity
-    { Commands = items; Tops = tops; Bottoms = bottoms }
-
-let private bodyIndex (frame: PaintFrame) =
-    match frame.BodyIndex with
-    | Some index -> index
-    | None ->
-        let index = indexCommands frame.BodyCommands
-        frame.BodyIndex <- Some index
-        index
-
 let private staticOverlayIndex (frame: PaintFrame) =
     match frame.StaticOverlayIndex with
     | Some index -> index
     | None ->
-        let index = indexCommands frame.StaticOverlay
+        let index = chunkOfCommands (List.toArray frame.StaticOverlay)
         frame.StaticOverlayIndex <- Some index
         index
-
-let private renderIndexedInBand ctx (index: CommandIndex) top bottom =
-    for i = 0 to index.Commands.Length - 1 do
-        if index.Bottoms.[i] >= top && index.Tops.[i] <= bottom then
-            renderPaintCommand ctx index.Commands.[i]
 
 /// Pages are laid out with their left edge at x = 0. Shown through a
 /// viewport, a page narrower than the widest one (a portrait section among
@@ -1122,8 +1168,8 @@ let private renderViewportBand (ctx: RenderContext) (frame: PaintFrame) (vp: Vie
             ctx.Ctx.rect(0.0, pageTop, page.Width, pageBottom - pageTop)
             ctx.Ctx.clip()
             renderPageSheet ctx page
-            renderIndexedInBand ctx (bodyIndex frame) pageTop pageBottom
-            renderIndexedInBand ctx (staticOverlayIndex frame) pageTop pageBottom
+            renderChunksInBand ctx frame.Body pageTop pageBottom
+            renderChunksInBand ctx [| staticOverlayIndex frame |] pageTop pageBottom
             renderCommandListInBand ctx { Top = pageTop; Bottom = pageBottom } frame.OverlayCommands
             ctx.Ctx.restore()
     ctx.Ctx.restore()
@@ -1243,7 +1289,7 @@ let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) 
         target.Ctx.clip()
         target.Ctx.font <- sprintf "%fpx %s" ctx.FontSize ctx.FontFamily
         renderPagesInBand target [ page ] page.Top bottom
-        renderIndexedInBand target (bodyIndex frame) page.Top bottom
+        renderChunksInBand target frame.Body page.Top bottom
         target.Ctx.restore()
         true
 
