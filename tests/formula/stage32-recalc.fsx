@@ -76,6 +76,8 @@ let fullRecalculation (wb: Wb.Workbook) =
 
 /// An edit both ways: incrementally, and by a full recalculation.
 type Outcome = Incremental of Recalc.RecalcStats | Declined
+let mutable oneRunSteps = 0
+let mutable oneRunShort = 0
 let mutable engine = Unchecked.defaultof<Recalc.Engine>
 let mutable current = Unchecked.defaultof<Wb.Workbook>
 let start (wb: Wb.Workbook) =
@@ -84,6 +86,9 @@ let start (wb: Wb.Workbook) =
 let edit label (hint: (string * CellAddress) list option) (change: Wb.Workbook -> Wb.Workbook) =
     let edited = change current
     let full = fullRecalculation edited
+    // One run of the full recalculation reaches the settled values.
+    oneRunSteps <- oneRunSteps + 1
+    if (difference (Formula.recalculateWorkbook edited) full).IsSome then oneRunShort <- oneRunShort + 1
     match Recalc.recalculate engine edited hint with
     | Some result ->
         (match difference result full with
@@ -264,6 +269,35 @@ for file, seed, steps in [ "real-world/milk-street-office.xlsx", 3, 45
 // (The synthetic workbook again, so that the sequences cover one the engine supports whatever the files hold.)
 let incrementalSynthetic, _ = randomEdits "two sheets" 9 150 (fst (twoSheets ()))
 ok "the random sequences were mostly incremental" (incrementalSynthetic > 120 && incrementalTotal > 60) (sprintf "%d synthetic, %d on files" incrementalSynthetic incrementalTotal)
+
+// (Up to six passes over two sheets: a chain that crosses between them more often than that is
+// still short after one run - a few steps of the sequences on the schedule workbooks.)
+ok "one run of the full recalculation settles nearly every edit of workbooks whose values travel between sheets"
+    (oneRunSteps > 300 && oneRunShort * 20 < oneRunSteps) (sprintf "%d of %d steps short" oneRunShort oneRunSteps)
+printfn "  one run of the full recalculation was short of the settled values in %d of %d steps" oneRunShort oneRunSteps
+
+// A date function fed something far outside the calendar is #NUM!, on every
+// platform, and does not take the recalculation down (.NET's DateTime threw).
+do
+    let wb = Wb.createWorkbook () |> setCells "sheet1" [ at 0 0, Some (number 1e12); at 0 1, Some (formula "=EOMONTH(A1,1)"); at 0 2, Some (formula "=EDATE(A1,5)"); at 0 3, Some (formula "=YEAR(A1)"); at 1 1, Some (formula "=1+1") ]
+    let calculated = Formula.recalculateWorkbook wb
+    eq "the recalculation goes on past them" (valueAt "sheet1" 1 1 calculated) (CellValue.Number 2.0)
+    ok "and they are errors or held at the calendar's end, not exceptions"
+        ([ 1; 2; 3 ] |> List.forall (fun col -> match valueAt "sheet1" 0 col calculated with CellValue.Error _ | CellValue.Number _ -> true | _ -> false)) (sprintf "%A" [ for col in 1 .. 3 -> valueAt "sheet1" 0 col calculated ])
+
+// A paste that makes a formula read itself through another sheet is a circular
+// reference: the engine leaves it to the full recalculation and says why.
+do
+    let wb = Wb.createWorkbook () |> Wb.addSheet "Other"
+    let other = wb.SheetOrder |> List.last
+    let wb =
+        wb |> setCells "sheet1" [ at 0 0, Some (number 3.0); at 1 0, Some (formula "=Other!A1*2") ]
+           |> setCells other [ at 0 0, Some (formula "=Sheet1!A1+1") ]
+    start wb
+    eq "through the other sheet" (valueAt "sheet1" 1 0 current) (CellValue.Number 8.0)
+    let edited = current |> setCells "sheet1" [ at 0 0, Some (formula "=A2+1") ]
+    eq "the input overwritten by a formula that reads what depends on it: declined, as a circular reference"
+        (Recalc.recalculate engine edited None |> Option.isSome, Recalc.lastDecline engine) (false, "a circular reference among the formulas to evaluate")
 
 printfn "stage32-recalc: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

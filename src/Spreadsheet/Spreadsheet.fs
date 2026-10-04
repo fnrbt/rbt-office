@@ -608,6 +608,13 @@ type Spreadsheet(container: Element) =
     let restoreCellMap (cells: Map<CellAddress, CellData>) (m: SpreadsheetModel) =
         { m with Cells = cells } |> invalidateFilterProjection
 
+    /// Put a sheet's cells back with the spill map they had: the cells a
+    /// dynamic array had spilled into are spilled cells again, not ordinary
+    /// ones in the formula's way (it showed #SPILL! after the undo of a Delete
+    /// or Cut that had removed it).
+    let restoreCellMapWithSpill (cells: Map<CellAddress, CellData>) (spill: Map<CellAddress, CellAddress>) (m: SpreadsheetModel) =
+        { m with Cells = cells; Spill = spill } |> invalidateFilterProjection
+
     /// The workbook was replaced or changed in more than its cells: the
     /// dependency graph and the calculated state it stands on are dropped.
     let invalidateCalcEngine () =
@@ -943,12 +950,13 @@ type Spreadsheet(container: Element) =
     /// recalculate: rows moved, so every formula reading them is stale.
     let sortActiveSheet (col: int) (ascending: bool) (description: string) =
         let oldCells = model.Cells
+        let oldSpill = model.Spill
         let oldRichRuns = model.RichRuns
         let oldSortState = model.SortState
         model <- sortByColumn col ascending model
         recalculateFormulas()
         let command = {
-            Undo = fun m -> { restoreCellMap oldCells m with RichRuns = oldRichRuns; SortState = oldSortState }
+            Undo = fun m -> { restoreCellMapWithSpill oldCells oldSpill m with RichRuns = oldRichRuns; SortState = oldSortState }
             Redo = fun m -> sortByColumn col ascending m
             Description = description
         }
@@ -960,12 +968,13 @@ type Spreadsheet(container: Element) =
         let selection = model.Selection
         let clipboardData = serializeSelection selection model true
         let oldCells = model.Cells
+        let oldSpill = model.Spill
         model <- { model with Clipboard = Some clipboardData }
         model <- clearSelectionCells selection model
         recalculateFormulas()
         if not (obj.ReferenceEquals(oldCells, model.Cells)) then
             let command = {
-                Undo = fun m -> restoreCellMap oldCells m
+                Undo = fun m -> restoreCellMapWithSpill oldCells oldSpill m
                 Redo = fun m -> clearSelectionCells selection m
                 Description = "Cut"
             }
@@ -1517,10 +1526,11 @@ type Spreadsheet(container: Element) =
     let clearSelection () =
         let selection = model.Selection
         let oldCells = model.Cells
+        let oldSpill = model.Spill
         model <- clearSelectionCells selection model
         if not (obj.ReferenceEquals(oldCells, model.Cells)) then
             recalculateFormulas()
-            model <- pushCommand { Undo = (fun m -> restoreCellMap oldCells m)
+            model <- pushCommand { Undo = (fun m -> restoreCellMapWithSpill oldCells oldSpill m)
                                    Redo = (fun m -> clearSelectionCells selection m)
                                    Description = "Delete" } model
 
@@ -1592,6 +1602,7 @@ type Spreadsheet(container: Element) =
         let block = top, left, bottom, right
         let area = float (bottom - top + 1) * float (right - left + 1)
         let oldCells = model.Cells
+        let oldSpill = model.Spill
         let apply (m: SpreadsheetModel) : SpreadsheetModel =
             let mutable cells = m.Cells
             let change (addr: CellAddress) (existing: CellData option) =
@@ -1612,7 +1623,7 @@ type Spreadsheet(container: Element) =
         if obj.ReferenceEquals(updated, model) then false
         else
             model <- updated
-            pushValueNeutral { Undo = (fun m -> restoreCellMap oldCells m)
+            pushValueNeutral { Undo = (fun m -> restoreCellMapWithSpill oldCells oldSpill m)
                                Redo = apply
                                Description = description }
             true
@@ -5041,6 +5052,7 @@ type Spreadsheet(container: Element) =
     /// Import CSV data
     member _.ImportCSV(csvText: string, startRow: int, startCol: int) =
         let oldCells = model.Cells
+        let oldSpill = model.Spill
         model <- importCSV csvText startRow startCol model
         recalculateFormulas()
 
@@ -5048,7 +5060,7 @@ type Spreadsheet(container: Element) =
         // persistent map) so dependent formulas recalculated by the import are
         // rolled back too, not just the imported rectangle.
         let command = {
-            Undo = fun m -> restoreCellMap oldCells m
+            Undo = fun m -> restoreCellMapWithSpill oldCells oldSpill m
             Redo = fun m ->
                 let sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
                 importCSV csvText startRow startCol m

@@ -2106,7 +2106,12 @@ let firstTableSelValue (sel: TableSel)
 // 1900-leap-year bug) makes the simple offset exact for every date from
 // 1900-03-01 (serial 61) onward, which covers every realistic spreadsheet.
 let private utcDate year month day = DateTime(year, month, day, 0, 0, 0, DateTimeKind.Utc)
-let private serialToDate (s: float) : DateTime = excelEpoch.AddDays(s)
+/// (A serial far outside the calendar - a formula fed something that is not a
+/// date - is held at the calendar's ends: .NET's DateTime throws there, which
+/// took a whole recalculation down with one cell.)
+let private serialToDate (s: float) : DateTime =
+    let held = if System.Double.IsNaN s then 0.0 else max -657000.0 (min 2958465.0 s)
+    excelEpoch.AddDays(held)
 /// Reads the date's own calendar fields, so a local-kind value (a parsed
 /// string, DateTime.Today) maps to the serial for the date it displays.
 let private dateToSerial (d: DateTime) : float =
@@ -4021,7 +4026,16 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
         elif isReferenceFunction name then
             // In a scalar context the reference collapses to its first cell.
             eval (resolveReferenceFunction name args ctx) ctx
-        else evalFunction name args ctx
+        else
+#if FABLE_COMPILER
+            evalFunction name args ctx
+#else
+            // (.NET's date arithmetic throws outside the calendar - EOMONTH or EDATE
+            // fed something that is no date - where JavaScript gives an invalid date:
+            // the cell is #NUM!, and the recalculation goes on.)
+            try evalFunction name args ctx
+            with :? System.ArgumentOutOfRangeException -> err Err.num
+#endif
 
 /// Do any of a call's arguments need rewriting before the function sees
 /// them? Functions recognise ranges by their syntax (`RangeRef`), so an
@@ -13444,7 +13458,13 @@ let recalculateWorkbook (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Rbt.Spre
             match Map.tryFind id workbook.Sheets with
             | Some sheet -> needsCalc sheet
             | None -> false)
-    let maxPasses = min 4 (List.length formulaSheets)
+    // (One sheet settles in one pass. Several: a value can travel from sheet to
+    // sheet and back - a name on one sheet read by a schedule on another whose
+    // totals the first sheet shows - once per pass at worst, so the passes go
+    // on until one changes nothing, within a bound that volatile functions
+    // and circular references across sheets, which never settle, stop at.)
+    let sheetCount = List.length formulaSheets
+    let maxPasses = if sheetCount <= 1 then sheetCount else min 8 (2 * sheetCount + 2)
     let mutable wb = workbook
     let mutable pass = 0
     let mutable changed = true

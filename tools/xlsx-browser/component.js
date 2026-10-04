@@ -712,6 +712,28 @@ checks['incremental-recalc'] = async () => {
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     incremental.close(); full.close();
 
+    // A spilling formula deleted with the cells it spilled into, and the Delete undone: it
+    // spills again (the spilled cells came back as ordinary cells, in its way: #SPILL!).
+    {
+        const { grid, host, close } = mountGrid();
+        try {
+            grid.SetCell(0, 0, '1'); grid.SetCell(1, 0, '2'); grid.SetCell(2, 0, '3');
+            grid.EnterText(0, 2, '=TRANSPOSE(A1:A3)');
+            const row = async () => [await valueAt(grid, 0, 2), await valueAt(grid, 0, 3), await valueAt(grid, 0, 4)];
+            check('a formula that spills', await row(), ['1', '2', '3']);
+            grid.SelectRange(0, 2, 0, 4);
+            host.querySelector('.spreadsheet-content').dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }));
+            check('deleted with its spilled cells', await row(), ['', '', '']);
+            grid.Undo();
+            check('undone: it spills as before', await row(), ['1', '2', '3']);
+            grid.SetCell(1, 0, '20');
+            check('and follows its source', await row(), ['1', '20', '3']);
+            grid.SelectRange(0, 2, 0, 4); grid.Cut(); grid.Undo();
+            check('the same after a Cut is undone', await row(), ['1', '20', '3']);
+        } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+        close();
+    }
+
     // The formula-heavy workbook: the first edit builds the dependency graph; an edit with few
     // dependents evaluates a few formulas; a block pasted where most formulas read evaluates those.
     const { grid, host, close } = mountGrid();
