@@ -421,7 +421,8 @@ type XlsxHyperlink = {
 
 type XlsxSheetOut = {
     Name: string
-    Visible: bool
+    /// Visible, hidden, or very hidden (only un-hidable from VBA).
+    State: XlsxReader.SheetState
     Cells: XlsxCellOut list
     MergedCells: MergedCellRange list
     ColumnWidths: (int * float) list
@@ -1060,7 +1061,7 @@ let private conditionalFormattingXml (dxfCount: int) (formats: XlsxReader.Condit
                               + "</dataBar>"
                     match rule.IconSet with
                     | Some family ->
-                        yield sprintf "<iconSet %s>%s</iconSet>" (attr "iconSet" family) (rule.IconSetCfvo |> List.map cfvo |> String.concat "")
+                        yield sprintf "<iconSet %s%s>%s</iconSet>" (attr "iconSet" family) (if rule.IconSetReverse then " reverse=\"1\"" else "") (rule.IconSetCfvo |> List.map cfvo |> String.concat "")
                     | None -> ()
                 ]
                 sprintf "<cfRule %s>%s</cfRule>" (String.concat " " attrs) (String.concat "" children))
@@ -1254,7 +1255,11 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
     let sheets =
         workbook.Sheets
         |> List.mapi (fun i s ->
-            let visible = if s.Visible then "" else " state=\"hidden\""
+            let visible =
+                match s.State with
+                | XlsxReader.SheetVisible -> ""
+                | XlsxReader.SheetHidden -> " state=\"hidden\""
+                | XlsxReader.SheetVeryHidden -> " state=\"veryHidden\""
             sprintf "<sheet %s sheetId=\"%d\" r:id=\"rId%d\"%s/>"
                 (attr "name" s.Name) (i + 1) (i + 1) visible)
         |> String.concat ""
@@ -1416,7 +1421,7 @@ let private formattedToWorkbook (sheets: FormattedSheet list) =
         sheets
         |> List.map (fun s ->
             { Name = s.Name
-              Visible = true
+              State = XlsxReader.SheetVisible
               Cells = s.Rows |> List.mapi (fun r row -> row.Cells |> List.mapi (fun c cell -> convertCell r c cell)) |> List.concat
               MergedCells = s.MergedCells
               ColumnWidths = []
@@ -1526,7 +1531,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                     (r, col), (c.Text, c.Author))
                 |> Map.ofList
             { Name = sheet.Name
-              Visible = (sheet.State = XlsxReader.SheetVisible)
+              State = sheet.State
               Cells =
                 sheet.Rows
                 |> List.collect (fun row ->

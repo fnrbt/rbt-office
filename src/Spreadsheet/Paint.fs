@@ -340,6 +340,9 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         let format =
             if tableStyles.IsEmpty then baseFormat
             else tableStyleFormat addr.Row addr.Col tableStyles baseFormat
+        // Conditional formats sit on top of the cell's own format and the
+        // table style: fills, font overrides, data bars, icons.
+        let format = Rbt.Spreadsheet.ConditionalFormatting.formatAt model addr format
         // Selection is rendered as a separate overlay (see `selectionPaintItems`)
         // so cursor moves don't invalidate the cached grid paint items.
         let selected = false

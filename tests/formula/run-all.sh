@@ -41,6 +41,7 @@ stages=(
     stage23-functions
     stage24-moves
     stage25-arrays3
+    stage26-rules
     numbertext
 )
 

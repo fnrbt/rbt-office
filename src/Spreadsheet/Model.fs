@@ -212,19 +212,95 @@ type ColumnFilter = {
     VisibleValues: Set<string>  // String representation of values to show
 }
 
-/// Conditional formatting rule
+/// The comparison of a `cellIs` conditional format or a data validation.
+type CompareOperator =
+    | OpGreaterThan
+    | OpLessThan
+    | OpGreaterOrEqual
+    | OpLessOrEqual
+    | OpEqual
+    | OpNotEqual
+    | OpBetween
+    | OpNotBetween
+
+/// Where a colour-scale stop, a data-bar end or an icon-set step sits on the
+/// value axis of the rule's range (a `<cfvo>`).
+type CfThresholdKind =
+    /// Lowest / highest value in the range.
+    | CfvoMin
+    | CfvoMax
+    /// A literal number.
+    | CfvoNumber
+    /// A percentage of the way from the lowest to the highest value.
+    | CfvoPercent
+    /// The value at this percentile of the range's numbers.
+    | CfvoPercentile
+    /// A formula, evaluated once for the rule.
+    | CfvoFormula
+
+type CfThreshold = {
+    Kind: CfThresholdKind
+    /// The number / percentage / formula text; None for min and max.
+    Value: string option
+}
+
+type TextRuleKind =
+    | TextContains
+    | TextNotContains
+    | TextBeginsWith
+    | TextEndsWith
+
+/// Conditional formatting rule. The first five cases are the literal rules
+/// the editor's dialog creates; the rest mirror the OOXML rule types. A
+/// formula in a rule is written for the top-left cell of the rule's first
+/// range and is re-pointed for every other cell (relative references move,
+/// `$`-locked ones stay).
 type ConditionalFormatRule =
     | GreaterThan of float
     | LessThan of float
     | Between of float * float
     | Equal of float
     | ContainsText of string
+    /// `cellIs`: the cell's value compared with one operand (two for
+    /// between / not between), each a formula.
+    | CellIs of CompareOperator * string * string option
+    /// `expression`: formatted where the formula is true.
+    | Expression of string
+    /// Case-insensitive text test.
+    | TextRule of TextRuleKind * string
+    /// `top10`: the `rank` largest (or smallest) values; `percent` makes the
+    /// rank a percentage of the range's count.
+    | TopBottom of rank: int * percent: bool * bottom: bool
+    /// `aboveAverage`: above (or below) the mean, optionally including it,
+    /// or beyond `stdDev` standard deviations from it when stdDev > 0.
+    | AboveAverage of above: bool * orEqual: bool * stdDev: int
+    | DuplicateValues
+    | UniqueValues
+    /// Blank cells (true) / non-blank cells (false).
+    | Blanks of bool
+    /// Cells holding an error (true) / no error (false).
+    | Errors of bool
+    /// 2- or 3-colour scale: stops in ascending order with their colours.
+    | ColorScale of (CfThreshold * string) list
+    /// Data bar from `low` to `high`, drawn in `color`.
+    | DataBar of low: CfThreshold * high: CfThreshold * color: string
+    /// Icon set: `family` is the OOXML name ("3TrafficLights1", "5Arrows");
+    /// one threshold per icon (the first is the floor).
+    | IconSet of family: string * thresholds: CfThreshold list * reverse: bool
 
 /// Conditional format (rule + style to apply)
 type ConditionalFormat = {
     Rule: ConditionalFormatRule
     Style: CellFormat
 }
+
+/// What a data validation of the comparison kind measures.
+type ValidationKind =
+    | WholeKind
+    | DecimalKind
+    | DateKind
+    | TimeKind
+    | TextLengthKind
 
 /// Data-validation rule (what a cell is allowed to contain).
 type ValidationRule =
@@ -237,6 +313,19 @@ type ValidationRule =
     | TextLength of float option * float option
     /// Date (Excel serial) range.
     | DateRange of float option * float option
+    /// Any comparison, including not-between and not-equal, of a whole
+    /// number / decimal / date / time / text length with operands that are
+    /// numbers or formulas (`=TODAY()`, `=$B$1`).
+    | Comparison of ValidationKind * CompareOperator * string * string option
+    /// The entry is valid when this formula is true.
+    | CustomFormula of string
+
+/// What happens when an entry fails validation. Excel's "stop" refuses the
+/// entry; "warning" and "information" only tell the user and accept it.
+type ValidationStyle =
+    | StopStyle
+    | WarningStyle
+    | InformationStyle
 
 type DataValidation = {
     Rule: ValidationRule
@@ -244,7 +333,25 @@ type DataValidation = {
     ErrorMessage: string option
     /// Shown as a tooltip while the cell is selected.
     InputMessage: string option
+    /// Captions of the error alert and of the input message.
+    ErrorTitle: string option
+    InputTitle: string option
+    Style: ValidationStyle
+    /// Excel's "show error alert after invalid data is entered". When off
+    /// the rule is advisory only: nothing is refused and nothing is shown.
+    ShowError: bool
+    /// Excel's "ignore blank". Carried for round trips: an emptied cell is
+    /// accepted either way.
+    AllowBlank: bool
+    /// The cell the rule's formulas are written for (the top-left of the
+    /// validated range); None = the validated cell itself.
+    Anchor: CellAddress option
 }
+
+/// A validation with the given rule and Excel's defaults for the rest.
+let validationOf (rule: ValidationRule) : DataValidation =
+    { Rule = rule; ErrorMessage = None; InputMessage = None; ErrorTitle = None; InputTitle = None
+      Style = StopStyle; ShowError = true; AllowBlank = true; Anchor = None }
 
 /// Merged cell range (primary cell is top-left)
 type MergedCell = {
@@ -326,6 +433,17 @@ type HeaderFooter = {
 type CellRange = {
     From: CellAddress
     To: CellAddress
+}
+
+/// A conditional format as it is defined: for one or more ranges, not per
+/// cell. A whole-column rule is the range from row 0 to the last sheet row —
+/// it is never clipped to the used range. Rules apply in ascending
+/// `Priority`; a matching rule with `StopIfTrue` hides the rules after it.
+type ConditionalFormatRange = {
+    Ranges: CellRange list
+    Format: ConditionalFormat
+    Priority: int
+    StopIfTrue: bool
 }
 
 /// Excel table style reference (e.g. `TableStyleMedium7` + show-stripes
@@ -524,8 +642,9 @@ type SpreadsheetModel = {
     /// Current search result index
     SearchIndex: int
 
-    /// Conditional formats by cell address
-    ConditionalFormats: Map<CellAddress, ConditionalFormat list>
+    /// Conditional formats, by range. See `ConditionalFormatting` for their
+    /// evaluation.
+    ConditionalFormats: ConditionalFormatRange list
 
     /// Merged cell ranges
     MergedCells: MergedCell list
@@ -627,7 +746,7 @@ let createEmpty rowCount colCount = {
     SearchCaseSensitive = None
     SearchResults = [||]
     SearchIndex = 0
-    ConditionalFormats = Map.empty
+    ConditionalFormats = []
     MergedCells = []
     RichRuns = Map.empty
     FrozenRows = 0
@@ -1004,6 +1123,10 @@ type FormulaHooks = {
     Adjust: StructureEdit -> (string option -> bool) -> string -> string
     /// Re-point references to a block of cells that was moved.
     Move: CellMove -> string -> string
+    /// Evaluate a formula written for one cell as if it stood `rows`/`cols`
+    /// away, at `cell` of `model` — how validation and conditional-format
+    /// formulas are applied to each cell of their range.
+    Evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue
 }
 
 let mutable private formulaHooks : FormulaHooks option = None
@@ -1054,6 +1177,13 @@ let moveFormulaReferences (move: CellMove) (formula: string) : string =
     match currentFormulaHooks () with
     | Some hooks -> hooks.Move move formula
     | None -> formula
+
+/// Evaluate `formula` (written for a cell `rows`/`cols` before `cell`) at
+/// `cell`. Error "NAME?" when no formula engine is loaded.
+let evaluateFormulaAt (formula: string) (rows: int) (cols: int) (model: SpreadsheetModel) (cell: CellAddress) : CellValue =
+    match currentFormulaHooks () with
+    | Some hooks -> hooks.Evaluate formula rows cols model cell
+    | None -> Error "NAME?"
 
 /// Serialize selection to clipboard data
 let serializeSelection (selection: Selection) (model: SpreadsheetModel) (isCut: bool): ClipboardData =
@@ -1627,6 +1757,43 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 ManualColBreaks = if onRows then setup.ManualColBreaks else moveBreaks setup.ManualColBreaks }
         if updated = setup then setup else updated
 
+    // Conditional formats follow their ranges; a rule left with no range is
+    // gone, and the formulas inside the rules are re-pointed like any other.
+    let conditionalFormats =
+        let moveRange (range: CellRange) =
+            if onRows then
+                // A whole-column rule stays a whole-column rule.
+                if range.From.Row = 0 && range.To.Row >= 1048575 then Some range
+                else
+                    moveSpan range.From.Row range.To.Row
+                    |> Option.map (fun (lo, hi) -> { From = { range.From with Row = lo }; To = { range.To with Row = hi } })
+            else
+                if range.From.Col = 0 && range.To.Col >= 16383 then Some range
+                else
+                    moveSpan range.From.Col range.To.Col
+                    |> Option.map (fun (lo, hi) -> { From = { range.From with Col = lo }; To = { range.To with Col = hi } })
+        let adjust (formula: string) = adjustFormulaForEdit edit targetsEditedSheet formula
+        let adjustThreshold (threshold: CfThreshold) =
+            match threshold.Kind with
+            | CfvoFormula -> { threshold with Value = threshold.Value |> Option.map adjust }
+            | _ -> threshold
+        let adjustRule (rule: ConditionalFormatRule) =
+            match rule with
+            | CellIs (op, first, second) -> CellIs (op, adjust first, second |> Option.map adjust)
+            | Expression formula -> Expression (adjust formula)
+            | ColorScale stops -> ColorScale (stops |> List.map (fun (threshold, color) -> adjustThreshold threshold, color))
+            | DataBar (low, high, color) -> DataBar (adjustThreshold low, adjustThreshold high, color)
+            | IconSet (family, thresholds, reverse) -> IconSet (family, thresholds |> List.map adjustThreshold, reverse)
+            | other -> other
+        model.ConditionalFormats
+        |> List.choose (fun entry ->
+            match entry.Ranges |> List.choose moveRange with
+            | [] -> None
+            | ranges ->
+                let rule = adjustRule entry.Format.Rule
+                if ranges = entry.Ranges && rule = entry.Format.Rule then Some entry
+                else Some { entry with Ranges = ranges; Format = { entry.Format with Rule = rule } })
+
     let delta = if isInsert then count else -count
     { model with
         Cells = cells
@@ -1636,7 +1803,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         ColCount = if onRows then model.ColCount else max 1 (model.ColCount + delta)
         RowHeights = if onRows then moveIndexMap model.RowHeights else model.RowHeights
         ColumnWidths = if onRows then model.ColumnWidths else moveIndexMap model.ColumnWidths
-        ConditionalFormats = moveAddressMap model.ConditionalFormats
+        ConditionalFormats = conditionalFormats
         RichRuns = moveAddressMap model.RichRuns
         MergedCells = merges
         Tables = tables
@@ -1872,7 +2039,9 @@ and replaceAllWithChanges (findText: string) (replaceText: string) (caseSensitiv
         if count = 0 then model, 0, oldCells, newCells
         else ({ model with Cells = cells } |> invalidateFilterProjection), count, oldCells, newCells
 
-/// Evaluate if a cell value matches a conditional format rule
+/// Does a cell value match a *literal* conditional format rule (the five
+/// value-only kinds)? Rules that need the range's other cells or the formula
+/// engine are evaluated by `ConditionalFormatting`.
 let evaluateRule (rule: ConditionalFormatRule) (value: CellValue): bool =
     match rule, value with
     | GreaterThan threshold, Number n -> n > threshold
@@ -1883,24 +2052,58 @@ let evaluateRule (rule: ConditionalFormatRule) (value: CellValue): bool =
     | ContainsText text, Formula (formula, _) -> formula.Contains(text)
     | _ -> false
 
-/// Get conditional format to apply to a cell (returns first matching rule)
+let cellRangeContains (addr: CellAddress) (range: CellRange) =
+    addr.Row >= range.From.Row && addr.Row <= range.To.Row && addr.Col >= range.From.Col && addr.Col <= range.To.Col
+
+/// The conditional formats whose ranges cover a cell, in priority order.
+let conditionalFormatsAt (addr: CellAddress) (model: SpreadsheetModel) : ConditionalFormatRange list =
+    model.ConditionalFormats
+    |> List.filter (fun entry -> entry.Ranges |> List.exists (cellRangeContains addr))
+    |> List.sortBy (fun entry -> entry.Priority)
+
+/// The style of the first literal rule on a cell that the value matches.
+/// Covers only the value-only rule kinds; see `ConditionalFormatting.formatAt`
+/// for the full evaluation.
 let getConditionalFormat (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel): CellFormat option =
-    match Map.tryFind addr model.ConditionalFormats with
-    | Some formats ->
-        formats
-        |> List.tryFind (fun cf -> evaluateRule cf.Rule value)
-        |> Option.map (fun cf -> cf.Style)
-    | None -> None
+    conditionalFormatsAt addr model
+    |> List.tryFind (fun entry -> evaluateRule entry.Format.Rule value)
+    |> Option.map (fun entry -> entry.Format.Style)
+
+/// Add a conditional format for some ranges. Like a rule made in Excel's
+/// dialog, it takes precedence over the rules already there.
+let addConditionalFormatRange (ranges: CellRange list) (format: ConditionalFormat) (model: SpreadsheetModel): SpreadsheetModel =
+    let priority =
+        match model.ConditionalFormats with
+        | [] -> 1
+        | existing -> (existing |> List.map (fun entry -> entry.Priority) |> List.min) - 1
+    { model with
+        ConditionalFormats = { Ranges = ranges; Format = format; Priority = priority; StopIfTrue = false } :: model.ConditionalFormats }
 
 /// Add a conditional format rule to a cell
 let addConditionalFormat (addr: CellAddress) (format: ConditionalFormat) (model: SpreadsheetModel): SpreadsheetModel =
-    let existingFormats = Map.tryFind addr model.ConditionalFormats |> Option.defaultValue []
-    let newFormats = format :: existingFormats
-    { model with ConditionalFormats = Map.add addr newFormats model.ConditionalFormats }
+    addConditionalFormatRange [ { From = addr; To = addr } ] format model
 
-/// Remove all conditional formats from a cell
+/// Remove all conditional formats from a cell. A rule covering more than the
+/// cell keeps the rest of its range.
 let removeConditionalFormats (addr: CellAddress) (model: SpreadsheetModel): SpreadsheetModel =
-    { model with ConditionalFormats = Map.remove addr model.ConditionalFormats }
+    let without (range: CellRange) : CellRange list =
+        if not (cellRangeContains addr range) then [ range ]
+        else
+            [ if range.From.Row < addr.Row then
+                  yield { From = range.From; To = { Row = addr.Row - 1; Col = range.To.Col } }
+              if range.From.Col < addr.Col then
+                  yield { From = { Row = addr.Row; Col = range.From.Col }; To = { Row = addr.Row; Col = addr.Col - 1 } }
+              if range.To.Col > addr.Col then
+                  yield { From = { Row = addr.Row; Col = addr.Col + 1 }; To = { Row = addr.Row; Col = range.To.Col } }
+              if range.To.Row > addr.Row then
+                  yield { From = { Row = addr.Row + 1; Col = range.From.Col }; To = range.To } ]
+    let remaining =
+        model.ConditionalFormats
+        |> List.choose (fun entry ->
+            match entry.Ranges |> List.collect without with
+            | [] -> None
+            | ranges -> Some (if ranges = entry.Ranges then entry else { entry with Ranges = ranges }))
+    if remaining = model.ConditionalFormats then model else { model with ConditionalFormats = remaining }
 
 // --- Conditional-format VISUALS: data bars / color scales / icon sets -------
 // These compute over a range and bake the result into each cell's CellFormat
@@ -1995,13 +2198,41 @@ let private displayText (v: CellValue) : string =
     | Boolean b -> if b then "TRUE" else "FALSE"
     | _ -> ""
 
-/// Check a value against a validation rule. Blank is always allowed (Excel's
-/// default). Returns Ok or a human-readable reason.
-let validateValue (rule: ValidationRule) (value: CellValue) : Result<unit, string> =
+/// Does `x` satisfy the comparison against its operand(s)?
+let compareHolds (op: CompareOperator) (x: float) (first: float) (second: float option) : bool =
+    let lo, hi =
+        match second with
+        | Some other -> min first other, max first other
+        | None -> first, first
+    let eps = 1e-9
+    match op with
+    | OpGreaterThan -> x > first + eps
+    | OpLessThan -> x < first - eps
+    | OpGreaterOrEqual -> x >= first - eps
+    | OpLessOrEqual -> x <= first + eps
+    | OpEqual -> abs (x - first) <= eps
+    | OpNotEqual -> abs (x - first) > eps
+    | OpBetween -> x >= lo - eps && x <= hi + eps
+    | OpNotBetween -> x < lo - eps || x > hi + eps
+
+/// Check a value against a validation rule whose formulas are evaluated by
+/// `evaluate` (formula text → value at the validated cell). Blank is always
+/// allowed (clearing a cell is never refused). Returns Ok or a reason.
+let validateValueWith (evaluate: string -> CellValue) (rule: ValidationRule) (value: CellValue) : Result<unit, string> =
     let v = unwrapVal value
     let isBlank = match v with Empty -> true | String "" -> true | _ -> false
     let within lo hi x =
         (match lo with Some l -> x >= l - 1e-9 | None -> true) && (match hi with Some h -> x <= h + 1e-9 | None -> true)
+    /// An operand: a plain number, or a formula to evaluate.
+    let operand (text: string) : float option =
+        let trimmed = text.Trim()
+        match Double.TryParse(trimmed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
+        | true, number -> Some number
+        | _ ->
+            match unwrapVal (evaluate trimmed) with
+            | Number number -> Some number
+            | Boolean flag -> Some (if flag then 1.0 else 0.0)
+            | _ -> None
     if isBlank then Result.Ok()
     else
         match rule with
@@ -2025,6 +2256,46 @@ let validateValue (rule: ValidationRule) (value: CellValue) : Result<unit, strin
             (match v with
              | Number n -> if within lo hi n then Result.Ok() else Result.Error "Enter a date within the allowed range."
              | _ -> Result.Error "Enter a date.")
+        | Comparison (kind, op, first, second) ->
+            let noun =
+                match kind with
+                | WholeKind -> "whole number"
+                | DecimalKind -> "number"
+                | DateKind -> "date"
+                | TimeKind -> "time"
+                | TextLengthKind -> "text of the allowed length"
+            let measured =
+                match kind, v with
+                | TextLengthKind, String text -> Some (float text.Length)
+                | TextLengthKind, other -> Some (float (displayText other).Length)
+                | WholeKind, Number n when n <> floor n -> None
+                // A time of day is the fractional part of a serial.
+                | TimeKind, Number n when n < 0.0 -> None
+                | _, Number n -> Some n
+                | _ -> None
+            match measured with
+            | None -> Result.Error (sprintf "Enter a %s." noun)
+            | Some x ->
+                match operand first, second |> Option.map operand with
+                // An operand that has no value yet cannot refuse anything.
+                | None, _ | _, Some None -> Result.Ok()
+                | Some firstValue, secondValue ->
+                    let secondValue = secondValue |> Option.bind id
+                    if compareHolds op x firstValue secondValue then Result.Ok()
+                    else Result.Error (sprintf "Enter a %s that meets the rule set for this cell." noun)
+        | CustomFormula formula ->
+            match unwrapVal (evaluate formula) with
+            | Boolean true -> Result.Ok()
+            | Number n when n <> 0.0 -> Result.Ok()
+            // A formula that cannot be evaluated does not lock the cell.
+            | Error _ -> Result.Ok()
+            | _ -> Result.Error "This value does not meet the validation rule set for this cell."
+
+/// Check a value against a validation rule without a sheet to evaluate
+/// formulas on: operands must be literal numbers, and a custom-formula rule
+/// accepts everything. Use `checkEntry` to validate an entry in a cell.
+let validateValue (rule: ValidationRule) (value: CellValue) : Result<unit, string> =
+    validateValueWith (fun _ -> Error "NAME?") rule value
 
 let getValidation (addr: CellAddress) (model: SpreadsheetModel) : DataValidation option =
     Map.tryFind addr model.Validations
@@ -2037,15 +2308,54 @@ let setValidation (addr: CellAddress) (dv: DataValidation) (model: SpreadsheetMo
     | ListValues _ -> updateFormat addr (fun f -> { f with HasListDropdown = true }) m
     | _ -> m
 
-/// Validate a prospective edit against the cell's rule (if any). Ok when valid
-/// or unconstrained; Error carries the rule's message (or a default).
-let validateEdit (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : Result<unit, string> =
+/// What validating an entry found.
+type ValidationOutcome =
+    /// No rule, or the entry satisfies it.
+    | EntryValid
+    /// The entry breaks the rule. `StopStyle` means it must be refused;
+    /// the other styles are advisory — the entry is kept and the user told.
+    | EntryInvalid of style: ValidationStyle * title: string option * message: string
+
+/// Validate a prospective entry against the cell's rule, the way Excel does
+/// when the edit is committed. `evaluate` runs a formula written for one cell
+/// at another (see `evaluateFormulaAt`); the rule's formulas see the sheet
+/// with the entry already in place, so `=COUNTIF($A:$A,A1)=1` counts it.
+let checkEntryWith (evaluate: string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue)
+                   (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : ValidationOutcome =
     match getValidation addr model with
-    | None -> Result.Ok()
+    | None -> EntryValid
+    | Some dv when not dv.ShowError -> EntryValid
     | Some dv ->
-        match validateValue dv.Rule value with
-        | Result.Ok() -> Result.Ok()
-        | Result.Error def -> Result.Error(dv.ErrorMessage |> Option.defaultValue def)
+        let existing = getCell addr model
+        let trialCell (v: CellValue) =
+            match existing with
+            | Some cellData -> { cellData with Value = v }
+            | None -> { Value = v; Format = defaultFormat; Comment = None }
+        // A typed formula is judged by its result.
+        let entered =
+            match value with
+            | Formula (formula, Empty) ->
+                Formula (formula, evaluate formula 0 0 (setCell addr (trialCell value) model) addr |> unwrapVal)
+            | other -> other
+        let trial = setCell addr (trialCell entered) model
+        let anchor = defaultArg dv.Anchor addr
+        let evaluateRuleFormula (formula: string) =
+            evaluate formula (addr.Row - anchor.Row) (addr.Col - anchor.Col) trial addr
+        match validateValueWith evaluateRuleFormula dv.Rule entered with
+        | Result.Ok () -> EntryValid
+        | Result.Error fallback -> EntryInvalid (dv.Style, dv.ErrorTitle, dv.ErrorMessage |> Option.defaultValue fallback)
+
+/// `checkEntryWith` on a stand-alone sheet (formulas cannot reach other sheets).
+let checkEntry (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : ValidationOutcome =
+    checkEntryWith evaluateFormulaAt addr value model
+
+/// Validate a prospective edit against the cell's rule (if any). Error only
+/// when the entry must be refused: a rule whose style is warning or
+/// information accepts every entry (use `checkEntry` to learn about those).
+let validateEdit (addr: CellAddress) (value: CellValue) (model: SpreadsheetModel) : Result<unit, string> =
+    match checkEntry addr value model with
+    | EntryInvalid (StopStyle, _, message) -> Result.Error message
+    | _ -> Result.Ok()
 
 /// Parse CSV string to list of rows
 let parseCSV (csvText: string): string list list =

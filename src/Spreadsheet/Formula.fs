@@ -1707,11 +1707,19 @@ let rec moveExprReferences (move: CellMove) (expr: Expr) : Expr =
 let moveFormulaText (move: CellMove) (formula: string) : string =
     rewriteFormulaText (moveExprReferences move) formula
 
+/// Set by the evaluator further down (it is defined after the rewrites):
+/// evaluates a formula written for one cell at another cell of a sheet.
+let mutable private evaluateShifted : string -> int -> int -> SpreadsheetModel -> CellAddress -> CellValue =
+    fun _ _ _ _ _ -> CellValue.Error Err.name
+
+let private evaluateShiftedHook (formula: string) (rows: int) (cols: int) (model: SpreadsheetModel) (cell: CellAddress) : CellValue =
+    evaluateShifted formula rows cols model cell
+
 /// Installs the formula rewrites Model.fs needs for paste and row/column
 /// edits (it compiles before this file). Model.fs reads this value to force
 /// the installation on hosts that have not touched this module yet.
 let formulaHooksInstalled : bool =
-    installFormulaHooks { Shift = shiftFormulaText; Adjust = adjustFormulaTextForEdit; Move = moveFormulaText }
+    installFormulaHooks { Shift = shiftFormulaText; Adjust = adjustFormulaTextForEdit; Move = moveFormulaText; Evaluate = evaluateShiftedHook }
     true
 
 /// Replace every `NameRef` whose (case-insensitive) name is bound in `subst`
@@ -13324,3 +13332,26 @@ let recalculateWorkbook (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Rbt.Spre
             | None -> ()
         pass <- pass + 1
     wb
+
+/// Evaluate a formula written for one cell as if it stood `rows` / `cols`
+/// away, at `cell`: relative references move, `$`-locked ones stay. This is
+/// how one conditional-format or validation formula serves a whole range.
+/// The result is unwrapped; an array result yields its top-left element.
+let evaluateFormulaShifted (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                           (sheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                           (formula: string) (rows: int) (cols: int)
+                           (model: SpreadsheetModel) (cell: CellAddress) : CellValue =
+    match parseFormulaShared formula with
+    | Result.Error _ -> CellValue.Error Err.syntax
+    | Ok expr ->
+        let expr = if rows = 0 && cols = 0 then expr else shiftExpr rows cols expr
+        let ctx = { Model = model; Workbook = workbook; Sheet = sheet; CurrentCell = Some cell }
+        if exprSpillsStatically expr then
+            let arr = evalArray expr ctx
+            if arr.Length > 0 && arr.[0].Length > 0 then unwrapValue arr.[0].[0] else CellValue.Error Err.value
+        else unwrapValue (eval expr ctx)
+
+/// Hands `evaluateFormulaShifted` to Model.fs (see `evaluateShifted` above).
+let private evaluateShiftedInstalled : bool =
+    evaluateShifted <- evaluateFormulaShifted None None
+    true

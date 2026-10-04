@@ -16,6 +16,7 @@ module EH = Rbt.SpreadsheetWisp.EditorHost
 module GR = Rbt.SpreadsheetWisp.GridRender
 module Pivot = Rbt.Spreadsheet.Pivot
 module Formula = Rbt.Spreadsheet.Formula
+module CF = Rbt.Spreadsheet.ConditionalFormatting
 
 let private appW = 1200
 let private appH = 820
@@ -143,16 +144,66 @@ module XlsxRead =
         | true, n -> Some n
         | _ -> None
 
-    let private validationRule (dv: XlsxReader.DataValidation) : M.DataValidation option =
-        match dv.ValidationType, dv.Formula1, dv.Formula2 with
-        | "list", Some f, _ ->
-            let values = f.Trim('"').Split(',') |> Array.toList
-            Some ({ Rule = M.ListValues values; ErrorMessage = dv.ErrorMessage; InputMessage = None } : M.DataValidation)
-        | "whole", lo, hi ->
-            Some ({ Rule = M.WholeNumber(lo |> Option.bind parseDouble, hi |> Option.bind parseDouble); ErrorMessage = dv.ErrorMessage; InputMessage = None } : M.DataValidation)
-        | "decimal", lo, hi ->
-            Some ({ Rule = M.DecimalRange(lo |> Option.bind parseDouble, hi |> Option.bind parseDouble); ErrorMessage = dv.ErrorMessage; InputMessage = None } : M.DataValidation)
-        | _ -> None
+    let private validationOoxml (dv: XlsxReader.DataValidation) : CF.OoxmlValidation =
+        { Type = dv.ValidationType
+          Operator = dv.Operator
+          Formula1 = dv.Formula1
+          Formula2 = dv.Formula2
+          AllowBlank = dv.AllowBlank
+          ShowErrorMessage = dv.ShowErrorMessage
+          ShowInputMessage = dv.ShowInputMessage
+          ErrorStyle = dv.ErrorStyle
+          ErrorTitle = dv.ErrorTitle
+          Error = dv.ErrorMessage
+          PromptTitle = dv.PromptTitle
+          Prompt = dv.Prompt }
+
+    /// A list validation whose values live in a range; resolved once every
+    /// sheet has been read.
+    type PendingList =
+        { Cells: (int * int * int * int)
+          Source: string
+          Template: M.DataValidation }
+
+    /// Sheet states of the workbook that was last loaded, by sheet name. The
+    /// editor shows every sheet and does not model visibility, so the state is
+    /// kept here to be written back on save.
+    let sheetStates = System.Collections.Generic.Dictionary<string, XlsxReader.SheetState>(StringComparer.OrdinalIgnoreCase)
+
+    /// The file's conditional formatting as model rules (kept by range).
+    let private conditionalFormats (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : M.ConditionalFormatRange list =
+        sheet.ConditionalFormats
+        |> List.map (fun cf ->
+            ({ Sqref = cf.Range
+               Rules =
+                cf.Rules
+                |> List.map (fun rule ->
+                    let dxf =
+                        rule.DxfId
+                        |> Option.bind (fun id -> if id >= 0 && id < wb.Dxfs.Length then Some wb.Dxfs.[id] else None)
+                    ({ Type = rule.Type
+                       Operator = rule.Operator
+                       Formulas = rule.Formulas
+                       Text = rule.Text
+                       Rank = rule.Rank
+                       Percent = rule.Percent
+                       Bottom = rule.Bottom
+                       AboveAverage = rule.AboveAverage
+                       EqualAverage = rule.EqualAverage
+                       StdDev = rule.StdDev
+                       ColorScale = rule.ColorScale |> List.map (fun stop -> stop.CfvoType, stop.CfvoValue, stop.Color)
+                       DataBarColor = rule.DataBarColor
+                       DataBarCfvo = rule.DataBarCfvo
+                       IconSet = rule.IconSet
+                       IconSetCfvo = rule.IconSetCfvo
+                       IconSetReverse = rule.IconSetReverse
+                       Priority = rule.Priority
+                       StopIfTrue = rule.StopIfTrue
+                       Style =
+                        dxf |> Option.map (fun d ->
+                            ({ FontColor = d.FontColor; FillColor = d.FillColor
+                               Bold = (d.Bold = Some true); Italic = (d.Italic = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
+        |> CF.ofOoxml
 
     let private pageSetup (sheet: XlsxReader.Worksheet) =
         let margins =
@@ -244,14 +295,30 @@ module XlsxRead =
             if r >= 0 && col >= 0 then comments.[(r, col)] <- { Text = c.Text; Author = c.Author }
         let listDropdowns = System.Collections.Generic.HashSet<int * int>()
         let mutable validations : Map<M.CellAddress, M.DataValidation> = Map.empty
+        let pendingLists = ResizeArray<PendingList>()
         for dv in sheet.DataValidations do
-            match parseRange dv.Range, validationRule dv with
-            | Some (sr, sc, er, ec), Some rule ->
-                for r in sr .. er do
-                    for c in sc .. ec do
-                        validations <- Map.add { Row = r; Col = c } rule validations
-                        if dv.ValidationType = "list" then listDropdowns.Add(r, c) |> ignore
-            | _ -> ()
+            let ooxml = validationOoxml dv
+            for area in dv.Range.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries) do
+                match parseRange area with
+                | Some (sr, sc, er, ec) ->
+                    let anchor : M.CellAddress = { Row = sr; Col = sc }
+                    match CF.validationRuleOfOoxml ooxml with
+                    | Some rule ->
+                        let validation = CF.validationWithOoxml anchor ooxml rule
+                        for r in sr .. er do
+                            for c in sc .. ec do
+                                validations <- Map.add { Row = r; Col = c } validation validations
+                                if dv.ValidationType = "list" then listDropdowns.Add(r, c) |> ignore
+                    | None ->
+                        match dv.ValidationType, dv.Formula1 with
+                        | "list", Some source ->
+                            pendingLists.Add { Cells = (sr, sc, er, ec); Source = source
+                                               Template = CF.validationWithOoxml anchor ooxml (M.ListValues []) }
+                            for r in sr .. er do
+                                for c in sc .. ec do
+                                    listDropdowns.Add(r, c) |> ignore
+                        | _ -> ()
+                | None -> ()
         let hyperlinks = System.Collections.Generic.HashSet<int * int>()
         for h in sheet.Hyperlinks do
             match parseRange h.Range with
@@ -339,7 +406,43 @@ module XlsxRead =
             FrozenCols = frozenCols
             ShowGridLines = sheet.ShowGridLines
             Validations = validations
-            PageSetup = pageSetup sheet }
+            ConditionalFormats = conditionalFormats wb sheet
+            PageSetup = pageSetup sheet },
+        List.ofSeq pendingLists
+
+    /// Fill in list validations whose values are a range (`$A$1:$A$5`,
+    /// `Lists!$B$2:$B$9`) now that every sheet can be read.
+    let private resolvePendingLists (models: M.SpreadsheetModel array) (names: string array) (index: int) (pending: PendingList list) =
+        let mutable model = models.[index]
+        for item in pending do
+            let text = (if item.Source.StartsWith "=" then item.Source.Substring 1 else item.Source).Trim()
+            let sheetIndex, rangeText =
+                match text.LastIndexOf '!' with
+                | -1 -> Some index, text
+                | bang ->
+                    let raw = text.Substring(0, bang)
+                    let name = if raw.Length >= 2 && raw.StartsWith "'" && raw.EndsWith "'" then raw.Substring(1, raw.Length - 2).Replace("''", "'") else raw
+                    (names |> Array.tryFindIndex (fun n -> String.Equals(n, name, StringComparison.OrdinalIgnoreCase))), text.Substring(bang + 1)
+            match sheetIndex, CF.parseArea rangeText with
+            | Some source, Some range ->
+                let sourceModel = models.[source]
+                let lastRow = min range.To.Row (sourceModel.RowCount - 1)
+                let lastCol = min range.To.Col (sourceModel.ColCount - 1)
+                let values =
+                    [ for r in range.From.Row .. lastRow do
+                        for c in range.From.Col .. lastCol do
+                            let shown = M.displayValue (M.getCellValue { Row = r; Col = c } sourceModel)
+                            if shown <> "" then yield shown ]
+                if not values.IsEmpty then
+                    let validation = { item.Template with Rule = M.ListValues values }
+                    let (sr, sc, er, ec) = item.Cells
+                    let mutable validations = model.Validations
+                    for r in sr .. er do
+                        for c in sc .. ec do
+                            validations <- Map.add { Row = r; Col = c } validation validations
+                    model <- { model with Validations = validations }
+            | _ -> ()
+        model
 
     let load path : (M.SpreadsheetModel array * string array) option =
         try
@@ -348,13 +451,16 @@ module XlsxRead =
             | None -> None
             | Some wb ->
                 let macros = VbaProject.extractFromXlsx bytes |> Option.defaultValue ""
-                let sheets =
-                    wb.Sheets
-                    |> List.map (fun s ->
-                        let m = toModel wb s
-                        if String.IsNullOrWhiteSpace macros then m else { m with Macros = macros })
-                    |> List.toArray
+                let loaded = wb.Sheets |> List.map (toModel wb) |> List.toArray
                 let names = wb.Sheets |> List.map (fun s -> s.Name) |> List.toArray
+                sheetStates.Clear()
+                for s in wb.Sheets do sheetStates.[s.Name] <- s.State
+                let models = loaded |> Array.map fst
+                let sheets =
+                    loaded
+                    |> Array.mapi (fun i (_, pending) ->
+                        let m = if pending.IsEmpty then models.[i] else resolvePendingLists models names i pending
+                        if String.IsNullOrWhiteSpace macros then m else { m with Macros = macros })
                 if sheets.Length = 0 then None else Some(sheets, names)
         with ex ->
             eprintfn "[spreadsheet-wisp] load failed: %s" ex.Message
@@ -416,30 +522,59 @@ module XlsxWrite =
         | M.Error e -> XlsxWriter.XlsxError(if e.StartsWith "#" then e else "#" + e)
         | M.Formula (expr, cached) -> XlsxWriter.XlsxFormula(expr, Some(value [] cached))
 
-    let private validationRef row col = sprintf "%s%d" (M.columnToLetter col) (row + 1)
+    /// The sheet's validations, grouped back into ranges.
+    let private validations (model: M.SpreadsheetModel) : XlsxWriter.XlsxDataValidation list =
+        CF.validationsToOoxml model.Validations
+        |> List.map (fun (sqref, dv) ->
+            ({ Sqref = sqref
+               ValidationType = dv.Type
+               Operator = dv.Operator
+               Formula1 = dv.Formula1
+               Formula2 = dv.Formula2
+               AllowBlank = dv.AllowBlank
+               ShowDropDown = true
+               ErrorMessage = dv.Error
+               InputMessage = dv.Prompt
+               ErrorTitle = dv.ErrorTitle
+               PromptTitle = dv.PromptTitle
+               ErrorStyle = dv.ErrorStyle
+               ShowErrorMessage = dv.ShowErrorMessage
+               ShowInputMessage = dv.ShowInputMessage } : XlsxWriter.XlsxDataValidation))
 
-    let private validation (addr: M.CellAddress) (dv: M.DataValidation) =
-        let typ, op, f1, f2 =
-            match dv.Rule with
-            | M.ListValues values -> "list", None, Some("\"" + String.concat "," values + "\""), None
-            | M.WholeNumber (lo, hi) -> "whole", Some "between", lo |> Option.map string, hi |> Option.map string
-            | M.DecimalRange (lo, hi) -> "decimal", Some "between", lo |> Option.map string, hi |> Option.map string
-            | M.TextLength (lo, hi) -> "textLength", Some "between", lo |> Option.map string, hi |> Option.map string
-            | M.DateRange (lo, hi) -> "date", Some "between", lo |> Option.map string, hi |> Option.map string
-        ({ Sqref = validationRef addr.Row addr.Col
-           ValidationType = typ
-           Operator = op
-           Formula1 = f1
-           Formula2 = f2
-           AllowBlank = true
-           ShowDropDown = true
-           ErrorMessage = dv.ErrorMessage
-           InputMessage = dv.InputMessage
-           ErrorTitle = None
-           PromptTitle = None
-           ErrorStyle = None
-           ShowErrorMessage = true
-           ShowInputMessage = dv.InputMessage.IsSome } : XlsxWriter.XlsxDataValidation)
+    /// The sheet's conditional formats in the writer's shape. Each rule's
+    /// style becomes a `<dxf>`; `dxfIndex` hands out its index in the
+    /// workbook-wide table.
+    let private conditionalFormatsOut (dxfIndex: XlsxReader.Dxf -> int) (model: M.SpreadsheetModel) : XlsxReader.ConditionalFormat list =
+        CF.toOoxml model.ConditionalFormats
+        |> List.map (fun cf ->
+            ({ Range = cf.Sqref
+               Rules =
+                cf.Rules
+                |> List.map (fun rule ->
+                    ({ Type = rule.Type
+                       Operator = rule.Operator
+                       Formulas = rule.Formulas
+                       DxfId =
+                        rule.Style |> Option.map (fun style ->
+                            dxfIndex { FontColor = style.FontColor |> Option.map (fun c -> c.TrimStart '#')
+                                       FillColor = style.FillColor |> Option.map (fun c -> c.TrimStart '#')
+                                       Bold = (if style.Bold then Some true else None)
+                                       Italic = (if style.Italic then Some true else None) })
+                       ColorScale = rule.ColorScale |> List.map (fun (kind, value, color) -> ({ CfvoType = kind; CfvoValue = value; Color = color } : XlsxReader.CfColorStop))
+                       DataBarColor = rule.DataBarColor
+                       DataBarCfvo = rule.DataBarCfvo
+                       Text = rule.Text
+                       IconSet = rule.IconSet
+                       IconSetCfvo = rule.IconSetCfvo
+                       IconSetReverse = rule.IconSetReverse
+                       Rank = rule.Rank
+                       Percent = rule.Percent
+                       Bottom = rule.Bottom
+                       AboveAverage = rule.AboveAverage
+                       EqualAverage = rule.EqualAverage
+                       StdDev = rule.StdDev
+                       Priority = rule.Priority
+                       StopIfTrue = rule.StopIfTrue } : XlsxReader.ConditionalFormatRule)) } : XlsxReader.ConditionalFormat))
 
     let private textAt row col (model: M.SpreadsheetModel) =
         let addr : M.CellAddress = { Row = row; Col = col }
@@ -496,9 +631,9 @@ module XlsxWrite =
     let private rangeRef (r: M.CellRange) =
         sprintf "$%s$%d:$%s$%d" (M.columnToLetter r.From.Col) (r.From.Row + 1) (M.columnToLetter r.To.Col) (r.To.Row + 1)
 
-    let private modelSheet name (model: M.SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
+    let private modelSheet (dxfIndex: XlsxReader.Dxf -> int) (name: string) (model: M.SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
         { Name = name
-          Visible = true
+          State = (match XlsxRead.sheetStates.TryGetValue name with | true, state -> state | _ -> XlsxReader.SheetVisible)
           Cells =
             model.Cells
             |> Map.toList
@@ -516,8 +651,8 @@ module XlsxWrite =
           FrozenCols = model.FrozenCols
           ShowGridLines = model.ShowGridLines
           Tables = model.Tables |> List.map (table model)
-          DataValidations = model.Validations |> Map.toList |> List.map (fun (addr, dv) -> validation addr dv)
-          ConditionalFormats = []
+          DataValidations = validations model
+          ConditionalFormats = conditionalFormatsOut dxfIndex model
           Hyperlinks = []
           PageMargins = Some(margins model.PageSetup.Margins)
           PageSetup = Some(pageSetup model.PageSetup)
@@ -530,12 +665,17 @@ module XlsxWrite =
           PrintTitleCols = model.PageSetup.RepeatCols |> Option.map (fun (a, b) -> sprintf "$%s:$%s" (M.columnToLetter a) (M.columnToLetter b)) }
 
     let save (sheets: M.SpreadsheetModel array) (names: string array) path =
+        let dxfs = ResizeArray<XlsxReader.Dxf>()
+        let dxfIndex (dxf: XlsxReader.Dxf) =
+            match dxfs.IndexOf dxf with
+            | -1 -> dxfs.Add dxf; dxfs.Count - 1
+            | index -> index
         let sheetDtos =
             sheets
-            |> Array.mapi (fun i model -> modelSheet (if i < names.Length then names.[i] else sprintf "Sheet%d" (i + 1)) model)
+            |> Array.mapi (fun i model -> modelSheet dxfIndex (if i < names.Length then names.[i] else sprintf "Sheet%d" (i + 1)) model)
             |> Array.toList
         let macroSource = sheets |> Array.tryPick (fun m -> if String.IsNullOrWhiteSpace m.Macros then None else Some m.Macros)
-        let workbook = ({ Sheets = sheetDtos; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = macroSource; Dxfs = [] } : XlsxWriter.XlsxWorkbookOut)
+        let workbook = ({ Sheets = sheetDtos; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = macroSource; Dxfs = List.ofSeq dxfs } : XlsxWriter.XlsxWorkbookOut)
         File.WriteAllBytes(path, XlsxWriter.writeWorkbookPackageBytes workbook)
 
 let private sampleWorkbook () =

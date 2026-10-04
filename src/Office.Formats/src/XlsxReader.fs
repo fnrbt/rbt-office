@@ -232,6 +232,8 @@ type ConditionalFormatRule = {
     /// (type, optional value). The first is always the implicit 0%
     /// floor; icon i shows when the value is ≥ threshold i.
     IconSetCfvo: (string * string option) list
+    /// `iconSet` reverse flag — the icons run from best to worst.
+    IconSetReverse: bool
     /// `top10` rank — the N in "top/bottom N". When Percent is set, N
     /// is a percentage of the range count. None for non-top10 rules.
     Rank: int option
@@ -3148,14 +3150,15 @@ module ConditionalFormats =
                 color, cfvoPairs db
             | None -> None, []
         // <iconSet iconSet="3TrafficLights1"><cfvo .../>...</iconSet>
-        let iconSet, iconSetCfvo =
+        let iconSet, iconSetCfvo, iconSetReverse =
             match Ns.childNs "iconSet" ruleNode with
             | Some ic ->
                 // Excel defaults the family to 3TrafficLights1 when the
                 // attribute is omitted.
                 Some (Xml.attr "iconSet" ic |> Option.defaultValue "3TrafficLights1"),
-                cfvoPairs ic
-            | None -> None, []
+                cfvoPairs ic,
+                (Xml.attr "reverse" ic |> Option.map isTrueText |> Option.defaultValue false)
+            | None -> None, [], false
         // top10 / aboveAverage carry their config as attributes on the
         // <cfRule> element itself rather than a child element.
         let attrInt name =
@@ -3184,6 +3187,7 @@ module ConditionalFormats =
             Text = Xml.attr "text" ruleNode
             IconSet = iconSet
             IconSetCfvo = iconSetCfvo
+            IconSetReverse = iconSetReverse
             Rank = rank
             Percent = percent
             Bottom = bottom

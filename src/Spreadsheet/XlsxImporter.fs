@@ -367,25 +367,9 @@ let private parseSqref (maxRow: int) (maxCol: int) (sqref: string) =
 type private PendingList = {
     Bounds: (int * int * int * int) array
     Source: string
-    ErrorMessage: string option
-    InputMessage: string option
+    /// The validation without its values (alert texts, style).
+    Template: DataValidation
 }
-
-/// (min, max) for a numeric validation; None when the rule cannot be
-/// expressed as an inclusive range (notBetween, notEqual, formula bounds).
-let private validationBounds (isWhole: bool) (operator: string) (f1: string option) (f2: string option): (float option * float option) option =
-    let n1 = f1 |> Option.bind invariantNumber
-    let n2 = f2 |> Option.bind invariantNumber
-    match operator, n1, n2 with
-    | "between", Some a, Some b -> Some (Some (min a b), Some (max a b))
-    | "equal", Some a, _ -> Some (Some a, Some a)
-    | "greaterThanOrEqual", Some a, _ -> Some (Some a, None)
-    | "lessThanOrEqual", Some a, _ -> Some (None, Some a)
-    // The model's ranges are inclusive: exact for whole numbers; for
-    // decimals the bound itself is accepted, which errs on the lenient side.
-    | "greaterThan", Some a, _ -> Some (Some (if isWhole then a + 1.0 else a), None)
-    | "lessThan", Some a, _ -> Some (None, Some (if isWhole then a - 1.0 else a))
-    | _ -> None
 
 let private convertPageSetup (meta: obj): PageSetup =
     let setup =
@@ -487,49 +471,49 @@ let private convertTables (meta: obj): Table list * Map<string, string list> =
         |> Array.toList
     tables, columns
 
-/// Rules the model can express (it knows > < between = and "contains
-/// text", each with an overlay style). Other rule types are left out rather
-/// than approximated.
-let private convertConditionalFormats (maxRow: int) (maxCol: int) (meta: obj): Map<CellAddress, ConditionalFormat list> =
-    let mutable result = Map.empty<CellAddress, (int * ConditionalFormat) list>
-    let mutable sequence = 0
-    for cf in arrayProp meta "conditionalFormats" do
-        let bounds = optStringProp cf "range" |> Option.map (parseSqref maxRow maxCol) |> Option.defaultValue [||]
-        for rule in arrayProp cf "rules" do
-            sequence <- sequence + 1
-            let formulas = arrayProp rule "formulas" |> Array.map string
-            let number index = if index < formulas.Length then invariantNumber formulas.[index] else None
-            let converted =
-                match optStringProp rule "type" |> Option.defaultValue "", optStringProp rule "operator" |> Option.defaultValue "" with
-                | "cellIs", "greaterThan" -> number 0 |> Option.map GreaterThan
-                | "cellIs", "lessThan" -> number 0 |> Option.map LessThan
-                | "cellIs", "equal" -> number 0 |> Option.map Equal
-                | "cellIs", "between" ->
-                    match number 0, number 1 with
-                    | Some a, Some b -> Some (Between (min a b, max a b))
-                    | _ -> None
-                | "containsText", _ -> optStringProp rule "text" |> Option.map ContainsText
-                | _ -> None
-            let style = getProp rule "style"
-            match converted with
-            | Some modelRule when not (isNullOrUndefined style) ->
-                let format =
-                    { defaultFormat with
-                        TextColor = optStringProp style "fontColor"
-                        BgColor = optStringProp style "fillColor"
-                        Bold = boolProp style "bold" false
-                        Italic = boolProp style "italic" false }
-                // Lower priority number wins in Excel; ties keep file order.
-                let priority = optIntProp rule "priority" |> Option.defaultValue (100000 + sequence)
-                let entry = priority, ({ Rule = modelRule; Style = format } : ConditionalFormat)
-                for (sr, sc, er, ec) in bounds do
-                    for r in sr .. er do
-                        for c in sc .. ec do
-                            let addr = { Row = r; Col = c }
-                            let existing = Map.tryFind addr result |> Option.defaultValue []
-                            result <- Map.add addr (existing @ [ entry ]) result
-            | _ -> ()
-    result |> Map.map (fun _ entries -> entries |> List.sortBy fst |> List.map snd)
+/// The sheet's conditional formatting as model rules, kept by range (a
+/// whole-column rule stays one). The reader's rule records are turned into
+/// the shared OOXML shape; `ConditionalFormatting.ofOoxml` does the rest.
+let private convertConditionalFormats (meta: obj): ConditionalFormatRange list =
+    let cfvos (items: obj array) =
+        items |> Array.map (fun item -> optStringProp item "type" |> Option.defaultValue "min", optStringProp item "value") |> Array.toList
+    [ for cf in arrayProp meta "conditionalFormats" ->
+        ({ Sqref = optStringProp cf "range" |> Option.defaultValue ""
+           Rules =
+            [ for rule in arrayProp cf "rules" ->
+                let style = getProp rule "style"
+                ({ Type = optStringProp rule "type" |> Option.defaultValue "cellIs"
+                   Operator = optStringProp rule "operator"
+                   Formulas = arrayProp rule "formulas" |> Array.map string |> Array.toList
+                   Text = optStringProp rule "text"
+                   Rank = optIntProp rule "rank"
+                   Percent = boolProp rule "percent" false
+                   Bottom = boolProp rule "bottom" false
+                   AboveAverage = boolProp rule "aboveAverage" true
+                   EqualAverage = boolProp rule "equalAverage" false
+                   StdDev = optIntProp rule "stdDev"
+                   ColorScale =
+                    arrayProp rule "colorScale"
+                    |> Array.map (fun stop ->
+                        optStringProp stop "type" |> Option.defaultValue "min",
+                        optStringProp stop "value",
+                        optStringProp stop "color" |> Option.defaultValue "FFFFFF")
+                    |> Array.toList
+                   DataBarColor = optStringProp rule "dataBarColor"
+                   DataBarCfvo = cfvos (arrayProp rule "dataBarCfvo")
+                   IconSet = optStringProp rule "iconSet"
+                   IconSetCfvo = cfvos (arrayProp rule "iconSetCfvo")
+                   IconSetReverse = boolProp rule "iconSetReverse" false
+                   Priority = optIntProp rule "priority"
+                   StopIfTrue = boolProp rule "stopIfTrue" false
+                   Style =
+                    if isNullOrUndefined style then None
+                    else
+                        Some ({ FontColor = optStringProp style "fontColor"
+                                FillColor = optStringProp style "fillColor"
+                                Bold = boolProp style "bold" false
+                                Italic = boolProp style "italic" false } : ConditionalFormatting.OoxmlStyle) } : ConditionalFormatting.OoxmlRule) ] } : ConditionalFormatting.OoxmlConditionalFormat) ]
+    |> ConditionalFormatting.ofOoxml
 
 /// Validations with a literal definition become rules now; list validations
 /// that point at a range or a name are returned as pending.
@@ -538,38 +522,37 @@ let private convertValidations (maxRow: int) (maxCol: int) (meta: obj): Map<Cell
     let pending = ResizeArray<PendingList>()
     for dv in arrayProp meta "validations" do
         let bounds = optStringProp dv "range" |> Option.map (parseSqref maxRow maxCol) |> Option.defaultValue [||]
-        let kind = optStringProp dv "type" |> Option.defaultValue "none"
-        let operator = optStringProp dv "operator" |> Option.defaultValue "between"
-        let f1 = optStringProp dv "formula1"
-        let f2 = optStringProp dv "formula2"
-        let errorMessage = optStringProp dv "error"
-        let inputMessage = if boolProp dv "showInputMessage" false then optStringProp dv "prompt" else None
-        // Excel only rejects an entry when showErrorMessage is set; without
-        // it the rule is advisory, so only a list (for its dropdown) is kept.
-        let enforced = boolProp dv "showErrorMessage" false
-        let rule =
-            match kind, f1 with
-            | "list", Some source ->
-                let source = source.Trim()
-                if source.StartsWith "\"" then
-                    let values = source.Trim('"').Split(',') |> Array.map (fun v -> v.Trim()) |> Array.toList
-                    Some (ListValues values)
-                else
-                    pending.Add { Bounds = bounds; Source = source; ErrorMessage = errorMessage; InputMessage = inputMessage }
-                    None
-            | "whole", _ when enforced -> validationBounds true operator f1 f2 |> Option.map WholeNumber
-            | "decimal", _ when enforced -> validationBounds false operator f1 f2 |> Option.map DecimalRange
-            | "textLength", _ when enforced -> validationBounds true operator f1 f2 |> Option.map TextLength
-            | "date", _ when enforced -> validationBounds false operator f1 f2 |> Option.map DateRange
-            | _ -> None
-        match rule with
+        let anchor =
+            if bounds.Length > 0 then (let (sr, sc, _, _) = bounds.[0] in { Row = sr; Col = sc })
+            else { Row = 0; Col = 0 }
+        let ooxml : ConditionalFormatting.OoxmlValidation =
+            { Type = optStringProp dv "type" |> Option.defaultValue "none"
+              Operator = optStringProp dv "operator"
+              Formula1 = optStringProp dv "formula1"
+              Formula2 = optStringProp dv "formula2"
+              AllowBlank = boolProp dv "allowBlank" false
+              ShowErrorMessage = boolProp dv "showErrorMessage" false
+              ShowInputMessage = boolProp dv "showInputMessage" false
+              ErrorStyle = optStringProp dv "errorStyle"
+              ErrorTitle = optStringProp dv "errorTitle"
+              Error = optStringProp dv "error"
+              PromptTitle = optStringProp dv "promptTitle"
+              Prompt = optStringProp dv "prompt" }
+        match ConditionalFormatting.validationRuleOfOoxml ooxml with
         | Some rule ->
-            let validation = { Rule = rule; ErrorMessage = errorMessage; InputMessage = inputMessage }
+            let validation = ConditionalFormatting.validationWithOoxml anchor ooxml rule
             for (sr, sc, er, ec) in bounds do
                 for r in sr .. er do
                     for c in sc .. ec do
                         rules <- Map.add { Row = r; Col = c } validation rules
-        | None -> ()
+        | None ->
+            match ooxml.Type, ooxml.Formula1 with
+            | "list", Some source ->
+                // The alert settings travel with the pending list; its
+                // values are filled in once the source can be read.
+                pending.Add { Bounds = bounds; Source = source.Trim()
+                              Template = ConditionalFormatting.validationWithOoxml anchor ooxml (ListValues []) }
+            | _ -> ()
     rules, List.ofSeq pending
 
 /// Values of a list validation's source range. `lookupSheet None` is the
@@ -607,7 +590,7 @@ let private applyPendingLists (lookupSheet: string option -> SpreadsheetModel op
     for item in pending do
         match resolveListSource lookupSheet lookupName item.Source with
         | Some values when not (List.isEmpty values) ->
-            let validation = { Rule = ListValues values; ErrorMessage = item.ErrorMessage; InputMessage = item.InputMessage }
+            let validation = { item.Template with Rule = ListValues values }
             for (sr, sc, er, ec) in item.Bounds do
                 for r in sr .. er do
                     for c in sc .. ec do
@@ -992,7 +975,7 @@ let private importSheetCore (excel: obj) (workbook: ExcelWorkbook) (sheet: Excel
                 SearchCaseSensitive = None
                 SearchResults = [||]
                 SearchIndex = 0
-                ConditionalFormats = if hasMeta then convertConditionalFormats (modelRows - 1) (modelCols - 1) meta else Map.empty
+                ConditionalFormats = if hasMeta then convertConditionalFormats meta else []
                 RichRuns = richRunsMap
                 MergedCells = mergedCellList
                 FrozenRows = if hasMeta then intProp meta "frozenRows" 0 else 0

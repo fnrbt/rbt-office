@@ -1139,6 +1139,28 @@ module Excel =
                                        objField "text" (optObj rule.Text)
                                        objField "priority" (optIntObj rule.Priority)
                                        objField "stopIfTrue" (box rule.StopIfTrue)
+                                       objField "rank" (optIntObj rule.Rank)
+                                       objField "percent" (box rule.Percent)
+                                       objField "bottom" (box rule.Bottom)
+                                       objField "aboveAverage" (box rule.AboveAverage)
+                                       objField "equalAverage" (box rule.EqualAverage)
+                                       objField "stdDev" (optIntObj rule.StdDev)
+                                       objField "colorScale"
+                                           (box [| for stop in rule.ColorScale ->
+                                                     objFromFields [
+                                                         objField "type" (box stop.CfvoType)
+                                                         objField "value" (optObj stop.CfvoValue)
+                                                         objField "color" (box stop.Color)
+                                                     ] |])
+                                       objField "dataBarColor" (optObj rule.DataBarColor)
+                                       objField "dataBarCfvo"
+                                           (box [| for (kind, value) in rule.DataBarCfvo ->
+                                                     objFromFields [ objField "type" (box kind); objField "value" (optObj value) ] |])
+                                       objField "iconSet" (optObj rule.IconSet)
+                                       objField "iconSetCfvo"
+                                           (box [| for (kind, value) in rule.IconSetCfvo ->
+                                                     objFromFields [ objField "type" (box kind); objField "value" (optObj value) ] |])
+                                       objField "iconSetReverse" (box rule.IconSetReverse)
                                        objField "style"
                                            (match dxf with
                                             | Some d ->

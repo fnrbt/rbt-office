@@ -12,6 +12,7 @@
     <Compile Include="Pivot.fs" />
     <Compile Include="Formula.fs" />
     <Compile Include="Calc.fs" />
+    <Compile Include="ConditionalFormatting.fs" />
     <Compile Include="Layout.fs" />
     <Compile Include="Paint.fs" />
     <Compile Include="XlsxImporter.fs" />

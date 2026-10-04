@@ -43,6 +43,9 @@ let private canvasSave (ctx: obj): unit = jsNative
 [<Emit("$0.restore()")>]
 let private canvasRestore (ctx: obj): unit = jsNative
 
+[<Emit("$0.insertBefore($1, $0.firstChild)")>]
+let private prependChild (parent: Element) (child: Element): unit = jsNative
+
 // Vector-path + transform emits (for VecPath / VecGroup — the chart scene).
 [<Emit("$0.beginPath()")>]
 let private canvasBeginPath (ctx: obj): unit = jsNative
@@ -198,7 +201,22 @@ type Spreadsheet(container: Element) =
                 Tables = wb.Tables
                 Names = wb.Names })
 
+    /// The workbook that conditional-format and validation formulas are
+    /// evaluated against; refreshed at each render.
+    let mutable ruleWorkbook: Workbook option = None
+
+    /// Evaluates a rule's formula at a cell of the active sheet, with the
+    /// other sheets and defined names in reach.
+    let ruleEvaluator : Rbt.Spreadsheet.ConditionalFormatting.FormulaEvaluator =
+        fun formula rows cols sheetModel cell ->
+            evaluateFormulaShifted ruleWorkbook (Some (sheetIdForIndex activeSheetIndex)) formula rows cols sheetModel cell
+
+    let refreshRuleWorkbook () =
+        ruleWorkbook <- Some (currentWorkbookSnapshot())
+        Rbt.Spreadsheet.ConditionalFormatting.formulaEvaluator <- ruleEvaluator
+
     let renderPortablePaintToCanvas (canvas: Element) =
+        if not model.ConditionalFormats.IsEmpty then refreshRuleWorkbook()
         let viewport = currentViewport()
         let ctx = getCanvasContext canvas
         setCanvasSize canvas viewport.Width viewport.Height
@@ -1265,25 +1283,43 @@ type Spreadsheet(container: Element) =
                     | None -> ()
                 | None -> ()
 
-                // Apply conditional formatting (highest priority)
-                match getConditionalFormat addr value model with
-                | Some condFormat ->
-                    if condFormat.Bold then
-                        setStyle cell "font-weight" "bold"
-                    if condFormat.Italic then
-                        setStyle cell "font-style" "italic"
-                    if condFormat.Underline then
-                        setStyle cell "text-decoration" "underline"
-                    match condFormat.TextColor with
-                    | Some color -> setStyle cell "color" color
+                // Apply conditional formatting (highest priority): the merged
+                // effect of every matching rule that covers the cell.
+                if not model.ConditionalFormats.IsEmpty then
+                    match Rbt.Spreadsheet.ConditionalFormatting.effectAt (Rbt.Spreadsheet.ConditionalFormatting.contextFor model) addr with
+                    | Some effect ->
+                        if effect.Bold = Some true then setStyle cell "font-weight" "bold"
+                        if effect.Italic = Some true then setStyle cell "font-style" "italic"
+                        let decorations =
+                            [ if effect.Underline = Some true then yield "underline"
+                              if effect.Strikethrough = Some true then yield "line-through" ]
+                        if not decorations.IsEmpty then setStyle cell "text-decoration" (String.concat " " decorations)
+                        match effect.TextColor with
+                        | Some color -> setStyle cell "color" color
+                        | None -> ()
+                        match effect.BgColor with
+                        | Some color -> setStyle cell "background-color" color
+                        | None -> ()
+                        match effect.DataBar with
+                        | Some (fraction, color) ->
+                            // A bar from the left edge, behind the text.
+                            let percent = int (System.Math.Round (fraction * 100.0))
+                            setStyle cell "background-image" (sprintf "linear-gradient(to right, %s %d%%, transparent %d%%)" color percent percent)
+                            setAttribute cell "data-cf-bar" (string percent)
+                        | None -> ()
+                        match effect.IconSet with
+                        | Some (index, count) when count > 1 ->
+                            // Same low → high signal the canvas painter draws:
+                            // red, amber, green.
+                            let t = float index / float (count - 1)
+                            let color = if t < 0.34 then "#E53935" elif t < 0.67 then "#F9A825" else "#43A047"
+                            let icon = createElement "span"
+                            setTextContent icon "\u25CF"
+                            setStyles icon [ "color", color; "margin-right", "3px"; "font-size", "10px" ]
+                            setAttribute icon "data-cf-icon" (string index)
+                            prependChild cell icon
+                        | _ -> ()
                     | None -> ()
-                    match condFormat.BgColor with
-                    | Some color -> setStyle cell "background-color" color
-                    | None -> ()
-                    match condFormat.FontSize with
-                    | Some size -> setStyle cell "font-size" (sprintf "%dpx" size)
-                    | None -> ()
-                | None -> ()
 
                 // Reapply selection styling (highest priority - overrides all other backgrounds)
                 if isInSelection && not isPrimaryCell then
@@ -1383,6 +1419,7 @@ type Spreadsheet(container: Element) =
             setInnerHTML content ""
             cellPool.Clear()
             chromeNodes.Clear()
+            if not model.ConditionalFormats.IsEmpty then refreshRuleWorkbook()
 
             // Get visible range
             let startRow, endRow, startCol, endCol = calculateVisibleRange()

@@ -157,21 +157,21 @@ let dressed =
         MergedCells = [ { StartRow = 3; StartCol = 0; EndRow = 5; EndCol = 1 } ]
         RowHeights = Map.ofList [ 4, 40.0 ]
         ColumnWidths = Map.ofList [ 1, 150.0 ]
-        ConditionalFormats = Map.ofList [ at 4 1, [ { Rule = GreaterThan 0.0; Style = defaultFormat } ] ]
-        Validations = Map.ofList [ at 6 2, { Rule = ListValues [ "x" ]; ErrorMessage = None; InputMessage = None } ]
+        ConditionalFormats = [ { Ranges = [ { From = at 4 1; To = at 4 1 } ]; Format = { Rule = GreaterThan 0.0; Style = defaultFormat }; Priority = 1; StopIfTrue = false } ]
+        Validations = Map.ofList [ at 6 2, validationOf (ListValues [ "x" ]) ]
         Spill = Map.ofList [ at 7 0, at 6 0 ]
         Tables = [ { Name = "T"; StartRow = 4; StartCol = 2; EndRow = 8; EndCol = 3; HeaderRowCount = 1; Style = None; AutoFilter = Some (2, 3); HasTotals = false } ] }
 let dressedIns = insertRow 4 dressed
 eq "insert-merge-grows"   dressedIns.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 6; EndCol = 1 } ]
 eq "insert-row-heights"   dressedIns.RowHeights (Map.ofList [ 5, 40.0 ])
-eq "insert-cond-formats"  (Map.containsKey (at 5 1) dressedIns.ConditionalFormats) true
+eq "insert-cond-formats"  (conditionalFormatsAt (at 5 1) dressedIns |> List.length, conditionalFormatsAt (at 4 1) dressedIns |> List.length) (1, 0)
 eq "insert-validations"   (Map.containsKey (at 7 2) dressedIns.Validations) true
 eq "insert-spill-map"     dressedIns.Spill (Map.ofList [ at 8 0, at 7 0 ])
 eq "insert-table-grows"   (dressedIns.Tables |> List.map (fun t -> t.StartRow, t.EndRow)) [ 4, 9 ]
 let dressedDel = deleteRow 4 dressed
 eq "delete-merge-shrinks" dressedDel.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 4; EndCol = 1 } ]
 eq "delete-row-heights"   dressedDel.RowHeights Map.empty
-eq "delete-cond-formats"  dressedDel.ConditionalFormats Map.empty
+eq "delete-cond-formats"  dressedDel.ConditionalFormats []
 eq "delete-validations"   (Map.containsKey (at 5 2) dressedDel.Validations) true
 eq "delete-spill-map"     dressedDel.Spill (Map.ofList [ at 6 0, at 5 0 ])
 eq "delete-table-shrinks" (dressedDel.Tables |> List.map (fun t -> t.StartRow, t.EndRow)) [ 4, 7 ]
@@ -179,7 +179,7 @@ let dressedCol = insertColumn 1 dressed
 eq "insert-col-widths"    dressedCol.ColumnWidths (Map.ofList [ 2, 150.0 ])
 eq "insert-col-merge"     dressedCol.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 5; EndCol = 2 } ]
 eq "insert-col-table"     (dressedCol.Tables |> List.map (fun t -> t.StartCol, t.EndCol, t.AutoFilter)) [ 3, 4, Some (3, 4) ]
-eq "insert-col-cf"        (Map.containsKey (at 4 2) dressedCol.ConditionalFormats) true
+eq "insert-col-cf"        (conditionalFormatsAt (at 4 2) dressedCol |> List.length) 1
 let dressedColDel = deleteColumn 1 dressed
 eq "delete-col-widths"    dressedColDel.ColumnWidths Map.empty
 eq "delete-col-merge"     dressedColDel.MergedCells [ { StartRow = 3; StartCol = 0; EndRow = 5; EndCol = 0 } ]

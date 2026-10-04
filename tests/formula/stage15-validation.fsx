@@ -48,8 +48,8 @@ check "date under"     (ok (validateValue dr (N 40000.0))) false
 // ── setValidation flags the dropdown; validateEdit uses the rule + message ──
 let model =
     { createEmpty 20 8 with Cells = Map.ofList [ { Row=0; Col=0 }, { Value = N 5.0; Format = defaultFormat; Comment = None } ] }
-    |> setValidation { Row=0; Col=0 } { Rule = wn; ErrorMessage = Some "Only 1-10!"; InputMessage = None }
-    |> setValidation { Row=1; Col=0 } { Rule = lst; ErrorMessage = None; InputMessage = None }
+    |> setValidation { Row=0; Col=0 } { validationOf wn with ErrorMessage = Some "Only 1-10!" }
+    |> setValidation { Row=1; Col=0 } (validationOf lst)
 check "validateEdit ok"    (ok (validateEdit { Row=0; Col=0 } (N 7.0) model)) true
 check "validateEdit reject" (ok (validateEdit { Row=0; Col=0 } (N 99.0) model)) false
 check "validateEdit message" (match validateEdit { Row=0; Col=0 } (N 99.0) model with Result.Error m -> m = "Only 1-10!" | _ -> false) true
