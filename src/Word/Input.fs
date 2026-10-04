@@ -85,6 +85,12 @@ type DragImageState = {
     InitialY: float
 }
 
+/// Text an IME (or a dead key) is composing. It is shown underlined at the
+/// caret but is not in the document until the composition ends.
+type CompositionState = {
+    mutable Text: string
+}
+
 /// Input handler state
 type InputHandler = {
     Canvas: HTMLCanvasElement
@@ -103,9 +109,36 @@ type InputHandler = {
     /// Document as it was when the current image resize/drag started, so the
     /// whole gesture becomes one undo step.
     mutable PointerStartDocument: Doc.Document option
+    /// Hidden text input next to the canvas that holds the keyboard focus: a
+    /// canvas gets no composition events, so IME, dead-key and virtual-keyboard
+    /// text arrives through this element. Created and removed by the handler.
+    mutable InputProxy: HTMLElement option
+    /// The composition in progress, if any.
+    mutable Composition: CompositionState option
+    /// Moves the input proxy to the caret, so the IME candidate window opens
+    /// there (set by `create`).
+    mutable SyncInputProxy: Doc.Document -> unit
     /// Removes listeners registered outside the canvas (set by `create`).
     mutable Dispose: unit -> unit
 }
+
+[<Emit("$0.focus({ preventScroll: true })")>]
+let private focusWithoutScroll (_element: HTMLElement) : unit = jsNative
+
+[<Emit("$0.isComposing === true || $0.keyCode === 229")>]
+let private keyBelongsToComposition (_event: KeyboardEvent) : bool = jsNative
+
+[<Emit("(typeof $0.data === 'string' ? $0.data : null)")>]
+let private eventData (_event: Event) : string = jsNative
+
+[<Emit("(typeof $0.inputType === 'string' ? $0.inputType : '')")>]
+let private eventInputType (_event: Event) : string = jsNative
+
+[<Emit("$0.value")>]
+let private proxyValue (_element: HTMLElement) : string = jsNative
+
+[<Emit("$0.value = $1")>]
+let private setProxyValue (_element: HTMLElement) (_value: string) : unit = jsNative
 
 /// Record a finished change in the undo history as one step. Selection-only
 /// changes are not recorded.
@@ -118,6 +151,7 @@ let private recordChange (handler: InputHandler) (description: string) (beforeDo
 let private showDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.Document <- doc
     renderWithHover handler.RenderContext doc handler.HoveredImage
+    handler.SyncInputProxy doc
     handler.OnChange doc
 
 /// Undo the last recorded change. Returns false when there is nothing to undo.
@@ -161,6 +195,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         TrackChangesAuthor = "RedBat Word"
         TrackChangesDate = ""
         PointerStartDocument = None
+        InputProxy = None
+        Composition = None
+        SyncInputProxy = ignore
         Dispose = ignore
     }
 
@@ -188,21 +225,27 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         if not (documentsEqualForChange newDoc handler.Document) then
             handler.Document <- newDoc
             renderWithHover handler.RenderContext newDoc handler.HoveredImage
+            handler.SyncInputProxy newDoc
             handler.OnChange newDoc
 
     // Make canvas focusable
     canvas.tabIndex <- 0
 
-    // Handle keyboard input
-    canvas.addEventListener("keydown", fun (e: Event) ->
+    // Handle keyboard input. The listener serves the canvas and the input
+    // proxy (which normally has the focus).
+    let onKeyDown (e: Event) =
         let ke = e :?> KeyboardEvent
         let mutable newDoc = handler.Document
         let mutable newHistory = handler.History
         let mutable useCommand = false
 
         let commandKey = ke.ctrlKey || ke.metaKey
+        // While an IME or a dead key is composing, keys belong to it (Enter
+        // confirms a candidate, arrows move within it, ...); the text arrives
+        // through the composition events.
+        let composing = handler.Composition.IsSome || keyBelongsToComposition ke
 
-        match ke.key with
+        match (if composing then "" else ke.key) with
         | key when commandKey && keyEquals 'z' key ->
             // Undo/Redo
             if ke.shiftKey then
@@ -441,8 +484,135 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 recordChange handler "Edit" handler.Document newDoc
             handler.Document <- newDoc
             renderWithHover handler.RenderContext newDoc handler.HoveredImage
+            handler.SyncInputProxy newDoc
             handler.OnChange newDoc
-    )
+
+    canvas.addEventListener("keydown", onKeyDown)
+
+    // ---- text input proxy: IME / dead keys / virtual keyboards ----------------
+    // A canvas receives no composition or input events. A hidden textarea next
+    // to it takes the keyboard focus instead; it sits at the caret so the IME
+    // candidate window opens in the right place.
+    let proxy = document.createElement "textarea"
+    proxy.setAttribute("data-rbt-word-input", "true")
+    proxy.setAttribute("aria-label", "Document text input")
+    proxy.setAttribute("autocomplete", "off")
+    proxy.setAttribute("autocorrect", "off")
+    proxy.setAttribute("autocapitalize", "off")
+    proxy.setAttribute("spellcheck", "false")
+    proxy.setAttribute("tabindex", "-1")
+    proxy.setAttribute(
+        "style",
+        "position:fixed;left:0;top:0;width:2px;height:16px;padding:0;margin:0;border:0;outline:none;resize:none;overflow:hidden;"
+        + "opacity:0;pointer-events:none;white-space:pre;background:transparent;color:transparent;caret-color:transparent;")
+    if isNull canvas.parentElement then document.body.appendChild proxy |> ignore
+    else canvas.parentElement.insertBefore(proxy, canvas.nextSibling) |> ignore
+    handler.InputProxy <- Some proxy
+    let mutable proxyAttached = true
+
+    let syncInputProxy (doc: Doc.Document) =
+        if proxyAttached then
+            match caretRect handler.RenderContext doc with
+            | Some (x, top, height) ->
+                // Mouse handling maps client to canvas coordinates one to one, so does this.
+                let rect = canvas.getBoundingClientRect()
+                proxy?style?left <- sprintf "%fpx" (rect.left + x)
+                proxy?style?top <- sprintf "%fpx" (rect.top + top)
+                proxy?style?height <- sprintf "%fpx" (max 8.0 height)
+                proxy?style?fontSize <- sprintf "%fpx" (max 8.0 (height * 0.75))
+            | None -> ()
+    handler.SyncInputProxy <- syncInputProxy
+
+    /// The document with the composing text shown underlined at the caret.
+    let compositionPreview (text: string) =
+        if text = "" then handler.Document
+        else
+            let inserted = Doc.insertText text handler.Document
+            match inserted.Selection with
+            | Some selection when selection.IsCollapsed && selection.Focus.Offset >= text.Length ->
+                match Doc.findParagraph inserted selection.Focus.BlockId with
+                | Some para ->
+                    let buffer = TextBuffer.applyStyle (selection.Focus.Offset - text.Length) text.Length (TextBuffer.withExplicitUnderline true) para.Buffer
+                    Doc.replaceParagraph inserted para.Id { para with Buffer = buffer }
+                | None -> inserted
+            | _ -> inserted
+
+    let showComposition (text: string) =
+        let preview = compositionPreview text
+        renderWithHover handler.RenderContext preview handler.HoveredImage
+        syncInputProxy preview
+
+    /// Text that arrived through the proxy becomes one undo step.
+    let commitInput description (afterDoc: Doc.Document) =
+        let beforeDoc = handler.Document
+        if not (documentsEqualForChange afterDoc beforeDoc) then
+            recordChange handler description beforeDoc afterDoc
+            handler.Document <- afterDoc
+            renderWithHover handler.RenderContext afterDoc handler.HoveredImage
+            syncInputProxy afterDoc
+            handler.OnChange afterDoc
+        else
+            // Take a composition preview off the canvas again.
+            renderWithHover handler.RenderContext beforeDoc handler.HoveredImage
+            syncInputProxy beforeDoc
+
+    proxy.addEventListener("keydown", onKeyDown)
+
+    proxy.addEventListener("compositionstart", fun (_: Event) ->
+        handler.Composition <- Some { Text = "" }
+        syncInputProxy handler.Document)
+
+    proxy.addEventListener("compositionupdate", fun (e: Event) ->
+        let text = match eventData e with | null -> "" | data -> data
+        match handler.Composition with
+        | Some state -> state.Text <- text
+        | None -> handler.Composition <- Some { Text = text }
+        showComposition text)
+
+    proxy.addEventListener("compositionend", fun (e: Event) ->
+        let text =
+            match eventData e with
+            | null -> (match handler.Composition with Some state -> state.Text | None -> "")
+            | data -> data
+        handler.Composition <- None
+        setProxyValue proxy ""
+        // The whole composition is one insertion, and one undo step.
+        commitInput "Typing" (if text = "" then handler.Document else insertTextForMode text handler.Document))
+
+    // Text and deletions that do not come as handled keydowns (virtual
+    // keyboards, dictation, the emoji picker, autocorrect).
+    proxy.addEventListener("beforeinput", fun (e: Event) ->
+        if handler.Composition.IsNone then
+            match eventInputType e with
+            | "insertText" | "insertReplacementText" ->
+                match eventData e with
+                | null | "" -> ()
+                | data ->
+                    e.preventDefault()
+                    commitInput "Typing" (insertTextForMode data handler.Document)
+            | "deleteContentBackward" ->
+                e.preventDefault()
+                commitInput "Delete" (deleteBackwardForMode handler.Document)
+            | "deleteContentForward" ->
+                e.preventDefault()
+                commitInput "Delete" (deleteForwardForMode handler.Document)
+            | _ -> ())
+
+    proxy.addEventListener("input", fun (_: Event) ->
+        // Whatever still reached the proxy (a paste from the context menu, an
+        // input type not handled above) is taken over as typed text.
+        if handler.Composition.IsNone then
+            let text = proxyValue proxy
+            if not (System.String.IsNullOrEmpty text) then
+                setProxyValue proxy ""
+                commitInput "Typing" (insertTextForMode text handler.Document))
+
+    // The canvas stays focusable (clicks, Tab, hosts calling canvas.focus());
+    // focus is handed on to the proxy so that text input reaches it.
+    canvas.addEventListener("focus", fun (_: Event) ->
+        if proxyAttached then
+            syncInputProxy handler.Document
+            focusWithoutScroll proxy)
 
     // Handle mouse down - start selection or image resize
     canvas.addEventListener("mousedown", fun (e: Event) ->
@@ -571,6 +741,12 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     addWindowListener "mouseup" onMouseUp
     handler.Dispose <- fun () ->
         removeWindowListener "mouseup" onMouseUp
+        // The input proxy belongs to the handler: take it out of the page.
+        proxyAttached <- false
+        handler.Composition <- None
+        handler.SyncInputProxy <- ignore
+        handler.InputProxy <- None
+        if not (isNull proxy.parentNode) then proxy.parentNode.removeChild proxy |> ignore
         handler.Dispose <- ignore
 
     // Initial render
@@ -583,6 +759,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
 let updateDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.Document <- doc
     renderWithHover handler.RenderContext doc None
+    handler.SyncInputProxy doc
     handler.OnChange doc
 
 /// Apply a change made outside the keyboard (API call, toolbar, dialog) as

@@ -66,9 +66,19 @@ module API =
     let canRedo (editor: Editor) =
         Inp.canRedo editor.Handler
 
-    /// Detach the editor's window-level listeners. Call when the canvas is removed.
+    /// Detach the editor's window-level listeners and remove its hidden text
+    /// input element. Call when the canvas is removed.
     let dispose (editor: Editor) =
         Inp.dispose editor.Handler
+
+    /// The hidden text input that holds the keyboard focus while the editor is
+    /// in use (IME, dead keys and virtual keyboards type into it); null once
+    /// the editor is disposed. Hosts that test for "the editor has focus"
+    /// should compare document.activeElement with this element.
+    let getInputElement (editor: Editor) : obj =
+        match editor.Handler.InputProxy with
+        | Some element -> box element
+        | None -> null
 
     let initializeCanvasWithChange (canvas: HTMLCanvasElement) (afterChange: unit -> unit) =
         let doc = Doc.empty
@@ -1905,6 +1915,7 @@ module API =
             "canUndo" ==> canUndo
             "canRedo" ==> canRedo
             "dispose" ==> dispose
+            "getInputElement" ==> getInputElement
             "getTrackChanges" ==> getTrackChanges
             "setTrackChanges" ==> setTrackChanges
             "setTrackChangesOptions" ==> setTrackChangesOptions

@@ -781,6 +781,30 @@ let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float)
     // unchanged) rather than a fresh full layout per mouse event.
     Rbt.Word.Layout.hitTestIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
 
+/// Where the caret (the selection focus) is on the canvas: x, top and height
+/// of its line, from the layout that is on screen. None without a selection.
+let caretRect (ctx: RenderContext) (doc: Document) : (float * float * float) option =
+    match doc.Selection with
+    | None -> None
+    | Some selection ->
+        let settings = layoutSettings ctx doc
+        let offset = selection.Focus.Offset
+        // A paragraph continued in another column has one layout per fragment.
+        let mutable found: BlockLayout option = None
+        let mutable fallback: BlockLayout option = None
+        for layout in layoutDocument ctx doc do
+            if layout.BlockId = selection.Focus.BlockId then
+                fallback <- Some layout
+                if found.IsNone && layout.Lines |> List.exists (fun line -> line.StartOffset <= offset && offset <= line.EndOffset) then
+                    found <- Some layout
+        match found |> Option.orElse fallback with
+        | None -> None
+        | Some layout when layout.Lines.IsEmpty -> Some (settings.PaddingLeft, layout.Y, ctx.LineHeight)
+        | Some layout ->
+            let line = lineForOffset layout offset
+            let x = xForOffsetWithRange (measureRangeWithContext ctx) line offset
+            Some (settings.PaddingLeft + x + alignmentOffset layout line, line.Y, line.Height)
+
 /// Hit test for images - returns blockId, offset, and image dimensions if clicking on an image
 let hitTestForImage (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) : (string * int * float * float * float * float) option =
     Rbt.Word.Layout.hitTestForImageIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc mouseX mouseY
@@ -800,4 +824,5 @@ let pageFrames _ _ = []
 let renderWithHover _ _ _ = ()
 let hitTest _ _ _ _ = None
 let hitTestForImage _ _ _ _ = None
+let caretRect _ _ = None
 #endif
