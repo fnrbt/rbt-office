@@ -53,7 +53,10 @@ type PaintFrame = {
     LineHeight: float
     PaddingLeft: float
     PaddingTop: float
-    TextPathPainter: obj option
+    /// The text path painter and the text measurers the frame was built
+    /// with, by the context's version counters (see RenderContext).
+    PainterVersion: int
+    MeasurerVersion: int
     /// The hover outline the overlay commands were built for.
     Hovered: (string * int) option
     /// The viewport the frame was painted through (None: whole-canvas mode).
@@ -83,6 +86,16 @@ type RenderContext = {
     /// (Delegates, not curried functions: the factory and the painter it
     /// returns come from JavaScript.)
     mutable TextPathPainterFactory: System.Func<CanvasRenderingContext2D, System.Func<string, TextPaintStyle, float, float, float, bool>> option
+    /// Count the times a text path painter / the text measurers were
+    /// installed or cleared (`setTextPathPainter`, `setTextMeasurers`). What
+    /// was painted or laid out with an earlier one is stale; nothing else
+    /// about a painter or measurer is compared - a function handed over from
+    /// JavaScript is a different object every time it is looked at.
+    mutable TextPathPainterVersion: int
+    mutable TextMeasurerVersion: int
+    /// How many paint frames were built (the commands of the whole document
+    /// collected) - for hosts and checks that want to see frames reused.
+    mutable FrameBuilds: int
     LayoutState: IncrementalLayoutState
     mutable LastPaint: PaintFrame option
     /// None: the canvas holds the whole document at layout scale and the host
@@ -139,6 +152,9 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextRangeMeasurer = None
     TextPathPainter = None
     TextPathPainterFactory = None
+    TextPathPainterVersion = 0
+    TextMeasurerVersion = 0
+    FrameBuilds = 0
     LayoutState = Rbt.Word.Layout.createIncrementalLayoutState ()
     LastPaint = None
     Viewport = None
@@ -217,6 +233,37 @@ let clearLayoutCache (ctx: RenderContext) =
     Rbt.Word.Layout.clearIncrementalLayoutState ctx.LayoutState
     ctx.LastPaint <- None
     ctx.PageFrame <- None
+
+/// Install the text path painter of the context's own canvas and the factory
+/// that makes one for any other canvas (both None: text is painted with
+/// canvas text). What was painted with the previous painter is stale from
+/// here on; nothing is invalidated at any other time.
+let setTextPathPainter (ctx: RenderContext)
+                       (painter: (string -> TextPaintStyle -> float -> float -> float -> bool) option)
+                       (factory: System.Func<CanvasRenderingContext2D, System.Func<string, TextPaintStyle, float, float, float, bool>> option) =
+    ctx.TextPathPainter <- painter
+    ctx.TextPathPainterFactory <- factory
+    ctx.TextPathPainterVersion <- ctx.TextPathPainterVersion + 1
+    ctx.PageFrame <- None
+
+/// As `setTextPathPainter`, from a factory: the painter of the context's own
+/// canvas is the one the factory makes for it.
+let setTextPathPainterFactory (ctx: RenderContext) (factory: System.Func<CanvasRenderingContext2D, System.Func<string, TextPaintStyle, float, float, float, bool>>) =
+    if isNull (box factory) then setTextPathPainter ctx None None
+    else
+        let paint = factory.Invoke ctx.Ctx
+        let painter =
+            if isNull (box paint) then None
+            else Some (fun (text: string) (style: TextPaintStyle) (x: float) (baseline: float) (width: float) -> paint.Invoke(text, style, x, baseline, width))
+        setTextPathPainter ctx painter (Some factory)
+
+/// Install the text measurers (None: measure with canvas text). Lines and
+/// pages measured with the previous ones are laid out again.
+let setTextMeasurers (ctx: RenderContext) (measureText: TextMeasurer option) (measureRange: TextRangeMeasurer option) =
+    ctx.TextMeasurer <- measureText
+    ctx.TextRangeMeasurer <- measureRange
+    ctx.TextMeasurerVersion <- ctx.TextMeasurerVersion + 1
+    clearLayoutCache ctx
 
 let layoutLookupFor (ctx: RenderContext) (doc: Document) =
     let layouts =
@@ -587,9 +634,6 @@ let private canvasWidth (ctx: RenderContext) = float ctx.Canvas.width
 
 let private canvasHeight (ctx: RenderContext) = float ctx.Canvas.height
 
-let private currentTextPathPainter (ctx: RenderContext) =
-    ctx.TextPathPainter |> Option.map box
-
 let private frameInvalidated (ctx: RenderContext) (previous: PaintFrame) =
     previous.CanvasWidth <> canvasWidth ctx
     || previous.CanvasHeight <> canvasHeight ctx
@@ -598,10 +642,8 @@ let private frameInvalidated (ctx: RenderContext) (previous: PaintFrame) =
     || previous.LineHeight <> ctx.LineHeight
     || previous.PaddingLeft <> ctx.PaddingLeft
     || previous.PaddingTop <> ctx.PaddingTop
-    || (match previous.TextPathPainter, currentTextPathPainter ctx with
-        | None, None -> false
-        | Some left, Some right -> not (obj.ReferenceEquals(left, right))
-        | _ -> true)
+    || previous.PainterVersion <> ctx.TextPathPainterVersion
+    || previous.MeasurerVersion <> ctx.TextMeasurerVersion
 
 let private unionRange next current =
     match current, next with
@@ -771,6 +813,7 @@ let private renderPartialFrame ctx doc frame band =
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
 let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
+    ctx.FrameBuilds <- ctx.FrameBuilds + 1
     let settings = layoutSettings ctx doc
     let layouts, pages = layoutDocumentWithPages ctx doc
     let layouts, bodyCommands, _ = collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages
@@ -794,7 +837,8 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
         LineHeight = ctx.LineHeight
         PaddingLeft = ctx.PaddingLeft
         PaddingTop = ctx.PaddingTop
-        TextPathPainter = currentTextPathPainter ctx
+        PainterVersion = ctx.TextPathPainterVersion
+        MeasurerVersion = ctx.TextMeasurerVersion
         Hovered = hoveredImage
         Viewport = ctx.Viewport
         BodyIndex = None

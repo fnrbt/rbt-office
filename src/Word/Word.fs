@@ -472,42 +472,25 @@ module API =
             ctx.LastPaint <- None
         // The same measurers (and text painter) as an editor: with them the
         // viewer breaks lines and pages exactly as that editor does.
-        let relayout () =
-            Ren.clearLayoutCache ctx
         state?setTextMeasurers <- fun (measureText: Layout.TextMeasurer) (measureRange: Layout.TextRangeMeasurer) ->
-            ctx.TextMeasurer <- (if isNull (box measureText) then None else Some measureText)
-            ctx.TextRangeMeasurer <- (if isNull (box measureRange) then None else Some measureRange)
-            relayout ()
+            Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) (if isNull (box measureRange) then None else Some measureRange)
         state?setTextMeasurer <- fun (measureText: Layout.TextMeasurer) ->
-            ctx.TextMeasurer <- (if isNull (box measureText) then None else Some measureText)
-            relayout ()
+            Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) ctx.TextRangeMeasurer
         state?setTextRangeMeasurer <- fun (measureRange: Layout.TextRangeMeasurer) ->
-            ctx.TextRangeMeasurer <- (if isNull (box measureRange) then None else Some measureRange)
-            relayout ()
+            Ren.setTextMeasurers ctx ctx.TextMeasurer (if isNull (box measureRange) then None else Some measureRange)
         // `painterFor(context2d)` returns the painter for that canvas context
         // (text, style, x, baseline, width) -> true when it painted the text.
         state?setTextPathPainter <- fun (painterFor: System.Func<CanvasRenderingContext2D, System.Func<string, Paint.TextPaintStyle, float, float, float, bool>>) ->
-            if isNull (box painterFor) then
-                ctx.TextPathPainterFactory <- None
-                ctx.TextPathPainter <- None
-            else
-                ctx.TextPathPainterFactory <- Some painterFor
-                let paint = painterFor.Invoke ctx.Ctx
-                ctx.TextPathPainter <- Some (fun text style x baseline width -> paint.Invoke(text, style, x, baseline, width))
-            ctx.LastPaint <- None
-            ctx.PageFrame <- None
+            Ren.setTextPathPainterFactory ctx painterFor
         state?clearTextMeasurer <- fun () ->
-            ctx.TextMeasurer <- None
-            ctx.TextRangeMeasurer <- None
-            ctx.TextPathPainter <- None
-            ctx.TextPathPainterFactory <- None
-            relayout ()
+            Ren.setTextPathPainter ctx None None
+            Ren.setTextMeasurers ctx None None
         state?getPageFrames <- fun () -> pageFramesToJs ctx (Ren.pageFrames ctx (current ()))
         state?getPageCount <- fun () -> Ren.pageCount ctx (current ())
         state?getDocumentSize <- fun () -> documentSizeToJs ctx (current ())
         state?renderPage <- fun (target: HTMLCanvasElement) (pageIndex: int) (scale: float) -> Ren.renderPage ctx (current ()) target pageIndex scale
         state
-    
+
     /// Get document text
     let getText (editor: Editor) =
         Doc.getText editor.Doc
@@ -522,49 +505,69 @@ module API =
         editor.Handler.TrackChangesAuthor <- if isNull (box author) || author = "" then "RedBat Word" else author
         editor.Handler.TrackChangesDate <- if isNull (box date) then "" else date
 
+    /// Measure text with `measureText(text, style)` instead of canvas text.
+    /// A plain JavaScript function. The measurers are part of what a layout
+    /// and a painted frame were made with: installing or clearing them lays
+    /// the document out again; nothing about the function itself is compared
+    /// afterwards.
     let setTextMeasurer (editor: Editor) (measureText: Layout.TextMeasurer) =
-        editor.Handler.RenderContext.TextMeasurer <- Some measureText
-        Ren.clearLayoutCache editor.Handler.RenderContext
-        Ren.render editor.Handler.RenderContext editor.Doc
+        let ctx = editor.Handler.RenderContext
+        Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) ctx.TextRangeMeasurer
+        Ren.render ctx editor.Doc
 
+    /// As setTextMeasurer, with `measureRange(text, style, start, length)`
+    /// for the width of a part of a shaped run.
     let setTextMeasurers (editor: Editor) (measureText: Layout.TextMeasurer) (measureRange: Layout.TextRangeMeasurer) =
-        editor.Handler.RenderContext.TextMeasurer <- Some measureText
-        editor.Handler.RenderContext.TextRangeMeasurer <- Some measureRange
-        Ren.clearLayoutCache editor.Handler.RenderContext
-        Ren.render editor.Handler.RenderContext editor.Doc
+        let ctx = editor.Handler.RenderContext
+        Ren.setTextMeasurers ctx (if isNull (box measureText) then None else Some measureText) (if isNull (box measureRange) then None else Some measureRange)
+        Ren.render ctx editor.Doc
 
     let setTextRangeMeasurer (editor: Editor) (measureRange: Layout.TextRangeMeasurer) =
-        editor.Handler.RenderContext.TextRangeMeasurer <- Some measureRange
-        Ren.clearLayoutCache editor.Handler.RenderContext
-        Ren.render editor.Handler.RenderContext editor.Doc
+        let ctx = editor.Handler.RenderContext
+        Ren.setTextMeasurers ctx ctx.TextMeasurer (if isNull (box measureRange) then None else Some measureRange)
+        Ren.render ctx editor.Doc
 
+    /// Paint text with `paintText(text, style, x, baseline, width)` - a plain
+    /// JavaScript function returning true when it painted the text - instead
+    /// of canvas text, on the editor's own canvas. The painted frame is built
+    /// again when a painter is installed or cleared, and at no other time:
+    /// scrolling and caret moves reuse it whatever function object the
+    /// painter is (see getRenderStats).
     let setTextPathPainter (editor: Editor) (paintText: string -> Paint.TextPaintStyle -> float -> float -> float -> bool) =
-        editor.Handler.RenderContext.TextPathPainter <- Some paintText
-        Ren.render editor.Handler.RenderContext editor.Doc
+        let ctx = editor.Handler.RenderContext
+        Ren.setTextPathPainter ctx (if isNull (box paintText) then None else Some paintText) None
+        Ren.render ctx editor.Doc
 
     /// As setTextPathPainter, for every canvas the editor paints on:
     /// `painterFor(context2d)` returns the painter for that canvas context, so
     /// renderPage paints its pages with it too (a painter draws on one context).
     let setTextPathPainterFactory (editor: Editor) (painterFor: System.Func<CanvasRenderingContext2D, System.Func<string, Paint.TextPaintStyle, float, float, float, bool>>) =
         let ctx = editor.Handler.RenderContext
-        ctx.TextPathPainterFactory <- Some painterFor
-        let paint = painterFor.Invoke ctx.Ctx
-        ctx.TextPathPainter <- Some (fun text style x baseline width -> paint.Invoke(text, style, x, baseline, width))
-        ctx.PageFrame <- None
+        Ren.setTextPathPainterFactory ctx painterFor
         Ren.render ctx editor.Doc
 
     let clearTextPathPainter (editor: Editor) =
-        editor.Handler.RenderContext.TextPathPainter <- None
-        editor.Handler.RenderContext.TextPathPainterFactory <- None
-        Ren.render editor.Handler.RenderContext editor.Doc
+        let ctx = editor.Handler.RenderContext
+        Ren.setTextPathPainter ctx None None
+        Ren.render ctx editor.Doc
 
     let clearTextMeasurer (editor: Editor) =
-        editor.Handler.RenderContext.TextMeasurer <- None
-        editor.Handler.RenderContext.TextRangeMeasurer <- None
-        editor.Handler.RenderContext.TextPathPainter <- None
-        editor.Handler.RenderContext.TextPathPainterFactory <- None
-        Ren.clearLayoutCache editor.Handler.RenderContext
-        Ren.render editor.Handler.RenderContext editor.Doc
+        let ctx = editor.Handler.RenderContext
+        Ren.setTextPathPainter ctx None None
+        Ren.setTextMeasurers ctx None None
+        Ren.render ctx editor.Doc
+
+    /// Counters of the editor's renderer, for hosts and checks:
+    /// { FrameBuilds (times the paint commands of the whole document were
+    ///   collected), PainterVersion, MeasurerVersion (times a text path
+    ///   painter / the measurers were installed or cleared) }.
+    let getRenderStats (editor: Editor) =
+        let ctx = editor.Handler.RenderContext
+        createObj [
+            "FrameBuilds" ==> ctx.FrameBuilds
+            "PainterVersion" ==> ctx.TextPathPainterVersion
+            "MeasurerVersion" ==> ctx.TextMeasurerVersion
+        ]
 
     let getCachedLayouts (editor: Editor) =
         Ren.cachedLayouts editor.Handler.RenderContext editor.Doc
@@ -2493,6 +2496,7 @@ module API =
             "setTextPathPainter" ==> setTextPathPainter
             "clearTextPathPainter" ==> clearTextPathPainter
             "clearTextMeasurer" ==> clearTextMeasurer
+            "getRenderStats" ==> getRenderStats
             "toggleTrackChanges" ==> toggleTrackChanges
             "getCommentAnchors" ==> getCommentAnchors
             "getRevisionInfos" ==> getRevisionInfos
