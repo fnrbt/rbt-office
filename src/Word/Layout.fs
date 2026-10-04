@@ -4757,6 +4757,37 @@ let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (sett
     | sections ->
         layoutSections memo settings measureText measureRange doc sections
 
+/// True when the document has more than one section, i.e. its pages need not
+/// all have the body PageSetup's geometry.
+let documentHasSections (doc: Document) =
+    doc.Blocks
+    |> List.exists (fun block ->
+        match tryGetParagraph block with
+        | Some para -> para.Metadata.SectionBreak.IsSome
+        | None -> false)
+
+/// Extend a page list so it reaches down to `bottom` (note areas below the
+/// last body line), repeating the geometry of the last page.
+let pageInfosCoveringBottom (bottom: float) (pages: PageInfo list) =
+    match List.tryLast pages with
+    | None -> pages
+    | Some last ->
+        let extra = ResizeArray<PageInfo>()
+        let mutable top = last.Top
+        while top + last.Height + pageGap < bottom do
+            top <- top + last.Height + pageGap
+            extra.Add { last with Top = top }
+        if extra.Count = 0 then pages else pages @ resizeArrayToList extra
+
+/// Index of the page a document Y falls on (the last page starting at or above it).
+let pageIndexForYInPages (pages: PageInfo list) (y: float) =
+    let mutable index = 0
+    let mutable current = 0
+    for page in pages do
+        if page.Top <= y + 0.5 then index <- current
+        current <- current + 1
+    index
+
 /// Lay out a document, returning the layouts and the per-page geometry.
 let layoutDocumentPages (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) : BlockLayout list * PageInfo list =
     layoutDocumentPagesWithMemo None settings measureText measureRange doc

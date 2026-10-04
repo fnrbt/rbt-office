@@ -1799,13 +1799,22 @@ let private addNestedTableBorders (styleContext: DocumentStyleContext option) (s
             | _ -> ()
             frames.Push(ScanNestedTable nestedTable)
 
-let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
+let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) (cachedPages: PageInfo list option) =
     let layouts, pages, layoutCount =
-        match cachedLayouts with
-        | Some ls ->
+        match cachedLayouts, cachedPages with
+        | Some ls, Some pages ->
+            // The layout pass that produced the layouts also produced the page
+            // geometry (per section); use it rather than guess.
+            ls, pages, List.length ls
+        | Some ls, None when documentHasSections doc ->
+            // Sections may differ in page size and orientation, which cannot be
+            // read back off the layouts: ask the layout pass for the pages.
+            let _, pages = layoutDocumentPages settings measureText measureRange doc
+            ls, pages, List.length ls
+        | Some ls, None ->
             let pages, layoutCount = uniformPageInfosWithLayoutCount settings ls
             ls, pages, layoutCount
-        | None ->
+        | None, _ ->
             let layouts, pages = layoutDocumentPages settings measureText measureRange doc
             layouts, pages, List.length layouts
     let needsBodyLineIndex =
@@ -1919,7 +1928,14 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
 
 let collectDocumentCommandsWithLayouts (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) =
     let layouts, commands, pages, _ =
-        collectDocumentCommandsWithLayoutsUncached settings fontFamily measureText measureRange doc cachedLayouts
+        collectDocumentCommandsWithLayoutsUncached settings fontFamily measureText measureRange doc cachedLayouts None
+    layouts, commands, pages
+
+/// Paint from an existing layout pass: its layouts and the page geometry it
+/// produced (layoutDocumentPages / layoutDocumentPagesIncremental).
+let collectDocumentCommandsWithLayoutsAndPages (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) =
+    let layouts, commands, pages, _ =
+        collectDocumentCommandsWithLayoutsUncached settings fontFamily measureText measureRange doc (Some layouts) (Some pages)
     layouts, commands, pages
 
 let collectDocumentCommands settings fontFamily measureText measureRange doc =

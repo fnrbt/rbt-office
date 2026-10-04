@@ -1110,6 +1110,38 @@ check "section footnote sits at the bottom of the referencing page"
     true
 
 // ---------------------------------------------------------------------------
+// Sections with their own page size: painting from an existing layout pass
+// keeps the per-section page geometry instead of assuming uniform pages.
+// ---------------------------------------------------------------------------
+let landscapeSetup : Doc.SectionPageSetup =
+    { PageWidth = 700.0; PageHeight = 300.0; MarginLeft = 0.0; MarginRight = 0.0; MarginTop = 40.0; MarginBottom = 40.0
+      HeaderDistance = 10.0; FooterDistance = 10.0; DifferentFirstPage = false; EvenAndOddHeaders = false }
+let mixedSectionDoc =
+    { Doc.empty with
+        Blocks =
+            [ Doc.Paragraph { paragraph "mixed-1" "wide section" with Metadata = { Doc.defaultMetadata with SectionBreak = Some "nextPage"; SectionPageSetup = Some landscapeSetup } }
+              Doc.Paragraph (paragraph "mixed-2" "body section") ]
+        PageSetup = flowPageSetup
+        Selection = None }
+let mixedLayouts, mixedPages = layoutDocumentPages flowSettings measureText (rangeMeasurerFromTextMeasurer measureText) mixedSectionDoc
+let pageSizes (pages: PageInfo list) = pages |> List.map (fun page -> page.Top, page.Width, page.Height)
+check "sections lay out to pages of their own size" (pageSizes mixedPages) [ 0.0, 700.0, 300.0; 300.0 + pageGap, 500.0, 400.0 ]
+let _, _, cachedOnlyPages =
+    collectDocumentCommandsWithLayouts flowSettings "Calibri" measureText (rangeMeasurerFromTextMeasurer measureText) mixedSectionDoc (Some mixedLayouts)
+check "painting from cached layouts keeps section pages" (pageSizes cachedOnlyPages) (pageSizes mixedPages)
+let _, _, cachedPagesPages =
+    collectDocumentCommandsWithLayoutsAndPages flowSettings "Calibri" measureText (rangeMeasurerFromTextMeasurer measureText) mixedSectionDoc mixedLayouts mixedPages
+check "painting with the pass's pages keeps them" (pageSizes cachedPagesPages) (pageSizes mixedPages)
+check "documentHasSections" (documentHasSections mixedSectionDoc, documentHasSections columnFlowDoc) (true, false)
+check "page index follows non-uniform pages"
+    ([ 10.0; 299.0; 300.0 + pageGap + 1.0; 5000.0 ] |> List.map (pageIndexForYInPages mixedPages))
+    [ 0; 0; 1; 1 ]
+check "pages extend over a note area below the last page"
+    (pageInfosCoveringBottom (300.0 + pageGap + 400.0 + pageGap + 50.0) mixedPages |> pageSizes |> List.last)
+    (300.0 + pageGap + 400.0 + pageGap, 500.0, 400.0)
+check "pages are left alone when they cover the content" (pageInfosCoveringBottom 500.0 mixedPages |> List.length) 2
+
+// ---------------------------------------------------------------------------
 // A tall paragraph in a vertically merged cell spreads over the rows it spans
 // instead of inflating the restart row; only what does not fit grows the last
 // row. The plan, the block flow and the border painter agree on the heights.

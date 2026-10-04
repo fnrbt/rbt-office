@@ -12,6 +12,9 @@ open Rbt.Word.Paint
 type PaintFrame = {
     Document: Document
     Layouts: BlockLayout list
+    /// Geometry of every page frame, as the layout pass produced it (sections
+    /// can differ in size and orientation), extended over the note areas.
+    Pages: PageInfo list
     BodyCommands: PaintCommand list
     OverlayCommands: PaintCommand list
     CanvasWidth: float
@@ -148,6 +151,10 @@ let measureRangeWithContext ctx text style start length =
 
 let layoutDocument (ctx: RenderContext) (doc: Document) =
     Rbt.Word.Layout.layoutDocumentIncrementalWithRange ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
+
+/// Layouts plus the per-page geometry of the same (incremental) layout pass.
+let layoutDocumentWithPages (ctx: RenderContext) (doc: Document) =
+    Rbt.Word.Layout.layoutDocumentPagesIncremental ctx.LayoutState (layoutSettings ctx doc) (measureWithContext ctx) (measureRangeWithContext ctx) doc
 
 let cachedLayouts (ctx: RenderContext) (doc: Document) =
     match ctx.LayoutState.LastDocument, ctx.LayoutState.LastLayouts with
@@ -288,28 +295,24 @@ let private documentHeightWithNotes (settings: LayoutSettings) (layouts: BlockLa
         |> List.fold max bottom
     max endnoteBottom footnoteBottom
 
-let private renderPages (ctx: RenderContext) (doc: Document) (layouts: BlockLayout list) =
-    let settings = layoutSettings ctx doc
-    let docHeight = documentHeightWithNotes settings layouts
-    let pageHeight = Rbt.Word.Layout.pageHeight settings
-    let stride = pageHeight + Rbt.Word.Layout.pageGap
-    let pageCount = max 1 (int (ceil (docHeight / stride)))
+/// The page frames to show: the pages of the layout pass, each with its own
+/// section's size, plus pages for note areas that reach below the last one.
+let private pageFramesForLayouts (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) =
+    let bottom =
+        if documentHasSections doc then bodyBottom settings layouts
+        else documentHeightWithNotes settings layouts
+    pageInfosCoveringBottom bottom pages
 
+let private renderPages (ctx: RenderContext) (pages: PageInfo list) =
     ctx.Ctx.fillStyle <- U3.Case1 "#eef0f3"
     ctx.Ctx.fillRect(0.0, 0.0, ctx.Canvas.width, ctx.Canvas.height)
 
-    for pageIndex in 0 .. pageCount - 1 do
-        let y = float pageIndex * stride
+    for page in pages do
         ctx.Ctx.fillStyle <- U3.Case1 "#ffffff"
-        ctx.Ctx.fillRect(0.0, y, settings.Width, pageHeight)
+        ctx.Ctx.fillRect(0.0, page.Top, page.Width, page.Height)
         ctx.Ctx.strokeStyle <- U3.Case1 "#d0d5dd"
         ctx.Ctx.lineWidth <- 1.0
-        ctx.Ctx.strokeRect(0.5, y + 0.5, settings.Width - 1.0, pageHeight - 1.0)
-
-let private pageCountForLayouts (settings: LayoutSettings) (layouts: BlockLayout list) =
-    let docHeight = documentHeightWithNotes settings layouts
-    let stride = pageHeight settings + pageGap
-    max 1 (int (ceil (docHeight / stride)))
+        ctx.Ctx.strokeRect(0.5, page.Top + 0.5, page.Width - 1.0, page.Height - 1.0)
 
 let private fontString (style: TextPaintStyle) defaultFontFamily =
     let fontStyle = if style.Bold && style.Italic then "bold italic"
@@ -691,7 +694,7 @@ let private renderFullFrame ctx doc frame =
     ctx.Ctx.font <- sprintf "%fpx %s" ctx.FontSize ctx.FontFamily
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
-    renderPages ctx doc frame.Layouts
+    renderPages ctx frame.Pages
     renderCommandList ctx frame.BodyCommands
     renderCommandList ctx frame.OverlayCommands
 
@@ -708,7 +711,7 @@ let private renderPartialFrame ctx doc frame band =
     ctx.Ctx.font <- sprintf "%fpx %s" ctx.FontSize ctx.FontFamily
     ctx.Ctx.fillStyle <- U3.Case1 "#000000"
 
-    renderPages ctx doc frame.Layouts
+    renderPages ctx frame.Pages
     renderCommandListInBand ctx band frame.BodyCommands
     renderCommandListInBand ctx band frame.OverlayCommands
 
@@ -717,8 +720,8 @@ let private renderPartialFrame ctx doc frame band =
 
 let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     let settings = layoutSettings ctx doc
-    let layouts = layoutDocument ctx doc
-    let layouts, bodyCommands, _ = collectDocumentCommandsWithLayouts settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc (Some layouts)
+    let layouts, pages = layoutDocumentWithPages ctx doc
+    let layouts, bodyCommands, _ = collectDocumentCommandsWithLayoutsAndPages settings ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc layouts pages
     let overlayCommands =
         List.concat [
             commentAnchorCommands ctx doc layouts
@@ -729,6 +732,7 @@ let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     {
         Document = doc
         Layouts = layouts
+        Pages = pageFramesForLayouts settings doc layouts pages
         BodyCommands = bodyCommands
         OverlayCommands = overlayCommands
         CanvasWidth = canvasWidth ctx
@@ -746,7 +750,7 @@ let private renderCore (ctx: RenderContext) (doc: Document) hoveredImage =
     match ctx.LastPaint with
     | None ->
         renderFullFrame ctx doc frame
-    | Some previous when frameInvalidated ctx previous ->
+    | Some previous when frameInvalidated ctx previous || previous.Pages <> frame.Pages ->
         renderFullFrame ctx doc frame
     | Some previous ->
         match computeDirtyRange previous frame with
@@ -761,8 +765,15 @@ let render (ctx: RenderContext) (doc: Document) =
 
 /// Number of pages the document lays out to, including footnote/endnote areas.
 /// Hosts use it to size the canvas (pages are stacked at pageHeight + pageGap).
+let pageFrames (ctx: RenderContext) (doc: Document) =
+    let layouts, pages = layoutDocumentWithPages ctx doc
+    pageFramesForLayouts (layoutSettings ctx doc) doc layouts pages
+
+/// Number of pages the document lays out to, including footnote/endnote areas.
+/// Pages are stacked with pageGap between them, but need not be the same size
+/// (sections); hosts size the canvas from pageFrames.
 let pageCount (ctx: RenderContext) (doc: Document) =
-    pageCountForLayouts (layoutSettings ctx doc) (layoutDocument ctx doc)
+    List.length (pageFrames ctx doc)
 
 /// Convert mouse position to document position
 let hitTest (ctx: RenderContext) (doc: Document) (mouseX: float) (mouseY: float) =
@@ -785,6 +796,7 @@ type BlockLayout = unit
 let createContext _ = ()
 let render _ _ = ()
 let pageCount _ _ = 1
+let pageFrames _ _ = []
 let renderWithHover _ _ _ = ()
 let hitTest _ _ _ _ = None
 let hitTestForImage _ _ _ _ = None

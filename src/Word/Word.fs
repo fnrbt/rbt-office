@@ -1595,6 +1595,33 @@ module API =
             "EvenAndOddHeaders" ==> setup.EvenAndOddHeaders
         ]
 
+    /// The page frames as shown on the canvas, top to bottom: each page's
+    /// position and size (sections can differ in page size and orientation)
+    /// and margins. Hosts size the canvas from the last frame's Top + Height
+    /// and the widest frame.
+    let getPageFrames (editor: Editor) =
+        Ren.pageFrames editor.Handler.RenderContext editor.Doc
+        |> List.map (fun page ->
+            createObj [
+                "Top" ==> page.Top
+                "Width" ==> page.Width
+                "Height" ==> page.Height
+                "MarginTop" ==> page.MarginTop
+                "MarginBottom" ==> page.MarginBottom
+                "MarginLeft" ==> page.MarginLeft
+                "MarginRight" ==> page.MarginRight
+            ])
+        |> List.toArray
+
+    let getPageCount (editor: Editor) =
+        Ren.pageCount editor.Handler.RenderContext editor.Doc
+
+    /// Document position under a canvas point, from the layout that is on screen.
+    let hitTestPosition (editor: Editor) (x: float) (y: float) =
+        match Ren.hitTest editor.Handler.RenderContext editor.Doc x y with
+        | Some (blockId, offset) -> createObj [ "BlockId" ==> blockId; "Offset" ==> offset ]
+        | None -> null
+
     let private paragraphFromText id text : Doc.ParagraphBlock =
         { Id = id; Buffer = TextBuf.ofString text; Metadata = Doc.defaultMetadata }
 
@@ -1976,6 +2003,9 @@ module API =
             "setPageSetup" ==> setPageSetup
             "setPageSetupOptions" ==> setPageSetupOptions
             "getPageSetup" ==> getPageSetup
+            "getPageFrames" ==> getPageFrames
+            "getPageCount" ==> getPageCount
+            "hitTestPosition" ==> hitTestPosition
             "setHeaderFooterText" ==> setHeaderFooterText
             "getHeaderFooterText" ==> getHeaderFooterText
             "setHeaderFooterTableText" ==> setHeaderFooterTableText
