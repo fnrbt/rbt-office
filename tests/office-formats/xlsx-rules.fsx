@@ -95,7 +95,7 @@ let blankSheet name state cfs dvs : XlsxWriter.XlsxSheetOut =
       MergedCells = []; ColumnWidths = []; RowHeights = []; FrozenRows = 0; FrozenCols = 0; ShowGridLines = true; Tables = []
       DataValidations = dvs; ConditionalFormats = cfs; Hyperlinks = []
       PageMargins = None; PageSetup = None; PrintOptions = None; HeaderFooter = None
-      RowBreaks = []; ColBreaks = []; PrintArea = None; PrintTitleRows = None; PrintTitleCols = None }
+      RowBreaks = []; ColBreaks = []; PrintArea = None; PrintTitleRows = None; PrintTitleCols = None; Extras = XlsxReader.emptySheetExtras }
 
 // ---- the rules ---------------------------------------------------------------
 let fill c = { defaultFormat with BgColor = Some c }
@@ -141,7 +141,7 @@ let sheets =
       blankSheet "Tucked" XlsxReader.SheetHidden [] []
       blankSheet "Deep" XlsxReader.SheetVeryHidden [] [] ]
 let out : XlsxWriter.XlsxWorkbookOut =
-    { Sheets = sheets; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = None; Dxfs = List.ofSeq dxfs }
+    { Sheets = sheets; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = None; Dxfs = List.ofSeq dxfs; Preserved = XlsxReader.emptyWorkbookPreservation }
 let bytes = XlsxWriter.writeWorkbookPackageBytes out
 // Set RBT_DUMP_XLSX to keep the package (used to feed the browser importer).
 match System.Environment.GetEnvironmentVariable "RBT_DUMP_XLSX" with

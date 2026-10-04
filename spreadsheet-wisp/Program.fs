@@ -662,7 +662,8 @@ module XlsxWrite =
           ColBreaks = model.PageSetup.ManualColBreaks
           PrintArea = model.PageSetup.PrintArea |> Option.map rangeRef
           PrintTitleRows = model.PageSetup.RepeatRows |> Option.map (fun (a, b) -> sprintf "$%d:$%d" (a + 1) (b + 1))
-          PrintTitleCols = model.PageSetup.RepeatCols |> Option.map (fun (a, b) -> sprintf "$%s:$%s" (M.columnToLetter a) (M.columnToLetter b)) }
+          PrintTitleCols = model.PageSetup.RepeatCols |> Option.map (fun (a, b) -> sprintf "$%s:$%s" (M.columnToLetter a) (M.columnToLetter b))
+          Extras = XlsxReader.emptySheetExtras }
 
     let save (sheets: M.SpreadsheetModel array) (names: string array) path =
         let dxfs = ResizeArray<XlsxReader.Dxf>()
@@ -675,7 +676,7 @@ module XlsxWrite =
             |> Array.mapi (fun i model -> modelSheet dxfIndex (if i < names.Length then names.[i] else sprintf "Sheet%d" (i + 1)) model)
             |> Array.toList
         let macroSource = sheets |> Array.tryPick (fun m -> if String.IsNullOrWhiteSpace m.Macros then None else Some m.Macros)
-        let workbook = ({ Sheets = sheetDtos; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = macroSource; Dxfs = List.ofSeq dxfs } : XlsxWriter.XlsxWorkbookOut)
+        let workbook = ({ Sheets = sheetDtos; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = macroSource; Dxfs = List.ofSeq dxfs; Preserved = XlsxReader.emptyWorkbookPreservation } : XlsxWriter.XlsxWorkbookOut)
         File.WriteAllBytes(path, XlsxWriter.writeWorkbookPackageBytes workbook)
 
 let private sampleWorkbook () =

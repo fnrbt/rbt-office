@@ -527,6 +527,114 @@ type SheetState =
     | SheetHidden
     | SheetVeryHidden
 
+/// Where a drawing object sits on the sheet (xdr:twoCellAnchor / oneCellAnchor /
+/// absoluteAnchor). Columns and rows are 0-based; offsets and sizes are EMU.
+type SheetAnchor = {
+    /// "twoCell" | "oneCell" | "absolute"
+    Kind: string
+    FromCol: int
+    FromColOffset: float
+    FromRow: int
+    FromRowOffset: float
+    /// The bottom-right corner of a two-cell anchor.
+    ToCol: int option
+    ToColOffset: float
+    ToRow: int option
+    ToRowOffset: float
+    /// Position of an absolute anchor.
+    X: float
+    Y: float
+    /// Size given by the anchor (one-cell, absolute) or by the object's own a:ext.
+    Width: float option
+    Height: float option
+    /// editAs: twoCell | oneCell | absolute.
+    EditAs: string option
+}
+
+/// A picture anchored to cells.
+type SheetImage = {
+    Anchor: SheetAnchor
+    Name: string option
+    Description: string option
+    /// image/png, image/jpeg, ...
+    ContentType: string
+    /// File extension without the dot.
+    Extension: string
+    Data: byte[]
+}
+
+/// A drawing object that is not a picture (a chart, a shape, a group, ...):
+/// its anchor element as it is in the file, kept to be written back unchanged.
+type SheetObject = {
+    Anchor: SheetAnchor
+    /// chart | shape | other
+    Kind: string
+    Name: string option
+    /// The anchor element, with the namespace declarations it needs.
+    Xml: string
+}
+
+/// A threaded comment (a comment with an author and replies).
+type ThreadedComment = {
+    CellRef: CellReference
+    Id: string
+    Author: string option
+    /// The person entry (id, user id, provider id) behind the author.
+    PersonId: string option
+    Date: string option
+    Text: string
+    Replies: ThreadedComment list
+}
+
+/// What a sheet holds beyond its cells: pictures, other drawing objects and threaded comments.
+type SheetExtras = {
+    Images: SheetImage list
+    Objects: SheetObject list
+    ThreadedComments: ThreadedComment list
+    /// Relationships of the sheet's drawing part that the objects refer to
+    /// (id, type, absolute target or external URL, external).
+    DrawingRelationships: (string * string * string * bool) list
+}
+
+let emptySheetExtras = { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = [] }
+
+/// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
+/// font, fill, border and number format its xf refers to given as their XML so
+/// that it does not depend on the indexes of the file it came from.
+type NamedCellStyle = {
+    Name: string
+    /// Attributes of the cellStyle element other than name and xfId (builtinId, customBuiltin, ...).
+    StyleAttributes: (string * string) list
+    /// Attributes of the xf other than the font / fill / border / number format ids.
+    XfAttributes: (string * string) list
+    /// Children of the xf (alignment, protection).
+    XfChildrenXml: string
+    FontXml: string option
+    FillXml: string option
+    BorderXml: string option
+    /// Built-in number format id (< 164), or the format code of a custom one.
+    NumFmtId: int
+    NumFmtCode: string option
+}
+
+/// Parts of the workbook package the model does not hold, kept to be written
+/// back: the theme, the parts behind drawing objects (charts, their embedded
+/// data), and the named cell styles.
+type WorkbookPreservation = {
+    /// (path, data) of parts written back as they are.
+    Parts: (string * byte[]) list
+    /// [Content_Types].xml entries of the original package.
+    Defaults: (string * string) list
+    Overrides: (string * string) list
+    /// Path of the theme part, when the workbook has one.
+    ThemePath: string option
+    NamedStyles: NamedCellStyle list
+    /// Persons of the threaded comments: (id, display name, user id, provider id).
+    Persons: (string * string * string * string) list
+}
+
+let emptyWorkbookPreservation = { Parts = []; Defaults = []; Overrides = []; ThemePath = None; NamedStyles = []; Persons = [] }
+
 type Worksheet = {
     Name: string
     /// Tab visibility, from the workbook's `<sheet state>`.
@@ -570,6 +678,8 @@ type Worksheet = {
     /// Repeat-col columns, from the col part of `_xlnm.Print_Titles`
     /// (e.g. `$A:$B`).
     PrintTitleCols: string option
+    /// Pictures, charts and other drawing objects, and threaded comments.
+    Extras: SheetExtras
 }
 
 type Workbook = {
@@ -594,6 +704,8 @@ type Workbook = {
     /// origin only. Numbers that are dates but carry no date number format
     /// are left as stored.
     Date1904: bool
+    /// What the package holds beyond the model (see WorkbookPreservation).
+    Preserved: WorkbookPreservation
 }
 
 // File content is always written with invariant formatting, whatever the
@@ -2168,6 +2280,7 @@ module Xlsx =
                 PrintArea = printNames.PrintArea
                 PrintTitleRows = printNames.PrintTitleRows
                 PrintTitleCols = printNames.PrintTitleCols
+                Extras = emptySheetExtras
             }
 
     let worksheetNativeFastWithStyles (styles: CellStyle array option) (name: string) (sheetXml: string) (comments: CellComment list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet option =
@@ -2222,6 +2335,7 @@ module Xlsx =
             PrintArea = printNames.PrintArea
             PrintTitleRows = printNames.PrintTitleRows
             PrintTitleCols = printNames.PrintTitleCols
+            Extras = emptySheetExtras
         }
 
     let worksheetFromNodeWithStyles (styles: CellStyle array option) (name: string) (sheet: XmlNode) (comments: CellComment list) (condFormats: ConditionalFormat list) (dataVals: DataValidation list) (charts: Chart list) (pivotTables: PivotTable list) (tables: TableDefinition list) (sheetRels: Relationship list) (printNames: WorksheetPrintNames) : Worksheet =
@@ -3504,6 +3618,8 @@ let applyStyling (styles: CellStyle array) (sheet: Worksheet) : Worksheet =
 type private PartSource = {
     Exists: string -> bool
     Text: string -> string option
+    /// Raw bytes of a part (pictures, and parts kept to be written back).
+    Bytes: string -> byte[] option
 }
 
 let private partDirectory (partPath: string) =
@@ -3600,6 +3716,237 @@ let private sheetDependencyPaths (source: PartSource) (sheetPath: string) : stri
         && (r.Type.EndsWith "/comments" || r.Type.EndsWith "/table" || r.Type.EndsWith "/pivotTable"))
     |> List.map (relTargetPath sheetPath)
 
+// ---- drawings: pictures and other objects anchored to cells -----------------
+
+let private imageContentType (path: string) =
+    let lower = path.ToLowerInvariant()
+    let extension = match lower.LastIndexOf '.' with | -1 -> "" | index -> lower.Substring(index + 1)
+    let contentType =
+        match extension with
+        | "png" -> "image/png"
+        | "jpg" | "jpeg" -> "image/jpeg"
+        | "gif" -> "image/gif"
+        | "bmp" -> "image/bmp"
+        | "svg" -> "image/svg+xml"
+        | "webp" -> "image/webp"
+        | "emf" -> "image/x-emf"
+        | "wmf" -> "image/x-wmf"
+        | "tif" | "tiff" -> "image/tiff"
+        | _ -> "application/octet-stream"
+    extension, contentType
+
+let private anchorOf (node: XmlNode) : SheetAnchor option =
+    let number (text: string option) = text |> Option.bind tryParseFloat |> Option.defaultValue 0.0
+    let childText name parent = Ns.childNs name parent |> Option.bind Xml.text
+    let marker name =
+        Ns.childNs name node
+        |> Option.map (fun m ->
+            (childText "col" m |> Option.bind tryParseInt |> Option.defaultValue 0), number (childText "colOff" m),
+            (childText "row" m |> Option.bind tryParseInt |> Option.defaultValue 0), number (childText "rowOff" m))
+    let size =
+        Ns.childNs "ext" node
+        |> Option.orElseWith (fun () -> Ns.descendantsNs "xfrm" node |> List.tryHead |> Option.bind (Ns.childNs "ext"))
+    let width = size |> Option.bind (Xml.attr "cx") |> Option.bind tryParseFloat
+    let height = size |> Option.bind (Xml.attr "cy") |> Option.bind tryParseFloat
+    let kind =
+        match Xml.name node |> Option.map Ns.stripNs with
+        | Some "twoCellAnchor" -> Some "twoCell"
+        | Some "oneCellAnchor" -> Some "oneCell"
+        | Some "absoluteAnchor" -> Some "absolute"
+        | _ -> None
+    kind
+    |> Option.map (fun kind ->
+        let fromCol, fromColOffset, fromRow, fromRowOffset = marker "from" |> Option.defaultValue (0, 0.0, 0, 0.0)
+        let toMarker = marker "to"
+        let pos = Ns.childNs "pos" node
+        { Kind = kind
+          FromCol = fromCol; FromColOffset = fromColOffset; FromRow = fromRow; FromRowOffset = fromRowOffset
+          ToCol = toMarker |> Option.map (fun (col, _, _, _) -> col)
+          ToColOffset = toMarker |> Option.map (fun (_, offset, _, _) -> offset) |> Option.defaultValue 0.0
+          ToRow = toMarker |> Option.map (fun (_, _, row, _) -> row)
+          ToRowOffset = toMarker |> Option.map (fun (_, _, _, offset) -> offset) |> Option.defaultValue 0.0
+          X = pos |> Option.bind (Xml.attr "x") |> number
+          Y = pos |> Option.bind (Xml.attr "y") |> number
+          Width = width
+          Height = height
+          EditAs = Xml.attr "editAs" node })
+
+/// The pictures and other objects of a sheet's drawing part. A picture is read
+/// into the model (anchor, size, data); anything else (a chart, a shape, a
+/// group) is kept as its anchor element, to be written back as it is.
+let private readDrawing (source: PartSource) (drawingPath: string) : SheetImage list * SheetObject list * (string * string * string * bool) list =
+    match source.Text drawingPath |> Option.map XmlDsl.parse with
+    | Some (XmlDsl.Element (_, rootAttrs, anchors) as root) ->
+        let rels = relationshipsOf source drawingPath
+        let images = ResizeArray<SheetImage>()
+        let objects = ResizeArray<SheetObject>()
+        for node in anchors do
+            match anchorOf node with
+            | Some anchor ->
+                let picture =
+                    Ns.childNs "pic" node
+                    |> Option.bind (fun pic ->
+                        let blip = Ns.descendantsNs "blip" pic |> List.tryHead
+                        let relId = blip |> Option.bind (fun b -> Xml.attr "r:embed" b)
+                        let rel = relId |> Option.bind (fun id -> rels |> List.tryFind (fun r -> r.Id = id && isInternal r))
+                        let props = Ns.descendantsNs "cNvPr" pic |> List.tryHead
+                        rel
+                        |> Option.bind (fun r ->
+                            let path = relTargetPath drawingPath r
+                            source.Bytes path
+                            |> Option.map (fun data ->
+                                let extension, contentType = imageContentType path
+                                { Anchor = anchor
+                                  Name = props |> Option.bind (Xml.attr "name")
+                                  Description = props |> Option.bind (Xml.attr "descr")
+                                  ContentType = contentType
+                                  Extension = extension
+                                  Data = data })))
+                match picture with
+                | Some image -> images.Add image
+                | None ->
+                    let kind =
+                        if not (Ns.descendantsNs "chart" node).IsEmpty then "chart"
+                        elif (Ns.childNs "sp" node).IsSome || (Ns.childNs "cxnSp" node).IsSome then "shape"
+                        else "other"
+                    objects.Add
+                        { Anchor = anchor
+                          Kind = kind
+                          Name = Ns.descendantsNs "cNvPr" node |> List.tryHead |> Option.bind (Xml.attr "name")
+                          Xml = DocxReader.selfContainedXml rootAttrs (DocxReader.Docx.xmlToString node) }
+            | None -> ()
+        ignore root
+        // Relationships the kept objects refer to, with absolute targets.
+        let referenced = objects |> Seq.collect (fun item -> DocxReader.relationshipIdsInXml item.Xml) |> Set.ofSeq
+        let keptRels =
+            rels
+            |> List.filter (fun r -> Set.contains r.Id referenced)
+            // A target like "#Sheet1!A1" is a place in the workbook, not a part: kept as written.
+            |> List.map (fun r ->
+                let isPart = isInternal r && not (r.Target.StartsWith "#")
+                r.Id, r.Type, (if isPart then "/" + relTargetPath drawingPath r else r.Target), not (isInternal r))
+        List.ofSeq images, List.ofSeq objects, keptRels
+    | _ -> [], [], []
+
+// ---- threaded comments ---------------------------------------------------------
+
+let private readPersons (source: PartSource) (path: string) : (string * string * string * string) list =
+    match source.Text path |> Option.map XmlDsl.parse with
+    | Some doc ->
+        Ns.descendantsNs "person" doc
+        |> List.choose (fun person ->
+            Xml.attr "id" person
+            |> Option.map (fun id ->
+                id, (Xml.attr "displayName" person |> Option.defaultValue ""), (Xml.attr "userId" person |> Option.defaultValue ""), (Xml.attr "providerId" person |> Option.defaultValue "None")))
+    | None -> []
+
+/// Threaded comments of a sheet: each thread is its first comment with the
+/// later ones (parentId) as replies, in file order.
+let private readThreadedComments (persons: (string * string * string * string) list) (xml: string) : ThreadedComment list =
+    let names = persons |> List.map (fun (id, name, _, _) -> id, name) |> Map.ofList
+    let all =
+        Ns.descendantsNs "threadedComment" (XmlDsl.parse xml)
+        |> List.choose (fun node ->
+            match Xml.attr "ref" node, Xml.attr "id" node with
+            | Some cellRef, Some id ->
+                let personId = Xml.attr "personId" node
+                Some (Xml.attr "parentId" node,
+                      { CellRef = Xlsx.parseCellRef cellRef
+                        Id = id
+                        Author = personId |> Option.bind (fun person -> Map.tryFind person names) |> Option.filter (fun name -> name <> "")
+                        PersonId = personId
+                        Date = Xml.attr "dT" node
+                        Text = Ns.childNs "text" node |> Option.bind Xml.text |> Option.defaultValue ""
+                        Replies = [] })
+            | _ -> None)
+    all
+    |> List.filter (fun (parent, _) -> parent.IsNone)
+    |> List.map (fun (_, root) ->
+        { root with Replies = all |> List.filter (fun (parent, _) -> parent = Some root.Id) |> List.map snd })
+
+// ---- named cell styles ---------------------------------------------------------
+
+let private readNamedStyles (stylesXml: string) : NamedCellStyle list =
+    let doc = XmlDsl.parse stylesXml
+    let entries (containerName: string) =
+        Ns.childNs containerName doc |> Option.map Xml.children |> Option.defaultValue [] |> List.filter (fun node -> (Xml.name node).IsSome) |> List.toArray
+    let fonts, fills, borders = entries "fonts", entries "fills", entries "borders"
+    let numFmts =
+        entries "numFmts"
+        |> Array.choose (fun node -> Option.map2 (fun id code -> id, code) (Xml.attr "numFmtId" node |> Option.bind tryParseInt) (Xml.attr "formatCode" node))
+        |> Map.ofArray
+    let styleXfs = entries "cellStyleXfs"
+    // A fragment may use a prefix the styles part declares on its root (x14ac, xr, ...).
+    let rootAttributes = match doc with | XmlDsl.Element (_, attrs, _) -> attrs | _ -> Map.empty
+    let fragment (node: XmlNode) = DocxReader.selfContainedXml rootAttributes (DocxReader.Docx.xmlToString node)
+    let itemXml (items: XmlNode array) (index: int option) =
+        index |> Option.bind (fun i -> if i >= 0 && i < items.Length then Some (fragment items.[i]) else None)
+    entries "cellStyles"
+    |> Array.toList
+    |> List.choose (fun cellStyle ->
+        match Xml.attr "name" cellStyle, Xml.attr "xfId" cellStyle |> Option.bind tryParseInt with
+        | Some name, Some xfId when xfId >= 0 && xfId < styleXfs.Length ->
+            let xf = styleXfs.[xfId]
+            let attributes (node: XmlNode) (skip: string list) =
+                match node with
+                // Prefixed attributes (xr:uid) are editor bookkeeping and need their namespace; left out.
+                | XmlDsl.Element (_, attrs, _) -> attrs |> Map.toList |> List.filter (fun (key, _) -> not (List.contains key skip) && not (key.Contains ":"))
+                | _ -> []
+            let intAttr key = Xml.attr key xf |> Option.bind tryParseInt
+            let numFmtId = intAttr "numFmtId" |> Option.defaultValue 0
+            Some (xfId,
+                  { Name = name
+                    StyleAttributes = attributes cellStyle [ "name"; "xfId" ]
+                    XfAttributes = attributes xf [ "numFmtId"; "fontId"; "fillId"; "borderId" ]
+                    XfChildrenXml = Xml.children xf |> List.map fragment |> String.concat ""
+                    FontXml = itemXml fonts (intAttr "fontId")
+                    FillXml = itemXml fills (intAttr "fillId")
+                    BorderXml = itemXml borders (intAttr "borderId")
+                    // A custom format is identified by its code; its id is the file's own numbering.
+                    NumFmtId = if numFmtId >= 164 then 0 else numFmtId
+                    NumFmtCode = if numFmtId >= 164 then Map.tryFind numFmtId numFmts else None })
+        | _ -> None)
+    // In the order of their xf, so that xf 0 (Normal, which the cell formats are based on) stays first.
+    |> List.sortBy fst
+    |> List.distinctBy fst
+    |> List.map snd
+
+// ---- parts kept for the next save ----------------------------------------------
+
+/// Every part reachable from `roots` through the parts' own relationships
+/// (charts with their embedded data and style parts), with those .rels parts.
+let private reachablePartsFrom (source: PartSource) (roots: string list) : (string * byte[]) list =
+    let seen = System.Collections.Generic.HashSet<string>()
+    let parts = ResizeArray<string * byte[]>()
+    let pending = System.Collections.Generic.Queue<string>(roots)
+    while pending.Count > 0 do
+        let path = pending.Dequeue()
+        if seen.Add path then
+            match source.Bytes path with
+            | Some data ->
+                parts.Add (path, data)
+                let relsPath = relsPathFor path
+                match source.Bytes relsPath with
+                | Some relsData ->
+                    if seen.Add relsPath then parts.Add (relsPath, relsData)
+                    for rel in relationshipsOf source path do
+                        if isInternal rel then pending.Enqueue (relTargetPath path rel)
+                | None -> ()
+            | None -> ()
+    parts |> Seq.sortBy fst |> Seq.toList
+
+let private contentTypesOf (source: PartSource) : (string * string) list * (string * string) list =
+    match source.Text "[Content_Types].xml" |> Option.map XmlDsl.parse with
+    | Some types ->
+        let entries (elementName: string) (keyName: string) =
+            Xml.children types
+            |> List.choose (fun node ->
+                if Xml.name node |> Option.map Ns.stripNs = Some elementName then
+                    Option.map2 (fun key contentType -> key, contentType) (Xml.attr keyName node) (Xml.attr "ContentType" node)
+                else None)
+        entries "Default" "Extension", entries "Override" "PartName"
+    | None -> [], []
+
 let private defaultThemeColors = [|
     "FFFFFF"; "000000"; "E7E6E6"; "44546A"
     "4472C4"; "ED7D31"; "A5A5A5"; "FFC000"; "5B9BD5"; "70AD47"
@@ -3638,6 +3985,11 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
         |> Option.map (XmlDsl.parse >> ConditionalFormats.parseDxfs themeColors)
         |> Option.defaultValue [||]
 
+    let persons =
+        header.Rels
+        |> List.filter (fun r -> r.Type.EndsWith "/person" && isInternal r)
+        |> List.collect (fun r -> readPersons source (relTargetPath header.WorkbookPath r))
+
     let worksheets =
         sheetsToLoad
         |> List.choose (fun (sheetIdx, info, sheetPath) ->
@@ -3656,6 +4008,16 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
                 let pivots =
                     partsOfType "/pivotTable"
                     |> List.collect (fun pivotXml -> try PivotTables.parsePivotTables pivotXml with _ -> [])
+                // Pictures, charts and other objects: the sheet's drawing part.
+                let images, objects, drawingRels =
+                    sheetRels
+                    |> List.tryFind (fun r -> r.Type.EndsWith "/drawing" && isInternal r)
+                    |> Option.map (fun r -> try readDrawing source (relTargetPath sheetPath r) with _ -> [], [], [])
+                    |> Option.defaultValue ([], [], [])
+                let threads =
+                    partsOfType "/threadedComment"
+                    |> List.collect (fun threadXml -> try readThreadedComments persons threadXml with _ -> [])
+                let extras = { Images = images; Objects = objects; ThreadedComments = threads; DrawingRelationships = drawingRels }
                 // A fresh context per sheet: shared-formula groups are sheet-local.
                 let ctx = Xlsx.newSheetContext (Some styles) header.Date1904
                 let viaDom () =
@@ -3664,13 +4026,29 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
                     let dataVals = DataValidations.parseDataValidations sheet
                     Xlsx.worksheetFromNodeCore ctx info.Name info.State sheet comments condFormats dataVals [] pivots tables sheetRels printNames
 #if FABLE_COMPILER
-                viaDom ()
+                { viaDom () with Extras = extras }
 #else
                 match Xlsx.worksheetNativeFastCore ctx info.Name info.State xml comments pivots tables sheetRels printNames with
-                | Some sheet -> sheet
-                | None -> viaDom ()
+                | Some sheet -> { sheet with Extras = extras }
+                | None -> { viaDom () with Extras = extras }
 #endif
             ))
+
+    // Parts behind the kept drawing objects (chart parts, their embedded data),
+    // and the theme: written back as they are.
+    let keptRoots =
+        (worksheets
+         |> List.collect (fun sheet -> sheet.Extras.DrawingRelationships)
+         |> List.choose (fun (_, _, target, isExternal) -> if isExternal || target.StartsWith "#" then None else Some (ZipInterop.normalizePath target)))
+        @ (if source.Exists header.ThemePath then [ header.ThemePath ] else [])
+    let defaults, overrides = contentTypesOf source
+    let preserved =
+        { Parts = reachablePartsFrom source (List.distinct keptRoots)
+          Defaults = defaults
+          Overrides = overrides
+          ThemePath = if source.Exists header.ThemePath then Some header.ThemePath else None
+          NamedStyles = stylesXml |> Option.map (fun xml -> try readNamedStyles xml with _ -> []) |> Option.defaultValue []
+          Persons = persons }
 
     {
         Sheets = worksheets
@@ -3682,19 +4060,60 @@ let private buildWorkbook (source: PartSource) (header: WorkbookHeader) (sheetsT
         NamedRanges = header.NamedRanges
         ThemeAccents = themeAccents
         Date1904 = header.Date1904
+        Preserved = preserved
     }
+
+#if FABLE_COMPILER
+[<Fable.Core.Emit("new Uint8Array($0)")>]
+let private bytesOfBuffer (buffer: obj) : byte[] = Fable.Core.Util.jsNative
+
+[<Fable.Core.Emit("new TextDecoder('utf-8').decode($0)")>]
+let private textOfBytes (bytes: byte[]) : string = Fable.Core.Util.jsNative
+#else
+let private bytesOfBuffer (buffer: obj) : byte[] = unbox buffer
+let private textOfBytes (bytes: byte[]) : string = System.Text.Encoding.UTF8.GetString bytes
+#endif
+
+/// Parts that are read as text on demand and never needed as bytes: the
+/// sheets and the shared strings, which are the large ones.
+let private isLargeTextPart (path: string) =
+    let lower = path.ToLowerInvariant()
+    (lower.StartsWith "xl/worksheets/" && not (lower.Contains "/_rels/")) || lower.EndsWith "sharedstrings.xml"
 
 // JSZip entry: await the parts each stage needs into a cache, then run the
 // shared synchronous stages over it.
 let private parseWorkbookFiltered loadAll sheetName (archive: ZipArchive) : Fable.Core.JS.Promise<Workbook option> =
     let cache = System.Collections.Generic.Dictionary<string, string>()
+    // Bytes of everything but the large text parts: pictures, and the parts
+    // kept for the next save (drawings, charts, theme).
+    let byteCache = System.Collections.Generic.Dictionary<string, byte[]>()
     let source = {
         Exists = fun path -> (ZipInterop.tryFindFile archive path).IsSome
         Text = fun path ->
             match cache.TryGetValue path with
             | true, text -> Some text
+            | _ ->
+                match byteCache.TryGetValue path with
+                | true, bytes ->
+                    let text = textOfBytes bytes
+                    cache.[path] <- text
+                    Some text
+                | _ -> None
+        Bytes = fun path ->
+            match byteCache.TryGetValue path with
+            | true, bytes -> Some bytes
             | _ -> None
     }
+    let fetchBytes () : Fable.Core.JS.Promise<unit> =
+        let wanted =
+            archive.Files
+            |> Map.toArray
+            |> Array.filter (fun (name, _) -> not (isLargeTextPart name))
+        wanted
+        |> Array.map (fun (_, file) -> file.GetArrayBuffer())
+        |> Promise.all
+        |> Promise.map (fun buffers ->
+            buffers |> Array.iteri (fun i buffer -> byteCache.[fst wanted.[i]] <- bytesOfBuffer buffer))
     let fetch (paths: string list) : Fable.Core.JS.Promise<unit> =
         let wanted =
             paths
@@ -3720,6 +4139,7 @@ let private parseWorkbookFiltered loadAll sheetName (archive: ZipArchive) : Fabl
                        @ sheetPaths
                        @ (sheetPaths |> List.map relsPathFor))
             do! fetch (sheetPaths |> List.collect (sheetDependencyPaths source))
+            do! fetchBytes ()
             return Some (buildWorkbook source header sheetsToLoad)
     }
 
@@ -3824,6 +4244,7 @@ let private parseWorkbookNativeFiltered loadAll sheetName (archive: ZipArchive) 
     let source = {
         Exists = fun path -> (ZipInterop.tryFindFile archive path).IsSome
         Text = ZipInterop.getFileTextNative archive
+        Bytes = ZipInterop.getFileBytesNative archive
     }
     readWorkbookHeader source (mainPartPath source)
     |> Option.map (fun header -> buildWorkbook source header (selectedSheets header loadAll sheetName))

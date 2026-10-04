@@ -132,6 +132,7 @@ let mkSheetWithColumns columns rows : XlsxReader.Worksheet =
         PrintArea = None
         PrintTitleRows = None
         PrintTitleCols = None
+        Extras = XlsxReader.emptySheetExtras
     }
 
 let mkSheet rows = mkSheetWithColumns [] rows
@@ -147,6 +148,7 @@ let mkWorkbook sheet : XlsxReader.Workbook =
         NamedRanges = []
         ThemeAccents = [||]
         Date1904 = false
+        Preserved = XlsxReader.emptyWorkbookPreservation
     }
 
 let isString expected (value: obj) =

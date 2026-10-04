@@ -445,6 +445,9 @@ type XlsxSheetOut = {
     PrintArea: string option
     PrintTitleRows: string option
     PrintTitleCols: string option
+    /// Pictures and other drawing objects anchored to cells, and threaded
+    /// comments (in the reader's shape; XlsxReader.emptySheetExtras for none).
+    Extras: XlsxReader.SheetExtras
 }
 
 type XlsxDefinedName = {
@@ -460,6 +463,9 @@ type XlsxWorkbookOut = {
     VbaProjectSource: string option
     /// Differential formats conditional-formatting rules refer to by index.
     Dxfs: XlsxReader.Dxf list
+    /// What was kept of the opened package (theme, chart parts, named cell
+    /// styles); XlsxReader.emptyWorkbookPreservation for a new workbook.
+    Preserved: XlsxReader.WorkbookPreservation
 }
 
 let defaultXlsxCellFormat = {
@@ -530,6 +536,8 @@ type private SharedStringKey = {
 }
 
 type private StyleBook = {
+    /// Named cell styles kept from the opened workbook.
+    NamedStyles: XlsxReader.NamedCellStyle list
     Dxfs: XlsxReader.Dxf list
     Fonts: FontKey list
     Fills: FillKey list
@@ -664,14 +672,15 @@ let private collectStyles (workbook: XlsxWorkbookOut) =
     let borders =
         xfs |> List.map (fun x -> x.Border) |> List.fold (fun acc key -> appendUnique key acc) [ defaultBorderKey ]
     let customNumFmts =
-        xfs
-        |> List.choose (fun x -> x.NumFmt)
+        (xfs |> List.choose (fun x -> x.NumFmt))
+        @ (workbook.Preserved.NamedStyles |> List.choose (fun style -> style.NumFmtCode))
         |> List.distinct
         |> List.filter (fun code -> builtInNumFmtId code |> Option.isNone)
         |> List.mapi (fun i code -> code, 164 + i)
         |> Map.ofList
     let styleIndex = xfs |> List.mapi (fun i x -> x, i) |> Map.ofList
-    { Dxfs = workbook.Dxfs
+    { NamedStyles = workbook.Preserved.NamedStyles
+      Dxfs = workbook.Dxfs
       Fonts = fonts
       Fills = fills
       Borders = borders
@@ -751,12 +760,34 @@ let private stylesXml (book: StyleBook) =
                 |> List.map (fun (code, id) -> sprintf "<numFmt numFmtId=\"%d\" formatCode=\"%s\"/>" id (escaped code))
                 |> String.concat ""
             sprintf "<numFmts count=\"%d\">%s</numFmts>" (Map.count book.NumFmtIds) items
-    let fonts = book.Fonts |> List.map fontXml |> String.concat ""
+    // The fonts, fills and borders of the kept named styles follow the
+    // workbook's own in each table; a named style's xf refers to them there.
+    let named = book.NamedStyles |> List.toArray
+    let namedSlot (pick: XlsxReader.NamedCellStyle -> string option) (ownCount: int) =
+        let mutable next = ownCount
+        named
+        |> Array.map (fun style ->
+            match pick style with
+            | Some _ ->
+                let id = next
+                next <- next + 1
+                id
+            | None -> 0)
+    let namedFontIds = namedSlot (fun style -> style.FontXml) book.Fonts.Length
+    let namedFillIds = namedSlot (fun style -> style.FillXml) (2 + book.Fills.Length)
+    let namedBorderIds = namedSlot (fun style -> style.BorderXml) book.Borders.Length
+    let namedXml (pick: XlsxReader.NamedCellStyle -> string option) = named |> Array.choose pick |> String.concat ""
+    let namedCount (pick: XlsxReader.NamedCellStyle -> string option) = named |> Array.filter (fun style -> (pick style).IsSome) |> Array.length
+    let fonts = (book.Fonts |> List.map fontXml |> String.concat "") + namedXml (fun style -> style.FontXml)
     let fills =
         let body =
             [ yield fillXml None
               yield "<fill><patternFill patternType=\"gray125\"/></fill>"
-              for fill in book.Fills -> fillXml fill ]
+              for fill in book.Fills -> fillXml fill
+              for style in named do
+                  match style.FillXml with
+                  | Some xml -> yield xml
+                  | None -> () ]
         sprintf "<fills count=\"%d\">%s</fills>" body.Length (String.concat "" body)
     let fillIdOf (fill: FillKey) =
         match fill with
@@ -781,7 +812,31 @@ let private stylesXml (book: StyleBook) =
                 |> Option.defaultValue ""
             "<dxf>" + font + fill + "</dxf>"
         sprintf "<dxfs count=\"%d\">%s</dxfs>" book.Dxfs.Length (book.Dxfs |> List.map dxfXml |> String.concat "")
-    let borders = book.Borders |> List.map borderXml |> String.concat ""
+    let borders = (book.Borders |> List.map borderXml |> String.concat "") + namedXml (fun style -> style.BorderXml)
+    // cellStyleXfs / cellStyles: the kept named styles, or just Normal.
+    let cellStyleXfs, cellStyles =
+        if named.Length = 0 then
+            "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>",
+            "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
+        else
+            let attributes (pairs: (string * string) list) = pairs |> List.map (fun (key, value) -> " " + attr key value) |> String.concat ""
+            let xfs =
+                named
+                |> Array.mapi (fun i style ->
+                    let numFmtId =
+                        match style.NumFmtCode with
+                        | Some code -> builtInNumFmtId code |> Option.orElseWith (fun () -> Map.tryFind code book.NumFmtIds) |> Option.defaultValue 0
+                        | None -> style.NumFmtId
+                    let ids = sprintf "numFmtId=\"%d\" fontId=\"%d\" fillId=\"%d\" borderId=\"%d\"" numFmtId namedFontIds.[i] namedFillIds.[i] namedBorderIds.[i]
+                    if style.XfChildrenXml = "" then sprintf "<xf %s%s/>" ids (attributes style.XfAttributes)
+                    else sprintf "<xf %s%s>%s</xf>" ids (attributes style.XfAttributes) style.XfChildrenXml)
+                |> String.concat ""
+            let styles =
+                named
+                |> Array.mapi (fun i style -> sprintf "<cellStyle %s xfId=\"%d\"%s/>" (attr "name" style.Name) i (attributes style.StyleAttributes))
+                |> String.concat ""
+            sprintf "<cellStyleXfs count=\"%d\">%s</cellStyleXfs>" named.Length xfs,
+            sprintf "<cellStyles count=\"%d\">%s</cellStyles>" named.Length styles
     let xfXml (xf: XfKey) =
         let numFmtId =
             match xf.NumFmt with
@@ -822,12 +877,12 @@ let private stylesXml (book: StyleBook) =
     declaration + "\n"
     + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
     + numFmts
-    + sprintf "<fonts count=\"%d\">%s</fonts>" book.Fonts.Length fonts
+    + sprintf "<fonts count=\"%d\">%s</fonts>" (book.Fonts.Length + namedCount (fun style -> style.FontXml)) fonts
     + fills
-    + sprintf "<borders count=\"%d\">%s</borders>" book.Borders.Length borders
-    + "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
+    + sprintf "<borders count=\"%d\">%s</borders>" (book.Borders.Length + namedCount (fun style -> style.BorderXml)) borders
+    + cellStyleXfs
     + sprintf "<cellXfs count=\"%d\">%s</cellXfs>" book.Xfs.Length xfs
-    + "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
+    + cellStyles
     + dxfs + "<tableStyles count=\"0\" defaultTableStyle=\"TableStyleMedium2\" defaultPivotStyle=\"PivotStyleLight16\"/>"
     + "</styleSheet>"
 
@@ -1150,6 +1205,111 @@ let private tablePartsXml count =
         let body = [ 1 .. count ] |> List.map (fun i -> sprintf "<tablePart r:id=\"rIdTable%d\"/>" i) |> String.concat ""
         sprintf "<tableParts count=\"%d\">%s</tableParts>" count body
 
+// ---- pictures, kept drawing objects and threaded comments ---------------------
+
+// The sheet's drawing part is written as xl/drawings/sheetDrawing<n>.xml: a
+// kept part may be called drawing<n>.xml (the user shapes of a chart).
+let private hasDrawing (sheet: XlsxSheetOut) =
+    not sheet.Extras.Images.IsEmpty || not sheet.Extras.Objects.IsEmpty
+
+let private drawingNamespace = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+let private drawingMainNamespace = "http://schemas.openxmlformats.org/drawingml/2006/main"
+let private threadedCommentsNamespace = "http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments"
+
+let private emu (value: float) = string (int64 (System.Math.Round value))
+
+/// The drawing part of a sheet: one anchor per picture, written from the model,
+/// then the kept objects (charts, shapes) as they were read.
+let private drawingXml (sheet: XlsxSheetOut) (imageRelIds: string list) =
+    let marker name (col: int) (colOffset: float) (row: int) (rowOffset: float) =
+        sprintf "<xdr:%s><xdr:col>%d</xdr:col><xdr:colOff>%s</xdr:colOff><xdr:row>%d</xdr:row><xdr:rowOff>%s</xdr:rowOff></xdr:%s>" name col (emu colOffset) row (emu rowOffset) name
+    let picture index (relId: string) (image: XlsxReader.SheetImage) =
+        let anchor = image.Anchor
+        let width = anchor.Width |> Option.defaultValue 0.0
+        let height = anchor.Height |> Option.defaultValue 0.0
+        let name = image.Name |> Option.defaultValue (sprintf "Picture %d" (index + 1))
+        let description = image.Description |> Option.map (fun text -> " " + attr "descr" text) |> Option.defaultValue ""
+        let pic =
+            sprintf "<xdr:pic><xdr:nvPicPr><xdr:cNvPr id=\"%d\" %s%s/><xdr:cNvPicPr><a:picLocks noChangeAspect=\"1\"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" r:embed=\"%s\"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"%s\" cy=\"%s\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/>"
+                (index + 2) (attr "name" name) description relId (emu width) (emu height)
+        let from = marker "from" anchor.FromCol anchor.FromColOffset anchor.FromRow anchor.FromRowOffset
+        match anchor.Kind, anchor.ToCol, anchor.ToRow with
+        | "twoCell", Some toCol, Some toRow ->
+            let editAs = anchor.EditAs |> Option.map (fun value -> " " + attr "editAs" value) |> Option.defaultValue ""
+            sprintf "<xdr:twoCellAnchor%s>%s%s%s</xdr:twoCellAnchor>" editAs from (marker "to" toCol anchor.ToColOffset toRow anchor.ToRowOffset) pic
+        | "absolute", _, _ ->
+            sprintf "<xdr:absoluteAnchor><xdr:pos x=\"%s\" y=\"%s\"/><xdr:ext cx=\"%s\" cy=\"%s\"/>%s</xdr:absoluteAnchor>" (emu anchor.X) (emu anchor.Y) (emu width) (emu height) pic
+        | _ ->
+            sprintf "<xdr:oneCellAnchor>%s<xdr:ext cx=\"%s\" cy=\"%s\"/>%s</xdr:oneCellAnchor>" from (emu width) (emu height) pic
+    let pictures = List.map3 picture [ 0 .. sheet.Extras.Images.Length - 1 ] imageRelIds sheet.Extras.Images
+    let objects = sheet.Extras.Objects |> List.map (fun item -> item.Xml)
+    // Only the two namespaces every anchor uses are declared here; a kept object
+    // carries the others on its own element, and a picture declares r: on its blip.
+    sprintf "%s\n<xdr:wsDr xmlns:xdr=\"%s\" xmlns:a=\"%s\">%s</xdr:wsDr>"
+        declaration drawingNamespace drawingMainNamespace (String.concat "" (pictures @ objects))
+
+/// The person behind an author name: the kept one, or a new entry.
+let private personsOf (workbook: XlsxWorkbookOut) : (string * string * string * string) list =
+    let authors =
+        workbook.Sheets
+        |> List.collect (fun sheet -> sheet.Extras.ThreadedComments |> List.collect (fun thread -> thread :: thread.Replies))
+    let mutable persons = workbook.Preserved.Persons
+    let mutable next = 1
+    for comment in authors do
+        let known =
+            match comment.PersonId with
+            | Some id -> persons |> List.exists (fun (personId, _, _, _) -> personId = id)
+            | None -> persons |> List.exists (fun (_, name, _, _) -> Some name = comment.Author)
+        if not known then
+            let id =
+                match comment.PersonId with
+                | Some id -> id
+                | None ->
+                    let id = sprintf "{00000000-0000-4000-8000-%012d}" next
+                    next <- next + 1
+                    id
+            let name = comment.Author |> Option.defaultValue ""
+            persons <- persons @ [ id, name, name, "None" ]
+    persons
+
+let private threadedCommentsXml (persons: (string * string * string * string) list) (sheetIndex: int) (sheet: XlsxSheetOut) =
+    if sheet.Extras.ThreadedComments.IsEmpty then None
+    else
+        let personId (comment: XlsxReader.ThreadedComment) =
+            match comment.PersonId with
+            | Some id -> id
+            | None ->
+                persons
+                |> List.tryPick (fun (id, name, _, _) -> if Some name = comment.Author then Some id else None)
+                |> Option.defaultValue "{00000000-0000-4000-8000-000000000000}"
+        let mutable next = 0
+        let idOf (comment: XlsxReader.ThreadedComment) =
+            if comment.Id <> "" then comment.Id
+            else
+                next <- next + 1
+                sprintf "{%08d-0000-4000-8000-%012d}" sheetIndex next
+        let one (parent: string option) (comment: XlsxReader.ThreadedComment) (id: string) =
+            sprintf "<threadedComment ref=\"%s%d\"%s personId=\"%s\" id=\"%s\"%s><text>%s</text></threadedComment>"
+                comment.CellRef.Column comment.CellRef.Row
+                (comment.Date |> Option.map (fun date -> " " + attr "dT" date) |> Option.defaultValue "")
+                (escaped (personId comment)) (escaped id)
+                (parent |> Option.map (fun parentId -> " " + attr "parentId" parentId) |> Option.defaultValue "")
+                (escapedCellText comment.Text)
+        let body =
+            sheet.Extras.ThreadedComments
+            |> List.collect (fun thread ->
+                let rootId = idOf thread
+                one None thread rootId :: (thread.Replies |> List.map (fun reply -> one (Some rootId) reply (idOf reply))))
+            |> String.concat ""
+        Some (sprintf "%s\n<ThreadedComments xmlns=\"%s\" xmlns:x=\"%s\">%s</ThreadedComments>" declaration threadedCommentsNamespace Namespaces.spreadsheet body)
+
+let private personsXml (persons: (string * string * string * string) list) =
+    let body =
+        persons
+        |> List.map (fun (id, name, userId, providerId) -> sprintf "<person %s %s %s %s/>" (attr "displayName" name) (attr "id" id) (attr "userId" userId) (attr "providerId" providerId))
+        |> String.concat ""
+    sprintf "%s\n<personList xmlns=\"%s\" xmlns:x=\"%s\">%s</personList>" declaration threadedCommentsNamespace Namespaces.spreadsheet body
+
 let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (sheet: XlsxSheetOut) =
     let hasFitToPage = sheet.PageSetup |> Option.exists (fun p -> p.FitToPage)
     let sheetPr = if hasFitToPage then "<sheetPr><pageSetUpPr fitToPage=\"1\"/></sheetPr>" else ""
@@ -1170,6 +1330,7 @@ let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (shee
     + pagePartsXml sheet
     + breaksXml "rowBreaks" sheet.RowBreaks
     + breaksXml "colBreaks" sheet.ColBreaks
+    + (if hasDrawing sheet then sprintf "<drawing r:id=\"rIdDrawing%d\"/>" sheetIndex else "")
     + (if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then sprintf "<legacyDrawing r:id=\"rIdCommentsVml%d\"/>" sheetIndex else "")
     + tablePartsXml sheet.Tables.Length
     + "</worksheet>"
@@ -1247,6 +1408,10 @@ let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) firstTableId =
         if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then
             yield sprintf "<Relationship Id=\"rIdComments%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments%d.xml\"/>" sheetIndex sheetIndex
             yield sprintf "<Relationship Id=\"rIdCommentsVml%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"../drawings/vmlDrawing%d.vml\"/>" sheetIndex sheetIndex
+        if hasDrawing sheet then
+            yield sprintf "<Relationship Id=\"rIdDrawing%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing\" Target=\"/xl/drawings/sheetDrawing%d.xml\"/>" sheetIndex sheetIndex
+        if not sheet.Extras.ThreadedComments.IsEmpty then
+            yield sprintf "<Relationship Id=\"rIdThreaded%d\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/threadedComment\" Target=\"/xl/threadedComments/threadedComment%d.xml\"/>" sheetIndex sheetIndex
     ]
     if List.isEmpty rels then None
     else Some (sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" rels))
@@ -1294,7 +1459,7 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
     sprintf "%s\n<workbook xmlns=\"%s\" xmlns:r=\"%s\"><bookViews><workbookView activeTab=\"%d\"/></bookViews><sheets>%s</sheets>%s</workbook>"
         declaration Namespaces.spreadsheet Namespaces.relationships (max 0 workbook.ActiveSheetIndex) sheets definedNames
 
-let private workbookRelsXmlFull (sheetCount: int) hasVba =
+let private workbookRelsXmlFull (sheetCount: int) hasVba (themePath: string option) (hasPersons: bool) =
     let sheetRels =
         [ 1 .. sheetCount ]
         |> List.map (fun i -> sprintf "<Relationship Id=\"rId%d\" Type=\"%s\" Target=\"worksheets/sheet%d.xml\"/>" i RelationshipTypes.worksheet i)
@@ -1303,6 +1468,11 @@ let private workbookRelsXmlFull (sheetCount: int) hasVba =
         yield sprintf "<Relationship Id=\"rIdStyles\" Type=\"%s\" Target=\"styles.xml\"/>" RelationshipTypes.styles
         yield sprintf "<Relationship Id=\"rIdSharedStrings\" Type=\"%s\" Target=\"sharedStrings.xml\"/>" RelationshipTypes.sharedStrings
         if hasVba then yield "<Relationship Id=\"rIdVBA\" Type=\"http://schemas.microsoft.com/office/2006/relationships/vbaProject\" Target=\"vbaProject.bin\"/>"
+        // The theme of the opened workbook, kept as it was.
+        match themePath with
+        | Some path -> yield sprintf "<Relationship Id=\"rIdTheme\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme\" Target=\"/%s\"/>" (escaped path)
+        | None -> ()
+        if hasPersons then yield "<Relationship Id=\"rIdPersons\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/person\" Target=\"/xl/persons/person.xml\"/>"
     ]
     sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" baseRels)
 
@@ -1331,16 +1501,41 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) =
                 sprintf "<Override PartName=\"/xl/comments%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>" (i + 1)
             else "")
         |> String.concat ""
+    // Pictures, the kept parts (charts, theme, embedded data) and threaded comments.
+    let keptPaths = workbook.Preserved.Parts |> List.map (fun (path, _) -> ("/" + path).ToLowerInvariant()) |> Set.ofList
+    let ownDefaults =
+        [ yield "rels", "application/vnd.openxmlformats-package.relationships+xml"
+          yield "xml", "application/xml"
+          yield "vml", "application/vnd.openxmlformats-officedocument.vmlDrawing"
+          if hasVba then yield "bin", "application/vnd.ms-office.vbaProject" ]
+    let imageDefaults =
+        workbook.Sheets
+        |> List.collect (fun sheet -> sheet.Extras.Images |> List.map (fun image -> image.Extension, image.ContentType))
+    let defaults =
+        ownDefaults @ imageDefaults @ (if keptPaths.IsEmpty then [] else workbook.Preserved.Defaults)
+        |> List.filter (fun (extension, _) -> extension <> "")
+        |> List.distinctBy (fun (extension, _) -> extension.ToLowerInvariant())
+        |> List.map (fun (extension, contentType) -> sprintf "<Default %s %s/>" (attr "Extension" extension) (attr "ContentType" contentType))
+        |> String.concat ""
+    let extraOverrides =
+        [ for i, sheet in workbook.Sheets |> List.mapi (fun i sheet -> i + 1, sheet) do
+              if hasDrawing sheet then
+                  yield sprintf "<Override PartName=\"/xl/drawings/sheetDrawing%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawing+xml\"/>" i
+              if not sheet.Extras.ThreadedComments.IsEmpty then
+                  yield sprintf "<Override PartName=\"/xl/threadedComments/threadedComment%d.xml\" ContentType=\"application/vnd.ms-excel.threadedcomments+xml\"/>" i
+          if workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty) then
+              yield "<Override PartName=\"/xl/persons/person.xml\" ContentType=\"application/vnd.ms-excel.person+xml\"/>"
+          for name, contentType in workbook.Preserved.Overrides do
+              if Set.contains (name.ToLowerInvariant()) keptPaths then
+                  yield sprintf "<Override %s %s/>" (attr "PartName" name) (attr "ContentType" contentType) ]
+        |> String.concat ""
     declaration + "\n"
     + sprintf "<Types xmlns=\"%s\">" Namespaces.contentTypes
-    + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
-    + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
-    + "<Default Extension=\"vml\" ContentType=\"application/vnd.openxmlformats-officedocument.vmlDrawing\"/>"
-    + (if hasVba then "<Default Extension=\"bin\" ContentType=\"application/vnd.ms-office.vbaProject\"/>" else "")
+    + defaults
     + sprintf "<Override PartName=\"/xl/workbook.xml\" ContentType=\"%s\"/>" workbookType
     + "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
     + "<Override PartName=\"/xl/sharedStrings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml\"/>"
-    + sheetOverrides + tableOverrides + comments
+    + sheetOverrides + tableOverrides + comments + extraOverrides
     + "</Types>"
 
 let private rootRelsXmlFull =
@@ -1356,7 +1551,15 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     textFiles.Add { Path = "[Content_Types].xml"; Content = contentTypesXmlFull workbook }
     textFiles.Add { Path = "_rels/.rels"; Content = rootRelsXmlFull }
     textFiles.Add { Path = "xl/workbook.xml"; Content = workbookXmlFull workbook }
-    textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook.Sheets.Length hasVba }
+    let persons = personsOf workbook
+    let hasThreads = workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty)
+    // The theme stays only if its part was kept.
+    let themePath = workbook.Preserved.ThemePath |> Option.filter (fun path -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
+    textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook.Sheets.Length hasVba themePath hasThreads }
+    if hasThreads then textFiles.Add { Path = "xl/persons/person.xml"; Content = personsXml persons }
+    let keptPartPaths = workbook.Preserved.Parts |> List.map fst |> Set.ofList
+    let mediaFiles = ResizeArray<string * byte[]>()
+    let mutable nextMedia = 1
     textFiles.Add { Path = "xl/styles.xml"; Content = stylesXml styles }
     textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedStringsXmlPreserved sharedItems }
     workbook.Sheets
@@ -1373,13 +1576,43 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         match vmlCommentsXml sheetIndex sheet.Cells with
         | Some xml -> textFiles.Add { Path = sprintf "xl/drawings/vmlDrawing%d.vml" sheetIndex; Content = xml }
         | None -> ()
+        match threadedCommentsXml persons sheetIndex sheet with
+        | Some xml -> textFiles.Add { Path = sprintf "xl/threadedComments/threadedComment%d.xml" sheetIndex; Content = xml }
+        | None -> ()
+        if hasDrawing sheet then
+            // One media part per picture (not under the name of a kept part), and
+            // the relationships the kept objects refer to, with their ids.
+            let imageRels =
+                sheet.Extras.Images
+                |> List.mapi (fun i image ->
+                    let extension = if image.Extension = "" then "bin" else image.Extension
+                    while Set.contains (sprintf "xl/media/image%d.%s" nextMedia extension) keptPartPaths do
+                        nextMedia <- nextMedia + 1
+                    let path = sprintf "xl/media/image%d.%s" nextMedia extension
+                    nextMedia <- nextMedia + 1
+                    mediaFiles.Add (path, image.Data)
+                    sprintf "rIdImg%d" (i + 1), path)
+            let relsBody =
+                [ for relId, path in imageRels do
+                      yield sprintf "<Relationship Id=\"%s\" Type=\"%s\" Target=\"/%s\"/>" relId RelationshipTypes.image path
+                  for relId, relType, target, isExternal in sheet.Extras.DrawingRelationships do
+                      yield sprintf "<Relationship %s %s %s%s/>" (attr "Id" relId) (attr "Type" relType) (attr "Target" target) (if isExternal then " TargetMode=\"External\"" else "") ]
+            textFiles.Add { Path = sprintf "xl/drawings/sheetDrawing%d.xml" sheetIndex; Content = drawingXml sheet (imageRels |> List.map fst) }
+            if not relsBody.IsEmpty then
+                textFiles.Add
+                    { Path = sprintf "xl/drawings/_rels/sheetDrawing%d.xml.rels" sheetIndex
+                      Content = sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" relsBody) }
         for table in sheet.Tables do
             textFiles.Add { Path = sprintf "xl/tables/table%d.xml" tableId; Content = tableXml tableId table }
             tableId <- tableId + 1)
+    let written = textFiles |> Seq.map (fun file -> file.Path) |> Set.ofSeq
     let binaryFiles =
-        match workbook.VbaProjectSource with
-        | Some source when source <> "" -> [ "xl/vbaProject.bin", VbaProject.writeProject "Module1" source ]
-        | _ -> []
+        (match workbook.VbaProjectSource with
+         | Some source when source <> "" -> [ "xl/vbaProject.bin", VbaProject.writeProject "Module1" source ]
+         | _ -> [])
+        @ List.ofSeq mediaFiles
+        // Kept parts go back as they were, unless the writer produced a part of that name.
+        @ (workbook.Preserved.Parts |> List.filter (fun (path, _) -> not (Set.contains path written)))
     textFiles |> Seq.toList, binaryFiles
 
 let writeWorkbookPackage (workbook: XlsxWorkbookOut) : Fable.Core.JS.Promise<obj> =
@@ -1441,11 +1674,13 @@ let private formattedToWorkbook (sheets: FormattedSheet list) =
               ColBreaks = []
               PrintArea = None
               PrintTitleRows = None
-              PrintTitleCols = None })
+              PrintTitleCols = None
+              Extras = XlsxReader.emptySheetExtras })
       ActiveSheetIndex = 0
       DefinedNames = []
       VbaProjectSource = None
-      Dxfs = [] }
+      Dxfs = []
+      Preserved = XlsxReader.emptyWorkbookPreservation }
 
 let private cellRefFromReader (r: XlsxReader.CellReference) =
     let col =
@@ -1633,11 +1868,13 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
               ColBreaks = sheet.ColBreaks
               PrintArea = sheet.PrintArea
               PrintTitleRows = sheet.PrintTitleRows
-              PrintTitleCols = sheet.PrintTitleCols })
+              PrintTitleCols = sheet.PrintTitleCols
+              Extras = sheet.Extras })
       ActiveSheetIndex = 0
       DefinedNames = workbook.NamedRanges |> List.map (fun n -> { Name = n.Name; RefersTo = n.RefersTo; LocalSheetIndex = n.Scope |> Option.bind (fun s -> match System.Int32.TryParse s with true, v -> Some v | _ -> None) })
       VbaProjectSource = None
-      Dxfs = workbook.Dxfs |> Array.toList }
+      Dxfs = workbook.Dxfs |> Array.toList
+      Preserved = workbook.Preserved }
 
 /// Helper to create a simple cell from string
 let simpleCell (value: string) : FormattedCell = {

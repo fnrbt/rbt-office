@@ -236,14 +236,16 @@ let syntheticSheet : XlsxWriter.XlsxSheetOut =
       ColBreaks = [ 2 ]
       PrintArea = Some "$A$1:$B$2"
       PrintTitleRows = Some "$1:$1"
-      PrintTitleCols = Some "$A:$A" }
+      PrintTitleCols = Some "$A:$A"
+      Extras = XlsxReader.emptySheetExtras }
 
 let synthetic : XlsxWriter.XlsxWorkbookOut =
     { XlsxWriter.Sheets = [ syntheticSheet ]
       ActiveSheetIndex = 0
       DefinedNames = [ { Name = "MY_RANGE"; RefersTo = "'RoundTrip'!$A$1:$B$2"; LocalSheetIndex = None } ]
       VbaProjectSource = Some "Sub Main()\n  Range(\"A1\").Value = 1\nEnd Sub\n"
-      Dxfs = [] }
+      Dxfs = []
+      Preserved = XlsxReader.emptyWorkbookPreservation }
 
 match synthetic |> XlsxWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesNative with
 | None -> ok "synthetic-roundtrip-load" false "reader returned None"
@@ -307,7 +309,8 @@ let nastyWorkbook : XlsxWriter.XlsxWorkbookOut =
       ActiveSheetIndex = 0
       DefinedNames = []
       VbaProjectSource = None
-      Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None } ] }
+      Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None } ]
+      Preserved = XlsxReader.emptyWorkbookPreservation }
 let nastyBytes = XlsxWriter.writeWorkbookPackageBytes nastyWorkbook
 
 let nastySheetXml = partText nastyBytes "xl/worksheets/sheet1.xml"
@@ -418,6 +421,119 @@ for cfFile in [ "real-world/saopaulo-condos.xlsx"; "test-documents-excel/synthet
            (cfSig wb1 = cfSig wb2 && (cfSig wb1 |> List.exists (fun sheet -> not (List.isEmpty sheet))))
            (sprintf "%A vs %A" (cfSig wb1) (cfSig wb2))
         ok ("cf-dxfs-survive-save " + cfFile) (wb1.Dxfs = wb2.Dxfs) (sprintf "%A vs %A" wb1.Dxfs wb2.Dxfs)
+
+// ---- pictures, charts, threaded comments, named styles and the theme ----------
+let drawingSummary (wb: XlsxReader.Workbook) =
+    wb.Sheets
+    |> List.map (fun sheet ->
+        sheet.Name,
+        sheet.Extras.Images |> List.map (fun image -> image.Anchor, image.Name, image.Description, image.ContentType, image.Data),
+        sheet.Extras.Objects,
+        sheet.Extras.ThreadedComments,
+        sheet.Extras.DrawingRelationships),
+    wb.Preserved.Parts, wb.Preserved.ThemePath, wb.Preserved.NamedStyles
+// Real workbooks with pictures and charts: everything the reader finds is
+// found again, identical, in what the writer saves (chart parts byte for byte).
+let drawingFiles =
+    [ "real-world/chart-zoo.xlsx"; "real-world/dashboard-ecommerce-sales.xlsx"; "real-world/dashboard-sales-analysis.xlsx"
+      "test-documents-excel/pandas-chartsheet.xlsx"; "test-documents-excel/phpsp-27template.xlsx"; "test-documents-excel/phpsp-32chartreadwrite.xlsx"
+      "test-documents-excel/poi-47504.xlsx"; "test-documents-excel/poi-47668.xlsx"; "test-documents-excel/poi-47813.xlsx"
+      "test-documents-excel/poi-49156.xlsx"; "test-documents-excel/synthetic-chart-column.xlsx" ]
+let mutable drawingPictures = 0
+let mutable drawingCharts = 0
+for relative in drawingFiles do
+    let path = Path.Combine(__SOURCE_DIRECTORY__, "..", relative)
+    if File.Exists path then
+        match loadWorkbook path with
+        | None -> ok ("drawings-load " + relative) false "reader returned None"
+        | Some wb1 ->
+            match roundTripWorkbook wb1 with
+            | None -> ok ("drawings-reload " + relative) false "reader returned None"
+            | Some wb2 ->
+                drawingPictures <- drawingPictures + (wb1.Sheets |> List.sumBy (fun sheet -> sheet.Extras.Images.Length))
+                drawingCharts <- drawingCharts + (wb1.Sheets |> List.sumBy (fun sheet -> sheet.Extras.Objects |> List.filter (fun item -> item.Kind = "chart") |> List.length))
+                ok ("drawings-survive-save " + relative) (drawingSummary wb1 = drawingSummary wb2) "pictures, objects, kept parts, theme or named styles differ after a save"
+ok "drawings-corpus-has-pictures-and-charts" (drawingPictures >= 10 && drawingCharts >= 25) (sprintf "%d pictures, %d charts" drawingPictures drawingCharts)
+
+// A picture, a chart, a threaded comment with a reply, a named style and a theme, synthetic.
+let extrasPackage =
+    let ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    use stream = new MemoryStream()
+    do
+        use archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create, true)
+        let add (name: string) (text: string) =
+            use writer = new StreamWriter(archive.CreateEntry(name).Open(), System.Text.UTF8Encoding(false))
+            writer.Write text
+        let addBytes (name: string) (bytes: byte[]) =
+            use entry = archive.CreateEntry(name).Open()
+            entry.Write(bytes, 0, bytes.Length)
+        add "[Content_Types].xml" "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"png\" ContentType=\"image/png\"/><Override PartName=\"/xl/charts/chart1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.drawingml.chart+xml\"/><Override PartName=\"/xl/theme/theme1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.theme+xml\"/></Types>"
+        add "xl/workbook.xml" (sprintf "<workbook xmlns=\"%s\" xmlns:r=\"%s\"><sheets><sheet name=\"Data\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>" ns rel)
+        add "xl/_rels/workbook.xml.rels" (sprintf "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"%s/worksheet\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"rId2\" Type=\"%s/styles\" Target=\"styles.xml\"/><Relationship Id=\"rId3\" Type=\"%s/theme\" Target=\"theme/theme1.xml\"/><Relationship Id=\"rId4\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/person\" Target=\"persons/person.xml\"/></Relationships>" rel rel rel)
+        add "xl/theme/theme1.xml" "<a:theme xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" name=\"Kept theme\"><a:themeElements><a:clrScheme name=\"Kept\"><a:accent1><a:srgbClr val=\"112233\"/></a:accent1></a:clrScheme></a:themeElements></a:theme>"
+        add "xl/styles.xml" (sprintf "<styleSheet xmlns=\"%s\"><numFmts count=\"1\"><numFmt numFmtId=\"170\" formatCode=\"0.000 &quot;kg&quot;\"/></numFmts><fonts count=\"2\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font><font><b/><sz val=\"14\"/><color rgb=\"FF9C0006\"/><name val=\"Georgia\"/></font></fonts><fills count=\"3\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/></fill><fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFFFC7CE\"/></patternFill></fill></fills><borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count=\"2\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/><xf numFmtId=\"170\" fontId=\"1\" fillId=\"2\" borderId=\"0\" applyFont=\"1\" applyFill=\"1\"><alignment horizontal=\"center\"/></xf></cellStyleXfs><cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs><cellStyles count=\"2\"><cellStyle name=\"Weighty\" xfId=\"1\"/><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>" ns)
+        add "xl/worksheets/sheet1.xml" (sprintf "<worksheet xmlns=\"%s\" xmlns:r=\"%s\"><sheetData><row r=\"1\"><c r=\"A1\"><v>42</v></c></row></sheetData><drawing r:id=\"rId1\"/></worksheet>" ns rel)
+        add "xl/worksheets/_rels/sheet1.xml.rels" (sprintf "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"%s/drawing\" Target=\"../drawings/drawing1.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/threadedComment\" Target=\"../threadedComments/threadedComment1.xml\"/></Relationships>" rel)
+        add "xl/drawings/drawing1.xml" (sprintf "<xdr:wsDr xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"%s\" xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><xdr:twoCellAnchor editAs=\"oneCell\"><xdr:from><xdr:col>1</xdr:col><xdr:colOff>9525</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>19050</xdr:rowOff></xdr:from><xdr:to><xdr:col>3</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>6</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:pic><xdr:nvPicPr><xdr:cNvPr id=\"2\" name=\"Logo\" descr=\"the logo\"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed=\"rId1\"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"1219200\" cy=\"762000\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:twoCellAnchor><xdr:oneCellAnchor><xdr:from><xdr:col>5</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx=\"3048000\" cy=\"1905000\"/><xdr:graphicFrame macro=\"\"><xdr:nvGraphicFramePr><xdr:cNvPr id=\"3\" name=\"Chart 1\"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"0\" cy=\"0\"/></xdr:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart r:id=\"rId2\"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>" rel)
+        add "xl/drawings/_rels/drawing1.xml.rels" (sprintf "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"%s/image\" Target=\"../media/logo.png\"/><Relationship Id=\"rId2\" Type=\"%s/chart\" Target=\"../charts/chart1.xml\"/></Relationships>" rel rel)
+        addBytes "xl/media/logo.png" [| 137uy; 80uy; 78uy; 71uy; 1uy; 2uy; 3uy; 250uy |]
+        add "xl/charts/chart1.xml" "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart><c:plotArea/></c:chart></c:chartSpace>"
+        add "xl/persons/person.xml" "<personList xmlns=\"http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments\"><person displayName=\"Ann Author\" id=\"{11111111-1111-1111-1111-111111111111}\" userId=\"ann@example.com\" providerId=\"AD\"/><person displayName=\"Bob Reply\" id=\"{22222222-2222-2222-2222-222222222222}\" userId=\"bob\" providerId=\"None\"/></personList>"
+        add "xl/threadedComments/threadedComment1.xml" "<ThreadedComments xmlns=\"http://schemas.microsoft.com/office/spreadsheetml/2018/threadedcomments\"><threadedComment ref=\"B2\" dT=\"2024-01-02T03:04:05.00\" personId=\"{11111111-1111-1111-1111-111111111111}\" id=\"{AAAAAAAA-0000-0000-0000-000000000001}\"><text>Is this right?</text></threadedComment><threadedComment ref=\"B2\" dT=\"2024-01-03T04:05:06.00\" personId=\"{22222222-2222-2222-2222-222222222222}\" id=\"{AAAAAAAA-0000-0000-0000-000000000002}\" parentId=\"{AAAAAAAA-0000-0000-0000-000000000001}\"><text>Yes &amp; checked</text></threadedComment></ThreadedComments>"
+    stream.ToArray()
+match XlsxReader.loadBytesNative extrasPackage with
+| None -> ok "extras-load" false "reader returned None"
+| Some wb1 ->
+    let sheet = wb1.Sheets.Head
+    ok "picture-read-with-anchor-and-data"
+       ((sheet.Extras.Images |> List.map (fun image -> image.Anchor.Kind, image.Anchor.FromCol, image.Anchor.FromColOffset, image.Anchor.FromRow, image.Anchor.ToCol, image.Anchor.ToRow, image.Anchor.EditAs, image.Anchor.Width, image.Name, image.Description, image.ContentType, image.Data.Length)) =
+          [ "twoCell", 1, 9525.0, 2, Some 3, Some 6, Some "oneCell", Some 1219200.0, Some "Logo", Some "the logo", "image/png", 8 ])
+       (sprintf "%A" sheet.Extras.Images)
+    ok "chart-kept-as-object"
+       ((sheet.Extras.Objects |> List.map (fun item -> item.Kind, item.Name, item.Anchor.Kind, item.Anchor.FromCol, item.Anchor.Width, item.Xml.Contains "<c:chart r:id=\"rId2\"/>")) = [ "chart", Some "Chart 1", "oneCell", 5, Some 3048000.0, true ])
+       (sprintf "%A" sheet.Extras.Objects)
+    ok "threaded-comment-with-author-and-reply"
+       ((sheet.Extras.ThreadedComments |> List.map (fun thread -> thread.CellRef.Column, thread.CellRef.Row, thread.Author, thread.Date, thread.Text, thread.Replies |> List.map (fun reply -> reply.Author, reply.Text))) =
+          [ "B", 2, Some "Ann Author", Some "2024-01-02T03:04:05.00", "Is this right?", [ Some "Bob Reply", "Yes & checked" ] ])
+       (sprintf "%A" sheet.Extras.ThreadedComments)
+    ok "named-styles-read"
+       ((wb1.Preserved.NamedStyles |> List.map (fun style -> style.Name, style.NumFmtCode, style.FontXml.IsSome, style.FillXml |> Option.map (fun xml -> xml.Contains "FFFFC7CE"), style.XfChildrenXml)) =
+          [ "Normal", None, true, Some false, ""; "Weighty", Some "0.000 \"kg\"", true, Some true, "<alignment horizontal=\"center\"/>" ])
+       (sprintf "%A" wb1.Preserved.NamedStyles)
+    ok "theme-and-chart-parts-kept"
+       ((wb1.Preserved.Parts |> List.map fst) = [ "xl/charts/chart1.xml"; "xl/theme/theme1.xml" ] && wb1.Preserved.ThemePath = Some "xl/theme/theme1.xml")
+       (sprintf "%A" (wb1.Preserved.Parts |> List.map fst))
+    let savedBytes = XlsxWriter.packageFromReaderWorkbook wb1 |> XlsxWriter.writeWorkbookPackageBytes
+    match XlsxReader.loadBytesNative savedBytes with
+    | None -> ok "extras-reload" false "reader returned None"
+    | Some wb2 ->
+        ok "extras-survive-save" (drawingSummary wb1 = drawingSummary wb2) (sprintf "%A\n%A" (drawingSummary wb1) (drawingSummary wb2))
+        ok "persons-survive-save" (wb1.Preserved.Persons = wb2.Preserved.Persons && wb2.Preserved.Persons.Length = 2) (sprintf "%A" wb2.Preserved.Persons)
+    // The saved package itself: the named style with its font / fill / number format, the theme, the chart part.
+    use savedArchive = new System.IO.Compression.ZipArchive(new MemoryStream(savedBytes), System.IO.Compression.ZipArchiveMode.Read)
+    let part (name: string) =
+        match savedArchive.GetEntry name with
+        | null -> ""
+        | entry -> (use reader = new StreamReader(entry.Open()) in reader.ReadToEnd())
+    let stylesPart = part "xl/styles.xml"
+    ok "named-style-written-with-its-formatting"
+       (stylesPart.Contains "<cellStyle name=\"Weighty\" xfId=\"1\"/>" && stylesPart.Contains "<cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/>"
+        && stylesPart.Contains "<name val=\"Georgia\"/>" && stylesPart.Contains "FFFFC7CE" && stylesPart.Contains "formatCode=\"0.000 &quot;kg&quot;\""
+        && stylesPart.Contains "<alignment horizontal=\"center\"/>")
+       stylesPart
+    ok "theme-written-back-unchanged" ((part "xl/theme/theme1.xml").Contains "name=\"Kept theme\"" && (part "xl/_rels/workbook.xml.rels").Contains "/theme\" Target=\"/xl/theme/theme1.xml\"") (part "xl/_rels/workbook.xml.rels")
+    ok "chart-part-written-back-unchanged" ((part "xl/charts/chart1.xml") = "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"><c:chart><c:plotArea/></c:chart></c:chartSpace>") (part "xl/charts/chart1.xml")
+    ok "threaded-comments-written"
+       ((part "xl/threadedComments/threadedComment1.xml").Contains "parentId=\"{AAAAAAAA-0000-0000-0000-000000000001}\"" && (part "xl/persons/person.xml").Contains "displayName=\"Bob Reply\"" && (part "[Content_Types].xml").Contains "threadedcomments+xml")
+       (part "xl/threadedComments/threadedComment1.xml")
+    ok "drawing-written-before-other-sheet-parts" ((part "xl/worksheets/sheet1.xml").Contains "<drawing r:id=\"rIdDrawing1\"/></worksheet>") (part "xl/worksheets/sheet1.xml")
+
+// A workbook made from scratch has none of this, and still no dangling parts.
+ok "new-workbook-has-no-drawing-parts"
+   (use archive = new System.IO.Compression.ZipArchive(new MemoryStream(XlsxWriter.writeWorkbookPackageBytes synthetic), System.IO.Compression.ZipArchiveMode.Read)
+    archive.Entries |> Seq.forall (fun entry -> not (entry.FullName.Contains "drawings/sheetDrawing") && not (entry.FullName.Contains "theme") && not (entry.FullName.Contains "threadedComment")))
+   "unexpected parts"
 
 printfn ""
 printfn "OfficeFormat XLSX writer tests: %d passed, %d failed" pass fail
