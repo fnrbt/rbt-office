@@ -63,6 +63,10 @@ try {
             const t0 = performance.now();
             const editorPackage = await OF.processors.forEditorPackage(bytes);
             const read = performance.now() - t0;
+            // A host asks which font faces the package needs before it loads it.
+            let t2 = performance.now();
+            const faces = Word.getRequiredFonts ? Word.getRequiredFonts(editorPackage).length : 0;
+            const fonts = performance.now() - t2;
             // As a host does: the measurers and the painter first, then the document (laid out once).
             let t1 = performance.now();
             if (usePainter) {
@@ -83,7 +87,7 @@ try {
             const framesTime = performance.now() - t1;
             const target = frames[Math.floor(frames.length / 2)];
             Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: target.Top, scrollLeft: 0, width: 1000, height: 800 });
-            return { loaded, read, imported, installed, frames: framesTime, pages: size.PageCount, top: target.Top };
+            return { loaded, read, imported, installed, fonts, faces, frames: framesTime, pages: size.PageCount, top: target.Top };
         },
         // Put the caret into a paragraph of plain text on the page in view (by clicking at a point of the canvas).
         caretAt(x, y) { return Word.getSelectionInformation ? JSON.stringify(Word.getCaretRect(editor)) : null; },
@@ -223,6 +227,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
             console.log('  -- opening: time under a function --');
             for (const [key, time] of [...total.entries()].filter(([key]) => (process.env.PROFILE_FILTER ? new RegExp(process.env.PROFILE_FILTER) : /word\/|office-formats\//).test(key)).sort((a, b) => b[1] - a[1]).slice(0, 70)) console.log(`  ${time.toFixed(0).padStart(7)} ms  ${key}`);
         }
+        console.log(`  getRequiredFonts(package): ${loaded.fonts.toFixed(0)} ms (${loaded.faces} faces), before the import`);
         console.log(`  opening: read the package ${(loaded.read / 1000).toFixed(2)} s, import and first paint ${(loaded.imported / 1000).toFixed(2)} s${painter ? `, measurers and painter installed ${(loaded.installed / 1000).toFixed(2)} s` : ''}, page frames ${loaded.frames.toFixed(0)} ms`);
         console.log(`docx4j-getting-started x ${repeat}: ${loaded.pages} pages, loaded in ${(loaded.loaded / 1000).toFixed(2)} s${painter ? ' (text path painter and measurers installed)' : ''}`);
         // A click into the text of the page in view puts the caret there.

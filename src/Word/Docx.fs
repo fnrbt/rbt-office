@@ -1359,7 +1359,7 @@ let private withCommentDetails (comments: CommentBody list) (doc: Document) : Do
             HeaderParts = doc.HeaderParts |> List.map mapPart
             FooterParts = doc.FooterParts |> List.map mapPart }
 
-let importFromEditorPackage (package: obj) : Document =
+let private convertEditorPackage (package: obj) : Document =
     let paragraphs = optionalArray (package?Paragraphs)
     let styles = optionalArray (package?Styles)
     let headerParts = optionalArray (package?HeaderParts)
@@ -1380,6 +1380,26 @@ let importFromEditorPackage (package: obj) : Document =
                     ImportedStyles = doc.Styles } }
         |> withCommentDetails comments
     if isNullOrUndefined package?PageSetup then doc else { doc with PageSetup = pageSetupFromEditor package?PageSetup }
+
+[<Emit("new WeakMap()")>]
+let private newPackageMap () : obj = jsNative
+[<Emit("((typeof $1 === 'object' && $1 !== null) ? $0.get($1) : undefined)")>]
+let private packageMapGet (_map: obj) (_package: obj) : Document = jsNative
+[<Emit("((typeof $1 === 'object' && $1 !== null) ? $0.set($1, $2) : undefined)")>]
+let private packageMapSet (_map: obj) (_package: obj) (_doc: Document) : unit = jsNative
+let private convertedPackages = newPackageMap ()
+
+/// The document of an editor package. A package object is converted once:
+/// a host that asks for a package's fonts (getRequiredFonts) and then loads
+/// it into an editor or a viewer pays for one conversion, not two. (A
+/// Document is immutable; the package object is not expected to change.)
+let importFromEditorPackage (package: obj) : Document =
+    let known = packageMapGet convertedPackages package
+    if not (isNull (box known)) then known
+    else
+        let doc = convertEditorPackage package
+        packageMapSet convertedPackages package doc
+        doc
 
 /// Export Word document to EditorParagraphs for Office.Formats
 /// Reader px for a run with no size anywhere (11pt), which the model holds as
