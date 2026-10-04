@@ -2101,18 +2101,55 @@ type Spreadsheet(container: Element) =
         let leftRuns =
             if plainSheet then [ 0.0, h, edgeBetween leftData cellData false (before >= 0) ]
             else runsAlong row endRow rowStart (fun r -> SpreadsheetLayout.edgeLeft model r col)
-        drawEdge 0 topRuns
-        drawEdge 1 leftRuns
+        // The two edges that end at the cell's top-left corner without being its own:
+        // the one coming down from above and the one coming in from the left.
+        let noEdge = SpreadsheetLayout.EdgeGrid false
+        let verticalEdge =
+            if above < 0 || before < 0 then noEdge
+            elif plainSheet then (if aboveData.IsSome || cornerData.IsSome then edgeBetween cornerData aboveData false true else noEdge)
+            else SpreadsheetLayout.edgeLeft model above col
+        let horizontalEdge =
+            if above < 0 || before < 0 then noEdge
+            elif plainSheet then (if leftData.IsSome || cornerData.IsSome then edgeBetween cornerData leftData true true else noEdge)
+            else SpreadsheetLayout.edgeAbove model row before
+        // A double border turning a corner: the outer rule goes round the outside, the
+        // inner one round the inside. Two children crossing (or a square) do not draw
+        // that - the outer line of an outline was two pixels off at its right corners -
+        // so the corner is one 3 x 3 element with the two sides it joins (CSS mitres a
+        // double border on one element), and the cell's own edges start after it.
+        let doubleOf (edge: SpreadsheetLayout.SharedEdge) =
+            match edge with
+            | SpreadsheetLayout.EdgeBorder border when border.Style.ToLowerInvariant() = "double" -> Some border
+            | _ -> None
+        let isLine (edge: SpreadsheetLayout.SharedEdge) = match edge with SpreadsheetLayout.EdgeBorder _ -> true | _ -> false
+        let firstOf (runs: (float * float * SpreadsheetLayout.SharedEdge) list) = match runs with (_, _, edge) :: _ -> edge | [] -> noEdge
+        let ownTop, ownLeft = firstOf topRuns, firstOf leftRuns
+        let doubleCorner =
+            match doubleOf ownTop, doubleOf ownLeft, doubleOf horizontalEdge, doubleOf verticalEdge with
+            | Some line, Some _, None, None when not (isLine horizontalEdge) && not (isLine verticalEdge) -> Some (line, "border-top", "border-left", true, true)
+            | None, Some line, Some _, None when not (isLine ownTop) && not (isLine verticalEdge) -> Some (line, "border-top", "border-right", false, true)
+            | Some line, None, None, Some _ when not (isLine ownLeft) && not (isLine horizontalEdge) -> Some (line, "border-bottom", "border-left", true, false)
+            | None, None, Some line, Some _ when not (isLine ownTop) && not (isLine ownLeft) -> Some (line, "border-bottom", "border-right", false, false)
+            | _ -> None
+        let trim (cut: bool) (runs: (float * float * SpreadsheetLayout.SharedEdge) list) =
+            match runs with
+            | (offset, length, edge) :: rest when cut && length > 3.0 -> (offset + 3.0, length - 3.0, edge) :: rest
+            | _ -> runs
+        match doubleCorner with
+        | Some (line, sideA, sideB, trimTop, trimLeft) ->
+            let css = borderCss line
+            edgeChildren.Add (100, "position:absolute;pointer-events:none;left:0;top:0;width:0;height:0;" + sideA + ":" + css + ";" + sideB + ":" + css)
+            drawEdge 0 (trim trimTop topRuns)
+            drawEdge 1 (trim trimLeft leftRuns)
+        | None ->
+            drawEdge 0 topRuns
+            drawEdge 1 leftRuns
         if endRow >= model.RowCount - 1 then drawEdge 2 (runsAlong col endCol columnStart (fun c -> SpreadsheetLayout.edgeBelow model endRow c))
         if endCol >= model.ColCount - 1 then drawEdge 3 (runsAlong row endRow rowStart (fun r -> SpreadsheetLayout.edgeRight model r endCol))
         // Where a border from above ends at one coming from the left (the
         // far corner of an outline), neither is this cell's own edge: the
         // corner between them is filled, unless an own edge covers it.
-        if above >= 0 && before >= 0 && (aboveData.IsSome || leftData.IsSome || cornerData.IsSome) then
-            let verticalEdge =
-                if plainSheet then edgeBetween cornerData aboveData false true else SpreadsheetLayout.edgeLeft model above col
-            let horizontalEdge =
-                if plainSheet then edgeBetween cornerData leftData true true else SpreadsheetLayout.edgeAbove model row before
+        if doubleCorner.IsNone then
             match verticalEdge, horizontalEdge with
             | SpreadsheetLayout.EdgeBorder vertical, SpreadsheetLayout.EdgeBorder horizontal ->
                 let cornerWidth = borderWidth vertical

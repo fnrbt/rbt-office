@@ -31,7 +31,7 @@ const edgeProbe = (source, origin, model, layout) => {
     const column = (x, y0, y1) => { const out = []; for (let y = Math.round(y0); y < Math.round(y1); y++) out.push(source.at(Math.round(x), y)); return out; };
     const line = (y, x0, x1) => { const out = []; for (let x = Math.round(x0); x < Math.round(x1); x++) out.push(source.at(x, Math.round(y))); return out; };
     return {
-        left, top,
+        left, top, at: (x, y) => source.at(x, y),
         // The thicknesses of the lines of a colour met going down through the middle of a column, from the middle of one row to the middle of another.
         across: (col, fromRow, toRow, color) => runsOf(column((left(col) + left(col + 1)) / 2, (top(fromRow) + top(fromRow + 1)) / 2, (top(toRow) + top(toRow + 1)) / 2), color).map((run) => run[1]),
         // ... and going right through the middle of a row.
@@ -99,6 +99,18 @@ checks['borders'] = async () => {
         grid.ApplyBorder('all', 'double', '#000000');
         grid.SelectCell(12, 8);
         probe = await screen();
+        // The outer rule of a double outline goes round the block unbroken: along the top, down the
+        // right side (it was two pixels off at the right corners), along the bottom and up the left.
+        for (const kind of ['all', 'outside']) {
+            if (kind === 'outside') { grid.SelectRange(1, 1, 3, 3); grid.ApplyBorder('none', 'thin', '#000000'); grid.SelectRange(1, 1, 3, 3); grid.ApplyBorder('outside', 'double', '#000000'); grid.SelectCell(12, 8); probe = await screen(); }
+            const x0 = Math.round(probe.left(1)), x1 = Math.round(probe.left(4)), y0 = Math.round(probe.top(1)), y1 = Math.round(probe.top(4));
+            check(`${kind} / double: the outer rule runs round the block (top, right, bottom, left)`,
+                [probe.solidRow(y0, x0, x1 + 3, BLACK), probe.solidColumn(x1 + 2, y0, y1 + 3, BLACK), probe.solidRow(y1 + 2, x0, x1 + 3, BLACK), probe.solidColumn(x0, y0, y1 + 3, BLACK)], [true, true, true, true]);
+            check(`${kind} / double: the inner rule runs round inside it, and the gap between the two is clear at the corners`,
+                [probe.solidRow(y0 + 2, x0 + 2, x1 + 1, BLACK), probe.solidColumn(x1, y0 + 2, y1 + 1, BLACK), probe.solidRow(y1, x0 + 2, x1 + 1, BLACK), probe.solidColumn(x0 + 2, y0 + 2, y1 + 1, BLACK),
+                 [[x0 + 1, y0 + 1], [x1 + 1, y0 + 1], [x1 + 1, y1 + 1], [x0 + 1, y1 + 1]].every(([x, y]) => !near(probe.shot ? probe.shot.at(x, y) : probe.at(x, y), BLACK))], [true, true, true, true, true]);
+            if (kind === 'outside') { grid.SelectRange(1, 1, 3, 3); grid.ApplyBorder('none', 'thin', '#000000'); grid.SelectRange(1, 1, 3, 3); grid.ApplyBorder('all', 'double', '#000000'); grid.SelectCell(12, 8); probe = await screen(); }
+        }
         check('all / double: each edge is two 1 px rules (not a box of its own per cell)', [probe.across(2, 0, 4, BLACK), probe.along(2, 0, 4, BLACK)], [[1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 1]]);
         grid.SelectRange(1, 1, 3, 3);
         grid.ApplyBorder('none', 'thin', '#000000');
