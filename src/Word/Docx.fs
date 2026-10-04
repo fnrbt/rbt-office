@@ -460,6 +460,8 @@ let private metadataFromEditor (item: obj) =
             LineSpacing = lineSpacing
             LineSpacingRule = lineSpacingRule
             WidowControl = widowControl
+            KeepNext = optionalBool (item?KeepNext)
+            KeepLines = optionalBool (item?KeepLines)
             BackgroundColor = backgroundColor
             ParagraphBorders = paragraphBorders
             ParagraphBorderBefore = paragraphBorderBefore
@@ -1403,6 +1405,8 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
         // Exact/at-least line spacing is stored relative to this size; the writer needs it to get the twips back.
         "ParagraphMarkFontSize" ==> para.Metadata.ParagraphMarkFontSize
         "WidowControl" ==> para.Metadata.WidowControl
+        "KeepNext" ==> para.Metadata.KeepNext
+        "KeepLines" ==> para.Metadata.KeepLines
         "BackgroundColor" ==> para.Metadata.BackgroundColor
         "ParagraphBorders" ==> paragraphBordersToEditor para.Metadata.ParagraphBorders
         "ParagraphBorderBefore" ==> para.Metadata.ParagraphBorderBefore

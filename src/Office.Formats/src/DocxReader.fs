@@ -3843,6 +3843,12 @@ let private explicitRunFields (styleMap: Map<string, StyleDefinition>) (paraProp
              else None)
     ]
 
+/// The paragraph properties its styles give without the paragraph's direct
+/// keepNext / keepLines (only resolved again when it has any).
+let private styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: Paragraph) (effectiveParaProps: ParagraphProperties) =
+    if para.Properties.KeepNext.IsNone && para.Properties.KeepLines.IsNone then effectiveParaProps
+    else resolvedParagraphProperties styleMap { para.Properties with KeepNext = None; KeepLines = None }
+
 let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
     let styleMap = buildStyleMap styles
     let _, documentDefaultParagraphProperties = resolveStyle styleMap (Some Styles.defaultStyleId)
@@ -4123,8 +4129,12 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 "HeadingLevel" ==> headingLevel
                 "Runs" ==> editorRuns
                 "Style" ==> effectiveParaProps.Style
-                "StyleKeepNext" ==> effectiveParaProps.KeepNext
-                "StyleKeepLines" ==> effectiveParaProps.KeepLines
+                // Direct keepNext / keepLines are the paragraph's own; StyleKeepX is what
+                // its style says without them (the editor infers style definitions from it).
+                "KeepNext" ==> para.Properties.KeepNext
+                "KeepLines" ==> para.Properties.KeepLines
+                "StyleKeepNext" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepNext
+                "StyleKeepLines" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepLines
                 "StylePageBreakBefore" ==> effectiveParaProps.PageBreakBefore
                 "PageBreakBefore" ==> effectiveParaProps.PageBreakBefore
                 "StyleWidowControl" ==> effectiveParaProps.WidowControl
@@ -4392,8 +4402,12 @@ let rec private toEditorParagraphsInternal (theme: Theme option) (styles: StyleD
                 objFromFields ([
                     "Runs" ==> editorRuns
                     "Style" ==> effectiveParaProps.Style
-                    "StyleKeepNext" ==> effectiveParaProps.KeepNext
-                    "StyleKeepLines" ==> effectiveParaProps.KeepLines
+                    // Direct keepNext / keepLines are the paragraph's own; StyleKeepX is what
+                    // its style says without them (the editor infers style definitions from it).
+                    "KeepNext" ==> para.Properties.KeepNext
+                    "KeepLines" ==> para.Properties.KeepLines
+                    "StyleKeepNext" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepNext
+                    "StyleKeepLines" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepLines
                     "StylePageBreakBefore" ==> effectiveParaProps.PageBreakBefore
                     "PageBreakBefore" ==> effectiveParaProps.PageBreakBefore
                     "StyleWidowControl" ==> effectiveParaProps.WidowControl

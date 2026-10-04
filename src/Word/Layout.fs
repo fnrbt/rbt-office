@@ -4242,7 +4242,7 @@ let private layoutDocumentWithRangeAndInitial
             let initialLayout, initialCounters, initialObstacles, initialPlacedBoxes = layoutParagraphWithMemo memo settings measureText measureRange maxWidth y 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters floatingObstacles placedFloatingBoxes
             if traceTimingEnabled then traceSlow (sprintf "block[%d]:initial lines=%d" index initialLayout.Lines.Length) initialStart
             let keepWithNextY =
-                if paragraphStyle.KeepNext = Some true then
+                if WordStyles.keepNext paragraphStyle para.Metadata then
                     let keepStart = timingStart ()
                     let mutable probeY = y + initialLayout.Height
                     let mutable probeIndex = index + 1
@@ -4260,7 +4260,7 @@ let private layoutDocumentWithRangeAndInitial
                                 shouldContinue <- false
                             else
                                 let nextLayout, _, _, _ = layoutParagraphWithMemo memo settings measureText measureRange maxWidth probeY 0.0 nextStyle (effectiveBufferInContext styleContext) nextPara numberedCounters initialObstacles initialPlacedBoxes
-                                let nextKeepsFurther = nextStyle.KeepNext = Some true
+                                let nextKeepsFurther = WordStyles.keepNext nextStyle nextPara.Metadata
                                 let nextContribution =
                                     if nextKeepsFurther then
                                         paragraphVisibleFitHeight nextStyle nextLayout
@@ -4314,7 +4314,7 @@ let private layoutDocumentWithRangeAndInitial
                     advanceToNextPage settings pagedY
                 else pagedY
             let pagedY =
-                if paragraphStyle.KeepLines = Some true && pagedY = y && y > settings.PaddingTop && linesSpanPages settings initialLayout.Lines then
+                if WordStyles.keepLines paragraphStyle para.Metadata && pagedY = y && y > settings.PaddingTop && linesSpanPages settings initialLayout.Lines then
                     advanceToNextPage settings y
                 else pagedY
             let layout, counters, obstacles, placedBoxes =
@@ -4629,8 +4629,8 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
     // the next one moves to the next column together with the paragraphs it is
     // chained to when the group (those paragraphs and the first line of what
     // follows) does not fit below it but would fit in a fresh column.
-    let keepGroupMovesToNextColumn index (style: ParagraphStyle) (layout: BlockLayout) colBottom =
-        if style.KeepNext <> Some true || atColumnTop () then false
+    let keepGroupMovesToNextColumn index (style: ParagraphStyle) (paragraphMetadata: BlockMetadata) (layout: BlockLayout) colBottom =
+        if not (WordStyles.keepNext style paragraphMetadata) || atColumnTop () then false
         else
             let mutable groupHeight = paragraphVisibleFitHeight style layout
             let mutable probeY = layout.Y + layout.Height
@@ -4649,7 +4649,7 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
                     else
                         let nextLayout, _, _, _ =
                             layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) probeY 0.0 nextStyle (effectiveBufferInContext styleContext) nextPara counters [] []
-                        let keepsFurther = nextStyle.KeepNext = Some true
+                        let keepsFurther = WordStyles.keepNext nextStyle nextPara.Metadata
                         groupHeight <-
                             groupHeight
                             + (if keepsFurther then paragraphVisibleFitHeight nextStyle nextLayout
@@ -4695,7 +4695,7 @@ let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSett
                     if keepChecked || isContinuation then false
                     else
                         keepChecked <- true
-                        keepGroupMovesToNextColumn blockIndex style rawLayout colBottom
+                        keepGroupMovesToNextColumn blockIndex style para0.Metadata rawLayout colBottom
                 let layout =
                     if isContinuation then
                         // The list marker belongs to the first fragment only.

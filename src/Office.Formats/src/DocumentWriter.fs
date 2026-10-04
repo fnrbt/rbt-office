@@ -967,8 +967,13 @@ let private generateParaPropsWithPageSetup (packageSetup: PageSetupInfo) (para: 
         | _ when itemType = "Heading" && headingLevel >= 1 && headingLevel <= 3 ->
             yield selfClosing "w:pStyle" [("w:val", sprintf "Heading%d" headingLevel)]
         | _ -> ()
-        yield! onOff "w:keepNext" (para?StyleKeepNext)
-        yield! onOff "w:keepLines" (para?StyleKeepLines)
+        // The paragraph's own keepNext / keepLines. A paragraph object without
+        // direct-formatting information (HasExplicit) only has the effective
+        // value, under StyleKeepNext / StyleKeepLines.
+        let keepValue (direct: obj) (effective: obj) =
+            if boolOrDefault false (para?HasExplicit) || not (isNullOrUndefined direct) then direct else effective
+        yield! onOff "w:keepNext" (keepValue (para?KeepNext) (para?StyleKeepNext))
+        yield! onOff "w:keepLines" (keepValue (para?KeepLines) (para?StyleKeepLines))
         if boolOrDefault false (para?PageBreakBefore) then yield selfClosing "w:pageBreakBefore" []
         yield! onOff "w:widowControl" (para?WidowControl)
         if listStyle = "bullet" || listStyle = "numbered" then

@@ -1251,6 +1251,52 @@ check "keep-with-next takes the heading to the next column"
     (strandingFillers |> Option.map (fun fillers -> keepColumns fillers true))
     (Some (1, 1))
 
+// keepNext / keepLines set directly on the paragraph work like the style's.
+let directKeepDoc fillers keep =
+    { columnFlowDoc with
+        Blocks =
+            [ for index in 1 .. fillers -> Doc.Paragraph (fillerPara index) ]
+            @ [ Doc.Paragraph { paragraph "kn-head" "heading" with Metadata = { Doc.defaultMetadata with KeepNext = (if keep then Some true else None); SpacingAfter = Some 0.0 } }
+                Doc.Paragraph { paragraph "kn-body" "body" with Metadata = { Doc.defaultMetadata with SpacingAfter = Some 0.0 } } ] }
+let directKeepColumns fillers keep =
+    let layouts = layoutDocument flowSettings measureText (directKeepDoc fillers keep)
+    columnOfBlock layouts "kn-head", columnOfBlock layouts "kn-body"
+check "direct keep-with-next moves the heading to the next column"
+    (strandingFillers |> Option.map (fun fillers -> directKeepColumns fillers false, directKeepColumns fillers true))
+    (Some ((0, 1), (1, 1)))
+let pageOfBlock (layouts: BlockLayout list) id =
+    let layout = layouts |> List.find (fun layout -> layout.BlockId = id)
+    int (floor (layout.Lines.Head.Y / (pageHeight flowSettings + pageGap)))
+let directKeepPages fillers keep =
+    let layouts = layoutDocument flowSettings measureText { directKeepDoc fillers keep with PageSetup = flowPageSetup }
+    pageOfBlock layouts "kn-head", pageOfBlock layouts "kn-body"
+let strandingPageFillers = [ 1 .. 40 ] |> List.tryFind (fun fillers -> directKeepPages fillers false = (0, 1))
+check "a heading can be stranded at the foot of a page" strandingPageFillers.IsSome true
+check "direct keep-with-next takes the heading to the next page"
+    (strandingPageFillers |> Option.map (fun fillers -> directKeepPages fillers true))
+    (Some (1, 1))
+check "a paragraph can switch its style's keep-with-next off"
+    (Styles.keepNext { Styles.normal with KeepNext = Some true } { Doc.defaultMetadata with KeepNext = Some false },
+     Styles.keepNext { Styles.normal with KeepNext = Some true } Doc.defaultMetadata,
+     Styles.keepLines Styles.normal { Doc.defaultMetadata with KeepLines = Some true })
+    (false, true, true)
+// keepLines on the paragraph: it moves to the next page whole instead of splitting.
+let keepLinesText = String.concat " " [ for index in 1 .. 40 -> sprintf "word%02d" index ]
+let keepLinesDoc fillers keep =
+    { columnFlowDoc with
+        PageSetup = flowPageSetup
+        Blocks =
+            [ for index in 1 .. fillers -> Doc.Paragraph (fillerPara index) ]
+            @ [ Doc.Paragraph { paragraph "kl-para" keepLinesText with Metadata = { Doc.defaultMetadata with KeepLines = (if keep then Some true else None); SpacingAfter = Some 0.0; WidowControl = Some false } } ] }
+let keepLinesPages fillers keep =
+    let layout = layoutDocument { flowSettings with Width = 300.0 } measureText (keepLinesDoc fillers keep) |> List.find (fun layout -> layout.BlockId = "kl-para")
+    layout.Lines |> List.map (fun line -> int (floor (line.Y / (pageHeight flowSettings + pageGap)))) |> List.distinct
+let splittingFillers = [ 1 .. 40 ] |> List.tryFind (fun fillers -> keepLinesPages fillers false = [ 0; 1 ])
+check "a paragraph can split across pages" splittingFillers.IsSome true
+check "direct keep-lines keeps the paragraph on one page"
+    (splittingFillers |> Option.map (fun fillers -> keepLinesPages fillers true))
+    (Some [ 1 ])
+
 // ---------------------------------------------------------------------------
 // Sections with their own page size: painting from an existing layout pass
 // keeps the per-section page geometry instead of assuming uniform pages.

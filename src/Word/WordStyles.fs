@@ -556,6 +556,9 @@ let spacingAfter (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
     |> Option.defaultValue 10.7
 let lineSpacing (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.LineSpacing |> Option.orElse paragraphStyle.LineSpacing |> Option.defaultValue 1.0
 let lineSpacingRule (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule |> Option.defaultValue "auto"
+/// Keep with next / keep lines together: the paragraph's own setting, else its style's.
+let keepNext (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.KeepNext |> Option.orElse paragraphStyle.KeepNext |> Option.defaultValue false
+let keepLines (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.KeepLines |> Option.orElse paragraphStyle.KeepLines |> Option.defaultValue false
 let widowControl (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) = metadata.WidowControl |> Option.orElse paragraphStyle.WidowControl |> Option.defaultValue true
 
 let contextualSpacingBetween (paragraphStyle: ParagraphStyle) (current: ParagraphBlock) (next: ParagraphBlock option) =
@@ -563,16 +566,30 @@ let contextualSpacingBetween (paragraphStyle: ParagraphStyle) (current: Paragrap
     enabled && next |> Option.exists (fun value -> current.Metadata.Style.IsSome && current.Metadata.Style = value.Metadata.Style)
 
 let effectiveMetadata (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
-    { metadata with
-        Alignment =
-            // Left is also the unset value; ExplicitAlignment tells direct left
-            // (which must beat a centred style) from "inherit".
-            if metadata.ExplicitAlignment || metadata.Alignment <> Left then metadata.Alignment
-            else paragraphStyle.Alignment |> Option.defaultValue metadata.Alignment
-        IndentLeft = metadata.IndentLeft |> Option.orElse paragraphStyle.IndentLeft
-        IndentRight = metadata.IndentRight |> Option.orElse paragraphStyle.IndentRight
-        FirstLineIndent = metadata.FirstLineIndent |> Option.orElse paragraphStyle.FirstLineIndent
-        ContextualSpacing = metadata.ContextualSpacing |> Option.orElse paragraphStyle.ContextualSpacing
-        LineSpacingRule = metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule
-        WidowControl = metadata.WidowControl |> Option.orElse paragraphStyle.WidowControl
-        BackgroundColor = metadata.BackgroundColor |> Option.orElse paragraphStyle.BackgroundColor }
+    // Left is also the unset value; ExplicitAlignment tells direct left (which
+    // must beat a centred style) from "inherit".
+    let alignment =
+        if metadata.ExplicitAlignment || metadata.Alignment <> Left then metadata.Alignment
+        else paragraphStyle.Alignment |> Option.defaultValue metadata.Alignment
+    // Nothing to take from the style: the metadata is its own effective form
+    // (layout asks for this per paragraph, so no copy is made then).
+    let inline unchanged (own: 'a option) (styled: 'a option) = own.IsSome || styled.IsNone
+    if alignment = metadata.Alignment
+       && unchanged metadata.IndentLeft paragraphStyle.IndentLeft
+       && unchanged metadata.IndentRight paragraphStyle.IndentRight
+       && unchanged metadata.FirstLineIndent paragraphStyle.FirstLineIndent
+       && unchanged metadata.ContextualSpacing paragraphStyle.ContextualSpacing
+       && unchanged metadata.LineSpacingRule paragraphStyle.LineSpacingRule
+       && unchanged metadata.WidowControl paragraphStyle.WidowControl
+       && unchanged metadata.BackgroundColor paragraphStyle.BackgroundColor then
+        metadata
+    else
+        { metadata with
+            Alignment = alignment
+            IndentLeft = metadata.IndentLeft |> Option.orElse paragraphStyle.IndentLeft
+            IndentRight = metadata.IndentRight |> Option.orElse paragraphStyle.IndentRight
+            FirstLineIndent = metadata.FirstLineIndent |> Option.orElse paragraphStyle.FirstLineIndent
+            ContextualSpacing = metadata.ContextualSpacing |> Option.orElse paragraphStyle.ContextualSpacing
+            LineSpacingRule = metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule
+            WidowControl = metadata.WidowControl |> Option.orElse paragraphStyle.WidowControl
+            BackgroundColor = metadata.BackgroundColor |> Option.orElse paragraphStyle.BackgroundColor }

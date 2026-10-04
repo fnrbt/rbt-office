@@ -97,6 +97,8 @@ const docs = [
             { part: 'word/document.xml', has: '<w:vanish/>' }, { part: 'word/document.xml', has: '<w:dstrike/>' },
             { part: 'word/document.xml', has: '<w:u w:val="wave" w:color="FF0000"/>' }, { part: 'word/document.xml', has: '<w:bidi/>' },
             { part: 'word/document.xml', has: '<w:pBdr><w:top w:val="single" w:sz="8" w:space="1" w:color="FF0000"/>' },
+            // keepNext / keepLines set on the paragraph itself survive the save, once.
+            { part: 'word/document.xml', has: '<w:pPr><w:keepNext/><w:keepLines/>' }, { part: 'word/document.xml', lacks: '<w:keepNext/>.*<w:keepNext/>' },
         ],
     },
     {

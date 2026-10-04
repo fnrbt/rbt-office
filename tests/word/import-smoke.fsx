@@ -211,7 +211,19 @@ match explicitParas with
         (Rbt.Word.WordStyles.effectiveMetadata (Rbt.Word.WordStyles.forBlockInDocument explicitDoc (Paragraph para)) para.Metadata).Alignment
     check "native alignment flags" (styled.Metadata.ExplicitAlignment, left.Metadata.ExplicitAlignment) (false, true)
     check "native explicit left overrides centred style" (alignmentOf styled, alignmentOf left) (Center, Left)
+    // keepNext comes from the Loud style here, not from the paragraphs.
+    let styleOf (para: ParagraphBlock) = Rbt.Word.WordStyles.forBlockInDocument explicitDoc (Paragraph para)
+    check "native style keep-next is not direct" (styled.Metadata.KeepNext, Rbt.Word.WordStyles.keepNext (styleOf styled) styled.Metadata) (None, true)
 | other -> ok "native explicit paragraphs" false (sprintf "%d paragraphs" other.Length)
+
+let directKeepDoc =
+    syntheticDocx """<w:p><w:pPr><w:keepNext/><w:keepLines/></w:pPr><w:r><w:t>kept</w:t></w:r></w:p><w:p><w:pPr><w:keepNext w:val="0"/></w:pPr><w:r><w:t>not kept</w:t></w:r></w:p><w:p><w:r><w:t>plain</w:t></w:r></w:p>"""
+    |> DocxReader.loadBytesNative
+    |> Option.get
+    |> Rbt.Word.Import.importDoc
+check "native direct keepNext / keepLines"
+    (directKeepDoc.Blocks |> List.choose (function Paragraph para | Heading (_, para) -> Some (para.Metadata.KeepNext, para.Metadata.KeepLines) | _ -> None))
+    [ Some true, Some true; Some false, None; None, None ]
 
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

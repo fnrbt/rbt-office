@@ -131,6 +131,9 @@ type BlockMetadata = {
     LineSpacing: float option
     LineSpacingRule: string option
     WidowControl: bool option
+    /// w:keepNext / w:keepLines set directly on the paragraph (None = as the style says).
+    KeepNext: bool option
+    KeepLines: bool option
     BackgroundColor: string option
     ParagraphBorders: ParagraphBorders option
     ParagraphBorderBefore: float option
@@ -174,6 +177,8 @@ let defaultMetadata = {
     LineSpacing = None
     LineSpacingRule = None
     WidowControl = None
+    KeepNext = None
+    KeepLines = None
     BackgroundColor = None
     ParagraphBorders = None
     ParagraphBorderBefore = None

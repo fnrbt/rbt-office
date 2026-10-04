@@ -623,6 +623,8 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             LineSpacing = fixedLineSpacing |> Option.map fst |> Option.orElse editorPara.LineSpacing
             LineSpacingRule = rawProps.LineRule
             WidowControl = props.WidowControl
+            KeepNext = props.KeepNext
+            KeepLines = props.KeepLines
             BackgroundColor = color props.BackgroundColor
             ParagraphBorders = paraBorders props.ParagraphBorders
             ParagraphBorderBefore = resolvedParaProps.ParagraphBorders |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Top)

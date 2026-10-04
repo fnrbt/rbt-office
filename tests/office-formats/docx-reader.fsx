@@ -302,6 +302,26 @@ ok "editor-paragraph-explicit-alignment"
    (explicitAlignments = [ ("center", None); ("left", Some "left") ])
    (sprintf "%A" explicitAlignments)
 
+// ----- keepNext / keepLines: the paragraph's own vs. its style's ------------
+let keepDoc =
+    docxWithParts
+        "<w:p><w:pPr><w:pStyle w:val=\"Kept\"/></w:pPr><w:r><w:t>style keeps</w:t></w:r></w:p><w:p><w:pPr><w:keepNext/><w:keepLines w:val=\"0\"/></w:pPr><w:r><w:t>direct</w:t></w:r></w:p><w:p><w:pPr><w:pStyle w:val=\"Kept\"/><w:keepNext w:val=\"0\"/></w:pPr><w:r><w:t>switched off</w:t></w:r></w:p>"
+        [ "word/styles.xml", sprintf "<w:styles %s><w:style w:type=\"paragraph\" w:styleId=\"Kept\"><w:name w:val=\"Kept\"/><w:pPr><w:keepNext/></w:pPr></w:style></w:styles>" wNs ]
+        []
+    |> DocxReader.loadBytesNative |> Option.get
+let keepItems =
+    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+        keepDoc.Theme keepDoc.Content keepDoc.Images keepDoc.Styles keepDoc.NumberingDefinitions keepDoc.Footnotes keepDoc.Endnotes
+    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+let keepSummary =
+    keepItems
+    |> Array.map (fun item ->
+        (fieldOf "KeepNext" item :?> bool option), (fieldOf "KeepLines" item :?> bool option), (fieldOf "StyleKeepNext" item :?> bool option))
+    |> Array.toList
+ok "editor-paragraph-direct-keep"
+   (keepSummary = [ (None, None, Some true); (Some true, Some false, None); (Some false, None, Some true) ])
+   (sprintf "%A" keepSummary)
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

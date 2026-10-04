@@ -30,7 +30,7 @@ const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'List
     'IndentLeft', 'IndentRight', 'FirstLineIndent', 'SpacingBefore', 'SpacingAfter', 'LineSpacing', 'LineSpacingRule',
     'TabStops', 'Rtl', 'BackgroundColor', 'ParagraphBorders', 'PageBreakBefore', 'PageBreakAfter', 'SectionBreak',
     'SectionPageNumberStart', 'SectionPageSetup', 'SectionColumns', 'StyleContextualSpacing',
-    'ContentControlTag', 'ContentControlAlias'];
+    'ContentControlTag', 'ContentControlAlias', 'KeepNext', 'KeepLines'];
 const TABLE_KEYS = ['PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
     'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const ROW_KEYS = ['IsHeader', 'Height', 'HeightRule', 'CanSplit', 'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
