@@ -58,6 +58,7 @@ module Viewer =
     ///   clearTextMeasurer()            measure text as an editor with the same measurers does:
     ///                                  the viewer then has that editor's lines and pages
     ///   setTextPathPainter(painterFor) painterFor(context2d) gives the text painter for a canvas
+    ///   getRequiredFonts()             [{ family, bold, italic }]: the faces the loaded document is set in
     ///   getRenderStats()               { FrameBuilds, LaidOutBlocks, CollectedBlocks, CollectedOnPaint, Blocks,
     ///                                    PainterVersion, MeasurerVersion } - see API.getRenderStats
     ///   render(document)               paint a Document on the viewer's canvas (as before)
@@ -96,9 +97,19 @@ module Viewer =
         state?getPageCount <- fun () -> Ren.pageCount ctx (current ())
         state?getDocumentSize <- fun () -> documentSizeToJs ctx (current ())
         state?renderPage <- fun (target: HTMLCanvasElement) (pageIndex: int) (scale: float) -> Ren.renderPage ctx (current ()) target pageIndex scale
+        // The font faces the loaded document is set in: [{ family, bold, italic }].
+        state?getRequiredFonts <- fun () -> Ren.requiredFonts ctx (current ())
         // Counters of the viewer's renderer (as the editor's getRenderStats).
         state?getRenderStats <- fun () -> Ren.renderStats ctx (current ())
         state
+
+    /// The font faces an editor package's document is set in, before anything
+    /// is shown: [{ family, bold, italic }], after style resolution, with the
+    /// faces the engine itself uses (list markers in Symbol / Wingdings /
+    /// Courier New, notes). `import { getRequiredFonts } from '.../word/WordViewer.js'`
+    /// (the editor API has the same function, which also takes an editor).
+    let getRequiredFonts (package: obj) : obj array =
+        Ren.requiredFontsOfDocument (Docx.importFromEditorPackage package)
 
     /// `import createViewer from '.../word/WordViewer.js'`.
     [<ExportDefault>]

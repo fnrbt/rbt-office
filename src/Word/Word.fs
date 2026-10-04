@@ -521,6 +521,21 @@ module API =
     let getRenderStats (editor: Editor) =
         Ren.renderStats editor.Handler.RenderContext editor.Doc
 
+    /// The font faces a document's text is set in: [{ family, bold, italic }],
+    /// after style resolution, with the faces the engine itself introduces (a
+    /// list marker in Symbol, Wingdings or Courier New; note text; headers
+    /// and footers). `target` is an editor (its current document) or an
+    /// editor package (Office.Formats `forEditorPackage`) that is not shown
+    /// yet - so a host fetches exactly these faces before it installs its
+    /// measurers and loads the document.
+    let getRequiredFonts (target: obj) : obj array =
+        if isNull target then [||]
+        elif not (isNull (target?Handler)) then
+            let editor = unbox<Editor> target
+            Ren.requiredFonts editor.Handler.RenderContext editor.Doc
+        else
+            Ren.requiredFontsOfDocument (Docx.importFromEditorPackage target)
+
     let getCachedLayouts (editor: Editor) =
         Ren.cachedLayouts editor.Handler.RenderContext editor.Doc
 
@@ -2488,6 +2503,7 @@ module API =
             "clearTextPathPainter" ==> clearTextPathPainter
             "clearTextMeasurer" ==> clearTextMeasurer
             "getRenderStats" ==> getRenderStats
+            "getRequiredFonts" ==> getRequiredFonts
             "getCaretContext" ==> getCaretContext
             "moveToAdjacentTableCell" ==> moveToAdjacentTableCell
             "toggleTrackChanges" ==> toggleTrackChanges

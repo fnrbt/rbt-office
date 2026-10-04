@@ -203,6 +203,51 @@ check "selection format: line spacing and the space before / after"
     (spacedFormat.ParagraphLineSpacing, spacedFormat.ParagraphSpacingBefore, spacedFormat.ParagraphSpacingAfter)
     (Styles.Uniform (Some 1.5), Styles.Uniform 8.0, Styles.Uniform 16.0)
 
+// ---- the font faces a document is set in --------------------------------------
+// After style resolution, and with the faces the engine itself introduces:
+// the default family for text without one, the face of a list marker (the "o"
+// bullet in Courier New, symbol bullets in Symbol / Wingdings), note text,
+// headers and footers, table cells and text boxes.
+do
+    let styled (id: string) (text: string) (change: TextStyle -> TextStyle) : Doc.ParagraphBlock =
+        { Id = id; Buffer = TB.empty |> TB.insert 0 text |> TB.applyStyle 0 text.Length change; Metadata = Doc.defaultMetadata }
+    let bullet (id: string) (levelText: string) (level: int) : Doc.ParagraphBlock =
+        { paragraph id "item" with Metadata = { Doc.defaultMetadata with ListStyle = Doc.Bullet; ListLevel = level; ListId = Some "b"; ListLevelText = Some levelText } }
+    let noted : Doc.ParagraphBlock =
+        { Id = "noted"; Buffer = TB.empty |> TB.insert 0 "with a note x" |> TB.setNote 12 1 (Some "1") (Some "footnote") (Some "the note") |> TB.applyStyle 0 13 (fun style -> { style with FontFamily = Some "Georgia" }); Metadata = Doc.defaultMetadata }
+    let table = (Doc.insertTable 1 1 Doc.empty).Blocks |> List.pick (function Doc.Table table -> Some table | _ -> None)
+    let cellTable =
+        Doc.Table { table with Id = "t"; Rows = [ { table.Rows.Head with Cells = [ { table.Rows.Head.Cells.Head with Content = [ styled "cell" "in a cell" (fun style -> { style with FontFamily = Some "Verdana"; Italic = true }) ] } ] } ] }
+    let body =
+        [ Doc.Paragraph (paragraph "plain" "plain text")
+          Doc.Paragraph (styled "arial" "bold italic arial" (fun style -> { style with FontFamily = Some "Arial"; Bold = true; Italic = true }))
+          Doc.Paragraph { paragraph "mixed" "regular then bold" with Buffer = TB.empty |> TB.insert 0 "regular then bold" |> TB.applyStyle 13 4 (fun style -> { style with Bold = true }) }
+          Doc.Paragraph (bullet "b1" "\uF0B7" 1)
+          Doc.Paragraph (bullet "b2" "o" 2)
+          Doc.Paragraph (bullet "b3" "\uF0A7" 3)
+          Doc.Paragraph noted
+          cellTable ]
+    let doc = { Doc.empty with Blocks = body; Selection = None; Headers = [ styled "header" "a header" (fun style -> { style with FontFamily = Some "Tahoma" }) ] }
+    let faces = requiredFontFaces settings "Calibri" measureText measureRange doc None
+    let has face = List.contains face faces
+    check "text without a family: the default face" (has ("Calibri", false, false)) true
+    check "a run's family with its weight and slant" (has ("Arial", true, true), has ("Arial", false, false)) (true, false)
+    check "a bold run in a paragraph: the bold face too" (has ("Calibri", true, false)) true
+    check "the bullet in Symbol" (has ("Symbol", false, false)) true
+    check "the o bullet in Courier New" (has ("Courier New", false, false)) true
+    check "the square bullet in Wingdings" (has ("Wingdings", false, false)) true
+    check "the paragraph with a note, and the note's face" (has ("Georgia", false, false), faces |> List.exists (fun (family, _, _) -> family = "Calibri")) (true, true)
+    check "a table cell's text" (has ("Verdana", false, true)) true
+    check "the header's text" (has ("Tahoma", false, false)) true
+    check "each face once, in order" (faces = (faces |> List.distinct |> List.sort)) true
+    check "nothing else" (faces |> List.map (fun (family, _, _) -> family) |> List.distinct |> List.sort) [ "Arial"; "Calibri"; "Courier New"; "Georgia"; "Symbol"; "Tahoma"; "Verdana"; "Wingdings" ]
+    // From a layout pass that exists already: the same faces.
+    let layouts, pages = layoutDocumentPages settings measureText measureRange doc
+    check "with the layouts of a pass" (requiredFontFaces settings "Calibri" measureText measureRange doc (Some (layouts, pages))) faces
+    // Other measurers: the same faces.
+    let wide (text: string) (_style: TextStyle) = float text.Length * 13.0
+    check "whatever the measurers say" (requiredFontFaces settings "Calibri" wide (rangeMeasurerFromTextMeasurer wide) doc None) faces
+
 printfn ""
 printfn "Word command tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

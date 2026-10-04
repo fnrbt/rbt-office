@@ -276,16 +276,17 @@ let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.Tex
             width
     (width * font.Scale) + TextBuffer.characterSpacingAdvance text style
 
-let layoutSettings (ctx: RenderContext) (doc: Document) =
+/// The layout settings of a document for a base font size and line height.
+let layoutSettingsFor (fontSize: float) (lineHeight: float) (doc: Document) =
     let hasFooter = not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty
     let footerReserve =
-        if hasFooter then doc.PageSetup.FooterDistance + ctx.LineHeight * 1.5
+        if hasFooter then doc.PageSetup.FooterDistance + lineHeight * 1.5
         else doc.PageSetup.MarginBottom
     {
     Width = doc.PageSetup.PageWidth
     PageHeight = doc.PageSetup.PageHeight
-    FontSize = ctx.FontSize
-    LineHeight = ctx.LineHeight
+    FontSize = fontSize
+    LineHeight = lineHeight
     PaddingLeft = doc.PageSetup.MarginLeft
     PaddingTop = Rbt.Word.WordLayout.Page.bodyTopWithRunningHeader doc
     MarginRight = doc.PageSetup.MarginRight
@@ -294,6 +295,9 @@ let layoutSettings (ctx: RenderContext) (doc: Document) =
     TableContinuationHeaderHeight = 0.0
     LongTrailingSpaceFitSafety = 3.5
     }
+
+let layoutSettings (ctx: RenderContext) (doc: Document) =
+    layoutSettingsFor ctx.FontSize ctx.LineHeight doc
 
 let measureWithContext ctx text style =
     match ctx.TextMeasurer with
@@ -1361,6 +1365,29 @@ let renderPage (ctx: RenderContext) (doc: Document) (canvas: HTMLCanvasElement) 
         // (The target is a copy of the context: what it counted is the context's.)
         ctx.CollectedOnPaint <- target.CollectedOnPaint
         true
+
+let private fontFacesToJs (faces: (string * bool * bool) list) : obj array =
+    faces
+    |> List.map (fun (family, bold, italic) ->
+        Fable.Core.JsInterop.createObj [ "family", box family; "bold", box bold; "italic", box italic ])
+    |> List.toArray
+
+/// The font faces the document on a renderer is set in (see
+/// Paint.requiredFontFaces), as [{ family, bold, italic }], from the layout
+/// the renderer has.
+let requiredFonts (ctx: RenderContext) (doc: Document) : obj array =
+    let layouts, pages = layoutDocumentWithPages ctx doc
+    Rbt.Word.Layout.withTablePlanScope ctx.PlanScope (fun () ->
+        requiredFontFaces (layoutSettings ctx doc) ctx.FontFamily (measureWithContext ctx) (measureRangeWithContext ctx) doc (Some (layouts, pages)))
+    |> fontFacesToJs
+
+/// The font faces a document is set in, without a renderer: before a host
+/// has fonts to measure with. (Which faces are used does not depend on the
+/// measurements.)
+let requiredFontsOfDocument (doc: Document) : obj array =
+    let measureText (text: string) (style: TextBuffer.TextStyle) = float text.Length * style.FontSize * 0.5
+    requiredFontFaces (layoutSettingsFor 16.0 24.0 doc) "Calibri" measureText (rangeMeasurerFromTextMeasurer measureText) doc None
+    |> fontFacesToJs
 
 /// Counters of a renderer, for hosts and checks (see API.getRenderStats).
 let renderStats (ctx: RenderContext) (doc: Document) : obj =

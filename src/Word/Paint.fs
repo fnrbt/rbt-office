@@ -2746,6 +2746,45 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
 let collectDocumentChunks (cache: PaintCache) (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (slices: LayoutSlices) (pages: PageInfo list) : PaintChunk array option =
     collectDocumentChunksWith true cache settings fontFamily measureText measureRange doc slices pages
 
+/// The font faces a document's text is set in, after styles are resolved:
+/// (family, bold, italic) of every run of the body, of table cells, text
+/// boxes, footnotes and endnotes, of headers and footers, and of what the
+/// engine itself sets in a face of its own - a list marker (the "o" bullet in
+/// Courier New, symbol bullets in Symbol / Wingdings), a note's text. Text
+/// without a family of its own is in `defaultFamily`. A host fetches exactly
+/// these faces before it measures and paints the document.
+/// `known`: the layouts and pages of a pass over the document, when there is
+/// one; otherwise the document is laid out here (the faces do not depend on
+/// what the measurers say).
+let requiredFontFaces (settings: LayoutSettings) (defaultFamily: string) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (known: (BlockLayout list * PageInfo list) option) : (string * bool * bool) list =
+    let faces = HashSet<string * bool * bool>()
+    let add (family: string option) (bold: bool) (italic: bool) =
+        let family = family |> Option.filter (fun name -> name.Trim() <> "") |> Option.defaultValue defaultFamily
+        faces.Add ((family, bold, italic)) |> ignore
+    let layouts, pages =
+        match known with
+        | Some (layouts, pages) -> layouts, pages
+        | None -> layoutDocumentPages settings measureText measureRange doc
+    // The lines of the body, of table cells and of the note areas: every run, whitespace too
+    // (it is measured in its face), and the list markers.
+    for layout in layouts do
+        match layout.PrefixStyle with
+        | Some style when layout.Prefix <> "" -> add style.FontFamily style.Bold style.Italic
+        | _ -> ()
+        for line in layout.Lines do
+            for segment in line.Segments do
+                match segment with
+                | TextSegment (_, style, _, _, _) -> add style.FontFamily style.Bold style.Italic
+                | MathSegment (_, style, _, _, _, _, _, _) -> add style.FontFamily style.Bold style.Italic
+                | ImageSegment _ -> ()
+    // What is painted besides: headers and footers, text boxes, markers.
+    let _, commands, _ = collectDocumentCommandsWithLayoutsAndPages settings defaultFamily measureText measureRange doc layouts pages
+    for command in commands do
+        match command with
+        | DrawText (_, style, _, _, _) -> add style.FontFamily style.Bold style.Italic
+        | _ -> ()
+    faces |> Seq.toList |> List.sort
+
 let private layoutListLookup (layouts: BlockLayout list) =
     fun blockId ->
         layouts |> List.tryFind (fun l -> l.BlockId = blockId)
