@@ -84,6 +84,28 @@ check "if-false"       "=IF(A1>100,1,2)"       (n 2.0)
 check "if-nested"      "=IF(A1>5,IF(B1>5,1,2),3)" (n 2.0)
 check "sum-of-func"    "=SUM(A1:A2)+B1"  (n 33.0)
 
+// Unary plus is a no-op: it does not coerce its operand. A3 = "hi", A4 = TRUE.
+check "plus-text-cell"     "=+A3"            (s "hi")
+check "plus-text-abs"      "=+$A$3"          (s "hi")
+check "plus-text-literal"  "=+\"abc\""       (s "abc")
+check "plus-number"        "=+A1"            (n 10.0)
+check "plus-boolean"       "=+A4"            (b true)
+check "plus-plus-text"     "=++A3"           (s "hi")
+check "plus-then-concat"   "=+A3&\"!\""      (s "hi!")
+check "plus-error"         "=+(1/0)"         (e "DIV/0!")
+check "plus-in-sum"        "=SUM(+A1,+A2)"   (n 30.0)
+check "plus-blank-is-ref"  "=+Z99"           (evaluateFormula "=Z99" model None)
+// Unary minus and percent coerce: numeric text converts, other text is #VALUE!.
+check "minus-text-cell"    "=-A3"            (e "VALUE!")
+check "minus-numeric-text" "=-\"5\""         (n -5.0)
+check "minus-boolean"      "=-A4"            (n -1.0)
+check "minus-blank"        "=-Z99"           (n 0.0)
+check "percent-text"       "=A3%"            (e "VALUE!")
+check "percent-num-text"   "=\"50\"%"        (n 0.5)
+check "percent-boolean"    "=A4%"            (n 0.01)
+check "minus-plus-text"    "=-+A3"           (e "VALUE!")
+check "plus-minus-number"  "=+-A1"           (n -10.0)
+
 printfn ""
 printfn "Stage 1 formula tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

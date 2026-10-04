@@ -3638,7 +3638,10 @@ let arithmeticArrayNonBlankCount model workbook e =
 let applyUnary (op: string) (v: CellValue) : CellValue =
     match op with
     | "-" -> (match coerceNumber v with Ok n -> CellValue.Number (-n) | Result.Error e -> err e)
-    | "+" -> (match coerceNumber v with Ok n -> CellValue.Number n | Result.Error e -> err e)
+    // Unary plus does nothing at all: it does not coerce, so text stays text
+    // and TRUE stays TRUE (`=+A1` is how Lotus-style formulas are typed).
+    // Minus and percent do coerce: numeric text converts, other text is #VALUE!.
+    | "+" -> v
     | "%" -> (match coerceNumber v with Ok n -> CellValue.Number (n / 100.0) | Result.Error e -> err e)
     | _ -> err Err.value
 

@@ -268,6 +268,54 @@ let circularFallback =
         (oneSheetWb circularInitial)
 ok "incremental-cycle-fallback" circularFallback "circular chain should force full recalc"
 
+// --- Unary plus on text survives recalculation ---------------------------
+// `=+$D$5` where D5 holds text shows the text (unary plus does not coerce),
+// through a whole-workbook recalculation and through the incremental engine,
+// same sheet and across sheets.
+let plusWb =
+    let data =
+        { createEmpty 100 26 with
+            Cells =
+                Map.ofList
+                    [ { Row = 4; Col = 3 }, cell (CellValue.String "Units:")
+                      { Row = 5; Col = 3 }, cell (CellValue.Number 7.0)
+                      { Row = 0; Col = 0 }, cell (CellValue.Formula ("=+$D$5", CellValue.String "Units:"))
+                      { Row = 1; Col = 0 }, cell (CellValue.Formula ("=+D6", CellValue.Number 7.0))
+                      { Row = 2; Col = 0 }, cell (CellValue.Formula ("=-D5", CellValue.Empty)) ] }
+    let other =
+        { createEmpty 100 26 with
+            Cells = Map.ofList [ { Row = 0; Col = 0 }, cell (CellValue.Formula ("+Data!$D$5", CellValue.String "Units:")) ] }
+    { Sheets =
+        Map.ofList
+            [ "sheet1", { Id = "sheet1"; Name = "Data"; Model = data; Visible = true }
+              "sheet2", { Id = "sheet2"; Name = "Other"; Model = other; Visible = true } ]
+      SheetOrder = [ "sheet1"; "sheet2" ]
+      ActiveSheet = "sheet1"
+      Tables = Map.empty
+      Names = Map.empty }
+let plusA1 = { Sheet = "sheet1"; Cell = { Row = 0; Col = 0 } }
+let plusA2 = { Sheet = "sheet1"; Cell = { Row = 1; Col = 0 } }
+let plusA3 = { Sheet = "sheet1"; Cell = { Row = 2; Col = 0 } }
+let plusOther = { Sheet = "sheet2"; Cell = { Row = 0; Col = 0 } }
+let plusFull = recalculateWorkbook plusWb
+ok "unary-plus-text-full-recalc" (readWb plusA1 plusFull = CellValue.String "Units:") (sprintf "A1 = %A" (readWb plusA1 plusFull))
+ok "unary-plus-number-full-recalc" (readWb plusA2 plusFull = CellValue.Number 7.0) (sprintf "A2 = %A" (readWb plusA2 plusFull))
+ok "unary-minus-text-full-recalc" (readWb plusA3 plusFull = CellValue.Error "VALUE!") (sprintf "A3 = %A" (readWb plusA3 plusFull))
+ok "unary-plus-text-xsheet-full-recalc" (readWb plusOther plusFull = CellValue.String "Units:") (sprintf "Other!A1 = %A" (readWb plusOther plusFull))
+let plusEngine =
+    emptyEngine
+    |> buildDependencies plusA1 "=+$D$5" plusWb
+    |> buildDependencies plusA2 "=+D6" plusWb
+    |> buildDependencies plusA3 "=-D5" plusWb
+    |> buildDependencies plusOther "+Data!$D$5" plusWb
+    |> rebuildCalcChain plusWb
+let plusD5 = { Sheet = "sheet1"; Cell = { Row = 4; Col = 3 } }
+let plusEdited, plusEngine1 = updateCell plusD5 (CellValue.String "Suites:") (cell (CellValue.String "Units:")) plusWb plusEngine
+let plusIncremental, _ = smartRecalculate plusEdited plusEngine1
+ok "unary-plus-text-incremental" (readWb plusA1 plusIncremental = CellValue.String "Suites:") (sprintf "A1 = %A" (readWb plusA1 plusIncremental))
+ok "unary-plus-text-xsheet-incremental" (readWb plusOther plusIncremental = CellValue.String "Suites:") (sprintf "Other!A1 = %A" (readWb plusOther plusIncremental))
+ok "unary-minus-text-incremental" (readWb plusA3 plusIncremental = CellValue.Error "VALUE!") (sprintf "A3 = %A" (readWb plusA3 plusIncremental))
+
 printfn ""
 printfn "Stage 5 calc-engine tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
