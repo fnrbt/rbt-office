@@ -859,6 +859,12 @@ type SpreadsheetModel = {
     /// removed sheets, so a save can carry over what the editor does not
     /// model. None for a sheet made in the editor.
     SourceSheet: SheetOrigin option
+
+    /// Counts the row / column insertions and deletions the sheet has seen
+    /// (an undo brings the earlier count back). What is kept of a file by
+    /// cell reference without being modelled (sparklines, x14 conditional
+    /// formats) is only written back while this is what it was at import.
+    StructureVersion: int
 }
 
 /// Command for undo/redo (must come after SpreadsheetModel)
@@ -921,6 +927,7 @@ let createEmpty rowCount colCount = {
     DataTables = []
     KeptRanges = []
     SourceSheet = None
+    StructureVersion = 0
 }
 
 /// Convert column index to letter (0="A", 25="Z", 26="AA")
@@ -2112,6 +2119,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
 
     let delta = if isInsert then count else -count
     { model with
+        StructureVersion = model.StructureVersion + 1
         Hyperlinks = hyperlinks
         KeptRanges = keptRanges
         DataTables = dataTables

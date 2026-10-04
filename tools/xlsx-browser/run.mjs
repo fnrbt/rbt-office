@@ -164,11 +164,14 @@ try {
                 }
             }
             lines.push(...pageErrors.splice(0).map((message) => 'FAIL page error: ' + message));
+            // Every workbook the check exported went through the package-integrity check (component.js).
+            try { lines.push(...[...new Set(await componentTab.evaluate('window.exportProblems.splice(0)'))].map((message) => 'FAIL exported package: ' + message)); } catch { /* the page is gone */ }
             const bad = lines.filter((line) => !line.startsWith('ok'));
             console.log(`${bad.length === 0 ? 'ok  ' : 'FAIL'} ${name}  (${lines.length - bad.length} passed, ${bad.length} failed)`);
             for (const line of (verbose ? lines : bad)) console.log('     ' + line);
             if (bad.length) failed++;
         }
+            try { console.log(`(${await componentTab.evaluate('window.exportsChecked')} exported workbooks checked for package integrity)`); } catch { /* the page is gone */ }
     }
 } finally { await browser.close(); server.close(); }
 console.log(failed === 0 ? `\nXLSX BROWSER CHECKS: ALL PASSED (${only && only !== 'roundtrip' ? 0 : fixtures.size} workbooks round-tripped with ${pictures} pictures and ${charts} charts, ${componentChecks} component checks)` : `\nXLSX BROWSER CHECKS: ${failed} FAILED`);

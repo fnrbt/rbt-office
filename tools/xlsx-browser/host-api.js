@@ -231,3 +231,57 @@ checks['revision'] = async () => {
     close();
     return lines;
 };
+
+// ExportXlsx keeps the document properties, printer settings (with the pageSetup r:id), the
+// calculation chain (only while the formula cells are where they were) and the x14 extensions
+// of sheets that were not restructured; what belonged to a removed sheet is not left behind.
+// (Every export here also goes through the package-integrity check of component.js.)
+checks['export-package-parts'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    const partsIn = async (bytes) => { const zip = await window.JSZip.loadAsync(bytes); const out = {}; for (const [path, file] of Object.entries(zip.files)) if (!file.dir && !/^xl\/(media|pivotCache\/pivotCacheRecords|worksheets\/sheet8)/.test(path)) out[path] = await file.async('string'); return out; };
+    try {
+        const { packageProblems } = await import('/component.js');
+        const original = await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx');
+        const before = await partsIn(original);
+        check('the fixture itself is whole', await packageProblems(original), []);
+        await grid.ImportXlsx(original);
+        grid.EnterText(40, 0, 'edited');
+        let after = await partsIn(await grid.ExportXlsx());
+        for (const part of ['docProps/core.xml', 'docProps/app.xml', 'xl/printerSettings/printerSettings1.bin', 'xl/calcChain.xml'])
+            check(`a value edit: ${part} is carried over`, after[part] === before[part] && after[part] !== undefined, true);
+        check('the package relationships name the properties', ['docProps/core.xml', 'docProps/app.xml', 'xl/workbook.xml'].every((target) => after['_rels/.rels'].includes(target)), true);
+        const dataIndex = grid.GetSheetNames().indexOf('Data') + 1;
+        const relId = (/<pageSetup[^>]*\sr:id="([^"]*)"/.exec(await (await window.JSZip.loadAsync(await grid.ExportXlsx())).files[`xl/worksheets/sheet${dataIndex}.xml`].async('string')) ?? [])[1];
+        check('pageSetup names the printer settings by a relationship of the sheet', new RegExp(`Id="${relId}"[^>]*printerSettings1\\.bin`).test(after[`xl/worksheets/_rels/sheet${dataIndex}.xml.rels`]), true);
+        check('x14 conditional formats of an untouched sheet are kept', [(after['xl/worksheets/sheet1.xml'].match(/<x14:cfRule\b/g) ?? []).length > 0, (after['xl/worksheets/sheet1.xml'].match(/<x14:cfRule\b/g) ?? []).length], [true, (before['xl/worksheets/sheet1.xml'].match(/<x14:cfRule\b/g) ?? []).length]);
+        // A formula added: Excel rebuilds the chain; its relationship and content type go with it.
+        grid.EnterText(41, 0, '=1+1');
+        after = await partsIn(await grid.ExportXlsx());
+        check('a formula added: no calcChain part, relationship or content type', [after['xl/calcChain.xml'] === undefined, /calcChain/.test(after['xl/_rels/workbook.xml.rels']), /calcChain/.test(after['[Content_Types].xml'])], [true, false, false]);
+        check('the properties and printer settings stay', [after['docProps/core.xml'] === before['docProps/core.xml'], after['xl/printerSettings/printerSettings1.bin'] !== undefined], [true, true]);
+        grid.Undo();
+        after = await partsIn(await grid.ExportXlsx());
+        check('undone: the chain is kept again', after['xl/calcChain.xml'] === before['xl/calcChain.xml'], true);
+        // Rows inserted in the first sheet: its x14 formats would be stale.
+        grid.InsertRows(2, 2);
+        after = await partsIn(await grid.ExportXlsx());
+        check('rows inserted: the x14 formats of that sheet are not written stale', /x14:conditionalFormattings/.test(after['xl/worksheets/sheet1.xml']), false);
+        grid.Undo();
+        // The Data sheet removed by the host.
+        const sheets = grid.GetSheets(), names = grid.GetSheetNames();
+        const keep = names.map((_, i) => i).filter((i) => names[i] !== 'Data');
+        grid.InstallWorkbook(keep.map((i) => sheets[i]), keep.map((i) => names[i]), 0, undefined);
+        after = await partsIn(await grid.ExportXlsx());
+        check('a removed sheet: its printer settings are not left in the package', [after['xl/printerSettings/printerSettings1.bin'] === undefined, /printerSettings/.test(after['[Content_Types].xml'].replace(/<Default[^>]*>/g, ''))], [true, false]);
+        check('the document properties stay', after['docProps/app.xml'] === before['docProps/app.xml'], true);
+        // Custom properties.
+        const custom = await bytesOf('tests/real-world/milk-street-office.xlsx');
+        await grid.ImportXlsx(custom);
+        const customBefore = await partsIn(custom);
+        after = await partsIn(await grid.ExportXlsx());
+        check('custom properties and several printer settings', ['docProps/custom.xml', 'docProps/core.xml', 'docProps/app.xml', 'xl/printerSettings/printerSettings1.bin', 'xl/printerSettings/printerSettings2.bin', 'xl/calcChain.xml'].map((part) => after[part] === customBefore[part] && after[part] !== undefined), [true, true, true, true, true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

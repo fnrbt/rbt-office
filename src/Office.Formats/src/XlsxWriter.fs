@@ -1396,9 +1396,14 @@ let private pagePartsXml (sheet: XlsxSheetOut) =
                 match p.PageOrder with Some po -> yield attr "pageOrder" po | None -> ()
                 if p.BlackAndWhite then yield "blackAndWhite=\"1\""
                 match p.CellComments with Some cc -> yield attr "cellComments" cc | None -> ()
+                // The printer settings part of the file the sheet came from.
+                match sheet.Extras.PrinterSettingsRelId with Some id -> yield attr "r:id" id | None -> ()
             ]
             sprintf "<pageSetup %s/>" (String.concat " " attrs))
-        |> Option.defaultValue ""
+        |> Option.defaultWith (fun () ->
+            match sheet.Extras.PrinterSettingsRelId with
+            | Some id -> sprintf "<pageSetup %s/>" (attr "r:id" id)
+            | None -> "")
     let headerFooter =
         sheet.HeaderFooter
         |> Option.map (fun h ->
@@ -1577,7 +1582,9 @@ let private worksheetXml (styles: StyleBook) sharedIndex sheetIndex active (shee
     + (if sheet.Cells |> List.exists (fun c -> c.Comment.IsSome) then sprintf "<legacyDrawing r:id=\"rIdCommentsVml%d\"/>" sheetIndex else "")
     + tablePartsXml sheet.Tables.Length
     // The slicer list (and other kept extensions) of the file the sheet came from.
-    + (if sheet.Extras.KeptExtensions.IsEmpty then "" else "<extLst>" + String.concat "" sheet.Extras.KeptExtensions + "</extLst>")
+    + (match sheet.Extras.KeptCellExtensions @ sheet.Extras.KeptExtensions with
+       | [] -> ""
+       | extensions -> "<extLst>" + String.concat "" extensions + "</extLst>")
     + "</worksheet>"
 
 let private commentsXml (cells: XlsxCellOut list) =
@@ -1668,7 +1675,7 @@ let private sheetRelsXml sheetIndex (sheet: XlsxSheetOut) firstTableId =
 /// The relationship id of each sheet in workbook.xml.rels: rId<n>, unless a
 /// kept relationship of the workbook (a pivot cache, an external link) has it.
 let private sheetRelationshipIds (workbook: XlsxWorkbookOut) : string list =
-    let taken = workbook.Preserved.WorkbookRelationships |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
+    let taken = workbook.Preserved.WorkbookRelationships @ Option.toList workbook.Preserved.CalcChain |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
     workbook.Sheets
     |> List.mapi (fun i _ ->
         let plain = sprintf "rId%d" (i + 1)
@@ -1765,12 +1772,12 @@ let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) hasVba (themePath: s
         | None -> ()
         if hasPersons then yield "<Relationship Id=\"rIdPersons\" Type=\"http://schemas.microsoft.com/office/2017/10/relationships/person\" Target=\"/xl/persons/person.xml\"/>"
         // Pivot caches, slicer caches and external links, under the ids workbook.xml names them by.
-        for relId, relType, target, isExternal in workbook.Preserved.WorkbookRelationships do
+        for relId, relType, target, isExternal in workbook.Preserved.WorkbookRelationships @ Option.toList workbook.Preserved.CalcChain do
             yield sprintf "<Relationship %s %s %s%s/>" (attr "Id" relId) (attr "Type" relType) (attr "Target" target) (if isExternal then " TargetMode=\"External\"" else "")
     ]
     sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" baseRels)
 
-let private contentTypesXmlFull (workbook: XlsxWorkbookOut) =
+let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (keptParts: (string * byte[]) list) =
     let hasVba = workbook.VbaProjectSource |> Option.exists hasText
     let workbookType =
         if hasVba then "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
@@ -1796,7 +1803,7 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) =
             else "")
         |> String.concat ""
     // Pictures, the kept parts (charts, theme, embedded data) and threaded comments.
-    let keptPaths = workbook.Preserved.Parts |> List.map (fun (path, _) -> ("/" + path).ToLowerInvariant()) |> Set.ofList
+    let keptPaths = keptParts |> List.map (fun (path, _) -> ("/" + path).ToLowerInvariant()) |> Set.ofList
     let ownDefaults =
         [ yield "rels", "application/vnd.openxmlformats-package.relationships+xml"
           yield "xml", "application/xml"
@@ -1832,9 +1839,63 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) =
     + sheetOverrides + tableOverrides + comments + extraOverrides
     + "</Types>"
 
-let private rootRelsXmlFull =
-    sprintf "%s\n<Relationships xmlns=\"%s\"><Relationship Id=\"rId1\" Type=\"%s\" Target=\"xl/workbook.xml\"/></Relationships>"
-        declaration Namespaces.relationshipsPackage RelationshipTypes.officeDocument
+/// The package relationships: the workbook, and the document properties kept from the opened file.
+let private rootRelsXmlFull (workbook: XlsxWorkbookOut) =
+    let kept = workbook.Preserved.RootRelationships
+    let mainId = if kept |> List.exists (fun (id, _, _, _) -> id = "rId1") then "rIdWorkbook" else "rId1"
+    let keptXml =
+        kept
+        |> List.map (fun (relId, relType, target, _) -> sprintf "<Relationship %s %s %s/>" (attr "Id" relId) (attr "Type" relType) (attr "Target" (target.TrimStart '/')))
+        |> String.concat ""
+    sprintf "%s\n<Relationships xmlns=\"%s\"><Relationship Id=\"%s\" Type=\"%s\" Target=\"xl/workbook.xml\"/>%s</Relationships>"
+        declaration Namespaces.relationshipsPackage mainId RelationshipTypes.officeDocument keptXml
+
+let private relationshipTargetPattern = System.Text.RegularExpressions.Regex("<Relationship\\b[^>]*>")
+
+/// The kept parts that something written still refers to: those the written
+/// relationships name, and what those parts' own relationships lead to. A
+/// part of a sheet that was removed (its pivot table, its printer settings,
+/// the chart of its drawing) is left out rather than written as an orphan.
+let private reachableKeptParts (workbook: XlsxWorkbookOut) (themePath: string option) : (string * byte[]) list =
+    let parts = System.Collections.Generic.Dictionary<string, byte[]>()
+    for path, data in workbook.Preserved.Parts do parts.[path] <- data
+    let seen = System.Collections.Generic.HashSet<string>()
+    let pending = System.Collections.Generic.Queue<string>()
+    let want (target: string) (isExternal: bool) =
+        if not isExternal && not (target.StartsWith "#") then pending.Enqueue (ZipInterop.normalizePath target)
+    for sheet in workbook.Sheets do
+        for _, _, target, isExternal in sheet.Extras.KeptRelationships do want target isExternal
+        if hasDrawing sheet then
+            for _, _, target, isExternal in sheet.Extras.DrawingRelationships do want target isExternal
+    for _, _, target, isExternal in workbook.Preserved.WorkbookRelationships @ Option.toList workbook.Preserved.CalcChain @ workbook.Preserved.RootRelationships do
+        want target isExternal
+    match themePath with Some path -> pending.Enqueue path | None -> ()
+    let directoryOf (path: string) = match path.LastIndexOf '/' with -1 -> "" | at -> path.Substring(0, at)
+    while pending.Count > 0 do
+        let path = pending.Dequeue()
+        if parts.ContainsKey path && seen.Add path then
+            let directory = directoryOf path
+            let relsPath = (if directory = "" then "" else directory + "/") + "_rels/" + path.Substring(if directory = "" then 0 else directory.Length + 1) + ".rels"
+            match parts.TryGetValue relsPath with
+            | true, relsData ->
+                seen.Add relsPath |> ignore
+                let relsText = System.Text.Encoding.UTF8.GetString relsData
+                for m in relationshipTargetPattern.Matches relsText |> Seq.cast<System.Text.RegularExpressions.Match> do
+                    let tag = m.Value
+                    let attribute (name: string) =
+                        let key = " " + name + "=\""
+                        let at = tag.IndexOf key
+                        if at < 0 then None
+                        else
+                            let start = at + key.Length
+                            let close = tag.IndexOf ('"', start)
+                            if close < 0 then None else Some (tag.Substring(start, close - start))
+                    match attribute "Target" with
+                    | Some target when attribute "TargetMode" <> Some "External" ->
+                        pending.Enqueue (ZipInterop.resolveTarget directory (target.Replace("&amp;", "&")))
+                    | _ -> ()
+            | _ -> ()
+    workbook.Preserved.Parts |> List.filter (fun (path, _) -> seen.Contains path)
 
 let private workbookFiles (workbook: XlsxWorkbookOut) =
     let styles = collectStyles workbook
@@ -1842,16 +1903,17 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     let hasVba = workbook.VbaProjectSource |> Option.exists hasText
     let mutable tableId = 1
     let textFiles = ResizeArray<PackageFile>()
-    textFiles.Add { Path = "[Content_Types].xml"; Content = contentTypesXmlFull workbook }
-    textFiles.Add { Path = "_rels/.rels"; Content = rootRelsXmlFull }
+    // The theme stays only if its part was kept.
+    let themePath = workbook.Preserved.ThemePath |> Option.filter (fun path -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
+    let keptParts = reachableKeptParts workbook themePath
+    textFiles.Add { Path = "[Content_Types].xml"; Content = contentTypesXmlFull workbook keptParts }
+    textFiles.Add { Path = "_rels/.rels"; Content = rootRelsXmlFull workbook }
     textFiles.Add { Path = "xl/workbook.xml"; Content = workbookXmlFull workbook }
     let persons = personsOf workbook
     let hasThreads = workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty)
-    // The theme stays only if its part was kept.
-    let themePath = workbook.Preserved.ThemePath |> Option.filter (fun path -> workbook.Preserved.Parts |> List.exists (fun (kept, _) -> kept = path))
     textFiles.Add { Path = "xl/_rels/workbook.xml.rels"; Content = workbookRelsXmlFull workbook hasVba themePath hasThreads }
     if hasThreads then textFiles.Add { Path = "xl/persons/person.xml"; Content = personsXml persons }
-    let keptPartPaths = workbook.Preserved.Parts |> List.map fst |> Set.ofList
+    let keptPartPaths = keptParts |> List.map fst |> Set.ofList
     let mediaFiles = ResizeArray<string * byte[]>()
     let mutable nextMedia = 1
     textFiles.Add { Path = "xl/styles.xml"; Content = stylesXml styles }
@@ -1906,7 +1968,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
          | _ -> [])
         @ List.ofSeq mediaFiles
         // Kept parts go back as they were, unless the writer produced a part of that name.
-        @ (workbook.Preserved.Parts |> List.filter (fun (path, _) -> not (Set.contains path written)))
+        @ (keptParts |> List.filter (fun (path, _) -> not (Set.contains path written)))
     textFiles |> Seq.toList, binaryFiles
 
 let writeWorkbookPackage (workbook: XlsxWorkbookOut) : Fable.Core.JS.Promise<obj> =

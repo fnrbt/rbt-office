@@ -3,8 +3,61 @@
 // "ok ..." / "FAIL ..." lines.
 const main = await import('/office-formats/src/Main.js');
 export const OF = typeof main.default === 'function' ? main.default() : main.default;
-const { default: createSpreadsheet } = await import('/spreadsheet/Spreadsheet.js');
-export { createSpreadsheet };
+const { default: createRawSpreadsheet } = await import('/spreadsheet/Spreadsheet.js');
+
+// What is wrong with a written package: a relationship whose target is not in it, a part
+// without a content type, a content type for a part that is not there, a part nothing leads to.
+export const packageProblems = async (bytes) => {
+    const zip = await window.JSZip.loadAsync(bytes), problems = [];
+    const paths = Object.keys(zip.files).filter((path) => !zip.files[path].dir), has = new Set(paths);
+    const attribute = (tag, name) => { const m = new RegExp('\\s' + name + '="([^"]*)"').exec(tag); return m ? m[1].replace(/&amp;/g, '&') : null; };
+    const types = has.has('[Content_Types].xml') ? await zip.files['[Content_Types].xml'].async('string') : '';
+    const defaults = new Set([...types.matchAll(/<Default\b[^>]*>/g)].map((m) => (attribute(m[0], 'Extension') ?? '').toLowerCase()));
+    const overrides = [...types.matchAll(/<Override\b[^>]*>/g)].map((m) => (attribute(m[0], 'PartName') ?? '').replace(/^\//, ''));
+    for (const path of overrides) if (!has.has(path)) problems.push('content type for a missing part: ' + path);
+    if (new Set(overrides).size !== overrides.length) problems.push('a part has two content types');
+    const overridden = new Set(overrides), reached = new Set();
+    const resolve = (base, target) => {
+        const out = [];
+        for (const segment of (target.startsWith('/') || base === '' ? target : base + '/' + target).split('/')) { if (segment === '..') out.pop(); else if (segment !== '' && segment !== '.') out.push(segment); }
+        return out.join('/');
+    };
+    for (const path of paths) {
+        if (path.endsWith('.rels')) {
+            const directory = path.slice(0, Math.max(0, path.lastIndexOf('/'))), ownerDirectory = directory.replace(/\/?_rels$/, '');
+            const owner = (ownerDirectory ? ownerDirectory + '/' : '') + path.slice(path.lastIndexOf('/') + 1).replace(/\.rels$/, '');
+            if (owner !== '' && !has.has(owner)) problems.push('relationships of a missing part: ' + path);
+            const ids = new Set();
+            for (const m of (await zip.files[path].async('string')).matchAll(/<Relationship\b[^>]*>/g)) {
+                const id = attribute(m[0], 'Id');
+                if (ids.has(id)) problems.push(`${path}: relationship id ${id} twice`);
+                ids.add(id);
+                if (attribute(m[0], 'TargetMode') === 'External') continue;
+                const target = resolve(ownerDirectory, attribute(m[0], 'Target') ?? '');
+                reached.add(target);
+                if (!has.has(target)) problems.push(`${path}: target ${target} is missing`);
+            }
+        } else if (path !== '[Content_Types].xml') {
+            const extension = path.includes('.') ? path.slice(path.lastIndexOf('.') + 1).toLowerCase() : '';
+            if (!overridden.has(path) && !defaults.has(extension)) problems.push('no content type: ' + path);
+        }
+    }
+    for (const path of paths) if (!path.endsWith('.rels') && path !== '[Content_Types].xml' && !reached.has(path)) problems.push('orphan: ' + path);
+    return problems;
+};
+// Every workbook a check exports is checked for integrity; run.mjs reports the problems with the check.
+window.exportProblems = [];
+window.exportsChecked = 0;
+export const createSpreadsheet = (element) => {
+    const grid = createRawSpreadsheet(element), exportXlsx = grid.ExportXlsx.bind(grid);
+    grid.ExportXlsx = async () => {
+        const bytes = await exportXlsx();
+        window.exportsChecked++;
+        for (const problem of await packageProblems(bytes)) window.exportProblems.push(problem);
+        return bytes;
+    };
+    return grid;
+};
 
 export const bytesOf = async (name) => new Uint8Array(await (await fetch('/fixture?name=' + encodeURIComponent(name))).arrayBuffer());
 export const makeLog = () => {

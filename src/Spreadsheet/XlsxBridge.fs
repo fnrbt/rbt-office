@@ -856,6 +856,16 @@ module Import =
                 parsePlainRange range
                 |> Option.map (fun (sr, sc, er, ec) ->
                     ({ Key = path; Range = { From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } } } : KeptRange)))
+        // The ranges pivot caches read from this sheet follow its rows and columns too.
+        let keptRanges =
+            keptRanges
+            @ (wb.Preserved.PivotCacheSources
+               |> List.choose (fun (path, sheetName, range) ->
+                   if not (sheetName.Equals(sheet.Name, StringComparison.OrdinalIgnoreCase)) then None
+                   else
+                       parsePlainRange (range.Replace("$", ""))
+                       |> Option.map (fun (sr, sc, er, ec) ->
+                           ({ Key = path; Range = { From = { Row = sr; Col = sc }; To = { Row = er; Col = ec } } } : KeptRange))))
 
         let model =
             { createEmpty modelRows modelCols with
@@ -1413,6 +1423,12 @@ module Export =
                 let extras =
                     if unchanged (fun m -> m.DataTables) then extras
                     else { extras with DataTables = dataTables model }
+                // Sparklines and x14 conditional formats name cells; the
+                // editor does not model them, so they only go back while the
+                // sheet's rows and columns are where the file had them.
+                let extras =
+                    if before.StructureVersion = model.StructureVersion then extras
+                    else { extras with KeptCellExtensions = [] }
                 // Column default styles follow their columns. The file's own
                 // `<col>` list is by position: it is only kept while no
                 // column was inserted or deleted.
@@ -1539,14 +1555,47 @@ module Export =
                                 | _ -> ()
                         | _ -> () ]
                     |> Map.ofList
-                if moved.IsEmpty then source.Workbook.Preserved
+                // The calculation chain lists the formula cells of the file: it
+                // is kept only while every sheet of the file is there with its
+                // formulas in the same cells (Excel builds a new chain for a
+                // file without one; a stale one makes it report a damaged file).
+                let formulaCells (cells: Map<CellAddress, CellData>) =
+                    let found = ResizeArray<CellAddress>()
+                    for KeyValue(addr, data) in cells do
+                        match data.Value with
+                        | CellValue.Formula _ -> found.Add addr
+                        | _ -> ()
+                    found
+                let chainStands =
+                    source.Workbook.Preserved.CalcChain.IsSome
+                    && input.Sheets.Length = source.Baseline.Length
+                    && (input.Sheets
+                        |> Array.mapi (fun index model -> index, model)
+                        |> Array.forall (fun (index, model) ->
+                            match sourceOf index with
+                            | Some (_, _, before) ->
+                                sameRef before.Cells model.Cells
+                                || (before.StructureVersion = model.StructureVersion
+                                    && (let was = formulaCells before.Cells
+                                        let now = formulaCells model.Cells
+                                        was.Count = now.Count && Seq.forall2 (=) was now))
+                            | None -> false))
+                let preserved =
+                    if chainStands then source.Workbook.Preserved else { source.Workbook.Preserved with CalcChain = None }
+                if moved.IsEmpty then preserved
                 else
-                    { source.Workbook.Preserved with
+                    let cachePaths = preserved.PivotCacheSources |> List.map (fun (path, _, _) -> path) |> Set.ofList
+                    { preserved with
                         Parts =
-                            source.Workbook.Preserved.Parts
+                            preserved.Parts
                             |> List.map (fun (path, data) ->
                                 match Map.tryFind path moved with
                                 | Some range ->
-                                    path, Text.Encoding.UTF8.GetBytes (XlsxReader.withPivotLocation range (Text.Encoding.UTF8.GetString data))
+                                    let text = Text.Encoding.UTF8.GetString data
+                                    // A pivot cache's source range, or a pivot table's location.
+                                    let rewritten =
+                                        if Set.contains path cachePaths then XlsxReader.withPivotCacheSource range text
+                                        else XlsxReader.withPivotLocation range text
+                                    path, Text.Encoding.UTF8.GetBytes rewritten
                                 | None -> path, data) }
             | None -> XlsxReader.emptyWorkbookPreservation }
