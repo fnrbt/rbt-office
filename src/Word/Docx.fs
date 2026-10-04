@@ -1207,26 +1207,6 @@ let private blocksFromEditor (items: obj array) =
         | _ -> block)
     |> Array.toList
 
-let private isDiscardableTrailingParagraph para =
-    System.String.IsNullOrWhiteSpace(TextBuffer.toString para.Buffer)
-    && not para.Metadata.PageBreakAfter
-    && para.Metadata.SectionBreak.IsNone
-    && para.Metadata.RenderedPageBreakBefore.IsNone
-    && para.Metadata.SectionPageSetup.IsNone
-    && para.Metadata.HeaderReferences.IsEmpty
-    && para.Metadata.FooterReferences.IsEmpty
-    && para.Metadata.ParagraphBorders.IsNone
-    && para.Metadata.ParagraphBorderBefore.IsNone
-    && para.Metadata.ParagraphBorderAfter.IsNone
-    && para.Metadata.MarkRevision.IsNone
-
-let private trimTrailingEmptyParagraphs blocks =
-    let rec trim = function
-        | (Paragraph para) :: rest when isDiscardableTrailingParagraph para -> trim rest
-        | (Heading (_, para)) :: rest when isDiscardableTrailingParagraph para -> trim rest
-        | rest -> rest
-    blocks |> List.rev |> trim |> List.rev
-
 let private paragraphsFromBlocks blocks =
     blocks
     |> List.choose (function
@@ -1275,7 +1255,9 @@ let private pageSetupFromEditor (value: obj) =
 
 /// Import EditorParagraphs from Office.Formats into Word document
 let importFromEditor (editorParagraphs: obj array) : Document =
-    let blocks = blocksFromEditor editorParagraphs |> trimTrailingEmptyParagraphs
+    // Every paragraph of the file is kept, empty ones at the end of the body
+    // included: they are content (Word lays them out, and writes them back).
+    let blocks = blocksFromEditor editorParagraphs
     let styles = stylesFromEditor editorParagraphs
 
     // Create document with all blocks

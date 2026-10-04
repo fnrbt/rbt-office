@@ -433,6 +433,16 @@ const docs = [
         ],
     },
     {
+        // Empty and whitespace-only paragraphs at the very end of the body are
+        // content: they come through import and export, and through a save.
+        name: 'synthetic/trailing-empty-paragraphs',
+        body: p('first') + '<w:p/>' + p('last text') + '<w:p/>' + '<w:p><w:pPr><w:jc w:val="center"/></w:pPr></w:p>' + p('   ') + '<w:p/>',
+        expect: [
+            { read: 'pkg.Paragraphs.length', equals: 7 },
+            { part: 'word/document.xml', has: 'last text</w:t></w:r></w:p><w:p>.*<w:jc w:val="center"/>.*<w:t xml:space="preserve">   </w:t>.*<w:p>(<w:pPr/>)?</w:p><w:sectPr' },
+        ],
+    },
+    {
         // Formatting a paragraph inherits (from its style, the document defaults or its
         // list level) or has nowhere at all is not written onto it: only what its own
         // w:pPr states. The first save is a fixed point for unset and for zero.

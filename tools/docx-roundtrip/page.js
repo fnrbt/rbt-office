@@ -129,11 +129,8 @@ function summarise(items, prefix, out) {
 
 function summarisePackage(pkg) {
     const out = [];
-    // The editor drops empty / whitespace-only paragraphs at the very end of the body on import.
+    // Every body block counts, empty paragraphs at the very end included.
     const body = [...(pkg.Paragraphs || [])];
-    const blank = (item) => (item.Type || 'Paragraph') !== 'Table' && (item.Type || 'Paragraph') !== 'TextBox' && runsSummary(item.Runs).every((r) => r.text !== undefined && r.text.trim() === '')
-        && !item.SectionBreak && !item.PageBreakAfter && !item.ParagraphBorders && !item.MarkRevisionType && !(item.HeaderReferences || []).length && !(item.FooterReferences || []).length;
-    while (body.length && blank(body[body.length - 1])) body.pop();
     summarise(body, 'body', out);
     for (const [key, label] of [['HeaderParts', 'header'], ['FooterParts', 'footer']])
         (pkg[key] || []).forEach((part, i) => {
@@ -335,6 +332,19 @@ window.roundTrip = async (name, expect) => {
         }
         const first = await open(original);
         const s0 = summarisePackage(first.pkg);
+        // Import then export with no edit at all: the same number of body blocks
+        // (and of blocks in every header / footer part) comes out as went in.
+        {
+            const untouched = exportPackage(first.doc);
+            const count = (items) => (items || []).length;
+            if (count(untouched.Paragraphs) !== count(first.pkg.Paragraphs))
+                problems.push(`import -> export: ${count(first.pkg.Paragraphs)} body blocks became ${count(untouched.Paragraphs)}`);
+            for (const key of ['HeaderParts', 'FooterParts'])
+                (first.pkg[key] || []).forEach((part, i) => {
+                    const got = count(((untouched[key] || [])[i] || {}).Paragraphs);
+                    if (got !== count(part.Paragraphs)) problems.push(`import -> export: ${key}[${i}] ${count(part.Paragraphs)} blocks became ${got}`);
+                });
+        }
         const mutate = expect.find((e) => e.mutate);
         const bytes1 = await save(first.doc, mutate ? new Function('pkg', mutate.mutate) : null);
         const second = await open(bytes1);

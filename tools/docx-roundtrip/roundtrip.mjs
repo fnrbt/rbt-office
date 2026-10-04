@@ -20,6 +20,9 @@
 //   dotnet fable src/Word           --outDir $DIST/word           --lang JavaScript --noCache
 //   node tools/docx-roundtrip/roundtrip.mjs --dist $DIST [--out DIR] [--verbose] [fixture.docx ...]
 //
+// For every document it also checks that import followed by export with no
+// edit yields the same number of blocks (empty paragraphs at the end included).
+//
 // With no fixture arguments it runs the built-in synthetic documents (one per
 // feature the writer has to preserve) plus the small corpus files listed in
 // DEFAULT_CORPUS. --out keeps the saved documents (pass 1 and 2) so the .NET
